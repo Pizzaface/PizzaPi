@@ -1,21 +1,45 @@
-import type { ExtensionFactory } from "@mariozechner/pi-coding-agent";
+import type { ExtensionContext, ExtensionFactory } from "@mariozechner/pi-coding-agent";
 
 interface RelayState {
     ws: WebSocket;
     sessionId: string;
     token: string;
+    shareUrl: string;
 }
 
+const RELAY_DEFAULT = "ws://localhost:3000";
+const RECONNECT_MAX_DELAY = 30_000;
+
 /**
- * PizzaPi Remote extension — registers `/liveshare` to stream the active session
- * to a browser via the PizzaPi relay server (packages/server).
+ * PizzaPi Remote extension.
  *
- * Usage:
- *   /liveshare         — start sharing, prints browser URL
- *   /liveshare stop    — disconnect
+ * Automatically connects to the PizzaPi relay on session start and streams all
+ * agent events in real-time so any browser client can pick up the session.
+ *
+ * Config:
+ *   PIZZAPI_RELAY_URL  WebSocket URL of the relay (default: ws://localhost:3000)
+ *                      Set to "off" to disable auto-connect.
+ *
+ * Commands:
+ *   /share             Show the current share URL (or "not connected")
+ *   /share stop        Disconnect from relay
+ *   /share reconnect   Force reconnect
  */
 export const remoteExtension: ExtensionFactory = (pi) => {
     let relay: RelayState | null = null;
+    let reconnectDelay = 1000;
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let shuttingDown = false;
+
+    // ── Core relay helpers ────────────────────────────────────────────────────
+
+    function relayUrl(): string {
+        return (process.env.PIZZAPI_RELAY_URL ?? RELAY_DEFAULT).replace(/\/$/, "");
+    }
+
+    function isDisabled(): boolean {
+        return (process.env.PIZZAPI_RELAY_URL ?? "").toLowerCase() === "off";
+    }
 
     function send(payload: unknown) {
         if (!relay || relay.ws.readyState !== WebSocket.OPEN) return;
@@ -27,92 +51,129 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         send({ type: "event", sessionId: relay.sessionId, token: relay.token, event });
     }
 
-    // ── /liveshare command ────────────────────────────────────────────────────
-    pi.registerCommand("liveshare", {
-        description: "Stream this session live to a browser (pizzapi relay)",
+    function scheduleReconnect(notify?: (msg: string) => void) {
+        if (shuttingDown || isDisabled()) return;
+        reconnectTimer = setTimeout(() => {
+            reconnectTimer = null;
+            connect(notify);
+        }, reconnectDelay);
+        reconnectDelay = Math.min(reconnectDelay * 2, RECONNECT_MAX_DELAY);
+    }
+
+    // ── WebSocket connection ──────────────────────────────────────────────────
+
+    function connect(notify?: (msg: string) => void) {
+        if (isDisabled() || shuttingDown) return;
+
+        const wsUrl = `${relayUrl()}/ws/sessions`;
+        const ws = new WebSocket(wsUrl);
+
+        ws.onopen = () => {
+            reconnectDelay = 1000; // reset backoff on success
+            ws.send(JSON.stringify({ type: "register" }));
+        };
+
+        ws.onmessage = (evt) => {
+            let msg: Record<string, unknown>;
+            try {
+                msg = JSON.parse(evt.data as string);
+            } catch {
+                return;
+            }
+
+            if (msg.type === "registered") {
+                relay = {
+                    ws,
+                    sessionId: msg.sessionId as string,
+                    token: msg.token as string,
+                    shareUrl: msg.shareUrl as string,
+                };
+                notify?.(`Connected to hub — share URL: ${relay.shareUrl}`);
+
+                // Switch to steady-state message handler (collab input)
+                ws.onmessage = (inputEvt) => {
+                    let inputMsg: Record<string, unknown>;
+                    try {
+                        inputMsg = JSON.parse(inputEvt.data as string);
+                    } catch {
+                        return;
+                    }
+                    if (inputMsg.type === "input" && typeof inputMsg.text === "string") {
+                        pi.sendUserMessage(inputMsg.text);
+                    }
+                };
+            }
+        };
+
+        ws.onerror = () => {
+            // close will fire next and handle reconnect
+        };
+
+        ws.onclose = () => {
+            if (relay?.ws === ws) relay = null;
+            if (!shuttingDown) scheduleReconnect(notify);
+        };
+    }
+
+    function disconnect() {
+        if (reconnectTimer) {
+            clearTimeout(reconnectTimer);
+            reconnectTimer = null;
+        }
+        if (relay) {
+            send({ type: "session_end", sessionId: relay.sessionId, token: relay.token });
+            relay.ws.close();
+            relay = null;
+        }
+    }
+
+    // ── Auto-connect on session start ─────────────────────────────────────────
+
+    pi.on("session_start", (_event, ctx: ExtensionContext) => {
+        if (isDisabled()) return;
+        // Use ctx.ui.notify so the share URL appears in the TUI on startup
+        connect((msg) => ctx.ui.notify(msg));
+    });
+
+    pi.on("session_shutdown", () => {
+        shuttingDown = true;
+        disconnect();
+    });
+
+    // ── /share command ────────────────────────────────────────────────────────
+
+    pi.registerCommand("share", {
+        description: "Show hub share URL, or: /share stop | /share reconnect",
         handler: async (args, ctx) => {
             const arg = args.trim().toLowerCase();
 
             if (arg === "stop") {
-                if (!relay) {
-                    ctx.ui.notify("No active live share session.");
-                    return;
-                }
-                send({ type: "session_end", sessionId: relay.sessionId, token: relay.token });
-                relay.ws.close();
-                relay = null;
-                ctx.ui.notify("Live share disconnected.");
+                disconnect();
+                ctx.ui.notify("Disconnected from hub.");
                 return;
             }
 
+            if (arg === "reconnect") {
+                disconnect();
+                shuttingDown = false;
+                reconnectDelay = 1000;
+                connect((msg) => ctx.ui.notify(msg));
+                ctx.ui.notify("Reconnecting to hub…");
+                return;
+            }
+
+            // Default: show status
             if (relay) {
-                ctx.ui.notify("Live share already active. Use /liveshare stop to disconnect.");
-                return;
+                ctx.ui.notify(`Hub connected\nShare URL: ${relay.shareUrl}`);
+            } else {
+                const url = isDisabled() ? "(disabled — set PIZZAPI_RELAY_URL to enable)" : relayUrl();
+                ctx.ui.notify(`Not connected to hub.\nRelay: ${url}\nUse /share reconnect to retry.`);
             }
-
-            const relayBase = (process.env.PIZZAPI_RELAY_URL ?? "ws://localhost:3000").replace(/\/$/, "");
-            const wsUrl = `${relayBase}/ws/sessions`;
-
-            ctx.ui.notify(`Connecting to relay at ${wsUrl}…`);
-
-            const ws = new WebSocket(wsUrl);
-
-            await new Promise<void>((resolve, reject) => {
-                const timeout = setTimeout(() => reject(new Error("Relay connection timed out")), 8000);
-
-                ws.onopen = () => {
-                    ws.send(JSON.stringify({ type: "register" }));
-                };
-
-                ws.onmessage = (evt) => {
-                    let msg: Record<string, unknown>;
-                    try {
-                        msg = JSON.parse(evt.data as string);
-                    } catch {
-                        return;
-                    }
-
-                    if (msg.type === "registered") {
-                        clearTimeout(timeout);
-                        relay = { ws, sessionId: msg.sessionId as string, token: msg.token as string };
-                        ctx.ui.notify(`Live share active!\nShare URL: ${msg.shareUrl}`);
-
-                        // Handle collab-mode input from browser viewers
-                        ws.onmessage = (inputEvt) => {
-                            let inputMsg: Record<string, unknown>;
-                            try {
-                                inputMsg = JSON.parse(inputEvt.data as string);
-                            } catch {
-                                return;
-                            }
-                            if (inputMsg.type === "input" && typeof inputMsg.text === "string") {
-                                pi.sendUserMessage(inputMsg.text);
-                            }
-                        };
-
-                        resolve();
-                    } else if (msg.type === "error") {
-                        clearTimeout(timeout);
-                        reject(new Error((msg.message as string) ?? "Relay error"));
-                    }
-                };
-
-                ws.onerror = () => {
-                    clearTimeout(timeout);
-                    reject(new Error("Could not connect to relay. Is PIZZAPI_RELAY_URL set correctly?"));
-                };
-
-                ws.onclose = () => {
-                    relay = null;
-                };
-            }).catch((err: Error) => {
-                ws.close();
-                ctx.ui.notify(`Live share failed: ${err.message}`);
-            });
         },
     });
 
     // ── Forward agent events to relay ─────────────────────────────────────────
+
     pi.on("agent_start", (event) => forwardEvent(event));
     pi.on("agent_end", (event) => forwardEvent(event));
     pi.on("turn_start", (event) => forwardEvent(event));
@@ -123,11 +184,4 @@ export const remoteExtension: ExtensionFactory = (pi) => {
     pi.on("tool_execution_start", (event) => forwardEvent(event));
     pi.on("tool_execution_update", (event) => forwardEvent(event));
     pi.on("tool_execution_end", (event) => forwardEvent(event));
-
-    pi.on("session_shutdown", () => {
-        if (!relay) return;
-        send({ type: "session_end", sessionId: relay.sessionId, token: relay.token });
-        relay.ws.close();
-        relay = null;
-    });
 };
