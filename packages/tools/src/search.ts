@@ -1,38 +1,35 @@
-import type { Tool } from "@pizzapi/runtime";
+import { Type } from "@mariozechner/pi-ai";
+import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { exec } from "child_process";
 import { promisify } from "util";
 
 const execAsync = promisify(exec);
 
-export const searchTool: Tool = {
-    definition: {
-        name: "search",
-        description: "Search for files or content using ripgrep or find",
-        parameters: {
-            pattern: { type: "string", description: "Search pattern (regex)" },
-            path: { type: "string", description: "Directory to search in" },
-            type: { type: "string", description: "'content' for grep, 'files' for find", optional: true },
-        },
-    },
-    async execute(args) {
-        const pattern = args.pattern as string;
-        const path = args.path as string;
-        const type = (args.type as string) ?? "content";
+export const searchTool: AgentTool = {
+    name: "search",
+    label: "Search",
+    description: "Search for files or content using ripgrep or find",
+    parameters: Type.Object({
+        pattern: Type.String({ description: "Search pattern (regex for content, glob for files)" }),
+        path: Type.String({ description: "Directory to search in" }),
+        type: Type.Optional(
+            Type.Union([Type.Literal("content"), Type.Literal("files")], {
+                description: "'content' for grep, 'files' for find",
+            }),
+        ),
+    }),
+    async execute(_toolCallId, params) {
+        const type = params.type ?? "content";
+        const command =
+            type === "files"
+                ? `find ${params.path} -name "${params.pattern}" -type f 2>/dev/null | head -50`
+                : `rg --no-heading -n "${params.pattern}" ${params.path} 2>/dev/null | head -100`;
 
-        try {
-            const command =
-                type === "files"
-                    ? `find ${path} -name "${pattern}" -type f 2>/dev/null | head -50`
-                    : `rg --no-heading -n "${pattern}" ${path} 2>/dev/null | head -100`;
-
-            const { stdout } = await execAsync(command, { timeout: 15_000 });
-            return { success: true, output: stdout || "No matches found" };
-        } catch (error) {
-            return {
-                success: false,
-                output: null,
-                error: error instanceof Error ? error.message : String(error),
-            };
-        }
+        const { stdout } = await execAsync(command, { timeout: 15_000 });
+        const output = stdout || "No matches found";
+        return {
+            content: [{ type: "text" as const, text: output }],
+            details: { pattern: params.pattern, path: params.path, type },
+        };
     },
 };

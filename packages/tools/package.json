@@ -9,7 +9,8 @@
         "dev": "tsc --watch"
     },
     "dependencies": {
-        "@pizzapi/runtime": "workspace:*"
+        "@mariozechner/pi-ai": "workspace:*",
+        "@mariozechner/pi-agent-core": "workspace:*"
     },
     "devDependencies": {
         "typescript": "^5.7.0"

@@ -10,8 +10,8 @@
         "start": "bun dist/index.js"
     },
     "dependencies": {
-        "@pizzapi/providers": "workspace:*",
-        "@pizzapi/runtime": "workspace:*",
+        "@mariozechner/pi-ai": "workspace:*",
+        "@mariozechner/pi-agent-core": "workspace:*",
         "@pizzapi/tools": "workspace:*"
     },
     "devDependencies": {

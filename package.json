@@ -2,16 +2,12 @@
     "name": "pizzapi",
     "private": true,
     "workspaces": [
-        "packages/runtime",
-        "packages/providers",
         "packages/tools",
         "packages/server",
         "packages/ui"
     ],
     "scripts": {
-        "build": "bun run build:providers && bun run build:runtime && bun run build:tools && bun run build:server && bun run build:ui",
-        "build:runtime": "cd packages/runtime && bun run build",
-        "build:providers": "cd packages/providers && bun run build",
+        "build": "bun run build:tools && bun run build:server && bun run build:ui",
         "build:tools": "cd packages/tools && bun run build",
         "build:server": "cd packages/server && bun run build",
         "build:ui": "cd packages/ui && bun run build",
@@ -20,6 +16,12 @@
         "dev:ui": "cd packages/ui && bun run dev",
         "typecheck": "tsc --build",
         "clean": "rm -rf packages/*/dist"
+    },
+    "dependencies": {
+        "@mariozechner/pi-ai": "^0.53.0",
+        "@mariozechner/pi-agent-core": "^0.53.0",
+        "@mariozechner/pi-web-ui": "^0.53.0",
+        "@mariozechner/pi-tui": "^0.53.0"
     },
     "devDependencies": {
         "concurrently": "^9.2.1",
