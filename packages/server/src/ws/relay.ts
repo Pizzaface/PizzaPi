@@ -29,8 +29,8 @@ export function onOpen(ws: ServerWebSocket<WsData>) {
         }
     } else if (ws.data.role === "hub") {
         addHubClient(ws);
-        // Send current session list immediately on connect
-        ws.send(JSON.stringify({ type: "sessions", sessions: getSessions() }));
+        // Send only this user's active sessions on connect
+        ws.send(JSON.stringify({ type: "sessions", sessions: getSessions(ws.data.userId) }));
     }
 }
 

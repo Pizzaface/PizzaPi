@@ -11,6 +11,10 @@ export interface WsData {
     token?: string;
     /** For runner role: runner ID */
     runnerId?: string;
+    /** Authenticated user ID (from API key) */
+    userId?: string;
+    /** Authenticated user name (from API key) */
+    userName?: string;
 }
 
 interface SharedSession {
@@ -22,6 +26,8 @@ interface SharedSession {
     shareUrl: string;
     cwd: string;
     startedAt: string;
+    userId?: string;
+    userName?: string;
 }
 
 interface RunnerEntry {
@@ -41,9 +47,10 @@ export function removeHubClient(ws: ServerWebSocket<WsData>) {
     hubClients.delete(ws);
 }
 
-function broadcastToHub(msg: unknown) {
+function broadcastToHub(msg: unknown, targetUserId?: string) {
     const data = JSON.stringify(msg);
     for (const ws of hubClients) {
+        if (targetUserId && ws.data.userId !== targetUserId) continue;
         try {
             ws.send(data);
         } catch {}
@@ -65,6 +72,8 @@ export function registerTuiSession(
     const token = randomBytes(32).toString("hex");
     const shareUrl = `${process.env.PIZZAPI_BASE_URL ?? "http://localhost:5173"}/session/${sessionId}`;
     const startedAt = new Date().toISOString();
+    const userId = ws.data.userId;
+    const userName = ws.data.userName;
     sharedSessions.set(sessionId, {
         tuiWs: ws,
         token,
@@ -73,20 +82,26 @@ export function registerTuiSession(
         shareUrl,
         cwd,
         startedAt,
+        userId,
+        userName,
     });
-    broadcastToHub({ type: "session_added", sessionId, shareUrl, cwd, startedAt });
+    broadcastToHub({ type: "session_added", sessionId, shareUrl, cwd, startedAt, userId, userName }, userId);
     return { sessionId, token, shareUrl };
 }
 
-/** Returns a public summary of all active TUI sessions (safe to send to hub clients). */
-export function getSessions() {
-    return Array.from(sharedSessions.entries()).map(([id, s]) => ({
-        sessionId: id,
-        shareUrl: s.shareUrl,
-        cwd: s.cwd,
-        startedAt: s.startedAt,
-        viewerCount: s.viewers.size,
-    }));
+/** Returns a public summary of active TUI sessions, optionally filtered by owner. */
+export function getSessions(filterUserId?: string) {
+    return Array.from(sharedSessions.entries())
+        .filter(([, s]) => !filterUserId || s.userId === filterUserId)
+        .map(([id, s]) => ({
+            sessionId: id,
+            shareUrl: s.shareUrl,
+            cwd: s.cwd,
+            startedAt: s.startedAt,
+            viewerCount: s.viewers.size,
+            userId: s.userId,
+            userName: s.userName,
+        }));
 }
 
 export function getSharedSession(sessionId: string) {
@@ -125,7 +140,7 @@ export function endSharedSession(sessionId: string) {
         } catch {}
     }
     sharedSessions.delete(sessionId);
-    broadcastToHub({ type: "session_removed", sessionId });
+    broadcastToHub({ type: "session_removed", sessionId }, session.userId);
 }
 
 // ── Runner registry (Task 003) ───────────────────────────────────────────────

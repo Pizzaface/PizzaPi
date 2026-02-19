@@ -1,4 +1,5 @@
 import type { ExtensionContext, ExtensionFactory } from "@mariozechner/pi-coding-agent";
+import { loadConfig } from "../config.js";
 
 interface RelayState {
     ws: WebSocket;
@@ -62,11 +63,24 @@ export const remoteExtension: ExtensionFactory = (pi) => {
 
     // ── WebSocket connection ──────────────────────────────────────────────────
 
+    function apiKey(): string | undefined {
+        return process.env.PIZZAPI_API_KEY ?? loadConfig(process.cwd()).apiKey;
+    }
+
     function connect(notify?: (msg: string) => void) {
         if (isDisabled() || shuttingDown) return;
 
+        const key = apiKey();
+        if (!key) {
+            const msg =
+                "PizzaPi: no API key configured. Set PIZZAPI_API_KEY or add \"apiKey\" to .pizzapi/config.json. Remote sharing disabled.";
+            console.warn(msg);
+            notify?.(msg);
+            return;
+        }
+
         const wsUrl = `${relayUrl()}/ws/sessions`;
-        const ws = new WebSocket(wsUrl);
+        const ws = new WebSocket(wsUrl, { headers: { "x-api-key": key } } as any);
 
         ws.onopen = () => {
             reconnectDelay = 1000; // reset backoff on success

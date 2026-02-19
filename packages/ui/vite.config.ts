@@ -1,4 +1,7 @@
 import { defineConfig, type Plugin } from "vite";
+import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
+import path from "path";
 
 const API_PORT = process.env.PORT ?? "3000";
 
@@ -21,7 +24,12 @@ function litProdMode(): Plugin {
 }
 
 export default defineConfig({
-    plugins: [litProdMode()],
+    plugins: [react(), tailwindcss(), litProdMode()],
+    resolve: {
+        alias: {
+            "@": path.resolve(__dirname, "./src"),
+        },
+    },
     server: {
         port: 5173,
         proxy: {

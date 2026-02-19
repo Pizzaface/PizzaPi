@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 
@@ -9,6 +9,8 @@ export interface PizzaPiConfig {
     agentDir?: string;
     /** Prepend text to the system prompt without replacing it */
     appendSystemPrompt?: string;
+    /** API key for authenticating with the PizzaPi relay server */
+    apiKey?: string;
 }
 
 function readJsonSafe(path: string): Partial<PizzaPiConfig> {
@@ -39,4 +41,15 @@ export function expandHome(path: string): string {
 
 export function defaultAgentDir(): string {
     return join(homedir(), ".pizzapi");
+}
+
+/**
+ * Merge fields into ~/.pizzapi/config.json (global config).
+ */
+export function saveGlobalConfig(fields: Partial<PizzaPiConfig>): void {
+    const dir = join(homedir(), ".pizzapi");
+    const path = join(dir, "config.json");
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    const existing = readJsonSafe(path);
+    writeFileSync(path, JSON.stringify({ ...existing, ...fields }, null, 2), "utf-8");
 }

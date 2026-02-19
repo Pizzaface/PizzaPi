@@ -7,6 +7,7 @@ import { existsSync, readFileSync, readdirSync } from "fs";
 import { join } from "path";
 import { defaultAgentDir, loadConfig } from "./config.js";
 import { remoteExtension } from "./extensions/remote.js";
+import { runSetup } from "./setup.js";
 
 async function main() {
     const args = process.argv.slice(2);
@@ -19,6 +20,11 @@ async function main() {
         return;
     }
 
+    if (args[0] === "setup") {
+        await runSetup({ force: true });
+        return;
+    }
+
     if (args.includes("--version") || args.includes("-v")) {
         const pkgPath = new URL("../package.json", import.meta.url);
         const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
@@ -28,6 +34,13 @@ async function main() {
 
     const config = loadConfig(cwd);
     const agentDir = config.agentDir ? config.agentDir.replace(/^~/, process.env.HOME ?? "") : defaultAgentDir();
+
+    // First-run: no API key configured — prompt setup before launching TUI
+    const hasApiKey = !!(process.env.PIZZAPI_API_KEY ?? config.apiKey);
+    const relayDisabled = (process.env.PIZZAPI_RELAY_URL ?? "").toLowerCase() === "off";
+    if (!hasApiKey && !relayDisabled) {
+        await runSetup();
+    }
 
     // Load .agents/*.md files from cwd
     const dotAgentsDir = join(cwd, ".agents");
