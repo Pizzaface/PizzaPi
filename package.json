@@ -1,0 +1,28 @@
+{
+    "name": "pizzapi",
+    "private": true,
+    "workspaces": [
+        "packages/runtime",
+        "packages/providers",
+        "packages/tools",
+        "packages/server",
+        "packages/ui"
+    ],
+    "scripts": {
+        "build": "bun run build:providers && bun run build:runtime && bun run build:tools && bun run build:server && bun run build:ui",
+        "build:runtime": "cd packages/runtime && bun run build",
+        "build:providers": "cd packages/providers && bun run build",
+        "build:tools": "cd packages/tools && bun run build",
+        "build:server": "cd packages/server && bun run build",
+        "build:ui": "cd packages/ui && bun run build",
+        "dev": "concurrently \"bun run dev:server\" \"bun run dev:ui\" --kill-others-on-exit",
+        "dev:server": "cd packages/server && bun run dev",
+        "dev:ui": "cd packages/ui && bun run dev",
+        "typecheck": "tsc --build",
+        "clean": "rm -rf packages/*/dist"
+    },
+    "devDependencies": {
+        "concurrently": "^9.2.1",
+        "typescript": "^5.7.0"
+    }
+}
