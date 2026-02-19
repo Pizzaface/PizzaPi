@@ -3,7 +3,7 @@ import { Agent } from "@mariozechner/pi-agent-core";
 import type { AgentEvent } from "@mariozechner/pi-agent-core";
 import { createToolkit } from "@pizzapi/tools";
 import type { WsData } from "./ws/registry.js";
-import { getRunners } from "./ws/registry.js";
+import { getRunners, getSessions } from "./ws/registry.js";
 import { onClose, onMessage, onOpen } from "./ws/relay.js";
 
 const PORT = parseInt(process.env.PORT ?? "3000");
@@ -43,6 +43,13 @@ const server = Bun.serve<WsData>({
             return new Response("WebSocket upgrade failed", { status: 400 });
         }
 
+        if (url.pathname === "/ws/hub") {
+            // Web UI connecting to watch the live session list
+            const upgraded = server.upgrade(req, { data: { role: "hub" } });
+            if (upgraded) return;
+            return new Response("WebSocket upgrade failed", { status: 400 });
+        }
+
         // ── REST endpoints ─────────────────────────────────────────────────────
         if (url.pathname === "/health") {
             return Response.json({ status: "ok" });
@@ -50,6 +57,10 @@ const server = Bun.serve<WsData>({
 
         if (url.pathname === "/api/runners" && req.method === "GET") {
             return Response.json({ runners: getRunners() });
+        }
+
+        if (url.pathname === "/api/sessions" && req.method === "GET") {
+            return Response.json({ sessions: getSessions() });
         }
 
         if (url.pathname === "/api/chat" && req.method === "POST") {

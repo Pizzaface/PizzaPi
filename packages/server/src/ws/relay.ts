@@ -2,12 +2,15 @@ import type { ServerWebSocket } from "bun";
 import type { WsData } from "./registry.js";
 import {
     addViewer,
+    addHubClient,
     broadcastToViewers,
     endSharedSession,
     getSharedSession,
+    getSessions,
     getRunner,
     registerRunner,
     registerTuiSession,
+    removeHubClient,
     removeRunner,
     removeViewer,
 } from "./registry.js";
@@ -24,6 +27,10 @@ export function onOpen(ws: ServerWebSocket<WsData>) {
         } else {
             ws.send(JSON.stringify({ type: "connected", sessionId: ws.data.sessionId }));
         }
+    } else if (ws.data.role === "hub") {
+        addHubClient(ws);
+        // Send current session list immediately on connect
+        ws.send(JSON.stringify({ type: "sessions", sessions: getSessions() }));
     }
 }
 
@@ -44,6 +51,7 @@ export function onMessage(ws: ServerWebSocket<WsData>, raw: string | Buffer) {
     } else if (ws.data.role === "runner") {
         handleRunnerMessage(ws, msg);
     }
+    // hub role: read-only feed, no inbound messages handled
 }
 
 /** Called when a WebSocket closes. */
@@ -54,6 +62,8 @@ export function onClose(ws: ServerWebSocket<WsData>) {
         removeViewer(ws.data.sessionId, ws);
     } else if (ws.data.role === "runner" && ws.data.runnerId) {
         removeRunner(ws.data.runnerId);
+    } else if (ws.data.role === "hub") {
+        removeHubClient(ws);
     }
 }
 
@@ -61,8 +71,9 @@ export function onClose(ws: ServerWebSocket<WsData>) {
 
 function handleTuiMessage(ws: ServerWebSocket<WsData>, msg: Record<string, unknown>) {
     if (msg.type === "register") {
-        // TUI registers a new shared session
-        const { sessionId, token, shareUrl } = registerTuiSession(ws);
+        // TUI registers a new shared session; cwd sent by CLI for display in hub UI
+        const cwd = typeof msg.cwd === "string" ? msg.cwd : "";
+        const { sessionId, token, shareUrl } = registerTuiSession(ws, cwd);
         ws.data.sessionId = sessionId;
         ws.data.token = token;
         ws.send(JSON.stringify({ type: "registered", sessionId, token, shareUrl }));

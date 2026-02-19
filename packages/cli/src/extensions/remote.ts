@@ -70,7 +70,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
 
         ws.onopen = () => {
             reconnectDelay = 1000; // reset backoff on success
-            ws.send(JSON.stringify({ type: "register" }));
+            ws.send(JSON.stringify({ type: "register", cwd: process.cwd() }));
         };
 
         ws.onmessage = (evt) => {
@@ -88,7 +88,6 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                     token: msg.token as string,
                     shareUrl: msg.shareUrl as string,
                 };
-                notify?.(`Connected to hub — share URL: ${relay.shareUrl}`);
 
                 // Switch to steady-state message handler (collab input)
                 ws.onmessage = (inputEvt) => {
@@ -129,10 +128,9 @@ export const remoteExtension: ExtensionFactory = (pi) => {
 
     // ── Auto-connect on session start ─────────────────────────────────────────
 
-    pi.on("session_start", (_event, ctx: ExtensionContext) => {
+    pi.on("session_start", () => {
         if (isDisabled()) return;
-        // Use ctx.ui.notify so the share URL appears in the TUI on startup
-        connect((msg) => ctx.ui.notify(msg));
+        connect();
     });
 
     pi.on("session_shutdown", () => {

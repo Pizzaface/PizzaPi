@@ -1,7 +1,7 @@
 import type { ServerWebSocket } from "bun";
 import { randomBytes, randomUUID } from "crypto";
 
-export type WsRole = "tui" | "viewer" | "runner";
+export type WsRole = "tui" | "viewer" | "runner" | "hub";
 
 export interface WsData {
     role: WsRole;
@@ -20,6 +20,8 @@ interface SharedSession {
     viewers: Set<ServerWebSocket<WsData>>;
     collabMode: boolean;
     shareUrl: string;
+    cwd: string;
+    startedAt: string;
 }
 
 interface RunnerEntry {
@@ -28,10 +30,33 @@ interface RunnerEntry {
     sessions: Map<string, Set<ServerWebSocket<WsData>>>;
 }
 
+// ── Hub connections (web UI watching session list) ────────────────────────────
+const hubClients = new Set<ServerWebSocket<WsData>>();
+
+export function addHubClient(ws: ServerWebSocket<WsData>) {
+    hubClients.add(ws);
+}
+
+export function removeHubClient(ws: ServerWebSocket<WsData>) {
+    hubClients.delete(ws);
+}
+
+function broadcastToHub(msg: unknown) {
+    const data = JSON.stringify(msg);
+    for (const ws of hubClients) {
+        try {
+            ws.send(data);
+        } catch {}
+    }
+}
+
 // ── Shared TUI sessions (live share) ─────────────────────────────────────────
 const sharedSessions = new Map<string, SharedSession>();
 
-export function registerTuiSession(ws: ServerWebSocket<WsData>): {
+export function registerTuiSession(
+    ws: ServerWebSocket<WsData>,
+    cwd: string = "",
+): {
     sessionId: string;
     token: string;
     shareUrl: string;
@@ -39,8 +64,29 @@ export function registerTuiSession(ws: ServerWebSocket<WsData>): {
     const sessionId = randomUUID();
     const token = randomBytes(32).toString("hex");
     const shareUrl = `${process.env.PIZZAPI_BASE_URL ?? "http://localhost:5173"}/session/${sessionId}`;
-    sharedSessions.set(sessionId, { tuiWs: ws, token, viewers: new Set(), collabMode: false, shareUrl });
+    const startedAt = new Date().toISOString();
+    sharedSessions.set(sessionId, {
+        tuiWs: ws,
+        token,
+        viewers: new Set(),
+        collabMode: false,
+        shareUrl,
+        cwd,
+        startedAt,
+    });
+    broadcastToHub({ type: "session_added", sessionId, shareUrl, cwd, startedAt });
     return { sessionId, token, shareUrl };
+}
+
+/** Returns a public summary of all active TUI sessions (safe to send to hub clients). */
+export function getSessions() {
+    return Array.from(sharedSessions.entries()).map(([id, s]) => ({
+        sessionId: id,
+        shareUrl: s.shareUrl,
+        cwd: s.cwd,
+        startedAt: s.startedAt,
+        viewerCount: s.viewers.size,
+    }));
 }
 
 export function getSharedSession(sessionId: string) {
@@ -79,6 +125,7 @@ export function endSharedSession(sessionId: string) {
         } catch {}
     }
     sharedSessions.delete(sessionId);
+    broadcastToHub({ type: "session_removed", sessionId });
 }
 
 // ── Runner registry (Task 003) ───────────────────────────────────────────────
