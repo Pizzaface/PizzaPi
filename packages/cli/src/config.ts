@@ -11,6 +11,8 @@ export interface PizzaPiConfig {
     appendSystemPrompt?: string;
     /** API key for authenticating with the PizzaPi relay server */
     apiKey?: string;
+    /** WebSocket URL of the PizzaPi relay server. Default: ws://localhost:3001 */
+    relayUrl?: string;
 }
 
 function readJsonSafe(path: string): Partial<PizzaPiConfig> {

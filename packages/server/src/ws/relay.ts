@@ -6,6 +6,7 @@ import {
     broadcastToViewers,
     endSharedSession,
     getSharedSession,
+    getSessionState,
     getSessions,
     getRunner,
     registerRunner,
@@ -13,19 +14,48 @@ import {
     removeHubClient,
     removeRunner,
     removeViewer,
+    touchSessionActivity,
+    updateSessionState,
 } from "./registry.js";
+import { getPersistedRelaySessionSnapshot } from "../sessions/store.js";
+
+async function replayPersistedSnapshot(ws: ServerWebSocket<WsData>, sessionId: string) {
+    try {
+        const snapshot = await getPersistedRelaySessionSnapshot(sessionId);
+        if (!snapshot || snapshot.state === null || snapshot.state === undefined) {
+            ws.send(JSON.stringify({ type: "error", message: "Session not found" }));
+            ws.close(1008, "Session not found");
+            return;
+        }
+
+        ws.send(JSON.stringify({ type: "connected", sessionId, replayOnly: true }));
+        ws.send(JSON.stringify({ type: "event", event: { type: "session_active", state: snapshot.state } }));
+        ws.send(JSON.stringify({ type: "disconnected", reason: "Session is no longer live (snapshot replay)." }));
+        ws.close(1000, "Snapshot replay complete");
+    } catch (error) {
+        ws.send(JSON.stringify({ type: "error", message: "Failed to load session snapshot" }));
+        ws.close(1011, "Failed to load session snapshot");
+        console.error("Failed to replay persisted snapshot", error);
+    }
+}
 
 /** Called when a WebSocket connection is opened. */
 export function onOpen(ws: ServerWebSocket<WsData>) {
     // Role is set in the upgrade handler based on URL path.
     // TUI and runner connections perform a handshake via the first message.
     if (ws.data.role === "viewer" && ws.data.sessionId) {
-        const ok = addViewer(ws.data.sessionId, ws);
+        const sessionId = ws.data.sessionId;
+        const ok = addViewer(sessionId, ws);
         if (!ok) {
-            ws.send(JSON.stringify({ type: "error", message: "Session not found" }));
-            ws.close(1008, "Session not found");
-        } else {
-            ws.send(JSON.stringify({ type: "connected", sessionId: ws.data.sessionId }));
+            void replayPersistedSnapshot(ws, sessionId);
+            return;
+        }
+
+        ws.send(JSON.stringify({ type: "connected", sessionId }));
+        // Replay the last known session state so the viewer sees current content immediately
+        const lastState = getSessionState(sessionId);
+        if (lastState !== undefined) {
+            ws.send(JSON.stringify({ type: "event", event: { type: "session_active", state: lastState } }));
         }
     } else if (ws.data.role === "hub") {
         addHubClient(ws);
@@ -73,10 +103,11 @@ function handleTuiMessage(ws: ServerWebSocket<WsData>, msg: Record<string, unkno
     if (msg.type === "register") {
         // TUI registers a new shared session; cwd sent by CLI for display in hub UI
         const cwd = typeof msg.cwd === "string" ? msg.cwd : "";
-        const { sessionId, token, shareUrl } = registerTuiSession(ws, cwd);
+        const isEphemeral = msg.ephemeral !== false;
+        const { sessionId, token, shareUrl } = registerTuiSession(ws, cwd, { isEphemeral });
         ws.data.sessionId = sessionId;
         ws.data.token = token;
-        ws.send(JSON.stringify({ type: "registered", sessionId, token, shareUrl }));
+        ws.send(JSON.stringify({ type: "registered", sessionId, token, shareUrl, isEphemeral }));
         return;
     }
 
@@ -91,6 +122,14 @@ function handleTuiMessage(ws: ServerWebSocket<WsData>, msg: Record<string, unkno
             endSharedSession(ws.data.sessionId);
             ws.data.sessionId = undefined;
             return;
+        }
+
+        // Cache session_active state so new viewers get an immediate snapshot
+        const event = msg.event as Record<string, unknown> | undefined;
+        if (event && event.type === "session_active") {
+            updateSessionState(ws.data.sessionId, event.state);
+        } else {
+            touchSessionActivity(ws.data.sessionId);
         }
 
         // Forward event to all viewers

@@ -3,8 +3,9 @@ import { Agent } from "@mariozechner/pi-agent-core";
 import type { AgentEvent } from "@mariozechner/pi-agent-core";
 import { createToolkit } from "@pizzapi/tools";
 import { getRunners, getSessions } from "../ws/registry.js";
-import { auth, kysely } from "../auth.js";
+import { apiKeyRateLimitConfig, auth, kysely } from "../auth.js";
 import { requireSession } from "../middleware.js";
+import { listPersistedRelaySessionsForUser } from "../sessions/store.js";
 
 export async function handleApi(req: Request, url: URL): Promise<Response | undefined> {
     if (url.pathname === "/health") {
@@ -51,6 +52,13 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
         const { randomBytes } = await import("crypto");
         const key = randomBytes(32).toString("hex");
 
+        // Hash key using SHA-256 + base64url (matches better-auth's defaultKeyHasher)
+        const keyHashBuf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key));
+        const hashedKey = btoa(String.fromCharCode(...new Uint8Array(keyHashBuf)))
+            .replace(/\+/g, "-")
+            .replace(/\//g, "_")
+            .replace(/=/g, "");
+
         await kysely
             .deleteFrom("apikey")
             .where("userId", "=", userId)
@@ -65,15 +73,15 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
                 name: "cli",
                 start: key.slice(0, 8),
                 prefix: null,
-                key,
+                key: hashedKey,
                 userId,
                 refillInterval: null,
                 refillAmount: null,
                 lastRefillAt: null,
                 enabled: 1,
-                rateLimitEnabled: 0,
-                rateLimitTimeWindow: null,
-                rateLimitMax: null,
+                rateLimitEnabled: apiKeyRateLimitConfig.enabled ? 1 : 0,
+                rateLimitTimeWindow: apiKeyRateLimitConfig.enabled ? apiKeyRateLimitConfig.timeWindow : null,
+                rateLimitMax: apiKeyRateLimitConfig.enabled ? apiKeyRateLimitConfig.maxRequests : null,
                 requestCount: 0,
                 remaining: null,
                 lastRequest: null,
@@ -97,7 +105,9 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
     if (url.pathname === "/api/sessions" && req.method === "GET") {
         const identity = await requireSession(req);
         if (identity instanceof Response) return identity;
-        return Response.json({ sessions: getSessions(identity.userId) });
+        const sessions = getSessions(identity.userId);
+        const persistedSessions = await listPersistedRelaySessionsForUser(identity.userId);
+        return Response.json({ sessions, persistedSessions });
     }
 
     if (url.pathname === "/api/chat" && req.method === "POST") {

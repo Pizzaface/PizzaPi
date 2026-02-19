@@ -1,12 +1,9 @@
 import * as React from "react";
-import type { SessionMetadata } from "@mariozechner/pi-web-ui";
-import { getAppStorage } from "@mariozechner/pi-web-ui";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
+import { getRelayWsBase } from "@/lib/relay";
 import { PanelLeftClose, PanelLeftOpen, Plus, User } from "lucide-react";
-
-// ── Types ──────────────────────────────────────────────────────────────────────
 
 interface HubSession {
     sessionId: string;
@@ -16,15 +13,31 @@ interface HubSession {
     viewerCount?: number;
     userId?: string;
     userName?: string;
+    isEphemeral?: boolean;
+    expiresAt?: string | null;
+}
+
+interface PersistedSessionSummary {
+    sessionId: string;
+    cwd: string;
+    shareUrl: string;
+    startedAt: string;
+    lastActiveAt: string;
+    endedAt: string | null;
+    isEphemeral: boolean;
+    expiresAt: string | null;
+}
+
+interface SessionsApiResponse {
+    sessions?: HubSession[];
+    persistedSessions?: PersistedSessionSummary[];
 }
 
 export interface SessionSidebarProps {
-    onLoadSession: (sessionId: string) => Promise<void>;
-    onNewSession: () => Promise<void>;
+    onOpenSession: (sessionId: string) => void;
+    onClearSelection: () => void;
     activeSessionId: string | null;
 }
-
-// ── Helpers ────────────────────────────────────────────────────────────────────
 
 function formatRelativeDate(isoString: string): string {
     const date = new Date(isoString);
@@ -43,8 +56,6 @@ function cwdLabel(cwd: string): string {
     return parts[parts.length - 1] || cwd;
 }
 
-// ── Live dot ───────────────────────────────────────────────────────────────────
-
 type DotState = "connecting" | "connected" | "disconnected";
 
 function LiveDot({ state }: { state: DotState }) {
@@ -61,31 +72,30 @@ function LiveDot({ state }: { state: DotState }) {
     );
 }
 
-// ── Sidebar component ──────────────────────────────────────────────────────────
-
-export function SessionSidebar({ onLoadSession, onNewSession, activeSessionId }: SessionSidebarProps) {
+export function SessionSidebar({ onOpenSession, onClearSelection, activeSessionId }: SessionSidebarProps) {
     const [collapsed, setCollapsed] = React.useState(false);
     const [liveSessions, setLiveSessions] = React.useState<HubSession[]>([]);
-    const [storedSessions, setStoredSessions] = React.useState<SessionMetadata[]>([]);
+    const [persistedSessions, setPersistedSessions] = React.useState<PersistedSessionSummary[]>([]);
     const [dotState, setDotState] = React.useState<DotState>("connecting");
 
-    // ── Load stored sessions ───────────────────────────────────────────────────
-
-    const loadStored = React.useCallback(async () => {
+    const loadPersisted = React.useCallback(async () => {
         try {
-            const storage = getAppStorage();
-            const meta = await storage.sessions.getAllMetadata();
-            setStoredSessions(meta);
+            const res = await fetch("/api/sessions", { credentials: "include" });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const json = (await res.json()) as SessionsApiResponse;
+            setPersistedSessions(Array.isArray(json.persistedSessions) ? json.persistedSessions : []);
         } catch {
-            setStoredSessions([]);
+            setPersistedSessions([]);
         }
     }, []);
 
     React.useEffect(() => {
-        loadStored();
-    }, [loadStored, activeSessionId]);
-
-    // ── Hub WebSocket ──────────────────────────────────────────────────────────
+        loadPersisted();
+        const timer = setInterval(() => {
+            void loadPersisted();
+        }, 20_000);
+        return () => clearInterval(timer);
+    }, [loadPersisted]);
 
     React.useEffect(() => {
         let ws: WebSocket | null = null;
@@ -94,10 +104,8 @@ export function SessionSidebar({ onLoadSession, onNewSession, activeSessionId }:
 
         function connect() {
             if (destroyed) return;
-            const relayBase = ((import.meta as any).env?.VITE_RELAY_URL ?? "ws://localhost:3000").replace(/\/$/, "");
             try {
-                // Session cookie is sent automatically by the browser for same-origin requests
-                ws = new WebSocket(`${relayBase}/ws/hub`);
+                ws = new WebSocket(`${getRelayWsBase()}/ws/hub`);
 
                 ws.onopen = () => {
                     retryDelay = 1000;
@@ -111,17 +119,29 @@ export function SessionSidebar({ onLoadSession, onNewSession, activeSessionId }:
                     if (msg.type === "sessions") {
                         setLiveSessions((msg.sessions as HubSession[]) ?? []);
                     } else if (msg.type === "session_added") {
-                        const s = msg as unknown as HubSession & { type: string };
-                        setLiveSessions((prev) => [
-                            ...prev,
-                            { sessionId: s.sessionId, shareUrl: s.shareUrl, cwd: s.cwd, startedAt: s.startedAt, userId: s.userId, userName: s.userName },
-                        ]);
+                        const s = msg as unknown as HubSession;
+                        setLiveSessions((prev) => {
+                            if (prev.some((p) => p.sessionId === s.sessionId)) return prev;
+                            return [
+                                ...prev,
+                                {
+                                    sessionId: s.sessionId,
+                                    shareUrl: s.shareUrl,
+                                    cwd: s.cwd,
+                                    startedAt: s.startedAt,
+                                    userId: s.userId,
+                                    userName: s.userName,
+                                    isEphemeral: s.isEphemeral,
+                                    expiresAt: s.expiresAt,
+                                },
+                            ];
+                        });
+                        void loadPersisted();
                     } else if (msg.type === "session_removed") {
                         setLiveSessions((prev) => prev.filter((s) => s.sessionId !== msg.sessionId));
+                        void loadPersisted();
                     }
                 };
-
-                ws.onerror = () => {};
 
                 ws.onclose = () => {
                     setDotState("disconnected");
@@ -142,11 +162,8 @@ export function SessionSidebar({ onLoadSession, onNewSession, activeSessionId }:
             destroyed = true;
             ws?.close();
         };
-    }, []);
+    }, [loadPersisted]);
 
-    // ── Render ─────────────────────────────────────────────────────────────────
-
-    // Group live sessions by cwd
     const liveGroups = React.useMemo(() => {
         const groups = new Map<string, HubSession[]>();
         for (const s of liveSessions) {
@@ -157,27 +174,31 @@ export function SessionSidebar({ onLoadSession, onNewSession, activeSessionId }:
         return groups;
     }, [liveSessions]);
 
-    // Group stored sessions by relative date
+    const liveSessionIds = React.useMemo(() => new Set(liveSessions.map((s) => s.sessionId)), [liveSessions]);
+
+    const historySessions = React.useMemo(
+        () => persistedSessions.filter((s) => !liveSessionIds.has(s.sessionId)),
+        [persistedSessions, liveSessionIds],
+    );
+
     const storedGroups = React.useMemo(() => {
-        const groups = new Map<string, SessionMetadata[]>();
-        for (const s of storedSessions) {
-            const label = formatRelativeDate(s.lastModified);
+        const groups = new Map<string, PersistedSessionSummary[]>();
+        for (const s of historySessions) {
+            const label = formatRelativeDate(s.lastActiveAt || s.startedAt);
             if (!groups.has(label)) groups.set(label, []);
             groups.get(label)!.push(s);
         }
         return groups;
-    }, [storedSessions]);
+    }, [historySessions]);
 
     return (
         <>
-            {/* Sidebar */}
             <aside
                 className={cn(
                     "flex flex-col h-full bg-sidebar border-r border-sidebar-border flex-shrink-0 overflow-hidden transition-[width,min-width] duration-200",
                     collapsed ? "w-0 min-w-0" : "w-60 min-w-60",
                 )}
             >
-                {/* Top bar */}
                 <div className="flex items-center justify-between px-3 py-2 border-b border-sidebar-border flex-shrink-0">
                     <Button
                         variant="ghost"
@@ -195,15 +216,14 @@ export function SessionSidebar({ onLoadSession, onNewSession, activeSessionId }:
                         variant="ghost"
                         size="icon"
                         className="h-7 w-7 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
-                        onClick={onNewSession}
-                        aria-label="New session"
-                        title="New session"
+                        onClick={onClearSelection}
+                        aria-label="Clear selected session"
+                        title="Clear selected session"
                     >
                         <Plus className="h-4 w-4" />
                     </Button>
                 </div>
 
-                {/* Live sessions */}
                 <div className="flex flex-col flex-shrink-0 overflow-hidden">
                     <div className="flex items-center gap-1.5 px-3 py-1.5">
                         <span className="text-[0.65rem] font-semibold uppercase tracking-widest text-sidebar-foreground/50">
@@ -227,13 +247,14 @@ export function SessionSidebar({ onLoadSession, onNewSession, activeSessionId }:
                                         </span>
                                     </div>
                                     {sessions.map((s) => (
-                                        <a
+                                        <button
                                             key={s.sessionId}
-                                            href={s.shareUrl}
-                                            target="_blank"
-                                            rel="noopener noreferrer"
-                                            title={s.shareUrl}
-                                            className="flex flex-col gap-0.5 px-2 py-1.5 rounded-md text-sidebar-foreground hover:bg-sidebar-accent transition-colors text-sm no-underline"
+                                            onClick={() => onOpenSession(s.sessionId)}
+                                            title={`View session ${s.sessionId}`}
+                                            className={cn(
+                                                "flex flex-col gap-0.5 w-full px-2 py-1.5 rounded-md text-left text-sidebar-foreground hover:bg-sidebar-accent transition-colors",
+                                                activeSessionId === s.sessionId && "bg-sidebar-accent text-sidebar-accent-foreground",
+                                            )}
                                         >
                                             <div className="flex items-center gap-2">
                                                 <span className="inline-block h-1.5 w-1.5 rounded-full bg-green-500 flex-shrink-0" />
@@ -252,7 +273,7 @@ export function SessionSidebar({ onLoadSession, onNewSession, activeSessionId }:
                                                     </span>
                                                 </div>
                                             )}
-                                        </a>
+                                        </button>
                                     ))}
                                 </div>
                             ))
@@ -260,7 +281,6 @@ export function SessionSidebar({ onLoadSession, onNewSession, activeSessionId }:
                     </div>
                 </div>
 
-                {/* History */}
                 <div className="flex flex-col flex-1 min-h-0 border-t border-sidebar-border overflow-hidden">
                     <div className="px-3 py-1.5 flex-shrink-0">
                         <span className="text-[0.65rem] font-semibold uppercase tracking-widest text-sidebar-foreground/50">
@@ -280,19 +300,19 @@ export function SessionSidebar({ onLoadSession, onNewSession, activeSessionId }:
                                     </div>
                                     {sessions.map((s) => (
                                         <button
-                                            key={s.id}
-                                            onClick={() => onLoadSession(s.id)}
-                                            title={s.title || s.id}
+                                            key={s.sessionId}
+                                            onClick={() => onOpenSession(s.sessionId)}
+                                            title={s.sessionId}
                                             className={cn(
                                                 "flex flex-col gap-0.5 w-full px-2 py-1.5 rounded-md text-left text-sidebar-foreground hover:bg-sidebar-accent transition-colors min-w-0",
-                                                s.id === activeSessionId && "bg-sidebar-accent text-sidebar-accent-foreground",
+                                                s.sessionId === activeSessionId && "bg-sidebar-accent text-sidebar-accent-foreground",
                                             )}
                                         >
                                             <span className="text-[0.8rem] font-medium truncate">
-                                                {s.title || "Untitled"}
+                                                Session {s.sessionId.slice(0, 8)}…
                                             </span>
                                             <span className="text-[0.65rem] text-sidebar-foreground/50">
-                                                {s.messageCount} msgs
+                                                Last active {formatRelativeDate(s.lastActiveAt || s.startedAt)}
                                             </span>
                                         </button>
                                     ))}
@@ -303,7 +323,6 @@ export function SessionSidebar({ onLoadSession, onNewSession, activeSessionId }:
                 </div>
             </aside>
 
-            {/* Expand button shown when collapsed */}
             {collapsed && (
                 <Button
                     variant="outline"

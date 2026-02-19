@@ -11,7 +11,7 @@ export async function handleWsUpgrade(
 ): Promise<Response | undefined> {
     if (url.pathname === "/ws/sessions") {
         // TUI (CLI) connecting to register a live-share session — must present a valid API key
-        const identity = await validateApiKey(req);
+        const identity = await validateApiKey(req, url.searchParams.get("apiKey") ?? undefined);
         if (identity instanceof Response) return identity;
         const upgraded = server.upgrade(req, {
             data: { role: "tui", userId: identity.userId, userName: identity.userName },

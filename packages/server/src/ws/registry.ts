@@ -1,5 +1,12 @@
 import type { ServerWebSocket } from "bun";
 import { randomBytes, randomUUID } from "crypto";
+import {
+    getEphemeralTtlMs,
+    recordRelaySessionEnd,
+    recordRelaySessionStart,
+    recordRelaySessionState,
+    touchRelaySession,
+} from "../sessions/store.js";
 
 export type WsRole = "tui" | "viewer" | "runner" | "hub";
 
@@ -28,6 +35,10 @@ interface SharedSession {
     startedAt: string;
     userId?: string;
     userName?: string;
+    isEphemeral: boolean;
+    expiresAt: string | null;
+    /** Last session_active state snapshot from the CLI, replayed to new viewers */
+    lastState?: unknown;
 }
 
 interface RunnerEntry {
@@ -60,9 +71,19 @@ function broadcastToHub(msg: unknown, targetUserId?: string) {
 // ── Shared TUI sessions (live share) ─────────────────────────────────────────
 const sharedSessions = new Map<string, SharedSession>();
 
+function nextEphemeralExpiry(): string {
+    return new Date(Date.now() + getEphemeralTtlMs()).toISOString();
+}
+
+function refreshEphemeralExpiry(session: SharedSession) {
+    if (!session.isEphemeral) return;
+    session.expiresAt = nextEphemeralExpiry();
+}
+
 export function registerTuiSession(
     ws: ServerWebSocket<WsData>,
     cwd: string = "",
+    opts: { isEphemeral?: boolean } = {},
 ): {
     sessionId: string;
     token: string;
@@ -74,6 +95,8 @@ export function registerTuiSession(
     const startedAt = new Date().toISOString();
     const userId = ws.data.userId;
     const userName = ws.data.userName;
+    const isEphemeral = opts.isEphemeral !== false;
+
     sharedSessions.set(sessionId, {
         tuiWs: ws,
         token,
@@ -84,8 +107,26 @@ export function registerTuiSession(
         startedAt,
         userId,
         userName,
+        isEphemeral,
+        expiresAt: isEphemeral ? nextEphemeralExpiry() : null,
     });
-    broadcastToHub({ type: "session_added", sessionId, shareUrl, cwd, startedAt, userId, userName }, userId);
+
+    void recordRelaySessionStart({
+        sessionId,
+        userId,
+        userName,
+        cwd,
+        shareUrl,
+        startedAt,
+        isEphemeral,
+    }).catch((error) => {
+        console.error("Failed to persist relay session start", error);
+    });
+
+    broadcastToHub(
+        { type: "session_added", sessionId, shareUrl, cwd, startedAt, userId, userName, isEphemeral },
+        userId,
+    );
     return { sessionId, token, shareUrl };
 }
 
@@ -101,6 +142,8 @@ export function getSessions(filterUserId?: string) {
             viewerCount: s.viewers.size,
             userId: s.userId,
             userName: s.userName,
+            isEphemeral: s.isEphemeral,
+            expiresAt: s.expiresAt,
         }));
 }
 
@@ -108,10 +151,36 @@ export function getSharedSession(sessionId: string) {
     return sharedSessions.get(sessionId);
 }
 
+export function updateSessionState(sessionId: string, state: unknown) {
+    const session = sharedSessions.get(sessionId);
+    if (!session) return;
+
+    session.lastState = state;
+    refreshEphemeralExpiry(session);
+
+    void recordRelaySessionState(sessionId, state).catch((error) => {
+        console.error("Failed to persist relay session state", error);
+    });
+}
+
+export function getSessionState(sessionId: string): unknown | undefined {
+    return sharedSessions.get(sessionId)?.lastState;
+}
+
+export function touchSessionActivity(sessionId: string) {
+    const session = sharedSessions.get(sessionId);
+    if (!session) return;
+    refreshEphemeralExpiry(session);
+    void touchRelaySession(sessionId).catch((error) => {
+        console.error("Failed to touch relay session", error);
+    });
+}
+
 export function addViewer(sessionId: string, ws: ServerWebSocket<WsData>): boolean {
     const session = sharedSessions.get(sessionId);
     if (!session) return false;
     session.viewers.add(ws);
+    touchSessionActivity(sessionId);
     return true;
 }
 
@@ -129,18 +198,40 @@ export function broadcastToViewers(sessionId: string, data: string) {
     }
 }
 
-export function endSharedSession(sessionId: string) {
+export function endSharedSession(sessionId: string, reason: string = "Session ended") {
     const session = sharedSessions.get(sessionId);
     if (!session) return;
-    const msg = JSON.stringify({ type: "disconnected" });
+
+    const msg = JSON.stringify({ type: "disconnected", reason });
     for (const viewer of session.viewers) {
         try {
             viewer.send(msg);
-            viewer.close(1000, "Session ended");
+            viewer.close(1000, reason);
         } catch {}
     }
+
     sharedSessions.delete(sessionId);
+
+    void recordRelaySessionEnd(sessionId).catch((error) => {
+        console.error("Failed to persist relay session end", error);
+    });
+
     broadcastToHub({ type: "session_removed", sessionId }, session.userId);
+}
+
+export function sweepExpiredSharedSessions(nowMs: number = Date.now()) {
+    for (const [sessionId, session] of sharedSessions.entries()) {
+        if (!session.isEphemeral || !session.expiresAt) continue;
+        const expiresAtMs = Date.parse(session.expiresAt);
+        if (!Number.isFinite(expiresAtMs) || expiresAtMs > nowMs) continue;
+
+        try {
+            session.tuiWs.send(JSON.stringify({ type: "session_expired", sessionId }));
+            session.tuiWs.close(1001, "Session expired");
+        } catch {}
+
+        endSharedSession(sessionId, "Session expired");
+    }
 }
 
 // ── Runner registry (Task 003) ───────────────────────────────────────────────

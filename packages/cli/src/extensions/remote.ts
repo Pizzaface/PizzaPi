@@ -1,4 +1,4 @@
-import type { ExtensionContext, ExtensionFactory } from "@mariozechner/pi-coding-agent";
+import { buildSessionContext, type ExtensionContext, type ExtensionFactory } from "@mariozechner/pi-coding-agent";
 import { loadConfig } from "../config.js";
 
 interface RelayState {
@@ -8,7 +8,7 @@ interface RelayState {
     shareUrl: string;
 }
 
-const RELAY_DEFAULT = "ws://localhost:3000";
+const RELAY_DEFAULT = "ws://localhost:3001";
 const RECONNECT_MAX_DELAY = 30_000;
 
 /**
@@ -22,24 +22,44 @@ const RECONNECT_MAX_DELAY = 30_000;
  *                      Set to "off" to disable auto-connect.
  *
  * Commands:
- *   /share             Show the current share URL (or "not connected")
- *   /share stop        Disconnect from relay
- *   /share reconnect   Force reconnect
+ *   /remote            Show the current share URL (or "not connected")
+ *   /remote stop       Disconnect from relay
+ *   /remote reconnect  Force reconnect
  */
 export const remoteExtension: ExtensionFactory = (pi) => {
     let relay: RelayState | null = null;
     let reconnectDelay = 1000;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let shuttingDown = false;
+    let latestCtx: ExtensionContext | null = null;
 
     // ── Core relay helpers ────────────────────────────────────────────────────
 
     function relayUrl(): string {
-        return (process.env.PIZZAPI_RELAY_URL ?? RELAY_DEFAULT).replace(/\/$/, "");
+        const configured =
+            process.env.PIZZAPI_RELAY_URL ??
+            loadConfig(process.cwd()).relayUrl ??
+            RELAY_DEFAULT;
+        return configured.replace(/\/$/, "");
+    }
+
+    function toWebSocketBaseUrl(value: string): string {
+        const trimmed = value.trim().replace(/\/$/, "");
+        if (trimmed.startsWith("ws://") || trimmed.startsWith("wss://")) {
+            return trimmed;
+        }
+        if (trimmed.startsWith("http://")) {
+            return `ws://${trimmed.slice("http://".length)}`;
+        }
+        if (trimmed.startsWith("https://")) {
+            return `wss://${trimmed.slice("https://".length)}`;
+        }
+        return trimmed;
     }
 
     function isDisabled(): boolean {
-        return (process.env.PIZZAPI_RELAY_URL ?? "").toLowerCase() === "off";
+        const configured = process.env.PIZZAPI_RELAY_URL ?? loadConfig(process.cwd()).relayUrl ?? "";
+        return configured.toLowerCase() === "off";
     }
 
     function send(payload: unknown) {
@@ -50,6 +70,15 @@ export const remoteExtension: ExtensionFactory = (pi) => {
     function forwardEvent(event: unknown) {
         if (!relay) return;
         send({ type: "event", sessionId: relay.sessionId, token: relay.token, event });
+    }
+
+    function buildSessionState() {
+        if (!latestCtx) return undefined;
+        const { messages, model, thinkingLevel } = buildSessionContext(
+            latestCtx.sessionManager.getEntries(),
+            latestCtx.sessionManager.getLeafId(),
+        );
+        return { messages, model, thinkingLevel, cwd: latestCtx.cwd };
     }
 
     function scheduleReconnect(notify?: (msg: string) => void) {
@@ -79,8 +108,21 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             return;
         }
 
-        const wsUrl = `${relayUrl()}/ws/sessions`;
-        const ws = new WebSocket(wsUrl, { headers: { "x-api-key": key } } as any);
+        const wsBase = toWebSocketBaseUrl(relayUrl());
+        const wsPath = wsBase.endsWith("/ws/sessions") ? wsBase : `${wsBase}/ws/sessions`;
+        const wsUrl = `${wsPath}?apiKey=${encodeURIComponent(key)}`;
+
+        let ws: WebSocket;
+        try {
+            ws = new WebSocket(wsUrl, { headers: { "x-api-key": key } } as any);
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            const text = `PizzaPi: failed to connect to relay (${wsUrl}): ${message}`;
+            console.warn(text);
+            notify?.(text);
+            scheduleReconnect(notify);
+            return;
+        }
 
         ws.onopen = () => {
             reconnectDelay = 1000; // reset backoff on success
@@ -103,6 +145,8 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                     shareUrl: msg.shareUrl as string,
                 };
 
+                forwardEvent({ type: "session_active", state: buildSessionState() });
+
                 // Switch to steady-state message handler (collab input)
                 ws.onmessage = (inputEvt) => {
                     let inputMsg: Record<string, unknown>;
@@ -122,8 +166,13 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             // close will fire next and handle reconnect
         };
 
-        ws.onclose = () => {
+        ws.onclose = (event) => {
             if (relay?.ws === ws) relay = null;
+            if (!shuttingDown) {
+                console.warn(
+                    `PizzaPi: relay disconnected (code=${event.code}, reason=${event.reason || "none"}). Reconnecting…`
+                );
+            }
             if (!shuttingDown) scheduleReconnect(notify);
         };
     }
@@ -142,9 +191,15 @@ export const remoteExtension: ExtensionFactory = (pi) => {
 
     // ── Auto-connect on session start ─────────────────────────────────────────
 
-    pi.on("session_start", () => {
+    pi.on("session_start", (_event, ctx) => {
+        latestCtx = ctx;
         if (isDisabled()) return;
         connect();
+    });
+
+    pi.on("session_switch", (_event, ctx) => {
+        latestCtx = ctx;
+        forwardEvent({ type: "session_active", state: buildSessionState() });
     });
 
     pi.on("session_shutdown", () => {
@@ -152,10 +207,10 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         disconnect();
     });
 
-    // ── /share command ────────────────────────────────────────────────────────
+    // ── /remote command ───────────────────────────────────────────────────────
 
-    pi.registerCommand("share", {
-        description: "Show hub share URL, or: /share stop | /share reconnect",
+    pi.registerCommand("remote", {
+        description: "Show hub share URL, or: /remote stop | /remote reconnect",
         handler: async (args, ctx) => {
             const arg = args.trim().toLowerCase();
 
@@ -179,7 +234,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 ctx.ui.notify(`Hub connected\nShare URL: ${relay.shareUrl}`);
             } else {
                 const url = isDisabled() ? "(disabled — set PIZZAPI_RELAY_URL to enable)" : relayUrl();
-                ctx.ui.notify(`Not connected to hub.\nRelay: ${url}\nUse /share reconnect to retry.`);
+                ctx.ui.notify(`Not connected to hub.\nRelay: ${url}\nUse /remote reconnect to retry.`);
             }
         },
     });

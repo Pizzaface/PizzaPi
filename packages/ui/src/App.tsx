@@ -1,67 +1,37 @@
 import * as React from "react";
-import {
-    ApiKeyPromptDialog,
-    ChatPanel,
-    AppStorage,
-    IndexedDBStorageBackend,
-    setAppStorage,
-    SettingsStore,
-    ProviderKeysStore,
-    SessionsStore,
-    CustomProvidersStore,
-    getAppStorage,
-} from "@mariozechner/pi-web-ui";
-import { Agent } from "@mariozechner/pi-agent-core";
-import { getModel } from "@mariozechner/pi-ai";
 import { SessionSidebar } from "@/components/SessionSidebar";
+import { SessionViewer, type RelayMessage } from "@/components/SessionViewer";
 import { AuthPage } from "@/components/AuthPage";
 import { ApiKeyManager } from "@/components/ApiKeyManager";
 import { authClient, useSession, signOut } from "@/lib/auth-client";
+import { getRelayWsBase } from "@/lib/relay";
 import { Button } from "@/components/ui/button";
 import { Sun, Moon, LogOut, KeyRound, X } from "lucide-react";
 
-// ── Storage bootstrap (run once outside React) ─────────────────────────────────
+function toRelayMessage(raw: unknown, fallbackId: string): RelayMessage | null {
+    if (!raw || typeof raw !== "object") return null;
 
-const settings = new SettingsStore();
-const providerKeys = new ProviderKeysStore();
-const sessions = new SessionsStore();
-const customProviders = new CustomProvidersStore();
+    const msg = raw as Record<string, unknown>;
+    const role = typeof msg.role === "string" ? msg.role : "message";
+    const timestamp = typeof msg.timestamp === "number" ? msg.timestamp : undefined;
+    const toolCallId = typeof msg.toolCallId === "string" ? msg.toolCallId : "";
+    const key = `${role}:${timestamp ?? ""}:${toolCallId || fallbackId}`;
 
-const backend = new IndexedDBStorageBackend({
-    dbName: "pizzapi",
-    version: 2,
-    stores: [
-        settings.getConfig(),
-        SessionsStore.getMetadataConfig(),
-        providerKeys.getConfig(),
-        customProviders.getConfig(),
-        sessions.getConfig(),
-    ],
-});
-
-settings.setBackend(backend);
-providerKeys.setBackend(backend);
-customProviders.setBackend(backend);
-sessions.setBackend(backend);
-
-const storage = new AppStorage(settings, providerKeys, sessions, customProviders, backend);
-setAppStorage(storage);
-
-// ── Helpers ────────────────────────────────────────────────────────────────────
-
-function createDefaultAgent(): Agent {
-    return new Agent({
-        initialState: {
-            systemPrompt: "You are PizzaPi, a helpful AI assistant.",
-            model: getModel("anthropic", "claude-sonnet-4-5-20250929"),
-            thinkingLevel: "off",
-            messages: [],
-            tools: [],
-        },
-    });
+    return {
+        key,
+        role,
+        timestamp,
+        content: msg.content,
+        toolName: typeof msg.toolName === "string" ? msg.toolName : undefined,
+        isError: msg.isError === true,
+    };
 }
 
-// ── App ────────────────────────────────────────────────────────────────────────
+function normalizeMessages(rawMessages: unknown[]): RelayMessage[] {
+    return rawMessages
+        .map((m, i) => toRelayMessage(m, `snapshot-${i}`))
+        .filter((m): m is RelayMessage => m !== null);
+}
 
 export function App() {
     const { data: session, isPending } = useSession();
@@ -70,70 +40,164 @@ export function App() {
         return saved === "dark" || (!saved && window.matchMedia("(prefers-color-scheme: dark)").matches);
     });
     const [activeSessionId, setActiveSessionId] = React.useState<string | null>(null);
+    const [messages, setMessages] = React.useState<RelayMessage[]>([]);
+    const [viewerStatus, setViewerStatus] = React.useState("Idle");
     const [showApiKeys, setShowApiKeys] = React.useState(false);
-    const chatPanelRef = React.useRef<InstanceType<typeof ChatPanel> | null>(null);
-    const chatContainerRef = React.useRef<HTMLDivElement>(null);
 
-    // Apply dark mode class
+    const viewerWsRef = React.useRef<WebSocket | null>(null);
+    const activeSessionRef = React.useRef<string | null>(null);
+
     React.useEffect(() => {
         document.documentElement.classList.toggle("dark", isDark);
         localStorage.setItem("theme", isDark ? "dark" : "light");
     }, [isDark]);
 
-    // Mount ChatPanel (LitElement) into the container div
     React.useEffect(() => {
-        if (!chatContainerRef.current) return;
-        const panel = new ChatPanel();
-        chatPanelRef.current = panel;
-        chatContainerRef.current.appendChild(panel);
         return () => {
-            chatContainerRef.current?.removeChild(panel);
-            chatPanelRef.current = null;
+            viewerWsRef.current?.close();
+            viewerWsRef.current = null;
         };
     }, []);
 
-    async function loadAgent(agent: Agent, sessionId: string | null = null) {
-        setActiveSessionId(sessionId);
-        await chatPanelRef.current?.setAgent(agent, {
-            onApiKeyRequired: async (provider: string) => {
-                return await ApiKeyPromptDialog.prompt(provider);
-            },
-            onBeforeSend: async () => {},
+    const clearSelection = React.useCallback(() => {
+        viewerWsRef.current?.close();
+        viewerWsRef.current = null;
+        activeSessionRef.current = null;
+        setActiveSessionId(null);
+        setMessages([]);
+        setViewerStatus("Idle");
+    }, []);
+
+    const upsertMessage = React.useCallback((raw: unknown, fallback: string) => {
+        const next = toRelayMessage(raw, fallback);
+        if (!next) return;
+
+        setMessages((prev) => {
+            const idx = prev.findIndex((m) => m.key === next.key);
+            if (idx >= 0) {
+                const updated = prev.slice();
+                updated[idx] = next;
+                return updated;
+            }
+            return [...prev, next];
         });
-    }
+    }, []);
 
-    async function handleLoadSession(sessionId: string) {
+    const handleRelayEvent = React.useCallback((event: unknown) => {
+        if (!event || typeof event !== "object") return;
+
+        const evt = event as Record<string, unknown>;
+        const type = typeof evt.type === "string" ? evt.type : "";
+
+        if (type === "session_active") {
+            const state = evt.state as Record<string, unknown> | undefined;
+            const rawMessages = Array.isArray(state?.messages) ? (state?.messages as unknown[]) : [];
+            setMessages(normalizeMessages(rawMessages));
+            setViewerStatus("Connected");
+            return;
+        }
+
+        if (type === "agent_end" && Array.isArray(evt.messages)) {
+            setMessages(normalizeMessages(evt.messages as unknown[]));
+            return;
+        }
+
+        if (type === "message_update") {
+            const assistantEvent = evt.assistantMessageEvent as Record<string, unknown> | undefined;
+            if (assistantEvent && assistantEvent.partial) {
+                upsertMessage(assistantEvent.partial, "message-update-partial");
+                return;
+            }
+            upsertMessage(evt.message, "message-update");
+            return;
+        }
+
+        if (type === "message_start" || type === "message_end" || type === "turn_end") {
+            upsertMessage(evt.message, type);
+        }
+    }, [upsertMessage]);
+
+    const openSession = React.useCallback((relaySessionId: string) => {
+        viewerWsRef.current?.close();
+        viewerWsRef.current = null;
+
+        activeSessionRef.current = relaySessionId;
+        setActiveSessionId(relaySessionId);
+        setMessages([]);
+        setViewerStatus("Connecting…");
+
+        const ws = new WebSocket(`${getRelayWsBase()}/ws/sessions/${relaySessionId}`);
+        viewerWsRef.current = ws;
+
+        ws.onmessage = (evt) => {
+            if (activeSessionRef.current !== relaySessionId) return;
+
+            let msg: Record<string, unknown>;
+            try {
+                msg = JSON.parse(evt.data as string);
+            } catch {
+                return;
+            }
+
+            if (msg.type === "connected") {
+                const replayOnly = msg.replayOnly === true;
+                setViewerStatus(replayOnly ? "Snapshot replay" : "Connected");
+                return;
+            }
+
+            if (msg.type === "event") {
+                handleRelayEvent(msg.event);
+                return;
+            }
+
+            if (msg.type === "disconnected") {
+                const reason = typeof msg.reason === "string" ? msg.reason : "Disconnected";
+                setViewerStatus(reason);
+                return;
+            }
+
+            if (msg.type === "error") {
+                setViewerStatus(typeof msg.message === "string" ? msg.message : "Failed to load session");
+            }
+        };
+
+        ws.onerror = () => {
+            if (activeSessionRef.current === relaySessionId) {
+                setViewerStatus("Connection error");
+            }
+        };
+
+        ws.onclose = () => {
+            if (activeSessionRef.current === relaySessionId) {
+                setViewerStatus((prev) => (prev === "Connected" || prev === "Connecting…" ? "Disconnected" : prev));
+            }
+        };
+    }, [handleRelayEvent]);
+
+    const sendSessionInput = React.useCallback((text: string) => {
+        const ws = viewerWsRef.current;
+        if (!ws || ws.readyState !== WebSocket.OPEN || !activeSessionRef.current) {
+            setViewerStatus("Not connected to a live session");
+            return false;
+        }
+
         try {
-            const store = getAppStorage();
-            const data = await store.sessions.loadSession(sessionId);
-            if (!data) return;
-            const agent = new Agent({
-                initialState: {
-                    systemPrompt: "You are PizzaPi, a helpful AI assistant.",
-                    model: data.model ?? getModel("anthropic", "claude-sonnet-4-5-20250929"),
-                    thinkingLevel: data.thinkingLevel ?? "off",
-                    messages: data.messages ?? [],
-                    tools: [],
+            ws.send(JSON.stringify({ type: "input", text }));
+            upsertMessage(
+                {
+                    role: "user",
+                    timestamp: Date.now(),
+                    toolCallId: `viewer-input-${Math.random().toString(36).slice(2, 8)}`,
+                    content: text,
                 },
-            });
-            await loadAgent(agent, sessionId);
-        } catch (err) {
-            console.error("Failed to load session:", err);
+                "viewer-input",
+            );
+            return true;
+        } catch {
+            setViewerStatus("Failed to send message");
+            return false;
         }
-    }
-
-    async function handleNewSession() {
-        await loadAgent(createDefaultAgent(), null);
-    }
-
-    // Load default agent once chat panel is mounted and user is authenticated
-    const initializedRef = React.useRef(false);
-    React.useEffect(() => {
-        if (session && chatPanelRef.current && !initializedRef.current) {
-            initializedRef.current = true;
-            loadAgent(createDefaultAgent(), null);
-        }
-    });
+    }, [upsertMessage]);
 
     if (isPending) {
         return (
@@ -144,23 +208,26 @@ export function App() {
     }
 
     if (!session) {
-        return <AuthPage onAuthenticated={() => authClient.getSession()} />;
+        return <AuthPage onAuthenticated={() => authClient.$store.notify("$sessionSignal")} />;
     }
 
     return (
         <div className="flex h-screen w-screen overflow-hidden bg-background relative">
             <SessionSidebar
-                onLoadSession={handleLoadSession}
-                onNewSession={handleNewSession}
+                onOpenSession={openSession}
+                onClearSelection={clearSelection}
                 activeSessionId={activeSessionId}
             />
 
-            {/* Main content */}
             <div className="flex flex-col flex-1 min-w-0 h-full relative">
-                <div ref={chatContainerRef} className="flex-1 min-h-0 flex flex-col [&>pi-chat-panel]:flex-1 [&>pi-chat-panel]:min-h-0" />
+                <SessionViewer
+                    sessionId={activeSessionId}
+                    messages={messages}
+                    status={viewerStatus}
+                    onSendInput={sendSessionInput}
+                />
             </div>
 
-            {/* Theme toggle */}
             <Button
                 variant="outline"
                 size="icon"
@@ -171,7 +238,6 @@ export function App() {
                 {isDark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
             </Button>
 
-            {/* API keys button */}
             <Button
                 variant="ghost"
                 size="icon"
@@ -183,7 +249,6 @@ export function App() {
                 <KeyRound className="h-4 w-4" />
             </Button>
 
-            {/* Sign out */}
             <Button
                 variant="ghost"
                 size="icon"
@@ -195,7 +260,6 @@ export function App() {
                 <LogOut className="h-4 w-4" />
             </Button>
 
-            {/* API key manager panel */}
             {showApiKeys && (
                 <div className="fixed inset-y-0 right-0 z-40 flex w-full max-w-md flex-col shadow-xl border-l bg-background">
                     <div className="flex items-center justify-between px-4 py-3 border-b">

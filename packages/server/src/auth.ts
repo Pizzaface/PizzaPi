@@ -76,12 +76,33 @@ export interface ApiKeyTable {
     metadata: string | null;
 }
 
+export interface RelaySessionTable {
+    id: string;
+    userId: string | null;
+    userName: string | null;
+    cwd: string;
+    shareUrl: string;
+    startedAt: string;
+    lastActiveAt: string;
+    endedAt: string | null;
+    isEphemeral: number;
+    expiresAt: string | null;
+}
+
+export interface RelaySessionStateTable {
+    sessionId: string;
+    state: string;
+    updatedAt: string;
+}
+
 export interface DB {
     user: UserTable;
     session: SessionTable;
     account: AccountTable;
     verification: VerificationTable;
     apikey: ApiKeyTable;
+    relay_session: RelaySessionTable;
+    relay_session_state: RelaySessionStateTable;
 }
 
 // ── Instances ─────────────────────────────────────────────────────────────────
@@ -91,9 +112,39 @@ const dialect = new BunSqliteDialect({ database: sqliteDb });
 
 export const kysely = new Kysely<DB>({ dialect });
 
+const DEFAULT_API_KEY_RATE_LIMIT_TIME_WINDOW_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_API_KEY_RATE_LIMIT_MAX_REQUESTS = 10;
+
+function parseBooleanEnv(value: string | undefined, fallback: boolean): boolean {
+    if (!value) return fallback;
+    const normalized = value.trim().toLowerCase();
+    if (["1", "true", "yes", "on"].includes(normalized)) return true;
+    if (["0", "false", "no", "off"].includes(normalized)) return false;
+    return fallback;
+}
+
+function parsePositiveIntEnv(value: string | undefined, fallback: number): number {
+    if (!value) return fallback;
+    const parsed = Number.parseInt(value, 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+export const apiKeyRateLimitConfig = {
+    enabled: parseBooleanEnv(process.env.PIZZAPI_API_KEY_RATE_LIMIT_ENABLED, false),
+    timeWindow: parsePositiveIntEnv(
+        process.env.PIZZAPI_API_KEY_RATE_LIMIT_TIME_WINDOW_MS,
+        DEFAULT_API_KEY_RATE_LIMIT_TIME_WINDOW_MS,
+    ),
+    maxRequests: parsePositiveIntEnv(
+        process.env.PIZZAPI_API_KEY_RATE_LIMIT_MAX_REQUESTS,
+        DEFAULT_API_KEY_RATE_LIMIT_MAX_REQUESTS,
+    ),
+};
+
 export const auth = betterAuth({
     baseURL: process.env.BETTER_AUTH_BASE_URL ?? `http://localhost:${process.env.PORT ?? "3000"}`,
-    database: { dialect, type: "sqlite" },
+    secret: process.env.BETTER_AUTH_SECRET,
+    database: { dialect, type: "sqlite", transaction: true },
     trustedOrigins: [process.env.PIZZAPI_BASE_URL ?? "http://localhost:5173"],
     emailAndPassword: {
         enabled: true,
@@ -101,6 +152,11 @@ export const auth = betterAuth({
     plugins: [
         apiKey({
             enableSessionForAPIKeys: true,
+            rateLimit: {
+                enabled: apiKeyRateLimitConfig.enabled,
+                timeWindow: apiKeyRateLimitConfig.timeWindow,
+                maxRequests: apiKeyRateLimitConfig.maxRequests,
+            },
         }),
     ],
 });

@@ -14,10 +14,11 @@ export async function requireSession(
 /** Validates x-api-key header; returns user info or a 401 Response. */
 export async function validateApiKey(
     req: Request,
+    explicitKey?: string,
 ): Promise<{ userId: string; userName: string } | Response> {
-    const key = req.headers.get("x-api-key");
+    const key = explicitKey ?? req.headers.get("x-api-key");
     if (!key) {
-        return new Response("Missing x-api-key header", { status: 401 });
+        return new Response("Missing API key (x-api-key header)", { status: 401 });
     }
     const result = await auth.api.verifyApiKey({ body: { key } });
     if (!result.valid || !result.key?.userId) {
