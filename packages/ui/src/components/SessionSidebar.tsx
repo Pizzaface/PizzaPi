@@ -1,0 +1,320 @@
+import * as React from "react";
+import type { SessionMetadata } from "@mariozechner/pi-web-ui";
+import { getAppStorage } from "@mariozechner/pi-web-ui";
+import { Button } from "@/components/ui/button";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { cn } from "@/lib/utils";
+import { PanelLeftClose, PanelLeftOpen, Plus, User } from "lucide-react";
+
+// ── Types ──────────────────────────────────────────────────────────────────────
+
+interface HubSession {
+    sessionId: string;
+    shareUrl: string;
+    cwd: string;
+    startedAt: string;
+    viewerCount?: number;
+    userId?: string;
+    userName?: string;
+}
+
+export interface SessionSidebarProps {
+    onLoadSession: (sessionId: string) => Promise<void>;
+    onNewSession: () => Promise<void>;
+    activeSessionId: string | null;
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────────
+
+function formatRelativeDate(isoString: string): string {
+    const date = new Date(isoString);
+    const now = new Date();
+    const diff = now.getTime() - date.getTime();
+    const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+    if (days === 0) return "Today";
+    if (days === 1) return "Yesterday";
+    if (days < 7) return `${days} days ago`;
+    return date.toLocaleDateString();
+}
+
+function cwdLabel(cwd: string): string {
+    if (!cwd) return "Unknown node";
+    const parts = cwd.replace(/\\/g, "/").split("/").filter(Boolean);
+    return parts[parts.length - 1] || cwd;
+}
+
+// ── Live dot ───────────────────────────────────────────────────────────────────
+
+type DotState = "connecting" | "connected" | "disconnected";
+
+function LiveDot({ state }: { state: DotState }) {
+    return (
+        <span
+            className={cn(
+                "inline-block h-2 w-2 rounded-full flex-shrink-0 transition-colors",
+                state === "connected" && "bg-green-500 shadow-[0_0_4px_#22c55e80]",
+                state === "disconnected" && "bg-red-500",
+                state === "connecting" && "bg-slate-400",
+            )}
+            title={state === "connected" ? "Connected" : state === "disconnected" ? "Disconnected" : "Connecting…"}
+        />
+    );
+}
+
+// ── Sidebar component ──────────────────────────────────────────────────────────
+
+export function SessionSidebar({ onLoadSession, onNewSession, activeSessionId }: SessionSidebarProps) {
+    const [collapsed, setCollapsed] = React.useState(false);
+    const [liveSessions, setLiveSessions] = React.useState<HubSession[]>([]);
+    const [storedSessions, setStoredSessions] = React.useState<SessionMetadata[]>([]);
+    const [dotState, setDotState] = React.useState<DotState>("connecting");
+
+    // ── Load stored sessions ───────────────────────────────────────────────────
+
+    const loadStored = React.useCallback(async () => {
+        try {
+            const storage = getAppStorage();
+            const meta = await storage.sessions.getAllMetadata();
+            setStoredSessions(meta);
+        } catch {
+            setStoredSessions([]);
+        }
+    }, []);
+
+    React.useEffect(() => {
+        loadStored();
+    }, [loadStored, activeSessionId]);
+
+    // ── Hub WebSocket ──────────────────────────────────────────────────────────
+
+    React.useEffect(() => {
+        let ws: WebSocket | null = null;
+        let retryDelay = 1000;
+        let destroyed = false;
+
+        function connect() {
+            if (destroyed) return;
+            const relayBase = ((import.meta as any).env?.VITE_RELAY_URL ?? "ws://localhost:3000").replace(/\/$/, "");
+            try {
+                // Session cookie is sent automatically by the browser for same-origin requests
+                ws = new WebSocket(`${relayBase}/ws/hub`);
+
+                ws.onopen = () => {
+                    retryDelay = 1000;
+                    setDotState("connected");
+                };
+
+                ws.onmessage = (evt) => {
+                    let msg: Record<string, unknown>;
+                    try { msg = JSON.parse(evt.data as string); } catch { return; }
+
+                    if (msg.type === "sessions") {
+                        setLiveSessions((msg.sessions as HubSession[]) ?? []);
+                    } else if (msg.type === "session_added") {
+                        const s = msg as unknown as HubSession & { type: string };
+                        setLiveSessions((prev) => [
+                            ...prev,
+                            { sessionId: s.sessionId, shareUrl: s.shareUrl, cwd: s.cwd, startedAt: s.startedAt, userId: s.userId, userName: s.userName },
+                        ]);
+                    } else if (msg.type === "session_removed") {
+                        setLiveSessions((prev) => prev.filter((s) => s.sessionId !== msg.sessionId));
+                    }
+                };
+
+                ws.onerror = () => {};
+
+                ws.onclose = () => {
+                    setDotState("disconnected");
+                    if (!destroyed) {
+                        setTimeout(() => {
+                            retryDelay = Math.min(retryDelay * 2, 30_000);
+                            connect();
+                        }, retryDelay);
+                    }
+                };
+            } catch {
+                setDotState("disconnected");
+            }
+        }
+
+        connect();
+        return () => {
+            destroyed = true;
+            ws?.close();
+        };
+    }, []);
+
+    // ── Render ─────────────────────────────────────────────────────────────────
+
+    // Group live sessions by cwd
+    const liveGroups = React.useMemo(() => {
+        const groups = new Map<string, HubSession[]>();
+        for (const s of liveSessions) {
+            const key = s.cwd || "";
+            if (!groups.has(key)) groups.set(key, []);
+            groups.get(key)!.push(s);
+        }
+        return groups;
+    }, [liveSessions]);
+
+    // Group stored sessions by relative date
+    const storedGroups = React.useMemo(() => {
+        const groups = new Map<string, SessionMetadata[]>();
+        for (const s of storedSessions) {
+            const label = formatRelativeDate(s.lastModified);
+            if (!groups.has(label)) groups.set(label, []);
+            groups.get(label)!.push(s);
+        }
+        return groups;
+    }, [storedSessions]);
+
+    return (
+        <>
+            {/* Sidebar */}
+            <aside
+                className={cn(
+                    "flex flex-col h-full bg-sidebar border-r border-sidebar-border flex-shrink-0 overflow-hidden transition-[width,min-width] duration-200",
+                    collapsed ? "w-0 min-w-0" : "w-60 min-w-60",
+                )}
+            >
+                {/* Top bar */}
+                <div className="flex items-center justify-between px-3 py-2 border-b border-sidebar-border flex-shrink-0">
+                    <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
+                        onClick={() => setCollapsed(true)}
+                        aria-label="Collapse sidebar"
+                    >
+                        <PanelLeftClose className="h-4 w-4" />
+                    </Button>
+                    <span className="text-[0.7rem] font-semibold uppercase tracking-widest text-sidebar-foreground/60">
+                        Sessions
+                    </span>
+                    <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
+                        onClick={onNewSession}
+                        aria-label="New session"
+                        title="New session"
+                    >
+                        <Plus className="h-4 w-4" />
+                    </Button>
+                </div>
+
+                {/* Live sessions */}
+                <div className="flex flex-col flex-shrink-0 overflow-hidden">
+                    <div className="flex items-center gap-1.5 px-3 py-1.5">
+                        <span className="text-[0.65rem] font-semibold uppercase tracking-widest text-sidebar-foreground/50">
+                            Live Sessions
+                        </span>
+                        <LiveDot state={dotState} />
+                    </div>
+                    <div className="flex flex-col px-1.5 pb-1.5 max-h-44 overflow-y-auto">
+                        {liveGroups.size === 0 ? (
+                            <p className="px-2 py-1 text-xs italic text-sidebar-foreground/40">No live sessions</p>
+                        ) : (
+                            Array.from(liveGroups.entries()).map(([cwd, sessions]) => (
+                                <div key={cwd}>
+                                    <div className="flex items-center gap-1 px-1.5 py-1">
+                                        <span className="text-[0.65rem] text-sidebar-primary/70">⬡</span>
+                                        <span
+                                            className="text-[0.65rem] font-semibold text-sidebar-foreground/55 truncate"
+                                            title={cwd}
+                                        >
+                                            {cwdLabel(cwd)}
+                                        </span>
+                                    </div>
+                                    {sessions.map((s) => (
+                                        <a
+                                            key={s.sessionId}
+                                            href={s.shareUrl}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            title={s.shareUrl}
+                                            className="flex flex-col gap-0.5 px-2 py-1.5 rounded-md text-sidebar-foreground hover:bg-sidebar-accent transition-colors text-sm no-underline"
+                                        >
+                                            <div className="flex items-center gap-2">
+                                                <span className="inline-block h-1.5 w-1.5 rounded-full bg-green-500 flex-shrink-0" />
+                                                <span className="flex-1 truncate text-[0.78rem] font-medium">
+                                                    Session {s.sessionId.slice(0, 8)}…
+                                                </span>
+                                                <span className="text-[0.65rem] text-sidebar-foreground/50 flex-shrink-0">
+                                                    {formatRelativeDate(s.startedAt)}
+                                                </span>
+                                            </div>
+                                            {s.userName && (
+                                                <div className="flex items-center gap-1 pl-3.5">
+                                                    <User className="h-2.5 w-2.5 text-sidebar-foreground/40 flex-shrink-0" />
+                                                    <span className="text-[0.65rem] text-sidebar-foreground/50 truncate">
+                                                        {s.userName}
+                                                    </span>
+                                                </div>
+                                            )}
+                                        </a>
+                                    ))}
+                                </div>
+                            ))
+                        )}
+                    </div>
+                </div>
+
+                {/* History */}
+                <div className="flex flex-col flex-1 min-h-0 border-t border-sidebar-border overflow-hidden">
+                    <div className="px-3 py-1.5 flex-shrink-0">
+                        <span className="text-[0.65rem] font-semibold uppercase tracking-widest text-sidebar-foreground/50">
+                            History
+                        </span>
+                    </div>
+                    <ScrollArea className="flex-1 px-1.5 pb-1.5">
+                        {storedGroups.size === 0 ? (
+                            <p className="px-2 py-1 text-xs italic text-sidebar-foreground/40">No saved sessions</p>
+                        ) : (
+                            Array.from(storedGroups.entries()).map(([label, sessions]) => (
+                                <div key={label}>
+                                    <div className="px-1.5 py-1">
+                                        <span className="text-[0.65rem] font-semibold text-sidebar-foreground/55">
+                                            {label}
+                                        </span>
+                                    </div>
+                                    {sessions.map((s) => (
+                                        <button
+                                            key={s.id}
+                                            onClick={() => onLoadSession(s.id)}
+                                            title={s.title || s.id}
+                                            className={cn(
+                                                "flex flex-col gap-0.5 w-full px-2 py-1.5 rounded-md text-left text-sidebar-foreground hover:bg-sidebar-accent transition-colors min-w-0",
+                                                s.id === activeSessionId && "bg-sidebar-accent text-sidebar-accent-foreground",
+                                            )}
+                                        >
+                                            <span className="text-[0.8rem] font-medium truncate">
+                                                {s.title || "Untitled"}
+                                            </span>
+                                            <span className="text-[0.65rem] text-sidebar-foreground/50">
+                                                {s.messageCount} msgs
+                                            </span>
+                                        </button>
+                                    ))}
+                                </div>
+                            ))
+                        )}
+                    </ScrollArea>
+                </div>
+            </aside>
+
+            {/* Expand button shown when collapsed */}
+            {collapsed && (
+                <Button
+                    variant="outline"
+                    size="icon"
+                    className="absolute top-2.5 left-2.5 z-50 h-8 w-8 shadow-sm"
+                    onClick={() => setCollapsed(false)}
+                    aria-label="Expand sidebar"
+                >
+                    <PanelLeftOpen className="h-4 w-4" />
+                </Button>
+            )}
+        </>
+    );
+}
