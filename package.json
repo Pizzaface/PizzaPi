@@ -4,16 +4,19 @@
     "workspaces": [
         "packages/tools",
         "packages/server",
-        "packages/ui"
+        "packages/ui",
+        "packages/cli"
     ],
     "scripts": {
-        "build": "bun run build:tools && bun run build:server && bun run build:ui",
+        "build": "bun run build:tools && bun run build:server && bun run build:ui && bun run build:cli",
         "build:tools": "cd packages/tools && bun run build",
         "build:server": "cd packages/server && bun run build",
         "build:ui": "cd packages/ui && bun run build",
+        "build:cli": "cd packages/cli && bun run build",
         "dev": "concurrently \"bun run dev:server\" \"bun run dev:ui\" --kill-others-on-exit",
         "dev:server": "cd packages/server && bun run dev",
         "dev:ui": "cd packages/ui && bun run dev",
+        "dev:cli": "cd packages/cli && bun run dev",
         "typecheck": "tsc --build",
         "clean": "rm -rf packages/*/dist"
     },
@@ -24,6 +27,7 @@
         "@mariozechner/pi-tui": "^0.53.0"
     },
     "devDependencies": {
+        "@playwright/test": "^1.58.2",
         "concurrently": "^9.2.1",
         "typescript": "^5.7.0"
     }

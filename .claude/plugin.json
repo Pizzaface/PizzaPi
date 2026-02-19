@@ -1,0 +1,6 @@
+{
+  "name": "beads-ccpm",
+  "description": "Project management system powered by Beads task tracker with PRDs, epics, task decomposition, parallel agent execution, and bidirectional sync.",
+  "version": "0.1.0",
+  "autoDiscover": true
+}

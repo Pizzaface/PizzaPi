@@ -2,16 +2,54 @@ import { getModel, getProviders, getModels } from "@mariozechner/pi-ai";
 import { Agent } from "@mariozechner/pi-agent-core";
 import type { AgentEvent } from "@mariozechner/pi-agent-core";
 import { createToolkit } from "@pizzapi/tools";
+import type { WsData } from "./ws/registry.js";
+import { getRunners } from "./ws/registry.js";
+import { onClose, onMessage, onOpen } from "./ws/relay.js";
 
 const PORT = parseInt(process.env.PORT ?? "3000");
 
-const server = Bun.serve({
+const server = Bun.serve<WsData>({
     port: PORT,
-    async fetch(req) {
+
+    async fetch(req, server) {
         const url = new URL(req.url);
 
+        // ── WebSocket upgrade ──────────────────────────────────────────────────
+        if (url.pathname === "/ws/sessions") {
+            // TUI connecting to register a live-share session
+            const upgraded = server.upgrade(req, { data: { role: "tui" } });
+            if (upgraded) return;
+            return new Response("WebSocket upgrade failed", { status: 400 });
+        }
+
+        if (url.pathname.startsWith("/ws/sessions/")) {
+            // Browser viewer connecting to watch a session
+            const sessionId = url.pathname.slice("/ws/sessions/".length);
+            if (!sessionId) return new Response("Missing session ID", { status: 400 });
+            const upgraded = server.upgrade(req, { data: { role: "viewer", sessionId } });
+            if (upgraded) return;
+            return new Response("WebSocket upgrade failed", { status: 400 });
+        }
+
+        if (url.pathname === "/ws/runner") {
+            // Runner daemon connecting (Task 003) — token passed as ?token=... query param
+            const token = url.searchParams.get("token") ?? "";
+            const expected = process.env.PIZZAPI_RUNNER_TOKEN;
+            if (!expected || token !== expected) {
+                return new Response("Unauthorized", { status: 401 });
+            }
+            const upgraded = server.upgrade(req, { data: { role: "runner" } });
+            if (upgraded) return;
+            return new Response("WebSocket upgrade failed", { status: 400 });
+        }
+
+        // ── REST endpoints ─────────────────────────────────────────────────────
         if (url.pathname === "/health") {
             return Response.json({ status: "ok" });
+        }
+
+        if (url.pathname === "/api/runners" && req.method === "GET") {
+            return Response.json({ runners: getRunners() });
         }
 
         if (url.pathname === "/api/chat" && req.method === "POST") {
@@ -41,7 +79,6 @@ const server = Bun.serve({
                     },
                 });
 
-                // Collect assistant text from events
                 let responseText = "";
                 agent.subscribe((event: AgentEvent) => {
                     if (
@@ -73,6 +110,12 @@ const server = Bun.serve({
         }
 
         return Response.json({ error: "Not found" }, { status: 404 });
+    },
+
+    websocket: {
+        open: onOpen,
+        message: onMessage,
+        close: onClose,
     },
 });
 

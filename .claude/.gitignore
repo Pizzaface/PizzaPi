@@ -1,0 +1,12 @@
+# Claude Code local files
+.claude/
+
+# IDE files
+.jbeval/
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
+/.claude/
+/.idea/
