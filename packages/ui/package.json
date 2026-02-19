@@ -8,9 +8,9 @@
         "preview": "vite preview"
     },
     "dependencies": {
-        "@mariozechner/pi-ai": "workspace:*",
-        "@mariozechner/pi-agent-core": "workspace:*",
-        "@mariozechner/pi-web-ui": "workspace:*",
+        "@mariozechner/pi-ai": "^0.53.0",
+        "@mariozechner/pi-agent-core": "^0.53.0",
+        "@mariozechner/pi-web-ui": "^0.53.0",
         "@pizzapi/tools": "workspace:*"
     },
     "devDependencies": {

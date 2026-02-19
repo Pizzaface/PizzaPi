@@ -13,7 +13,7 @@ export const bashTool: AgentTool = {
         command: Type.String({ description: "The command to execute" }),
         timeout: Type.Optional(Type.Number({ description: "Timeout in milliseconds" })),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params: any) {
         const timeout = params.timeout ?? 30_000;
         const { stdout, stderr } = await execAsync(params.command, { timeout });
         return {

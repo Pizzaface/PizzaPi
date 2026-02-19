@@ -5,7 +5,9 @@
         "rootDir": "src",
         "composite": false,
         "declaration": false,
-        "declarationMap": false
+        "declarationMap": false,
+        "experimentalDecorators": true,
+        "useDefineForClassFields": false
     },
     "include": ["src"]
 }

@@ -1,0 +1,262 @@
+---
+allowed-tools: Bash, Read, Write
+---
+
+# Epic Merge
+
+Merge completed epic from worktree back to main branch using traditional git merge.
+
+**Note:** For stacked PR workflow, use `/pm:epic-spr-merge` instead. This command is for traditional single-merge workflows.
+
+## Usage
+
+```
+/pm:epic-merge <epic_name>
+```
+
+## Quick Check
+
+1. **Verify worktree exists:**
+
+   ```bash
+   git worktree list | grep "epic-$ARGUMENTS" || echo "❌ No worktree for epic: $ARGUMENTS"
+   ```
+
+2. **Check for active agents:**
+   Read `.project/epics/$ARGUMENTS/execution-status.md`
+   If active agents exist: "Active agents detected. Stop them first with: /pm:epic-stop $ARGUMENTS"
+
+## Instructions
+
+### 1. Pre-Merge Validation
+
+Navigate to worktree and check status:
+
+```bash
+cd ../epic-$ARGUMENTS
+
+# Check for uncommitted changes
+if [[ $(git status --porcelain) ]]; then
+  echo "Uncommitted changes in worktree:"
+  git status --short
+  echo "Commit or stash changes before merging"
+  exit 1
+fi
+
+# Check branch status
+git fetch origin
+git status -sb
+```
+
+### 2. Run Tests (Optional but Recommended)
+
+```bash
+# Look for test commands based on project type
+if [ -f package.json ]; then
+  npm test || echo "Tests failed. Continue anyway? (yes/no)"
+elif [ -f pom.xml ]; then
+  mvn test || echo "Tests failed. Continue anyway? (yes/no)"
+elif [ -f build.gradle ] || [ -f build.gradle.kts ]; then
+  ./gradlew test || echo "Tests failed. Continue anyway? (yes/no)"
+elif [ -f composer.json ]; then
+  ./vendor/bin/phpunit || echo "Tests failed. Continue anyway? (yes/no)"
+elif [ -f *.sln ] || [ -f *.csproj ]; then
+  dotnet test || echo "Tests failed. Continue anyway? (yes/no)"
+elif [ -f Cargo.toml ]; then
+  cargo test || echo "Tests failed. Continue anyway? (yes/no)"
+elif [ -f go.mod ]; then
+  go test ./... || echo "Tests failed. Continue anyway? (yes/no)"
+elif [ -f Gemfile ]; then
+  bundle exec rspec || bundle exec rake test || echo "Tests failed. Continue anyway? (yes/no)"
+elif [ -f pubspec.yaml ]; then
+  flutter test || echo "Tests failed. Continue anyway? (yes/no)"
+elif [ -f Package.swift ]; then
+  swift test || echo "Tests failed. Continue anyway? (yes/no)"
+elif [ -f CMakeLists.txt ]; then
+  cd build && ctest || echo "Tests failed. Continue anyway? (yes/no)"
+elif [ -f Makefile ]; then
+  make test || echo "Tests failed. Continue anyway? (yes/no)"
+fi
+```
+
+### 3. Update Epic Documentation
+
+Get current datetime: `date -u +"%Y-%m-%dT%H:%M:%SZ"`
+
+Update `.project/epics/$ARGUMENTS/epic.md`:
+
+- Set status to "completed"
+- Update completion date
+- Add final summary
+
+### 4. Attempt Merge
+
+```bash
+# Return to main repository
+cd {main-repo-path}
+
+# Ensure main is up to date
+git checkout main
+git pull origin main
+
+# Attempt merge
+echo "Merging epic/$ARGUMENTS to main..."
+git merge epic/$ARGUMENTS --no-ff -m "Merge epic: $ARGUMENTS
+
+Completed features:
+# Generate feature list
+feature_list=""
+if [ -d ".project/epics/$ARGUMENTS" ]; then
+  cd .project/epics/$ARGUMENTS
+  for task_file in *.md; do
+    [ -f "$task_file" ] || continue
+    [ "$task_file" = "epic.md" ] && continue
+    [ "$task_file" = "beads-mapping.md" ] && continue
+    task_name=$(grep '^name:' "$task_file" | cut -d: -f2 | sed 's/^ *//')
+    feature_list="$feature_list\n- $task_name"
+  done
+  cd - > /dev/null
+fi
+
+echo "$feature_list""
+```
+
+### 5. Handle Merge Conflicts
+
+If merge fails with conflicts:
+
+```bash
+# Check conflict status
+git status
+
+echo "
+❌ Merge conflicts detected!
+
+Conflicts in:
+$(git diff --name-only --diff-filter=U)
+
+Options:
+1. Resolve manually:
+   - Edit conflicted files
+   - git add {files}
+   - git commit
+
+2. Abort merge:
+   git merge --abort
+
+3. Get help:
+   /pm:epic-resolve $ARGUMENTS
+
+Worktree preserved at: ../epic-$ARGUMENTS
+"
+exit 1
+```
+
+### 6. Post-Merge Cleanup
+
+If merge succeeds:
+
+```bash
+# Push to remote
+git push origin main
+
+# Clean up worktree
+git worktree remove ../epic-$ARGUMENTS
+echo "Worktree removed: ../epic-$ARGUMENTS"
+
+# Delete branch
+git branch -d epic/$ARGUMENTS
+git push origin --delete epic/$ARGUMENTS 2>/dev/null || true
+
+# Archive epic locally
+mkdir -p .project/epics/archived/
+mv .project/epics/$ARGUMENTS .project/epics/archived/
+echo "Epic archived: .project/epics/archived/$ARGUMENTS"
+```
+
+### 7. Update Beads Issues
+
+Close related issues in Beads:
+
+```bash
+# Get epic Beads ID
+epic_id=$(grep '^beads_id:' .project/epics/archived/$ARGUMENTS/epic.md | sed 's/^beads_id: *//')
+
+# Close epic issue
+if [ -n "$epic_id" ]; then
+  bd close "$epic_id" --reason="Epic completed and merged to main"
+fi
+
+# Close task issues
+for task_file in .project/epics/archived/$ARGUMENTS/*.md; do
+  [ -f "$task_file" ] || continue
+  [ "$(basename $task_file)" = "epic.md" ] && continue
+  [ "$(basename $task_file)" = "beads-mapping.md" ] && continue
+
+  task_id=$(grep '^beads_id:' "$task_file" | sed 's/^beads_id: *//')
+  if [ -n "$task_id" ]; then
+    bd close "$task_id" --reason="Completed in epic merge"
+  fi
+done
+
+# Sync all changes
+bd sync
+```
+
+### 8. Final Output
+
+```
+Epic Merged Successfully: $ARGUMENTS
+
+Summary:
+  Branch: epic/$ARGUMENTS → main
+  Commits merged: {count}
+  Files changed: {count}
+  Issues closed: {count}
+
+Cleanup completed:
+  - Worktree removed
+  - Branch deleted
+  - Epic archived
+  - Beads issues closed
+
+Next steps:
+  - Deploy changes if needed
+  - Start new epic: /pm:prd-new {feature}
+  - View completed work: git log --oneline -20
+  - View ready work: bd ready
+```
+
+## Conflict Resolution Help
+
+If conflicts need resolution:
+
+```
+The epic branch has conflicts with main.
+
+This typically happens when:
+- Main has changed since epic started
+- Multiple epics modified same files
+- Dependencies were updated
+
+To resolve:
+1. Open conflicted files
+2. Look for <<<<<<< markers
+3. Choose correct version or combine
+4. Remove conflict markers
+5. git add {resolved files}
+6. git commit
+7. git push
+
+Or abort and try later:
+  git merge --abort
+```
+
+## Important Notes
+
+- Always check for uncommitted changes first
+- Run tests before merging when possible
+- Use --no-ff to preserve epic history
+- Archive epic data instead of deleting
+- Close Beads issues to maintain sync
+- Follow the beads-operations rule for Beads commands

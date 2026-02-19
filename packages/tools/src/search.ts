@@ -18,7 +18,7 @@ export const searchTool: AgentTool = {
             }),
         ),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params: any) {
         const type = params.type ?? "content";
         const command =
             type === "files"

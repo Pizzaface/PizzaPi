@@ -10,11 +10,12 @@
         "start": "bun dist/index.js"
     },
     "dependencies": {
-        "@mariozechner/pi-ai": "workspace:*",
-        "@mariozechner/pi-agent-core": "workspace:*",
+        "@mariozechner/pi-ai": "^0.53.0",
+        "@mariozechner/pi-agent-core": "^0.53.0",
         "@pizzapi/tools": "workspace:*"
     },
     "devDependencies": {
+        "@types/bun": "^1.3.9",
         "typescript": "^5.7.0"
     }
 }

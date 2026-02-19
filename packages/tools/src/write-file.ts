@@ -11,7 +11,7 @@ export const writeFileTool: AgentTool = {
         path: Type.String({ description: "Absolute path to the file" }),
         content: Type.String({ description: "Content to write" }),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params: any) {
         await mkdir(dirname(params.path), { recursive: true });
         await writeFile(params.path, params.content, "utf-8");
         return {

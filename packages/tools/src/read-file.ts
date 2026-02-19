@@ -9,7 +9,7 @@ export const readFileTool: AgentTool = {
     parameters: Type.Object({
         path: Type.String({ description: "Absolute path to the file" }),
     }),
-    async execute(_toolCallId, params) {
+    async execute(_toolCallId, params: any) {
         const content = await readFile(params.path, "utf-8");
         return {
             content: [{ type: "text" as const, text: content }],
