@@ -34,7 +34,6 @@ export interface RelayMessage {
 export interface SessionViewerProps {
   sessionId: string | null;
   messages: RelayMessage[];
-  status: string;
   onSendInput?: (text: string) => boolean | void | Promise<boolean | void>;
 }
 
@@ -133,7 +132,7 @@ function roleLabel(role: string) {
   return role || "Message";
 }
 
-export function SessionViewer({ sessionId, messages, status, onSendInput }: SessionViewerProps) {
+export function SessionViewer({ sessionId, messages, onSendInput }: SessionViewerProps) {
   const [input, setInput] = React.useState("");
 
   React.useEffect(() => {
@@ -161,7 +160,6 @@ export function SessionViewer({ sessionId, messages, status, onSendInput }: Sess
             {sessionId ? `Session ${sessionId}` : "No session selected"}
           </p>
         </div>
-        <p className="text-xs text-muted-foreground">{status}</p>
       </div>
 
       <Conversation className="flex-1 min-h-0">

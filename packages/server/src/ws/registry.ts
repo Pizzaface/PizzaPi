@@ -29,6 +29,7 @@ interface SharedSession {
     tuiWs: ServerWebSocket<WsData>;
     token: string;
     viewers: Set<ServerWebSocket<WsData>>;
+    /** Whether viewer chat input is forwarded to the owning TUI session */
     collabMode: boolean;
     shareUrl: string;
     cwd: string;
@@ -83,7 +84,7 @@ function refreshEphemeralExpiry(session: SharedSession) {
 export function registerTuiSession(
     ws: ServerWebSocket<WsData>,
     cwd: string = "",
-    opts: { isEphemeral?: boolean } = {},
+    opts: { isEphemeral?: boolean; collabMode?: boolean } = {},
 ): {
     sessionId: string;
     token: string;
@@ -96,12 +97,13 @@ export function registerTuiSession(
     const userId = ws.data.userId;
     const userName = ws.data.userName;
     const isEphemeral = opts.isEphemeral !== false;
+    const collabMode = opts.collabMode !== false;
 
     sharedSessions.set(sessionId, {
         tuiWs: ws,
         token,
         viewers: new Set(),
-        collabMode: false,
+        collabMode,
         shareUrl,
         cwd,
         startedAt,

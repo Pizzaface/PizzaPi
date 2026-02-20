@@ -104,10 +104,11 @@ function handleTuiMessage(ws: ServerWebSocket<WsData>, msg: Record<string, unkno
         // TUI registers a new shared session; cwd sent by CLI for display in hub UI
         const cwd = typeof msg.cwd === "string" ? msg.cwd : "";
         const isEphemeral = msg.ephemeral !== false;
-        const { sessionId, token, shareUrl } = registerTuiSession(ws, cwd, { isEphemeral });
+        const collabMode = msg.collabMode !== false;
+        const { sessionId, token, shareUrl } = registerTuiSession(ws, cwd, { isEphemeral, collabMode });
         ws.data.sessionId = sessionId;
         ws.data.token = token;
-        ws.send(JSON.stringify({ type: "registered", sessionId, token, shareUrl, isEphemeral }));
+        ws.send(JSON.stringify({ type: "registered", sessionId, token, shareUrl, isEphemeral, collabMode }));
         return;
     }
 

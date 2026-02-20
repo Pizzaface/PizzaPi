@@ -37,6 +37,7 @@ export interface SessionSidebarProps {
     onOpenSession: (sessionId: string) => void;
     onClearSelection: () => void;
     activeSessionId: string | null;
+    onRelayStatusChange?: (state: DotState) => void;
 }
 
 function formatRelativeDate(isoString: string): string {
@@ -56,7 +57,7 @@ function cwdLabel(cwd: string): string {
     return parts[parts.length - 1] || cwd;
 }
 
-type DotState = "connecting" | "connected" | "disconnected";
+export type DotState = "connecting" | "connected" | "disconnected";
 
 function LiveDot({ state }: { state: DotState }) {
     return (
@@ -72,11 +73,20 @@ function LiveDot({ state }: { state: DotState }) {
     );
 }
 
-export function SessionSidebar({ onOpenSession, onClearSelection, activeSessionId }: SessionSidebarProps) {
+export function SessionSidebar({
+    onOpenSession,
+    onClearSelection,
+    activeSessionId,
+    onRelayStatusChange,
+}: SessionSidebarProps) {
     const [collapsed, setCollapsed] = React.useState(false);
     const [liveSessions, setLiveSessions] = React.useState<HubSession[]>([]);
     const [persistedSessions, setPersistedSessions] = React.useState<PersistedSessionSummary[]>([]);
     const [dotState, setDotState] = React.useState<DotState>("connecting");
+
+    React.useEffect(() => {
+        onRelayStatusChange?.(dotState);
+    }, [dotState, onRelayStatusChange]);
 
     const loadPersisted = React.useCallback(async () => {
         try {
