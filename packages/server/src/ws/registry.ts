@@ -7,6 +7,7 @@ import {
     recordRelaySessionState,
     touchRelaySession,
 } from "../sessions/store.js";
+import { appendRelayEventToCache } from "../sessions/redis.js";
 
 export type WsRole = "tui" | "viewer" | "runner" | "hub";
 
@@ -198,6 +199,16 @@ export function broadcastToViewers(sessionId: string, data: string) {
             viewer.send(data);
         } catch {}
     }
+}
+
+export function publishSessionEvent(sessionId: string, event: unknown) {
+    const session = sharedSessions.get(sessionId);
+    if (session) {
+        refreshEphemeralExpiry(session);
+    }
+
+    void appendRelayEventToCache(sessionId, event, { isEphemeral: session?.isEphemeral });
+    broadcastToViewers(sessionId, JSON.stringify({ type: "event", event }));
 }
 
 export function endSharedSession(sessionId: string, reason: string = "Session ended") {

@@ -234,6 +234,18 @@ export function SessionSidebar({
                     </Button>
                 </div>
 
+                {collapsed && (
+                    <Button
+                        variant="outline"
+                        size="icon"
+                        className="m-2 h-8 w-8 shadow-sm"
+                        onClick={() => setCollapsed(false)}
+                        aria-label="Expand sidebar"
+                    >
+                        <PanelLeftOpen className="h-4 w-4" />
+                    </Button>
+                )}
+
                 <div className="flex flex-col flex-shrink-0 overflow-hidden">
                     <div className="flex items-center gap-1.5 px-3 py-1.5">
                         <span className="text-[0.65rem] font-semibold uppercase tracking-widest text-sidebar-foreground/50">
@@ -333,17 +345,6 @@ export function SessionSidebar({
                 </div>
             </aside>
 
-            {collapsed && (
-                <Button
-                    variant="outline"
-                    size="icon"
-                    className="absolute top-2.5 left-2.5 z-50 h-8 w-8 shadow-sm"
-                    onClick={() => setCollapsed(false)}
-                    aria-label="Expand sidebar"
-                >
-                    <PanelLeftOpen className="h-4 w-4" />
-                </Button>
-            )}
         </>
     );
 }

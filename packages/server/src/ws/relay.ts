@@ -9,6 +9,7 @@ import {
     getSessionState,
     getSessions,
     getRunner,
+    publishSessionEvent,
     registerRunner,
     registerTuiSession,
     removeHubClient,
@@ -18,18 +19,38 @@ import {
     updateSessionState,
 } from "./registry.js";
 import { getPersistedRelaySessionSnapshot } from "../sessions/store.js";
+import { getCachedRelayEvents } from "../sessions/redis.js";
+
+async function replayCachedEvents(ws: ServerWebSocket<WsData>, sessionId: string): Promise<boolean> {
+    const cachedEvents = await getCachedRelayEvents(sessionId);
+    if (cachedEvents.length === 0) return false;
+
+    for (const event of cachedEvents) {
+        try {
+            ws.send(JSON.stringify({ type: "event", event, replay: true }));
+        } catch {
+            return false;
+        }
+    }
+    return true;
+}
 
 async function replayPersistedSnapshot(ws: ServerWebSocket<WsData>, sessionId: string) {
     try {
-        const snapshot = await getPersistedRelaySessionSnapshot(sessionId);
-        if (!snapshot || snapshot.state === null || snapshot.state === undefined) {
-            ws.send(JSON.stringify({ type: "error", message: "Session not found" }));
-            ws.close(1008, "Session not found");
-            return;
+        ws.send(JSON.stringify({ type: "connected", sessionId, replayOnly: true }));
+
+        const replayedCachedEvents = await replayCachedEvents(ws, sessionId);
+        if (!replayedCachedEvents) {
+            const snapshot = await getPersistedRelaySessionSnapshot(sessionId);
+            if (!snapshot || snapshot.state === null || snapshot.state === undefined) {
+                ws.send(JSON.stringify({ type: "error", message: "Session not found" }));
+                ws.close(1008, "Session not found");
+                return;
+            }
+
+            ws.send(JSON.stringify({ type: "event", event: { type: "session_active", state: snapshot.state } }));
         }
 
-        ws.send(JSON.stringify({ type: "connected", sessionId, replayOnly: true }));
-        ws.send(JSON.stringify({ type: "event", event: { type: "session_active", state: snapshot.state } }));
         ws.send(JSON.stringify({ type: "disconnected", reason: "Session is no longer live (snapshot replay)." }));
         ws.close(1000, "Snapshot replay complete");
     } catch (error) {
@@ -45,18 +66,30 @@ export function onOpen(ws: ServerWebSocket<WsData>) {
     // TUI and runner connections perform a handshake via the first message.
     if (ws.data.role === "viewer" && ws.data.sessionId) {
         const sessionId = ws.data.sessionId;
-        const ok = addViewer(sessionId, ws);
-        if (!ok) {
+        if (!getSharedSession(sessionId)) {
             void replayPersistedSnapshot(ws, sessionId);
             return;
         }
 
         ws.send(JSON.stringify({ type: "connected", sessionId }));
-        // Replay the last known session state so the viewer sees current content immediately
-        const lastState = getSessionState(sessionId);
-        if (lastState !== undefined) {
-            ws.send(JSON.stringify({ type: "event", event: { type: "session_active", state: lastState } }));
-        }
+
+        void (async () => {
+            const replayedCachedEvents = await replayCachedEvents(ws, sessionId);
+            const ok = addViewer(sessionId, ws);
+            if (!ok) {
+                ws.send(JSON.stringify({ type: "disconnected", reason: "Session ended" }));
+                ws.close(1000, "Session ended");
+                return;
+            }
+
+            if (!replayedCachedEvents) {
+                // Fallback: replay latest in-memory snapshot when Redis has no event buffer.
+                const lastState = getSessionState(sessionId);
+                if (lastState !== undefined) {
+                    ws.send(JSON.stringify({ type: "event", event: { type: "session_active", state: lastState } }));
+                }
+            }
+        })();
     } else if (ws.data.role === "hub") {
         addHubClient(ws);
         // Send only this user's active sessions on connect
@@ -112,6 +145,11 @@ function handleTuiMessage(ws: ServerWebSocket<WsData>, msg: Record<string, unkno
         return;
     }
 
+    if (msg.type === "exec_result" && ws.data.sessionId) {
+        broadcastToViewers(ws.data.sessionId, JSON.stringify(msg));
+        return;
+    }
+
     if (msg.type === "event" || msg.type === "session_end") {
         // Validate token
         if (!ws.data.sessionId || msg.token !== ws.data.token) {
@@ -133,8 +171,8 @@ function handleTuiMessage(ws: ServerWebSocket<WsData>, msg: Record<string, unkno
             touchSessionActivity(ws.data.sessionId);
         }
 
-        // Forward event to all viewers
-        broadcastToViewers(ws.data.sessionId, JSON.stringify({ type: "event", event: msg.event }));
+        // Cache + forward event to viewers (for reconnect replay).
+        publishSessionEvent(ws.data.sessionId, msg.event);
         return;
     }
 }
@@ -152,6 +190,26 @@ function handleViewerMessage(ws: ServerWebSocket<WsData>, msg: Record<string, un
         try {
             session.tuiWs.send(JSON.stringify({ type: "input", text: msg.text }));
         } catch {}
+        return;
+    }
+
+    if (
+        msg.type === "model_set" &&
+        session.collabMode &&
+        typeof msg.provider === "string" &&
+        typeof msg.modelId === "string"
+    ) {
+        try {
+            session.tuiWs.send(JSON.stringify({ type: "model_set", provider: msg.provider, modelId: msg.modelId }));
+        } catch {}
+        return;
+    }
+
+    if (msg.type === "exec" && session.collabMode && typeof msg.id === "string" && typeof msg.command === "string") {
+        try {
+            session.tuiWs.send(JSON.stringify(msg));
+        } catch {}
+        return;
     }
 }
 
@@ -168,7 +226,7 @@ function handleRunnerMessage(ws: ServerWebSocket<WsData>, msg: Record<string, un
     // Forward agent events from runner sessions to browser viewers
     if (msg.type === "runner_session_event") {
         const sessionId = msg.sessionId as string;
-        broadcastToViewers(sessionId, JSON.stringify({ type: "event", event: msg.event }));
+        publishSessionEvent(sessionId, msg.event);
         return;
     }
 

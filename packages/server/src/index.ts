@@ -8,11 +8,13 @@ import {
     getEphemeralSweepIntervalMs,
     pruneExpiredRelaySessions,
 } from "./sessions/store.js";
+import { deleteRelayEventCaches, initializeRelayRedisCache } from "./sessions/redis.js";
 import { sweepExpiredSharedSessions } from "./ws/registry.js";
 
 const PORT = parseInt(process.env.PORT ?? "3000");
 
 await ensureRelaySessionTables();
+void initializeRelayRedisCache();
 
 const server = Bun.serve<WsData>({
     port: PORT,
@@ -58,9 +60,14 @@ const server = Bun.serve<WsData>({
 const sweepMs = getEphemeralSweepIntervalMs();
 setInterval(() => {
     sweepExpiredSharedSessions();
-    void pruneExpiredRelaySessions().catch((error) => {
-        console.error("Failed to prune expired relay sessions", error);
-    });
+    void pruneExpiredRelaySessions()
+        .then((expiredIds) => {
+            if (expiredIds.length === 0) return;
+            return deleteRelayEventCaches(expiredIds);
+        })
+        .catch((error) => {
+            console.error("Failed to prune expired relay sessions", error);
+        });
 }, sweepMs);
 
 console.log(`PizzaPi server running on http://localhost:${server.port}`);

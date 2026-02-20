@@ -145,7 +145,11 @@ export const auth = betterAuth({
     baseURL: process.env.BETTER_AUTH_BASE_URL ?? `http://localhost:${process.env.PORT ?? "3000"}`,
     secret: process.env.BETTER_AUTH_SECRET,
     database: { dialect, type: "sqlite", transaction: true },
-    trustedOrigins: [process.env.PIZZAPI_BASE_URL ?? "http://localhost:5173"],
+    trustedOrigins: [
+        process.env.PIZZAPI_BASE_URL ?? "http://localhost:5173",
+        "http://jordans-mac-mini.tail65556b.ts.net:5173",
+        "https://jordans-mac-mini.tail65556b.ts.net:5173",
+    ],
     emailAndPassword: {
         enabled: true,
     },

@@ -14,6 +14,7 @@ export default defineConfig({
     },
     server: {
         port: 5173,
+        allowedHosts: ["jordans-mac-mini.tail65556b.ts.net"],
         proxy: {
             "/api": `http://localhost:${API_PORT}`,
             "/ws": {

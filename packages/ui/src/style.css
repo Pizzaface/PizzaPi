@@ -121,3 +121,21 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* Mobile layout helpers (viewer/sidebar sizing) */
+@layer utilities {
+  .pp-sidebar-wrap {
+    transition: transform 200ms ease;
+  }
+
+  /* Use dynamic viewport units when available so the chat fits under mobile URL bars */
+  .pp-shell {
+    height: 100dvh;
+  }
+
+  @supports not (height: 100dvh) {
+    .pp-shell {
+      height: 100vh;
+    }
+  }
+}

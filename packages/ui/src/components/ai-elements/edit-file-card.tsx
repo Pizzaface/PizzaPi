@@ -1,0 +1,112 @@
+"use client";
+
+import * as React from "react";
+import { cn } from "@/lib/utils";
+import { FileDiffIcon } from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from "@/components/ui/dialog";
+
+export interface EditFileCardProps {
+  /** Full file path */
+  path: string;
+  /** Display name (defaults to basename of path) */
+  fileName?: string;
+  /** Number of lines added */
+  additions: number;
+  /** Number of lines removed */
+  deletions: number;
+  /** Diff content to render inside the modal */
+  children: React.ReactNode;
+  className?: string;
+}
+
+export function EditFileCard({
+  path,
+  fileName,
+  additions,
+  deletions,
+  children,
+  className,
+}: EditFileCardProps) {
+  const [open, setOpen] = React.useState(false);
+
+  const displayName =
+    fileName ?? path.split(/[\\/]/).filter(Boolean).pop() ?? "file";
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className={cn(
+          "group flex w-full items-center gap-3 rounded-lg border border-border/80 bg-muted/30 px-3 py-2.5 text-left transition-colors hover:bg-muted/60 hover:border-border cursor-pointer",
+          className,
+        )}
+      >
+        <div className="flex size-9 shrink-0 items-center justify-center rounded-md border border-border/60 bg-background text-muted-foreground group-hover:text-foreground transition-colors">
+          <FileDiffIcon className="size-4" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <span className="text-sm font-medium text-foreground truncate block">
+            {displayName}
+          </span>
+          <p className="mt-0.5 text-[11px] font-mono text-muted-foreground truncate">
+            {path}
+          </p>
+        </div>
+        <div className="flex shrink-0 items-center gap-1.5">
+          {additions > 0 && (
+            <span className="inline-flex items-center rounded border border-green-500/30 bg-green-500/10 px-1.5 py-0.5 text-[10px] font-mono font-semibold text-green-500">
+              +{additions}
+            </span>
+          )}
+          {deletions > 0 && (
+            <span className="inline-flex items-center rounded border border-red-500/30 bg-red-500/10 px-1.5 py-0.5 text-[10px] font-mono font-semibold text-red-500">
+              -{deletions}
+            </span>
+          )}
+        </div>
+      </button>
+
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="sm:max-w-3xl max-h-[85vh] flex flex-col gap-0 p-0 overflow-hidden">
+          <DialogHeader className="px-5 pt-5 pb-3 border-b border-border/60 shrink-0">
+            <div className="flex items-center gap-2.5">
+              <div className="flex size-8 shrink-0 items-center justify-center rounded-md border border-border/60 bg-muted text-muted-foreground">
+                <FileDiffIcon className="size-4" />
+              </div>
+              <div className="min-w-0">
+                <DialogTitle className="text-sm font-semibold truncate">
+                  {displayName}
+                </DialogTitle>
+                <DialogDescription className="text-[11px] font-mono truncate">
+                  {path}
+                </DialogDescription>
+              </div>
+              <div className="ml-auto flex shrink-0 items-center gap-1.5">
+                {additions > 0 && (
+                  <span className="inline-flex items-center rounded border border-green-500/30 bg-green-500/10 px-1.5 py-0.5 text-[10px] font-mono font-semibold text-green-500">
+                    +{additions}
+                  </span>
+                )}
+                {deletions > 0 && (
+                  <span className="inline-flex items-center rounded border border-red-500/30 bg-red-500/10 px-1.5 py-0.5 text-[10px] font-mono font-semibold text-red-500">
+                    -{deletions}
+                  </span>
+                )}
+              </div>
+            </div>
+          </DialogHeader>
+          <div className="flex-1 overflow-auto p-0">
+            {children}
+          </div>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}

@@ -1,4 +1,11 @@
 services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
   server:
     build:
       context: ..
@@ -7,6 +14,9 @@ services:
       - "3000:3000"
     environment:
       - PORT=3000
+      - PIZZAPI_REDIS_URL=redis://redis:6379
+    depends_on:
+      - redis
     restart: unless-stopped
 
   dev:
@@ -18,6 +28,10 @@ services:
     ports:
       - "3000:3000"
       - "5173:5173"
+    environment:
+      - PIZZAPI_REDIS_URL=redis://redis:6379
+    depends_on:
+      - redis
     volumes:
       - ..:/app
       - /app/node_modules
