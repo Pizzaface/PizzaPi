@@ -15,6 +15,7 @@ import {
   useRef,
   useState,
 } from "react";
+
 import { Shimmer } from "./shimmer";
 
 interface TerminalContextType {
@@ -132,7 +133,7 @@ export const TerminalStatus = ({
       className={cn("flex items-center gap-2 text-xs text-zinc-400", className)}
       {...props}
     >
-      {children ?? <Shimmer className="w-16">Running...</Shimmer>}
+      {children ?? <Shimmer className="w-16">Running…</Shimmer>}
     </div>
   );
 };
@@ -247,6 +248,7 @@ export const TerminalContent = ({
   const { output, isStreaming, autoScroll } = useContext(TerminalContext);
   const containerRef = useRef<HTMLDivElement>(null);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: output triggers auto-scroll when new content arrives
   useEffect(() => {
     if (autoScroll && containerRef.current) {
       containerRef.current.scrollTop = containerRef.current.scrollHeight;

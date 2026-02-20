@@ -38,6 +38,14 @@ import { ArrowDownIcon, MessageSquare } from "lucide-react";
 
 export type { RelayMessage } from "@/components/session-viewer/types";
 
+export interface TokenUsage {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  cost: number;
+}
+
 export interface SessionViewerProps {
   sessionId: string | null;
   messages: RelayMessage[];
@@ -46,9 +54,46 @@ export interface SessionViewerProps {
   availableCommands?: Array<{ name: string; description?: string }>;
   onSendInput?: (text: string) => boolean | void | Promise<boolean | void>;
   onExec?: (payload: unknown) => boolean | void;
+  /** Whether the agent is currently processing a turn */
+  agentActive?: boolean;
+  /** Current reasoning effort level (e.g. "low", "medium", "high", "off") */
+  effortLevel?: string | null;
+  /** Cumulative token usage for the session */
+  tokenUsage?: TokenUsage | null;
+  /** Unix ms timestamp of the most recent heartbeat from the CLI */
+  lastHeartbeatAt?: number | null;
+  /** Human-readable connection/activity status */
+  viewerStatus?: string;
 }
 
-export function SessionViewer({ sessionId, messages, activeToolCalls, pendingQuestion, availableCommands, onSendInput, onExec }: SessionViewerProps) {
+function formatTokenCount(n: number): string {
+  if (n < 1000) return String(n);
+  if (n < 10_000) return `${(n / 1000).toFixed(1)}k`;
+  if (n < 1_000_000) return `${Math.round(n / 1000)}k`;
+  if (n < 10_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  return `${Math.round(n / 1_000_000)}M`;
+}
+
+function HeartbeatStaleBadge({ lastHeartbeatAt }: { lastHeartbeatAt: number | null | undefined }) {
+  const [stale, setStale] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!lastHeartbeatAt) { setStale(false); return; }
+    const check = () => setStale(Date.now() - lastHeartbeatAt > 35_000);
+    check();
+    const timer = setInterval(check, 5_000);
+    return () => clearInterval(timer);
+  }, [lastHeartbeatAt]);
+
+  if (!stale) return null;
+  return (
+    <span className="text-[0.65rem] text-amber-400/80" title="No heartbeat received in the last 35 seconds — CLI may be disconnected">
+      ⚠ stale
+    </span>
+  );
+}
+
+export function SessionViewer({ sessionId, messages, activeToolCalls, pendingQuestion, availableCommands, onSendInput, onExec, agentActive, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus }: SessionViewerProps) {
   const [input, setInput] = React.useState("");
 
   const [commandOpen, setCommandOpen] = React.useState(false);
@@ -138,13 +183,52 @@ export function SessionViewer({ sessionId, messages, activeToolCalls, pendingQue
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
-      <div className="border-b border-border px-4 py-2 flex items-center justify-between">
-        <div className="min-w-0">
-          <p className="text-xs uppercase tracking-widest text-muted-foreground">Session Viewer</p>
-          <p className="text-sm font-medium truncate">
-            {sessionId ? `Session ${sessionId}` : "No session selected"}
-          </p>
+      <div className="border-b border-border px-4 py-2 flex items-center justify-between gap-3 flex-wrap">
+        <div className="min-w-0 flex items-center gap-2.5">
+          {/* Active pulse indicator */}
+          {sessionId && (
+            <span
+              className={cn(
+                "inline-block h-2 w-2 rounded-full flex-shrink-0 transition-colors",
+                agentActive
+                  ? "bg-green-400 shadow-[0_0_6px_#4ade8080] animate-pulse"
+                  : lastHeartbeatAt
+                    ? "bg-slate-400"
+                    : "bg-slate-600",
+              )}
+              title={agentActive ? "Agent active" : lastHeartbeatAt ? "Agent idle" : "No heartbeat yet"}
+            />
+          )}
+          <div className="min-w-0">
+            <p className="text-[0.65rem] uppercase tracking-widest text-muted-foreground leading-none mb-0.5">
+              {sessionId ? (agentActive ? "Active" : viewerStatus ?? "Connected") : "Session Viewer"}
+            </p>
+            <p className="text-sm font-medium truncate leading-none">
+              {sessionId ? `Session ${sessionId.slice(0, 8)}…` : "No session selected"}
+            </p>
+          </div>
         </div>
+
+        {/* Token usage + effort badges */}
+        {sessionId && (
+          <div className="flex items-center gap-2 flex-wrap flex-shrink-0">
+            <HeartbeatStaleBadge lastHeartbeatAt={lastHeartbeatAt} />
+            {effortLevel && effortLevel !== "off" && (
+              <span className="rounded-full border border-border bg-muted px-2 py-0.5 text-[0.65rem] font-medium text-muted-foreground uppercase tracking-wide">
+                {effortLevel}
+              </span>
+            )}
+            {tokenUsage && (tokenUsage.input > 0 || tokenUsage.output > 0) && (
+              <span
+                className="text-[0.7rem] text-muted-foreground tabular-nums"
+                title={`Input: ${tokenUsage.input.toLocaleString()} tokens\nOutput: ${tokenUsage.output.toLocaleString()} tokens${tokenUsage.cacheRead ? `\nCache read: ${tokenUsage.cacheRead.toLocaleString()}` : ""}${tokenUsage.cacheWrite ? `\nCache write: ${tokenUsage.cacheWrite.toLocaleString()}` : ""}${tokenUsage.cost ? `\nCost: $${tokenUsage.cost.toFixed(4)}` : ""}`}
+              >
+                ↑{formatTokenCount(tokenUsage.input)} ↓{formatTokenCount(tokenUsage.output)}
+                {tokenUsage.cost > 0 && ` · $${tokenUsage.cost.toFixed(3)}`}
+              </span>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="relative flex-1 min-h-0">
@@ -167,7 +251,7 @@ export function SessionViewer({ sessionId, messages, activeToolCalls, pendingQue
               onScroll={updateNearBottomState}
             >
               <div className="flex flex-col py-2">
-                {visibleMessages.map((message) => (
+                {visibleMessages.map((message, msgIdx) => (
                   <div
                     key={message.key}
                     className="w-full px-4 py-1.5"
@@ -195,6 +279,7 @@ export function SessionViewer({ sessionId, messages, activeToolCalls, pendingQue
                           message.isError,
                           message.toolInput,
                           message.toolCallId ?? message.key,
+                          agentActive && msgIdx === visibleMessages.length - 1,
                         )}
                       </MessageContent>
                     </Message>

@@ -105,6 +105,24 @@ function normalizeModel(raw: unknown): ConfiguredModelInfo | null {
   };
 }
 
+/** Inject `durationSeconds` into thinking blocks that we've timed client-side. */
+function augmentThinkingDurations(message: unknown, durations: Map<number, number>): unknown {
+  if (!message || typeof message !== "object" || durations.size === 0) return message;
+  const msg = message as Record<string, unknown>;
+  if (!Array.isArray(msg.content)) return message;
+  let changed = false;
+  const content = msg.content.map((block, i) => {
+    if (!block || typeof block !== "object") return block;
+    const b = block as Record<string, unknown>;
+    if (b.type === "thinking" && durations.has(i) && b.durationSeconds === undefined) {
+      changed = true;
+      return { ...b, durationSeconds: durations.get(i) };
+    }
+    return block;
+  });
+  return changed ? { ...msg, content } : message;
+}
+
 function normalizeModelList(rawModels: unknown[]): ConfiguredModelInfo[] {
   const deduped = new Map<string, ConfiguredModelInfo>();
   for (const raw of rawModels) {
@@ -136,6 +154,15 @@ export function App() {
   const [modelSelectorOpen, setModelSelectorOpen] = React.useState(false);
   const [isChangingModel, setIsChangingModel] = React.useState(false);
 
+  // Live session status from heartbeats
+  const [agentActive, setAgentActive] = React.useState(false);
+  const [effortLevel, setEffortLevel] = React.useState<string | null>(null);
+  const [tokenUsage, setTokenUsage] = React.useState<{ input: number; output: number; cacheRead: number; cacheWrite: number; cost: number } | null>(null);
+  const [lastHeartbeatAt, setLastHeartbeatAt] = React.useState<number | null>(null);
+
+  // Sequence tracking for gap detection
+  const lastSeqRef = React.useRef<number | null>(null);
+
   // Capabilities advertised by the runner (commands, models, etc.)
   const [availableCommands, setAvailableCommands] = React.useState<Array<{ name: string; description?: string }>>([]);
 
@@ -151,6 +178,12 @@ export function App() {
   const deltaRafRef = React.useRef<number | null>(null);
   // Key of the in-flight streaming partial message; evicted when the final message lands.
   const streamingPartialKeyRef = React.useRef<string | null>(null);
+
+  // Track wall-clock timing of thinking blocks so we can bake duration into the content.
+  // contentIndex → Date.now() at thinking_start
+  const thinkingStartTimesRef = React.useRef<Map<number, number>>(new Map());
+  // contentIndex → elapsed seconds at thinking_end
+  const thinkingDurationsRef = React.useRef<Map<number, number>>(new Map());
 
   React.useEffect(() => {
     document.documentElement.classList.toggle("dark", isDark);
@@ -168,6 +201,7 @@ export function App() {
     viewerWsRef.current?.close();
     viewerWsRef.current = null;
     activeSessionRef.current = null;
+    lastSeqRef.current = null;
     setActiveSessionId(null);
     setMessages([]);
     setViewerStatus("Idle");
@@ -177,11 +211,41 @@ export function App() {
     setAvailableModels([]);
     setModelSelectorOpen(false);
     setIsChangingModel(false);
+    setAgentActive(false);
+    setEffortLevel(null);
+    setTokenUsage(null);
+    setLastHeartbeatAt(null);
+  }, []);
+
+  // Full reset: cancel the RAF and wipe all pending streaming state. Use before
+  // replacing the entire message list (session_active, agent_end) so a queued
+  // RAF can't staple a stale partial on top of the fresh snapshot.
+  const cancelPendingDeltas = React.useCallback(() => {
+    if (deltaRafRef.current !== null) {
+      cancelAnimationFrame(deltaRafRef.current);
+      deltaRafRef.current = null;
+    }
+    pendingDeltaRef.current = new Map();
+    streamingPartialKeyRef.current = null;
+    thinkingStartTimesRef.current = new Map();
+    thinkingDurationsRef.current = new Map();
   }, []);
 
   const upsertMessage = React.useCallback((raw: unknown, fallback: string, evictPartial = false) => {
     const next = toRelayMessage(raw, fallback);
     if (!next) return;
+
+    if (evictPartial && streamingPartialKeyRef.current) {
+      // Remove only the partial from the pending queue so the RAF can't
+      // re-insert it after we evict it from state. We intentionally do NOT
+      // clear streamingPartialKeyRef here — the setMessages callback below
+      // still needs it to locate and splice out the partial from state.
+      pendingDeltaRef.current.delete(streamingPartialKeyRef.current);
+      if (pendingDeltaRef.current.size === 0 && deltaRafRef.current !== null) {
+        cancelAnimationFrame(deltaRafRef.current);
+        deltaRafRef.current = null;
+      }
+    }
 
     setMessages((prev) => {
       let base = prev;
@@ -235,11 +299,31 @@ export function App() {
     }
   }, []);
 
-  const handleRelayEvent = React.useCallback((event: unknown) => {
+  const handleRelayEvent = React.useCallback((event: unknown, seq?: number) => {
     if (!event || typeof event !== "object") return;
 
     const evt = event as Record<string, unknown>;
     const type = typeof evt.type === "string" ? evt.type : "";
+
+    if (type === "heartbeat") {
+      const hb = evt as {
+        active?: boolean;
+        model?: { provider: string; id: string; name?: string } | null;
+        thinkingLevel?: string | null;
+        tokenUsage?: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number } | null;
+        ts?: number;
+      };
+      setAgentActive(hb.active === true);
+      if (hb.thinkingLevel !== undefined) setEffortLevel(hb.thinkingLevel ?? null);
+      if (hb.tokenUsage) setTokenUsage(hb.tokenUsage);
+      if (typeof hb.ts === "number") setLastHeartbeatAt(hb.ts);
+      // Heartbeats also carry the current model; keep activeModel in sync.
+      if (hb.model) {
+        const m = normalizeModel(hb.model);
+        if (m) setActiveModel(m);
+      }
+      return;
+    }
 
     if (type === "capabilities") {
       const modelsRaw = Array.isArray((evt as any).models) ? ((evt as any).models as unknown[]) : [];
@@ -264,6 +348,9 @@ export function App() {
         ? normalizeModelList(state.availableModels as unknown[])
         : [];
 
+      // Flush any queued streaming-delta RAF before replacing state so stale
+      // partials can't be re-inserted on top of the fresh snapshot.
+      cancelPendingDeltas();
       setMessages(normalizeMessages(rawMessages));
       setActiveModel(stateModel);
       setAvailableModels(stateModels);
@@ -274,10 +361,15 @@ export function App() {
 
       setPendingQuestion(null);
       setIsChangingModel(false);
+
+      // Extract thinkingLevel from session snapshot too
+      const thinkingLevel = typeof state?.thinkingLevel === "string" ? state.thinkingLevel : null;
+      if (thinkingLevel !== undefined) setEffortLevel(thinkingLevel);
       return;
     }
 
     if (type === "agent_end" && Array.isArray(evt.messages)) {
+      cancelPendingDeltas();
       setMessages(normalizeMessages(evt.messages as unknown[]));
       setPendingQuestion(null);
       return;
@@ -426,12 +518,26 @@ export function App() {
       const assistantEvent = evt.assistantMessageEvent as Record<string, unknown> | undefined;
       if (assistantEvent && assistantEvent.partial) {
         const deltaType = typeof assistantEvent.type === "string" ? assistantEvent.type : "";
+        const contentIndex = typeof assistantEvent.contentIndex === "number" ? assistantEvent.contentIndex : -1;
+
+        // Track wall-clock duration of each thinking block.
+        if (deltaType === "thinking_start" && contentIndex >= 0) {
+          thinkingStartTimesRef.current.set(contentIndex, Date.now());
+        } else if (deltaType === "thinking_end" && contentIndex >= 0) {
+          const startTime = thinkingStartTimesRef.current.get(contentIndex);
+          if (startTime !== undefined) {
+            const durationSeconds = Math.ceil((Date.now() - startTime) / 1000);
+            thinkingDurationsRef.current.set(contentIndex, durationSeconds);
+            thinkingStartTimesRef.current.delete(contentIndex);
+          }
+        }
+
         const isStreamingDelta =
           deltaType === "toolcall_delta" ||
           deltaType === "text_delta" ||
           deltaType === "thinking_delta";
         const partial = assistantEvent.partial as Record<string, unknown>;
-        const raw = { ...partial, timestamp: undefined };
+        const raw = augmentThinkingDurations({ ...partial, timestamp: undefined }, thinkingDurationsRef.current);
         if (isStreamingDelta) {
           upsertMessageDebounced(raw, "message-update-partial");
         } else {
@@ -448,15 +554,19 @@ export function App() {
     }
 
     if (type === "message_end" || type === "turn_end") {
-      upsertMessage(evt.message, type, true);
+      upsertMessage(augmentThinkingDurations(evt.message, thinkingDurationsRef.current), type, true);
+      // Reset for the next assistant message.
+      thinkingStartTimesRef.current = new Map();
+      thinkingDurationsRef.current = new Map();
     }
-  }, [upsertMessage, upsertMessageDebounced]);
+  }, [upsertMessage, upsertMessageDebounced, cancelPendingDeltas]);
 
   const openSession = React.useCallback((relaySessionId: string) => {
     viewerWsRef.current?.close();
     viewerWsRef.current = null;
 
     activeSessionRef.current = relaySessionId;
+    lastSeqRef.current = null;
     setActiveSessionId(relaySessionId);
     setMessages([]);
     setViewerStatus("Connecting…");
@@ -465,6 +575,10 @@ export function App() {
     setActiveModel(null);
     setAvailableModels([]);
     setIsChangingModel(false);
+    setAgentActive(false);
+    setEffortLevel(null);
+    setTokenUsage(null);
+    setLastHeartbeatAt(null);
 
     const ws = new WebSocket(`${getRelayWsBase()}/ws/sessions/${relaySessionId}`);
     viewerWsRef.current = ws;
@@ -483,6 +597,16 @@ export function App() {
         const replayOnly = msg.replayOnly === true;
         setViewerStatus(replayOnly ? "Snapshot replay" : "Connected");
 
+        // Seed the last known sequence number so gap detection works from the start.
+        if (typeof msg.lastSeq === "number") {
+          lastSeqRef.current = msg.lastSeq;
+        }
+
+        // Reflect initial active status from connected message.
+        if (typeof msg.isActive === "boolean") {
+          setAgentActive(msg.isActive);
+        }
+
         // Tell the runner we connected so it can push capabilities (models/commands/etc.)
         try {
           ws.send(JSON.stringify({ type: "connected" }));
@@ -492,7 +616,19 @@ export function App() {
       }
 
       if (msg.type === "event") {
-        handleRelayEvent(msg.event);
+        // Detect sequence gaps; request a resync if we missed events.
+        const seq = typeof msg.seq === "number" ? msg.seq : null;
+        if (seq !== null && lastSeqRef.current !== null) {
+          const expected = lastSeqRef.current + 1;
+          if (seq > expected) {
+            // Gap detected — request a resync snapshot from the server.
+            console.warn(`[relay] Sequence gap: expected ${expected}, got ${seq}. Requesting resync.`);
+            try { ws.send(JSON.stringify({ type: "resync" })); } catch {}
+          }
+        }
+        if (seq !== null) lastSeqRef.current = seq;
+
+        handleRelayEvent(msg.event, seq ?? undefined);
         return;
       }
 
@@ -810,6 +946,11 @@ export function App() {
             availableCommands={availableCommands}
             onSendInput={sendSessionInput}
             onExec={sendRemoteExec}
+            agentActive={agentActive}
+            effortLevel={effortLevel}
+            tokenUsage={tokenUsage}
+            lastHeartbeatAt={lastHeartbeatAt}
+            viewerStatus={viewerStatus}
           />
         </div>
 

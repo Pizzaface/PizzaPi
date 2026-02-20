@@ -7,6 +7,8 @@ interface RelayState {
     sessionId: string;
     token: string;
     shareUrl: string;
+    /** Monotonic sequence number for the next event forwarded to relay */
+    seq: number;
 }
 
 interface AskUserQuestionParams {
@@ -68,6 +70,11 @@ export const remoteExtension: ExtensionFactory = (pi) => {
     let latestCtx: ExtensionContext | null = null;
     let pendingAskUserQuestion: PendingAskUserQuestion | null = null;
 
+    // ── Heartbeat state ───────────────────────────────────────────────────────
+    let isAgentActive = false;
+    let sessionStartedAt: number | null = null;
+    let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+
     // ── Core relay helpers ────────────────────────────────────────────────────
 
     function relayUrl(): string {
@@ -104,7 +111,58 @@ export const remoteExtension: ExtensionFactory = (pi) => {
 
     function forwardEvent(event: unknown) {
         if (!relay) return;
-        send({ type: "event", sessionId: relay.sessionId, token: relay.token, event });
+        const seq = ++relay.seq;
+        send({ type: "event", sessionId: relay.sessionId, token: relay.token, event, seq });
+    }
+
+    function buildTokenUsage() {
+        if (!latestCtx) return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+        let input = 0, output = 0, cacheRead = 0, cacheWrite = 0, cost = 0;
+        for (const entry of latestCtx.sessionManager.getEntries()) {
+            if (entry.type === "message" && entry.message.role === "assistant") {
+                input += entry.message.usage.input;
+                output += entry.message.usage.output;
+                cacheRead += entry.message.usage.cacheRead;
+                cacheWrite += entry.message.usage.cacheWrite;
+                cost += entry.message.usage.cost.total;
+            }
+        }
+        return { input, output, cacheRead, cacheWrite, cost };
+    }
+
+    function buildHeartbeat() {
+        const { thinkingLevel } = latestCtx
+            ? buildSessionContext(latestCtx.sessionManager.getEntries(), latestCtx.sessionManager.getLeafId())
+            : { thinkingLevel: null };
+
+        return {
+            type: "heartbeat",
+            active: isAgentActive,
+            model: latestCtx?.model
+                ? { provider: latestCtx.model.provider, id: latestCtx.model.id, name: latestCtx.model.name }
+                : null,
+            thinkingLevel: thinkingLevel ?? null,
+            tokenUsage: buildTokenUsage(),
+            cwd: latestCtx?.cwd ?? null,
+            uptime: sessionStartedAt !== null ? Date.now() - sessionStartedAt : null,
+            ts: Date.now(),
+        };
+    }
+
+    function startHeartbeat() {
+        stopHeartbeat();
+        // Send an immediate heartbeat so the viewer has state right away.
+        forwardEvent(buildHeartbeat());
+        heartbeatTimer = setInterval(() => {
+            forwardEvent(buildHeartbeat());
+        }, 10_000);
+    }
+
+    function stopHeartbeat() {
+        if (heartbeatTimer !== null) {
+            clearInterval(heartbeatTimer);
+            heartbeatTimer = null;
+        }
     }
 
     function getConfiguredModels(ctx: ExtensionContext): RelayModelInfo[] {
@@ -686,10 +744,12 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                     sessionId: msg.sessionId as string,
                     token: msg.token as string,
                     shareUrl: msg.shareUrl as string,
+                    seq: 0,
                 };
                 setRelayStatus("Connected to Relay");
 
                 forwardEvent({ type: "session_active", state: buildSessionState() });
+                startHeartbeat();
 
                 // Switch to steady-state message handler (collab input)
                 ws.onmessage = (inputEvt) => {
@@ -751,6 +811,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
     }
 
     function disconnect() {
+        stopHeartbeat();
         if (reconnectTimer) {
             clearTimeout(reconnectTimer);
             reconnectTimer = null;
@@ -768,6 +829,8 @@ export const remoteExtension: ExtensionFactory = (pi) => {
 
     pi.on("session_start", (_event, ctx) => {
         latestCtx = ctx;
+        sessionStartedAt = Date.now();
+        isAgentActive = false;
         installFooter(ctx);
         if (isDisabled()) {
             setRelayStatus(undefined);
@@ -778,13 +841,17 @@ export const remoteExtension: ExtensionFactory = (pi) => {
 
     pi.on("session_switch", (_event, ctx) => {
         latestCtx = ctx;
+        sessionStartedAt = Date.now();
+        isAgentActive = false;
         installFooter(ctx);
         setRelayStatus(pendingAskUserQuestion ? "Waiting for AskUserQuestion answer" : relay ? "Connected to Relay" : undefined);
         forwardEvent({ type: "session_active", state: buildSessionState() });
+        forwardEvent(buildHeartbeat());
     });
 
     pi.on("session_shutdown", () => {
         shuttingDown = true;
+        stopHeartbeat();
         disconnect();
     });
 
@@ -930,8 +997,18 @@ export const remoteExtension: ExtensionFactory = (pi) => {
 
     // ── Forward agent events to relay ─────────────────────────────────────────
 
-    pi.on("agent_start", (event) => forwardEvent(event));
-    pi.on("agent_end", (event) => forwardEvent(event));
+    pi.on("agent_start", (event) => {
+        isAgentActive = true;
+        forwardEvent(event);
+        // Push an immediate heartbeat so viewers see "active" without waiting 10s.
+        forwardEvent(buildHeartbeat());
+    });
+    pi.on("agent_end", (event) => {
+        isAgentActive = false;
+        forwardEvent(event);
+        // Push a heartbeat immediately so viewers see "idle" after the turn.
+        forwardEvent(buildHeartbeat());
+    });
     pi.on("turn_start", (event) => forwardEvent(event));
     pi.on("turn_end", (event) => forwardEvent(event));
     pi.on("message_start", (event) => forwardEvent(event));

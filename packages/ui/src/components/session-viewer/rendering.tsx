@@ -8,9 +8,11 @@ import {
   ToolContent,
   ToolHeader,
   ToolInput,
-  getStatusBadge,
-  type ToolState,
+  StatusBadge,
+  type ToolPart,
 } from "@/components/ai-elements/tool";
+
+type ToolState = ToolPart["state"];
 import {
   Terminal,
   TerminalHeader,
@@ -21,6 +23,11 @@ import {
   TerminalContent,
 } from "@/components/ai-elements/terminal";
 import { MessageResponse } from "@/components/ai-elements/message";
+import {
+  Reasoning,
+  ReasoningTrigger,
+  ReasoningContent,
+} from "@/components/ai-elements/reasoning";
 import { FileTypeCard } from "@/components/ai-elements/file-type-card";
 import { EditFileCard } from "@/components/ai-elements/edit-file-card";
 import {
@@ -383,7 +390,7 @@ function renderGroupedToolExecution(
           <div className="flex items-center gap-2 text-sm text-zinc-400">
             <TerminalTitle>{toolName}</TerminalTitle>
           </div>
-          <div className="flex items-center gap-2">{getStatusBadge(state)}</div>
+          <div className="flex items-center gap-2"><StatusBadge status={state} /></div>
         </div>
         <div className="px-4 py-2 font-mono text-xs border-b border-zinc-800">
           <span className="text-zinc-600 select-none mr-1">$</span>
@@ -513,7 +520,7 @@ function renderGroupedToolExecution(
       <TerminalHeader>
         <TerminalTitle>{toolName}</TerminalTitle>
         <div className="flex items-center gap-2">
-          {getStatusBadge(state)}
+          <StatusBadge status={state} />
           <TerminalStatus />
           <TerminalActions>
             {outputText && <TerminalCopyButton />}
@@ -536,12 +543,14 @@ export function renderContent(
   toolName: string | undefined,
   isError: boolean | undefined,
   toolInput: unknown,
-  toolKey: string
+  toolKey: string,
+  isThinkingActive?: boolean
 ) {
   if (role === "toolResult" || role === "tool") {
     if (toolInput !== undefined) {
       const isStreaming =
-        !hasVisibleContent(content) && (activeToolCalls?.size ?? 0) > 0;
+        !hasVisibleContent(content) &&
+        (toolKey ? (activeToolCalls?.has(toolKey) ?? false) : false);
       return renderGroupedToolExecution(
         toolKey,
         toolName ?? "tool",
@@ -584,18 +593,16 @@ export function renderContent(
           }
 
           if (b.type === "thinking") {
+            const isLastBlock = i === (content as unknown[]).length - 1;
+            const thinkingIsStreaming = isLastBlock && (isThinkingActive ?? false);
+            const thinkingDuration = typeof b.durationSeconds === "number" ? b.durationSeconds : undefined;
             return (
-              <details
-                key={i}
-                className="rounded border border-border/80 bg-muted/30 p-2"
-              >
-                <summary className="cursor-pointer text-xs text-muted-foreground">
-                  Reasoning
-                </summary>
-                <pre className="mt-2 whitespace-pre-wrap text-xs text-muted-foreground">
+              <Reasoning key={i} isStreaming={thinkingIsStreaming} duration={thinkingDuration}>
+                <ReasoningTrigger />
+                <ReasoningContent>
                   {typeof b.thinking === "string" ? b.thinking : ""}
-                </pre>
-              </details>
+                </ReasoningContent>
+              </Reasoning>
             );
           }
 
@@ -632,7 +639,7 @@ export function renderContent(
 
             return (
               <Tool key={i} defaultOpen={false}>
-                <ToolHeader toolName={toolName} state={state} />
+                <ToolHeader type="dynamic-tool" toolName={toolName} state={state} />
                 <ToolContent>
                   {isEdit ? (
                     <DiffView

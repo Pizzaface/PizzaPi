@@ -15,6 +15,8 @@ interface HubSession {
     userName?: string;
     isEphemeral?: boolean;
     expiresAt?: string | null;
+    isActive?: boolean;
+    lastHeartbeatAt?: string | null;
 }
 
 interface PersistedSessionSummary {
@@ -143,6 +145,8 @@ export function SessionSidebar({
                                     userName: s.userName,
                                     isEphemeral: s.isEphemeral,
                                     expiresAt: s.expiresAt,
+                                    isActive: (s as any).isActive ?? false,
+                                    lastHeartbeatAt: (s as any).lastHeartbeatAt ?? null,
                                 },
                             ];
                         });
@@ -150,6 +154,20 @@ export function SessionSidebar({
                     } else if (msg.type === "session_removed") {
                         setLiveSessions((prev) => prev.filter((s) => s.sessionId !== msg.sessionId));
                         void loadPersisted();
+                    } else if (msg.type === "session_status") {
+                        // Update active status from heartbeat notifications.
+                        const { sessionId, isActive, lastHeartbeatAt } = msg as {
+                            sessionId: string;
+                            isActive: boolean;
+                            lastHeartbeatAt: string;
+                        };
+                        setLiveSessions((prev) =>
+                            prev.map((s) =>
+                                s.sessionId === sessionId
+                                    ? { ...s, isActive, lastHeartbeatAt }
+                                    : s,
+                            ),
+                        );
                     }
                 };
 
@@ -279,7 +297,15 @@ export function SessionSidebar({
                                             )}
                                         >
                                             <div className="flex items-center gap-2">
-                                                <span className="inline-block h-1.5 w-1.5 rounded-full bg-green-500 flex-shrink-0" />
+                                                <span
+                                                    className={cn(
+                                                        "inline-block h-1.5 w-1.5 rounded-full flex-shrink-0 transition-colors",
+                                                        s.isActive
+                                                            ? "bg-green-400 shadow-[0_0_4px_#4ade8060] animate-pulse"
+                                                            : "bg-green-600",
+                                                    )}
+                                                    title={s.isActive ? "Agent actively processing" : "Session idle"}
+                                                />
                                                 <span className="flex-1 truncate text-[0.78rem] font-medium">
                                                     Session {s.sessionId.slice(0, 8)}…
                                                 </span>

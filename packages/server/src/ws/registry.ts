@@ -41,6 +41,14 @@ interface SharedSession {
     expiresAt: string | null;
     /** Last session_active state snapshot from the CLI, replayed to new viewers */
     lastState?: unknown;
+    /** Monotonic sequence counter — incremented for every event forwarded to viewers */
+    seq: number;
+    /** Whether the agent is currently running (set from heartbeat events) */
+    isActive: boolean;
+    /** ISO timestamp of the most recent heartbeat received from the CLI */
+    lastHeartbeatAt: string | null;
+    /** Most recent heartbeat payload (forwarded to new viewers on connect) */
+    lastHeartbeat: unknown | null;
 }
 
 interface RunnerEntry {
@@ -112,6 +120,10 @@ export function registerTuiSession(
         userName,
         isEphemeral,
         expiresAt: isEphemeral ? nextEphemeralExpiry() : null,
+        seq: 0,
+        isActive: false,
+        lastHeartbeatAt: null,
+        lastHeartbeat: null,
     });
 
     void recordRelaySessionStart({
@@ -127,7 +139,7 @@ export function registerTuiSession(
     });
 
     broadcastToHub(
-        { type: "session_added", sessionId, shareUrl, cwd, startedAt, userId, userName, isEphemeral },
+        { type: "session_added", sessionId, shareUrl, cwd, startedAt, userId, userName, isEphemeral, isActive: false, lastHeartbeatAt: null },
         userId,
     );
     return { sessionId, token, shareUrl };
@@ -147,6 +159,8 @@ export function getSessions(filterUserId?: string) {
             userName: s.userName,
             isEphemeral: s.isEphemeral,
             expiresAt: s.expiresAt,
+            isActive: s.isActive,
+            lastHeartbeatAt: s.lastHeartbeatAt,
         }));
 }
 
@@ -205,10 +219,65 @@ export function publishSessionEvent(sessionId: string, event: unknown) {
     const session = sharedSessions.get(sessionId);
     if (session) {
         refreshEphemeralExpiry(session);
+        session.seq += 1;
     }
 
+    const seq = session?.seq;
     void appendRelayEventToCache(sessionId, event, { isEphemeral: session?.isEphemeral });
-    broadcastToViewers(sessionId, JSON.stringify({ type: "event", event }));
+    broadcastToViewers(sessionId, JSON.stringify({ type: "event", event, seq }));
+}
+
+/** Update session liveness state from a heartbeat event. */
+export function updateSessionHeartbeat(sessionId: string, heartbeat: Record<string, unknown>) {
+    const session = sharedSessions.get(sessionId);
+    if (!session) return;
+
+    const wasActive = session.isActive;
+    session.isActive = heartbeat.active === true;
+    session.lastHeartbeatAt = new Date().toISOString();
+    session.lastHeartbeat = heartbeat;
+    refreshEphemeralExpiry(session);
+
+    // Notify hub clients when active status changes so session list updates live.
+    if (wasActive !== session.isActive) {
+        broadcastToHub(
+            {
+                type: "session_status",
+                sessionId,
+                isActive: session.isActive,
+                lastHeartbeatAt: session.lastHeartbeatAt,
+            },
+            session.userId,
+        );
+    }
+}
+
+/** Returns the current seq counter for a session (used in viewer connected message). */
+export function getSessionSeq(sessionId: string): number {
+    return sharedSessions.get(sessionId)?.seq ?? 0;
+}
+
+/** Returns the last heartbeat payload for a session (replayed to newly-connected viewers). */
+export function getSessionLastHeartbeat(sessionId: string): unknown | null {
+    return sharedSessions.get(sessionId)?.lastHeartbeat ?? null;
+}
+
+/** Sends the current snapshot to a viewer WebSocket (used for resync requests). */
+export function sendSnapshotToViewer(sessionId: string, ws: ServerWebSocket<WsData>) {
+    const session = sharedSessions.get(sessionId);
+    if (!session) return;
+
+    const seq = session.seq;
+    if (session.lastHeartbeat) {
+        try {
+            ws.send(JSON.stringify({ type: "event", event: session.lastHeartbeat, seq }));
+        } catch {}
+    }
+    if (session.lastState !== undefined) {
+        try {
+            ws.send(JSON.stringify({ type: "event", event: { type: "session_active", state: session.lastState }, seq }));
+        } catch {}
+    }
 }
 
 export function endSharedSession(sessionId: string, reason: string = "Session ended") {
