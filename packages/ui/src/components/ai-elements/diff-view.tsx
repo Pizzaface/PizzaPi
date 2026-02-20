@@ -189,7 +189,7 @@ function DiffContent({
                 : row.tokens.map((t, ti) => (
                     <span
                       key={ti}
-                      className="dark:!text-[var(--shiki-dark)]"
+                      className="dark:text-(--shiki-dark)!"
                       style={{ color: t.color }}
                     >
                       {t.content}
