@@ -110,6 +110,7 @@ export async function recordRelaySessionStart(input: RelaySessionStartInput): Pr
             isEphemeral: input.isEphemeral ? 1 : 0,
             expiresAt: input.isEphemeral ? ephemeralExpiryIso(new Date(now).getTime()) : null,
         })
+        .onConflict((oc) => oc.column("id").doNothing())
         .execute();
 }
 
