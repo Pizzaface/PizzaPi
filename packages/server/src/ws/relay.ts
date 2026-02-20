@@ -61,26 +61,45 @@ function augmentMessageThinkingDurations(
 import { getPersistedRelaySessionSnapshot } from "../sessions/store.js";
 import { getCachedRelayEvents } from "../sessions/redis.js";
 
-async function replayCachedEvents(ws: ServerWebSocket<WsData>, sessionId: string): Promise<boolean> {
+function findLatestSnapshotEvent(cachedEvents: unknown[]): Record<string, unknown> | null {
+    for (let i = cachedEvents.length - 1; i >= 0; i--) {
+        const raw = cachedEvents[i];
+        if (!raw || typeof raw !== "object") continue;
+        const evt = raw as Record<string, unknown>;
+        const type = typeof evt.type === "string" ? evt.type : "";
+
+        // Prefer a full message list if present.
+        if (type === "agent_end" && Array.isArray((evt as any).messages)) return evt;
+        if (type === "session_active" && (evt as any).state !== undefined) return evt;
+    }
+    return null;
+}
+
+async function sendLatestSnapshotFromCache(ws: ServerWebSocket<WsData>, sessionId: string): Promise<boolean> {
     const cachedEvents = await getCachedRelayEvents(sessionId);
     if (cachedEvents.length === 0) return false;
 
-    for (const event of cachedEvents) {
-        try {
-            ws.send(JSON.stringify({ type: "event", event, replay: true }));
-        } catch {
-            return false;
-        }
+    const snapshotEvent = findLatestSnapshotEvent(cachedEvents);
+    if (!snapshotEvent) return false;
+
+    try {
+        ws.send(JSON.stringify({ type: "event", event: snapshotEvent, replay: true }));
+        return true;
+    } catch {
+        return false;
     }
-    return true;
 }
 
 async function replayPersistedSnapshot(ws: ServerWebSocket<WsData>, sessionId: string) {
     try {
         ws.send(JSON.stringify({ type: "connected", sessionId, replayOnly: true }));
 
-        const replayedCachedEvents = await replayCachedEvents(ws, sessionId);
-        if (!replayedCachedEvents) {
+        // Fast path: instead of replaying the entire event buffer, try to send only the
+        // latest session snapshot (last session_active / agent_end) so the UI can load
+        // instantly from the newest state.
+        const sentFromCache = await sendLatestSnapshotFromCache(ws, sessionId);
+
+        if (!sentFromCache) {
             const snapshot = await getPersistedRelaySessionSnapshot(sessionId);
             if (!snapshot || snapshot.state === null || snapshot.state === undefined) {
                 ws.send(JSON.stringify({ type: "error", message: "Session not found" }));
@@ -119,29 +138,37 @@ export function onOpen(ws: ServerWebSocket<WsData>) {
             lastSeq,
             isActive: session?.isActive ?? false,
             lastHeartbeatAt: session?.lastHeartbeatAt ?? null,
+            sessionName: session?.sessionName ?? null,
         }));
 
-        void (async () => {
-            const replayedCachedEvents = await replayCachedEvents(ws, sessionId);
-            const ok = addViewer(sessionId, ws);
-            if (!ok) {
-                ws.send(JSON.stringify({ type: "disconnected", reason: "Session ended" }));
-                ws.close(1000, "Session ended");
-                return;
-            }
 
-            if (!replayedCachedEvents) {
-                // Fallback: replay the latest in-memory heartbeat + snapshot when Redis has no event buffer.
-                const lastHeartbeat = getSessionLastHeartbeat(sessionId);
-                if (lastHeartbeat) {
-                    ws.send(JSON.stringify({ type: "event", event: lastHeartbeat, seq: lastSeq }));
-                }
-                const lastState = getSessionState(sessionId);
-                if (lastState !== undefined) {
-                    ws.send(JSON.stringify({ type: "event", event: { type: "session_active", state: lastState }, seq: lastSeq }));
-                }
-            }
-        })();
+        // Add viewer immediately so they don't miss subsequent live events.
+        const ok = addViewer(sessionId, ws);
+        if (!ok) {
+            ws.send(JSON.stringify({ type: "disconnected", reason: "Session ended" }));
+            ws.close(1000, "Session ended");
+            return;
+        }
+
+        // Fast load: send only the latest snapshot (instead of replaying the full
+        // Redis event buffer). The UI will render instantly from this state.
+        const lastHeartbeat = getSessionLastHeartbeat(sessionId);
+        if (lastHeartbeat) {
+            try {
+                ws.send(JSON.stringify({ type: "event", event: lastHeartbeat, seq: lastSeq }));
+            } catch {}
+        }
+
+        const lastState = getSessionState(sessionId);
+        if (lastState !== undefined) {
+            try {
+                ws.send(JSON.stringify({ type: "event", event: { type: "session_active", state: lastState }, seq: lastSeq }));
+            } catch {}
+        } else {
+            // If we don't have an in-memory snapshot (e.g. relay restart), fall back
+            // to the latest cached snapshot from Redis.
+            void sendLatestSnapshotFromCache(ws, sessionId);
+        }
     } else if (ws.data.role === "hub") {
         addHubClient(ws);
         // Send only this user's active sessions on connect
@@ -185,15 +212,38 @@ export function onClose(ws: ServerWebSocket<WsData>) {
 
 // ── TUI message handling ──────────────────────────────────────────────────────
 
+function sendCumulativeEventAck(ws: ServerWebSocket<WsData>, seq: number) {
+    const previous = ws.data.lastAckedSeq ?? 0;
+    const next = seq > previous ? seq : previous;
+    ws.data.lastAckedSeq = next;
+
+    try {
+        ws.send(JSON.stringify({ type: "event_ack", sessionId: ws.data.sessionId, seq: next }));
+    } catch {}
+}
+
 function handleTuiMessage(ws: ServerWebSocket<WsData>, msg: Record<string, unknown>) {
     if (msg.type === "register") {
-        // TUI registers a new shared session; cwd sent by CLI for display in hub UI
+        // TUI registers a shared session; sessionId is provided by CLI so reconnects preserve identity.
         const cwd = typeof msg.cwd === "string" ? msg.cwd : "";
+        const requestedSessionId = typeof msg.sessionId === "string" ? msg.sessionId : undefined;
         const isEphemeral = msg.ephemeral !== false;
         const collabMode = msg.collabMode !== false;
-        const { sessionId, token, shareUrl } = registerTuiSession(ws, cwd, { isEphemeral, collabMode });
+        const sessionName =
+            typeof msg.sessionName === "string"
+                ? msg.sessionName
+                : msg.sessionName === null
+                  ? null
+                  : undefined;
+        const { sessionId, token, shareUrl } = registerTuiSession(ws, cwd, {
+            sessionId: requestedSessionId,
+            isEphemeral,
+            collabMode,
+            sessionName,
+        });
         ws.data.sessionId = sessionId;
         ws.data.token = token;
+        ws.data.lastAckedSeq = 0;
         ws.send(JSON.stringify({ type: "registered", sessionId, token, shareUrl, isEphemeral, collabMode }));
         return;
     }
@@ -214,7 +264,14 @@ function handleTuiMessage(ws: ServerWebSocket<WsData>, msg: Record<string, unkno
             clearThinkingMaps(ws.data.sessionId);
             endSharedSession(ws.data.sessionId);
             ws.data.sessionId = undefined;
+            ws.data.lastAckedSeq = undefined;
             return;
+        }
+
+        // Fast path: acknowledge receipt immediately (cumulative), before heavier work
+        // like state transforms, Redis cache append, or viewer fanout.
+        if (typeof msg.seq === "number" && Number.isFinite(msg.seq)) {
+            sendCumulativeEventAck(ws, msg.seq);
         }
 
         // Cache session_active state so new viewers get an immediate snapshot
@@ -292,10 +349,31 @@ function handleViewerMessage(ws: ServerWebSocket<WsData>, msg: Record<string, un
         return;
     }
 
-    // Collab mode: forward viewer input to TUI
+    // Collab mode: forward viewer input (+ optional attachments metadata) to TUI
     if (msg.type === "input" && session.collabMode && typeof msg.text === "string") {
+        const attachments = Array.isArray(msg.attachments)
+            ? msg.attachments
+                  .filter((entry) => entry && typeof entry === "object")
+                  .map((entry) => {
+                      const item = entry as Record<string, unknown>;
+                      return {
+                          attachmentId: typeof item.attachmentId === "string" ? item.attachmentId : undefined,
+                          mediaType: typeof item.mediaType === "string" ? item.mediaType : undefined,
+                          filename: typeof item.filename === "string" ? item.filename : undefined,
+                          url: typeof item.url === "string" ? item.url : undefined,
+                      };
+                  })
+                  .filter(
+                      (item) =>
+                          (typeof item.attachmentId === "string" && item.attachmentId.length > 0) ||
+                          (typeof item.url === "string" && item.url.length > 0),
+                  )
+            : [];
+
+        const client = typeof msg.client === "string" ? msg.client : undefined;
+
         try {
-            session.tuiWs.send(JSON.stringify({ type: "input", text: msg.text }));
+            session.tuiWs.send(JSON.stringify({ type: "input", text: msg.text, attachments, client }));
         } catch {}
         return;
     }

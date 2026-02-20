@@ -1,5 +1,11 @@
-import { buildSessionContext, type ExtensionContext, type ExtensionFactory } from "@mariozechner/pi-coding-agent";
-import { loadConfig } from "../config.js";
+import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { buildSessionContext, SessionManager, type ExtensionContext, type ExtensionFactory, type SessionInfo } from "@mariozechner/pi-coding-agent";
+import { loadConfig, defaultAgentDir } from "../config.js";
+import { getMcpBridge } from "./mcp-bridge.js";
 import type { RemoteExecRequest, RemoteExecResponse } from "./remote-commands.js";
 
 interface RelayState {
@@ -9,6 +15,8 @@ interface RelayState {
     shareUrl: string;
     /** Monotonic sequence number for the next event forwarded to relay */
     seq: number;
+    /** Highest cumulative seq acknowledged by relay */
+    ackedSeq: number;
 }
 
 interface AskUserQuestionParams {
@@ -58,9 +66,10 @@ const ASK_USER_TOOL_NAME = "AskUserQuestion";
  *   /remote stop       Disconnect from relay
  *   /remote reconnect  Force reconnect
  *
- * Note: The `new_session` exec handler relies on a Bun patch applied to
- * `@mariozechner/pi-coding-agent` that exposes `newSession()` on the extension
- * runtime. See `patches/README.md` for details.
+ * Note: The `new_session` and `resume_session` exec handlers rely on a Bun
+ * patch applied to `@mariozechner/pi-coding-agent` that exposes
+ * `newSession()`/`switchSession()` on the extension runtime.
+ * See `patches/README.md` for details.
  */
 export const remoteExtension: ExtensionFactory = (pi) => {
     let relay: RelayState | null = null;
@@ -69,11 +78,165 @@ export const remoteExtension: ExtensionFactory = (pi) => {
     let shuttingDown = false;
     let latestCtx: ExtensionContext | null = null;
     let pendingAskUserQuestion: PendingAskUserQuestion | null = null;
+    let relaySessionId: string = randomUUID();
+
+    // ── Provider usage cache ──────────────────────────────────────────────────
+    // Generic normalized shape shared with the UI.
+    interface UsageWindow { label: string; utilization: number; resets_at: string }
+    interface ProviderUsageData { windows: UsageWindow[] }
+
+    const USAGE_CACHE_TTL = 5 * 60 * 1000; // 5 min
+    const usageCache = new Map<string, { data: ProviderUsageData; fetchedAt: number }>();
+
+    function getOAuthToken(providerId: string): string | null {
+        try {
+            const config = loadConfig(process.cwd());
+            const agentDir = config.agentDir
+                ? config.agentDir.replace(/^~/, homedir())
+                : defaultAgentDir();
+            const authPath = join(agentDir, "auth.json");
+            if (!existsSync(authPath)) return null;
+            const auth = JSON.parse(readFileSync(authPath, "utf-8"));
+            return (auth as any)?.[providerId]?.access ?? null;
+        } catch {
+            return null;
+        }
+    }
+
+    function isCached(providerId: string): boolean {
+        const entry = usageCache.get(providerId);
+        return !!entry && Date.now() - entry.fetchedAt < USAGE_CACHE_TTL;
+    }
+
+    function buildProviderUsage(): Record<string, ProviderUsageData> {
+        const out: Record<string, ProviderUsageData> = {};
+        for (const [id, { data }] of usageCache) out[id] = data;
+        return out;
+    }
+
+    async function refreshAnthropicUsage(): Promise<void> {
+        if (isCached("anthropic")) return;
+        const token = getOAuthToken("anthropic");
+        if (!token) return;
+        try {
+            const res = await fetch("https://api.anthropic.com/api/oauth/usage", {
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                    "anthropic-version": "2023-06-01",
+                    "anthropic-beta": "oauth-2025-04-20",
+                },
+            });
+            if (!res.ok) return;
+            const raw = (await res.json()) as Record<string, unknown>;
+
+            // Map known windows; ignore nulls and unknown fields.
+            const WINDOW_LABELS: Record<string, string> = {
+                five_hour: "5-hour",
+                seven_day: "7-day",
+                seven_day_opus: "7-day (Opus)",
+                seven_day_sonnet: "7-day (Sonnet)",
+                seven_day_oauth_apps: "7-day (OAuth apps)",
+                seven_day_cowork: "7-day (co-work)",
+            };
+            const windows: UsageWindow[] = [];
+            for (const [key, label] of Object.entries(WINDOW_LABELS)) {
+                const w = raw[key] as { utilization: number; resets_at: string } | null | undefined;
+                if (w?.resets_at != null && typeof w.utilization === "number") {
+                    windows.push({ label, utilization: w.utilization, resets_at: w.resets_at });
+                }
+            }
+            if (windows.length > 0) {
+                usageCache.set("anthropic", { data: { windows }, fetchedAt: Date.now() });
+            }
+        } catch {
+            // Non-fatal
+        }
+    }
+
+    async function refreshCodexUsage(): Promise<void> {
+        if (isCached("openai-codex")) return;
+        const token = getOAuthToken("openai-codex");
+        if (!token) return;
+        try {
+            const res = await fetch("https://api.openai.com/api/codex/usage", {
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                },
+            });
+            if (!res.ok) return;
+            const raw = (await res.json()) as {
+                plan_type?: string;
+                rate_limit?: {
+                    primary?: { used_percent: number; window_minutes?: number | null; resets_at?: number | null } | null;
+                    secondary?: { used_percent: number; window_minutes?: number | null; resets_at?: number | null } | null;
+                } | null;
+                additional_rate_limits?: Array<{
+                    limit_name: string;
+                    metered_feature: string;
+                    rate_limit?: {
+                        primary?: { used_percent: number; window_minutes?: number | null; resets_at?: number | null } | null;
+                    } | null;
+                }> | null;
+            };
+
+            function windowLabel(minutes: number | null | undefined): string {
+                if (!minutes) return "Usage";
+                if (minutes < 60) return `${minutes}-min`;
+                if (minutes < 60 * 24) return `${Math.round(minutes / 60)}-hour`;
+                return `${Math.round(minutes / 60 / 24)}-day`;
+            }
+
+            function toWindow(
+                w: { used_percent: number; window_minutes?: number | null; resets_at?: number | null } | null | undefined,
+                label: string,
+            ): UsageWindow | null {
+                if (!w || w.resets_at == null) return null;
+                return {
+                    label: w.window_minutes ? windowLabel(w.window_minutes) : label,
+                    utilization: w.used_percent,
+                    resets_at: new Date(w.resets_at * 1000).toISOString(),
+                };
+            }
+
+            const windows: UsageWindow[] = [];
+            const primary = toWindow(raw.rate_limit?.primary, "Primary");
+            if (primary) windows.push(primary);
+            const secondary = toWindow(raw.rate_limit?.secondary, "Secondary");
+            if (secondary) windows.push(secondary);
+
+            // Additional metered features (e.g. background tasks)
+            for (const extra of raw.additional_rate_limits ?? []) {
+                const w = toWindow(extra.rate_limit?.primary, extra.limit_name);
+                if (w) {
+                    w.label = extra.limit_name;
+                    windows.push(w);
+                }
+            }
+
+            if (windows.length > 0) {
+                usageCache.set("openai-codex", { data: { windows }, fetchedAt: Date.now() });
+            }
+        } catch {
+            // Non-fatal
+        }
+    }
+
+    async function refreshAllUsage(): Promise<void> {
+        await Promise.allSettled([
+            refreshAnthropicUsage(),
+            refreshCodexUsage(),
+        ]);
+    }
 
     // ── Heartbeat state ───────────────────────────────────────────────────────
     let isAgentActive = false;
     let sessionStartedAt: number | null = null;
     let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+
+    // ── Session name sync state ───────────────────────────────────────────────
+    // Keeps web viewers in sync when /name is run directly in the TUI.
+    let sessionNameSyncTimer: ReturnType<typeof setInterval> | null = null;
+    let lastBroadcastSessionName: string | null = null;
 
     // ── Core relay helpers ────────────────────────────────────────────────────
 
@@ -115,6 +278,112 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         send({ type: "event", sessionId: relay.sessionId, token: relay.token, event, seq });
     }
 
+    type RemoteInputAttachment = {
+        attachmentId?: string;
+        mediaType?: string;
+        filename?: string;
+        url?: string;
+    };
+
+    function normalizeRemoteInputAttachments(raw: unknown): RemoteInputAttachment[] {
+        if (!Array.isArray(raw)) return [];
+        return raw
+            .filter((item) => item && typeof item === "object")
+            .map((item) => {
+                const record = item as Record<string, unknown>;
+                return {
+                    attachmentId: typeof record.attachmentId === "string" ? record.attachmentId : undefined,
+                    mediaType: typeof record.mediaType === "string" ? record.mediaType : undefined,
+                    filename: typeof record.filename === "string" ? record.filename : undefined,
+                    url: typeof record.url === "string" ? record.url : undefined,
+                } satisfies RemoteInputAttachment;
+            })
+            .filter((item) =>
+                (typeof item.attachmentId === "string" && item.attachmentId.length > 0) ||
+                (typeof item.url === "string" && item.url.length > 0),
+            );
+    }
+
+    function parseDataUrl(url: string): { mediaType: string; data: string } | null {
+        const match = /^data:([^;,]+)?;base64,(.+)$/i.exec(url);
+        if (!match) return null;
+        return {
+            mediaType: match[1] || "application/octet-stream",
+            data: match[2],
+        };
+    }
+
+    function relayHttpBaseUrl(): string {
+        const wsBase = toWebSocketBaseUrl(relayUrl()).replace(/\/ws\/sessions$/, "");
+        if (wsBase.startsWith("ws://")) return `http://${wsBase.slice("ws://".length)}`;
+        if (wsBase.startsWith("wss://")) return `https://${wsBase.slice("wss://".length)}`;
+        return wsBase;
+    }
+
+    async function loadAttachmentFromRelay(attachmentId: string): Promise<{ mediaType: string; filename?: string; dataBase64: string } | null> {
+        const key = apiKey();
+        if (!key) return null;
+
+        const response = await fetch(`${relayHttpBaseUrl()}/api/attachments/${encodeURIComponent(attachmentId)}`, {
+            headers: { "x-api-key": key },
+        });
+
+        if (!response.ok) return null;
+
+        const mediaType = response.headers.get("content-type") || "application/octet-stream";
+        const filename = response.headers.get("x-attachment-filename") ?? undefined;
+        const dataBase64 = Buffer.from(await response.arrayBuffer()).toString("base64");
+
+        return { mediaType, filename, dataBase64 };
+    }
+
+    async function buildUserMessageFromRemoteInput(text: string, attachments: RemoteInputAttachment[]): Promise<string | unknown[]> {
+        if (attachments.length === 0) return text;
+
+        const parts: unknown[] = [];
+        if (text.length > 0) {
+            parts.push({ type: "text", text });
+        }
+
+        for (const attachment of attachments) {
+            let mediaType = attachment.mediaType || "application/octet-stream";
+            let filename = attachment.filename;
+            let dataBase64: string | null = null;
+
+            if (attachment.attachmentId) {
+                const loaded = await loadAttachmentFromRelay(attachment.attachmentId);
+                if (loaded) {
+                    mediaType = loaded.mediaType;
+                    filename = loaded.filename ?? filename;
+                    dataBase64 = loaded.dataBase64;
+                }
+            } else if (attachment.url) {
+                const parsed = parseDataUrl(attachment.url);
+                if (parsed) {
+                    mediaType = parsed.mediaType;
+                    dataBase64 = parsed.data;
+                }
+            }
+
+            if (dataBase64 && mediaType.startsWith("image/")) {
+                parts.push({
+                    type: "image",
+                    source: {
+                        type: "base64",
+                        mediaType,
+                        data: dataBase64,
+                    },
+                });
+                continue;
+            }
+
+            const label = filename || mediaType || "attachment";
+            parts.push({ type: "text", text: `[Attachment provided by web client: ${label}]` });
+        }
+
+        return parts.length > 0 ? parts : text;
+    }
+
     function buildTokenUsage() {
         if (!latestCtx) return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
         let input = 0, output = 0, cacheRead = 0, cacheWrite = 0, cost = 0;
@@ -130,22 +399,45 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         return { input, output, cacheRead, cacheWrite, cost };
     }
 
+    function getCurrentSessionName(ctx: ExtensionContext | null | undefined): string | null {
+        if (!ctx) return null;
+        const raw = ctx.sessionManager.getSessionName();
+        if (typeof raw !== "string") return null;
+        const trimmed = raw.trim();
+        return trimmed.length > 0 ? trimmed : null;
+    }
+
+    function getCurrentThinkingLevel(ctx: ExtensionContext | null | undefined): string | null {
+        const api = pi as any;
+        if (typeof api.getThinkingLevel === "function") {
+            const level = api.getThinkingLevel();
+            if (typeof level === "string") {
+                const trimmed = level.trim();
+                if (trimmed) return trimmed;
+            }
+        }
+
+        if (!ctx) return null;
+        const { thinkingLevel } = buildSessionContext(ctx.sessionManager.getEntries(), ctx.sessionManager.getLeafId());
+        return thinkingLevel ?? null;
+    }
+
     function buildHeartbeat() {
-        const { thinkingLevel } = latestCtx
-            ? buildSessionContext(latestCtx.sessionManager.getEntries(), latestCtx.sessionManager.getLeafId())
-            : { thinkingLevel: null };
+        const thinkingLevel = getCurrentThinkingLevel(latestCtx);
 
         return {
             type: "heartbeat",
             active: isAgentActive,
             model: latestCtx?.model
-                ? { provider: latestCtx.model.provider, id: latestCtx.model.id, name: latestCtx.model.name }
+                ? { provider: latestCtx.model.provider, id: latestCtx.model.id, name: latestCtx.model.name, reasoning: latestCtx.model.reasoning }
                 : null,
+            sessionName: getCurrentSessionName(latestCtx),
             thinkingLevel: thinkingLevel ?? null,
             tokenUsage: buildTokenUsage(),
             cwd: latestCtx?.cwd ?? null,
             uptime: sessionStartedAt !== null ? Date.now() - sessionStartedAt : null,
             ts: Date.now(),
+            providerUsage: buildProviderUsage(),
         };
     }
 
@@ -154,6 +446,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         // Send an immediate heartbeat so the viewer has state right away.
         forwardEvent(buildHeartbeat());
         heartbeatTimer = setInterval(() => {
+            void refreshAllUsage();
             forwardEvent(buildHeartbeat());
         }, 10_000);
     }
@@ -163,6 +456,31 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             clearInterval(heartbeatTimer);
             heartbeatTimer = null;
         }
+    }
+
+    function stopSessionNameSync() {
+        if (sessionNameSyncTimer !== null) {
+            clearInterval(sessionNameSyncTimer);
+            sessionNameSyncTimer = null;
+        }
+    }
+
+    function markSessionNameBroadcasted() {
+        lastBroadcastSessionName = getCurrentSessionName(latestCtx);
+    }
+
+    function startSessionNameSync() {
+        stopSessionNameSync();
+        markSessionNameBroadcasted();
+
+        sessionNameSyncTimer = setInterval(() => {
+            const currentSessionName = getCurrentSessionName(latestCtx);
+            if (currentSessionName === lastBroadcastSessionName) return;
+
+            lastBroadcastSessionName = currentSessionName;
+            forwardEvent({ type: "session_active", state: buildSessionState() });
+            forwardEvent(buildHeartbeat());
+        }, 1000);
     }
 
     function getConfiguredModels(ctx: ExtensionContext): RelayModelInfo[] {
@@ -183,14 +501,15 @@ export const remoteExtension: ExtensionFactory = (pi) => {
 
     function buildSessionState() {
         if (!latestCtx) return undefined;
-        const { messages, model, thinkingLevel } = buildSessionContext(
+        const { messages, model } = buildSessionContext(
             latestCtx.sessionManager.getEntries(),
             latestCtx.sessionManager.getLeafId(),
         );
         return {
             messages,
             model,
-            thinkingLevel,
+            thinkingLevel: getCurrentThinkingLevel(latestCtx),
+            sessionName: getCurrentSessionName(latestCtx),
             cwd: latestCtx.cwd,
             availableModels: getConfiguredModels(latestCtx),
         };
@@ -222,6 +541,48 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         send(payload);
     }
 
+    async function listSessionsForResume(ctx: ExtensionContext): Promise<SessionInfo[]> {
+        const cwd = ctx.sessionManager.getCwd();
+        const sessionDir = ctx.sessionManager.getSessionDir();
+        const sessions = await SessionManager.list(cwd, sessionDir);
+        return sessions.sort((a, b) => b.modified.getTime() - a.modified.getTime());
+    }
+
+    function pickResumeSession(sessions: SessionInfo[], currentPath: string | undefined, query?: string): SessionInfo | null {
+        const normalized = query?.trim().toLowerCase();
+        const candidates = sessions.filter((session) => session.path !== currentPath);
+        if (candidates.length === 0) return null;
+
+        if (!normalized) {
+            return candidates[0] ?? null;
+        }
+
+        return (
+            candidates.find((session) => {
+                const id = session.id.toLowerCase();
+                const path = session.path.toLowerCase();
+                const name = (session.name ?? "").toLowerCase();
+                const firstMessage = (session.firstMessage ?? "").toLowerCase();
+                return (
+                    id.includes(normalized) ||
+                    path.includes(normalized) ||
+                    name.includes(normalized) ||
+                    firstMessage.includes(normalized)
+                );
+            }) ?? null
+        );
+    }
+
+    function toResumeSessionSummary(session: SessionInfo) {
+        return {
+            id: session.id,
+            path: session.path,
+            name: session.name ?? null,
+            modified: session.modified.toISOString(),
+            firstMessage: session.firstMessage,
+        };
+    }
+
     async function handleExecFromWeb(req: RemoteExecRequest) {
         const replyOk = (result?: unknown) => sendToWeb({ type: "exec_result", id: req.id, ok: true, command: req.command, result });
         const replyErr = (error: string) => sendToWeb({ type: "exec_result", id: req.id, ok: false, command: req.command, error });
@@ -231,6 +592,31 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 // Return the same list we already advertise in capabilities
                 const commands = (pi.getCommands?.() ?? []).map((c: any) => ({ name: c.name, description: c.description }));
                 replyOk({ commands });
+                return;
+            }
+
+            if (req.command === "mcp") {
+                const bridge = getMcpBridge();
+                if (!bridge) {
+                    replyErr("MCP extension is not initialized yet");
+                    return;
+                }
+
+                const action = req.action === "reload" ? "reload" : "status";
+                const result = action === "reload" ? await bridge.reload() : bridge.status();
+                replyOk(result);
+                return;
+            }
+
+            if (req.command === "abort") {
+                if (!latestCtx) {
+                    replyErr("No active session");
+                    return;
+                }
+                latestCtx.abort();
+                replyOk();
+                // Push a heartbeat immediately so the web UI updates active state quickly.
+                forwardEvent(buildHeartbeat());
                 return;
             }
 
@@ -275,13 +661,48 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                     replyErr("Missing level");
                     return;
                 }
-                // Not currently exposed on ExtensionAPI; acknowledge but report unsupported.
-                replyErr("set_thinking_level is not supported by the PizzaPi runner yet");
+                if (!latestCtx) {
+                    replyErr("No active session");
+                    return;
+                }
+                const api = pi as any;
+                if (typeof api.setThinkingLevel !== "function" || typeof api.getThinkingLevel !== "function") {
+                    replyErr("Thinking level controls are not available in this pi version");
+                    return;
+                }
+                api.setThinkingLevel(level);
+                replyOk({ thinkingLevel: api.getThinkingLevel() });
+                forwardEvent({ type: "session_active", state: buildSessionState() });
                 return;
             }
 
             if (req.command === "cycle_thinking_level") {
-                replyErr("cycle_thinking_level is not supported by the PizzaPi runner yet");
+                if (!latestCtx) {
+                    replyErr("No active session");
+                    return;
+                }
+                const api = pi as any;
+                if (typeof api.setThinkingLevel !== "function" || typeof api.getThinkingLevel !== "function") {
+                    replyErr("Thinking level controls are not available in this pi version");
+                    return;
+                }
+
+                // No cycleThinkingLevel API exists, so we cycle manually.
+                const LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"];
+                const current = String(api.getThinkingLevel() ?? "off");
+                const startIdx = LEVELS.indexOf(current);
+
+                let appliedLevel = current;
+                for (let i = 1; i <= LEVELS.length; i++) {
+                    const candidate = LEVELS[((startIdx >= 0 ? startIdx : 0) + i) % LEVELS.length];
+                    api.setThinkingLevel(candidate);
+                    appliedLevel = String(api.getThinkingLevel() ?? candidate);
+                    // If clamping kept the same level, keep looking for the next distinct one.
+                    if (appliedLevel !== current) break;
+                }
+
+                replyOk({ thinkingLevel: appliedLevel });
+                forwardEvent({ type: "session_active", state: buildSessionState() });
                 return;
             }
 
@@ -319,8 +740,12 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                     return;
                 }
                 await pi.setSessionName(req.name);
-                replyOk();
-                forwardEvent({ type: "session_active", state: buildSessionState() });
+
+                markSessionNameBroadcasted();
+                const state = buildSessionState();
+                replyOk({ sessionName: state?.sessionName ?? null });
+                forwardEvent({ type: "session_active", state });
+                forwardEvent(buildHeartbeat());
                 return;
             }
 
@@ -345,6 +770,62 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                                 .join("")
                           : null;
                 replyOk({ text });
+                return;
+            }
+
+            if (req.command === "list_resume_sessions") {
+                if (!latestCtx) {
+                    replyErr("No active session");
+                    return;
+                }
+
+                const sessions = await listSessionsForResume(latestCtx);
+                const currentPath = latestCtx.sessionManager.getSessionFile();
+                const candidates = sessions.filter((session) => session.path !== currentPath).map(toResumeSessionSummary);
+
+                replyOk({
+                    currentPath: currentPath ?? null,
+                    sessions: candidates,
+                });
+                return;
+            }
+
+            if (req.command === "resume_session") {
+                if (!latestCtx) {
+                    replyErr("No active session");
+                    return;
+                }
+
+                if (typeof (pi as any).switchSession !== "function") {
+                    replyErr("switchSession is not available in this pi version");
+                    return;
+                }
+
+                const sessions = await listSessionsForResume(latestCtx);
+                const currentPath = latestCtx.sessionManager.getSessionFile();
+                const target = req.sessionPath
+                    ? sessions.find((session) => session.path === req.sessionPath) ?? null
+                    : pickResumeSession(sessions, currentPath, req.query);
+
+                if (!target || target.path === currentPath) {
+                    replyErr("No other sessions found to resume");
+                    return;
+                }
+
+                try {
+                    const result = await (pi as any).switchSession(target.path);
+                    if (result?.cancelled) {
+                        replyErr("Resume was cancelled");
+                        return;
+                    }
+                } catch (e) {
+                    replyErr(e instanceof Error ? e.message : String(e));
+                    return;
+                }
+
+                replyOk({ session: toResumeSessionSummary(target) });
+                forwardEvent({ type: "session_active", state: buildSessionState() });
+                forwardEvent(buildHeartbeat());
                 return;
             }
 
@@ -375,6 +856,21 @@ export const remoteExtension: ExtensionFactory = (pi) => {
 
             if (req.command === "export_html") {
                 replyErr("export_html is not implemented for remote exec yet");
+                return;
+            }
+
+            if (req.command === "restart") {
+                replyOk();
+                // Brief delay to ensure the response is flushed to the relay/web client
+                setTimeout(() => {
+                    const child = spawn(process.execPath, process.argv.slice(1), {
+                        detached: true,
+                        stdio: "inherit",
+                        env: process.env,
+                    });
+                    child.unref();
+                    process.exit(0);
+                }, 100);
                 return;
             }
 
@@ -430,6 +926,11 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         latestCtx.ui.setStatus(RELAY_STATUS_KEY, text);
     }
 
+    function disconnectedStatusText(): string | undefined {
+        if (isDisabled()) return undefined;
+        return apiKey() ? "Disconnected from hub" : undefined;
+    }
+
     function consumePendingAskUserQuestionFromWeb(text: string): boolean {
         if (!pendingAskUserQuestion) return false;
         const answer = text.trim();
@@ -438,7 +939,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         const pending = pendingAskUserQuestion;
         pendingAskUserQuestion = null;
         pending.resolve(answer);
-        setRelayStatus(relay ? "Connected to Relay" : undefined);
+        setRelayStatus(relay ? "Connected to Relay" : disconnectedStatusText());
         return true;
     }
 
@@ -447,7 +948,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         const pending = pendingAskUserQuestion;
         pendingAskUserQuestion = null;
         pending.resolve(null);
-        setRelayStatus(relay ? "Connected to Relay" : undefined);
+        setRelayStatus(relay ? "Connected to Relay" : disconnectedStatusText());
     }
 
     async function askUserQuestion(
@@ -486,7 +987,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
 
                 localAbort.abort();
                 if (signal) signal.removeEventListener("abort", onAbort);
-                setRelayStatus(relay ? "Connected to Relay" : undefined);
+                setRelayStatus(relay ? "Connected to Relay" : disconnectedStatusText());
                 resolve({ answer, source });
             };
 
@@ -643,10 +1144,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                     if (totalCost) statsParts.push(`$${totalCost.toFixed(3)}`);
                     statsParts.push(contextPart);
 
-                    const { thinkingLevel } = buildSessionContext(
-                        activeCtx.sessionManager.getEntries(),
-                        activeCtx.sessionManager.getLeafId(),
-                    );
+                    const thinkingLevel = getCurrentThinkingLevel(activeCtx);
                     const modelName = activeCtx.model?.id ?? "no-model";
                     let modelText =
                         activeCtx.model?.reasoning && thinkingLevel
@@ -702,13 +1200,13 @@ export const remoteExtension: ExtensionFactory = (pi) => {
 
     function connect() {
         if (isDisabled() || shuttingDown) {
-            setRelayStatus(undefined);
+            setRelayStatus(disconnectedStatusText());
             return;
         }
 
         const key = apiKey();
         if (!key) {
-            setRelayStatus(undefined);
+            setRelayStatus(disconnectedStatusText());
             return;
         }
 
@@ -720,14 +1218,22 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         try {
             ws = new WebSocket(wsUrl, { headers: { "x-api-key": key } } as any);
         } catch {
-            setRelayStatus(undefined);
+            setRelayStatus(disconnectedStatusText());
             scheduleReconnect();
             return;
         }
 
         ws.onopen = () => {
             reconnectDelay = 1000; // reset backoff on success
-            ws.send(JSON.stringify({ type: "register", cwd: process.cwd(), collabMode: true }));
+            ws.send(
+                JSON.stringify({
+                    type: "register",
+                    sessionId: relaySessionId,
+                    cwd: process.cwd(),
+                    collabMode: true,
+                    sessionName: getCurrentSessionName(latestCtx),
+                }),
+            );
         };
 
         ws.onmessage = (evt) => {
@@ -739,16 +1245,19 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             }
 
             if (msg.type === "registered") {
+                relaySessionId = msg.sessionId as string;
                 relay = {
                     ws,
-                    sessionId: msg.sessionId as string,
+                    sessionId: relaySessionId,
                     token: msg.token as string,
                     shareUrl: msg.shareUrl as string,
                     seq: 0,
+                    ackedSeq: 0,
                 };
                 setRelayStatus("Connected to Relay");
 
                 forwardEvent({ type: "session_active", state: buildSessionState() });
+                void refreshAllUsage();
                 startHeartbeat();
 
                 // Switch to steady-state message handler (collab input)
@@ -759,6 +1268,14 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                     } catch {
                         return;
                     }
+                    if (inputMsg.type === "event_ack" && typeof inputMsg.seq === "number") {
+                        // Relay sends cumulative acks; keep only the highest seq we've seen.
+                        if (relay) {
+                            relay.ackedSeq = Math.max(relay.ackedSeq, inputMsg.seq);
+                        }
+                        return;
+                    }
+
                     if (inputMsg.type === "connected") {
                         // A new viewer connected (web UI). Send capability snapshot.
                         forwardEvent(buildCapabilitiesState());
@@ -780,10 +1297,16 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                     }
 
                     if (inputMsg.type === "input" && typeof inputMsg.text === "string") {
-                        if (consumePendingAskUserQuestionFromWeb(inputMsg.text)) {
+                        const inputText = inputMsg.text;
+                        if (consumePendingAskUserQuestionFromWeb(inputText)) {
                             return;
                         }
-                        pi.sendUserMessage(inputMsg.text);
+
+                        const attachments = normalizeRemoteInputAttachments(inputMsg.attachments);
+                        void (async () => {
+                            const message = await buildUserMessageFromRemoteInput(inputText, attachments);
+                            pi.sendUserMessage(message as any);
+                        })();
                         return;
                     }
 
@@ -805,7 +1328,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         ws.onclose = () => {
             if (relay?.ws === ws) relay = null;
             cancelPendingAskUserQuestion();
-            setRelayStatus(undefined);
+            setRelayStatus(disconnectedStatusText());
             if (!shuttingDown) scheduleReconnect();
         };
     }
@@ -822,7 +1345,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             relay.ws.close();
             relay = null;
         }
-        setRelayStatus(undefined);
+        setRelayStatus(disconnectedStatusText());
     }
 
     // ── Auto-connect on session start ─────────────────────────────────────────
@@ -832,8 +1355,9 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         sessionStartedAt = Date.now();
         isAgentActive = false;
         installFooter(ctx);
+        startSessionNameSync();
         if (isDisabled()) {
-            setRelayStatus(undefined);
+            setRelayStatus(disconnectedStatusText());
             return;
         }
         connect();
@@ -844,7 +1368,14 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         sessionStartedAt = Date.now();
         isAgentActive = false;
         installFooter(ctx);
-        setRelayStatus(pendingAskUserQuestion ? "Waiting for AskUserQuestion answer" : relay ? "Connected to Relay" : undefined);
+        startSessionNameSync();
+        setRelayStatus(
+            pendingAskUserQuestion
+                ? "Waiting for AskUserQuestion answer"
+                : relay
+                  ? "Connected to Relay"
+                  : disconnectedStatusText(),
+        );
         forwardEvent({ type: "session_active", state: buildSessionState() });
         forwardEvent(buildHeartbeat());
     });
@@ -852,6 +1383,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
     pi.on("session_shutdown", () => {
         shuttingDown = true;
         stopHeartbeat();
+        stopSessionNameSync();
         disconnect();
     });
 

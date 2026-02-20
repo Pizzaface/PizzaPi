@@ -17,6 +17,8 @@ export interface WsData {
     sessionId?: string;
     /** Auth token (TUI-side, to validate incoming events) */
     token?: string;
+    /** Highest cumulative event seq acknowledged back to this TUI connection */
+    lastAckedSeq?: number;
     /** For runner role: runner ID */
     runnerId?: string;
     /** Authenticated user ID (from API key) */
@@ -37,6 +39,7 @@ interface SharedSession {
     startedAt: string;
     userId?: string;
     userName?: string;
+    sessionName: string | null;
     isEphemeral: boolean;
     expiresAt: string | null;
     /** Last session_active state snapshot from the CLI, replayed to new viewers */
@@ -90,16 +93,37 @@ function refreshEphemeralExpiry(session: SharedSession) {
     session.expiresAt = nextEphemeralExpiry();
 }
 
+function normalizeSessionName(value: unknown): string | null {
+    if (typeof value !== "string") return null;
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+}
+
+function modelFromHeartbeat(rawHeartbeat: unknown) {
+    const rawModel = (rawHeartbeat as any)?.model;
+    return rawModel &&
+        typeof rawModel === "object" &&
+        typeof (rawModel as any).provider === "string" &&
+        typeof (rawModel as any).id === "string"
+        ? {
+              provider: (rawModel as any).provider as string,
+              id: (rawModel as any).id as string,
+              name: typeof (rawModel as any).name === "string" ? ((rawModel as any).name as string) : undefined,
+          }
+        : null;
+}
+
 export function registerTuiSession(
     ws: ServerWebSocket<WsData>,
     cwd: string = "",
-    opts: { isEphemeral?: boolean; collabMode?: boolean } = {},
+    opts: { sessionId?: string; isEphemeral?: boolean; collabMode?: boolean; sessionName?: string | null } = {},
 ): {
     sessionId: string;
     token: string;
     shareUrl: string;
 } {
-    const sessionId = randomUUID();
+    const requestedSessionId = typeof opts.sessionId === "string" ? opts.sessionId.trim() : "";
+    const sessionId = requestedSessionId.length > 0 ? requestedSessionId : randomUUID();
     const token = randomBytes(32).toString("hex");
     const shareUrl = `${process.env.PIZZAPI_BASE_URL ?? "http://localhost:5173"}/session/${sessionId}`;
     const startedAt = new Date().toISOString();
@@ -107,6 +131,11 @@ export function registerTuiSession(
     const userName = ws.data.userName;
     const isEphemeral = opts.isEphemeral !== false;
     const collabMode = opts.collabMode !== false;
+    const sessionName = normalizeSessionName(opts.sessionName);
+
+    if (sharedSessions.has(sessionId)) {
+        endSharedSession(sessionId, "Session reconnected");
+    }
 
     sharedSessions.set(sessionId, {
         tuiWs: ws,
@@ -118,6 +147,7 @@ export function registerTuiSession(
         startedAt,
         userId,
         userName,
+        sessionName,
         isEphemeral,
         expiresAt: isEphemeral ? nextEphemeralExpiry() : null,
         seq: 0,
@@ -139,7 +169,20 @@ export function registerTuiSession(
     });
 
     broadcastToHub(
-        { type: "session_added", sessionId, shareUrl, cwd, startedAt, userId, userName, isEphemeral, isActive: false, lastHeartbeatAt: null },
+        {
+            type: "session_added",
+            sessionId,
+            shareUrl,
+            cwd,
+            startedAt,
+            userId,
+            userName,
+            sessionName,
+            isEphemeral,
+            isActive: false,
+            lastHeartbeatAt: null,
+            model: null,
+        },
         userId,
     );
     return { sessionId, token, shareUrl };
@@ -149,19 +192,25 @@ export function registerTuiSession(
 export function getSessions(filterUserId?: string) {
     return Array.from(sharedSessions.entries())
         .filter(([, s]) => !filterUserId || s.userId === filterUserId)
-        .map(([id, s]) => ({
-            sessionId: id,
-            shareUrl: s.shareUrl,
-            cwd: s.cwd,
-            startedAt: s.startedAt,
-            viewerCount: s.viewers.size,
-            userId: s.userId,
-            userName: s.userName,
-            isEphemeral: s.isEphemeral,
-            expiresAt: s.expiresAt,
-            isActive: s.isActive,
-            lastHeartbeatAt: s.lastHeartbeatAt,
-        }));
+        .map(([id, s]) => {
+            const model = modelFromHeartbeat(s.lastHeartbeat);
+
+            return {
+                sessionId: id,
+                shareUrl: s.shareUrl,
+                cwd: s.cwd,
+                startedAt: s.startedAt,
+                viewerCount: s.viewers.size,
+                userId: s.userId,
+                userName: s.userName,
+                sessionName: s.sessionName,
+                isEphemeral: s.isEphemeral,
+                expiresAt: s.expiresAt,
+                isActive: s.isActive,
+                lastHeartbeatAt: s.lastHeartbeatAt,
+                model,
+            };
+        });
 }
 
 export function getSharedSession(sessionId: string) {
@@ -172,8 +221,28 @@ export function updateSessionState(sessionId: string, state: unknown) {
     const session = sharedSessions.get(sessionId);
     if (!session) return;
 
+    const stateObj = state && typeof state === "object" ? (state as Record<string, unknown>) : null;
+    const hasSessionName = !!stateObj && Object.prototype.hasOwnProperty.call(stateObj, "sessionName");
+    const nextSessionName = hasSessionName ? normalizeSessionName(stateObj?.sessionName) : session.sessionName;
+    const sessionNameChanged = nextSessionName !== session.sessionName;
+
     session.lastState = state;
+    session.sessionName = nextSessionName;
     refreshEphemeralExpiry(session);
+
+    if (sessionNameChanged) {
+        broadcastToHub(
+            {
+                type: "session_status",
+                sessionId,
+                isActive: session.isActive,
+                lastHeartbeatAt: session.lastHeartbeatAt,
+                sessionName: session.sessionName,
+                model: modelFromHeartbeat(session.lastHeartbeat),
+            },
+            session.userId,
+        );
+    }
 
     void recordRelaySessionState(sessionId, state).catch((error) => {
         console.error("Failed to persist relay session state", error);
@@ -232,20 +301,46 @@ export function updateSessionHeartbeat(sessionId: string, heartbeat: Record<stri
     const session = sharedSessions.get(sessionId);
     if (!session) return;
 
+    const prevHeartbeat = session.lastHeartbeat as any;
+    const prevModel = prevHeartbeat?.model;
+    const prevModelKey =
+        prevModel && typeof prevModel === "object" && typeof prevModel.provider === "string" && typeof prevModel.id === "string"
+            ? `${prevModel.provider}/${prevModel.id}`
+            : null;
+
+    const hasSessionName = Object.prototype.hasOwnProperty.call(heartbeat, "sessionName");
+    const prevSessionName = session.sessionName;
+
     const wasActive = session.isActive;
     session.isActive = heartbeat.active === true;
     session.lastHeartbeatAt = new Date().toISOString();
     session.lastHeartbeat = heartbeat;
+    if (hasSessionName) {
+        session.sessionName = normalizeSessionName((heartbeat as any).sessionName);
+    }
     refreshEphemeralExpiry(session);
 
-    // Notify hub clients when active status changes so session list updates live.
-    if (wasActive !== session.isActive) {
+    const nextModel = (heartbeat as any)?.model;
+    const nextModelKey =
+        nextModel && typeof nextModel === "object" && typeof nextModel.provider === "string" && typeof nextModel.id === "string"
+            ? `${nextModel.provider}/${nextModel.id}`
+            : null;
+
+    const modelChanged = prevModelKey !== nextModelKey;
+    const sessionNameChanged = hasSessionName && prevSessionName !== session.sessionName;
+
+    // Notify hub clients when active status, model, or session name changes.
+    if (wasActive !== session.isActive || modelChanged || sessionNameChanged) {
+        const model = modelFromHeartbeat(heartbeat);
+
         broadcastToHub(
             {
                 type: "session_status",
                 sessionId,
                 isActive: session.isActive,
                 lastHeartbeatAt: session.lastHeartbeatAt,
+                sessionName: session.sessionName,
+                model,
             },
             session.userId,
         );

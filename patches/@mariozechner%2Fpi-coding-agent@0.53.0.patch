@@ -2,22 +2,26 @@ diff --git a/dist/core/extensions/loader.js b/dist/core/extensions/loader.js
 index 0f555eefcaaabc0878624ee302f01054791bfa7f..1f80cd9a2180ab93f41e65a0a14323abe5f8bd66 100644
 --- a/dist/core/extensions/loader.js
 +++ b/dist/core/extensions/loader.js
-@@ -97,6 +97,8 @@ export function createExtensionRuntime() {
+@@ -97,6 +97,9 @@ export function createExtensionRuntime() {
          setThinkingLevel: notInitialized,
          flagValues: new Map(),
          pendingProviderRegistrations: [],
 +        // PATCH(pizzapi): session control for extensions
 +        newSession: () => Promise.reject(new Error("Extension runtime not initialized")),
++        switchSession: () => Promise.reject(new Error("Extension runtime not initialized")),
      };
  }
  /**
-@@ -185,6 +187,10 @@ function createExtensionAPI(extension, runtime, cwd, eventBus) {
+@@ -185,6 +188,13 @@ function createExtensionAPI(extension, runtime, cwd, eventBus) {
          registerProvider(name, config) {
              runtime.pendingProviderRegistrations.push({ name, config });
          },
 +        // PATCH(pizzapi): session control for extensions
 +        newSession(options) {
 +            return runtime.newSession(options);
++        },
++        switchSession(sessionPath) {
++            return runtime.switchSession(sessionPath);
 +        },
          events: eventBus,
      };
@@ -26,20 +30,22 @@ diff --git a/dist/core/extensions/runner.js b/dist/core/extensions/runner.js
 index d6c4f3f361f37c81796e793016d8b4812d1e8fff..b26abe4e5433988d78838ddeb18a7439cdc4e07b 100644
 --- a/dist/core/extensions/runner.js
 +++ b/dist/core/extensions/runner.js
-@@ -148,6 +148,8 @@ export class ExtensionRunner {
+@@ -148,6 +148,9 @@ export class ExtensionRunner {
              this.navigateTreeHandler = actions.navigateTree;
              this.switchSessionHandler = actions.switchSession;
              this.reloadHandler = actions.reload;
 +            // PATCH(pizzapi): expose session control on runtime for extension access
 +            this.runtime.newSession = (options) => this.newSessionHandler(options);
++            this.runtime.switchSession = (sessionPath) => this.switchSessionHandler(sessionPath);
              return;
          }
          this.waitForIdleFn = async () => { };
-@@ -156,6 +158,7 @@ export class ExtensionRunner {
+@@ -156,6 +159,8 @@ export class ExtensionRunner {
          this.navigateTreeHandler = async () => ({ cancelled: false });
          this.switchSessionHandler = async () => ({ cancelled: false });
          this.reloadHandler = async () => { };
 +        this.runtime.newSession = (options) => this.newSessionHandler(options);
++        this.runtime.switchSession = (sessionPath) => this.switchSessionHandler(sessionPath);
      }
      setUIContext(uiContext) {
          this.uiContext = uiContext ?? noOpUIContext;

@@ -299,7 +299,26 @@ function renderToolResult(content: unknown, toolName?: string, isError?: boolean
     }
   }
 
-  if (normalizedToolName === "write" || normalizedToolName.endsWith(".write")) {
+  if (
+    normalizedToolName === "write" ||
+    normalizedToolName.endsWith(".write") ||
+    normalizedToolName === "write_file" ||
+    normalizedToolName.endsWith(".write_file")
+  ) {
+    const parsed = text ? tryParseJsonObject(text.trim()) : null;
+    const asObj =
+      content && typeof content === "object" && !Array.isArray(content)
+        ? (content as Record<string, unknown>)
+        : parsed;
+
+    const path = asObj && typeof asObj.path === "string" ? asObj.path : null;
+    const newText =
+      asObj && typeof asObj.content === "string" ? asObj.content : null;
+
+    if (path && newText !== null) {
+      return <DiffView path={path} oldText="" newText={newText} />;
+    }
+
     if (text) {
       return (
         <CodeBlock code={text} language="markdown" className="border-border/70" />
@@ -515,6 +534,55 @@ function renderGroupedToolExecution(
     );
   }
 
+  const isWrite =
+    norm === "write" ||
+    norm.endsWith(".write") ||
+    norm === "write_file" ||
+    norm.endsWith(".write_file");
+  if (isWrite) {
+    const inputArgs =
+      toolInput && typeof toolInput === "object"
+        ? (toolInput as Record<string, unknown>)
+        : {};
+
+    const writePath =
+      typeof inputArgs.file_path === "string"
+        ? inputArgs.file_path
+        : typeof inputArgs.path === "string"
+          ? inputArgs.path
+          : null;
+    const newText =
+      typeof inputArgs.content === "string"
+        ? inputArgs.content
+        : typeof inputArgs.newText === "string"
+          ? inputArgs.newText
+          : null;
+
+    if (writePath && newText !== null) {
+      return <DiffView path={writePath} oldText="" newText={newText} />;
+    }
+
+    const resultText = hasOutput ? extractTextFromToolContent(content) : null;
+    const pendingPath = writePath ?? "file";
+    const pendingName = pendingPath.split(/[\\/]/).filter(Boolean).pop() ?? "file";
+    return (
+      <EditFileCard
+        path={pendingPath}
+        fileName={pendingName}
+        additions={0}
+        deletions={0}
+      >
+        <div className="flex items-center justify-center py-8 text-sm text-muted-foreground">
+          {isStreaming
+            ? "Writing file…"
+            : hasOutput
+              ? resultText ?? "Write complete"
+              : "No diff available"}
+        </div>
+      </EditFileCard>
+    );
+  }
+
   return (
     <Terminal output={outputText ?? ""} isStreaming={isStreaming} className="text-xs">
       <TerminalHeader>
@@ -627,11 +695,19 @@ export function renderContent(
                     })()
                   : ({} as Record<string, unknown>);
 
+            const normalizedToolName = normalizeToolName(toolName);
             const isEdit =
-              toolName === "edit" &&
+              (normalizedToolName === "edit" || normalizedToolName.endsWith(".edit")) &&
               typeof args.path === "string" &&
               typeof args.oldText === "string" &&
               typeof args.newText === "string";
+            const isWrite =
+              (normalizedToolName === "write" ||
+                normalizedToolName.endsWith(".write") ||
+                normalizedToolName === "write_file" ||
+                normalizedToolName.endsWith(".write_file")) &&
+              typeof args.path === "string" &&
+              typeof args.content === "string";
 
             const state: ToolState = isActive
               ? "input-available"
@@ -646,6 +722,12 @@ export function renderContent(
                       path={args.path as string}
                       oldText={args.oldText as string}
                       newText={args.newText as string}
+                    />
+                  ) : isWrite ? (
+                    <DiffView
+                      path={args.path as string}
+                      oldText=""
+                      newText={args.content as string}
                     />
                   ) : (
                     <ToolInput input={args} />

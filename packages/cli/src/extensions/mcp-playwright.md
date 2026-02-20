@@ -17,6 +17,6 @@ To enable Playwright MCP tools in `pizzapi`, add this to your config:
 
 This will register tools with names like:
 
-- `mcp:playwright:<tool>`
+- `mcp_playwright_<tool>`
 
 (Exact tool list depends on the MCP server.)

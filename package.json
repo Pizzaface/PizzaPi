@@ -12,7 +12,7 @@
         "build:tools": "cd packages/tools && bun run build",
         "build:server": "cd packages/server && bun run build",
         "build:ui": "cd packages/ui && bun run build",
-        "build:cli": "bun --cwd=@pizzapi/cli build",
+        "build:cli": "cd packages/cli && bun run build",
         "dev": "concurrently \"bun run dev:server\" \"bun run dev:ui --host\" --kill-others-on-exit",
         "dev:server": "cd packages/server && bun run dev",
         "dev:ui": "cd packages/ui && bun run dev",

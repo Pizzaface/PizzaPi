@@ -10,6 +10,7 @@ import { join } from "path";
 import { defaultAgentDir, loadConfig } from "./config.js";
 import { remoteExtension } from "./extensions/remote.js";
 import { mcpExtension } from "./extensions/mcp-extension.js";
+import { restartExtension } from "./extensions/restart.js";
 import { runSetup } from "./setup.js";
 
 async function main() {
@@ -30,6 +31,78 @@ async function main() {
 
     if (args[0] === "setup") {
         await runSetup({ force: true });
+        return;
+    }
+
+    if (args[0] === "usage") {
+        const config = loadConfig(cwd);
+        const agentDir = config.agentDir ? config.agentDir.replace(/^~/, process.env.HOME ?? "") : defaultAgentDir();
+        const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
+
+        const accessToken = await authStorage.getApiKey("anthropic");
+        if (!accessToken) {
+            console.error("No Anthropic credentials found. Log in with /login inside pizzapi.");
+            process.exit(1);
+        }
+
+        const res = await fetch("https://api.anthropic.com/api/oauth/usage", {
+            headers: {
+                Authorization: `Bearer ${accessToken}`,
+                "anthropic-version": "2023-06-01",
+                "anthropic-beta": "oauth-2025-04-20",
+            },
+        });
+
+        if (!res.ok) {
+            console.error(`Failed to fetch usage: HTTP ${res.status} ${res.statusText}`);
+            const body = await res.text();
+            if (body) console.error(body);
+            process.exit(1);
+        }
+
+        type UsageWindow = { utilization: number; resets_at: string } | null;
+        type ExtraUsage = { is_enabled: boolean; monthly_limit: number | null; used_credits: number | null; utilization: number | null };
+        type UsageResponse = {
+            five_hour: UsageWindow;
+            seven_day: UsageWindow;
+            seven_day_oauth_apps: UsageWindow;
+            seven_day_opus: UsageWindow;
+            seven_day_sonnet: UsageWindow;
+            seven_day_cowork: UsageWindow;
+            extra_usage: ExtraUsage;
+            [key: string]: unknown;
+        };
+        const usage = (await res.json()) as UsageResponse;
+
+        if (args.includes("--json")) {
+            console.log(JSON.stringify(usage, null, 2));
+            return;
+        }
+
+        const formatWindow = (label: string, w: UsageWindow) => {
+            if (!w) return;
+            const pct = `${w.utilization.toFixed(1)}%`;
+            const reset = new Date(w.resets_at).toLocaleString();
+            console.log(`  ${label.padEnd(22)} ${pct.padStart(6)}  (resets ${reset})`);
+        };
+
+        console.log("\nClaude usage (OAuth subscription)");
+        console.log("─".repeat(58));
+        formatWindow("5-hour window", usage.five_hour);
+        formatWindow("7-day window", usage.seven_day);
+        formatWindow("7-day (OAuth apps)", usage.seven_day_oauth_apps);
+        formatWindow("7-day (Opus)", usage.seven_day_opus);
+        formatWindow("7-day (Sonnet)", usage.seven_day_sonnet);
+        formatWindow("7-day (co-work)", usage.seven_day_cowork);
+
+        const ex = usage.extra_usage;
+        if (ex?.is_enabled) {
+            console.log(`\n  Extra usage enabled`);
+            if (ex.monthly_limit != null) console.log(`    Monthly limit:   $${ex.monthly_limit}`);
+            if (ex.used_credits != null) console.log(`    Credits used:    $${ex.used_credits}`);
+            if (ex.utilization != null) console.log(`    Utilization:     ${ex.utilization.toFixed(1)}%`);
+        }
+        console.log();
         return;
     }
 
@@ -112,7 +185,7 @@ async function main() {
     const loader = new DefaultResourceLoader({
         cwd,
         agentDir,
-        extensionFactories: [remoteExtension, mcpExtension],
+        extensionFactories: [remoteExtension, mcpExtension, restartExtension],
         ...(config.systemPrompt !== undefined && {
             systemPromptOverride: () => config.systemPrompt,
         }),

@@ -1,6 +1,7 @@
 import * as React from "react";
 import { SessionSidebar, type DotState } from "@/components/SessionSidebar";
 import { SessionViewer, type RelayMessage } from "@/components/SessionViewer";
+import { ProviderIcon } from "@/components/ProviderIcon";
 import { AuthPage } from "@/components/AuthPage";
 import { ApiKeyManager } from "@/components/ApiKeyManager";
 import { authClient, useSession, signOut } from "@/lib/auth-client";
@@ -16,6 +17,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Sun, Moon, LogOut, KeyRound, X, User, ChevronsUpDown, PanelLeftOpen } from "lucide-react";
+import { UsageIndicator, type ProviderUsageMap } from "@/components/UsageIndicator";
 import {
   ModelSelector,
   ModelSelectorContent,
@@ -37,11 +39,15 @@ function toRelayMessage(raw: unknown, fallbackId: string): RelayMessage | null {
   const role = typeof msg.role === "string" ? msg.role : "message";
   const timestamp = typeof msg.timestamp === "number" ? msg.timestamp : undefined;
   const toolCallId = typeof msg.toolCallId === "string" ? msg.toolCallId : "";
-  const key = toolCallId
-    ? `${role}:tool:${toolCallId}`
-    : timestamp !== undefined
-      ? `${role}:ts:${timestamp}`
-      : `${role}:fallback:${fallbackId}`;
+  const id = typeof msg.id === "string" ? msg.id : undefined;
+
+  const key = id
+    ? `${role}:id:${id}`
+    : toolCallId
+      ? `${role}:tool:${toolCallId}`
+      : timestamp !== undefined
+        ? `${role}:ts:${timestamp}`
+        : `${role}:fallback:${fallbackId}`;
 
   return {
     key,
@@ -54,27 +60,66 @@ function toRelayMessage(raw: unknown, fallbackId: string): RelayMessage | null {
   };
 }
 
+function getAssistantToolCallIds(msg: RelayMessage): string[] {
+  if (msg.role !== "assistant" || !Array.isArray(msg.content)) return [];
+  const ids: string[] = [];
+  for (const block of msg.content) {
+    if (!block || typeof block !== "object") continue;
+    const b = block as Record<string, unknown>;
+    if (b.type !== "toolCall") continue;
+    const id =
+      typeof b.toolCallId === "string"
+        ? b.toolCallId
+        : typeof b.id === "string"
+          ? b.id
+          : "";
+    if (id) ids.push(id);
+  }
+  return ids;
+}
+
 function normalizeMessages(rawMessages: unknown[]): RelayMessage[] {
   const all = rawMessages
     .map((m, i) => toRelayMessage(m, `snapshot-${i}`))
     .filter((m): m is RelayMessage => m !== null);
 
-  // Drop no-timestamp assistant messages that are immediately followed by a
-  // timestamped assistant message — these are streaming partials saved alongside
-  // the final message in the snapshot and would produce duplicate rows in the UI.
+  // Drop no-timestamp assistant messages that are superseded by a later
+  // timestamped assistant message. Two messages are considered the same turn
+  // when they share at least one toolCallId, OR when the no-timestamp message
+  // is immediately followed by a timestamped one (the original heuristic).
+  //
+  // This prevents streaming partials saved alongside the final message from
+  // producing duplicate rows (e.g. thinking blocks appearing below tool cards).
+
+  // Build a set of toolCallIds referenced by any timestamped assistant message.
+  const timestampedToolCallIds = new Set<string>();
+  for (const msg of all) {
+    if (msg.role === "assistant" && msg.timestamp !== undefined) {
+      for (const id of getAssistantToolCallIds(msg)) {
+        timestampedToolCallIds.add(id);
+      }
+    }
+  }
+
   const dropIndices = new Set<number>();
-  for (let i = 0; i < all.length - 1; i++) {
+  for (let i = 0; i < all.length; i++) {
     const cur = all[i];
+    if (cur.role !== "assistant" || cur.timestamp !== undefined) continue;
+
+    // Original heuristic: immediately followed by a timestamped assistant message.
     const next = all[i + 1];
-    if (
-      cur.role === "assistant" &&
-      cur.timestamp === undefined &&
-      next.role === "assistant" &&
-      next.timestamp !== undefined
-    ) {
+    if (next?.role === "assistant" && next.timestamp !== undefined) {
+      dropIndices.add(i);
+      continue;
+    }
+
+    // Extended heuristic: shares a toolCallId with any later timestamped assistant message.
+    const ids = getAssistantToolCallIds(cur);
+    if (ids.length > 0 && ids.some((id) => timestampedToolCallIds.has(id))) {
       dropIndices.add(i);
     }
   }
+
   if (dropIndices.size === 0) return all;
   return all.filter((_, i) => !dropIndices.has(i));
 }
@@ -85,6 +130,34 @@ interface ConfiguredModelInfo {
   name?: string;
   reasoning?: boolean;
   contextWindow?: number;
+}
+
+interface TokenUsageInfo {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  cost: number;
+}
+
+interface ResumeSessionOption {
+  id: string;
+  path: string;
+  name: string | null;
+  modified: string;
+  firstMessage?: string;
+}
+
+interface SessionUiCacheEntry {
+  messages: RelayMessage[];
+  activeModel: ConfiguredModelInfo | null;
+  sessionName: string | null;
+  availableModels: ConfiguredModelInfo[];
+  availableCommands: Array<{ name: string; description?: string }>;
+  agentActive: boolean;
+  effortLevel: string | null;
+  tokenUsage: TokenUsageInfo | null;
+  lastHeartbeatAt: number | null;
 }
 
 function normalizeModel(raw: unknown): ConfiguredModelInfo | null {
@@ -103,6 +176,12 @@ function normalizeModel(raw: unknown): ConfiguredModelInfo | null {
     reasoning: typeof model.reasoning === "boolean" ? model.reasoning : undefined,
     contextWindow: typeof model.contextWindow === "number" ? model.contextWindow : undefined,
   };
+}
+
+function normalizeSessionName(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 /** Inject `durationSeconds` into thinking blocks that we've timed client-side. */
@@ -150,6 +229,7 @@ export function App() {
   const [pendingQuestion, setPendingQuestion] = React.useState<{ toolCallId: string; question: string } | null>(null);
   const [activeToolCalls, setActiveToolCalls] = React.useState<Map<string, string>>(new Map());
   const [activeModel, setActiveModel] = React.useState<ConfiguredModelInfo | null>(null);
+  const [sessionName, setSessionName] = React.useState<string | null>(null);
   const [availableModels, setAvailableModels] = React.useState<ConfiguredModelInfo[]>([]);
   const [modelSelectorOpen, setModelSelectorOpen] = React.useState(false);
   const [isChangingModel, setIsChangingModel] = React.useState(false);
@@ -157,8 +237,9 @@ export function App() {
   // Live session status from heartbeats
   const [agentActive, setAgentActive] = React.useState(false);
   const [effortLevel, setEffortLevel] = React.useState<string | null>(null);
-  const [tokenUsage, setTokenUsage] = React.useState<{ input: number; output: number; cacheRead: number; cacheWrite: number; cost: number } | null>(null);
+  const [tokenUsage, setTokenUsage] = React.useState<TokenUsageInfo | null>(null);
   const [lastHeartbeatAt, setLastHeartbeatAt] = React.useState<number | null>(null);
+  const [providerUsage, setProviderUsage] = React.useState<ProviderUsageMap | null>(null);
 
   // Sequence tracking for gap detection
   const lastSeqRef = React.useRef<number | null>(null);
@@ -166,11 +247,39 @@ export function App() {
   // Capabilities advertised by the runner (commands, models, etc.)
   const [availableCommands, setAvailableCommands] = React.useState<Array<{ name: string; description?: string }>>([]);
 
+  // /resume picker state (fetched from runner session files)
+  const [resumeSessions, setResumeSessions] = React.useState<ResumeSessionOption[]>([]);
+  const [resumeSessionsLoading, setResumeSessionsLoading] = React.useState(false);
+
   // Mobile layout
   const [sidebarOpen, setSidebarOpen] = React.useState(false);
 
   const viewerWsRef = React.useRef<WebSocket | null>(null);
   const activeSessionRef = React.useRef<string | null>(null);
+
+  // Cache last-known UI state per relay session so switching sessions feels instant.
+  const sessionUiCacheRef = React.useRef<Map<string, SessionUiCacheEntry>>(new Map());
+
+  const patchSessionCache = React.useCallback((patch: Partial<SessionUiCacheEntry>) => {
+    const sessionId = activeSessionRef.current;
+    if (!sessionId) return;
+
+    const prev = sessionUiCacheRef.current.get(sessionId);
+    const next: SessionUiCacheEntry = {
+      messages: prev?.messages ?? [],
+      activeModel: prev?.activeModel ?? null,
+      sessionName: prev?.sessionName ?? null,
+      availableModels: prev?.availableModels ?? [],
+      availableCommands: prev?.availableCommands ?? [],
+      agentActive: prev?.agentActive ?? false,
+      effortLevel: prev?.effortLevel ?? null,
+      tokenUsage: prev?.tokenUsage ?? null,
+      lastHeartbeatAt: prev?.lastHeartbeatAt ?? null,
+      ...patch,
+    };
+
+    sessionUiCacheRef.current.set(sessionId, next);
+  }, []);
 
   // Debounce streaming delta updates (toolcall_delta, text_delta, thinking_delta) so we
   // flush at most once per animation frame instead of once per character.
@@ -208,7 +317,11 @@ export function App() {
     setPendingQuestion(null);
     setActiveToolCalls(new Map());
     setActiveModel(null);
+    setSessionName(null);
     setAvailableModels([]);
+    setAvailableCommands([]);
+    setResumeSessions([]);
+    setResumeSessionsLoading(false);
     setModelSelectorOpen(false);
     setIsChangingModel(false);
     setAgentActive(false);
@@ -282,9 +395,28 @@ export function App() {
         setMessages((prev) => {
           let result = prev;
           for (const { raw: pendingRaw, key } of pending.values()) {
-            const msg = toRelayMessage(pendingRaw, key);
+            let msg = toRelayMessage(pendingRaw, key);
             if (!msg) continue;
-            const idx = result.findIndex((m) => m.key === key);
+
+            // Try to find an existing message by key
+            let idx = result.findIndex((m) => m.key === msg!.key);
+
+            // Heuristic: if not found, and it's a fallback key (streaming),
+            // and the last message looks like a match (same role),
+            // assume it's the target and ADOPT its key.
+            if (idx === -1 && msg.key.includes(":fallback:")) {
+              const lastIdx = result.length - 1;
+              if (lastIdx >= 0) {
+                const last = result[lastIdx];
+                if (last.role === msg.role && !last.isError && last.timestamp !== undefined) {
+                  // Inherit the key and timestamp from the existing message
+                  // to maintain stability.
+                  msg = { ...msg, key: last.key, timestamp: last.timestamp };
+                  idx = lastIdx;
+                }
+              }
+            }
+
             if (idx >= 0) {
               if (result === prev) result = prev.slice();
               result[idx] = msg;
@@ -299,6 +431,25 @@ export function App() {
     }
   }, []);
 
+  const appendLocalSystemMessage = React.useCallback((text: string) => {
+    const content = text.trim();
+    if (!content) return;
+
+    const now = Date.now();
+    const message: RelayMessage = {
+      key: `system:local:${now}:${Math.random().toString(16).slice(2)}`,
+      role: "system",
+      timestamp: now,
+      content,
+    };
+
+    setMessages((prev) => {
+      const next = [...prev, message];
+      patchSessionCache({ messages: next });
+      return next;
+    });
+  }, [patchSessionCache]);
+
   const handleRelayEvent = React.useCallback((event: unknown, seq?: number) => {
     if (!event || typeof event !== "object") return;
 
@@ -309,19 +460,56 @@ export function App() {
       const hb = evt as {
         active?: boolean;
         model?: { provider: string; id: string; name?: string } | null;
+        sessionName?: string | null;
         thinkingLevel?: string | null;
-        tokenUsage?: { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number } | null;
+        tokenUsage?: TokenUsageInfo | null;
         ts?: number;
       };
-      setAgentActive(hb.active === true);
-      if (hb.thinkingLevel !== undefined) setEffortLevel(hb.thinkingLevel ?? null);
-      if (hb.tokenUsage) setTokenUsage(hb.tokenUsage);
-      if (typeof hb.ts === "number") setLastHeartbeatAt(hb.ts);
+
+      const nextAgentActive = hb.active === true;
+      const cachePatch: Partial<SessionUiCacheEntry> = {
+        agentActive: nextAgentActive,
+      };
+
+      setAgentActive(nextAgentActive);
+
+      if (hb.thinkingLevel !== undefined) {
+        const next = hb.thinkingLevel ?? null;
+        setEffortLevel(next);
+        cachePatch.effortLevel = next;
+      }
+
+      if (hb.tokenUsage !== undefined) {
+        const next = hb.tokenUsage ?? null;
+        setTokenUsage(next);
+        cachePatch.tokenUsage = next;
+      }
+
+      if (typeof hb.ts === "number") {
+        setLastHeartbeatAt(hb.ts);
+        cachePatch.lastHeartbeatAt = hb.ts;
+      }
+
+      if ((hb as any).providerUsage !== undefined) {
+        setProviderUsage((hb as any).providerUsage ?? null);
+      }
+
+      if (Object.prototype.hasOwnProperty.call(hb, "sessionName")) {
+        const nextName = normalizeSessionName(hb.sessionName);
+        setSessionName(nextName);
+        cachePatch.sessionName = nextName;
+      }
+
       // Heartbeats also carry the current model; keep activeModel in sync.
       if (hb.model) {
         const m = normalizeModel(hb.model);
-        if (m) setActiveModel(m);
+        if (m) {
+          setActiveModel(m);
+          cachePatch.activeModel = m;
+        }
       }
+
+      patchSessionCache(cachePatch);
       return;
     }
 
@@ -329,14 +517,16 @@ export function App() {
       const modelsRaw = Array.isArray((evt as any).models) ? ((evt as any).models as unknown[]) : [];
       const commandsRaw = Array.isArray((evt as any).commands) ? ((evt as any).commands as any[]) : [];
 
+      const normalizedModels = normalizeModelList(modelsRaw);
+      const normalizedCommands = commandsRaw
+        .filter((c) => c && typeof c === "object" && typeof c.name === "string")
+        .map((c) => ({ name: String(c.name), description: typeof c.description === "string" ? c.description : undefined }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+
       // Keep model state in sync with capability snapshots too.
-      setAvailableModels(normalizeModelList(modelsRaw));
-      setAvailableCommands(
-        commandsRaw
-          .filter((c) => c && typeof c === "object" && typeof c.name === "string")
-          .map((c) => ({ name: String(c.name), description: typeof c.description === "string" ? c.description : undefined }))
-          .sort((a, b) => a.name.localeCompare(b.name)),
-      );
+      setAvailableModels(normalizedModels);
+      setAvailableCommands(normalizedCommands);
+      patchSessionCache({ availableModels: normalizedModels, availableCommands: normalizedCommands });
       return;
     }
 
@@ -347,12 +537,18 @@ export function App() {
       const stateModels = Array.isArray(state?.availableModels)
         ? normalizeModelList(state.availableModels as unknown[])
         : [];
+      const normalizedMessages = normalizeMessages(rawMessages);
+      const hasSessionName = !!state && Object.prototype.hasOwnProperty.call(state, "sessionName");
+      const nextSessionName = hasSessionName ? normalizeSessionName(state?.sessionName) : null;
 
       // Flush any queued streaming-delta RAF before replacing state so stale
       // partials can't be re-inserted on top of the fresh snapshot.
       cancelPendingDeltas();
-      setMessages(normalizeMessages(rawMessages));
+      setMessages(normalizedMessages);
       setActiveModel(stateModel);
+      if (hasSessionName) {
+        setSessionName(nextSessionName);
+      }
       setAvailableModels(stateModels);
 
       // Don't clobber a transient status like "Model set" with a generic
@@ -364,13 +560,23 @@ export function App() {
 
       // Extract thinkingLevel from session snapshot too
       const thinkingLevel = typeof state?.thinkingLevel === "string" ? state.thinkingLevel : null;
-      if (thinkingLevel !== undefined) setEffortLevel(thinkingLevel);
+      setEffortLevel(thinkingLevel);
+
+      patchSessionCache({
+        messages: normalizedMessages,
+        activeModel: stateModel,
+        ...(hasSessionName ? { sessionName: nextSessionName } : {}),
+        availableModels: stateModels,
+        effortLevel: thinkingLevel,
+      });
       return;
     }
 
     if (type === "agent_end" && Array.isArray(evt.messages)) {
+      const normalized = normalizeMessages(evt.messages as unknown[]);
       cancelPendingDeltas();
-      setMessages(normalizeMessages(evt.messages as unknown[]));
+      setMessages(normalized);
+      patchSessionCache({ messages: normalized });
       setPendingQuestion(null);
       return;
     }
@@ -381,7 +587,10 @@ export function App() {
       const raw = evt.model as Record<string, unknown> | undefined;
       if (raw && typeof raw.modelId === "string") {
         const normalized = normalizeModel({ ...raw, id: raw.modelId });
-        if (normalized) setActiveModel(normalized);
+        if (normalized) {
+          setActiveModel(normalized);
+          patchSessionCache({ activeModel: normalized });
+        }
       }
       return;
     }
@@ -392,7 +601,37 @@ export function App() {
       const result = (evt as any).result;
       if (!ok) {
         const error = typeof (evt as any).error === "string" ? (evt as any).error : "Command failed";
+        if (command === "list_resume_sessions") {
+          setResumeSessionsLoading(false);
+        }
         setViewerStatus(`/${command}: ${error}`);
+        return;
+      }
+
+      if (command === "list_resume_sessions") {
+        const list: unknown[] = Array.isArray(result?.sessions) ? (result.sessions as unknown[]) : [];
+        const normalized: ResumeSessionOption[] = [];
+
+        for (const item of list) {
+          if (!item || typeof item !== "object") continue;
+          const entry = item as Record<string, unknown>;
+          if (typeof entry.id !== "string" || typeof entry.path !== "string" || typeof entry.modified !== "string") {
+            continue;
+          }
+          normalized.push({
+            id: entry.id,
+            path: entry.path,
+            name: typeof entry.name === "string" ? entry.name : null,
+            modified: entry.modified,
+            firstMessage: typeof entry.firstMessage === "string" ? entry.firstMessage : undefined,
+          });
+        }
+
+        setResumeSessions(normalized);
+        setResumeSessionsLoading(false);
+        if (normalized.length === 0) {
+          setViewerStatus("No resumable sessions");
+        }
         return;
       }
 
@@ -404,6 +643,39 @@ export function App() {
         } else {
           setViewerStatus("Nothing to copy");
         }
+        return;
+      }
+
+      if (command === "mcp") {
+        const lines = Array.isArray(result?.lines)
+          ? result.lines.filter((line: unknown): line is string => typeof line === "string")
+          : [];
+        if (lines.length > 0) {
+          appendLocalSystemMessage(lines.join("\n"));
+        }
+
+        const summary = typeof result?.summary === "string"
+          ? result.summary
+          : typeof result?.toolCount === "number"
+            ? `MCP tools loaded: ${result.toolCount}`
+            : "MCP status updated";
+        setViewerStatus(summary);
+        return;
+      }
+
+      if (command === "cycle_thinking_level" || command === "set_thinking_level") {
+        const newLevel = typeof result?.thinkingLevel === "string" ? result.thinkingLevel : null;
+        setEffortLevel(newLevel);
+        patchSessionCache({ effortLevel: newLevel });
+        setViewerStatus(newLevel && newLevel !== "off" ? `Effort: ${newLevel}` : "Effort: off");
+        return;
+      }
+
+      if (command === "set_session_name") {
+        const nextSessionName = normalizeSessionName(result?.sessionName);
+        setSessionName(nextSessionName);
+        patchSessionCache({ sessionName: nextSessionName });
+        setViewerStatus(nextSessionName ? "Session renamed" : "Session name cleared");
         return;
       }
 
@@ -424,6 +696,16 @@ export function App() {
         return;
       }
 
+      if (command === "restart") {
+        setViewerStatus("Restarting CLI…");
+        return;
+      }
+
+      if (command === "resume_session") {
+        setViewerStatus("Session resumed");
+        return;
+      }
+
       setViewerStatus("OK");
       return;
     }
@@ -432,6 +714,7 @@ export function App() {
       const selected = normalizeModel(evt.model);
       if (selected) {
         setActiveModel(selected);
+        patchSessionCache({ activeModel: selected });
       }
       setIsChangingModel(false);
       return;
@@ -559,7 +842,7 @@ export function App() {
       thinkingStartTimesRef.current = new Map();
       thinkingDurationsRef.current = new Map();
     }
-  }, [upsertMessage, upsertMessageDebounced, cancelPendingDeltas]);
+  }, [upsertMessage, upsertMessageDebounced, cancelPendingDeltas, appendLocalSystemMessage]);
 
   const openSession = React.useCallback((relaySessionId: string) => {
     viewerWsRef.current?.close();
@@ -568,17 +851,23 @@ export function App() {
     activeSessionRef.current = relaySessionId;
     lastSeqRef.current = null;
     setActiveSessionId(relaySessionId);
-    setMessages([]);
     setViewerStatus("Connecting…");
     setPendingQuestion(null);
     setActiveToolCalls(new Map());
-    setActiveModel(null);
-    setAvailableModels([]);
     setIsChangingModel(false);
-    setAgentActive(false);
-    setEffortLevel(null);
-    setTokenUsage(null);
-    setLastHeartbeatAt(null);
+    setResumeSessions([]);
+    setResumeSessionsLoading(false);
+
+    const cached = sessionUiCacheRef.current.get(relaySessionId);
+    setMessages(cached?.messages ?? []);
+    setActiveModel(cached?.activeModel ?? null);
+    setSessionName(cached?.sessionName ?? null);
+    setAvailableModels(cached?.availableModels ?? []);
+    setAvailableCommands(cached?.availableCommands ?? []);
+    setAgentActive(cached?.agentActive ?? false);
+    setEffortLevel(cached?.effortLevel ?? null);
+    setTokenUsage(cached?.tokenUsage ?? null);
+    setLastHeartbeatAt(cached?.lastHeartbeatAt ?? null);
 
     const ws = new WebSocket(`${getRelayWsBase()}/ws/sessions/${relaySessionId}`);
     viewerWsRef.current = ws;
@@ -605,6 +894,13 @@ export function App() {
         // Reflect initial active status from connected message.
         if (typeof msg.isActive === "boolean") {
           setAgentActive(msg.isActive);
+          patchSessionCache({ agentActive: msg.isActive });
+        }
+
+        if (Object.prototype.hasOwnProperty.call(msg, "sessionName")) {
+          const nextName = normalizeSessionName((msg as any).sessionName);
+          setSessionName(nextName);
+          patchSessionCache({ sessionName: nextName });
         }
 
         // Tell the runner we connected so it can push capabilities (models/commands/etc.)
@@ -665,19 +961,87 @@ export function App() {
     };
   }, [handleRelayEvent]);
 
-  const sendSessionInput = React.useCallback((text: string) => {
+  const sendSessionInput = React.useCallback(async (message: { text: string; files?: Array<{ mediaType?: string; filename?: string; url?: string }> } | string) => {
     const ws = viewerWsRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN || !activeSessionRef.current) {
+    const sessionId = activeSessionRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN || !sessionId) {
       setViewerStatus("Not connected to a live session");
       return false;
     }
 
-    const trimmed = text.trim();
+    const payload = typeof message === "string" ? { text: message, files: [] } : message;
+    const trimmed = payload.text.trim();
+
+    const rawFiles = (payload.files ?? [])
+      .filter((f) => typeof f?.url === "string" && f.url.length > 0)
+      .map((f) => ({
+        mediaType: typeof f.mediaType === "string" ? f.mediaType : undefined,
+        filename: typeof f.filename === "string" ? f.filename : undefined,
+        url: f.url as string,
+      }));
+
+    let attachments: Array<{ attachmentId: string; filename?: string; mediaType?: string; size?: number; expiresAt?: string }> = [];
+
+    if (rawFiles.length > 0) {
+      const uploaded: Array<{ attachmentId: string; filename?: string; mediaType?: string; size?: number; expiresAt?: string }> = [];
+
+      for (const [index, file] of rawFiles.entries()) {
+        const displayName = file.filename || `attachment-${index + 1}`;
+        setViewerStatus(`Uploading attachment ${index + 1}/${rawFiles.length}: ${displayName}`);
+
+        const formData = new FormData();
+        try {
+          const blob = await fetch(file.url).then((res) => res.blob());
+          const uploadFile = new File([blob], displayName, {
+            type: file.mediaType || blob.type || "application/octet-stream",
+          });
+          formData.append("files", uploadFile);
+        } catch {
+          setViewerStatus(`Failed to prepare attachment: ${displayName}`);
+          return false;
+        }
+
+        try {
+          const uploadRes = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/attachments`, {
+            method: "POST",
+            body: formData,
+            credentials: "include",
+          });
+
+          if (!uploadRes.ok) {
+            const body = await uploadRes.json().catch(() => null);
+            const message = body && typeof body.error === "string" ? body.error : `Upload failed for ${displayName}`;
+            setViewerStatus(message);
+            return false;
+          }
+
+          const body = await uploadRes.json().catch(() => null) as any;
+          const first = Array.isArray(body?.attachments) ? body.attachments[0] : null;
+          if (!first || typeof first.attachmentId !== "string") {
+            setViewerStatus(`Upload failed for ${displayName}`);
+            return false;
+          }
+
+          uploaded.push({
+            attachmentId: first.attachmentId as string,
+            filename: typeof first.filename === "string" ? first.filename : undefined,
+            mediaType: typeof first.mimeType === "string" ? first.mimeType : undefined,
+            size: typeof first.size === "number" ? first.size : undefined,
+            expiresAt: typeof first.expiresAt === "string" ? first.expiresAt : undefined,
+          });
+        } catch {
+          setViewerStatus(`Upload failed for ${displayName}`);
+          return false;
+        }
+      }
+
+      attachments = uploaded;
+      setViewerStatus(`Uploaded ${attachments.length} attachment${attachments.length === 1 ? "" : "s"}. Sending…`);
+    }
 
     try {
-      // Always send raw user input as chat to the runner.
-      // Slash commands are handled via the command palette (exec messages), not as chat text.
-      ws.send(JSON.stringify({ type: "input", text: trimmed }));
+      ws.send(JSON.stringify({ type: "input", text: trimmed, attachments, client: "web" }));
+      setViewerStatus("Connected");
       return true;
     } catch {
       setViewerStatus("Failed to send message");
@@ -700,6 +1064,20 @@ export function App() {
     }
   }, []);
 
+  const requestResumeSessions = React.useCallback(() => {
+    if (!activeSessionRef.current) return false;
+    setResumeSessionsLoading(true);
+    const ok = sendRemoteExec({
+      type: "exec",
+      id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      command: "list_resume_sessions",
+    });
+    if (!ok) {
+      setResumeSessionsLoading(false);
+    }
+    return ok;
+  }, [sendRemoteExec]);
+
   const selectModel = React.useCallback((model: ConfiguredModelInfo) => {
     const ws = viewerWsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN || !activeSessionRef.current) {
@@ -717,6 +1095,16 @@ export function App() {
       setViewerStatus("Failed to change model");
     }
   }, []);
+
+  const handleOpenSession = React.useCallback((id: string) => {
+    openSession(id);
+    setSidebarOpen(false);
+  }, [openSession]);
+
+  const handleClearSelection = React.useCallback(() => {
+    clearSelection();
+    setSidebarOpen(false);
+  }, [clearSelection]);
 
   if (isPending) {
     return (
@@ -771,6 +1159,12 @@ export function App() {
             <span className={relayStatusDot(relayStatus)} />
             <span className="hidden sm:inline">{relayStatusLabel(relayStatus)}</span>
           </div>
+          {providerUsage && (
+            <>
+              <Separator orientation="vertical" className="h-5" />
+              <UsageIndicator usage={providerUsage} />
+            </>
+          )}
         </div>
 
         <div className="flex items-center gap-2">
@@ -895,15 +1289,10 @@ export function App() {
           }
         >
           <SessionSidebar
-            onOpenSession={(id) => {
-              openSession(id);
-              setSidebarOpen(false);
-            }}
-            onClearSelection={() => {
-              clearSelection();
-              setSidebarOpen(false);
-            }}
+            onOpenSession={handleOpenSession}
+            onClearSelection={handleClearSelection}
             activeSessionId={activeSessionId}
+            activeModel={activeModel}
             onRelayStatusChange={setRelayStatus}
           />
         </div>
@@ -932,18 +1321,26 @@ export function App() {
               Sessions
             </Button>
             {activeSessionId && (
-              <span className="truncate text-xs text-muted-foreground">
-                Session {activeSessionId.slice(0, 8)}…
+              <span className="truncate text-xs text-muted-foreground inline-flex items-center gap-1.5 min-w-0">
+                {activeModel?.provider && (
+                  <ProviderIcon provider={activeModel.provider} className="size-3" />
+                )}
+                <span className="truncate">{sessionName || `Session ${activeSessionId.slice(0, 8)}…`}</span>
               </span>
             )}
           </div>
 
           <SessionViewer
             sessionId={activeSessionId}
+            sessionName={sessionName}
             messages={messages}
+            activeModel={activeModel}
             activeToolCalls={activeToolCalls}
             pendingQuestion={pendingQuestion?.question ?? null}
             availableCommands={availableCommands}
+            resumeSessions={resumeSessions}
+            resumeSessionsLoading={resumeSessionsLoading}
+            onRequestResumeSessions={requestResumeSessions}
             onSendInput={sendSessionInput}
             onExec={sendRemoteExec}
             agentActive={agentActive}

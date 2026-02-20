@@ -37,8 +37,72 @@ type McpClient = {
   close(): void;
 };
 
+const PROVIDER_TOOL_NAME_MAX_LENGTH = 64;
+
 function isRecord(v: unknown): v is Record<string, unknown> {
   return !!v && typeof v === "object" && !Array.isArray(v);
+}
+
+function shortHash(value: string): string {
+  let h1 = 0xdeadbeef ^ value.length;
+  let h2 = 0x41c6ce57 ^ value.length;
+
+  for (let i = 0; i < value.length; i++) {
+    const ch = value.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+
+  return `${(h1 >>> 0).toString(36)}${(h2 >>> 0).toString(36)}`;
+}
+
+function sanitizeToolNamePart(value: string): string {
+  const sanitized = value
+    .trim()
+    .replace(/[^a-zA-Z0-9_-]+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "");
+
+  return sanitized || "tool";
+}
+
+function clampToolName(name: string, seed: string): string {
+  if (name.length <= PROVIDER_TOOL_NAME_MAX_LENGTH) return name;
+
+  const hash = shortHash(seed).slice(0, 8);
+  const keep = Math.max(1, PROVIDER_TOOL_NAME_MAX_LENGTH - hash.length - 1);
+  return `${name.slice(0, keep)}_${hash}`;
+}
+
+function allocateProviderSafeToolName(serverName: string, mcpToolName: string, usedNames: Set<string>): string {
+  const source = `${serverName}:${mcpToolName}`;
+  const normalizedBase = `mcp_${sanitizeToolNamePart(serverName).toLowerCase()}_${sanitizeToolNamePart(mcpToolName).toLowerCase()}`;
+
+  const preferred = clampToolName(normalizedBase, source);
+  if (!usedNames.has(preferred)) {
+    usedNames.add(preferred);
+    return preferred;
+  }
+
+  const hash = shortHash(source).slice(0, 8);
+  const withHash = clampToolName(`${normalizedBase}_${hash}`, `${source}:${hash}`);
+  if (!usedNames.has(withHash)) {
+    usedNames.add(withHash);
+    return withHash;
+  }
+
+  let counter = 2;
+  while (true) {
+    const candidate = clampToolName(`${normalizedBase}_${hash}_${counter}`, `${source}:${counter}`);
+    if (!usedNames.has(candidate)) {
+      usedNames.add(candidate);
+      return candidate;
+    }
+    counter++;
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -132,7 +196,7 @@ function createStdioMcpClient(opts: { name: string; command: string; args?: stri
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// HTTP client
+// HTTP client (plain JSON POST — legacy / simple servers)
 // ─────────────────────────────────────────────────────────────────────────────
 
 function createHttpMcpClient(opts: { name: string; url: string; headers?: Record<string, string> }): McpClient {
@@ -171,6 +235,145 @@ function createHttpMcpClient(opts: { name: string; url: string; headers?: Record
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// HTTP Streamable client (MCP spec 2025-03-26)
+//
+// Sends JSON-RPC over POST with Accept: application/json, text/event-stream.
+// The server may respond with either:
+//   - application/json  → single JSON-RPC response (handled like plain HTTP)
+//   - text/event-stream → SSE stream; we read until we find the matching id
+//
+// Session lifecycle:
+//   - Server may return mcp-session-id on any response; we attach it to all
+//     subsequent requests.
+//   - close() sends DELETE to the endpoint so the server can clean up.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function createStreamableMcpClient(opts: { name: string; url: string; headers?: Record<string, string> }): McpClient {
+  let nextId = 1;
+  let sessionId: string | undefined;
+
+  function buildHeaders(extra?: Record<string, string>): Record<string, string> {
+    return {
+      "Content-Type": "application/json",
+      Accept: "application/json, text/event-stream",
+      ...(opts.headers ?? {}),
+      ...(sessionId ? { "mcp-session-id": sessionId } : {}),
+      ...(extra ?? {}),
+    };
+  }
+
+  async function parseSSE(res: Response, targetId: number, signal?: AbortSignal): Promise<any> {
+    if (!res.body) throw new Error("MCP streamable: response body is null");
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    const abortHandler = () => reader.cancel().catch(() => {});
+    signal?.addEventListener("abort", abortHandler, { once: true });
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+
+        // SSE events are separated by blank lines (\n\n or \r\n\r\n)
+        const events = buffer.split(/\r?\n\r?\n/);
+        buffer = events.pop() ?? "";
+
+        for (const event of events) {
+          // Collect all "data:" lines within this event block
+          let data = "";
+          for (const line of event.split(/\r?\n/)) {
+            if (line.startsWith("data:")) {
+              data += line.slice(5).trimStart();
+            }
+          }
+          if (!data) continue;
+
+          let msg: any;
+          try {
+            msg = JSON.parse(data);
+          } catch {
+            continue;
+          }
+
+          if (!isRecord(msg)) continue;
+
+          // Ignore notifications / requests that have no id
+          if (!("id" in msg)) continue;
+
+          if (msg.id === targetId || msg.id === String(targetId)) {
+            if (msg.error) throw new Error(String((msg.error as any)?.message ?? "MCP error"));
+            return (msg as any).result;
+          }
+        }
+      }
+    } finally {
+      signal?.removeEventListener("abort", abortHandler);
+      reader.cancel().catch(() => {});
+    }
+
+    throw new Error("MCP streamable: SSE stream ended without a matching response");
+  }
+
+  async function request(method: string, params?: any, signal?: AbortSignal): Promise<any> {
+    const id = nextId++;
+    const payload = { jsonrpc: "2.0", id, method, params };
+
+    const res = await fetch(opts.url, {
+      method: "POST",
+      headers: buildHeaders(),
+      body: JSON.stringify(payload),
+      signal,
+    });
+
+    // Capture / update session ID
+    const sid = res.headers.get("mcp-session-id");
+    if (sid) sessionId = sid;
+
+    if (!res.ok) throw new Error(`MCP streamable HTTP ${res.status}`);
+
+    const ct = res.headers.get("content-type") ?? "";
+
+    if (ct.includes("text/event-stream")) {
+      return parseSSE(res, id, signal);
+    }
+
+    // Fallback: plain JSON
+    const json = (await res.json().catch(() => null)) as any;
+    if (!json || typeof json !== "object") throw new Error("MCP streamable: invalid JSON response");
+    if (json.error) throw new Error(String(json.error?.message ?? "MCP error"));
+    return json.result;
+  }
+
+  return {
+    name: opts.name,
+    async listTools() {
+      const res = (await request("tools/list")) as McpListToolsResult;
+      return Array.isArray(res?.tools) ? res.tools : [];
+    },
+    async callTool(toolName: string, args: unknown, signal?: AbortSignal) {
+      const res = await request("tools/call", { name: toolName, arguments: args ?? {} }, signal);
+      return (res ?? {}) as McpCallToolResult;
+    },
+    close() {
+      // Best-effort session teardown
+      if (sessionId) {
+        const sid = sessionId;
+        sessionId = undefined;
+        fetch(opts.url, {
+          method: "DELETE",
+          headers: { ...(opts.headers ?? {}), "mcp-session-id": sid },
+        }).catch(() => {});
+      }
+    },
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 export type McpConfig = {
   // Preferred format
@@ -178,19 +381,21 @@ export type McpConfig = {
     servers?: Array<
       | { name: string; transport: "stdio"; command: string; args?: string[]; env?: Record<string, string> }
       | { name: string; transport: "http"; url: string; headers?: Record<string, string> }
+      | { name: string; transport: "streamable"; url: string; headers?: Record<string, string> }
     >;
   };
 
   // Compatibility format (commonly used by MCP configs)
   // {
   //   "mcpServers": {
-  //     "playwright": { "command": "npx", "args": ["@playwright/mcp@latest"] }
+  //     "playwright": { "command": "npx", "args": ["@playwright/mcp@latest"] },
+  //     "myserver":   { "url": "http://localhost:3000/mcp", "transport": "streamable" }
   //   }
   // }
   mcpServers?: Record<
     string,
     | { command: string; args?: string[]; env?: Record<string, string> }
-    | { url: string; headers?: Record<string, string> }
+    | { url: string; transport?: "http" | "streamable"; headers?: Record<string, string> }
   >;
 };
 
@@ -212,6 +417,14 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
     } else if (s.transport === "http") {
       clients.push(
         createHttpMcpClient({
+          name: s.name,
+          url: s.url,
+          headers: s.headers,
+        }),
+      );
+    } else if (s.transport === "streamable") {
+      clients.push(
+        createStreamableMcpClient({
           name: s.name,
           url: s.url,
           headers: s.headers,
@@ -239,8 +452,12 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
     }
 
     if ("url" in def && typeof (def as any).url === "string") {
-      const d = def as { url: string; headers?: Record<string, string> };
-      clients.push(createHttpMcpClient({ name, url: d.url, headers: d.headers }));
+      const d = def as { url: string; transport?: "http" | "streamable"; headers?: Record<string, string> };
+      if (d.transport === "streamable") {
+        clients.push(createStreamableMcpClient({ name, url: d.url, headers: d.headers }));
+      } else {
+        clients.push(createHttpMcpClient({ name, url: d.url, headers: d.headers }));
+      }
     }
   }
 
@@ -254,6 +471,7 @@ export async function registerMcpTools(pi: any, config: PizzaPiConfig & McpConfi
   let toolCount = 0;
   const toolNames: string[] = [];
   const errors: Array<{ server: string; error: string }> = [];
+  const usedToolNames = new Set<string>();
 
   for (const client of clients) {
     let tools: McpTool[] = [];
@@ -267,16 +485,26 @@ export async function registerMcpTools(pi: any, config: PizzaPiConfig & McpConfi
 
     for (const tool of tools) {
       if (!tool?.name) continue;
-      const toolName = `mcp:${client.name}:${tool.name}`;
+
+      const sourceName = `mcp:${client.name}:${tool.name}`;
+      const toolName = allocateProviderSafeToolName(client.name, tool.name, usedToolNames);
+
       toolCount++;
       toolNames.push(toolName);
 
+      const parameters = (tool.inputSchema ?? { type: "object", additionalProperties: true }) as any;
+      if (parameters && typeof parameters === "object" && "$schema" in parameters) {
+        delete parameters.$schema;
+      }
+
       pi.registerTool({
         name: toolName,
-        label: tool.name,
-        description: tool.description ?? `MCP tool from ${client.name}`,
+        label: `${client.name}:${tool.name}`,
+        description: tool.description
+          ? `${tool.description} (source: ${sourceName})`
+          : `MCP tool from ${client.name} (source: ${sourceName})`,
         // pi expects JSON schema-ish. MCP uses inputSchema.
-        parameters: (tool.inputSchema ?? { type: "object", additionalProperties: true }) as any,
+        parameters,
         async execute(_toolCallId: string, rawParams: unknown, signal: AbortSignal | undefined) {
           const result = await client.callTool(tool.name, rawParams ?? {}, signal);
           // Ensure we return something pi can render.

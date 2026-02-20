@@ -43,7 +43,72 @@ function shouldGroupToolCall(toolName: string): boolean {
   );
 }
 
+/**
+ * Extract all toolCallIds referenced in a grouped-tool toolCall block within an
+ * assistant message's content array.
+ */
+function extractGroupedToolCallIds(message: RelayMessage): Set<string> {
+  const ids = new Set<string>();
+  if (message.role !== "assistant" || !Array.isArray(message.content)) return ids;
+  for (const block of message.content) {
+    if (!block || typeof block !== "object") continue;
+    const b = block as Record<string, unknown>;
+    if (b.type !== "toolCall") continue;
+    const toolName = typeof b.name === "string" ? b.name : "unknown";
+    if (!shouldGroupToolCall(toolName)) continue;
+    const id =
+      typeof b.toolCallId === "string"
+        ? b.toolCallId
+        : typeof b.id === "string"
+          ? b.id
+          : "";
+    if (id) ids.add(id);
+  }
+  return ids;
+}
+
+/**
+ * When the same assistant turn is represented multiple times in the message list
+ * (e.g. a streaming partial saved alongside the final message), drop all earlier
+ * copies so only the last (most complete) version gets split into grouped items.
+ *
+ * Two assistant messages are considered duplicates of the same turn when they
+ * share at least one grouped-tool toolCallId.
+ */
+function deduplicateAssistantMessages(messages: RelayMessage[]): RelayMessage[] {
+  // Build a map: toolCallId → last index of an assistant message that references it.
+  const lastIndexForToolCallId = new Map<string, number>();
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    if (msg.role !== "assistant") continue;
+    const ids = extractGroupedToolCallIds(msg);
+    for (const id of ids) {
+      lastIndexForToolCallId.set(id, i);
+    }
+  }
+
+  if (lastIndexForToolCallId.size === 0) return messages;
+
+  // Drop any assistant message that contains grouped tool calls but is NOT the
+  // last message to reference all of those tool call IDs.
+  return messages.filter((msg, i) => {
+    if (msg.role !== "assistant") return true;
+    const ids = extractGroupedToolCallIds(msg);
+    if (ids.size === 0) return true;
+    // Keep only if this index is the last for every id it contains.
+    for (const id of ids) {
+      if (lastIndexForToolCallId.get(id) !== i) return false;
+    }
+    return true;
+  });
+}
+
 export function groupToolExecutionMessages(messages: RelayMessage[]): RelayMessage[] {
+  // Pre-deduplicate: drop earlier copies of the same assistant turn (streaming
+  // partials) so their split-off thinking blocks don't appear below the tool card
+  // produced by the final (timestamped) version.
+  const deduped = deduplicateAssistantMessages(messages);
+
   // Map from tool item key → index in `grouped`.
   const toolCallIndexByKey = new Map<string, number>();
   // Map from toolCallId → index in `grouped`.
@@ -54,7 +119,7 @@ export function groupToolExecutionMessages(messages: RelayMessage[]): RelayMessa
 
   const grouped: RelayMessage[] = [];
 
-  for (const message of messages) {
+  for (const message of deduped) {
     if (message.role === "assistant" && Array.isArray(message.content)) {
       const blocks = message.content as unknown[];
 

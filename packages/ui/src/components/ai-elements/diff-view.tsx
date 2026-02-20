@@ -13,8 +13,8 @@ type DiffLine =
   | { kind: "add"; text: string };
 
 function computeDiff(oldText: string, newText: string): DiffLine[] {
-  const oldLines = oldText.split("\n");
-  const newLines = newText.split("\n");
+  const oldLines = oldText === "" ? [] : oldText.split("\n");
+  const newLines = newText === "" ? [] : newText.split("\n");
   const m = oldLines.length;
   const n = newLines.length;
 

@@ -1,5 +1,7 @@
 export type RemoteExecCommand =
   | { command: "get_commands" }
+  | { command: "mcp"; action?: "status" | "reload" }
+  | { command: "abort" }
   | { command: "set_model"; provider: string; modelId: string }
   | { command: "cycle_model" }
   | { command: "get_available_models" }
@@ -10,7 +12,10 @@ export type RemoteExecCommand =
   | { command: "compact"; customInstructions?: string }
   | { command: "set_session_name"; name: string }
   | { command: "get_last_assistant_text" }
-  | { command: "new_session" };
+  | { command: "list_resume_sessions" }
+  | { command: "resume_session"; query?: string; sessionPath?: string }
+  | { command: "new_session" }
+  | { command: "restart" };
 
 export type RemoteExecRequest = { type: "exec"; id: string } & RemoteExecCommand;
 

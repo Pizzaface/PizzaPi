@@ -10,6 +10,7 @@ import {
 } from "./sessions/store.js";
 import { deleteRelayEventCaches, initializeRelayRedisCache } from "./sessions/redis.js";
 import { sweepExpiredSharedSessions } from "./ws/registry.js";
+import { sweepExpiredAttachments } from "./attachments/store.js";
 
 const PORT = parseInt(process.env.PORT ?? "3000");
 
@@ -60,6 +61,7 @@ const server = Bun.serve<WsData>({
 const sweepMs = getEphemeralSweepIntervalMs();
 setInterval(() => {
     sweepExpiredSharedSessions();
+    void sweepExpiredAttachments();
     void pruneExpiredRelaySessions()
         .then((expiredIds) => {
             if (expiredIds.length === 0) return;

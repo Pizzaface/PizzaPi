@@ -1,8 +1,10 @@
 import * as React from "react";
+import { Resizable } from "react-resizable";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { getRelayWsBase } from "@/lib/relay";
+import { ProviderIcon } from "@/components/ProviderIcon";
 import { PanelLeftClose, PanelLeftOpen, Plus, User } from "lucide-react";
 
 interface HubSession {
@@ -13,32 +15,20 @@ interface HubSession {
     viewerCount?: number;
     userId?: string;
     userName?: string;
+    sessionName?: string | null;
     isEphemeral?: boolean;
     expiresAt?: string | null;
     isActive?: boolean;
     lastHeartbeatAt?: string | null;
-}
-
-interface PersistedSessionSummary {
-    sessionId: string;
-    cwd: string;
-    shareUrl: string;
-    startedAt: string;
-    lastActiveAt: string;
-    endedAt: string | null;
-    isEphemeral: boolean;
-    expiresAt: string | null;
-}
-
-interface SessionsApiResponse {
-    sessions?: HubSession[];
-    persistedSessions?: PersistedSessionSummary[];
+    model?: { provider: string; id: string; name?: string } | null;
 }
 
 export interface SessionSidebarProps {
     onOpenSession: (sessionId: string) => void;
     onClearSelection: () => void;
     activeSessionId: string | null;
+    /** Active model info for the currently selected session (used for provider indicator) */
+    activeModel?: { provider: string; id: string; name?: string } | null;
     onRelayStatusChange?: (state: DotState) => void;
 }
 
@@ -51,6 +41,20 @@ function formatRelativeDate(isoString: string): string {
     if (days === 1) return "Yesterday";
     if (days < 7) return `${days} days ago`;
     return date.toLocaleDateString();
+}
+
+function isToday(isoString: string): boolean {
+    const date = new Date(isoString);
+    const now = new Date();
+    return (
+        date.getFullYear() === now.getFullYear() &&
+        date.getMonth() === now.getMonth() &&
+        date.getDate() === now.getDate()
+    );
+}
+
+function formatTime(isoString: string): string {
+    return new Date(isoString).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
 function cwdLabel(cwd: string): string {
@@ -75,39 +79,56 @@ function LiveDot({ state }: { state: DotState }) {
     );
 }
 
-export function SessionSidebar({
+export const SessionSidebar = React.memo(function SessionSidebar({
     onOpenSession,
     onClearSelection,
     activeSessionId,
+    activeModel,
     onRelayStatusChange,
 }: SessionSidebarProps) {
     const [collapsed, setCollapsed] = React.useState(false);
+
+    const [isDesktop, setIsDesktop] = React.useState(() => {
+        if (typeof window === "undefined") return true;
+        return window.matchMedia("(min-width: 768px)").matches;
+    });
+
+    React.useEffect(() => {
+        if (typeof window === "undefined") return;
+        const mql = window.matchMedia("(min-width: 768px)");
+        const onChange = (evt: MediaQueryListEvent) => setIsDesktop(evt.matches);
+        setIsDesktop(mql.matches);
+        if ("addEventListener" in mql) mql.addEventListener("change", onChange);
+        else (mql as any).addListener(onChange);
+        return () => {
+            if ("removeEventListener" in mql) mql.removeEventListener("change", onChange);
+            else (mql as any).removeListener(onChange);
+        };
+    }, []);
+
+    const effectiveCollapsed = isDesktop ? collapsed : false;
+
+    // Desktop-only: allow resizing the sidebar width.
+    const [sidebarWidth, setSidebarWidth] = React.useState(() => {
+        if (typeof localStorage === "undefined") return 240;
+        const raw = localStorage.getItem("pp.sidebarWidth");
+        const n = raw ? Number(raw) : NaN;
+        if (Number.isFinite(n)) return Math.min(Math.max(n, 220), 520);
+        return 240;
+    });
+
+    React.useEffect(() => {
+        if (!isDesktop) return;
+        if (effectiveCollapsed) return;
+        localStorage.setItem("pp.sidebarWidth", String(sidebarWidth));
+    }, [sidebarWidth, effectiveCollapsed, isDesktop]);
+
     const [liveSessions, setLiveSessions] = React.useState<HubSession[]>([]);
-    const [persistedSessions, setPersistedSessions] = React.useState<PersistedSessionSummary[]>([]);
     const [dotState, setDotState] = React.useState<DotState>("connecting");
 
     React.useEffect(() => {
         onRelayStatusChange?.(dotState);
     }, [dotState, onRelayStatusChange]);
-
-    const loadPersisted = React.useCallback(async () => {
-        try {
-            const res = await fetch("/api/sessions", { credentials: "include" });
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            const json = (await res.json()) as SessionsApiResponse;
-            setPersistedSessions(Array.isArray(json.persistedSessions) ? json.persistedSessions : []);
-        } catch {
-            setPersistedSessions([]);
-        }
-    }, []);
-
-    React.useEffect(() => {
-        loadPersisted();
-        const timer = setInterval(() => {
-            void loadPersisted();
-        }, 20_000);
-        return () => clearInterval(timer);
-    }, [loadPersisted]);
 
     React.useEffect(() => {
         let ws: WebSocket | null = null;
@@ -143,28 +164,36 @@ export function SessionSidebar({
                                     startedAt: s.startedAt,
                                     userId: s.userId,
                                     userName: s.userName,
+                                    sessionName: (s as any).sessionName ?? null,
                                     isEphemeral: s.isEphemeral,
                                     expiresAt: s.expiresAt,
                                     isActive: (s as any).isActive ?? false,
                                     lastHeartbeatAt: (s as any).lastHeartbeatAt ?? null,
+                                    model: (s as any).model ?? null,
                                 },
                             ];
                         });
-                        void loadPersisted();
                     } else if (msg.type === "session_removed") {
                         setLiveSessions((prev) => prev.filter((s) => s.sessionId !== msg.sessionId));
-                        void loadPersisted();
                     } else if (msg.type === "session_status") {
-                        // Update active status from heartbeat notifications.
-                        const { sessionId, isActive, lastHeartbeatAt } = msg as {
+                        // Update active status (and model) from heartbeat notifications.
+                        const { sessionId, isActive, lastHeartbeatAt, model, sessionName } = msg as {
                             sessionId: string;
                             isActive: boolean;
                             lastHeartbeatAt: string;
+                            model?: { provider: string; id: string; name?: string } | null;
+                            sessionName?: string | null;
                         };
                         setLiveSessions((prev) =>
                             prev.map((s) =>
                                 s.sessionId === sessionId
-                                    ? { ...s, isActive, lastHeartbeatAt }
+                                    ? {
+                                          ...s,
+                                          isActive,
+                                          lastHeartbeatAt,
+                                          model: model === undefined ? (s.model ?? null) : model,
+                                          sessionName: sessionName === undefined ? (s.sessionName ?? null) : sessionName,
+                                      }
                                     : s,
                             ),
                         );
@@ -190,7 +219,7 @@ export function SessionSidebar({
             destroyed = true;
             ws?.close();
         };
-    }, [loadPersisted]);
+    }, []);
 
     const liveGroups = React.useMemo(() => {
         const groups = new Map<string, HubSession[]>();
@@ -202,175 +231,169 @@ export function SessionSidebar({
         return groups;
     }, [liveSessions]);
 
-    const liveSessionIds = React.useMemo(() => new Set(liveSessions.map((s) => s.sessionId)), [liveSessions]);
+    const sidebarContent = (
+        <aside
+            className={cn(
+                "flex flex-col h-full bg-sidebar border-r border-sidebar-border flex-shrink-0 overflow-hidden relative w-full",
+            )}
+        >
+            <div className="flex items-center justify-between px-3 py-2 border-b border-sidebar-border flex-shrink-0">
+                <Button
+                    variant="ghost"
+                    size="icon"
+                    className="hidden md:inline-flex h-7 w-7 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
+                    onClick={() => setCollapsed(true)}
+                    aria-label="Collapse sidebar"
+                >
+                    <PanelLeftClose className="h-4 w-4" />
+                </Button>
+                <span className="text-[0.7rem] font-semibold uppercase tracking-widest text-sidebar-foreground/60">
+                    Sessions
+                </span>
+                <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
+                    onClick={onClearSelection}
+                    aria-label="Clear selected session"
+                    title="Clear selected session"
+                >
+                    <Plus className="h-4 w-4" />
+                </Button>
+            </div>
 
-    const historySessions = React.useMemo(
-        () => persistedSessions.filter((s) => !liveSessionIds.has(s.sessionId)),
-        [persistedSessions, liveSessionIds],
+            <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
+                <div className="flex items-center gap-1.5 px-3 py-1.5 flex-shrink-0">
+                    <span className="text-[0.65rem] font-semibold uppercase tracking-widest text-sidebar-foreground/50">
+                        Live Sessions
+                    </span>
+                    <LiveDot state={dotState} />
+                </div>
+                <ScrollArea className="flex-1 px-1.5 pb-1.5">
+                    {liveGroups.size === 0 ? (
+                        <p className="px-2 py-1 text-xs italic text-sidebar-foreground/40">No live sessions</p>
+                    ) : (
+                        Array.from(liveGroups.entries()).map(([cwd, sessions]) => (
+                            <div key={cwd} className="flex flex-col">
+                                <div className="flex items-center gap-1 px-1.5 py-1 min-w-0">
+                                    <span className="text-[0.65rem] text-sidebar-primary/70">⬡</span>
+                                    <span
+                                        className="text-[0.65rem] font-semibold text-sidebar-foreground/55 truncate flex-1"
+                                        title={cwd}
+                                    >
+                                        {cwdLabel(cwd)}
+                                    </span>
+                                </div>
+                                {sessions.map((s) => (
+                                    <button
+                                        key={s.sessionId}
+                                        onClick={() => onOpenSession(s.sessionId)}
+                                        title={`View session ${s.sessionId}`}
+                                        className={cn(
+                                            "flex flex-col gap-0.5 w-full min-w-0 px-2 py-1.5 rounded-md text-left text-sidebar-foreground hover:bg-sidebar-accent transition-colors",
+                                            activeSessionId === s.sessionId && "bg-sidebar-accent text-sidebar-accent-foreground",
+                                        )}
+                                    >
+                                        <div className="flex items-center gap-2 justify-between mt-1 mr-2 flex-row min-w-0">
+                                            <div className="flex flex-col items-center px-2 gap-1 w-3 flex-shrink-0 pt-0.5">
+                                                <span
+                                                    className={cn(
+                                                        "inline-block h-1.5 w-1.5 rounded-full transition-colors",
+                                                        s.isActive
+                                                            ? "bg-blue-500 shadow-[0_0_4px_#3b82f680] animate-pulse"
+                                                            : "bg-green-600",
+                                                    )}
+                                                    title={s.isActive ? "Actively generating" : "Session idle"}
+                                                />
+                                                <ProviderIcon
+                                                    provider={
+                                                        s.model?.provider ??
+                                                        (activeSessionId === s.sessionId ? activeModel?.provider : undefined) ??
+                                                        "unknown"
+                                                    }
+                                                    className="size-3 text-sidebar-foreground/70"
+                                                    title={
+                                                        s.model?.provider
+                                                            ? `${s.model.provider} · ${s.model.name ?? s.model.id}`
+                                                            : activeSessionId === s.sessionId && activeModel?.provider
+                                                              ? `${activeModel.provider} · ${activeModel.name ?? activeModel.id}`
+                                                              : "unknown"
+                                                    }
+                                                />
+                                            </div>
+                                            <div className="flex-1 min-w-0">
+                                                <div className="truncate text-[0.78rem] font-medium">
+                                                    {s.sessionName?.trim() || `Session ${s.sessionId.slice(0, 8)}…`}
+                                                </div>
+                                                {s.userName && (
+                                                    <div className="flex items-center gap-1">
+                                                        <User className="h-2.5 w-2.5 text-sidebar-foreground/40 flex-shrink-0" />
+                                                        <span className="text-[0.65rem] text-sidebar-foreground/50 truncate">
+                                                            {s.userName}
+                                                        </span>
+                                                    </div>
+                                                )}
+                                            </div>
+                                            <span className="text-[0.65rem] text-sidebar-foreground/50 flex-shrink-0">
+                                                {isToday(s.startedAt)
+                                                    ? formatTime(s.lastHeartbeatAt ?? s.startedAt)
+                                                    : formatRelativeDate(s.startedAt)}
+                                            </span>
+                                        </div>
+                                    </button>
+                                ))}
+                            </div>
+                        ))
+                    )}
+                </ScrollArea>
+            </div>
+        </aside>
     );
 
-    const storedGroups = React.useMemo(() => {
-        const groups = new Map<string, PersistedSessionSummary[]>();
-        for (const s of historySessions) {
-            const label = formatRelativeDate(s.lastActiveAt || s.startedAt);
-            if (!groups.has(label)) groups.set(label, []);
-            groups.get(label)!.push(s);
-        }
-        return groups;
-    }, [historySessions]);
-
-    return (
-        <>
-            <aside
-                className={cn(
-                    "flex flex-col h-full bg-sidebar border-r border-sidebar-border flex-shrink-0 overflow-hidden transition-[width,min-width] duration-200",
-                    collapsed ? "w-0 min-w-0" : "w-60 min-w-60",
-                )}
-            >
-                <div className="flex items-center justify-between px-3 py-2 border-b border-sidebar-border flex-shrink-0">
-                    <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
-                        onClick={() => setCollapsed(true)}
-                        aria-label="Collapse sidebar"
-                    >
-                        <PanelLeftClose className="h-4 w-4" />
-                    </Button>
-                    <span className="text-[0.7rem] font-semibold uppercase tracking-widest text-sidebar-foreground/60">
-                        Sessions
-                    </span>
-                    <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
-                        onClick={onClearSelection}
-                        aria-label="Clear selected session"
-                        title="Clear selected session"
-                    >
-                        <Plus className="h-4 w-4" />
-                    </Button>
-                </div>
-
-                {collapsed && (
+    if (effectiveCollapsed) {
+        return (
+            <aside className="hidden md:flex flex-col h-full bg-sidebar border-r border-sidebar-border flex-shrink-0 w-10">
+                <div className="p-2">
                     <Button
                         variant="outline"
                         size="icon"
-                        className="m-2 h-8 w-8 shadow-sm"
+                        className="h-8 w-8 shadow-sm"
                         onClick={() => setCollapsed(false)}
                         aria-label="Expand sidebar"
                     >
                         <PanelLeftOpen className="h-4 w-4" />
                     </Button>
-                )}
-
-                <div className="flex flex-col flex-shrink-0 overflow-hidden">
-                    <div className="flex items-center gap-1.5 px-3 py-1.5">
-                        <span className="text-[0.65rem] font-semibold uppercase tracking-widest text-sidebar-foreground/50">
-                            Live Sessions
-                        </span>
-                        <LiveDot state={dotState} />
-                    </div>
-                    <div className="flex flex-col px-1.5 pb-1.5 max-h-44 overflow-y-auto">
-                        {liveGroups.size === 0 ? (
-                            <p className="px-2 py-1 text-xs italic text-sidebar-foreground/40">No live sessions</p>
-                        ) : (
-                            Array.from(liveGroups.entries()).map(([cwd, sessions]) => (
-                                <div key={cwd}>
-                                    <div className="flex items-center gap-1 px-1.5 py-1">
-                                        <span className="text-[0.65rem] text-sidebar-primary/70">⬡</span>
-                                        <span
-                                            className="text-[0.65rem] font-semibold text-sidebar-foreground/55 truncate"
-                                            title={cwd}
-                                        >
-                                            {cwdLabel(cwd)}
-                                        </span>
-                                    </div>
-                                    {sessions.map((s) => (
-                                        <button
-                                            key={s.sessionId}
-                                            onClick={() => onOpenSession(s.sessionId)}
-                                            title={`View session ${s.sessionId}`}
-                                            className={cn(
-                                                "flex flex-col gap-0.5 w-full px-2 py-1.5 rounded-md text-left text-sidebar-foreground hover:bg-sidebar-accent transition-colors",
-                                                activeSessionId === s.sessionId && "bg-sidebar-accent text-sidebar-accent-foreground",
-                                            )}
-                                        >
-                                            <div className="flex items-center gap-2">
-                                                <span
-                                                    className={cn(
-                                                        "inline-block h-1.5 w-1.5 rounded-full flex-shrink-0 transition-colors",
-                                                        s.isActive
-                                                            ? "bg-green-400 shadow-[0_0_4px_#4ade8060] animate-pulse"
-                                                            : "bg-green-600",
-                                                    )}
-                                                    title={s.isActive ? "Agent actively processing" : "Session idle"}
-                                                />
-                                                <span className="flex-1 truncate text-[0.78rem] font-medium">
-                                                    Session {s.sessionId.slice(0, 8)}…
-                                                </span>
-                                                <span className="text-[0.65rem] text-sidebar-foreground/50 flex-shrink-0">
-                                                    {formatRelativeDate(s.startedAt)}
-                                                </span>
-                                            </div>
-                                            {s.userName && (
-                                                <div className="flex items-center gap-1 pl-3.5">
-                                                    <User className="h-2.5 w-2.5 text-sidebar-foreground/40 flex-shrink-0" />
-                                                    <span className="text-[0.65rem] text-sidebar-foreground/50 truncate">
-                                                        {s.userName}
-                                                    </span>
-                                                </div>
-                                            )}
-                                        </button>
-                                    ))}
-                                </div>
-                            ))
-                        )}
-                    </div>
-                </div>
-
-                <div className="flex flex-col flex-1 min-h-0 border-t border-sidebar-border overflow-hidden">
-                    <div className="px-3 py-1.5 flex-shrink-0">
-                        <span className="text-[0.65rem] font-semibold uppercase tracking-widest text-sidebar-foreground/50">
-                            History
-                        </span>
-                    </div>
-                    <ScrollArea className="flex-1 px-1.5 pb-1.5">
-                        {storedGroups.size === 0 ? (
-                            <p className="px-2 py-1 text-xs italic text-sidebar-foreground/40">No saved sessions</p>
-                        ) : (
-                            Array.from(storedGroups.entries()).map(([label, sessions]) => (
-                                <div key={label}>
-                                    <div className="px-1.5 py-1">
-                                        <span className="text-[0.65rem] font-semibold text-sidebar-foreground/55">
-                                            {label}
-                                        </span>
-                                    </div>
-                                    {sessions.map((s) => (
-                                        <button
-                                            key={s.sessionId}
-                                            onClick={() => onOpenSession(s.sessionId)}
-                                            title={s.sessionId}
-                                            className={cn(
-                                                "flex flex-col gap-0.5 w-full px-2 py-1.5 rounded-md text-left text-sidebar-foreground hover:bg-sidebar-accent transition-colors min-w-0",
-                                                s.sessionId === activeSessionId && "bg-sidebar-accent text-sidebar-accent-foreground",
-                                            )}
-                                        >
-                                            <span className="text-[0.8rem] font-medium truncate">
-                                                Session {s.sessionId.slice(0, 8)}…
-                                            </span>
-                                            <span className="text-[0.65rem] text-sidebar-foreground/50">
-                                                Last active {formatRelativeDate(s.lastActiveAt || s.startedAt)}
-                                            </span>
-                                        </button>
-                                    ))}
-                                </div>
-                            ))
-                        )}
-                    </ScrollArea>
                 </div>
             </aside>
+        );
+    }
 
-        </>
-    );
-}
+    if (isDesktop) {
+        return (
+            <Resizable
+                width={sidebarWidth}
+                height={0}
+                axis="x"
+                resizeHandles={["e"]}
+                minConstraints={[220, 0]}
+                maxConstraints={[520, 0]}
+                onResize={(_, data) => setSidebarWidth(data.size.width)}
+                onResizeStop={(_, data) => setSidebarWidth(data.size.width)}
+                handle={(_, ref) => (
+                    <div
+                        ref={ref as any}
+                        className="hidden md:block absolute top-0 right-0 h-full w-1.5 cursor-col-resize hover:bg-sidebar-border/60"
+                        aria-label="Resize sidebar"
+                        role="separator"
+                    />
+                )}
+            >
+                <div className="relative h-full flex-shrink-0" style={{ width: sidebarWidth }}>
+                    {sidebarContent}
+                </div>
+            </Resizable>
+        );
+    }
+
+    return sidebarContent;
+});
