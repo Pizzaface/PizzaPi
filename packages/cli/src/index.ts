@@ -5,7 +5,8 @@ import {
     InteractiveMode,
     ModelRegistry,
 } from "@mariozechner/pi-coding-agent";
-import { existsSync, readFileSync, readdirSync } from "fs";
+import { existsSync, readFileSync } from "fs";
+import { readFile, readdir } from "fs/promises";
 import { join } from "path";
 import { defaultAgentDir, loadConfig } from "./config.js";
 import { remoteExtension } from "./extensions/remote.js";
@@ -192,12 +193,16 @@ async function main() {
     const dotAgentsDir = join(cwd, ".agents");
     const agentFiles: Array<{ path: string; content: string }> = [];
     if (existsSync(dotAgentsDir)) {
-        for (const file of readdirSync(dotAgentsDir)) {
-            if (file.endsWith(".md")) {
+        const files = await readdir(dotAgentsDir);
+        const mdFiles = files.filter((file) => file.endsWith(".md"));
+        const loadedAgents = await Promise.all(
+            mdFiles.map(async (file) => {
                 const filePath = join(dotAgentsDir, file);
-                agentFiles.push({ path: filePath, content: readFileSync(filePath, "utf-8") });
-            }
-        }
+                const content = await readFile(filePath, "utf-8");
+                return { path: filePath, content };
+            })
+        );
+        agentFiles.push(...loadedAgents);
     }
 
     const loader = new DefaultResourceLoader({
