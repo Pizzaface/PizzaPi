@@ -115,21 +115,15 @@ export async function recordRelaySessionStart(input: RelaySessionStartInput): Pr
 }
 
 export async function touchRelaySession(sessionId: string): Promise<void> {
-    const row = await kysely
-        .selectFrom("relay_session")
-        .select(["isEphemeral"])
-        .where("id", "=", sessionId)
-        .executeTakeFirst();
-
-    if (!row) return;
-
     const nowIso = new Date().toISOString();
+    const newExpiry = ephemeralExpiryIso();
+
     await kysely
         .updateTable("relay_session")
-        .set({
+        .set((eb) => ({
             lastActiveAt: nowIso,
-            expiresAt: row.isEphemeral === 1 ? ephemeralExpiryIso() : null,
-        })
+            expiresAt: eb.case().when(eb.ref("isEphemeral"), "=", 1).then(newExpiry).else(eb.ref("expiresAt")).end(),
+        }))
         .where("id", "=", sessionId)
         .execute();
 }
@@ -148,22 +142,16 @@ export async function recordRelaySessionState(sessionId: string, state: unknown)
 }
 
 export async function recordRelaySessionEnd(sessionId: string): Promise<void> {
-    const row = await kysely
-        .selectFrom("relay_session")
-        .select(["isEphemeral"])
-        .where("id", "=", sessionId)
-        .executeTakeFirst();
-
-    if (!row) return;
-
     const nowIso = new Date().toISOString();
+    const newExpiry = ephemeralExpiryIso();
+
     await kysely
         .updateTable("relay_session")
-        .set({
+        .set((eb) => ({
             endedAt: nowIso,
             lastActiveAt: nowIso,
-            expiresAt: row.isEphemeral === 1 ? ephemeralExpiryIso() : null,
-        })
+            expiresAt: eb.case().when(eb.ref("isEphemeral"), "=", 1).then(newExpiry).else(eb.ref("expiresAt")).end(),
+        }))
         .where("id", "=", sessionId)
         .execute();
 }
