@@ -1,4 +1,5 @@
 import { expect, test, beforeAll } from "bun:test";
+import { randomUUID } from "crypto";
 import { kysely } from "../src/auth.js";
 import { ensureRelaySessionTables, touchRelaySession, recordRelaySessionStart, getPersistedRelaySessionSnapshot } from "../src/sessions/store.js";
 
@@ -7,7 +8,7 @@ beforeAll(async () => {
 });
 
 test("touchRelaySession updates ephemeral session correctly", async () => {
-    const sessionId = "ephemeral-1";
+    const sessionId = randomUUID();
     const now = new Date().toISOString();
     await recordRelaySessionStart({
         sessionId,
@@ -38,7 +39,7 @@ test("touchRelaySession updates ephemeral session correctly", async () => {
 });
 
 test("touchRelaySession updates non-ephemeral session correctly", async () => {
-    const sessionId = "persisted-1";
+    const sessionId = randomUUID();
     const now = new Date().toISOString();
     await recordRelaySessionStart({
         sessionId,
@@ -83,7 +84,7 @@ test("touchRelaySession updates non-ephemeral session correctly", async () => {
 });
 
 test("benchmark touchRelaySession", async () => {
-    const sessionId = "bench-1";
+    const sessionId = randomUUID();
     const now = new Date().toISOString();
     await recordRelaySessionStart({
         sessionId,
