@@ -22,10 +22,12 @@ interface RelayState {
 interface AskUserQuestionParams {
     question: string;
     placeholder?: string;
+    options?: string[];
 }
 
 interface AskUserQuestionDetails {
     question: string;
+    options?: string[];
     answer: string | null;
     source: "tui" | "web" | null;
     cancelled: boolean;
@@ -35,6 +37,7 @@ interface AskUserQuestionDetails {
 interface PendingAskUserQuestion {
     toolCallId: string;
     question: string;
+    options?: string[];
     resolve: (answer: string | null) => void;
 }
 
@@ -158,7 +161,8 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         const token = getOAuthToken("openai-codex");
         if (!token) return;
         try {
-            const res = await fetch("https://api.openai.com/api/codex/usage", {
+            // Codex subscription usage is served from ChatGPT backend APIs.
+            const res = await fetch("https://chatgpt.com/backend-api/wham/usage", {
                 headers: {
                     Authorization: `Bearer ${token}`,
                 },
@@ -169,12 +173,19 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 rate_limit?: {
                     primary?: { used_percent: number; window_minutes?: number | null; resets_at?: number | null } | null;
                     secondary?: { used_percent: number; window_minutes?: number | null; resets_at?: number | null } | null;
+                    primary_window?: { used_percent: number; limit_window_seconds?: number | null; reset_at?: number | null } | null;
+                    secondary_window?: { used_percent: number; limit_window_seconds?: number | null; reset_at?: number | null } | null;
+                } | null;
+                code_review_rate_limit?: {
+                    primary_window?: { used_percent: number; limit_window_seconds?: number | null; reset_at?: number | null } | null;
+                    secondary_window?: { used_percent: number; limit_window_seconds?: number | null; reset_at?: number | null } | null;
                 } | null;
                 additional_rate_limits?: Array<{
                     limit_name: string;
-                    metered_feature: string;
+                    metered_feature?: string;
                     rate_limit?: {
                         primary?: { used_percent: number; window_minutes?: number | null; resets_at?: number | null } | null;
+                        primary_window?: { used_percent: number; limit_window_seconds?: number | null; reset_at?: number | null } | null;
                     } | null;
                 }> | null;
             };
@@ -187,26 +198,52 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             }
 
             function toWindow(
-                w: { used_percent: number; window_minutes?: number | null; resets_at?: number | null } | null | undefined,
+                w:
+                    | { used_percent: number; window_minutes?: number | null; resets_at?: number | null }
+                    | { used_percent: number; limit_window_seconds?: number | null; reset_at?: number | null }
+                    | null
+                    | undefined,
                 label: string,
             ): UsageWindow | null {
-                if (!w || w.resets_at == null) return null;
+                if (!w) return null;
+                const used = typeof w.used_percent === "number" ? w.used_percent : null;
+                const resetAt =
+                    "resets_at" in w
+                        ? w.resets_at
+                        : "reset_at" in w
+                          ? w.reset_at
+                          : null;
+                if (used == null || resetAt == null) return null;
+
+                const minutes =
+                    "window_minutes" in w
+                        ? (w.window_minutes ?? undefined)
+                        : "limit_window_seconds" in w && typeof w.limit_window_seconds === "number"
+                          ? Math.max(1, Math.round(w.limit_window_seconds / 60))
+                          : undefined;
+
                 return {
-                    label: w.window_minutes ? windowLabel(w.window_minutes) : label,
-                    utilization: w.used_percent,
-                    resets_at: new Date(w.resets_at * 1000).toISOString(),
+                    label: minutes ? windowLabel(minutes) : label,
+                    utilization: used,
+                    resets_at: new Date(resetAt * 1000).toISOString(),
                 };
             }
 
             const windows: UsageWindow[] = [];
-            const primary = toWindow(raw.rate_limit?.primary, "Primary");
+            const primary = toWindow(raw.rate_limit?.primary_window ?? raw.rate_limit?.primary, "Primary");
             if (primary) windows.push(primary);
-            const secondary = toWindow(raw.rate_limit?.secondary, "Secondary");
+            const secondary = toWindow(raw.rate_limit?.secondary_window ?? raw.rate_limit?.secondary, "Secondary");
             if (secondary) windows.push(secondary);
+
+            const review = toWindow(raw.code_review_rate_limit?.primary_window, "Code Review");
+            if (review) {
+                review.label = "Code Review";
+                windows.push(review);
+            }
 
             // Additional metered features (e.g. background tasks)
             for (const extra of raw.additional_rate_limits ?? []) {
-                const w = toWindow(extra.rate_limit?.primary, extra.limit_name);
+                const w = toWindow(extra.rate_limit?.primary_window ?? extra.rate_limit?.primary, extra.limit_name);
                 if (w) {
                     w.label = extra.limit_name;
                     windows.push(w);
@@ -928,7 +965,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
 
     function disconnectedStatusText(): string | undefined {
         if (isDisabled()) return undefined;
-        return apiKey() ? "Disconnected from hub" : undefined;
+        return apiKey() ? "Disconnected from Relay" : undefined;
     }
 
     function consumePendingAskUserQuestionFromWeb(text: string): boolean {
@@ -1004,6 +1041,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 pendingAskUserQuestion = {
                     toolCallId,
                     question: params.question,
+                    options: params.options,
                     resolve: (answer) => {
                         webDone = true;
                         if (answer) {
@@ -1017,8 +1055,15 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             }
 
             if (canAskViaTui) {
+                // If options are provided, format them into the question for the TUI
+                // (until we have a proper select UI method).
+                let displayQuestion = params.question;
+                if (params.options && params.options.length > 0) {
+                    displayQuestion += ` (Options: ${params.options.join(", ")})`;
+                }
+                
                 void ctx.ui
-                    .input(params.question, params.placeholder, { signal: localAbort.signal })
+                    .input(displayQuestion, params.placeholder, { signal: localAbort.signal })
                     .then((value) => {
                         localDone = true;
                         const answer = value?.trim();
@@ -1167,6 +1212,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                     // concatenated string ends up shorter than `width`.
                     const locationLine = layoutLeftRight(pwd, modelBadge, width, truncateMiddle);
                     const statsLine = layoutLeftRight(statsText, relayStatus, width, truncateEnd);
+                    const relayStatusColor = relayStatus.toLowerCase().includes("disconnected") ? "error" : "success";
 
                     const line1Raw = locationLine.left + locationLine.pad + locationLine.right;
                     const line2Raw = statsLine.left + statsLine.pad + statsLine.right;
@@ -1176,7 +1222,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
 
                     return [
                         theme.fg("dim", locationLine.left) + locationLine.pad + theme.fg("dim", locationLine.right) + line1Pad,
-                        theme.fg("dim", statsLine.left) + statsLine.pad + theme.fg("success", statsLine.right) + line2Pad,
+                        theme.fg("dim", statsLine.left) + statsLine.pad + theme.fg(relayStatusColor as any, statsLine.right) + line2Pad,
                     ];
                 },
             };
@@ -1405,6 +1451,11 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                     type: "string",
                     description: "Optional placeholder hint for the answer input.",
                 },
+                options: {
+                    type: "array",
+                    items: { type: "string" },
+                    description: "Optional list of predefined choices for the user to select from.",
+                },
             },
             required: ["question"],
             additionalProperties: false,
@@ -1415,6 +1466,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                     content: [{ type: "text", text: "A different AskUserQuestion prompt is already pending." }],
                     details: {
                         question: pendingAskUserQuestion.question,
+                        options: pendingAskUserQuestion.options,
                         answer: null,
                         source: null,
                         cancelled: true,
@@ -1430,6 +1482,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                     content: [{ type: "text", text: "AskUserQuestion requires a non-empty question." }],
                     details: {
                         question: "",
+                        options: params.options,
                         answer: null,
                         source: null,
                         cancelled: true,
@@ -1441,6 +1494,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 content: [{ type: "text", text: `Waiting for answer: ${question}` }],
                 details: {
                     question,
+                    options: params.options,
                     answer: null,
                     source: null,
                     cancelled: false,
@@ -1450,7 +1504,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
 
             const result = await askUserQuestion(
                 toolCallId,
-                { question, placeholder: params.placeholder },
+                { question, placeholder: params.placeholder, options: params.options },
                 signal,
                 ctx,
             );
@@ -1460,6 +1514,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                     content: [{ type: "text", text: "User did not provide an answer." }],
                     details: {
                         question,
+                        options: params.options,
                         answer: null,
                         source: null,
                         cancelled: true,
@@ -1471,6 +1526,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 content: [{ type: "text", text: `Answer received: ${result.answer}` }],
                 details: {
                     question,
+                    options: params.options,
                     answer: result.answer,
                     source: result.source,
                     cancelled: false,
@@ -1482,6 +1538,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 content: [{ type: "text", text: `User answered: ${result.answer}` }],
                 details: {
                     question,
+                    options: params.options,
                     answer: result.answer,
                     source: result.source,
                     cancelled: false,

@@ -20,6 +20,22 @@ export type ProviderUsageMap = Record<string, ProviderUsageData>;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
+    anthropic: "Anthropic",
+    "openai-codex": "OpenAI Codex",
+    openai: "OpenAI",
+    google: "Google",
+    "google-vertex": "Google Vertex",
+    amazon: "Amazon Bedrock",
+    bedrock: "Amazon Bedrock",
+    github: "GitHub",
+    nvidia: "NVIDIA",
+};
+
+function getProviderDisplayName(providerId: string): string {
+    return PROVIDER_DISPLAY_NAMES[providerId.toLowerCase()] ?? providerId;
+}
+
 function usageColor(pct: number) {
     if (pct >= 90) return "bg-red-500 dark:bg-red-400";
     if (pct >= 70) return "bg-amber-400 dark:bg-amber-300";
@@ -62,12 +78,42 @@ function ProviderSection({ providerId, data }: { providerId: string; data: Provi
         <div className="flex flex-col gap-2">
             <div className="flex items-center gap-1.5">
                 <ProviderIcon provider={providerId} className="size-3 flex-shrink-0" />
-                <span className="text-[0.7rem] font-semibold capitalize text-foreground">{providerId}</span>
+                <span className="text-[0.7rem] font-semibold text-foreground">{getProviderDisplayName(providerId)}</span>
             </div>
             {data.windows.map((w) => (
                 <UsageBar key={w.label} window={w} />
             ))}
         </div>
+    );
+}
+
+function dotColorClass(pct: number): string {
+    if (pct >= 90) return "bg-red-500 dark:bg-red-400 shadow-[0_0_4px_#ef444480] dark:shadow-[0_0_6px_#f8717180]";
+    if (pct >= 70) return "bg-amber-400 dark:bg-amber-300 shadow-[0_0_4px_#fbbf2480] dark:shadow-[0_0_6px_#fcd34d80]";
+    return "bg-green-500 dark:bg-green-400 shadow-[0_0_4px_#22c55e80] dark:shadow-[0_0_6px_#4ade8080]";
+}
+
+function ProviderBadge({ providerId, data }: { providerId: string; data: ProviderUsageData }) {
+    const pct = Math.min(100, Math.max(0, data.windows[0].utilization));
+    return (
+        <TooltipProvider delayDuration={200}>
+            <Tooltip>
+                <TooltipTrigger asChild>
+                    <button
+                        className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors cursor-default select-none"
+                        aria-label={`${getProviderDisplayName(providerId)} subscription usage`}
+                        type="button"
+                    >
+                        <ProviderIcon provider={providerId} className="size-3 flex-shrink-0 hidden sm:block" />
+                        <span className={cn("inline-block h-2 w-2 rounded-full flex-shrink-0", dotColorClass(pct))} />
+                        <span className="hidden sm:inline tabular-nums">{pct.toFixed(0)}%</span>
+                    </button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" className="w-56 p-3 space-y-2 bg-popover text-popover-foreground border border-border">
+                    <ProviderSection providerId={providerId} data={data} />
+                </TooltipContent>
+            </Tooltip>
+        </TooltipProvider>
     );
 }
 
@@ -81,38 +127,11 @@ export function UsageIndicator({ usage }: { usage: ProviderUsageMap | null }) {
 
     if (entries.length === 0) return null;
 
-    // Badge: show the first window of the first provider
-    const [firstId, firstData] = entries[0];
-    const primary = firstData.windows[0];
-    const pct = Math.min(100, Math.max(0, primary.utilization));
-    const dotColor =
-        pct >= 90
-            ? "bg-red-500 dark:bg-red-400 shadow-[0_0_4px_#ef444480] dark:shadow-[0_0_6px_#f8717180]"
-            : pct >= 70
-              ? "bg-amber-400 dark:bg-amber-300 shadow-[0_0_4px_#fbbf2480] dark:shadow-[0_0_6px_#fcd34d80]"
-              : "bg-green-500 dark:bg-green-400 shadow-[0_0_4px_#22c55e80] dark:shadow-[0_0_6px_#4ade8080]";
-
     return (
-        <TooltipProvider delayDuration={200}>
-            <Tooltip>
-                <TooltipTrigger asChild>
-                    <button
-                        className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors cursor-default select-none"
-                        aria-label="Provider subscription usage"
-                        type="button"
-                    >
-                        <ProviderIcon provider={firstId} className={cn("size-3 flex-shrink-0 hidden sm:block")} />
-                        <span className={cn("inline-block h-2 w-2 rounded-full flex-shrink-0", dotColor)} />
-                        <span className="hidden sm:inline tabular-nums">{pct.toFixed(0)}%</span>
-                    </button>
-                </TooltipTrigger>
-                <TooltipContent side="bottom" className="w-56 p-3 space-y-4 bg-popover text-popover-foreground border border-border">
-                    <p className="text-xs font-semibold text-foreground">Subscription usage</p>
-                    {entries.map(([id, data]) => (
-                        <ProviderSection key={id} providerId={id} data={data} />
-                    ))}
-                </TooltipContent>
-            </Tooltip>
-        </TooltipProvider>
+        <div className="flex items-center gap-3">
+            {entries.map(([id, data]) => (
+                <ProviderBadge key={id} providerId={id} data={data} />
+            ))}
+        </div>
     );
 }

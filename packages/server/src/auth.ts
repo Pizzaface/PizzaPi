@@ -147,6 +147,7 @@ export const auth = betterAuth({
     database: { dialect, type: "sqlite", transaction: true },
     trustedOrigins: [
         process.env.PIZZAPI_BASE_URL ?? "http://localhost:5173",
+        "http://127.0.0.1:5173",
         "http://jordans-mac-mini.tail65556b.ts.net:5173",
         "https://jordans-mac-mini.tail65556b.ts.net:5173",
     ],

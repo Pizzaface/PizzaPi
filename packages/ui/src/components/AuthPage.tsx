@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import { PizzaLogo } from "@/components/PizzaLogo";
 import { signIn, signUp } from "@/lib/auth-client";
 
 interface AuthPageProps {
@@ -51,10 +52,13 @@ export function AuthPage({ onAuthenticated }: AuthPageProps) {
     }
 
     return (
-        <div className="flex h-screen w-screen items-center justify-center bg-background">
+        <div className="flex min-h-[100dvh] w-full items-start justify-center bg-background p-4 overflow-y-auto pp-safe-top pp-safe-bottom sm:items-center">
             <Card className="w-full max-w-sm">
                 <CardHeader>
-                    <CardTitle className="text-xl">PizzaPi</CardTitle>
+                    <div className="flex justify-center">
+                        <PizzaLogo />
+                    </div>
+                    <CardTitle className="text-xl text-center">PizzaPi</CardTitle>
                     <CardDescription>
                         {tab === "signin" ? "Sign in to your account." : "Create a new account."}
                     </CardDescription>

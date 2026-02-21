@@ -45,18 +45,30 @@ async function main() {
             process.exit(1);
         }
 
-        const res = await fetch("https://api.anthropic.com/api/oauth/usage", {
-            headers: {
-                Authorization: `Bearer ${accessToken}`,
-                "anthropic-version": "2023-06-01",
-                "anthropic-beta": "oauth-2025-04-20",
-            },
-        });
+        let res: Response;
+        try {
+            res = await fetch("https://api.anthropic.com/api/oauth/usage", {
+                headers: {
+                    Authorization: `Bearer ${accessToken}`,
+                    "anthropic-version": "2023-06-01",
+                    "anthropic-beta": "oauth-2025-04-20",
+                },
+            });
+        } catch (err) {
+            const cause = err instanceof Error && (err as any).cause instanceof Error ? (err as any).cause.message : null;
+            const detail = cause ?? (err instanceof Error ? err.message : String(err));
+            console.error(`Failed to fetch usage: network error (${detail})`);
+            process.exit(1);
+        }
 
         if (!res.ok) {
             console.error(`Failed to fetch usage: HTTP ${res.status} ${res.statusText}`);
-            const body = await res.text();
-            if (body) console.error(body);
+            try {
+                const body = await res.text();
+                if (body) console.error(body);
+            } catch {
+                // ignore body read errors
+            }
             process.exit(1);
         }
 
@@ -72,7 +84,13 @@ async function main() {
             extra_usage: ExtraUsage;
             [key: string]: unknown;
         };
-        const usage = (await res.json()) as UsageResponse;
+        let usage: UsageResponse;
+        try {
+            usage = (await res.json()) as UsageResponse;
+        } catch (err) {
+            console.error(`Failed to parse usage response: ${err instanceof Error ? err.message : String(err)}`);
+            process.exit(1);
+        }
 
         if (args.includes("--json")) {
             console.log(JSON.stringify(usage, null, 2));

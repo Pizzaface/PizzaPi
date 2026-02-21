@@ -1,4 +1,5 @@
 import * as React from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   ConversationEmptyState,
 } from "@/components/ai-elements/conversation";
@@ -69,7 +70,7 @@ export interface SessionViewerProps {
   /** Active model info for the current session (used to show provider indicator) */
   activeModel?: { provider: string; id: string; name?: string; reasoning?: boolean } | null;
   activeToolCalls?: Map<string, string>;
-  pendingQuestion?: string | null;
+  pendingQuestion?: { question: string; options?: string[] } | null;
   availableCommands?: Array<{ name: string; description?: string }>;
   resumeSessions?: ResumeSessionOption[];
   resumeSessionsLoading?: boolean;
@@ -246,7 +247,7 @@ const SessionMessageItem = React.memo(({ message, activeToolCalls, agentActive, 
       <Message from={toMessageRole(message.role)}>
         <MessageContent
           className={cn(
-            "max-w-3xl rounded-lg border px-3 py-2",
+            "pp-message-content max-w-3xl min-w-0 rounded-lg border px-3 py-2 break-words",
             message.role === "user"
               ? "ml-auto bg-primary text-primary-foreground border-primary/40"
               : "bg-card text-card-foreground border-border",
@@ -516,6 +517,13 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
   const scrollRef = React.useRef<HTMLDivElement | null>(null);
   const [isNearBottom, setIsNearBottom] = React.useState(true);
 
+  const rowVirtualizer = useVirtualizer({
+    count: visibleMessages.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => 140,
+    overscan: 10,
+  });
+
   const updateNearBottomState = React.useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -523,11 +531,18 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     setIsNearBottom(distanceFromBottom < 80);
   }, []);
 
-  const scrollToBottom = React.useCallback((behavior: ScrollBehavior = "auto") => {
+  const scrollToBottom = React.useCallback((behavior: "auto" | "smooth" = "auto") => {
     const el = scrollRef.current;
     if (!el) return;
+
+    // Prefer virtualizer alignment to avoid off-by-one issues with dynamic row heights.
+    if (visibleMessages.length > 0) {
+      rowVirtualizer.scrollToIndex(visibleMessages.length - 1, { align: "end", behavior });
+      return;
+    }
+
     el.scrollTo({ top: el.scrollHeight, behavior });
-  }, []);
+  }, [rowVirtualizer, visibleMessages.length]);
 
   // On session change, jump to bottom immediately.
   React.useEffect(() => {
@@ -636,16 +651,36 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
               className="h-full overflow-y-auto"
               onScroll={updateNearBottomState}
             >
-              <div className="flex flex-col py-2">
-                {visibleMessages.map((message, msgIdx) => (
-                  <SessionMessageItem
-                    key={message.key}
-                    message={message}
-                    activeToolCalls={activeToolCalls}
-                    agentActive={agentActive}
-                    isLast={msgIdx === visibleMessages.length - 1}
-                  />
-                ))}
+              <div
+                className="w-full py-2"
+                style={{ height: rowVirtualizer.getTotalSize(), position: "relative" }}
+              >
+                {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+                  const message = visibleMessages[virtualRow.index]!;
+                  const isLast = virtualRow.index === visibleMessages.length - 1;
+
+                  return (
+                    <div
+                      key={message.key}
+                      ref={rowVirtualizer.measureElement}
+                      data-index={virtualRow.index}
+                      className="w-full"
+                      style={{
+                        position: "absolute",
+                        top: 0,
+                        left: 0,
+                        transform: `translateY(${virtualRow.start}px)`,
+                      }}
+                    >
+                      <SessionMessageItem
+                        message={message}
+                        activeToolCalls={activeToolCalls}
+                        agentActive={agentActive}
+                        isLast={isLast}
+                      />
+                    </div>
+                  );
+                })}
               </div>
             </div>
 
@@ -664,10 +699,30 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
         )}
       </div>
 
-      <div className="border-t border-border px-3 py-2">
+      <div className="border-t border-border px-3 py-2 pp-safe-bottom">
         {pendingQuestion && sessionId && (
           <div className="mb-2 rounded-md border border-amber-400/50 bg-amber-500/10 px-2.5 py-2 text-xs text-amber-200">
-            <span className="font-semibold">AskUserQuestion:</span> {pendingQuestion}
+            <span className="font-semibold">AskUserQuestion:</span> {pendingQuestion.question}
+            {pendingQuestion.options && pendingQuestion.options.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-2">
+                {pendingQuestion.options.map((option) => (
+                  <Button
+                    key={option}
+                    variant="outline"
+                    size="sm"
+                    className="h-7 border-amber-400/30 bg-background/20 text-amber-100 hover:bg-amber-400/20 hover:text-white"
+                    onClick={() => {
+                      if (onSendInput) {
+                        onSendInput(option);
+                        setInput("");
+                      }
+                    }}
+                  >
+                    {option}
+                  </Button>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
@@ -811,7 +866,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
               placeholder={
                 sessionId
                   ? pendingQuestion
-                    ? `Answer: ${pendingQuestion}`
+                    ? `Answer: ${pendingQuestion.question}`
                     : availableCommands && availableCommands.length > 0
                       ? `Send a message… (try /${availableCommands[0]!.name})`
                       : "Send a message to this session…"

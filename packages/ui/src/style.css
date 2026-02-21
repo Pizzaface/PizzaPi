@@ -120,6 +120,35 @@
     font-family: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
     @apply bg-background text-foreground;
   }
+
+  /* Ensure long content wraps on mobile (URLs, tool ids, long tokens, etc.) */
+  .pp-message-content {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .pp-message-content pre,
+  .pp-message-content code {
+    max-width: 100%;
+  }
+
+  .pp-message-content pre {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .pp-message-content table {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .pp-message-content img,
+  .pp-message-content video {
+    max-width: 100%;
+    height: auto;
+  }
 }
 
 /* Mobile layout helpers (viewer/sidebar sizing) */
@@ -128,14 +157,22 @@
     transition: transform 200ms ease;
   }
 
-  /* Use dynamic viewport units when available so the chat fits under mobile URL bars */
-  .pp-shell {
-    height: 100dvh;
+  /* Safe-area padding helpers (iOS notch / home indicator) */
+  .pp-safe-top {
+    padding-top: env(safe-area-inset-top);
+  }
+  .pp-safe-bottom {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .pp-safe-left {
+    padding-left: env(safe-area-inset-left);
+  }
+  .pp-safe-right {
+    padding-right: env(safe-area-inset-right);
   }
 
-  @supports not (height: 100dvh) {
-    .pp-shell {
-      height: 100vh;
-    }
+  /* Shell should fill the available space inside the app (app root controls viewport height) */
+  .pp-shell {
+    height: 100%;
   }
 }

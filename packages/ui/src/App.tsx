@@ -4,6 +4,7 @@ import { SessionViewer, type RelayMessage } from "@/components/SessionViewer";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { AuthPage } from "@/components/AuthPage";
 import { ApiKeyManager } from "@/components/ApiKeyManager";
+import { PizzaLogo } from "@/components/PizzaLogo";
 import { authClient, useSession, signOut } from "@/lib/auth-client";
 import { getRelayWsBase } from "@/lib/relay";
 import { Button } from "@/components/ui/button";
@@ -226,7 +227,7 @@ export function App() {
   const [viewerStatus, setViewerStatus] = React.useState("Idle");
   const [relayStatus, setRelayStatus] = React.useState<DotState>("connecting");
   const [showApiKeys, setShowApiKeys] = React.useState(false);
-  const [pendingQuestion, setPendingQuestion] = React.useState<{ toolCallId: string; question: string } | null>(null);
+  const [pendingQuestion, setPendingQuestion] = React.useState<{ toolCallId: string; question: string; options?: string[] } | null>(null);
   const [activeToolCalls, setActiveToolCalls] = React.useState<Map<string, string>>(new Map());
   const [activeModel, setActiveModel] = React.useState<ConfiguredModelInfo | null>(null);
   const [sessionName, setSessionName] = React.useState<string | null>(null);
@@ -253,6 +254,15 @@ export function App() {
 
   // Mobile layout
   const [sidebarOpen, setSidebarOpen] = React.useState(false);
+
+  // Prevent the underlying content from scrolling when the mobile sidebar is open.
+  React.useEffect(() => {
+    const prev = document.body.style.overflow;
+    if (sidebarOpen) document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [sidebarOpen]);
 
   const viewerWsRef = React.useRef<WebSocket | null>(null);
   const activeSessionRef = React.useRef<string | null>(null);
@@ -759,10 +769,14 @@ export function App() {
     if (type === "tool_execution_start" && evt.toolName === "AskUserQuestion") {
       const args = evt.args as Record<string, unknown> | undefined;
       const question = typeof args?.question === "string" ? args.question.trim() : "";
+      const rawOptions = Array.isArray(args?.options) ? args.options : undefined;
+      const options = rawOptions ? (rawOptions as unknown[]).filter((o): o is string => typeof o === "string") : undefined;
+
       if (question) {
         setPendingQuestion({
           toolCallId: typeof evt.toolCallId === "string" ? evt.toolCallId : "ask-user-question",
           question,
+          options,
         });
         setViewerStatus("Waiting for answer…");
       }
@@ -778,10 +792,16 @@ export function App() {
           ? details.question
           : "";
       const question = rawQuestion.trim();
+
+      const rawOptions = (Array.isArray(partial?.options) ? partial.options : undefined)
+        ?? (Array.isArray(details?.options) ? details.options : undefined);
+      const options = rawOptions ? (rawOptions as unknown[]).filter((o): o is string => typeof o === "string") : undefined;
+
       if (question) {
         setPendingQuestion({
           toolCallId: typeof evt.toolCallId === "string" ? evt.toolCallId : "ask-user-question",
           question,
+          options,
         });
       }
       return;
@@ -1150,9 +1170,10 @@ export function App() {
   }
 
   return (
-    <div className="flex h-screen w-screen flex-col overflow-hidden bg-background">
-      <header className="flex items-center justify-between gap-3 border-b bg-background px-4 py-2 flex-shrink-0">
+    <div className="flex h-[100dvh] w-full flex-col overflow-hidden bg-background pp-safe-left pp-safe-right">
+      <header className="flex items-center justify-between gap-3 border-b bg-background px-4 pb-2 pt-[calc(0.5rem_+_env(safe-area-inset-top))] flex-shrink-0">
         <div className="flex items-center gap-3 flex-shrink-0">
+          <PizzaLogo />
           <span className="text-sm font-semibold">PizzaPi</span>
           <Separator orientation="vertical" className="h-5" />
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -1336,7 +1357,7 @@ export function App() {
             messages={messages}
             activeModel={activeModel}
             activeToolCalls={activeToolCalls}
-            pendingQuestion={pendingQuestion?.question ?? null}
+            pendingQuestion={pendingQuestion}
             availableCommands={availableCommands}
             resumeSessions={resumeSessions}
             resumeSessionsLoading={resumeSessionsLoading}
