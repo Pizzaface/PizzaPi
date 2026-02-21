@@ -268,6 +268,8 @@ const SessionMessageItem = React.memo(({ message, activeToolCalls, agentActive, 
             message.toolInput,
             message.toolCallId ?? message.key,
             agentActive && isLast,
+            message.thinking,
+            message.thinkingDuration,
           )}
         </MessageContent>
       </Message>
@@ -648,12 +650,12 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
           <>
             <div
               ref={scrollRef}
-              className="h-full overflow-y-auto"
+              className="h-full overflow-y-auto flex flex-col"
               onScroll={updateNearBottomState}
             >
               <div
-                className="w-full py-2"
-                style={{ height: rowVirtualizer.getTotalSize(), position: "relative" }}
+                className="w-full py-2 mt-auto"
+                style={{ height: rowVirtualizer.getTotalSize(), position: "relative", flexShrink: 0 }}
               >
                 {rowVirtualizer.getVirtualItems().map((virtualRow) => {
                   const message = visibleMessages[virtualRow.index]!;

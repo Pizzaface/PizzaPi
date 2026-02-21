@@ -12,10 +12,12 @@ import {
     getSessions,
     getRunner,
     publishSessionEvent,
+    recordRunnerSession,
     registerRunner,
     registerTuiSession,
     removeHubClient,
     removeRunner,
+    removeRunnerSession,
     removeViewer,
     sendSnapshotToViewer,
     touchSessionActivity,
@@ -60,6 +62,7 @@ function augmentMessageThinkingDurations(
 }
 import { getPersistedRelaySessionSnapshot } from "../sessions/store.js";
 import { getCachedRelayEvents } from "../sessions/redis.js";
+import { resolveSpawnError, resolveSpawnReady } from "./runner-control.js";
 
 function findLatestSnapshotEvent(cachedEvents: unknown[]): Record<string, unknown> | null {
     for (let i = cachedEvents.length - 1; i >= 0; i--) {
@@ -402,7 +405,12 @@ function handleViewerMessage(ws: ServerWebSocket<WsData>, msg: Record<string, un
 
 function handleRunnerMessage(ws: ServerWebSocket<WsData>, msg: Record<string, unknown>) {
     if (msg.type === "register_runner") {
-        const runnerId = registerRunner(ws);
+        const name = typeof msg.name === "string" ? msg.name : null;
+        const roots = Array.isArray(msg.roots)
+            ? (msg.roots as unknown[]).filter((r): r is string => typeof r === "string")
+            : [];
+
+        const runnerId = registerRunner(ws, { name, roots });
         ws.data.runnerId = runnerId;
         ws.send(JSON.stringify({ type: "runner_registered", runnerId }));
         return;
@@ -415,9 +423,25 @@ function handleRunnerMessage(ws: ServerWebSocket<WsData>, msg: Record<string, un
         return;
     }
 
-    // session_ready / session_killed / sessions_list — forward to web UI viewers if any
-    if (msg.type === "session_ready" || msg.type === "session_killed" || msg.type === "sessions_list") {
+    // session_ready / session_error / session_killed / sessions_list — forward to web UI viewers if any
+    if (msg.type === "session_ready" || msg.type === "session_error" || msg.type === "session_killed" || msg.type === "sessions_list") {
         const sessionId = msg.sessionId as string | undefined;
+        const runnerId = ws.data.runnerId;
+
+        if (runnerId && sessionId && msg.type === "session_ready") {
+            recordRunnerSession(runnerId, sessionId);
+            resolveSpawnReady(sessionId);
+        }
+
+        if (runnerId && sessionId && msg.type === "session_error") {
+            const message = typeof (msg as any).message === "string" ? String((msg as any).message) : "Runner spawn failed";
+            resolveSpawnError(sessionId, message);
+        }
+
+        if (runnerId && sessionId && msg.type === "session_killed") {
+            removeRunnerSession(runnerId, sessionId);
+        }
+
         if (sessionId) {
             broadcastToViewers(sessionId, JSON.stringify(msg));
         }

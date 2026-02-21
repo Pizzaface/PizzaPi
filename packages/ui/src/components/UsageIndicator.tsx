@@ -25,6 +25,8 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
     "openai-codex": "OpenAI Codex",
     openai: "OpenAI",
     google: "Google",
+    "google-gemini-cli": "Gemini",
+    "google-antigravity": "Gemini",
     "google-vertex": "Google Vertex",
     amazon: "Amazon Bedrock",
     bedrock: "Amazon Bedrock",
@@ -94,19 +96,20 @@ function dotColorClass(pct: number): string {
 }
 
 function ProviderBadge({ providerId, data }: { providerId: string; data: ProviderUsageData }) {
-    const pct = Math.min(100, Math.max(0, data.windows[0].utilization));
+    const usedPct = Math.min(100, Math.max(0, data.windows[0].utilization));
+    const remainingPct = Math.max(0, 100 - usedPct);
     return (
         <TooltipProvider delayDuration={200}>
             <Tooltip>
                 <TooltipTrigger asChild>
                     <button
                         className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors cursor-default select-none"
-                        aria-label={`${getProviderDisplayName(providerId)} subscription usage`}
+                        aria-label={`${getProviderDisplayName(providerId)} subscription usage (${remainingPct.toFixed(0)}% remaining)`}
                         type="button"
                     >
                         <ProviderIcon provider={providerId} className="size-3 flex-shrink-0 hidden sm:block" />
-                        <span className={cn("inline-block h-2 w-2 rounded-full flex-shrink-0", dotColorClass(pct))} />
-                        <span className="hidden sm:inline tabular-nums">{pct.toFixed(0)}%</span>
+                        <span className={cn("inline-block h-2 w-2 rounded-full flex-shrink-0", dotColorClass(usedPct))} />
+                        <span className="hidden sm:inline tabular-nums">{remainingPct.toFixed(0)}%</span>
                     </button>
                 </TooltipTrigger>
                 <TooltipContent side="bottom" className="w-56 p-3 space-y-2 bg-popover text-popover-foreground border border-border">

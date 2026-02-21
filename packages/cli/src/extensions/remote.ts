@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { buildSessionContext, SessionManager, type ExtensionContext, type ExtensionFactory, type SessionInfo } from "@mariozechner/pi-coding-agent";
+import { AuthStorage, buildSessionContext, SessionManager, type ExtensionContext, type ExtensionFactory, type SessionInfo } from "@mariozechner/pi-coding-agent";
 import { loadConfig, defaultAgentDir } from "../config.js";
 import { getMcpBridge } from "./mcp-bridge.js";
 import type { RemoteExecRequest, RemoteExecResponse } from "./remote-commands.js";
@@ -81,7 +81,9 @@ export const remoteExtension: ExtensionFactory = (pi) => {
     let shuttingDown = false;
     let latestCtx: ExtensionContext | null = null;
     let pendingAskUserQuestion: PendingAskUserQuestion | null = null;
-    let relaySessionId: string = randomUUID();
+    let relaySessionId: string = (process.env.PIZZAPI_SESSION_ID && process.env.PIZZAPI_SESSION_ID.trim().length > 0)
+        ? process.env.PIZZAPI_SESSION_ID.trim()
+        : randomUUID();
 
     // ── Provider usage cache ──────────────────────────────────────────────────
     // Generic normalized shape shared with the UI.
@@ -258,10 +260,69 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         }
     }
 
+    async function refreshGeminiUsage(): Promise<void> {
+        if (isCached("google-gemini-cli")) return;
+        // Credentials are stored as JSON: { token, projectId }
+        let token: string;
+        let projectId: string;
+        try {
+            const config = loadConfig(process.cwd());
+            const agentDir = config.agentDir ? config.agentDir.replace(/^~/, homedir()) : defaultAgentDir();
+            const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
+            const raw = await authStorage.getApiKey("google-gemini-cli");
+            if (!raw) return;
+            const parsed = JSON.parse(raw) as { token?: string; projectId?: string };
+            if (!parsed.token || !parsed.projectId) return;
+            token = parsed.token;
+            projectId = parsed.projectId;
+        } catch {
+            return;
+        }
+
+        try {
+            const endpoint = process.env["CODE_ASSIST_ENDPOINT"] ?? "https://cloudcode-pa.googleapis.com";
+            const version = process.env["CODE_ASSIST_API_VERSION"] ?? "v1internal";
+            const res = await fetch(`${endpoint}/${version}:retrieveUserQuota`, {
+                method: "POST",
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({ project: projectId }),
+            });
+            if (!res.ok) return;
+
+            const raw = (await res.json()) as {
+                buckets?: Array<{
+                    remainingAmount?: string;
+                    remainingFraction?: number;
+                    resetTime?: string;
+                    tokenType?: string;
+                    modelId?: string;
+                }>;
+            };
+
+            const windows: UsageWindow[] = [];
+            for (const bucket of raw.buckets ?? []) {
+                if (bucket.remainingFraction == null || !bucket.resetTime) continue;
+                // API returns remaining fraction (0–1); convert to utilization (0–100 used)
+                const utilization = (1 - bucket.remainingFraction) * 100;
+                const label = [bucket.tokenType, bucket.modelId].filter(Boolean).join(" / ") || "Quota";
+                windows.push({ label, utilization, resets_at: bucket.resetTime });
+            }
+            if (windows.length > 0) {
+                usageCache.set("google-gemini-cli", { data: { windows }, fetchedAt: Date.now() });
+            }
+        } catch {
+            // Non-fatal
+        }
+    }
+
     async function refreshAllUsage(): Promise<void> {
         await Promise.allSettled([
             refreshAnthropicUsage(),
             refreshCodexUsage(),
+            refreshGeminiUsage(),
         ]);
     }
 
@@ -367,7 +428,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
 
         if (!response.ok) return null;
 
-        const mediaType = response.headers.get("content-type") || "application/octet-stream";
+        const mediaType = (response.headers.get("content-type") || "application/octet-stream").split(";")[0].trim();
         const filename = response.headers.get("x-attachment-filename") ?? undefined;
         const dataBase64 = Buffer.from(await response.arrayBuffer()).toString("base64");
 
@@ -405,11 +466,8 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             if (dataBase64 && mediaType.startsWith("image/")) {
                 parts.push({
                     type: "image",
-                    source: {
-                        type: "base64",
-                        mediaType,
-                        data: dataBase64,
-                    },
+                    mimeType: mediaType,
+                    data: dataBase64,
                 });
                 continue;
             }

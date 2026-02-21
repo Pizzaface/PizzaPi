@@ -2,7 +2,8 @@ import { getModel, getProviders, getModels } from "@mariozechner/pi-ai";
 import { Agent } from "@mariozechner/pi-agent-core";
 import type { AgentEvent } from "@mariozechner/pi-agent-core";
 import { createToolkit } from "@pizzapi/tools";
-import { getRunners, getSessions, getSharedSession } from "../ws/registry.js";
+import { getRunner, getRunners, getSessions, getSharedSession, recordRunnerSession } from "../ws/registry.js";
+import { waitForSpawnAck } from "../ws/runner-control.js";
 import { apiKeyRateLimitConfig, auth, kysely } from "../auth.js";
 import { requireSession, validateApiKey } from "../middleware.js";
 import { listPersistedRelaySessionsForUser } from "../sessions/store.js";
@@ -104,7 +105,75 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
     if (url.pathname === "/api/runners" && req.method === "GET") {
         const identity = await requireSession(req);
         if (identity instanceof Response) return identity;
-        return Response.json({ runners: getRunners() });
+        return Response.json({ runners: getRunners(identity.userId) });
+    }
+
+    if (url.pathname === "/api/runners/spawn" && req.method === "POST") {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        let body: any = {};
+        try {
+            body = await req.json();
+        } catch {
+            body = {};
+        }
+
+        const requestedRunnerId = typeof body.runnerId === "string" ? body.runnerId : undefined;
+        const requestedCwd = typeof body.cwd === "string" ? body.cwd : undefined;
+
+        // Sessions are tied to a folder on a specific runner machine.
+        // We do not attempt to infer which runner has which path — the client must choose.
+        if (!requestedRunnerId) {
+            return Response.json({ error: "Missing runnerId" }, { status: 400 });
+        }
+
+        const runnerId = requestedRunnerId;
+        const runner = getRunner(runnerId);
+        if (!runner) {
+            return Response.json({ error: "Runner not found" }, { status: 404 });
+        }
+        const runnerUserId = (runner as any).userId as string | null | undefined;
+        if (!runnerUserId) {
+            return Response.json({ error: "Runner is not associated with a user" }, { status: 403 });
+        }
+        if (runnerUserId !== identity.userId) {
+            return Response.json({ error: "Forbidden" }, { status: 403 });
+        }
+
+        if (requestedCwd) {
+            // Safety check: server-side enforcement (runner also enforces).
+            // If the runner declares workspace roots, do not allow spawning outside them.
+            const hasRoots = Array.isArray((runner as any).roots) && (runner as any).roots.length > 0;
+            if (hasRoots && !runnerHasCwdAccess(runner, requestedCwd)) {
+                return Response.json({ error: `Runner cannot access cwd: ${requestedCwd}` }, { status: 400 });
+            }
+        }
+
+        const sessionId = crypto.randomUUID();
+
+        try {
+            runner.ws.send(
+                JSON.stringify({
+                    type: "new_session",
+                    sessionId,
+                    cwd: requestedCwd,
+                }),
+            );
+        } catch {
+            return Response.json({ error: "Failed to send spawn request to runner" }, { status: 502 });
+        }
+
+        // Wait briefly for the runner to accept/reject (e.g. cwd missing/outside roots).
+        const ack = await waitForSpawnAck(sessionId, 5_000);
+        if (ack.ok === false && !(ack as any).timeout) {
+            return Response.json({ error: ack.message }, { status: 400 });
+        }
+
+        // Best-effort accounting
+        recordRunnerSession(runnerId, sessionId);
+
+        return Response.json({ ok: true, runnerId, sessionId, pending: (ack as any).timeout === true });
     }
 
     if (url.pathname === "/api/sessions" && req.method === "GET") {
@@ -273,4 +342,103 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
     }
 
     return undefined;
+}
+
+function normalizePath(value: string): string {
+    const trimmed = value.trim().replace(/\\/g, "/");
+    return trimmed.length > 1 ? trimmed.replace(/\/+$/, "") : trimmed;
+}
+
+function runnerHasCwdAccess(runner: ReturnType<typeof getRunner>, cwd: string): boolean {
+    if (!runner) return false;
+    const roots = (runner as any).roots as string[] | undefined;
+    if (!roots || roots.length === 0) return false;
+    const nCwd = normalizePath(cwd);
+    return roots.some((root) => {
+        const r = normalizePath(root);
+        return nCwd === r || nCwd.startsWith(r + "/");
+    });
+}
+
+function pickRunnerIdLeastLoaded(): string | null {
+    const runners = getRunners().slice().sort((a, b) => a.sessionCount - b.sessionCount);
+    return runners.length > 0 ? runners[0].runnerId : null;
+}
+
+function pickRunnerIdForCwd(requestedCwd?: string): string | null {
+    const cwd = requestedCwd?.trim() ? requestedCwd : undefined;
+    if (!cwd) return null;
+
+    const all = getRunners().map((r) => ({
+        runnerId: r.runnerId,
+        sessionCount: r.sessionCount,
+        roots: (r as any).roots as string[] | undefined,
+    }));
+
+    const nCwd = normalizePath(cwd);
+
+    // 1) Prefer runners that declare roots AND match the cwd.
+    const rootMatched = all
+        .filter((r) => Array.isArray(r.roots) && r.roots.length > 0)
+        .filter((r) => (r.roots ?? []).some((root) => {
+            const nRoot = normalizePath(root);
+            return nCwd === nRoot || nCwd.startsWith(nRoot + "/");
+        }))
+        .sort((a, b) => a.sessionCount - b.sessionCount);
+
+    if (rootMatched.length > 0) return rootMatched[0].runnerId;
+
+    // 2) Fallback: ONLY if no runner declared any roots.
+    // In that case we have no reliable way to match a cwd to a runner, so we pick
+    // least-loaded and let the runner accept/reject based on actual filesystem.
+    const anyRootsDeclared = all.some((r) => Array.isArray(r.roots) && r.roots.length > 0);
+    if (anyRootsDeclared) return null;
+
+    const fallback = all.slice().sort((a, b) => a.sessionCount - b.sessionCount);
+    return fallback.length > 0 ? fallback[0].runnerId : null;
+}
+
+async function mintEphemeralApiKey(userId: string, name: string, ttlSeconds: number): Promise<string> {
+    const { randomBytes } = await import("crypto");
+    const key = randomBytes(32).toString("hex");
+
+    // Hash key using SHA-256 + base64url (matches better-auth's defaultKeyHasher)
+    const keyHashBuf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(key));
+    const hashedKey = btoa(String.fromCharCode(...new Uint8Array(keyHashBuf)))
+        .replace(/\+/g, "-")
+        .replace(/\//g, "_")
+        .replace(/=/g, "");
+
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const expiresAt = new Date(now.getTime() + ttlSeconds * 1000).toISOString();
+
+    await kysely
+        .insertInto("apikey")
+        .values({
+            id: crypto.randomUUID(),
+            name,
+            start: key.slice(0, 8),
+            prefix: null,
+            key: hashedKey,
+            userId,
+            refillInterval: null,
+            refillAmount: null,
+            lastRefillAt: null,
+            enabled: 1,
+            rateLimitEnabled: apiKeyRateLimitConfig.enabled ? 1 : 0,
+            rateLimitTimeWindow: apiKeyRateLimitConfig.enabled ? apiKeyRateLimitConfig.timeWindow : null,
+            rateLimitMax: apiKeyRateLimitConfig.enabled ? apiKeyRateLimitConfig.maxRequests : null,
+            requestCount: 0,
+            remaining: null,
+            lastRequest: null,
+            expiresAt,
+            createdAt: nowIso,
+            updatedAt: nowIso,
+            permissions: null,
+            metadata: null,
+        })
+        .execute();
+
+    return key;
 }

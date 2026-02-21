@@ -7,4 +7,6 @@ export interface RelayMessage {
   toolCallId?: string;
   toolInput?: unknown;
   isError?: boolean;
+  thinking?: string;
+  thinkingDuration?: number;
 }

@@ -117,6 +117,7 @@
   },
   "patchedDependencies": {
     "@mariozechner/pi-coding-agent@0.53.0": "patches/@mariozechner%2Fpi-coding-agent@0.53.0.patch",
+    "@mariozechner/pi-ai@0.53.0": "patches/@mariozechner%2Fpi-ai@0.53.0.patch",
   },
   "packages": {
     "@ai-sdk/gateway": ["@ai-sdk/gateway@3.0.53", "", { "dependencies": { "@ai-sdk/provider": "3.0.8", "@ai-sdk/provider-utils": "4.0.15", "@vercel/oidc": "3.1.0" }, "peerDependencies": { "zod": "^3.25.76 || ^4.1.8" } }, "sha512-QT3FEoNARMRlk8JJVR7L98exiK9C8AGfrEJVbRxBT1yIXKs/N19o/+PsjTRVsARgDJNcy9JbJp1FspKucEat0Q=="],

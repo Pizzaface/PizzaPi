@@ -1,0 +1,63 @@
+diff --git a/dist/providers/transform-messages.js b/dist/providers/transform-messages.js
+index 3d29acb..e5ee1ec 100644
+--- a/dist/providers/transform-messages.js
++++ b/dist/providers/transform-messages.js
+@@ -8,9 +8,56 @@ export function transformMessages(messages, model, normalizeToolCallId) {
+     const toolCallIdMap = new Map();
+     // First pass: transform messages (thinking blocks, tool call ID normalization)
+     const transformed = messages.map((msg) => {
+-        // User messages pass through unchanged
++        // Normalize user message content blocks to the internal { type:"image", mimeType, data } shape.
++        // Some frontends (and OpenAI-compatible payloads) use:
++        //   { type: "image", source: { type: "base64", mediaType: "image/png", data: "..." } }
+         if (msg.role === "user") {
+-            return msg;
++            if (typeof msg.content === "string" || !Array.isArray(msg.content)) {
++                return msg;
++            }
++            const parseDataUrl = (url) => {
++                const match = /^data:([^;,]+)?;base64,(.+)$/i.exec(url);
++                if (!match)
++                    return null;
++                return { mimeType: match[1] || "application/octet-stream", data: match[2] };
++            };
++            const normalizedContent = msg.content.flatMap((block) => {
++                if (!block || typeof block !== "object")
++                    return [];
++                if (block.type !== "image") {
++                    return block;
++                }
++                // Standard pi-ai ImageContent format
++                if (typeof block.mimeType === "string" && typeof block.data === "string") {
++                    return block;
++                }
++                // OpenAI-ish { source: { type:"base64", mediaType, data } }
++                const source = block.source;
++                if (source && typeof source === "object") {
++                    if (source.type === "base64" && typeof source.data === "string") {
++                        const mimeType = (typeof source.mediaType === "string" && source.mediaType) ||
++                            (typeof source.mimeType === "string" && source.mimeType) ||
++                            "image/png";
++                        return { type: "image", mimeType, data: source.data };
++                    }
++                    if (source.type === "url" && typeof source.url === "string") {
++                        const parsed = parseDataUrl(source.url);
++                        if (parsed) {
++                            return { type: "image", mimeType: parsed.mimeType, data: parsed.data };
++                        }
++                    }
++                }
++                // OpenAI-ish { image_url: "data:...;base64,..." }
++                if (typeof block.image_url === "string") {
++                    const parsed = parseDataUrl(block.image_url);
++                    if (parsed) {
++                        return { type: "image", mimeType: parsed.mimeType, data: parsed.data };
++                    }
++                }
++                // Can't normalize: convert to a text note to avoid provider errors
++                return { type: "text", text: "[Unsupported image content: missing mimeType/data]" };
++            });
++            return { ...msg, content: normalizedContent };
+         }
+         // Handle toolResult messages - normalize toolCallId if we have a mapping
+         if (msg.role === "toolResult") {

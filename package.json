@@ -17,6 +17,7 @@
         "dev:server": "cd packages/server && bun run dev",
         "dev:ui": "cd packages/ui && bun run dev",
         "dev:cli": "bun packages/cli/src/index.ts",
+        "dev:runner": "bun packages/cli/src/index.ts runner",
         "typecheck": "tsc --build",
         "clean": "rm -rf packages/*/dist"
     },
@@ -32,6 +33,7 @@
         "typescript": "^5.7.0"
     },
     "patchedDependencies": {
-        "@mariozechner/pi-coding-agent@0.53.0": "patches/@mariozechner%2Fpi-coding-agent@0.53.0.patch"
+        "@mariozechner/pi-coding-agent@0.53.0": "patches/@mariozechner%2Fpi-coding-agent@0.53.0.patch",
+        "@mariozechner/pi-ai@0.53.0": "patches/@mariozechner%2Fpi-ai@0.53.0.patch"
     }
 }

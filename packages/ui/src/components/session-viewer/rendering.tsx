@@ -386,7 +386,9 @@ function renderGroupedToolExecution(
   toolInput: unknown,
   content: unknown,
   isError: boolean | undefined,
-  isStreaming: boolean
+  isStreaming: boolean,
+  thinking?: string,
+  thinkingDuration?: number
 ) {
   const hasOutput = hasVisibleContent(content);
   const state: ToolState = hasOutput
@@ -398,12 +400,12 @@ function renderGroupedToolExecution(
       : "input-available";
 
   const norm = normalizeToolName(toolName);
-  const isBash = norm === "bash" || norm.endsWith(".bash");
-  const commandLine = synthesizeCommandLine(toolName, toolInput);
-  const outputText = hasOutput ? extractTextFromToolContent(content) : null;
+  let card: React.ReactNode = null;
 
-  if (isBash) {
-    return (
+  if (norm === "bash" || norm.endsWith(".bash")) {
+    const commandLine = synthesizeCommandLine(toolName, toolInput);
+    const outputText = hasOutput ? extractTextFromToolContent(content) : null;
+    card = (
       <div className="flex flex-col overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950 text-zinc-100 text-xs">
         <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-2">
           <div className="flex items-center gap-2 text-sm text-zinc-400">
@@ -444,36 +446,31 @@ function renderGroupedToolExecution(
         )}
       </div>
     );
-  }
-
-  const isRead = norm === "read" || norm.endsWith(".read");
-  if (isRead) {
+  } else if (norm === "read" || norm.endsWith(".read")) {
     if (hasOutput) {
-      return renderReadToolResult(content, isError, toolInput);
+      card = renderReadToolResult(content, isError, toolInput);
+    } else {
+      const inputArgs =
+        toolInput && typeof toolInput === "object"
+          ? (toolInput as Record<string, unknown>)
+          : {};
+      const pendingPath =
+        typeof inputArgs.file_path === "string"
+          ? inputArgs.file_path
+          : typeof inputArgs.path === "string"
+            ? inputArgs.path
+            : "file";
+      const pendingName = pendingPath.split(/[\\/]/).filter(Boolean).pop() ?? "file";
+      const pendingMime = extToMime(pendingPath);
+      card = (
+        <FileTypeCard path={pendingPath} fileName={pendingName} mimeType={pendingMime}>
+          <div className="flex items-center justify-center py-8 text-sm text-muted-foreground">
+            {isStreaming ? "Reading file…" : "No content"}
+          </div>
+        </FileTypeCard>
+      );
     }
-    const inputArgs =
-      toolInput && typeof toolInput === "object"
-        ? (toolInput as Record<string, unknown>)
-        : {};
-    const pendingPath =
-      typeof inputArgs.file_path === "string"
-        ? inputArgs.file_path
-        : typeof inputArgs.path === "string"
-          ? inputArgs.path
-          : "file";
-    const pendingName = pendingPath.split(/[\\/]/).filter(Boolean).pop() ?? "file";
-    const pendingMime = extToMime(pendingPath);
-    return (
-      <FileTypeCard path={pendingPath} fileName={pendingName} mimeType={pendingMime}>
-        <div className="flex items-center justify-center py-8 text-sm text-muted-foreground">
-          {isStreaming ? "Reading file…" : "No content"}
-        </div>
-      </FileTypeCard>
-    );
-  }
-
-  const isEdit = norm === "edit" || norm.endsWith(".edit");
-  if (isEdit) {
+  } else if (norm === "edit" || norm.endsWith(".edit")) {
     const inputArgs =
       toolInput && typeof toolInput === "object"
         ? (toolInput as Record<string, unknown>)
@@ -511,35 +508,33 @@ function renderGroupedToolExecution(
             : null;
 
     if (editPath && oldText !== null && newText !== null) {
-      return <DiffView path={editPath} oldText={oldText} newText={newText} />;
+      card = <DiffView path={editPath} oldText={oldText} newText={newText} />;
+    } else {
+      const pendingPath = editPath ?? "file";
+      const pendingName = pendingPath.split(/[\\/]/).filter(Boolean).pop() ?? "file";
+      card = (
+        <EditFileCard
+          path={pendingPath}
+          fileName={pendingName}
+          additions={0}
+          deletions={0}
+        >
+          <div className="flex items-center justify-center py-8 text-sm text-muted-foreground">
+            {isStreaming
+              ? "Applying edit…"
+              : hasOutput
+                ? resultText ?? "Edit complete"
+                : "No diff available"}
+          </div>
+        </EditFileCard>
+      );
     }
-
-    const pendingPath = editPath ?? "file";
-    const pendingName = pendingPath.split(/[\\/]/).filter(Boolean).pop() ?? "file";
-    return (
-      <EditFileCard
-        path={pendingPath}
-        fileName={pendingName}
-        additions={0}
-        deletions={0}
-      >
-        <div className="flex items-center justify-center py-8 text-sm text-muted-foreground">
-          {isStreaming
-            ? "Applying edit…"
-            : hasOutput
-              ? resultText ?? "Edit complete"
-              : "No diff available"}
-        </div>
-      </EditFileCard>
-    );
-  }
-
-  const isWrite =
+  } else if (
     norm === "write" ||
     norm.endsWith(".write") ||
     norm === "write_file" ||
-    norm.endsWith(".write_file");
-  if (isWrite) {
+    norm.endsWith(".write_file")
+  ) {
     const inputArgs =
       toolInput && typeof toolInput === "object"
         ? (toolInput as Record<string, unknown>)
@@ -559,49 +554,68 @@ function renderGroupedToolExecution(
           : null;
 
     if (writePath && newText !== null) {
-      return <DiffView path={writePath} oldText="" newText={newText} />;
+      card = <DiffView path={writePath} oldText="" newText={newText} />;
+    } else {
+      const resultText = hasOutput ? extractTextFromToolContent(content) : null;
+      const pendingPath = writePath ?? "file";
+      const pendingName = pendingPath.split(/[\\/]/).filter(Boolean).pop() ?? "file";
+      card = (
+        <EditFileCard
+          path={pendingPath}
+          fileName={pendingName}
+          additions={0}
+          deletions={0}
+        >
+          <div className="flex items-center justify-center py-8 text-sm text-muted-foreground">
+            {isStreaming
+              ? "Writing file…"
+              : hasOutput
+                ? resultText ?? "Write complete"
+                : "No diff available"}
+          </div>
+        </EditFileCard>
+      );
     }
-
-    const resultText = hasOutput ? extractTextFromToolContent(content) : null;
-    const pendingPath = writePath ?? "file";
-    const pendingName = pendingPath.split(/[\\/]/).filter(Boolean).pop() ?? "file";
-    return (
-      <EditFileCard
-        path={pendingPath}
-        fileName={pendingName}
-        additions={0}
-        deletions={0}
-      >
-        <div className="flex items-center justify-center py-8 text-sm text-muted-foreground">
-          {isStreaming
-            ? "Writing file…"
-            : hasOutput
-              ? resultText ?? "Write complete"
-              : "No diff available"}
+  } else {
+    // Default / Generic
+    const commandLine = synthesizeCommandLine(toolName, toolInput);
+    const outputText = hasOutput ? extractTextFromToolContent(content) : null;
+    card = (
+      <Terminal output={outputText ?? ""} isStreaming={isStreaming} className="text-xs">
+        <TerminalHeader>
+          <TerminalTitle>{toolName}</TerminalTitle>
+          <div className="flex items-center gap-2">
+            <StatusBadge status={state} />
+            <TerminalStatus />
+            <TerminalActions>
+              {outputText && <TerminalCopyButton />}
+            </TerminalActions>
+          </div>
+        </TerminalHeader>
+        <div className="px-4 py-2 font-mono text-xs text-zinc-400 border-b border-zinc-800">
+          <span className="text-zinc-600 select-none mr-1">$</span>
+          <span className="text-zinc-300">{commandLine}</span>
         </div>
-      </EditFileCard>
+        {hasOutput && <TerminalContent className="text-xs" />}
+      </Terminal>
     );
   }
 
-  return (
-    <Terminal output={outputText ?? ""} isStreaming={isStreaming} className="text-xs">
-      <TerminalHeader>
-        <TerminalTitle>{toolName}</TerminalTitle>
-        <div className="flex items-center gap-2">
-          <StatusBadge status={state} />
-          <TerminalStatus />
-          <TerminalActions>
-            {outputText && <TerminalCopyButton />}
-          </TerminalActions>
-        </div>
-      </TerminalHeader>
-      <div className="px-4 py-2 font-mono text-xs text-zinc-400 border-b border-zinc-800">
-        <span className="text-zinc-600 select-none mr-1">$</span>
-        <span className="text-zinc-300">{commandLine}</span>
+  if (thinking) {
+    return (
+      <div className="flex flex-col gap-2">
+         <div className="px-1">
+            <Reasoning duration={thinkingDuration}>
+               <ReasoningTrigger />
+               <ReasoningContent>{thinking}</ReasoningContent>
+            </Reasoning>
+         </div>
+         {card}
       </div>
-      {hasOutput && <TerminalContent className="text-xs" />}
-    </Terminal>
-  );
+    );
+  }
+
+  return card;
 }
 
 export function renderContent(
@@ -612,7 +626,9 @@ export function renderContent(
   isError: boolean | undefined,
   toolInput: unknown,
   toolKey: string,
-  isThinkingActive?: boolean
+  isThinkingActive?: boolean,
+  thinking?: string,
+  thinkingDuration?: number
 ) {
   if (role === "toolResult" || role === "tool") {
     if (toolInput !== undefined) {
@@ -625,7 +641,9 @@ export function renderContent(
         toolInput,
         content,
         isError,
-        isStreaming
+        isStreaming,
+        thinking,
+        thinkingDuration
       );
     }
     return renderToolResult(content, toolName, isError);
@@ -737,16 +755,21 @@ export function renderContent(
             );
           }
 
-          if (b.type === "image" && typeof b.data === "string") {
-            const mime = typeof b.mimeType === "string" ? b.mimeType : "image/png";
-            return (
-              <img
-                key={i}
-                src={`data:${mime};base64,${b.data}`}
-                alt="Message attachment"
-                className="max-h-80 max-w-full rounded border border-border"
-              />
-            );
+          if (b.type === "image") {
+            const source = (b.source && typeof b.source === "object" ? b.source : {}) as Record<string, unknown>;
+            const data = typeof b.data === "string" ? b.data : typeof source.data === "string" ? source.data : null;
+            const mime = typeof b.mimeType === "string" ? b.mimeType : typeof source.mediaType === "string" ? source.mediaType : "image/png";
+
+            if (data) {
+              return (
+                <img
+                  key={i}
+                  src={`data:${mime};base64,${data}`}
+                  alt="Message attachment"
+                  className="max-h-80 max-w-full rounded border border-border"
+                />
+              );
+            }
           }
 
           return (

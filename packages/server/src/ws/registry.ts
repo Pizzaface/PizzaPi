@@ -56,8 +56,16 @@ interface SharedSession {
 
 interface RunnerEntry {
     ws: ServerWebSocket<WsData>;
-    /** Sessions this runner has spawned, keyed by session ID */
-    sessions: Map<string, Set<ServerWebSocket<WsData>>>;
+    /** Owner user ID (from API key auth) */
+    userId: string | null;
+    /** Owner display name (from API key auth) */
+    userName: string | null;
+    /** Optional display name (host label) */
+    name: string | null;
+    /** Allowed workspace root directories on the runner (used for scheduling + safety) */
+    roots: string[];
+    /** Session IDs this runner has spawned (best-effort accounting) */
+    sessions: Set<string>;
 }
 
 // ── Hub connections (web UI watching session list) ────────────────────────────
@@ -414,17 +422,56 @@ export function sweepExpiredSharedSessions(nowMs: number = Date.now()) {
 // ── Runner registry (Task 003) ───────────────────────────────────────────────
 const runners = new Map<string, RunnerEntry>();
 
-export function registerRunner(ws: ServerWebSocket<WsData>): string {
+function normalizeRoot(value: string): string {
+    const trimmed = value.trim();
+    if (!trimmed) return "";
+    // Normalize slashes and remove trailing slash (except for "/").
+    const normalized = trimmed.replace(/\\/g, "/");
+    return normalized.length > 1 ? normalized.replace(/\/+$/, "") : normalized;
+}
+
+export function registerRunner(
+    ws: ServerWebSocket<WsData>,
+    info?: { name?: string | null; roots?: string[] },
+): string {
     const runnerId = randomUUID();
-    runners.set(runnerId, { ws, sessions: new Map() });
+    const roots = (info?.roots ?? [])
+        .filter((r) => typeof r === "string")
+        .map(normalizeRoot)
+        .filter(Boolean);
+
+    runners.set(runnerId, {
+        ws,
+        userId: ws.data.userId ?? null,
+        userName: ws.data.userName ?? null,
+        name: info?.name && info.name.trim() ? info.name.trim() : null,
+        roots,
+        sessions: new Set(),
+    });
     return runnerId;
 }
 
-export function getRunners() {
-    return Array.from(runners.entries()).map(([id, r]) => ({
-        runnerId: id,
-        sessionCount: r.sessions.size,
-    }));
+export function recordRunnerSession(runnerId: string, sessionId: string) {
+    const runner = runners.get(runnerId);
+    if (!runner) return;
+    runner.sessions.add(sessionId);
+}
+
+export function removeRunnerSession(runnerId: string, sessionId: string) {
+    const runner = runners.get(runnerId);
+    if (!runner) return;
+    runner.sessions.delete(sessionId);
+}
+
+export function getRunners(filterUserId?: string) {
+    return Array.from(runners.entries())
+        .filter(([, r]) => !filterUserId || r.userId === filterUserId)
+        .map(([id, r]) => ({
+            runnerId: id,
+            name: r.name,
+            roots: r.roots,
+            sessionCount: r.sessions.size,
+        }));
 }
 
 export function getRunner(runnerId: string) {

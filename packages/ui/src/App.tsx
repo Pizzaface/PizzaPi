@@ -4,11 +4,30 @@ import { SessionViewer, type RelayMessage } from "@/components/SessionViewer";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { AuthPage } from "@/components/AuthPage";
 import { ApiKeyManager } from "@/components/ApiKeyManager";
+import { RunnerTokenManager } from "@/components/RunnerTokenManager";
 import { PizzaLogo } from "@/components/PizzaLogo";
 import { authClient, useSession, signOut } from "@/lib/auth-client";
 import { getRelayWsBase } from "@/lib/relay";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Spinner } from "@/components/ui/spinner";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -227,6 +246,15 @@ export function App() {
   const [viewerStatus, setViewerStatus] = React.useState("Idle");
   const [relayStatus, setRelayStatus] = React.useState<DotState>("connecting");
   const [showApiKeys, setShowApiKeys] = React.useState(false);
+
+  type RunnerInfo = { runnerId: string; name?: string | null; roots?: string[]; sessionCount: number };
+  const [newSessionOpen, setNewSessionOpen] = React.useState(false);
+  const [runners, setRunners] = React.useState<RunnerInfo[]>([]);
+  const [runnersLoading, setRunnersLoading] = React.useState(false);
+  const [spawnRunnerId, setSpawnRunnerId] = React.useState<string | undefined>(undefined);
+  const [spawnCwd, setSpawnCwd] = React.useState<string>("");
+  const [spawningSession, setSpawningSession] = React.useState(false);
+
   const [pendingQuestion, setPendingQuestion] = React.useState<{ toolCallId: string; question: string; options?: string[] } | null>(null);
   const [activeToolCalls, setActiveToolCalls] = React.useState<Map<string, string>>(new Map());
   const [activeModel, setActiveModel] = React.useState<ConfiguredModelInfo | null>(null);
@@ -263,6 +291,40 @@ export function App() {
       document.body.style.overflow = prev;
     };
   }, [sidebarOpen]);
+
+  React.useEffect(() => {
+    if (!newSessionOpen) return;
+
+    let cancelled = false;
+    setRunnersLoading(true);
+    void fetch("/api/runners", { credentials: "include" })
+      .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
+      .then((data) => {
+        if (cancelled) return;
+        const list = Array.isArray((data as any)?.runners) ? (data as any).runners as any[] : [];
+        const normalized = list
+          .map((r) => ({
+            runnerId: typeof r?.runnerId === "string" ? r.runnerId : "",
+            name: typeof r?.name === "string" ? r.name : null,
+            roots: Array.isArray(r?.roots) ? (r.roots as unknown[]).filter((x): x is string => typeof x === "string") : [],
+            sessionCount: typeof r?.sessionCount === "number" ? r.sessionCount : 0,
+          }))
+          .filter((r) => r.runnerId);
+        setRunners(normalized);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setRunners([]);
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setRunnersLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [newSessionOpen]);
 
   const viewerWsRef = React.useRef<WebSocket | null>(null);
   const activeSessionRef = React.useRef<string | null>(null);
@@ -1126,6 +1188,90 @@ export function App() {
     setSidebarOpen(false);
   }, [clearSelection]);
 
+  const handleNewSession = React.useCallback(() => {
+    setSpawnRunnerId(undefined);
+    setSpawnCwd("");
+    setNewSessionOpen(true);
+  }, []);
+
+  const waitForSessionToGoLive = React.useCallback(async (sessionId: string, timeoutMs: number) => {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      try {
+        const res = await fetch("/api/sessions", { credentials: "include" });
+        if (res.ok) {
+          const body = await res.json().catch(() => null) as any;
+          const sessions = Array.isArray(body?.sessions) ? body.sessions : [];
+          const live = sessions.some((s: any) => typeof s?.sessionId === "string" && s.sessionId === sessionId);
+          if (live) return true;
+        }
+      } catch {
+        // ignore
+      }
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+    return false;
+  }, []);
+
+  const spawnNewRunnerSession = React.useCallback(async () => {
+    if (spawningSession) return;
+
+    setSpawningSession(true);
+    setViewerStatus("Spawning session…");
+
+    if (!spawnRunnerId) {
+      setViewerStatus("Pick a runner");
+      setSpawningSession(false);
+      return;
+    }
+
+    const payload: any = {
+      runnerId: spawnRunnerId,
+      ...(spawnCwd.trim() ? { cwd: spawnCwd.trim() } : {}),
+    };
+
+    let sessionId: string | null = null;
+    try {
+      const res = await fetch("/api/runners/spawn", {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      const body = await res.json().catch(() => null) as any;
+      if (!res.ok) {
+        const msg = body && typeof body.error === "string" ? body.error : `Spawn failed (HTTP ${res.status})`;
+        setViewerStatus(msg);
+        return;
+      }
+
+      sessionId = typeof body?.sessionId === "string" ? body.sessionId : null;
+      if (!sessionId) {
+        setViewerStatus("Spawn failed: missing sessionId");
+        return;
+      }
+
+      setNewSessionOpen(false);
+
+      // Wait until the worker actually registers with the relay, otherwise opening the
+      // viewer websocket would immediately fall back to snapshot replay and disconnect.
+      const live = await waitForSessionToGoLive(sessionId, 30_000);
+      if (!live) {
+        setViewerStatus("Session is starting… (it will appear in the sidebar soon)");
+        return;
+      }
+
+      handleOpenSession(sessionId);
+      setViewerStatus("Connecting…");
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      setViewerStatus(`Spawn failed: ${detail}`);
+    } finally {
+      setSpawningSession(false);
+    }
+  }, [spawningSession, spawnRunnerId, spawnCwd, handleOpenSession, waitForSessionToGoLive]);
+
   if (isPending) {
     return (
       <div className="flex h-screen w-screen items-center justify-center bg-background">
@@ -1311,6 +1457,7 @@ export function App() {
         >
           <SessionSidebar
             onOpenSession={handleOpenSession}
+            onNewSession={handleNewSession}
             onClearSelection={handleClearSelection}
             activeSessionId={activeSessionId}
             activeModel={activeModel}
@@ -1372,6 +1519,82 @@ export function App() {
           />
         </div>
 
+        <Dialog open={newSessionOpen} onOpenChange={(open) => { if (!spawningSession) setNewSessionOpen(open); }}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>New session</DialogTitle>
+              <DialogDescription>
+                Spawn a new headless PizzaPi session on a connected runner.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="grid gap-3">
+              <div className="grid gap-1.5">
+                <Label htmlFor="pp-runner">Runner</Label>
+                <Select value={spawnRunnerId} onValueChange={setSpawnRunnerId}>
+                  <SelectTrigger id="pp-runner" className="w-full">
+                    <SelectValue placeholder={runnersLoading ? "Loading…" : "Select a runner"} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {runners.map((r) => {
+                      const label = (r.name && r.name.trim()) ? r.name.trim() : `${r.runnerId.slice(0, 8)}…`;
+                      const roots = Array.isArray(r.roots) ? r.roots : [];
+                      const rootsLabel = roots.length > 0 ? ` · ${roots.length} root${roots.length === 1 ? "" : "s"}` : "";
+                      return (
+                        <SelectItem key={r.runnerId} value={r.runnerId}>
+                          {label} ({r.sessionCount} sessions{rootsLabel})
+                        </SelectItem>
+                      );
+                    })}
+                  </SelectContent>
+                </Select>
+                {runnersLoading && (
+                  <div className="text-xs text-muted-foreground inline-flex items-center gap-2">
+                    <Spinner className="size-3" /> Loading runners…
+                  </div>
+                )}
+                {!runnersLoading && runners.length === 0 && (
+                  <div className="text-xs text-destructive">
+                    No runners connected. Start one with <code className="px-1">pizzapi runner</code>.
+                  </div>
+                )}
+              </div>
+
+              <div className="grid gap-1.5">
+                <Label htmlFor="pp-cwd">Working directory</Label>
+                <Input
+                  id="pp-cwd"
+                  value={spawnCwd}
+                  onChange={(e) => setSpawnCwd(e.target.value)}
+                  placeholder="/path/to/project"
+                  disabled={spawningSession}
+                />
+                <div className="text-xs text-muted-foreground">
+                  This is the path on the runner machine.
+                </div>
+              </div>
+            </div>
+
+            <DialogFooter>
+              <div className="flex-1 text-xs text-muted-foreground">
+                {!spawnRunnerId ? "Pick a runner." : ""}
+              </div>
+              <Button variant="outline" onClick={() => setNewSessionOpen(false)} disabled={spawningSession}>
+                Cancel
+              </Button>
+              <Button onClick={spawnNewRunnerSession} disabled={spawningSession || runners.length === 0 || !spawnRunnerId}>
+                {spawningSession ? (
+                  <span className="inline-flex items-center gap-2">
+                    <Spinner /> Spawning…
+                  </span>
+                ) : (
+                  "Spawn"
+                )}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
         {showApiKeys && (
           <div className="absolute inset-y-0 right-0 z-40 flex w-full max-w-md flex-col shadow-xl border-l bg-background">
             <div className="flex items-center justify-between px-4 py-3 border-b">
@@ -1387,7 +1610,10 @@ export function App() {
               </Button>
             </div>
             <div className="flex-1 overflow-y-auto p-4">
-              <ApiKeyManager />
+              <div className="flex flex-col gap-4">
+                <ApiKeyManager />
+                <RunnerTokenManager />
+              </div>
             </div>
           </div>
         )}

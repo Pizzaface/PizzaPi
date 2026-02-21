@@ -11,6 +11,8 @@ interface PendingToolCall {
   args: unknown;
 }
 
+type PendingThinking = { thinking: string; duration: number };
+
 function parseToolArguments(argumentsValue: unknown): unknown {
   if (argumentsValue && typeof argumentsValue === "object") {
     return argumentsValue;
@@ -103,6 +105,33 @@ function deduplicateAssistantMessages(messages: RelayMessage[]): RelayMessage[] 
   });
 }
 
+function getThinkingContent(buf: unknown[]): { thinking: string; duration: number } | null {
+  let thinking = "";
+  let duration = 0;
+  let hasThinking = false;
+
+  for (const block of buf) {
+    if (!block || typeof block !== "object") return null;
+    const b = block as Record<string, unknown>;
+
+    if (b.type === "thinking") {
+      hasThinking = true;
+      const text = typeof b.thinking === "string" ? b.thinking : "";
+      if (text) thinking += (thinking ? "\n" : "") + text;
+      if (typeof b.durationSeconds === "number") duration += b.durationSeconds;
+    } else if (b.type === "text") {
+      const text = typeof b.text === "string" ? b.text : "";
+      // If there is any visible text, it's not a pure thinking block
+      if (text.trim()) return null;
+    } else {
+      // Any other block type (e.g. image) means it's not pure thinking
+      return null;
+    }
+  }
+
+  return hasThinking ? { thinking, duration } : null;
+}
+
 export function groupToolExecutionMessages(messages: RelayMessage[]): RelayMessage[] {
   // Pre-deduplicate: drop earlier copies of the same assistant turn (streaming
   // partials) so their split-off thinking blocks don't appear below the tool card
@@ -126,11 +155,23 @@ export function groupToolExecutionMessages(messages: RelayMessage[]): RelayMessa
       let assistantPartIndex = 0;
       let toolCallOrdinal = 0;
       let buffer: unknown[] = [];
+      let pendingThinking: PendingThinking | null = null;
 
-      const pushAssistantPart = () => {
+      const pushAssistantPart = (isBeforeTool: boolean) => {
         if (!hasVisibleContent(buffer)) {
           buffer = [];
           return;
+        }
+
+        // If we are immediately followed by a tool, and the buffer is PURELY thinking,
+        // steal the thinking content to attach to the tool card.
+        if (isBeforeTool) {
+          const thought = getThinkingContent(buffer);
+          if (thought) {
+            pendingThinking = thought;
+            buffer = [];
+            return;
+          }
         }
 
         grouped.push({
@@ -139,6 +180,7 @@ export function groupToolExecutionMessages(messages: RelayMessage[]): RelayMessa
           content: buffer,
         });
         buffer = [];
+        pendingThinking = null;
       };
 
       for (const block of blocks) {
@@ -161,7 +203,7 @@ export function groupToolExecutionMessages(messages: RelayMessage[]): RelayMessa
 
           // Flush any assistant text/thinking blocks before the tool call so the
           // tool card appears *after* the assistant content that triggered it.
-          pushAssistantPart();
+          pushAssistantPart(true);
 
           // ToolCall blocks use `id` (not `toolCallId`) per pi-ai types, but be
           // defensive since other relays might use toolCallId.
@@ -179,13 +221,21 @@ export function groupToolExecutionMessages(messages: RelayMessage[]): RelayMessa
             toolCallId || `${message.key}:tool:${toolCallOrdinal++}`;
           const itemKey = `pending-tool:${stableId}`;
 
+          const pending = pendingThinking as PendingThinking | null;
+          const pendingText = pending?.thinking;
+          const pendingDuration = pending?.duration;
+
           if (toolCallIndexByKey.has(itemKey)) {
             const idx = toolCallIndexByKey.get(itemKey)!;
+            const existing = grouped[idx];
+
             grouped[idx] = {
-              ...grouped[idx],
+              ...existing,
               toolName,
               toolInput: args,
-              toolCallId: toolCallId || grouped[idx].toolCallId,
+              toolCallId: toolCallId || existing.toolCallId,
+              thinking: pendingText ?? existing.thinking,
+              thinkingDuration: pendingDuration ?? existing.thinkingDuration,
             };
           } else {
             toolCallIndexByKey.set(itemKey, grouped.length);
@@ -200,9 +250,12 @@ export function groupToolExecutionMessages(messages: RelayMessage[]): RelayMessa
               toolInput: args,
               toolCallId,
               content: null,
+              thinking: pendingText,
+              thinkingDuration: pendingDuration,
             });
           }
 
+          pendingThinking = null; // Consumed
           continue;
         }
 
@@ -210,7 +263,7 @@ export function groupToolExecutionMessages(messages: RelayMessage[]): RelayMessa
       }
 
       // Flush remaining assistant content after the last tool call.
-      pushAssistantPart();
+      pushAssistantPart(false);
       continue;
     }
 

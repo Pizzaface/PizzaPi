@@ -5,7 +5,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { getRelayWsBase } from "@/lib/relay";
 import { ProviderIcon } from "@/components/ProviderIcon";
-import { PanelLeftClose, PanelLeftOpen, Plus, User } from "lucide-react";
+import { PanelLeftClose, PanelLeftOpen, Plus, User, X } from "lucide-react";
 
 interface HubSession {
     sessionId: string;
@@ -25,6 +25,7 @@ interface HubSession {
 
 export interface SessionSidebarProps {
     onOpenSession: (sessionId: string) => void;
+    onNewSession: () => void;
     onClearSelection: () => void;
     activeSessionId: string | null;
     /** Active model info for the currently selected session (used for provider indicator) */
@@ -63,6 +64,32 @@ function cwdLabel(cwd: string): string {
     return parts[parts.length - 1] || cwd;
 }
 
+/**
+ * Group key for a session path.
+ * - POSIX: "/srv/repos/foo" -> "/srv"
+ * - Windows-ish: "C:/repo" -> "C:"
+ */
+function rootFolder(cwd: string): string {
+    if (!cwd) return "Unknown";
+    const normalized = cwd.replace(/\\/g, "/");
+    const drive = normalized.match(/^[A-Za-z]:/);
+    if (drive) return drive[0];
+    if (normalized.startsWith("/")) {
+        const parts = normalized.split("/").filter(Boolean);
+        return parts.length > 0 ? `/${parts[0]}` : "/";
+    }
+    // Fallback: treat first segment as "root"
+    return normalized.split("/").filter(Boolean)[0] ?? "Unknown";
+}
+
+function relativeToRoot(cwd: string, root: string): string {
+    const normalized = cwd.replace(/\\/g, "/");
+    const r = root.replace(/\\/g, "/");
+    if (normalized === r) return ".";
+    if (normalized.startsWith(r + "/")) return normalized.slice((r + "/").length);
+    return normalized;
+}
+
 export type DotState = "connecting" | "connected" | "disconnected";
 
 function LiveDot({ state }: { state: DotState }) {
@@ -81,6 +108,7 @@ function LiveDot({ state }: { state: DotState }) {
 
 export const SessionSidebar = React.memo(function SessionSidebar({
     onOpenSession,
+    onNewSession,
     onClearSelection,
     activeSessionId,
     activeModel,
@@ -224,11 +252,22 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     const liveGroups = React.useMemo(() => {
         const groups = new Map<string, HubSession[]>();
         for (const s of liveSessions) {
-            const key = s.cwd || "";
+            const key = rootFolder(s.cwd || "");
             if (!groups.has(key)) groups.set(key, []);
             groups.get(key)!.push(s);
         }
-        return groups;
+
+        // Sort sessions within each root by most recently active/started.
+        for (const [k, sessions] of groups.entries()) {
+            sessions.sort((a, b) => {
+                const aT = Date.parse(a.lastHeartbeatAt ?? a.startedAt);
+                const bT = Date.parse(b.lastHeartbeatAt ?? b.startedAt);
+                return (Number.isFinite(bT) ? bT : 0) - (Number.isFinite(aT) ? aT : 0);
+            });
+            groups.set(k, sessions);
+        }
+
+        return new Map(Array.from(groups.entries()).sort(([a], [b]) => a.localeCompare(b)));
     }, [liveSessions]);
 
     const sidebarContent = (
@@ -250,16 +289,28 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                 <span className="text-[0.7rem] font-semibold uppercase tracking-widest text-sidebar-foreground/60">
                     Sessions
                 </span>
-                <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
-                    onClick={onClearSelection}
-                    aria-label="Clear selected session"
-                    title="Clear selected session"
-                >
-                    <Plus className="h-4 w-4" />
-                </Button>
+                <div className="flex items-center gap-1">
+                    <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
+                        onClick={onNewSession}
+                        aria-label="New session"
+                        title="New session"
+                    >
+                        <Plus className="h-4 w-4" />
+                    </Button>
+                    <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
+                        onClick={onClearSelection}
+                        aria-label="Clear selected session"
+                        title="Clear selected session"
+                    >
+                        <X className="h-4 w-4" />
+                    </Button>
+                </div>
             </div>
 
             <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
@@ -273,15 +324,15 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                     {liveGroups.size === 0 ? (
                         <p className="px-2 py-1 text-xs italic text-sidebar-foreground/40">No live sessions</p>
                     ) : (
-                        Array.from(liveGroups.entries()).map(([cwd, sessions]) => (
-                            <div key={cwd} className="flex flex-col">
+                        Array.from(liveGroups.entries()).map(([root, sessions]) => (
+                            <div key={root} className="flex flex-col">
                                 <div className="flex items-center gap-1 px-1.5 py-1 min-w-0">
                                     <span className="text-[0.65rem] text-sidebar-primary/70">⬡</span>
                                     <span
                                         className="text-[0.65rem] font-semibold text-sidebar-foreground/55 truncate flex-1"
-                                        title={cwd}
+                                        title={root}
                                     >
-                                        {cwdLabel(cwd)}
+                                        {root}
                                     </span>
                                 </div>
                                 {sessions.map((s) => (
@@ -331,6 +382,17 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                         <span className="text-[0.65rem] text-sidebar-foreground/50 truncate">
                                                             {s.userName}
                                                         </span>
+                                                    </div>
+                                                )}
+                                                {!!s.cwd && (
+                                                    <div
+                                                        className="text-[0.65rem] text-sidebar-foreground/40 truncate"
+                                                        title={s.cwd}
+                                                    >
+                                                        {(() => {
+                                                            const r = rootFolder(s.cwd);
+                                                            return relativeToRoot(s.cwd, r);
+                                                        })()}
                                                     </div>
                                                 )}
                                             </div>
