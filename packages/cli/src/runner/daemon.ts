@@ -41,8 +41,11 @@ export async function runDaemon(_args: string[] = []): Promise<void> {
     connect();
 
     function connect() {
-        const wsUrlWithToken = `${wsUrl}?token=${encodeURIComponent(token!)}`;
-        const ws = new WebSocket(wsUrlWithToken);
+        const ws = new WebSocket(wsUrl, {
+            headers: {
+                Authorization: `Bearer ${token}`,
+            },
+        } as any);
         let runnerId: string | null = null;
         let reconnectDelay = 1000;
 

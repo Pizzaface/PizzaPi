@@ -10,8 +10,8 @@ export async function handleWsUpgrade(
     server: BunServer,
 ): Promise<Response | undefined> {
     if (url.pathname === "/ws/sessions") {
-        // TUI (CLI) connecting to register a live-share session — must present a valid API key
-        const identity = await validateApiKey(req, url.searchParams.get("apiKey") ?? undefined);
+        // TUI (CLI) connecting to register a live-share session — must present a valid API key (x-api-key header)
+        const identity = await validateApiKey(req);
         if (identity instanceof Response) return identity;
         const upgraded = server.upgrade(req, {
             data: { role: "tui", userId: identity.userId, userName: identity.userName },
@@ -39,10 +39,11 @@ export async function handleWsUpgrade(
     }
 
     if (url.pathname === "/ws/runner") {
-        // Runner daemon connecting — token passed as ?token=... query param
-        const token = url.searchParams.get("token") ?? "";
+        // Runner daemon connecting — token passed as Bearer token in Authorization header
+        const authHeader = req.headers.get("Authorization") ?? "";
+        const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
         const expected = process.env.PIZZAPI_RUNNER_TOKEN;
-        if (!expected || token !== expected) {
+        if (!expected || !token || token !== expected) {
             return new Response("Unauthorized", { status: 401 });
         }
         const upgraded = server.upgrade(req, { data: { role: "runner" } });

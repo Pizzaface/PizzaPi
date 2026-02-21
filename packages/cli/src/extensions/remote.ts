@@ -1257,8 +1257,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         }
 
         const wsBase = toWebSocketBaseUrl(relayUrl());
-        const wsPath = wsBase.endsWith("/ws/sessions") ? wsBase : `${wsBase}/ws/sessions`;
-        const wsUrl = `${wsPath}?apiKey=${encodeURIComponent(key)}`;
+        const wsUrl = wsBase.endsWith("/ws/sessions") ? wsBase : `${wsBase}/ws/sessions`;
 
         let ws: WebSocket;
         try {
