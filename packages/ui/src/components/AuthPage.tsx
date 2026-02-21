@@ -63,8 +63,12 @@ export function AuthPage({ onAuthenticated }: AuthPageProps) {
                         {tab === "signin" ? "Sign in to your account." : "Create a new account."}
                     </CardDescription>
                     {/* Tabs */}
-                    <div className="flex gap-1 mt-2 border-b">
+                    <div role="tablist" aria-label="Authentication Options" className="flex gap-1 mt-2 border-b">
                         <button
+                            id="tab-signin"
+                            role="tab"
+                            aria-selected={tab === "signin"}
+                            aria-controls="auth-panel"
                             type="button"
                             className={`px-3 py-1.5 text-sm font-medium transition-colors border-b-2 -mb-px ${tab === "signin" ? "border-foreground text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"}`}
                             onClick={() => switchTab("signin")}
@@ -72,6 +76,10 @@ export function AuthPage({ onAuthenticated }: AuthPageProps) {
                             Sign in
                         </button>
                         <button
+                            id="tab-signup"
+                            role="tab"
+                            aria-selected={tab === "signup"}
+                            aria-controls="auth-panel"
                             type="button"
                             className={`px-3 py-1.5 text-sm font-medium transition-colors border-b-2 -mb-px ${tab === "signup" ? "border-foreground text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"}`}
                             onClick={() => switchTab("signup")}
@@ -80,8 +88,13 @@ export function AuthPage({ onAuthenticated }: AuthPageProps) {
                         </button>
                     </div>
                 </CardHeader>
-                <form onSubmit={handleSubmit}>
-                    <CardContent className="flex flex-col gap-3">
+                <div
+                    id="auth-panel"
+                    role="tabpanel"
+                    aria-labelledby={tab === "signin" ? "tab-signin" : "tab-signup"}
+                >
+                    <form onSubmit={handleSubmit}>
+                        <CardContent className="flex flex-col gap-3">
                         {tab === "signup" && (
                             <div className="flex flex-col gap-1.5">
                                 <Label htmlFor="auth-name">Name</Label>
@@ -132,7 +145,8 @@ export function AuthPage({ onAuthenticated }: AuthPageProps) {
                             {loading ? (tab === "signin" ? "Signing in…" : "Creating account…") : (tab === "signin" ? "Sign in" : "Create account")}
                         </Button>
                     </CardFooter>
-                </form>
+                    </form>
+                </div>
             </Card>
         </div>
     );
