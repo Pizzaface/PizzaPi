@@ -30,6 +30,10 @@ import {
     getSubscriptionsForUser,
     updateEnabledEvents,
 } from "../push.js";
+import { RateLimiter, isValidEmail, isValidPassword } from "../security.js";
+
+// 5 requests per 15 minutes
+const registerRateLimiter = new RateLimiter(5, 15 * 60 * 1000);
 
 export async function handleApi(req: Request, url: URL): Promise<Response | undefined> {
     if (url.pathname === "/health") {
@@ -37,10 +41,23 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
     }
 
     if (url.pathname === "/api/register" && req.method === "POST") {
+        const clientIp = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+        if (!registerRateLimiter.check(clientIp)) {
+            return Response.json({ error: "Too many registration attempts. Please try again later." }, { status: 429 });
+        }
+
         const body = await req.json() as { name?: string; email?: string; password?: string };
         const { name, email, password } = body;
         if (!email || !password) {
             return Response.json({ error: "Missing required fields: email, password" }, { status: 400 });
+        }
+
+        if (!isValidEmail(email)) {
+            return Response.json({ error: "Invalid email format" }, { status: 400 });
+        }
+
+        if (!isValidPassword(password)) {
+            return Response.json({ error: "Password must be at least 8 characters long" }, { status: 400 });
         }
 
         const existing = await kysely
