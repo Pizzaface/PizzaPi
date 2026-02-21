@@ -20,6 +20,9 @@ export function AuthPage({ onAuthenticated }: AuthPageProps) {
     const [error, setError] = React.useState<string | null>(null);
     const [loading, setLoading] = React.useState(false);
 
+    const signinRef = React.useRef<HTMLButtonElement>(null);
+    const signupRef = React.useRef<HTMLButtonElement>(null);
+
     async function handleSubmit(e: React.FormEvent) {
         e.preventDefault();
         setError(null);
@@ -51,6 +54,26 @@ export function AuthPage({ onAuthenticated }: AuthPageProps) {
         setError(null);
     }
 
+    function handleKeyDown(e: React.KeyboardEvent) {
+        if (e.key === "ArrowRight") {
+            e.preventDefault();
+            switchTab("signup");
+            signupRef.current?.focus();
+        } else if (e.key === "ArrowLeft") {
+            e.preventDefault();
+            switchTab("signin");
+            signinRef.current?.focus();
+        } else if (e.key === "Home") {
+            e.preventDefault();
+            switchTab("signin");
+            signinRef.current?.focus();
+        } else if (e.key === "End") {
+            e.preventDefault();
+            switchTab("signup");
+            signupRef.current?.focus();
+        }
+    }
+
     return (
         <div className="flex min-h-[100dvh] w-full items-start justify-center bg-background p-4 overflow-y-auto pp-safe-top pp-safe-bottom sm:items-center">
             <Card className="w-full max-w-sm">
@@ -63,12 +86,19 @@ export function AuthPage({ onAuthenticated }: AuthPageProps) {
                         {tab === "signin" ? "Sign in to your account." : "Create a new account."}
                     </CardDescription>
                     {/* Tabs */}
-                    <div role="tablist" aria-label="Authentication Options" className="flex gap-1 mt-2 border-b">
+                    <div
+                        role="tablist"
+                        aria-label="Authentication Options"
+                        className="flex gap-1 mt-2 border-b"
+                        onKeyDown={handleKeyDown}
+                    >
                         <button
+                            ref={signinRef}
                             id="tab-signin"
                             role="tab"
                             aria-selected={tab === "signin"}
                             aria-controls="auth-panel"
+                            tabIndex={tab === "signin" ? 0 : -1}
                             type="button"
                             className={`px-3 py-1.5 text-sm font-medium transition-colors border-b-2 -mb-px ${tab === "signin" ? "border-foreground text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"}`}
                             onClick={() => switchTab("signin")}
@@ -76,10 +106,12 @@ export function AuthPage({ onAuthenticated }: AuthPageProps) {
                             Sign in
                         </button>
                         <button
+                            ref={signupRef}
                             id="tab-signup"
                             role="tab"
                             aria-selected={tab === "signup"}
                             aria-controls="auth-panel"
+                            tabIndex={tab === "signup" ? 0 : -1}
                             type="button"
                             className={`px-3 py-1.5 text-sm font-medium transition-colors border-b-2 -mb-px ${tab === "signup" ? "border-foreground text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"}`}
                             onClick={() => switchTab("signup")}
