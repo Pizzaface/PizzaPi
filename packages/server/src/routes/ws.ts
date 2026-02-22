@@ -1,6 +1,6 @@
 import type { WsData } from "../ws/registry.js";
 import { validateApiKey } from "../middleware.js";
-import { auth } from "../auth.js";
+import { auth, trustedOrigins } from "../auth.js";
 
 type BunServer = ReturnType<typeof Bun.serve<WsData>>;
 
@@ -22,6 +22,10 @@ export async function handleWsUpgrade(
 
     if (url.pathname.startsWith("/ws/sessions/")) {
         // Browser viewer connecting to watch a session — must have a valid session cookie
+        const origin = req.headers.get("Origin");
+        if (origin && !trustedOrigins.includes(origin)) {
+            return new Response("Forbidden: Untrusted Origin", { status: 403 });
+        }
         const session = await auth.api.getSession({ headers: req.headers });
         if (!session) return new Response("Unauthorized", { status: 401 });
         const sessionId = url.pathname.slice("/ws/sessions/".length);
@@ -53,6 +57,10 @@ export async function handleWsUpgrade(
 
     if (url.pathname === "/ws/hub") {
         // Web UI connecting to watch the live session list — must have a valid session cookie
+        const origin = req.headers.get("Origin");
+        if (origin && !trustedOrigins.includes(origin)) {
+            return new Response("Forbidden: Untrusted Origin", { status: 403 });
+        }
         const session = await auth.api.getSession({ headers: req.headers });
         if (!session) return new Response("Unauthorized", { status: 401 });
         const upgraded = server.upgrade(req, {
