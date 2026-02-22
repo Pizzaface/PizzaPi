@@ -9,6 +9,7 @@ import { Trash2, Plus, KeyRound } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Skeleton } from "@/components/ui/skeleton";
 import { RevealedSecretBanner } from "@/components/ui/revealed-secret";
+import { Spinner } from "@/components/ui/spinner";
 
 interface ApiKey {
     id: string;
@@ -27,6 +28,7 @@ export function ApiKeyManager() {
     const [newKeyName, setNewKeyName] = React.useState("");
     const [newKeyValue, setNewKeyValue] = React.useState<string | null>(null);
     const [error, setError] = React.useState<string | null>(null);
+    const [deletingKeyId, setDeletingKeyId] = React.useState<string | null>(null);
 
     async function loadKeys() {
         setLoading(true);
@@ -73,6 +75,7 @@ export function ApiKeyManager() {
 
     async function handleDelete(id: string) {
         setError(null);
+        setDeletingKeyId(id);
         try {
             const { error } = await authClient.$fetch("/api-key/delete", {
                 method: "POST",
@@ -85,6 +88,8 @@ export function ApiKeyManager() {
             }
         } catch (e) {
             setError(e instanceof Error ? e.message : "Failed to delete API key");
+        } finally {
+            setDeletingKeyId(null);
         }
     }
 
@@ -170,9 +175,15 @@ export function ApiKeyManager() {
                                         size="icon"
                                         className="h-7 w-7 flex-shrink-0 text-destructive hover:text-destructive"
                                         onClick={() => handleDelete(k.id)}
+                                        disabled={deletingKeyId === k.id}
                                         title="Revoke key"
+                                        aria-label="Revoke key"
                                     >
-                                        <Trash2 className="h-3.5 w-3.5" />
+                                        {deletingKeyId === k.id ? (
+                                            <Spinner className="h-3.5 w-3.5" />
+                                        ) : (
+                                            <Trash2 className="h-3.5 w-3.5" />
+                                        )}
                                     </Button>
                                 </div>
                             ))}
