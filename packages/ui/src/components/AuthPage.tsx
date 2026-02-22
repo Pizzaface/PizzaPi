@@ -5,6 +5,7 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { PizzaLogo } from "@/components/PizzaLogo";
 import { signIn, signUp } from "@/lib/auth-client";
+import { Loader2 } from "lucide-react";
 
 interface AuthPageProps {
     onAuthenticated: () => void;
@@ -174,6 +175,7 @@ export function AuthPage({ onAuthenticated }: AuthPageProps) {
                             className="w-full"
                             disabled={loading || !email || !password || (tab === "signup" && !name)}
                         >
+                            {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                             {loading ? (tab === "signin" ? "Signing in…" : "Creating account…") : (tab === "signin" ? "Sign in" : "Create account")}
                         </Button>
                     </CardFooter>

@@ -16,7 +16,8 @@ export type RemoteExecRequest =
     | { type: "exec"; id: string; command: "resume_session"; query?: string; sessionPath?: string }
     | { type: "exec"; id: string; command: "export_html"; outputPath?: string }
     | { type: "exec"; id: string; command: "new_session" }
-    | { type: "exec"; id: string; command: "restart" };
+    | { type: "exec"; id: string; command: "restart" }
+    | { type: "exec"; id: string; command: "end_session" };
 
 export type RemoteExecResponse =
     | { type: "exec_result"; id: string; ok: true; command: RemoteExecRequest["command"]; result?: unknown }

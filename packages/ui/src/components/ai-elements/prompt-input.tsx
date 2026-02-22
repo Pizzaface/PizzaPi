@@ -378,6 +378,8 @@ export type PromptInputProps = Omit<
   maxFiles?: number;
   // bytes
   maxFileSize?: number;
+  // Disable all controls inside the prompt input
+  disabled?: boolean;
   onError?: (err: {
     code: "max_files" | "max_file_size" | "accept";
     message: string;
@@ -396,6 +398,7 @@ export const PromptInput = ({
   syncHiddenInput,
   maxFiles,
   maxFileSize,
+  disabled,
   onError,
   onSubmit,
   children,
@@ -799,7 +802,12 @@ export const PromptInput = ({
         ref={formRef}
         {...props}
       >
-        <InputGroup className="overflow-hidden">{children}</InputGroup>
+        <InputGroup
+          className={cn("overflow-hidden", disabled && "opacity-50 pointer-events-none")}
+          data-disabled={disabled || undefined}
+        >
+          {children}
+        </InputGroup>
       </form>
     </>
   );

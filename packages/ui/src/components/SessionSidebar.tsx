@@ -4,8 +4,9 @@ import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 import { getRelayWsBase } from "@/lib/relay";
+import { formatPathTail } from "@/lib/path";
 import { ProviderIcon } from "@/components/ProviderIcon";
-import { PanelLeftClose, PanelLeftOpen, Plus, User, X } from "lucide-react";
+import { PanelLeftClose, PanelLeftOpen, Plus, User, X, HardDrive } from "lucide-react";
 
 interface HubSession {
     sessionId: string;
@@ -21,16 +22,24 @@ interface HubSession {
     isActive?: boolean;
     lastHeartbeatAt?: string | null;
     model?: { provider: string; id: string; name?: string } | null;
+    runnerId?: string | null;
+    runnerName?: string | null;
 }
+
+export type { HubSession };
 
 export interface SessionSidebarProps {
     onOpenSession: (sessionId: string) => void;
     onNewSession: () => void;
     onClearSelection: () => void;
+    onShowRunners: () => void;
     activeSessionId: string | null;
+    showRunners?: boolean;
     /** Active model info for the currently selected session (used for provider indicator) */
     activeModel?: { provider: string; id: string; name?: string } | null;
     onRelayStatusChange?: (state: DotState) => void;
+    /** Called whenever the live sessions list changes so the parent can use it (e.g. mobile switcher) */
+    onSessionsChange?: (sessions: HubSession[]) => void;
 }
 
 function formatRelativeDate(isoString: string): string {
@@ -58,37 +67,6 @@ function formatTime(isoString: string): string {
     return new Date(isoString).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-function cwdLabel(cwd: string): string {
-    if (!cwd) return "Unknown node";
-    const parts = cwd.replace(/\\/g, "/").split("/").filter(Boolean);
-    return parts[parts.length - 1] || cwd;
-}
-
-/**
- * Group key for a session path.
- * - POSIX: "/srv/repos/foo" -> "/srv"
- * - Windows-ish: "C:/repo" -> "C:"
- */
-function rootFolder(cwd: string): string {
-    if (!cwd) return "Unknown";
-    const normalized = cwd.replace(/\\/g, "/");
-    const drive = normalized.match(/^[A-Za-z]:/);
-    if (drive) return drive[0];
-    if (normalized.startsWith("/")) {
-        const parts = normalized.split("/").filter(Boolean);
-        return parts.length > 0 ? `/${parts[0]}` : "/";
-    }
-    // Fallback: treat first segment as "root"
-    return normalized.split("/").filter(Boolean)[0] ?? "Unknown";
-}
-
-function relativeToRoot(cwd: string, root: string): string {
-    const normalized = cwd.replace(/\\/g, "/");
-    const r = root.replace(/\\/g, "/");
-    if (normalized === r) return ".";
-    if (normalized.startsWith(r + "/")) return normalized.slice((r + "/").length);
-    return normalized;
-}
 
 export type DotState = "connecting" | "connected" | "disconnected";
 
@@ -106,13 +84,40 @@ function LiveDot({ state }: { state: DotState }) {
     );
 }
 
+import { Skeleton } from "@/components/ui/skeleton";
+
+function SidebarSkeleton() {
+    return (
+        <div className="flex flex-col px-2 pb-2 gap-2 mt-2 animate-in fade-in duration-500">
+             <div className="flex flex-col gap-1">
+                <div className="flex items-center gap-1.5 px-1.5 py-2 opacity-50">
+                     <Skeleton className="h-3 w-3 rounded-full" />
+                     <Skeleton className="h-3 w-16 rounded-sm" />
+                </div>
+                {[1, 2, 3].map((i) => (
+                    <div key={i} className="flex items-center gap-3 px-2.5 py-3 rounded-lg">
+                        <Skeleton className="h-8 w-8 rounded-md shrink-0" />
+                        <div className="flex-1 space-y-2 min-w-0">
+                            <Skeleton className="h-3.5 w-3/4 rounded-sm" />
+                            <Skeleton className="h-2.5 w-1/2 rounded-sm" />
+                        </div>
+                    </div>
+                ))}
+             </div>
+        </div>
+    );
+}
+
 export const SessionSidebar = React.memo(function SessionSidebar({
     onOpenSession,
     onNewSession,
     onClearSelection,
+    onShowRunners,
     activeSessionId,
+    showRunners,
     activeModel,
     onRelayStatusChange,
+    onSessionsChange,
 }: SessionSidebarProps) {
     const [collapsed, setCollapsed] = React.useState(false);
 
@@ -153,10 +158,15 @@ export const SessionSidebar = React.memo(function SessionSidebar({
 
     const [liveSessions, setLiveSessions] = React.useState<HubSession[]>([]);
     const [dotState, setDotState] = React.useState<DotState>("connecting");
+    const [hasLoaded, setHasLoaded] = React.useState(false);
 
     React.useEffect(() => {
         onRelayStatusChange?.(dotState);
     }, [dotState, onRelayStatusChange]);
+
+    React.useEffect(() => {
+        onSessionsChange?.(liveSessions);
+    }, [liveSessions, onSessionsChange]);
 
     React.useEffect(() => {
         let ws: WebSocket | null = null;
@@ -179,6 +189,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
 
                     if (msg.type === "sessions") {
                         setLiveSessions((msg.sessions as HubSession[]) ?? []);
+                        setHasLoaded(true);
                     } else if (msg.type === "session_added") {
                         const s = msg as unknown as HubSession;
                         setLiveSessions((prev) => {
@@ -198,6 +209,8 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                     isActive: (s as any).isActive ?? false,
                                     lastHeartbeatAt: (s as any).lastHeartbeatAt ?? null,
                                     model: (s as any).model ?? null,
+                                    runnerId: (s as any).runnerId ?? null,
+                                    runnerName: (s as any).runnerName ?? null,
                                 },
                             ];
                         });
@@ -205,12 +218,14 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                         setLiveSessions((prev) => prev.filter((s) => s.sessionId !== msg.sessionId));
                     } else if (msg.type === "session_status") {
                         // Update active status (and model) from heartbeat notifications.
-                        const { sessionId, isActive, lastHeartbeatAt, model, sessionName } = msg as {
+                        const { sessionId, isActive, lastHeartbeatAt, model, sessionName, runnerId, runnerName } = msg as {
                             sessionId: string;
                             isActive: boolean;
                             lastHeartbeatAt: string;
                             model?: { provider: string; id: string; name?: string } | null;
                             sessionName?: string | null;
+                            runnerId?: string | null;
+                            runnerName?: string | null;
                         };
                         setLiveSessions((prev) =>
                             prev.map((s) =>
@@ -221,6 +236,8 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                           lastHeartbeatAt,
                                           model: model === undefined ? (s.model ?? null) : model,
                                           sessionName: sessionName === undefined ? (s.sessionName ?? null) : sessionName,
+                                          runnerId: runnerId === undefined ? (s.runnerId ?? null) : runnerId,
+                                          runnerName: runnerName === undefined ? (s.runnerName ?? null) : runnerName,
                                       }
                                     : s,
                             ),
@@ -250,24 +267,34 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     }, []);
 
     const liveGroups = React.useMemo(() => {
-        const groups = new Map<string, HubSession[]>();
+        // Group key: runnerId (or "__local__" for sessions not tied to a runner).
+        const groups = new Map<string, { label: string; sessions: HubSession[] }>();
         for (const s of liveSessions) {
-            const key = rootFolder(s.cwd || "");
-            if (!groups.has(key)) groups.set(key, []);
-            groups.get(key)!.push(s);
+            const key = s.runnerId ?? "__local__";
+            if (!groups.has(key)) {
+                const label = s.runnerName?.trim() || (s.runnerId ? `Runner ${s.runnerId.slice(0, 8)}…` : "Local");
+                groups.set(key, { label, sessions: [] });
+            }
+            groups.get(key)!.sessions.push(s);
         }
 
-        // Sort sessions within each root by most recently active/started.
-        for (const [k, sessions] of groups.entries()) {
-            sessions.sort((a, b) => {
+        // Sort sessions within each group by most recently active/started.
+        for (const entry of groups.values()) {
+            entry.sessions.sort((a, b) => {
                 const aT = Date.parse(a.lastHeartbeatAt ?? a.startedAt);
                 const bT = Date.parse(b.lastHeartbeatAt ?? b.startedAt);
                 return (Number.isFinite(bT) ? bT : 0) - (Number.isFinite(aT) ? aT : 0);
             });
-            groups.set(k, sessions);
         }
 
-        return new Map(Array.from(groups.entries()).sort(([a], [b]) => a.localeCompare(b)));
+        // Sort groups: named runners first (alphabetically), then unnamed, then local.
+        return new Map(
+            Array.from(groups.entries()).sort(([aKey, aVal], [bKey, bVal]) => {
+                if (aKey === "__local__") return 1;
+                if (bKey === "__local__") return -1;
+                return aVal.label.localeCompare(bVal.label);
+            }),
+        );
     }, [liveSessions]);
 
     const sidebarContent = (
@@ -276,24 +303,27 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                 "flex flex-col h-full bg-sidebar border-r border-sidebar-border flex-shrink-0 overflow-hidden relative w-full",
             )}
         >
+            {/* Sidebar header */}
             <div className="flex items-center justify-between px-3 py-2 border-b border-sidebar-border flex-shrink-0">
-                <Button
-                    variant="ghost"
-                    size="icon"
-                    className="hidden md:inline-flex h-7 w-7 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
-                    onClick={() => setCollapsed(true)}
-                    aria-label="Collapse sidebar"
-                >
-                    <PanelLeftClose className="h-4 w-4" />
-                </Button>
-                <span className="text-[0.7rem] font-semibold uppercase tracking-widest text-sidebar-foreground/60">
-                    Sessions
-                </span>
+                <div className="flex items-center gap-2">
+                    <Button
+                        variant="ghost"
+                        size="icon"
+                        className="hidden md:inline-flex h-7 w-7 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
+                        onClick={() => setCollapsed(true)}
+                        aria-label="Collapse sidebar"
+                    >
+                        <PanelLeftClose className="h-4 w-4" />
+                    </Button>
+                    <span className="text-[0.7rem] font-semibold uppercase tracking-widest text-sidebar-foreground/60">
+                        Sessions
+                    </span>
+                </div>
                 <div className="flex items-center gap-1">
                     <Button
                         variant="ghost"
                         size="icon"
-                        className="h-7 w-7 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
+                        className="h-8 w-8 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
                         onClick={onNewSession}
                         aria-label="New session"
                         title="New session"
@@ -303,7 +333,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                     <Button
                         variant="ghost"
                         size="icon"
-                        className="h-7 w-7 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
+                        className="h-8 w-8 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
                         onClick={onClearSelection}
                         aria-label="Clear selected session"
                         title="Clear selected session"
@@ -314,55 +344,71 @@ export const SessionSidebar = React.memo(function SessionSidebar({
             </div>
 
             <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
-                <div className="flex items-center gap-1.5 px-3 py-1.5 flex-shrink-0">
-                    <span className="text-[0.65rem] font-semibold uppercase tracking-widest text-sidebar-foreground/50">
-                        Live Sessions
-                    </span>
-                    <LiveDot state={dotState} />
+                {/* Runners nav item / Live sessions header */}
+                <div className="px-2 pt-2 pb-1 flex-shrink-0">
+                    <button
+                        onClick={onShowRunners}
+                        className={cn(
+                            "flex items-center gap-2.5 w-full px-3 py-2 rounded-lg text-sm font-medium transition-colors",
+                            showRunners
+                                ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                                : "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
+                        )}
+                    >
+                        <HardDrive className={cn("h-4 w-4 flex-shrink-0", showRunners ? "text-primary" : "text-sidebar-foreground/50")} />
+                        <span>Runners</span>
+                        <div className="ml-auto">
+                            <LiveDot state={dotState} />
+                        </div>
+                    </button>
                 </div>
-                <ScrollArea className="flex-1 px-1.5 pb-1.5">
-                    {liveGroups.size === 0 ? (
-                        <p className="px-2 py-1 text-xs italic text-sidebar-foreground/40">No live sessions</p>
+
+                <ScrollArea className="flex-1 px-2 pb-2">
+                    {!hasLoaded ? (
+                        <SidebarSkeleton />
+                    ) : liveGroups.size === 0 ? (
+                        <p className="px-2 py-3 text-xs italic text-sidebar-foreground/40 text-center">No live sessions</p>
                     ) : (
-                        Array.from(liveGroups.entries()).map(([root, sessions]) => (
-                            <div key={root} className="flex flex-col">
-                                <div className="flex items-center gap-1 px-1.5 py-1 min-w-0">
-                                    <span className="text-[0.65rem] text-sidebar-primary/70">⬡</span>
+                        Array.from(liveGroups.entries()).map(([groupKey, { label, sessions }]) => (
+                            <div key={groupKey} className="flex flex-col mb-2">
+                                {/* Group header */}
+                                <div className="flex items-center gap-1.5 px-1.5 py-1 min-w-0">
+                                    <HardDrive className="h-3 w-3 text-sidebar-foreground/35 flex-shrink-0" />
                                     <span
-                                        className="text-[0.65rem] font-semibold text-sidebar-foreground/55 truncate flex-1"
-                                        title={root}
+                                        className="text-[0.65rem] font-medium text-sidebar-foreground/45 truncate flex-1"
+                                        title={label}
                                     >
-                                        {root}
+                                        {label}
                                     </span>
                                 </div>
-                                {sessions.map((s) => (
-                                    <button
-                                        key={s.sessionId}
-                                        onClick={() => onOpenSession(s.sessionId)}
-                                        title={`View session ${s.sessionId}`}
-                                        className={cn(
-                                            "flex flex-col gap-0.5 w-full min-w-0 px-2 py-1.5 rounded-md text-left text-sidebar-foreground hover:bg-sidebar-accent transition-colors",
-                                            activeSessionId === s.sessionId && "bg-sidebar-accent text-sidebar-accent-foreground",
-                                        )}
-                                    >
-                                        <div className="flex items-center gap-2 justify-between mt-1 mr-2 flex-row min-w-0">
-                                            <div className="flex flex-col items-center px-2 gap-1 w-3 flex-shrink-0 pt-0.5">
-                                                <span
-                                                    className={cn(
-                                                        "inline-block h-1.5 w-1.5 rounded-full transition-colors",
-                                                        s.isActive
-                                                            ? "bg-blue-500 shadow-[0_0_4px_#3b82f680] animate-pulse"
-                                                            : "bg-green-600",
-                                                    )}
-                                                    title={s.isActive ? "Actively generating" : "Session idle"}
-                                                />
+
+                                {/* Session cards */}
+                                {sessions.map((s) => {
+                                    const isSelected = !showRunners && activeSessionId === s.sessionId;
+                                    const provider = s.model?.provider ??
+                                        (activeSessionId === s.sessionId ? activeModel?.provider : undefined) ??
+                                        "unknown";
+                                    const timeLabel = isToday(s.startedAt)
+                                        ? formatTime(s.lastHeartbeatAt ?? s.startedAt)
+                                        : formatRelativeDate(s.startedAt);
+
+                                    return (
+                                        <button
+                                            key={s.sessionId}
+                                            onClick={() => onOpenSession(s.sessionId)}
+                                            title={`View session ${s.sessionId}`}
+                                            className={cn(
+                                                "flex items-center gap-2.5 w-full min-w-0 px-2.5 py-2.5 rounded-lg text-left transition-colors",
+                                                isSelected
+                                                    ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                                                    : "text-sidebar-foreground hover:bg-sidebar-accent/50",
+                                            )}
+                                        >
+                                            {/* Provider icon + activity dot */}
+                                            <div className="relative flex-shrink-0 flex items-center justify-center w-7 h-7 rounded-md bg-sidebar-accent/50">
                                                 <ProviderIcon
-                                                    provider={
-                                                        s.model?.provider ??
-                                                        (activeSessionId === s.sessionId ? activeModel?.provider : undefined) ??
-                                                        "unknown"
-                                                    }
-                                                    className="size-3 text-sidebar-foreground/70"
+                                                    provider={provider}
+                                                    className="size-4 text-sidebar-foreground/70"
                                                     title={
                                                         s.model?.provider
                                                             ? `${s.model.provider} · ${s.model.name ?? s.model.id}`
@@ -371,39 +417,48 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                               : "unknown"
                                                     }
                                                 />
+                                                <span
+                                                    className={cn(
+                                                        "absolute -top-0.5 -right-0.5 inline-block h-2 w-2 rounded-full border border-sidebar ring-1 ring-sidebar transition-colors",
+                                                        s.isActive
+                                                            ? "bg-blue-400 shadow-[0_0_4px_#60a5fa80] animate-pulse ring-blue-400/20"
+                                                            : "bg-green-600 ring-green-600/20",
+                                                    )}
+                                                    title={s.isActive ? "Actively generating" : "Session idle"}
+                                                />
                                             </div>
+
+                                            {/* Text info */}
                                             <div className="flex-1 min-w-0">
-                                                <div className="truncate text-[0.78rem] font-medium">
-                                                    {s.sessionName?.trim() || `Session ${s.sessionId.slice(0, 8)}…`}
+                                                <div className="flex items-baseline justify-between gap-1 min-w-0">
+                                                    <span className="truncate text-[0.8rem] font-medium leading-tight">
+                                                        {s.sessionName?.trim() || `Session ${s.sessionId.slice(0, 8)}…`}
+                                                    </span>
+                                                    <span className="text-[0.65rem] text-sidebar-foreground/45 flex-shrink-0">
+                                                        {timeLabel}
+                                                    </span>
                                                 </div>
-                                                {s.userName && (
-                                                    <div className="flex items-center gap-1">
-                                                        <User className="h-2.5 w-2.5 text-sidebar-foreground/40 flex-shrink-0" />
-                                                        <span className="text-[0.65rem] text-sidebar-foreground/50 truncate">
-                                                            {s.userName}
-                                                        </span>
-                                                    </div>
-                                                )}
-                                                {!!s.cwd && (
-                                                    <div
-                                                        className="text-[0.65rem] text-sidebar-foreground/40 truncate"
-                                                        title={s.cwd}
-                                                    >
-                                                        {(() => {
-                                                            const r = rootFolder(s.cwd);
-                                                            return relativeToRoot(s.cwd, r);
-                                                        })()}
+                                                {(s.userName || s.cwd) && (
+                                                    <div className="flex items-center gap-1 mt-0.5 min-w-0">
+                                                        {s.userName && (
+                                                            <span className="text-[0.65rem] text-sidebar-foreground/45 truncate">
+                                                                {s.userName}
+                                                            </span>
+                                                        )}
+                                                        {s.cwd && (
+                                                            <span
+                                                                className="text-[0.65rem] text-sidebar-foreground/35 truncate"
+                                                                title={s.cwd}
+                                                            >
+                                                                {s.userName ? "·" : ""} {formatPathTail(s.cwd, 2)}
+                                                            </span>
+                                                        )}
                                                     </div>
                                                 )}
                                             </div>
-                                            <span className="text-[0.65rem] text-sidebar-foreground/50 flex-shrink-0">
-                                                {isToday(s.startedAt)
-                                                    ? formatTime(s.lastHeartbeatAt ?? s.startedAt)
-                                                    : formatRelativeDate(s.startedAt)}
-                                            </span>
-                                        </div>
-                                    </button>
-                                ))}
+                                        </button>
+                                    );
+                                })}
                             </div>
                         ))
                     )}
@@ -415,7 +470,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     if (effectiveCollapsed) {
         return (
             <aside className="hidden md:flex flex-col h-full bg-sidebar border-r border-sidebar-border flex-shrink-0 w-10">
-                <div className="p-2">
+                <div className="p-2 flex flex-col gap-2">
                     <Button
                         variant="outline"
                         size="icon"
@@ -424,6 +479,15 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                         aria-label="Expand sidebar"
                     >
                         <PanelLeftOpen className="h-4 w-4" />
+                    </Button>
+                    <Button
+                        variant={showRunners ? "secondary" : "ghost"}
+                        size="icon"
+                        className="h-8 w-8"
+                        onClick={onShowRunners}
+                        title="Runners"
+                    >
+                        <HardDrive className={cn("h-4 w-4", showRunners && "text-primary")} />
                     </Button>
                 </div>
             </aside>

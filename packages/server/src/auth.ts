@@ -95,6 +95,23 @@ export interface RelaySessionStateTable {
     updatedAt: string;
 }
 
+export interface PushSubscriptionTable {
+    id: string;
+    userId: string;
+    endpoint: string;
+    keys: string;
+    createdAt: string;
+    enabledEvents: string;
+}
+
+export interface RunnerRecentFolderTable {
+    id: string;
+    userId: string;
+    runnerId: string;
+    path: string;
+    lastUsedAt: string;
+}
+
 export interface DB {
     user: UserTable;
     session: SessionTable;
@@ -103,6 +120,8 @@ export interface DB {
     apikey: ApiKeyTable;
     relay_session: RelaySessionTable;
     relay_session_state: RelaySessionStateTable;
+    push_subscription: PushSubscriptionTable;
+    runner_recent_folder: RunnerRecentFolderTable;
 }
 
 // ── Instances ─────────────────────────────────────────────────────────────────
@@ -150,6 +169,8 @@ export const auth = betterAuth({
         "http://127.0.0.1:5173",
         "http://jordans-mac-mini.tail65556b.ts.net:5173",
         "https://jordans-mac-mini.tail65556b.ts.net:5173",
+        // Bare HTTPS Tailscale URL (port 443, served via `vite --https` with Tailscale cert)
+        "https://jordans-mac-mini.tail65556b.ts.net",
     ],
     emailAndPassword: {
         enabled: true,

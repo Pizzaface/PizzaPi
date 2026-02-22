@@ -40,17 +40,21 @@ export function FileTypeCard({
 
   return (
     <>
+      {/* ── Inline trigger card ───────────────────────────────────────────── */}
       <button
         type="button"
         onClick={() => setOpen(true)}
         className={cn(
-          "group flex w-full items-center gap-3 rounded-lg border border-border/80 bg-muted/30 px-3 py-2.5 text-left transition-colors hover:bg-muted/60 hover:border-border cursor-pointer",
+          "group flex w-full items-center gap-2.5 rounded-lg border border-border/80 bg-muted/30 px-3 py-2.5 text-left transition-colors hover:bg-muted/60 hover:border-border cursor-pointer",
           className,
         )}
       >
-        <div className="flex size-9 shrink-0 items-center justify-center rounded-md border border-border/60 bg-background text-muted-foreground group-hover:text-foreground transition-colors">
-          <Icon className="size-4" />
+        {/* Icon */}
+        <div className="flex size-8 sm:size-9 shrink-0 items-center justify-center rounded-md border border-border/60 bg-background text-muted-foreground group-hover:text-foreground transition-colors">
+          <Icon className="size-3.5 sm:size-4" />
         </div>
+
+        {/* Name + path */}
         <div className="min-w-0 flex-1">
           <span className="text-sm font-medium text-foreground truncate block">
             {displayName}
@@ -59,19 +63,30 @@ export function FileTypeCard({
             {path}
           </p>
         </div>
-        <span className="inline-flex shrink-0 items-center rounded border border-border/60 bg-muted px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground">
+
+        {/* MIME badge — hidden on the smallest screens to preserve space */}
+        <span className="hidden sm:inline-flex shrink-0 items-center rounded border border-border/60 bg-muted px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground">
           {mimeType}
         </span>
       </button>
 
+      {/* ── Modal ─────────────────────────────────────────────────────────── */}
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="sm:max-w-3xl max-h-[85vh] flex flex-col gap-0 p-0 overflow-hidden">
-          <DialogHeader className="px-5 pt-5 pb-3 border-b border-border/60 shrink-0">
-            <div className="flex items-center gap-2.5">
+        {/*
+          - w-[calc(100%-2rem)] is already the base default from DialogContent.
+          - max-h uses dvh so mobile browser chrome doesn't cut content off.
+          - pr-12 on the inner header row leaves room for the absolute close button.
+        */}
+        <DialogContent className="pp-file-card-dialog sm:max-w-3xl max-h-[90dvh] sm:max-h-[85dvh] flex flex-col gap-0 p-0 overflow-hidden">
+          <DialogHeader className="pl-4 sm:pl-5 pr-12 pt-4 sm:pt-5 pb-3 border-b border-border/60 shrink-0">
+            <div className="flex items-center gap-2.5 min-w-0">
+              {/* Icon */}
               <div className="flex size-8 shrink-0 items-center justify-center rounded-md border border-border/60 bg-muted text-muted-foreground">
                 <Icon className="size-4" />
               </div>
-              <div className="min-w-0">
+
+              {/* Name + path */}
+              <div className="min-w-0 flex-1">
                 <DialogTitle className="text-sm font-semibold truncate">
                   {displayName}
                 </DialogTitle>
@@ -79,11 +94,14 @@ export function FileTypeCard({
                   {path}
                 </DialogDescription>
               </div>
-              <span className="ml-auto inline-flex shrink-0 items-center rounded border border-border/60 bg-muted px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground">
+
+              {/* MIME badge — only shows when there's enough room (sm+) */}
+              <span className="hidden sm:inline-flex shrink-0 items-center rounded border border-border/60 bg-muted px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground">
                 {mimeType}
               </span>
             </div>
           </DialogHeader>
+
           <div className="flex-1 overflow-auto p-0">
             {children}
           </div>

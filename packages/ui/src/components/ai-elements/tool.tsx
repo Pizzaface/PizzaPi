@@ -67,10 +67,11 @@ const statusIcons: Record<ToolPart["state"], ReactNode> = {
 
 export type StatusBadgeProps = {
   status: ToolPart["state"];
+  className?: string;
 };
 
-export const StatusBadge = ({ status }: StatusBadgeProps) => (
-  <Badge className="gap-1.5 rounded-full text-xs" variant="secondary">
+export const StatusBadge = ({ status, className }: StatusBadgeProps) => (
+  <Badge className={cn("gap-1.5 rounded-full text-xs", className)} variant="secondary">
     {statusIcons[status]}
     {statusLabels[status]}
   </Badge>
@@ -95,10 +96,10 @@ export const ToolHeader = ({
       )}
       {...props}
     >
-      <div className="flex items-center gap-2">
-        <WrenchIcon className="size-4 text-muted-foreground" />
-        <span className="font-medium text-sm">{title ?? derivedName}</span>
-        <StatusBadge status={state} />
+      <div className="flex items-center gap-2 min-w-0">
+        <WrenchIcon className="size-4 shrink-0 text-muted-foreground" />
+        <span className="font-medium text-sm truncate">{title ?? derivedName}</span>
+        <StatusBadge status={state} className="shrink-0" />
       </div>
       <ChevronDownIcon className="size-4 text-muted-foreground transition-transform group-data-[state=open]:rotate-180" />
     </CollapsibleTrigger>

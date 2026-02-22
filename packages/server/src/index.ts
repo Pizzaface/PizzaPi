@@ -11,10 +11,12 @@ import {
 import { deleteRelayEventCaches, initializeRelayRedisCache } from "./sessions/redis.js";
 import { sweepExpiredSharedSessions } from "./ws/registry.js";
 import { sweepExpiredAttachments } from "./attachments/store.js";
+import { ensurePushSubscriptionTable } from "./push.js";
 
 const PORT = parseInt(process.env.PORT ?? "3000");
 
 await ensureRelaySessionTables();
+await ensurePushSubscriptionTable();
 void initializeRelayRedisCache();
 
 const server = Bun.serve<WsData>({

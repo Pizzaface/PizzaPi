@@ -3,17 +3,25 @@
     "version": "0.1.0",
     "type": "module",
     "bin": {
-        "pizzapi": "./src/index.ts"
+        "pizza": "./src/index.ts"
     },
     "scripts": {
         "dev": "bun src/index.ts",
         "dev:runner": "bun src/index.ts runner",
         "build": "tsc",
-        "start": "bun dist/index.js"
+        "start": "bun dist/index.js",
+        "build:binary": "bun build-binaries.ts --target",
+        "build:binary:linux-x64": "bun build-binaries.ts --target linux-x64",
+        "build:binary:linux-arm64": "bun build-binaries.ts --target linux-arm64",
+        "build:binary:macos-x64": "bun build-binaries.ts --target macos-x64",
+        "build:binary:macos-arm64": "bun build-binaries.ts --target macos-arm64",
+        "build:binary:windows-x64": "bun build-binaries.ts --target windows-x64",
+        "build:binaries": "bun build-binaries.ts"
     },
     "dependencies": {
         "@mariozechner/pi-coding-agent": "^0.53.0",
-        "@pizzapi/tools": "workspace:*"
+        "@pizzapi/tools": "workspace:*",
+        "@zenyr/bun-pty": "^0.4.4"
     },
     "devDependencies": {
         "@types/bun": "^1.3.9",

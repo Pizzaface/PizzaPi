@@ -1,10 +1,11 @@
 import * as React from "react";
-import { SessionSidebar, type DotState } from "@/components/SessionSidebar";
+import { SessionSidebar, type DotState, type HubSession } from "@/components/SessionSidebar";
 import { SessionViewer, type RelayMessage } from "@/components/SessionViewer";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { AuthPage } from "@/components/AuthPage";
 import { ApiKeyManager } from "@/components/ApiKeyManager";
 import { RunnerTokenManager } from "@/components/RunnerTokenManager";
+import { RunnerManager } from "@/components/RunnerManager";
 import { PizzaLogo } from "@/components/PizzaLogo";
 import { authClient, useSession, signOut } from "@/lib/auth-client";
 import { getRelayWsBase } from "@/lib/relay";
@@ -36,8 +37,10 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Sun, Moon, LogOut, KeyRound, X, User, ChevronsUpDown, PanelLeftOpen } from "lucide-react";
+import { Sun, Moon, LogOut, KeyRound, X, User, ChevronsUpDown, PanelLeftOpen, HardDrive, Bell, BellOff, Check, Plus } from "lucide-react";
+import { NotificationToggle, MobileNotificationMenuItem } from "@/components/NotificationToggle";
 import { UsageIndicator, type ProviderUsageMap } from "@/components/UsageIndicator";
+import { TerminalManager } from "@/components/TerminalManager";
 import {
   ModelSelector,
   ModelSelectorContent,
@@ -49,7 +52,6 @@ import {
   ModelSelectorLogo,
   ModelSelectorName,
   ModelSelectorShortcut,
-  ModelSelectorTrigger,
 } from "@/components/ai-elements/model-selector";
 
 function toRelayMessage(raw: unknown, fallbackId: string): RelayMessage | null {
@@ -246,6 +248,8 @@ export function App() {
   const [viewerStatus, setViewerStatus] = React.useState("Idle");
   const [relayStatus, setRelayStatus] = React.useState<DotState>("connecting");
   const [showApiKeys, setShowApiKeys] = React.useState(false);
+  const [showRunners, setShowRunners] = React.useState(false);
+  const [showTerminal, setShowTerminal] = React.useState(false);
 
   type RunnerInfo = { runnerId: string; name?: string | null; roots?: string[]; sessionCount: number };
   const [newSessionOpen, setNewSessionOpen] = React.useState(false);
@@ -254,9 +258,15 @@ export function App() {
   const [spawnRunnerId, setSpawnRunnerId] = React.useState<string | undefined>(undefined);
   const [spawnCwd, setSpawnCwd] = React.useState<string>("");
   const [spawningSession, setSpawningSession] = React.useState(false);
+  const [recentFolders, setRecentFolders] = React.useState<string[]>([]);
+  const [recentFoldersLoading, setRecentFoldersLoading] = React.useState(false);
 
   const [pendingQuestion, setPendingQuestion] = React.useState<{ toolCallId: string; question: string; options?: string[] } | null>(null);
   const [activeToolCalls, setActiveToolCalls] = React.useState<Map<string, string>>(new Map());
+
+  // Message queue: messages sent while the agent is active
+  type QueuedMessage = { id: string; text: string; deliverAs: "steer" | "followUp"; timestamp: number };
+  const [messageQueue, setMessageQueue] = React.useState<QueuedMessage[]>([]);
   const [activeModel, setActiveModel] = React.useState<ConfiguredModelInfo | null>(null);
   const [sessionName, setSessionName] = React.useState<string | null>(null);
   const [availableModels, setAvailableModels] = React.useState<ConfiguredModelInfo[]>([]);
@@ -282,6 +292,17 @@ export function App() {
 
   // Mobile layout
   const [sidebarOpen, setSidebarOpen] = React.useState(false);
+  const [liveSessions, setLiveSessions] = React.useState<HubSession[]>([]);
+  const [sessionSwitcherOpen, setSessionSwitcherOpen] = React.useState(false);
+
+  // Auto-reopen the last viewed session once live sessions arrive.
+  // (restoredRef is declared here; the effect is placed after openSession is defined below)
+  const restoredRef = React.useRef(false);
+
+  // Tracks a session that was restarted via the remote exec "restart" command.
+  // When the session comes back live (hub sends session_added), we auto-reconnect.
+  const restartPendingSessionIdRef = React.useRef<string | null>(null);
+  const restartPendingTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Prevent the underlying content from scrolling when the mobile sidebar is open.
   React.useEffect(() => {
@@ -291,6 +312,36 @@ export function App() {
       document.body.style.overflow = prev;
     };
   }, [sidebarOpen]);
+
+  // Fetch recent folders when a runner is selected in the new-session dialog.
+  React.useEffect(() => {
+    if (!newSessionOpen || !spawnRunnerId) {
+      setRecentFolders([]);
+      return;
+    }
+
+    let cancelled = false;
+    setRecentFoldersLoading(true);
+    void fetch(`/api/runners/${encodeURIComponent(spawnRunnerId)}/recent-folders`, { credentials: "include" })
+      .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
+      .then((data) => {
+        if (cancelled) return;
+        const list = Array.isArray((data as any)?.folders) ? (data as any).folders as string[] : [];
+        setRecentFolders(list);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setRecentFolders([]);
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setRecentFoldersLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [newSessionOpen, spawnRunnerId]);
 
   React.useEffect(() => {
     if (!newSessionOpen) return;
@@ -388,6 +439,7 @@ export function App() {
     setViewerStatus("Idle");
     setPendingQuestion(null);
     setActiveToolCalls(new Map());
+    setMessageQueue([]);
     setActiveModel(null);
     setSessionName(null);
     setAvailableModels([]);
@@ -474,16 +526,19 @@ export function App() {
             let idx = result.findIndex((m) => m.key === msg!.key);
 
             // Heuristic: if not found, and it's a fallback key (streaming),
-            // and the last message looks like a match (same role),
-            // assume it's the target and ADOPT its key.
+            // and the last message is itself a no-timestamp streaming partial
+            // from the current turn, adopt its key to update in-place.
+            // We must NOT adopt completed (timestamped) messages — that would
+            // overwrite a previous turn's finished reply with new streaming
+            // content, causing it to appear before the user's latest message.
             if (idx === -1 && msg.key.includes(":fallback:")) {
               const lastIdx = result.length - 1;
               if (lastIdx >= 0) {
                 const last = result[lastIdx];
-                if (last.role === msg.role && !last.isError && last.timestamp !== undefined) {
-                  // Inherit the key and timestamp from the existing message
-                  // to maintain stability.
-                  msg = { ...msg, key: last.key, timestamp: last.timestamp };
+                if (last.role === msg.role && !last.isError && last.timestamp === undefined) {
+                  // Inherit the key from the existing partial so we update
+                  // in-place rather than appending a second streaming bubble.
+                  msg = { ...msg, key: last.key };
                   idx = lastIdx;
                 }
               }
@@ -650,6 +705,8 @@ export function App() {
       setMessages(normalized);
       patchSessionCache({ messages: normalized });
       setPendingQuestion(null);
+      // Clear message queue — the agent processed any queued steer/followUp messages
+      setMessageQueue([]);
       return;
     }
 
@@ -764,12 +821,41 @@ export function App() {
       }
 
       if (command === "new_session") {
+        cancelPendingDeltas();
+        setMessages([]);
+        setPendingQuestion(null);
+        setActiveToolCalls(new Map());
+        setMessageQueue([]);
+        setSessionName(null);
+        setAgentActive(false);
+        patchSessionCache({
+          messages: [],
+          sessionName: null,
+          agentActive: false,
+        });
         setViewerStatus("New session started");
         return;
       }
 
       if (command === "restart") {
         setViewerStatus("Restarting CLI…");
+        // Remember which session is restarting so we can auto-reconnect when it
+        // comes back live.  The session ID is stable across a restart (PIZZAPI_SESSION_ID).
+        const pendingId = activeSessionRef.current;
+        if (pendingId) {
+          restartPendingSessionIdRef.current = pendingId;
+          if (restartPendingTimerRef.current) clearTimeout(restartPendingTimerRef.current);
+          // Give up auto-reconnect after 60 s in case the CLI never comes back.
+          restartPendingTimerRef.current = setTimeout(() => {
+            restartPendingSessionIdRef.current = null;
+            restartPendingTimerRef.current = null;
+          }, 60_000);
+        }
+        return;
+      }
+
+      if (command === "end_session") {
+        setViewerStatus("Ending session…");
         return;
       }
 
@@ -779,6 +865,26 @@ export function App() {
       }
 
       setViewerStatus("OK");
+      return;
+    }
+
+    if (type === "cli_error") {
+      const message = typeof evt.message === "string" ? evt.message : "An error occurred in the CLI";
+      const source = typeof evt.source === "string" && evt.source ? evt.source : null;
+      const ts = typeof evt.ts === "number" ? evt.ts : Date.now();
+      const label = source ? `CLI Error (${source})` : "CLI Error";
+      const errMessage: RelayMessage = {
+        key: `cli_error:${ts}:${Math.random().toString(16).slice(2)}`,
+        role: "system",
+        timestamp: ts,
+        content: `⚠ ${label}: ${message}`,
+        isError: true,
+      };
+      setMessages((prev) => {
+        const next = [...prev, errMessage];
+        patchSessionCache({ messages: next });
+        return next;
+      });
       return;
     }
 
@@ -930,6 +1036,7 @@ export function App() {
     viewerWsRef.current?.close();
     viewerWsRef.current = null;
 
+    localStorage.setItem("pp.lastSessionId", relaySessionId);
     activeSessionRef.current = relaySessionId;
     lastSeqRef.current = null;
     setActiveSessionId(relaySessionId);
@@ -1016,8 +1123,11 @@ export function App() {
       }
 
       if (msg.type === "disconnected") {
-        const reason = typeof msg.reason === "string" ? msg.reason : "Disconnected";
-        setViewerStatus(reason);
+        const isRestarting = restartPendingSessionIdRef.current === relaySessionId;
+        if (!isRestarting) {
+          const reason = typeof msg.reason === "string" ? msg.reason : "Disconnected";
+          setViewerStatus(reason);
+        }
         setPendingQuestion(null);
         setIsChangingModel(false);
         return;
@@ -1036,14 +1146,52 @@ export function App() {
 
     ws.onclose = () => {
       if (activeSessionRef.current === relaySessionId) {
-        setViewerStatus((prev) => (prev === "Connected" || prev === "Connecting…" ? "Disconnected" : prev));
+        const isRestarting = restartPendingSessionIdRef.current === relaySessionId;
+        setViewerStatus((prev) =>
+          isRestarting
+            ? "Restarting CLI…"
+            : prev === "Connected" || prev === "Connecting…"
+              ? "Disconnected"
+              : prev,
+        );
         setPendingQuestion(null);
         setIsChangingModel(false);
       }
     };
   }, [handleRelayEvent]);
 
-  const sendSessionInput = React.useCallback(async (message: { text: string; files?: Array<{ mediaType?: string; filename?: string; url?: string }> } | string) => {
+  // Auto-reopen the last viewed session once live sessions arrive.
+  React.useEffect(() => {
+    if (restoredRef.current) return;
+    if (liveSessions.length === 0) return;
+    const lastId = localStorage.getItem("pp.lastSessionId");
+    if (!lastId) return;
+    const still_live = liveSessions.some((s) => s.sessionId === lastId);
+    if (!still_live) return;
+    restoredRef.current = true;
+    openSession(lastId);
+  }, [liveSessions, openSession]);
+
+  // When a restarted session comes back live, automatically reconnect to it.
+  React.useEffect(() => {
+    const pendingId = restartPendingSessionIdRef.current;
+    if (!pendingId) return;
+    const isLive = liveSessions.some((s) => s.sessionId === pendingId);
+    if (!isLive) return;
+
+    // Clear the pending restart state before reconnecting.
+    restartPendingSessionIdRef.current = null;
+    if (restartPendingTimerRef.current) {
+      clearTimeout(restartPendingTimerRef.current);
+      restartPendingTimerRef.current = null;
+    }
+
+    openSession(pendingId);
+  }, [liveSessions, openSession]);
+
+
+
+  const sendSessionInput = React.useCallback(async (message: { text: string; files?: Array<{ mediaType?: string; filename?: string; url?: string }>; deliverAs?: "steer" | "followUp" } | string) => {
     const ws = viewerWsRef.current;
     const sessionId = activeSessionRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN || !sessionId) {
@@ -1121,9 +1269,47 @@ export function App() {
       setViewerStatus(`Uploaded ${attachments.length} attachment${attachments.length === 1 ? "" : "s"}. Sending…`);
     }
 
+    const deliverAs = typeof message === "object" ? message.deliverAs : undefined;
+
     try {
-      ws.send(JSON.stringify({ type: "input", text: trimmed, attachments, client: "web" }));
-      setViewerStatus("Connected");
+      ws.send(JSON.stringify({
+        type: "input",
+        text: trimmed,
+        attachments,
+        client: "web",
+        ...(deliverAs ? { deliverAs } : {}),
+      }));
+
+      // Track queued messages when the agent is active
+      if (deliverAs && trimmed) {
+        if (deliverAs === "steer") {
+          // Steer messages appear immediately in the conversation
+          const now = Date.now();
+          setMessages((prev) => [
+            ...prev,
+            {
+              key: `user:steer:${now}:${Math.random().toString(16).slice(2)}`,
+              role: "user",
+              timestamp: now,
+              content: trimmed,
+            },
+          ]);
+          setViewerStatus("Steering message sent");
+        } else {
+          setMessageQueue((prev) => [
+            ...prev,
+            {
+              id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+              text: trimmed,
+              deliverAs,
+              timestamp: Date.now(),
+            },
+          ]);
+          setViewerStatus("Follow-up queued");
+        }
+      } else {
+        setViewerStatus("Connected");
+      }
       return true;
     } catch {
       setViewerStatus("Failed to send message");
@@ -1136,6 +1322,10 @@ export function App() {
     if (!ws || ws.readyState !== WebSocket.OPEN || !activeSessionRef.current) {
       setViewerStatus("Not connected to a live session");
       return false;
+    }
+    const command = payload && typeof payload === "object" && typeof payload.command === "string" ? payload.command : null;
+    if (command === "end_session") {
+      setViewerStatus("Ending session…");
     }
     try {
       ws.send(JSON.stringify(payload));
@@ -1160,6 +1350,14 @@ export function App() {
     return ok;
   }, [sendRemoteExec]);
 
+  const removeQueuedMessage = React.useCallback((id: string) => {
+    setMessageQueue((prev) => prev.filter((m) => m.id !== id));
+  }, []);
+
+  const clearMessageQueue = React.useCallback(() => {
+    setMessageQueue([]);
+  }, []);
+
   const selectModel = React.useCallback((model: ConfiguredModelInfo) => {
     const ws = viewerWsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN || !activeSessionRef.current) {
@@ -1179,11 +1377,25 @@ export function App() {
   }, []);
 
   const handleOpenSession = React.useCallback((id: string) => {
+    setShowRunners(false);
     openSession(id);
     setSidebarOpen(false);
   }, [openSession]);
 
+  // Listen for messages from the service worker (e.g. notification click → open session)
+  React.useEffect(() => {
+    if (!("serviceWorker" in navigator)) return;
+    const handler = (event: MessageEvent) => {
+      if (event.data?.type === "open-session" && typeof event.data.sessionId === "string") {
+        handleOpenSession(event.data.sessionId);
+      }
+    };
+    navigator.serviceWorker.addEventListener("message", handler);
+    return () => navigator.serviceWorker.removeEventListener("message", handler);
+  }, [handleOpenSession]);
+
   const handleClearSelection = React.useCallback(() => {
+    setShowRunners(false);
     clearSelection();
     setSidebarOpen(false);
   }, [clearSelection]);
@@ -1191,6 +1403,7 @@ export function App() {
   const handleNewSession = React.useCallback(() => {
     setSpawnRunnerId(undefined);
     setSpawnCwd("");
+    setRecentFolders([]);
     setNewSessionOpen(true);
   }, []);
 
@@ -1289,10 +1502,10 @@ export function App() {
   const userEmail = rawUser && typeof rawUser.email === "string" ? (rawUser.email as string) : "";
   const userLabel = userName || userEmail || "Account";
 
-  function relayStatusLabel(status: DotState) {
-    if (status === "connected") return "Relay connected";
+  function relayStatusLabel(status: DotState, short = false) {
+    if (status === "connected") return short ? "Connected" : "Relay connected";
     if (status === "connecting") return "Connecting…";
-    return "Relay disconnected";
+    return short ? "Disconnected" : "Relay disconnected";
   }
 
   function relayStatusDot(status: DotState) {
@@ -1317,14 +1530,15 @@ export function App() {
 
   return (
     <div className="flex h-[100dvh] w-full flex-col overflow-hidden bg-background pp-safe-left pp-safe-right">
-      <header className="flex items-center justify-between gap-3 border-b bg-background px-4 pb-2 pt-[calc(0.5rem_+_env(safe-area-inset-top))] flex-shrink-0">
+      {/* ── Desktop header ────────────────────────────────────────────── */}
+      <header className="hidden md:flex items-center justify-between gap-3 border-b bg-background px-4 pb-2 pt-[calc(0.5rem_+_env(safe-area-inset-top))] flex-shrink-0">
         <div className="flex items-center gap-3 flex-shrink-0">
           <PizzaLogo />
           <span className="text-sm font-semibold">PizzaPi</span>
           <Separator orientation="vertical" className="h-5" />
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
             <span className={relayStatusDot(relayStatus)} />
-            <span className="hidden sm:inline">{relayStatusLabel(relayStatus)}</span>
+            <span>{relayStatusLabel(relayStatus)}</span>
           </div>
           {providerUsage && (
             <>
@@ -1346,75 +1560,18 @@ export function App() {
             {isDark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
           </Button>
 
+          <NotificationToggle />
+
           <Button
             variant="ghost"
             size="icon"
             className="h-9 w-9"
-            onClick={() => setShowApiKeys(true)}
+            onClick={() => { setShowApiKeys(true); setShowRunners(false); }}
             aria-label="Manage API keys"
             title="Manage API keys"
           >
             <KeyRound className="h-4 w-4" />
           </Button>
-
-          <div className="hidden md:flex">
-            <ModelSelector open={modelSelectorOpen} onOpenChange={setModelSelectorOpen}>
-              <ModelSelectorTrigger asChild>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="max-w-80 gap-2"
-                  disabled={!activeSessionId || availableModels.length === 0 || isChangingModel}
-                  title={
-                    !activeSessionId
-                      ? "Select a live session first"
-                      : availableModels.length === 0
-                        ? "No configured models on this runner"
-                        : "Select model"
-                  }
-                >
-                  <span className="truncate text-left">
-                    {activeModel
-                      ? `${activeModel.provider}/${activeModel.id}`
-                      : !activeSessionId
-                        ? "No session selected"
-                        : availableModels.length === 0
-                          ? "No configured models"
-                          : "Select model"}
-                  </span>
-                  <ChevronsUpDown className="h-3.5 w-3.5 opacity-70" />
-                </Button>
-              </ModelSelectorTrigger>
-              <ModelSelectorContent className="sm:max-w-xl">
-                <ModelSelectorInput placeholder="Search configured models…" />
-                <ModelSelectorList>
-                  <ModelSelectorEmpty>No configured models available.</ModelSelectorEmpty>
-                  {Array.from(modelGroups.entries()).map(([provider, models]) => (
-                    <ModelSelectorGroup key={provider} heading={provider}>
-                      {models.map((model) => {
-                        const modelKey = `${model.provider}/${model.id}`;
-                        const isActive = modelKey === activeModelKey;
-                        return (
-                          <ModelSelectorItem
-                            key={modelKey}
-                            value={`${model.provider} ${model.id} ${model.name ?? ""}`}
-                            onSelect={() => selectModel(model)}
-                          >
-                            <ModelSelectorLogo provider={model.provider} />
-                            <ModelSelectorName>
-                              <span className="font-medium">{model.name || model.id}</span>
-                              <span className="ml-2 text-xs text-muted-foreground">{model.id}</span>
-                            </ModelSelectorName>
-                            {isActive && <ModelSelectorShortcut>Current</ModelSelectorShortcut>}
-                          </ModelSelectorItem>
-                        );
-                      })}
-                    </ModelSelectorGroup>
-                  ))}
-                </ModelSelectorList>
-              </ModelSelectorContent>
-            </ModelSelector>
-          </div>
 
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -1422,7 +1579,7 @@ export function App() {
                 <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-muted text-[11px] font-semibold flex-shrink-0">
                   {initials(userLabel)}
                 </span>
-                <span className="hidden md:inline truncate text-left max-w-40">{userLabel}</span>
+                <span className="truncate text-left max-w-40">{userLabel}</span>
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-64">
@@ -1434,9 +1591,13 @@ export function App() {
                 <div className="px-2 pb-1 text-xs text-muted-foreground truncate">{userEmail}</div>
               )}
               <DropdownMenuSeparator />
-              <DropdownMenuItem onSelect={() => setShowApiKeys(true)}>
+              <DropdownMenuItem onSelect={() => { setShowApiKeys(true); setShowRunners(false); }}>
                 <KeyRound className="h-4 w-4" />
                 API keys
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => { setShowRunners(true); setShowApiKeys(false); setActiveSessionId(null); }}>
+                <HardDrive className="h-4 w-4" />
+                Runners
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem variant="destructive" onSelect={() => signOut()}>
@@ -1447,6 +1608,198 @@ export function App() {
           </DropdownMenu>
         </div>
       </header>
+
+      {/* ── Mobile header ─────────────────────────────────────────────── */}
+      {/* Fixed so the keyboard sliding up never pushes the header off-screen */}
+      <header className="md:hidden fixed top-0 left-0 right-0 z-50 flex items-center justify-between gap-2 border-b bg-background px-3 pp-safe-left pp-safe-right"
+        style={{ paddingTop: "calc(0.5rem + env(safe-area-inset-top))", paddingBottom: "0.5rem" }}
+      >
+        {/* Left: sidebar toggle */}
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-9 w-9 flex-shrink-0"
+          onClick={() => setSidebarOpen(true)}
+          aria-label="Open sidebar"
+        >
+          <PanelLeftOpen className="h-5 w-5" />
+        </Button>
+
+        {/* Center: session switcher pill or logo */}
+        <div className="flex-1 min-w-0 flex justify-center">
+          <DropdownMenu open={sessionSwitcherOpen} onOpenChange={setSessionSwitcherOpen}>
+            <DropdownMenuTrigger asChild>
+              {activeSessionId ? (
+                <button
+                  className="inline-flex items-center gap-2 min-w-0 max-w-full rounded-xl bg-muted/50 border border-border/60 px-3 py-1.5 hover:bg-muted transition-colors"
+                >
+                  <span
+                    className={`inline-block h-1.5 w-1.5 rounded-full flex-shrink-0 transition-colors ${agentActive ? "bg-green-400 shadow-[0_0_5px_#4ade8080] animate-pulse" : "bg-slate-400"}`}
+                  />
+                  {activeModel?.provider && (
+                    <ProviderIcon provider={activeModel.provider} className="size-3.5 flex-shrink-0" />
+                  )}
+                  <span className="truncate text-sm font-medium">
+                    {sessionName || `Session ${activeSessionId.slice(0, 8)}…`}
+                  </span>
+                  <ChevronsUpDown className="h-3 w-3 opacity-40 flex-shrink-0" />
+                </button>
+              ) : (
+                <button className="inline-flex items-center gap-2 px-2 py-1.5 rounded-xl hover:bg-muted/50 transition-colors">
+                  <PizzaLogo className="!w-7 !h-7" />
+                  <span className="text-sm font-semibold">PizzaPi</span>
+                  <span className={relayStatusDot(relayStatus)} />
+                </button>
+              )}
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="center" className="w-72 max-h-[70vh] overflow-y-auto">
+              <DropdownMenuLabel className="flex items-center justify-between">
+                <span>Sessions</span>
+                <span className={`inline-block h-1.5 w-1.5 rounded-full ${relayStatus === "connected" ? "bg-green-500 shadow-[0_0_4px_#22c55e80]" : relayStatus === "connecting" ? "bg-slate-400" : "bg-red-500"}`} />
+              </DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              {liveSessions.length === 0 ? (
+                <div className="px-2 py-3 text-xs text-muted-foreground text-center italic">No live sessions</div>
+              ) : (
+                liveSessions
+                  .slice()
+                  .sort((a, b) => {
+                    const aT = Date.parse(a.lastHeartbeatAt ?? a.startedAt);
+                    const bT = Date.parse(b.lastHeartbeatAt ?? b.startedAt);
+                    return (Number.isFinite(bT) ? bT : 0) - (Number.isFinite(aT) ? aT : 0);
+                  })
+                  .map((s) => {
+                    const isActive = s.sessionId === activeSessionId;
+                    const provider = s.model?.provider ?? (isActive ? activeModel?.provider : undefined) ?? "unknown";
+                    const label = s.sessionName?.trim() || `Session ${s.sessionId.slice(0, 8)}…`;
+                    return (
+                      <DropdownMenuItem
+                        key={s.sessionId}
+                        onSelect={() => {
+                          handleOpenSession(s.sessionId);
+                          setSessionSwitcherOpen(false);
+                        }}
+                        className="flex items-center gap-2.5 py-2.5"
+                      >
+                        {/* Provider icon + activity badge */}
+                        <div className="relative flex-shrink-0 flex items-center justify-center w-7 h-7 rounded-md bg-muted">
+                          <ProviderIcon provider={provider} className="size-4 text-muted-foreground" />
+                          <span
+                            className={`absolute -top-0.5 -right-0.5 inline-block h-2 w-2 rounded-full border-2 border-popover ${s.isActive ? "bg-blue-400 animate-pulse" : "bg-green-600"}`}
+                            title={s.isActive ? "Generating" : "Idle"}
+                          />
+                        </div>
+                        {/* Name + path */}
+                        <div className="flex-1 min-w-0">
+                          <div className="text-sm font-medium truncate">{label}</div>
+                          {s.cwd && (
+                            <div className="text-[0.65rem] text-muted-foreground truncate">{s.cwd.split("/").slice(-2).join("/")}</div>
+                          )}
+                        </div>
+                        {/* Checkmark for active */}
+                        {isActive && <Check className="h-3.5 w-3.5 text-primary flex-shrink-0" />}
+                      </DropdownMenuItem>
+                    );
+                  })
+              )}
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onSelect={() => { handleNewSession(); setSessionSwitcherOpen(false); }} className="gap-2">
+                <Plus className="h-4 w-4" />
+                New session
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+
+        {/* Right: usage + account */}
+        <div className="flex items-center gap-1 flex-shrink-0">
+          {providerUsage && (
+            <div className="hidden xs:flex">
+              <UsageIndicator usage={providerUsage} />
+            </div>
+          )}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="icon" className="h-9 w-9">
+                <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-muted text-[11px] font-semibold">
+                  {initials(userLabel)}
+                </span>
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-64">
+              <DropdownMenuLabel className="flex items-center gap-2">
+                <User className="h-4 w-4 text-muted-foreground" />
+                <span className="truncate">{userName || "Signed in"}</span>
+              </DropdownMenuLabel>
+              {userEmail && (
+                <div className="px-2 pb-1 text-xs text-muted-foreground truncate">{userEmail}</div>
+              )}
+              {providerUsage && (
+                <div className="px-2 py-1.5 border-t border-border/50">
+                  <UsageIndicator usage={providerUsage} />
+                </div>
+              )}
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onSelect={() => setIsDark((d) => !d)}>
+                {isDark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+                {isDark ? "Light mode" : "Dark mode"}
+              </DropdownMenuItem>
+              <MobileNotificationMenuItem />
+              <DropdownMenuItem onSelect={() => { setShowApiKeys(true); setShowRunners(false); setSidebarOpen(false); }}>
+                <KeyRound className="h-4 w-4" />
+                API keys
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => { setShowRunners(true); setShowApiKeys(false); setActiveSessionId(null); setSidebarOpen(false); }}>
+                <HardDrive className="h-4 w-4" />
+                Runners
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem variant="destructive" onSelect={() => signOut()}>
+                <LogOut className="h-4 w-4" />
+                Sign out
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      </header>
+      {/* Spacer that reserves the exact height of the fixed mobile header */}
+      <div className="md:hidden flex-shrink-0" style={{ height: "calc(3.25rem + env(safe-area-inset-top))" }} aria-hidden="true" />
+
+      {/* Mobile model selector (shared with desktop) */}
+      <ModelSelector open={modelSelectorOpen} onOpenChange={setModelSelectorOpen}>
+        <div className="hidden" />
+        <ModelSelectorContent
+          className="sm:max-w-xl"
+          defaultValue={activeModel ? `${activeModel.provider} ${activeModel.id} ${activeModel.name ?? ""}`.toLowerCase() : undefined}
+        >
+          <ModelSelectorInput placeholder="Search configured models…" />
+          <ModelSelectorList>
+            <ModelSelectorEmpty>No configured models available.</ModelSelectorEmpty>
+            {Array.from(modelGroups.entries()).map(([provider, models]) => (
+              <ModelSelectorGroup key={provider} heading={provider}>
+                {models.map((model) => {
+                  const modelKey = `${model.provider}/${model.id}`;
+                  const isActive = modelKey === activeModelKey;
+                  return (
+                    <ModelSelectorItem
+                      key={modelKey}
+                      value={`${model.provider} ${model.id} ${model.name ?? ""}`.toLowerCase()}
+                      onSelect={() => selectModel(model)}
+                    >
+                      <ModelSelectorLogo provider={model.provider} />
+                      <ModelSelectorName>
+                        <span className="font-medium">{model.name || model.id}</span>
+                        <span className="ml-2 text-xs text-muted-foreground">{model.id}</span>
+                      </ModelSelectorName>
+                      {isActive && <ModelSelectorShortcut>Current</ModelSelectorShortcut>}
+                    </ModelSelectorItem>
+                  );
+                })}
+              </ModelSelectorGroup>
+            ))}
+          </ModelSelectorList>
+        </ModelSelectorContent>
+      </ModelSelector>
 
       <div className="pp-shell flex flex-1 min-h-0 overflow-hidden relative">
         <div
@@ -1459,9 +1812,12 @@ export function App() {
             onOpenSession={handleOpenSession}
             onNewSession={handleNewSession}
             onClearSelection={handleClearSelection}
+            onShowRunners={() => { setShowRunners(true); setShowApiKeys(false); setActiveSessionId(null); setSidebarOpen(false); }}
             activeSessionId={activeSessionId}
+            showRunners={showRunners}
             activeModel={activeModel}
             onRelayStatusChange={setRelayStatus}
+            onSessionsChange={setLiveSessions}
           />
         </div>
 
@@ -1476,47 +1832,52 @@ export function App() {
         )}
 
         <div className="flex flex-col flex-1 min-w-0 h-full">
-          {/* Mobile: session nav bar */}
-          <div className="flex items-center gap-2 border-b border-border px-2 py-1.5 md:hidden flex-shrink-0">
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-8 gap-1.5 px-2 text-xs"
-              onClick={() => setSidebarOpen(true)}
-              aria-label="Open sidebar"
-            >
-              <PanelLeftOpen className="h-4 w-4" />
-              Sessions
-            </Button>
-            {activeSessionId && (
-              <span className="truncate text-xs text-muted-foreground inline-flex items-center gap-1.5 min-w-0">
-                {activeModel?.provider && (
-                  <ProviderIcon provider={activeModel.provider} className="size-3" />
-                )}
-                <span className="truncate">{sessionName || `Session ${activeSessionId.slice(0, 8)}…`}</span>
-              </span>
+          <div className={showTerminal ? "flex flex-col flex-1 min-h-0 overflow-hidden" : "flex flex-col flex-1 min-h-0"}>
+            {showRunners ? (
+              <RunnerManager onOpenSession={(id) => { handleOpenSession(id); setShowRunners(false); }} />
+            ) : (
+              <SessionViewer
+                sessionId={activeSessionId}
+                sessionName={sessionName}
+                messages={messages}
+                activeModel={activeModel}
+                activeToolCalls={activeToolCalls}
+                pendingQuestion={pendingQuestion}
+                availableCommands={availableCommands}
+                resumeSessions={resumeSessions}
+                resumeSessionsLoading={resumeSessionsLoading}
+                onRequestResumeSessions={requestResumeSessions}
+                onSendInput={sendSessionInput}
+                onExec={sendRemoteExec}
+                onShowModelSelector={() => setModelSelectorOpen(true)}
+                agentActive={agentActive}
+                effortLevel={effortLevel}
+                tokenUsage={tokenUsage}
+                lastHeartbeatAt={lastHeartbeatAt}
+                viewerStatus={viewerStatus}
+                messageQueue={messageQueue}
+                onRemoveQueuedMessage={removeQueuedMessage}
+                onClearMessageQueue={clearMessageQueue}
+                onToggleTerminal={() => setShowTerminal((v) => !v)}
+                showTerminalButton
+              />
             )}
           </div>
-
-          <SessionViewer
-            sessionId={activeSessionId}
-            sessionName={sessionName}
-            messages={messages}
-            activeModel={activeModel}
-            activeToolCalls={activeToolCalls}
-            pendingQuestion={pendingQuestion}
-            availableCommands={availableCommands}
-            resumeSessions={resumeSessions}
-            resumeSessionsLoading={resumeSessionsLoading}
-            onRequestResumeSessions={requestResumeSessions}
-            onSendInput={sendSessionInput}
-            onExec={sendRemoteExec}
-            agentActive={agentActive}
-            effortLevel={effortLevel}
-            tokenUsage={tokenUsage}
-            lastHeartbeatAt={lastHeartbeatAt}
-            viewerStatus={viewerStatus}
-          />
+          {showTerminal && (
+            <>
+              {/* Mobile: full-screen overlay above everything */}
+              <div
+                className="md:hidden fixed inset-0 z-[60] flex flex-col bg-zinc-950 pp-safe-left pp-safe-right"
+                style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
+              >
+                <TerminalManager className="h-full" onClose={() => setShowTerminal(false)} />
+              </div>
+              {/* Desktop: bottom split panel */}
+              <div className="hidden md:block border-t border-zinc-800" style={{ height: "40%", minHeight: 200 }}>
+                <TerminalManager className="h-full" />
+              </div>
+            </>
+          )}
         </div>
 
         <Dialog open={newSessionOpen} onOpenChange={(open) => { if (!spawningSession) setNewSessionOpen(open); }}>
@@ -1572,6 +1933,34 @@ export function App() {
                 <div className="text-xs text-muted-foreground">
                   This is the path on the runner machine.
                 </div>
+                {recentFoldersLoading && (
+                  <div className="text-xs text-muted-foreground inline-flex items-center gap-1.5">
+                    <Spinner className="size-3" /> Loading recent folders…
+                  </div>
+                )}
+                {!recentFoldersLoading && recentFolders.length > 0 && (
+                  <div className="flex flex-col gap-1.5">
+                    <span className="text-xs font-medium text-muted-foreground">Recent</span>
+                    <div className="flex flex-wrap gap-1.5">
+                      {recentFolders.map((folder) => (
+                        <button
+                          key={folder}
+                          type="button"
+                          disabled={spawningSession}
+                          onClick={() => setSpawnCwd(folder)}
+                          className={`inline-flex items-center rounded border px-2 py-0.5 font-mono text-[11px] transition-colors
+                            ${spawnCwd === folder
+                              ? "border-primary bg-primary/10 text-primary"
+                              : "border-border bg-muted/50 text-muted-foreground hover:border-foreground/30 hover:text-foreground"
+                            }`}
+                          title={folder}
+                        >
+                          <span className="max-w-[220px] truncate">{folder}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
 

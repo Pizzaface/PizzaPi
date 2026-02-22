@@ -1,7 +1,14 @@
 import * as React from "react";
 import type { BundledLanguage } from "shiki";
 
-import { CodeBlock } from "@/components/ai-elements/code-block";
+import {
+  CodeBlock,
+  CodeBlockActions,
+  CodeBlockCopyButton,
+  CodeBlockFilename,
+  CodeBlockHeader,
+  CodeBlockTitle,
+} from "@/components/ai-elements/code-block";
 import { DiffView } from "@/components/ai-elements/diff-view";
 import {
   Tool,
@@ -42,6 +49,51 @@ import {
   tryParseJsonObject,
 } from "@/components/session-viewer/utils";
 import { ChevronDownIcon } from "lucide-react";
+
+function CopyableCodeBlock({
+  code,
+  language,
+  className,
+  filename,
+}: {
+  code: string;
+  language: BundledLanguage | string;
+  className?: string;
+  filename?: string;
+}) {
+  return (
+    <CodeBlock code={code} language={language as BundledLanguage} className={className}>
+      <CodeBlockHeader>
+        <CodeBlockTitle>
+          {filename ? (
+            <CodeBlockFilename>{filename}</CodeBlockFilename>
+          ) : (
+            <span className="text-xs">{language}</span>
+          )}
+        </CodeBlockTitle>
+        <CodeBlockActions>
+          <CodeBlockCopyButton />
+        </CodeBlockActions>
+      </CodeBlockHeader>
+    </CodeBlock>
+  );
+}
+
+function WriteFileCard({
+  path,
+  content,
+}: {
+  path: string;
+  content: string;
+}) {
+  const lineCount = content ? content.split("\n").length : 0;
+  const lang = extToLang(path);
+  return (
+    <EditFileCard path={path} additions={lineCount} deletions={0}>
+      <CopyableCodeBlock code={content} language={lang} className="border-0 rounded-none" />
+    </EditFileCard>
+  );
+}
 
 export function toMessageRole(role: string): "user" | "assistant" | "system" {
   if (role === "user") return "user";
@@ -165,7 +217,7 @@ function renderReadToolResult(
       mimeType={mimeType}
       className={isError ? "border-destructive/60" : undefined}
     >
-      <CodeBlock code={resolvedCode} language={lang} className="border-0 rounded-none" />
+      <CopyableCodeBlock code={resolvedCode} language={lang} className="border-0 rounded-none" />
     </FileTypeCard>
   ) : null;
 
@@ -240,7 +292,7 @@ function renderReadToolResult(
 
   if (!textCard && imageNodes.length === 0) {
     return (
-      <CodeBlock
+      <CopyableCodeBlock
         code={JSON.stringify(content, null, 2)}
         language="json"
         className="border-border/70"
@@ -294,7 +346,7 @@ function renderToolResult(content: unknown, toolName?: string, isError?: boolean
 
     if (text) {
       return (
-        <CodeBlock code={text} language="markdown" className="border-border/70" />
+        <CopyableCodeBlock code={text} language="markdown" className="border-border/70" />
       );
     }
   }
@@ -316,12 +368,12 @@ function renderToolResult(content: unknown, toolName?: string, isError?: boolean
       asObj && typeof asObj.content === "string" ? asObj.content : null;
 
     if (path && newText !== null) {
-      return <DiffView path={path} oldText="" newText={newText} />;
+      return <WriteFileCard path={path} content={newText} />;
     }
 
     if (text) {
       return (
-        <CodeBlock code={text} language="markdown" className="border-border/70" />
+        <CopyableCodeBlock code={text} language="markdown" className="border-border/70" />
       );
     }
   }
@@ -331,7 +383,7 @@ function renderToolResult(content: unknown, toolName?: string, isError?: boolean
     const parsed = tryParseJsonObject(trimmed);
     if (parsed) {
       return (
-        <CodeBlock
+        <CopyableCodeBlock
           code={JSON.stringify(parsed, null, 2)}
           language="json"
           className="border-border/70"
@@ -341,7 +393,7 @@ function renderToolResult(content: unknown, toolName?: string, isError?: boolean
 
     if (trimmed.includes("\n") || trimmed.length > 100) {
       return (
-        <CodeBlock code={text} language="markdown" className="border-border/70" />
+        <CopyableCodeBlock code={text} language="markdown" className="border-border/70" />
       );
     }
 
@@ -351,7 +403,7 @@ function renderToolResult(content: unknown, toolName?: string, isError?: boolean
   if (content === undefined || content === null) return null;
 
   return (
-    <CodeBlock
+    <CopyableCodeBlock
       code={JSON.stringify(content, null, 2)}
       language="json"
       className="border-border/70"
@@ -407,11 +459,11 @@ function renderGroupedToolExecution(
     const outputText = hasOutput ? extractTextFromToolContent(content) : null;
     card = (
       <div className="flex flex-col overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950 text-zinc-100 text-xs">
-        <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-2">
-          <div className="flex items-center gap-2 text-sm text-zinc-400">
+        <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-2 gap-2">
+          <div className="flex min-w-0 items-center gap-2 text-sm text-zinc-400">
             <TerminalTitle>{toolName}</TerminalTitle>
           </div>
-          <div className="flex items-center gap-2"><StatusBadge status={state} /></div>
+          <div className="flex shrink-0 items-center gap-2"><StatusBadge status={state} /></div>
         </div>
         <div className="px-4 py-2 font-mono text-xs border-b border-zinc-800">
           <span className="text-zinc-600 select-none mr-1">$</span>
@@ -554,7 +606,7 @@ function renderGroupedToolExecution(
           : null;
 
     if (writePath && newText !== null) {
-      card = <DiffView path={writePath} oldText="" newText={newText} />;
+      card = <WriteFileCard path={writePath} content={newText} />;
     } else {
       const resultText = hasOutput ? extractTextFromToolContent(content) : null;
       const pendingPath = writePath ?? "file";
@@ -742,10 +794,9 @@ export function renderContent(
                       newText={args.newText as string}
                     />
                   ) : isWrite ? (
-                    <DiffView
+                    <WriteFileCard
                       path={args.path as string}
-                      oldText=""
-                      newText={args.content as string}
+                      content={args.content as string}
                     />
                   ) : (
                     <ToolInput input={args} />

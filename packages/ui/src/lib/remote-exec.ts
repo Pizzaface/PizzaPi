@@ -15,7 +15,8 @@ export type RemoteExecCommand =
   | { command: "list_resume_sessions" }
   | { command: "resume_session"; query?: string; sessionPath?: string }
   | { command: "new_session" }
-  | { command: "restart" };
+  | { command: "restart" }
+  | { command: "end_session" };
 
 export type RemoteExecRequest = { type: "exec"; id: string } & RemoteExecCommand;
 

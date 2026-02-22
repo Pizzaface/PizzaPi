@@ -54,6 +54,16 @@ const RECONNECT_MAX_DELAY = 30_000;
 const RELAY_STATUS_KEY = "relay";
 const ASK_USER_TOOL_NAME = "AskUserQuestion";
 
+// ── Module-level CLI error forwarder ─────────────────────────────────────────
+// Set by the factory so worker.ts can forward errors into the relay from outside
+// the extension boundary (e.g. the bindExtensions onError callback).
+let _cliErrorForwarder: ((message: string, source?: string) => void) | null = null;
+
+/** Forward a CLI-side error to all active relay viewers. */
+export function forwardCliError(message: string, source?: string): void {
+    _cliErrorForwarder?.(message, source);
+}
+
 /**
  * PizzaPi Remote extension.
  *
@@ -93,6 +103,12 @@ export const remoteExtension: ExtensionFactory = (pi) => {
     const USAGE_CACHE_TTL = 5 * 60 * 1000; // 5 min
     const usageCache = new Map<string, { data: ProviderUsageData; fetchedAt: number }>();
 
+    // When running as a runner-spawned worker the daemon is responsible for
+    // fetching provider quota data and writing it to a shared cache file.
+    // Reading from that file avoids N identical API calls (one per session).
+    // CLI sessions (no env var) continue to fetch independently as before.
+    const runnerUsageCachePath: string | null = process.env.PIZZAPI_RUNNER_USAGE_CACHE_PATH ?? null;
+
     function getOAuthToken(providerId: string): string | null {
         try {
             const config = loadConfig(process.cwd());
@@ -117,6 +133,33 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         const out: Record<string, ProviderUsageData> = {};
         for (const [id, { data }] of usageCache) out[id] = data;
         return out;
+    }
+
+    /**
+     * Read the runner daemon's shared usage cache file and populate the local
+     * in-memory cache.  Called instead of direct API fetches for runner-spawned
+     * sessions — the daemon is the single source of truth for quota data on this
+     * node, so all sessions see the same numbers without redundant API calls.
+     */
+    async function refreshFromRunnerCache(): Promise<void> {
+        if (!runnerUsageCachePath) return;
+        try {
+            if (!existsSync(runnerUsageCachePath)) return;
+            const parsed = JSON.parse(readFileSync(runnerUsageCachePath, "utf-8")) as {
+                fetchedAt: number;
+                providers: Record<string, ProviderUsageData>;
+            };
+            const fetchedAt = typeof parsed.fetchedAt === "number" ? parsed.fetchedAt : 0;
+            for (const [id, data] of Object.entries(parsed.providers ?? {})) {
+                if (data && Array.isArray((data as ProviderUsageData).windows)) {
+                    usageCache.set(id, { data: data as ProviderUsageData, fetchedAt });
+                }
+            }
+        } catch {
+            // Non-fatal — cache file may not exist yet (daemon still starting) or
+            // be temporarily unreadable.  Workers will show stale/empty data until
+            // the daemon writes its first snapshot.
+        }
     }
 
     async function refreshAnthropicUsage(): Promise<void> {
@@ -319,6 +362,14 @@ export const remoteExtension: ExtensionFactory = (pi) => {
     }
 
     async function refreshAllUsage(): Promise<void> {
+        if (runnerUsageCachePath) {
+            // Runner-spawned worker: read the daemon's shared cache instead of
+            // making independent API calls.  The daemon already fetches on our
+            // behalf and keeps the file fresh every 5 minutes.
+            await refreshFromRunnerCache();
+            return;
+        }
+        // CLI session: fetch directly from each provider as before.
         await Promise.allSettled([
             refreshAnthropicUsage(),
             refreshCodexUsage(),
@@ -364,6 +415,11 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         const configured = process.env.PIZZAPI_RELAY_URL ?? loadConfig(process.cwd()).relayUrl ?? "";
         return configured.toLowerCase() === "off";
     }
+
+    // Wire up module-level error forwarder so worker.ts can push errors into the relay.
+    _cliErrorForwarder = (message, source) => {
+        forwardEvent({ type: "cli_error", message, source: source ?? null, ts: Date.now() });
+    };
 
     function send(payload: unknown) {
         if (!relay || relay.ws.readyState !== WebSocket.OPEN) return;
@@ -949,6 +1005,21 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 return;
             }
 
+            if (req.command === "end_session") {
+                if (!latestCtx) {
+                    replyErr("No active session");
+                    return;
+                }
+
+                replyOk();
+                shuttingDown = true;
+                // Brief delay to ensure the response is flushed to the relay/web client
+                setTimeout(() => {
+                    latestCtx?.shutdown();
+                }, 100);
+                return;
+            }
+
             if (req.command === "export_html") {
                 replyErr("export_html is not implemented for remote exec yet");
                 return;
@@ -958,6 +1029,14 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 replyOk();
                 // Brief delay to ensure the response is flushed to the relay/web client
                 setTimeout(() => {
+                    // When running as a runner-spawned worker, signal the daemon to
+                    // re-spawn us (exit code 43) so it can send a fresh session_ready
+                    // and preserve the runner→session link.
+                    if (process.env.PIZZAPI_RUNNER_USAGE_CACHE_PATH) {
+                        process.exit(43);
+                        return;
+                    }
+                    // Standalone: self-fork as before.
                     const child = spawn(process.execPath, process.argv.slice(1), {
                         detached: true,
                         stdio: "inherit",
@@ -1406,9 +1485,12 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                         }
 
                         const attachments = normalizeRemoteInputAttachments(inputMsg.attachments);
+                        const deliverAs = inputMsg.deliverAs === "followUp" ? "followUp" as const
+                            : inputMsg.deliverAs === "steer" ? "steer" as const
+                            : undefined;
                         void (async () => {
                             const message = await buildUserMessageFromRemoteInput(inputText, attachments);
-                            pi.sendUserMessage(message as any);
+                            pi.sendUserMessage(message as any, deliverAs ? { deliverAs } : undefined);
                         })();
                         return;
                     }
@@ -1487,6 +1569,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         shuttingDown = true;
         stopHeartbeat();
         stopSessionNameSync();
+        _cliErrorForwarder = null;
         disconnect();
     });
 

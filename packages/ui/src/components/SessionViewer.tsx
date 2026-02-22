@@ -1,6 +1,7 @@
 import * as React from "react";
-import { useVirtualizer } from "@tanstack/react-virtual";
+
 import {
+  ConversationDownload,
   ConversationEmptyState,
 } from "@/components/ai-elements/conversation";
 import type { RelayMessage } from "@/components/session-viewer/types";
@@ -35,15 +36,25 @@ import {
 } from "@/components/ai-elements/attachments";
 import { Button } from "@/components/ui/button";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
   Command,
   CommandEmpty,
   CommandGroup,
   CommandItem,
   CommandList,
 } from "@/components/ui/command";
+import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
+import { formatPathTail } from "@/lib/path";
 import { ProviderIcon } from "@/components/ProviderIcon";
-import { ArrowDownIcon, MessageSquare, PaperclipIcon } from "lucide-react";
+import { ArrowDownIcon, ChevronsUpDown, MessageSquare, OctagonX, PaperclipIcon, Plus, Zap, Clock, X, Trash2, TerminalIcon, DownloadIcon } from "lucide-react";
 
 export type { RelayMessage } from "@/components/session-viewer/types";
 
@@ -63,6 +74,13 @@ interface ResumeSessionOption {
   firstMessage?: string;
 }
 
+export interface QueuedMessage {
+  id: string;
+  text: string;
+  deliverAs: "steer" | "followUp";
+  timestamp: number;
+}
+
 export interface SessionViewerProps {
   sessionId: string | null;
   sessionName?: string | null;
@@ -75,8 +93,9 @@ export interface SessionViewerProps {
   resumeSessions?: ResumeSessionOption[];
   resumeSessionsLoading?: boolean;
   onRequestResumeSessions?: () => boolean | void;
-  onSendInput?: (message: PromptInputMessage | string) => boolean | void | Promise<boolean | void>;
+  onSendInput?: (message: PromptInputMessage & { deliverAs?: "steer" | "followUp" } | string) => boolean | void | Promise<boolean | void>;
   onExec?: (payload: unknown) => boolean | void;
+  onShowModelSelector?: () => void;
   /** Whether the agent is currently processing a turn */
   agentActive?: boolean;
   /** Current reasoning effort level (e.g. "low", "medium", "high", "off") */
@@ -87,6 +106,16 @@ export interface SessionViewerProps {
   lastHeartbeatAt?: number | null;
   /** Human-readable connection/activity status */
   viewerStatus?: string;
+  /** Messages queued while the agent is active */
+  messageQueue?: QueuedMessage[];
+  /** Remove a single queued message */
+  onRemoveQueuedMessage?: (id: string) => void;
+  /** Clear all queued messages */
+  onClearMessageQueue?: () => void;
+  /** Toggle the terminal panel */
+  onToggleTerminal?: () => void;
+  /** Whether to show the terminal button */
+  showTerminalButton?: boolean;
 }
 
 function formatTokenCount(n: number): string {
@@ -247,10 +276,10 @@ const SessionMessageItem = React.memo(({ message, activeToolCalls, agentActive, 
       <Message from={toMessageRole(message.role)}>
         <MessageContent
           className={cn(
-            "pp-message-content max-w-3xl min-w-0 rounded-lg border px-3 py-2 break-words",
+            "pp-message-content max-w-3xl min-w-0 rounded-lg border px-3 py-2",
             message.role === "user"
               ? "ml-auto bg-primary text-primary-foreground border-primary/40"
-              : "bg-card text-card-foreground border-border",
+              : "w-full bg-card text-card-foreground border-border",
           )}
         >
           <div className="mb-1 flex items-center gap-2 text-[11px] uppercase tracking-wide opacity-70">
@@ -267,7 +296,11 @@ const SessionMessageItem = React.memo(({ message, activeToolCalls, agentActive, 
             message.isError,
             message.toolInput,
             message.toolCallId ?? message.key,
-            agentActive && isLast,
+            // Only treat thinking as still-streaming when the agent is active,
+            // this is the last message, AND the message has no timestamp yet
+            // (timestamped messages are finalized even if a heartbeat hasn't
+            // confirmed agentActive=false yet).
+            agentActive && isLast && message.timestamp === undefined,
             message.thinking,
             message.thinkingDuration,
           )}
@@ -294,9 +327,34 @@ const SessionMessageItem = React.memo(({ message, activeToolCalls, agentActive, 
   return true;
 });
 
-export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, agentActive, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus }: SessionViewerProps) {
+function SessionSkeleton() {
+  return (
+    <div className="flex flex-col gap-6 p-4 max-w-3xl mx-auto w-full animate-in fade-in duration-700">
+      <div className="flex flex-col items-end gap-1 opacity-40">
+        <Skeleton className="h-10 w-1/2 rounded-2xl rounded-br-sm" />
+      </div>
+      <div className="flex flex-col items-start gap-1 opacity-40">
+        <div className="flex items-center gap-2 mb-1 px-1">
+             <Skeleton className="h-2.5 w-12 rounded-sm" />
+             <Skeleton className="h-2.5 w-2.5 rounded-full" />
+             <Skeleton className="h-2.5 w-20 rounded-sm" />
+        </div>
+        <Skeleton className="h-24 w-3/4 rounded-2xl rounded-bl-sm" />
+      </div>
+       <div className="flex flex-col items-end gap-1 opacity-30 delay-100">
+        <Skeleton className="h-16 w-1/3 rounded-2xl rounded-br-sm" />
+      </div>
+    </div>
+  );
+}
+
+export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, messageQueue, onRemoveQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton }: SessionViewerProps) {
   const [input, setInput] = React.useState("");
   const [composerError, setComposerError] = React.useState<string | null>(null);
+  const [showClearDialog, setShowClearDialog] = React.useState(false);
+  const [showEndSessionDialog, setShowEndSessionDialog] = React.useState(false);
+  // Delivery mode for messages sent while agent is active: "steer" interrupts, "followUp" waits
+  const [deliveryMode, setDeliveryMode] = React.useState<"steer" | "followUp">("followUp");
 
   const [commandOpen, setCommandOpen] = React.useState(false);
   const [commandQuery, setCommandQuery] = React.useState("");
@@ -356,7 +414,11 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     }
 
     if (rawCommand === "model" || rawCommand === "cycle_model") {
-      onExec({ type: "exec", id, command: "cycle_model" });
+      if (onShowModelSelector) {
+        onShowModelSelector();
+      } else {
+        onExec({ type: "exec", id, command: "cycle_model" });
+      }
       setInput("");
       setCommandOpen(false);
       setCommandQuery("");
@@ -425,7 +487,12 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
       if (text && executeSlashCommand(text)) return;
       if (!onSendInput) return;
 
-      Promise.resolve(onSendInput(message))
+      // When the agent is active, attach the delivery mode
+      const payload = agentActive
+        ? { ...message, deliverAs: deliveryMode }
+        : message;
+
+      Promise.resolve(onSendInput(payload))
         .then((result) => {
           if (result !== false) setInput("");
           else setComposerError("Failed to send message.");
@@ -434,7 +501,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
           setComposerError("Failed to send message.");
         });
     },
-    [executeSlashCommand, onSendInput, sessionId],
+    [executeSlashCommand, onSendInput, sessionId, agentActive, deliveryMode],
   );
 
   const supportedWebCommands = React.useMemo(() => {
@@ -445,8 +512,8 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
       { name: "resume", description: "Resume the previous session" },
       { name: "mcp", description: "Show MCP status" },
       { name: "mcp_reload", description: "Reload MCP tools" },
-      { name: "model", description: "Cycle model" },
-      { name: "cycle_model", description: "Cycle model" },
+      { name: "model", description: "Select model" },
+      { name: "cycle_model", description: "Select model" },
       { name: "effort", description: "Cycle reasoning effort level" },
       { name: "cycle_effort", description: "Cycle reasoning effort level" },
       { name: "compact", description: "Compact context" },
@@ -508,43 +575,109 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
 
   const groupedMessages = React.useMemo(() => groupToolExecutionMessages(messages), [messages]);
 
+  // Stable sort: messages with a timestamp come first (ordered by timestamp);
+  // messages with no timestamp are placed at the absolute end in their original
+  // relative order. This prevents timestampless messages (e.g. synthesised tool
+  // cards, streaming partials) from appearing in the middle of a conversation.
+  const sortedMessages = React.useMemo(() => {
+    const withTs: RelayMessage[] = [];
+    const withoutTs: RelayMessage[] = [];
+    for (const msg of groupedMessages) {
+      if (msg.timestamp != null) {
+        withTs.push(msg);
+      } else {
+        withoutTs.push(msg);
+      }
+    }
+    withTs.sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
+    return [...withTs, ...withoutTs];
+  }, [groupedMessages]);
+
   const visibleMessages = React.useMemo(
-    () => groupedMessages.filter((message) => {
+    () => sortedMessages.filter((message) => {
       if (hasVisibleContent(message.content)) return true;
       return (message.role === "toolResult" || message.role === "tool") && message.toolInput !== undefined;
     }),
-    [groupedMessages],
+    [sortedMessages],
   );
 
-  const scrollRef = React.useRef<HTMLDivElement | null>(null);
-  const [isNearBottom, setIsNearBottom] = React.useState(true);
+  const PAGE_SIZE = 50;
 
-  const rowVirtualizer = useVirtualizer({
-    count: visibleMessages.length,
-    getScrollElement: () => scrollRef.current,
-    estimateSize: () => 140,
-    overscan: 10,
-  });
+  const scrollRef = React.useRef<HTMLDivElement | null>(null);
+  const contentRef = React.useRef<HTMLDivElement | null>(null);
+  const sentinelRef = React.useRef<HTMLDivElement | null>(null);
+  const [isNearBottom, setIsNearBottom] = React.useState(true);
+  const isNearBottomRef = React.useRef(true);
+  const [renderedCount, setRenderedCount] = React.useState(PAGE_SIZE);
+
+  // Reset window when session or message list changes significantly.
+  React.useEffect(() => {
+    setRenderedCount(PAGE_SIZE);
+  }, [sessionId]);
+
+  const renderedMessages = React.useMemo(
+    () => visibleMessages.slice(-renderedCount),
+    [visibleMessages, renderedCount],
+  );
+  const hasMore = visibleMessages.length > renderedCount;
 
   const updateNearBottomState = React.useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
     const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    setIsNearBottom(distanceFromBottom < 80);
+    const nearBottom = distanceFromBottom < 200;
+    isNearBottomRef.current = nearBottom;
+    setIsNearBottom(nearBottom);
   }, []);
 
   const scrollToBottom = React.useCallback((behavior: "auto" | "smooth" = "auto") => {
     const el = scrollRef.current;
     if (!el) return;
-
-    // Prefer virtualizer alignment to avoid off-by-one issues with dynamic row heights.
-    if (visibleMessages.length > 0) {
-      rowVirtualizer.scrollToIndex(visibleMessages.length - 1, { align: "end", behavior });
-      return;
-    }
-
     el.scrollTo({ top: el.scrollHeight, behavior });
-  }, [rowVirtualizer, visibleMessages.length]);
+  }, []);
+
+  // ResizeObserver: when the scroll content grows in height (e.g. during thinking/
+  // streaming where message count stays the same), keep pinned to the bottom.
+  // We calculate distance directly instead of relying on isNearBottomRef, which
+  // can be flipped to false by a scroll event that fires between the content
+  // resize and this callback (race condition).
+  React.useEffect(() => {
+    const content = contentRef.current;
+    const scroller = scrollRef.current;
+    if (!content || !scroller) return;
+    const observer = new ResizeObserver(() => {
+      const distance = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+      if (distance < 200 || isNearBottomRef.current) {
+        scrollToBottom("auto");
+      }
+    });
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [scrollToBottom]);
+
+  // When the sentinel at the top enters the viewport, load the previous page
+  // while preserving the scroll position so the view doesn't jump.
+  React.useEffect(() => {
+    const sentinel = sentinelRef.current;
+    const scroller = scrollRef.current;
+    if (!sentinel || !scroller || !hasMore) return;
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (!entry?.isIntersecting) return;
+        const prevScrollHeight = scroller.scrollHeight;
+        setRenderedCount((c) => c + PAGE_SIZE);
+        // After React re-renders with more items, restore scroll position so
+        // the user stays at the same message they were looking at.
+        requestAnimationFrame(() => {
+          scroller.scrollTop += scroller.scrollHeight - prevScrollHeight;
+        });
+      },
+      { root: scroller, threshold: 0 },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [hasMore]);
 
   // On session change, jump to bottom immediately.
   React.useEffect(() => {
@@ -562,50 +695,44 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
       scrollToBottom("auto");
       updateNearBottomState();
     });
-  }, [visibleMessages.length, isNearBottom, scrollToBottom, updateNearBottomState]);
+  }, [visibleMessages, isNearBottom, scrollToBottom, updateNearBottomState]);
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
-      <div className="border-b border-border px-4 py-2 flex items-center justify-between gap-3 flex-wrap">
-        <div className="flex-1 min-w-0 flex items-center gap-2.5">
-          {/* Active pulse indicator */}
-          {sessionId && (
-            <span
-              className={cn(
-                "inline-block h-2 w-2 rounded-full flex-shrink-0 transition-colors",
-                agentActive
-                  ? "bg-green-400 shadow-[0_0_6px_#4ade8080] animate-pulse"
-                  : lastHeartbeatAt
-                    ? "bg-slate-400"
-                    : "bg-slate-600",
-              )}
-              title={agentActive ? "Agent active" : lastHeartbeatAt ? "Agent idle" : "No heartbeat yet"}
-            />
-          )}
-          <div className="min-w-0">
-            <p className="text-[0.65rem] uppercase tracking-widest text-muted-foreground leading-none mb-0.5">
-              {sessionId ? (agentActive ? "Active" : viewerStatus ?? "Connected") : "Session Viewer"}
-            </p>
-            <div className="flex items-center gap-2 min-w-0">
-              <p className="text-sm font-medium truncate leading-none flex-1 min-w-0">
-                {sessionId ? (sessionName || `Session ${sessionId.slice(0, 8)}…`) : "No session selected"}
-              </p>
-              {sessionId && activeModel?.provider && (
-                <span
-                  className="inline-flex items-center gap-1 rounded-full border border-border bg-muted px-2 py-0.5 text-[0.65rem] text-muted-foreground flex-shrink-0"
-                  title={`${activeModel.provider} · ${activeModel.name ?? activeModel.id}`}
-                >
-                  <ProviderIcon provider={activeModel.provider} className="size-3" />
-                  <span className="max-w-32 truncate">{activeModel.provider}</span>
-                </span>
-              )}
-            </div>
-          </div>
-        </div>
+      {/* Session info bar */}
+      {sessionId && (
+        <div className="border-b border-border px-3 py-2 flex items-center gap-2 min-w-0">
+          {/* Status dot */}
+          <span
+            className={cn(
+              "inline-block h-2 w-2 rounded-full flex-shrink-0 transition-colors",
+              agentActive
+                ? "bg-green-400 shadow-[0_0_6px_#4ade8080] animate-pulse"
+                : lastHeartbeatAt
+                  ? "bg-slate-400"
+                  : "bg-slate-600",
+            )}
+            title={agentActive ? "Agent active" : lastHeartbeatAt ? "Agent idle" : "No heartbeat yet"}
+          />
 
-        {/* Token usage + effort badges */}
-        {sessionId && (
-          <div className="flex items-center gap-2 flex-wrap flex-shrink-0">
+          {/* Session name + model */}
+          <div className="flex-1 min-w-0 flex items-center gap-2">
+            <span className="text-sm font-medium truncate leading-none">
+              {sessionName || `Session ${sessionId.slice(0, 8)}…`}
+            </span>
+            {activeModel?.provider && (
+              <span
+                className="hidden sm:inline-flex items-center gap-1 rounded-full border border-border bg-muted px-2 py-0.5 text-[0.65rem] text-muted-foreground flex-shrink-0"
+                title={`${activeModel.provider} · ${activeModel.name ?? activeModel.id}`}
+              >
+                <ProviderIcon provider={activeModel.provider} className="size-3" />
+                <span className="max-w-24 truncate">{activeModel.provider}</span>
+              </span>
+            )}
+          </div>
+
+          {/* Right: badges + end session */}
+          <div className="flex items-center gap-1.5 flex-shrink-0">
             <HeartbeatStaleBadge lastHeartbeatAt={lastHeartbeatAt} />
             {activeModel?.reasoning && (
               <button
@@ -618,71 +745,124 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                 title="Click to cycle effort level"
                 type="button"
               >
-                {effortLevel && effortLevel !== "off" ? effortLevel : "effort: off"}
+                {effortLevel && effortLevel !== "off" ? effortLevel : "off"}
               </button>
             )}
             {tokenUsage && (tokenUsage.input > 0 || tokenUsage.output > 0) && (
               <span
-                className="text-[0.7rem] text-muted-foreground tabular-nums"
+                className="text-[0.7rem] text-muted-foreground tabular-nums hidden xs:inline"
                 title={`Input: ${tokenUsage.input.toLocaleString()} tokens\nOutput: ${tokenUsage.output.toLocaleString()} tokens${tokenUsage.cacheRead ? `\nCache read: ${tokenUsage.cacheRead.toLocaleString()}` : ""}${tokenUsage.cacheWrite ? `\nCache write: ${tokenUsage.cacheWrite.toLocaleString()}` : ""}${tokenUsage.cost ? `\nCost: $${tokenUsage.cost.toFixed(4)}` : ""}`}
               >
                 ↑{formatTokenCount(tokenUsage.input)} ↓{formatTokenCount(tokenUsage.output)}
-                {tokenUsage.cost > 0 && ` · $${tokenUsage.cost.toFixed(3)}`}
+                <span className="hidden sm:inline">
+                  {tokenUsage.cost > 0 && ` · $${tokenUsage.cost.toFixed(3)}`}
+                </span>
               </span>
             )}
+            <ConversationDownload
+              messages={sortedMessages.map((m) => ({
+                role: toMessageRole(m.role),
+                content:
+                  typeof m.content === "string"
+                    ? m.content
+                    : JSON.stringify(m.content, null, 2),
+              }))}
+              filename={`session-${sessionId || "export"}.md`}
+              className="static top-auto right-auto h-7 w-7 sm:h-7 sm:w-auto sm:px-2.5 sm:text-[0.7rem] border-border bg-background hover:bg-accent hover:text-accent-foreground rounded-md"
+              variant="outline"
+              size="icon"
+              title="Download conversation markdown"
+            >
+              <DownloadIcon className="size-3.5" />
+              <span className="hidden sm:inline ml-1">Save</span>
+            </ConversationDownload>
+            <Button
+              className="h-7 w-7 sm:h-7 sm:w-auto sm:px-2.5 sm:text-[0.7rem]"
+              disabled={!onExec}
+              onClick={() => {
+                if (!onExec || !sessionId) return;
+                if (window.innerWidth < 640) {
+                  setShowEndSessionDialog(true);
+                } else {
+                  onExec({ type: "exec", id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, command: "end_session" });
+                }
+              }}
+              size="icon"
+              type="button"
+              variant="destructive"
+              title="End Session"
+            >
+              <OctagonX className="size-3.5" />
+              <span className="hidden sm:inline ml-1">End</span>
+            </Button>
+            <Button
+              className="h-7 w-7 sm:h-7 sm:w-auto sm:px-2.5 sm:text-[0.7rem]"
+              disabled={!onExec}
+              onClick={() => {
+                if (!onExec) return;
+                if (window.innerWidth < 640) {
+                  setShowClearDialog(true);
+                } else {
+                  onExec({ type: "exec", id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, command: "new_session" });
+                }
+              }}
+              size="icon"
+              type="button"
+              variant="outline"
+              title="New conversation (/new)"
+            >
+              <Plus className="size-3.5" />
+              <span className="hidden sm:inline ml-1">Clear</span>
+            </Button>
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
       <div className="relative flex-1 min-h-0">
         {!sessionId ? (
           <ConversationEmptyState
-            icon={<MessageSquare className="size-8" />}
+            icon={<MessageSquare className="size-8 opacity-40" />}
             title="No session selected"
-            description="Pick a session from the sidebar."
+            description="Open the sidebar and pick a session to get started."
           />
         ) : visibleMessages.length === 0 ? (
-          <ConversationEmptyState
-            title="Waiting for session events"
-            description="Messages will appear here in real time."
-          />
+          viewerStatus === "Connecting…" ? (
+            <SessionSkeleton />
+          ) : (
+            <ConversationEmptyState
+              icon={
+                <span className="inline-flex items-center justify-center h-10 w-10 rounded-full bg-muted/60 border border-border/60">
+                  <span className="inline-block h-2.5 w-2.5 rounded-full bg-slate-400 animate-pulse" />
+                </span>
+              }
+              title="Waiting for session events"
+              description="Messages will appear here in real time."
+            />
+          )
         ) : (
           <>
             <div
               ref={scrollRef}
-              className="h-full overflow-y-auto flex flex-col"
+              className="h-full overflow-y-auto overflow-x-hidden"
               onScroll={updateNearBottomState}
             >
-              <div
-                className="w-full py-2 mt-auto"
-                style={{ height: rowVirtualizer.getTotalSize(), position: "relative", flexShrink: 0 }}
-              >
-                {rowVirtualizer.getVirtualItems().map((virtualRow) => {
-                  const message = visibleMessages[virtualRow.index]!;
-                  const isLast = virtualRow.index === visibleMessages.length - 1;
-
-                  return (
-                    <div
-                      key={message.key}
-                      ref={rowVirtualizer.measureElement}
-                      data-index={virtualRow.index}
-                      className="w-full"
-                      style={{
-                        position: "absolute",
-                        top: 0,
-                        left: 0,
-                        transform: `translateY(${virtualRow.start}px)`,
-                      }}
-                    >
-                      <SessionMessageItem
-                        message={message}
-                        activeToolCalls={activeToolCalls}
-                        agentActive={agentActive}
-                        isLast={isLast}
-                      />
-                    </div>
-                  );
-                })}
+              <div ref={contentRef} className="w-full py-2 flex flex-col min-h-full justify-end">
+                {/* Sentinel: scrolling up to this triggers loading older messages */}
+                <div ref={sentinelRef} className="h-px" />
+                {hasMore && (
+                  <div className="py-2 text-center text-xs text-muted-foreground">
+                    Scroll up for older messages
+                  </div>
+                )}
+                {renderedMessages.map((message, index) => (
+                  <SessionMessageItem
+                    key={message.key}
+                    message={message}
+                    activeToolCalls={activeToolCalls}
+                    agentActive={agentActive}
+                    isLast={index === renderedMessages.length - 1}
+                  />
+                ))}
               </div>
             </div>
 
@@ -702,6 +882,59 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
       </div>
 
       <div className="border-t border-border px-3 py-2 pp-safe-bottom">
+        {/* Message queue display */}
+        {sessionId && messageQueue && messageQueue.length > 0 && (
+          <div className="mb-2 rounded-md border border-border bg-muted/30 px-2.5 py-2">
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="text-[0.65rem] font-medium text-muted-foreground uppercase tracking-wide">
+                Queued messages ({messageQueue.length})
+              </span>
+              {onClearMessageQueue && (
+                <button
+                  type="button"
+                  onClick={onClearMessageQueue}
+                  className="inline-flex items-center gap-1 text-[0.65rem] text-muted-foreground hover:text-destructive transition-colors"
+                  title="Clear all queued messages"
+                >
+                  <Trash2 className="size-3" />
+                  Clear
+                </button>
+              )}
+            </div>
+            <div className="flex flex-col gap-1">
+              {messageQueue.map((qm) => (
+                <div key={qm.id} className="flex items-start gap-2 text-xs group">
+                  <span
+                    className={cn(
+                      "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[0.6rem] font-medium uppercase tracking-wide flex-shrink-0 mt-0.5",
+                      qm.deliverAs === "steer"
+                        ? "bg-amber-500/15 text-amber-500 border border-amber-500/30"
+                        : "bg-blue-500/15 text-blue-500 border border-blue-500/30",
+                    )}
+                  >
+                    {qm.deliverAs === "steer" ? (
+                      <><Zap className="size-2.5" /> Steer</>
+                    ) : (
+                      <><Clock className="size-2.5" /> Follow-up</>
+                    )}
+                  </span>
+                  <span className="truncate flex-1 text-foreground/80 leading-relaxed">{qm.text}</span>
+                  {onRemoveQueuedMessage && (
+                    <button
+                      type="button"
+                      onClick={() => onRemoveQueuedMessage(qm.id)}
+                      className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-all flex-shrink-0 mt-0.5"
+                      title="Remove queued message"
+                    >
+                      <X className="size-3" />
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {pendingQuestion && sessionId && (
           <div className="mb-2 rounded-md border border-amber-400/50 bg-amber-500/10 px-2.5 py-2 text-xs text-amber-200">
             <span className="font-semibold">AskUserQuestion:</span> {pendingQuestion.question}
@@ -763,7 +996,12 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                               <span className="font-mono text-sm truncate">{session.name || `Session ${session.id.slice(0, 8)}…`}</span>
                               <span className="text-[11px] text-muted-foreground shrink-0">{new Date(session.modified).toLocaleDateString()}</span>
                             </div>
-                            <span className="text-[11px] text-muted-foreground truncate">{session.path}</span>
+                            <span
+                              className="text-[11px] text-muted-foreground truncate"
+                              title={session.path}
+                            >
+                              {formatPathTail(session.path, 2)}
+                            </span>
                           </div>
                         </CommandItem>
                       ))}
@@ -778,6 +1016,10 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                           key={cmd.name}
                           value={cmd.name}
                           onSelect={() => {
+                            if (cmd.name === "new") {
+                              executeSlashCommand("/new");
+                              return;
+                            }
                             setInput(`/${cmd.name} `);
                             setCommandQuery("");
                             setCommandOpen(cmd.name === "resume");
@@ -807,6 +1049,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
           onSubmit={handleSubmit}
           maxFiles={8}
           maxFileSize={20 * 1024 * 1024}
+          disabled={!sessionId}
           onError={(err) => {
             setComposerError(err.message);
           }}
@@ -830,6 +1073,13 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
               }}
               onKeyDown={(event) => {
                 if (!sessionId) return;
+
+                // Alt+Enter: toggle delivery mode (matches CLI behavior)
+                if (event.key === "Enter" && event.altKey && agentActive) {
+                  event.preventDefault();
+                  setDeliveryMode((m) => m === "steer" ? "followUp" : "steer");
+                  return;
+                }
 
                 // If we're in slash mode, show suggestions + allow selecting with Enter.
                 if (commandOpen) {
@@ -856,7 +1106,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                 // Minimal slash-command exec for supported commands.
                 if (event.key !== "Enter" || event.shiftKey) return;
 
-                const trimmed = input.trim();
+                const trimmed = event.currentTarget.value.trim();
                 if (!trimmed.startsWith("/")) return;
 
                 if (executeSlashCommand(trimmed)) {
@@ -869,8 +1119,10 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                 sessionId
                   ? pendingQuestion
                     ? `Answer: ${pendingQuestion.question}`
-                    : availableCommands && availableCommands.length > 0
-                      ? `Send a message… (try /${availableCommands[0]!.name})`
+                    : agentActive
+                      ? deliveryMode === "steer"
+                        ? "Type to steer the agent…"
+                        : "Type a follow-up message…"
                       : "Send a message to this session…"
                   : "Pick a session to chat"
               }
@@ -880,13 +1132,68 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
           <PromptInputFooter>
             <PromptInputTools>
               <ComposerAttachmentButton />
-              <span className="px-2 text-xs text-muted-foreground">
-                {sessionId
-                  ? pendingQuestion
-                    ? "Provide the answer and press Enter"
-                    : "Press Enter to send"
-                  : "Select a session to send messages"}
-              </span>
+              {sessionId && onShowModelSelector ? (
+                <button
+                  type="button"
+                  onClick={onShowModelSelector}
+                  className="inline-flex items-center gap-1.5 rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-muted/60 transition-colors min-w-0 max-w-[40vw]"
+                >
+                  {activeModel?.provider && (
+                    <ProviderIcon provider={activeModel.provider} className="size-3 shrink-0" />
+                  )}
+                  <span className="truncate">
+                    {activeModel ? `${activeModel.provider}/${activeModel.id}` : "Select model"}
+                  </span>
+                  <ChevronsUpDown className="size-3 opacity-50 shrink-0" />
+                </button>
+              ) : sessionId && !pendingQuestion ? (
+                <span className="px-2 text-xs text-muted-foreground">
+                  {sessionId ? "Press Enter to send" : "Select a session to send messages"}
+                </span>
+              ) : null}
+              {showTerminalButton && onToggleTerminal && (
+                <button
+                  type="button"
+                  onClick={onToggleTerminal}
+                  className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-muted/60 transition-colors"
+                  title="Toggle terminal"
+                >
+                  <TerminalIcon className="size-3" />
+                  <span className="hidden sm:inline">Terminal</span>
+                </button>
+              )}
+              {sessionId && agentActive && (
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setDeliveryMode((m) => m === "steer" ? "followUp" : "steer")}
+                    className={cn(
+                      "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[0.65rem] font-medium transition-colors border",
+                      deliveryMode === "steer"
+                        ? "bg-amber-500/15 text-amber-500 border-amber-500/30 hover:bg-amber-500/25"
+                        : "bg-blue-500/15 text-blue-500 border-blue-500/30 hover:bg-blue-500/25",
+                    )}
+                    title={deliveryMode === "steer"
+                      ? "Steer: interrupts agent mid-run (click to switch to follow-up)"
+                      : "Follow-up: waits until agent finishes (click to switch to steer)"
+                    }
+                  >
+                    {deliveryMode === "steer" ? (
+                      <><Zap className="size-3" /> Steer</>
+                    ) : (
+                      <><Clock className="size-3" /> Follow-up</>
+                    )}
+                  </button>
+                  <span className="text-[0.65rem] text-muted-foreground hidden sm:inline">
+                    {deliveryMode === "steer" ? "Interrupts agent" : "Queued after agent"}
+                  </span>
+                </div>
+              )}
+              {sessionId && pendingQuestion && !agentActive && (
+                <span className="px-2 text-xs text-muted-foreground">
+                  Provide the answer and press Enter
+                </span>
+              )}
             </PromptInputTools>
             <ComposerSubmitButton
               sessionId={sessionId}
@@ -897,6 +1204,60 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
           </PromptInputFooter>
         </PromptInput>
       </div>
+
+      {/* Clear confirmation dialog — shown on mobile only */}
+      <Dialog open={showClearDialog} onOpenChange={setShowClearDialog}>
+        <DialogContent showCloseButton={false} className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Start a new conversation?</DialogTitle>
+            <DialogDescription>
+              This will clear the current conversation and start fresh.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowClearDialog(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => {
+                setShowClearDialog(false);
+                if (onExec) {
+                  onExec({ type: "exec", id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, command: "new_session" });
+                }
+              }}
+            >
+              Clear
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showEndSessionDialog} onOpenChange={setShowEndSessionDialog}>
+        <DialogContent showCloseButton={false} className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>End this session?</DialogTitle>
+            <DialogDescription>
+              This will permanently end the session. You won't be able to resume it.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowEndSessionDialog(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                setShowEndSessionDialog(false);
+                if (onExec && sessionId) {
+                  onExec({ type: "exec", id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, command: "end_session" });
+                }
+              }}
+            >
+              End Session
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

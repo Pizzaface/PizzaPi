@@ -11,18 +11,29 @@ import {
     getSessionLastHeartbeat,
     getSessions,
     getRunner,
+    getTerminalEntry,
+    getTerminalsForRunner,
+    linkSessionToRunner,
     publishSessionEvent,
     recordRunnerSession,
     registerRunner,
+    markTerminalSpawned,
+    registerTerminal,
     registerTuiSession,
     removeHubClient,
     removeRunner,
+    removeTerminal,
+    removeTerminalViewer,
+    sendToTerminalViewer,
+    setTerminalViewer,
     removeRunnerSession,
     removeViewer,
     sendSnapshotToViewer,
     touchSessionActivity,
     updateSessionState,
     updateSessionHeartbeat,
+    updateRunnerSkills,
+    type RunnerSkill,
 } from "./registry.js";
 
 // ── Thinking-block duration tracking ─────────────────────────────────────────
@@ -63,6 +74,50 @@ function augmentMessageThinkingDurations(
 import { getPersistedRelaySessionSnapshot } from "../sessions/store.js";
 import { getCachedRelayEvents } from "../sessions/redis.js";
 import { resolveSpawnError, resolveSpawnReady } from "./runner-control.js";
+import { notifyAgentFinished, notifyAgentNeedsInput, notifyAgentError } from "../push.js";
+
+// ── Skill request/response registry ──────────────────────────────────────────
+// Maps requestId → { resolve, timer }. Used to correlate skill command
+// responses (skill_result) from the runner back to the HTTP request handler.
+
+interface PendingSkillRequest {
+    resolve: (result: { ok: boolean; message?: string; skills?: RunnerSkill[]; content?: string; name?: string }) => void;
+    timer: ReturnType<typeof setTimeout>;
+}
+
+const pendingSkillRequests = new Map<string, PendingSkillRequest>();
+
+/**
+ * Send a skill command to a runner and wait for the response.
+ * Returns the runner's skill_result payload or throws on timeout.
+ */
+export async function sendSkillCommand(
+    runnerId: string,
+    command: Record<string, unknown>,
+    timeoutMs = 10_000,
+): Promise<{ ok: boolean; message?: string; skills?: RunnerSkill[]; content?: string; name?: string }> {
+    const runner = getRunner(runnerId);
+    if (!runner) throw new Error("Runner not found");
+
+    const requestId = Math.random().toString(36).slice(2) + Date.now().toString(36);
+
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+            pendingSkillRequests.delete(requestId);
+            reject(new Error("Skill command timed out"));
+        }, timeoutMs);
+
+        pendingSkillRequests.set(requestId, { resolve, timer });
+
+        try {
+            runner.ws.send(JSON.stringify({ ...command, requestId }));
+        } catch (err) {
+            clearTimeout(timer);
+            pendingSkillRequests.delete(requestId);
+            reject(err);
+        }
+    });
+}
 
 function findLatestSnapshotEvent(cachedEvents: unknown[]): Record<string, unknown> | null {
     for (let i = cachedEvents.length - 1; i >= 0; i--) {
@@ -172,6 +227,26 @@ export function onOpen(ws: ServerWebSocket<WsData>) {
             // to the latest cached snapshot from Redis.
             void sendLatestSnapshotFromCache(ws, sessionId);
         }
+    } else if (ws.data.role === "terminal" && ws.data.terminalId) {
+        // Browser terminal viewer connecting — attach to the terminal entry
+        const terminalId = ws.data.terminalId;
+        console.log(`[terminal] viewer connected: terminalId=${terminalId} userId=${ws.data.userId}`);
+        const entry = getTerminalEntry(terminalId);
+        if (!entry) {
+            console.warn(`[terminal] viewer connected but no terminal entry found: terminalId=${terminalId}`);
+            ws.send(JSON.stringify({ type: "terminal_error", terminalId, message: "Terminal not found" }));
+            ws.close(1008, "Terminal not found");
+            return;
+        }
+        if (entry.userId !== ws.data.userId) {
+            console.warn(`[terminal] viewer forbidden: terminalId=${terminalId} entry.userId=${entry.userId} viewer.userId=${ws.data.userId}`);
+            ws.send(JSON.stringify({ type: "terminal_error", terminalId, message: "Forbidden" }));
+            ws.close(1008, "Forbidden");
+            return;
+        }
+        setTerminalViewer(terminalId, ws);
+        console.log(`[terminal] viewer attached to runnerId=${entry.runnerId}: terminalId=${terminalId}`);
+        ws.send(JSON.stringify({ type: "terminal_connected", terminalId }));
     } else if (ws.data.role === "hub") {
         addHubClient(ws);
         // Send only this user's active sessions on connect
@@ -195,6 +270,8 @@ export function onMessage(ws: ServerWebSocket<WsData>, raw: string | Buffer) {
         handleViewerMessage(ws, msg);
     } else if (ws.data.role === "runner") {
         handleRunnerMessage(ws, msg);
+    } else if (ws.data.role === "terminal") {
+        handleTerminalViewerMessage(ws, msg);
     }
     // hub role: read-only feed, no inbound messages handled
 }
@@ -207,7 +284,15 @@ export function onClose(ws: ServerWebSocket<WsData>) {
     } else if (ws.data.role === "viewer" && ws.data.sessionId) {
         removeViewer(ws.data.sessionId, ws);
     } else if (ws.data.role === "runner" && ws.data.runnerId) {
+        // Clean up any terminals owned by this runner
+        for (const tid of getTerminalsForRunner(ws.data.runnerId)) {
+            sendToTerminalViewer(tid, { type: "terminal_exit", terminalId: tid, exitCode: -1 });
+            removeTerminal(tid);
+        }
         removeRunner(ws.data.runnerId);
+    } else if (ws.data.role === "terminal" && ws.data.terminalId) {
+        console.log(`[terminal] viewer disconnected: terminalId=${ws.data.terminalId} userId=${ws.data.userId}`);
+        removeTerminalViewer(ws.data.terminalId, ws);
     } else if (ws.data.role === "hub") {
         removeHubClient(ws);
     }
@@ -326,6 +411,38 @@ function handleTuiMessage(ws: ServerWebSocket<WsData>, msg: Record<string, unkno
 
         // Cache + forward event to viewers (for reconnect replay).
         publishSessionEvent(sessionId, eventToPublish);
+
+        // ── Push notifications ─────────────────────────────────────────────────
+        // Only send push when the user doesn't have an active browser viewer open.
+        const sessionForPush = getSharedSession(sessionId);
+        const userId = sessionForPush?.userId;
+        const hasViewers = sessionForPush ? sessionForPush.viewers.size > 0 : false;
+
+        if (userId && !hasViewers && event) {
+            const sName = sessionForPush?.sessionName ?? null;
+
+            // Agent finished working
+            if (event.type === "agent_end") {
+                notifyAgentFinished(userId, sessionId, sName);
+            }
+
+            // Agent is asking a question (AskUserQuestion tool)
+            if (
+                event.type === "tool_execution_start" &&
+                event.toolName === "AskUserQuestion"
+            ) {
+                const args = event.args as Record<string, unknown> | undefined;
+                const question = typeof args?.question === "string" ? args.question : undefined;
+                notifyAgentNeedsInput(userId, sessionId, question, sName);
+            }
+
+            // CLI error
+            if (event.type === "cli_error") {
+                const errMsg = typeof event.message === "string" ? event.message : undefined;
+                notifyAgentError(userId, sessionId, errMsg, sName);
+            }
+        }
+
         return;
     }
 }
@@ -374,9 +491,10 @@ function handleViewerMessage(ws: ServerWebSocket<WsData>, msg: Record<string, un
             : [];
 
         const client = typeof msg.client === "string" ? msg.client : undefined;
+        const deliverAs = msg.deliverAs === "steer" || msg.deliverAs === "followUp" ? msg.deliverAs : undefined;
 
         try {
-            session.tuiWs.send(JSON.stringify({ type: "input", text: msg.text, attachments, client }));
+            session.tuiWs.send(JSON.stringify({ type: "input", text: msg.text, attachments, client, ...(deliverAs ? { deliverAs } : {}) }));
         } catch {}
         return;
     }
@@ -409,10 +527,65 @@ function handleRunnerMessage(ws: ServerWebSocket<WsData>, msg: Record<string, un
         const roots = Array.isArray(msg.roots)
             ? (msg.roots as unknown[]).filter((r): r is string => typeof r === "string")
             : [];
+        const requestedRunnerId = typeof msg.runnerId === "string" ? msg.runnerId : undefined;
+        const runnerSecret = typeof msg.runnerSecret === "string" ? msg.runnerSecret : undefined;
+        const skills = Array.isArray(msg.skills) ? (msg.skills as unknown[]) : [];
 
-        const runnerId = registerRunner(ws, { name, roots });
+        const result = registerRunner(ws, { name, roots, requestedRunnerId, runnerSecret, skills: skills as any });
+        if (result instanceof Error) {
+            ws.send(JSON.stringify({ type: "error", message: result.message }));
+            ws.close(1008, result.message);
+            return;
+        }
+        const runnerId = result;
         ws.data.runnerId = runnerId;
         ws.send(JSON.stringify({ type: "runner_registered", runnerId }));
+        return;
+    }
+
+    // skills_list: runner responding to list_skills or reporting updated skills
+    if (msg.type === "skills_list") {
+        const runnerId = ws.data.runnerId;
+        const skills = Array.isArray(msg.skills) ? (msg.skills as unknown[]) : [];
+        if (runnerId) {
+            updateRunnerSkills(runnerId, skills as any);
+        }
+
+        // Resolve pending request if any
+        const requestId = typeof msg.requestId === "string" ? msg.requestId : undefined;
+        if (requestId) {
+            const pending = pendingSkillRequests.get(requestId);
+            if (pending) {
+                clearTimeout(pending.timer);
+                pendingSkillRequests.delete(requestId);
+                pending.resolve({ ok: true, skills: skills as any });
+            }
+        }
+        return;
+    }
+
+    // skill_result: runner responding to create/update/delete/get commands
+    if (msg.type === "skill_result") {
+        const requestId = typeof msg.requestId === "string" ? msg.requestId : undefined;
+        if (requestId) {
+            const pending = pendingSkillRequests.get(requestId);
+            if (pending) {
+                clearTimeout(pending.timer);
+                pendingSkillRequests.delete(requestId);
+                pending.resolve({
+                    ok: msg.ok === true,
+                    message: typeof msg.message === "string" ? msg.message : undefined,
+                    skills: Array.isArray(msg.skills) ? (msg.skills as any) : undefined,
+                    content: typeof msg.content === "string" ? msg.content : undefined,
+                    name: typeof msg.name === "string" ? msg.name : undefined,
+                });
+            }
+        }
+
+        // If the runner also sent an updated skills list, persist it
+        if (ws.data.runnerId && Array.isArray(msg.skills)) {
+            updateRunnerSkills(ws.data.runnerId, msg.skills as any);
+        }
         return;
     }
 
@@ -430,6 +603,7 @@ function handleRunnerMessage(ws: ServerWebSocket<WsData>, msg: Record<string, un
 
         if (runnerId && sessionId && msg.type === "session_ready") {
             recordRunnerSession(runnerId, sessionId);
+            linkSessionToRunner(runnerId, sessionId);
             resolveSpawnReady(sessionId);
         }
 
@@ -444,6 +618,92 @@ function handleRunnerMessage(ws: ServerWebSocket<WsData>, msg: Record<string, un
 
         if (sessionId) {
             broadcastToViewers(sessionId, JSON.stringify(msg));
+        }
+        return;
+    }
+
+    // ── Terminal PTY messages from runner → browser viewer ─────────────────
+    if (msg.type === "terminal_ready" || msg.type === "terminal_data" || msg.type === "terminal_exit" || msg.type === "terminal_error") {
+        const terminalId = typeof msg.terminalId === "string" ? msg.terminalId : "";
+        if (!terminalId) {
+            console.warn(`[terminal] handleRunnerMessage: missing terminalId in ${msg.type} from runnerId=${ws.data.runnerId}`);
+            return;
+        }
+
+        const entry = getTerminalEntry(terminalId);
+
+        if (msg.type === "terminal_ready") {
+            console.log(`[terminal] runner→relay: terminal_ready terminalId=${terminalId} runnerId=${ws.data.runnerId} (viewer attached=${entry?.viewer != null})`);
+        } else if (msg.type === "terminal_exit") {
+            console.log(`[terminal] runner→relay: terminal_exit terminalId=${terminalId} exitCode=${msg.exitCode} runnerId=${ws.data.runnerId}`);
+        } else if (msg.type === "terminal_error") {
+            console.warn(`[terminal] runner→relay: terminal_error terminalId=${terminalId} message="${msg.message}" runnerId=${ws.data.runnerId}`);
+        }
+        // terminal_data is too chatty to log every message
+
+        if (msg.type === "terminal_exit" || (msg.type === "terminal_error" && !entry)) {
+            sendToTerminalViewer(terminalId, msg);
+            removeTerminal(terminalId);
+            return;
+        }
+
+        // Forward directly to the browser viewer
+        sendToTerminalViewer(terminalId, msg);
+        return;
+    }
+}
+
+// ── Terminal viewer message handling ──────────────────────────────────────────
+
+function handleTerminalViewerMessage(ws: ServerWebSocket<WsData>, msg: Record<string, unknown>) {
+    const terminalId = ws.data.terminalId;
+    if (!terminalId) {
+        console.warn(`[terminal] handleTerminalViewerMessage: no terminalId on ws.data (msg.type=${msg.type})`);
+        return;
+    }
+
+    const entry = getTerminalEntry(terminalId);
+    if (!entry) {
+        console.warn(`[terminal] handleTerminalViewerMessage: no entry for terminalId=${terminalId} (msg.type=${msg.type}) — message dropped`);
+        return;
+    }
+
+    // Forward input/resize/kill to the runner that owns this terminal
+    if (msg.type === "terminal_input" || msg.type === "terminal_resize" || msg.type === "kill_terminal") {
+        const runner = getRunner(entry.runnerId);
+        if (!runner) {
+            console.warn(`[terminal] handleTerminalViewerMessage: runner not found runnerId=${entry.runnerId} for terminalId=${terminalId} (msg.type=${msg.type}) — message dropped`);
+            return;
+        }
+
+        // Deferred spawn: if the PTY hasn't been spawned yet and we receive the
+        // first terminal_resize from the viewer, use those dimensions to spawn.
+        if (!entry.spawned && msg.type === "terminal_resize") {
+            const cols = typeof msg.cols === "number" && msg.cols > 0 ? msg.cols : (entry.spawnOpts.cols ?? 80);
+            const rows = typeof msg.rows === "number" && msg.rows > 0 ? msg.rows : (entry.spawnOpts.rows ?? 24);
+            console.log(`[terminal] deferred spawn: viewer sent resize → spawning PTY terminalId=${terminalId} ${cols}x${rows} cwd=${entry.spawnOpts.cwd ?? "(default)"}`);
+            markTerminalSpawned(terminalId);
+            try {
+                runner.ws.send(JSON.stringify({
+                    type: "new_terminal",
+                    terminalId,
+                    cwd: entry.spawnOpts.cwd,
+                    shell: entry.spawnOpts.shell,
+                    cols,
+                    rows,
+                }));
+            } catch (err) {
+                console.error(`[terminal] deferred spawn: failed to send new_terminal to runner runnerId=${entry.runnerId} terminalId=${terminalId}:`, err);
+                ws.send(JSON.stringify({ type: "terminal_error", terminalId, message: "Failed to spawn terminal" }));
+            }
+            return; // Don't forward the resize — the runner will use the dims from new_terminal
+        }
+
+        console.log(`[terminal] viewer→runner: terminalId=${terminalId} type=${msg.type}${msg.type === "terminal_resize" ? ` cols=${msg.cols} rows=${msg.rows}` : ""}`);
+        try {
+            runner.ws.send(JSON.stringify({ ...msg, terminalId }));
+        } catch (err) {
+            console.error(`[terminal] handleTerminalViewerMessage: failed to send to runner runnerId=${entry.runnerId} terminalId=${terminalId}:`, err);
         }
         return;
     }

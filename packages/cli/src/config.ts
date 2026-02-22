@@ -13,6 +13,12 @@ export interface PizzaPiConfig {
     apiKey?: string;
     /** WebSocket URL of the PizzaPi relay server. Default: ws://localhost:3001 */
     relayUrl?: string;
+    /**
+     * Additional skill paths to load (files or directories).
+     * Merged on top of the default ~/.pizzapi/skills/ and .pizzapi/skills/ locations.
+     * Supports ~ expansion and absolute paths.
+     */
+    skills?: string[];
 }
 
 function readJsonSafe(path: string): Partial<PizzaPiConfig> {

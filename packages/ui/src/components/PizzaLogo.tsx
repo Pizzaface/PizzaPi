@@ -66,8 +66,7 @@ export function PizzaLogo({ className = "" }: PizzaLogoProps) {
 
   return (
     <div
-      className={`relative inline-flex items-center justify-center cursor-pointer ${className}`}
-      style={{ width: 56, height: 56 }}
+      className={`relative inline-flex items-center justify-center cursor-pointer w-9 h-9 sm:w-14 sm:h-14 ${className}`}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
     >

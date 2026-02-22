@@ -250,6 +250,7 @@ export function groupToolExecutionMessages(messages: RelayMessage[]): RelayMessa
               toolInput: args,
               toolCallId,
               content: null,
+              timestamp: message.timestamp,
               thinking: pendingText,
               thinkingDuration: pendingDuration,
             });
@@ -309,6 +310,7 @@ export function groupToolExecutionMessages(messages: RelayMessage[]): RelayMessa
             toolName: resolvedToolName,
             toolInput: resolvedArgs,
             toolCallId: resolvedToolCallId,
+            timestamp: message.timestamp ?? grouped[existingIdx].timestamp,
             role: "tool",
           };
           continue;
@@ -325,6 +327,7 @@ export function groupToolExecutionMessages(messages: RelayMessage[]): RelayMessa
             toolName: resolvedToolName,
             toolInput: resolvedArgs,
             toolCallId: resolvedToolCallId,
+            timestamp: message.timestamp ?? grouped[existingIdxByKey].timestamp,
             role: "tool",
           };
           continue;

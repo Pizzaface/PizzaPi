@@ -2,16 +2,25 @@ import { getModel, getProviders, getModels } from "@mariozechner/pi-ai";
 import { Agent } from "@mariozechner/pi-agent-core";
 import type { AgentEvent } from "@mariozechner/pi-agent-core";
 import { createToolkit } from "@pizzapi/tools";
-import { getRunner, getRunners, getSessions, getSharedSession, recordRunnerSession } from "../ws/registry.js";
+import { getRunner, getRunners, getSessions, getSharedSession, linkSessionToRunner, recordRunnerSession, registerTerminal } from "../ws/registry.js";
+import { sendSkillCommand } from "../ws/relay.js";
 import { waitForSpawnAck } from "../ws/runner-control.js";
 import { apiKeyRateLimitConfig, auth, kysely } from "../auth.js";
 import { requireSession, validateApiKey } from "../middleware.js";
 import { listPersistedRelaySessionsForUser } from "../sessions/store.js";
+import { getRecentFolders, recordRecentFolder } from "../runner-recent-folders.js";
 import {
     attachmentMaxFileSizeBytes,
     getStoredAttachment,
     storeSessionAttachment,
 } from "../attachments/store.js";
+import {
+    getVapidPublicKey,
+    subscribePush,
+    unsubscribePush,
+    getSubscriptionsForUser,
+    updateEnabledEvents,
+} from "../push.js";
 
 export async function handleApi(req: Request, url: URL): Promise<Response | undefined> {
     if (url.pathname === "/health") {
@@ -172,8 +181,193 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
 
         // Best-effort accounting
         recordRunnerSession(runnerId, sessionId);
+        linkSessionToRunner(runnerId, sessionId);
+
+        // Persist this cwd as a recent folder for the runner (best-effort, fire-and-forget).
+        if (requestedCwd) {
+            void recordRecentFolder(identity.userId, runnerId, requestedCwd).catch(() => {});
+        }
 
         return Response.json({ ok: true, runnerId, sessionId, pending: (ack as any).timeout === true });
+    }
+
+    if (url.pathname === "/api/runners/restart" && req.method === "POST") {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        let body: any = {};
+        try {
+            body = await req.json();
+        } catch {
+            body = {};
+        }
+
+        const runnerId = typeof body.runnerId === "string" ? body.runnerId : undefined;
+        if (!runnerId) {
+            return Response.json({ error: "Missing runnerId" }, { status: 400 });
+        }
+
+        const runner = getRunner(runnerId);
+        if (!runner) {
+            return Response.json({ error: "Runner not found" }, { status: 404 });
+        }
+
+        const runnerUserId = (runner as any).userId as string | null | undefined;
+        if (runnerUserId !== identity.userId) {
+            return Response.json({ error: "Forbidden" }, { status: 403 });
+        }
+
+        try {
+            runner.ws.send(JSON.stringify({ type: "restart" }));
+        } catch {
+            return Response.json({ error: "Failed to send restart request to runner" }, { status: 502 });
+        }
+
+        return Response.json({ ok: true });
+    }
+
+    // ── Terminal creation ────────────────────────────────────────────────────
+
+    if (url.pathname === "/api/runners/terminal" && req.method === "POST") {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        let body: any = {};
+        try { body = await req.json(); } catch { body = {}; }
+
+        const runnerId = typeof body.runnerId === "string" ? body.runnerId : undefined;
+        const requestedCwd = typeof body.cwd === "string" ? body.cwd : undefined;
+        const cols = typeof body.cols === "number" ? body.cols : 80;
+        const rows = typeof body.rows === "number" ? body.rows : 24;
+
+        if (!runnerId) {
+            return Response.json({ error: "Missing runnerId" }, { status: 400 });
+        }
+
+        const runner = getRunner(runnerId);
+        if (!runner) {
+            return Response.json({ error: "Runner not found" }, { status: 404 });
+        }
+
+        const runnerUserId = (runner as any).userId as string | null | undefined;
+        if (!runnerUserId || runnerUserId !== identity.userId) {
+            return Response.json({ error: "Forbidden" }, { status: 403 });
+        }
+
+        const terminalId = crypto.randomUUID();
+
+        // Register the terminal in "pending" state. The PTY is NOT spawned yet —
+        // it will be triggered when the viewer's WebSocket connects and sends its
+        // first terminal_resize with real dimensions. This eliminates the race
+        // where the PTY starts (and possibly exits) before the viewer is ready.
+        registerTerminal(terminalId, runnerId, identity.userId, {
+            cwd: requestedCwd,
+            cols,
+            rows,
+        });
+
+        return Response.json({ ok: true, terminalId, runnerId });
+    }
+
+    // ── Runner recent folders ─────────────────────────────────────────────────
+
+    const recentFoldersMatch = url.pathname.match(/^\/api\/runners\/([^/]+)\/recent-folders$/);
+    if (recentFoldersMatch) {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        const runnerId = decodeURIComponent(recentFoldersMatch[1]);
+        const runner = getRunner(runnerId);
+        if (!runner) {
+            return Response.json({ error: "Runner not found" }, { status: 404 });
+        }
+        const runnerUserId = (runner as any).userId as string | null | undefined;
+        if (runnerUserId !== identity.userId) {
+            return Response.json({ error: "Forbidden" }, { status: 403 });
+        }
+
+        if (req.method === "GET") {
+            const folders = await getRecentFolders(identity.userId, runnerId);
+            return Response.json({ folders });
+        }
+
+        return undefined;
+    }
+
+    // ── Runner skills ─────────────────────────────────────────────────────────
+
+    const skillsMatch = url.pathname.match(/^\/api\/runners\/([^/]+)\/skills(?:\/([^/]+))?$/);
+    if (skillsMatch) {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        const runnerId = decodeURIComponent(skillsMatch[1]);
+        const skillName = skillsMatch[2] ? decodeURIComponent(skillsMatch[2]) : undefined;
+
+        const runner = getRunner(runnerId);
+        if (!runner) return Response.json({ error: "Runner not found" }, { status: 404 });
+
+        const runnerUserId = (runner as any).userId as string | null | undefined;
+        if (runnerUserId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
+
+        // GET /api/runners/:id/skills — list skills (from in-memory cache)
+        if (req.method === "GET" && !skillName) {
+            return Response.json({ skills: (runner as any).skills ?? [] });
+        }
+
+        // GET /api/runners/:id/skills/:name — get full skill content
+        if (req.method === "GET" && skillName) {
+            try {
+                const result = await sendSkillCommand(runnerId, { type: "get_skill", name: skillName });
+                if (!result.ok) return Response.json({ error: result.message ?? "Skill not found" }, { status: 404 });
+                return Response.json({ name: result.name, content: result.content });
+            } catch (err) {
+                return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 502 });
+            }
+        }
+
+        // POST /api/runners/:id/skills — create a new skill
+        if (req.method === "POST" && !skillName) {
+            let body: any = {};
+            try { body = await req.json(); } catch {}
+            const name = typeof body.name === "string" ? body.name.trim() : "";
+            const content = typeof body.content === "string" ? body.content : "";
+            if (!name) return Response.json({ error: "Missing skill name" }, { status: 400 });
+            try {
+                const result = await sendSkillCommand(runnerId, { type: "create_skill", name, content });
+                if (!result.ok) return Response.json({ error: result.message ?? "Failed to create skill" }, { status: 400 });
+                return Response.json({ ok: true, skills: result.skills ?? [] });
+            } catch (err) {
+                return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 502 });
+            }
+        }
+
+        // PUT /api/runners/:id/skills/:name — update a skill
+        if (req.method === "PUT" && skillName) {
+            let body: any = {};
+            try { body = await req.json(); } catch {}
+            const content = typeof body.content === "string" ? body.content : "";
+            try {
+                const result = await sendSkillCommand(runnerId, { type: "update_skill", name: skillName, content });
+                if (!result.ok) return Response.json({ error: result.message ?? "Failed to update skill" }, { status: 400 });
+                return Response.json({ ok: true, skills: result.skills ?? [] });
+            } catch (err) {
+                return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 502 });
+            }
+        }
+
+        // DELETE /api/runners/:id/skills/:name — delete a skill
+        if (req.method === "DELETE" && skillName) {
+            try {
+                const result = await sendSkillCommand(runnerId, { type: "delete_skill", name: skillName });
+                if (!result.ok) return Response.json({ error: result.message ?? "Skill not found" }, { status: 404 });
+                return Response.json({ ok: true, skills: result.skills ?? [] });
+            } catch (err) {
+                return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 502 });
+            }
+        }
+
+        return undefined;
     }
 
     if (url.pathname === "/api/sessions" && req.method === "GET") {
@@ -339,6 +533,80 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
             getModels(p).map((m) => ({ provider: p, id: m.id, name: m.name })),
         );
         return Response.json({ models });
+    }
+
+    // ── Push notification endpoints ────────────────────────────────────────────
+
+    if (url.pathname === "/api/push/vapid-public-key" && req.method === "GET") {
+        return Response.json({ publicKey: getVapidPublicKey() });
+    }
+
+    if (url.pathname === "/api/push/subscribe" && req.method === "POST") {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        const body = await req.json() as {
+            endpoint?: string;
+            keys?: { p256dh?: string; auth?: string };
+            enabledEvents?: string;
+        };
+
+        if (!body.endpoint || !body.keys?.p256dh || !body.keys?.auth) {
+            return Response.json(
+                { error: "Missing required fields: endpoint, keys.p256dh, keys.auth" },
+                { status: 400 },
+            );
+        }
+
+        const id = await subscribePush({
+            userId: identity.userId,
+            endpoint: body.endpoint,
+            keys: { p256dh: body.keys.p256dh, auth: body.keys.auth },
+            enabledEvents: body.enabledEvents,
+        });
+
+        return Response.json({ ok: true, id });
+    }
+
+    if (url.pathname === "/api/push/unsubscribe" && req.method === "POST") {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        const body = await req.json() as { endpoint?: string };
+        if (!body.endpoint) {
+            return Response.json({ error: "Missing endpoint" }, { status: 400 });
+        }
+
+        await unsubscribePush(identity.userId, body.endpoint);
+        return Response.json({ ok: true });
+    }
+
+    if (url.pathname === "/api/push/subscriptions" && req.method === "GET") {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        const subs = await getSubscriptionsForUser(identity.userId);
+        return Response.json({
+            subscriptions: subs.map((s) => ({
+                id: s.id,
+                endpoint: s.endpoint,
+                createdAt: s.createdAt,
+                enabledEvents: s.enabledEvents,
+            })),
+        });
+    }
+
+    if (url.pathname === "/api/push/events" && req.method === "PUT") {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        const body = await req.json() as { endpoint?: string; enabledEvents?: string };
+        if (!body.endpoint || !body.enabledEvents) {
+            return Response.json({ error: "Missing endpoint or enabledEvents" }, { status: 400 });
+        }
+
+        await updateEnabledEvents(identity.userId, body.endpoint, body.enabledEvents);
+        return Response.json({ ok: true });
     }
 
     return undefined;

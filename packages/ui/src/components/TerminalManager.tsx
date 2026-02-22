@@ -1,0 +1,435 @@
+import * as React from "react";
+import { WebTerminal } from "./WebTerminal";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { TerminalIcon, Plus, ChevronLeft } from "lucide-react";
+import { cn } from "@/lib/utils";
+
+interface RunnerInfo {
+  runnerId: string;
+  name?: string | null;
+  roots?: string[];
+  sessionCount: number;
+}
+
+interface TerminalTab {
+  terminalId: string;
+  runnerId: string;
+  cwd?: string;
+  label: string;
+}
+
+export interface TerminalManagerProps {
+  className?: string;
+  /** Called when the user wants to close the entire terminal panel (used for the mobile overlay). */
+  onClose?: () => void;
+}
+
+export function TerminalManager({ className, onClose }: TerminalManagerProps) {
+  const [terminals, setTerminals] = React.useState<TerminalTab[]>([]);
+  const [activeTerminalId, setActiveTerminalId] = React.useState<string | null>(null);
+  const [dialogOpen, setDialogOpen] = React.useState(false);
+  const [runners, setRunners] = React.useState<RunnerInfo[]>([]);
+  const [runnersLoading, setRunnersLoading] = React.useState(false);
+  const [selectedRunnerId, setSelectedRunnerId] = React.useState<string>("");
+  const [cwd, setCwd] = React.useState("");
+  const [spawning, setSpawning] = React.useState(false);
+  const [recentFolders, setRecentFolders] = React.useState<string[]>([]);
+
+  // Fetch runners when dialog opens
+  React.useEffect(() => {
+    if (!dialogOpen) return;
+    let cancelled = false;
+    setRunnersLoading(true);
+    void fetch("/api/runners", { credentials: "include" })
+      .then((res) => res.ok ? res.json() : Promise.reject())
+      .then((data) => {
+        if (cancelled) return;
+        const list = Array.isArray((data as any)?.runners) ? (data as any).runners : [];
+        const normalized = list
+          .map((r: any) => ({
+            runnerId: typeof r?.runnerId === "string" ? r.runnerId : "",
+            name: typeof r?.name === "string" ? r.name : null,
+            roots: Array.isArray(r?.roots) ? r.roots.filter((x: unknown): x is string => typeof x === "string") : [],
+            sessionCount: typeof r?.sessionCount === "number" ? r.sessionCount : 0,
+          }))
+          .filter((r: RunnerInfo) => r.runnerId);
+        setRunners(normalized);
+        // Auto-select first runner
+        if (normalized.length > 0 && !selectedRunnerId) {
+          setSelectedRunnerId(normalized[0].runnerId);
+        }
+      })
+      .catch(() => { if (!cancelled) setRunners([]); })
+      .finally(() => { if (!cancelled) setRunnersLoading(false); });
+    return () => { cancelled = true; };
+  }, [dialogOpen]);
+
+  // Fetch recent folders when runner changes
+  React.useEffect(() => {
+    if (!dialogOpen || !selectedRunnerId) {
+      setRecentFolders([]);
+      return;
+    }
+    let cancelled = false;
+    void fetch(`/api/runners/${encodeURIComponent(selectedRunnerId)}/recent-folders`, { credentials: "include" })
+      .then((res) => res.ok ? res.json() : Promise.reject())
+      .then((data) => {
+        if (cancelled) return;
+        setRecentFolders(Array.isArray((data as any)?.folders) ? (data as any).folders : []);
+      })
+      .catch(() => { if (!cancelled) setRecentFolders([]); });
+    return () => { cancelled = true; };
+  }, [dialogOpen, selectedRunnerId]);
+
+  const openNewTerminal = React.useCallback(async () => {
+    if (!selectedRunnerId) return;
+    setSpawning(true);
+    try {
+      const res = await fetch("/api/runners/terminal", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          runnerId: selectedRunnerId,
+          cwd: cwd.trim() || undefined,
+          cols: 120,
+          rows: 30,
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        alert(body?.error || `Failed to create terminal (HTTP ${res.status})`);
+        return;
+      }
+      const data = await res.json() as { ok: boolean; terminalId: string; runnerId: string };
+      if (!data.ok || !data.terminalId) {
+        alert("Failed to create terminal");
+        return;
+      }
+
+      const runner = runners.find((r) => r.runnerId === selectedRunnerId);
+      const label = cwd.trim()
+        ? cwd.trim().split("/").pop() || "Terminal"
+        : runner?.name || "Terminal";
+
+      const tab: TerminalTab = {
+        terminalId: data.terminalId,
+        runnerId: data.runnerId,
+        cwd: cwd.trim() || undefined,
+        label,
+      };
+      setTerminals((prev) => [...prev, tab]);
+      setActiveTerminalId(data.terminalId);
+      setDialogOpen(false);
+      setCwd("");
+    } finally {
+      setSpawning(false);
+    }
+  }, [selectedRunnerId, cwd, runners]);
+
+  const closeTerminal = React.useCallback((terminalId: string) => {
+    setTerminals((prev) => {
+      const next = prev.filter((t) => t.terminalId !== terminalId);
+      if (activeTerminalId === terminalId) {
+        setActiveTerminalId(next.length > 0 ? next[next.length - 1].terminalId : null);
+      }
+      return next;
+    });
+  }, [activeTerminalId]);
+
+  if (terminals.length === 0) {
+    // When used as a mobile full-screen overlay, show a proper panel instead of a tiny button
+    if (onClose) {
+      return (
+        <>
+          <div className="flex flex-col h-full bg-zinc-950">
+            {/* Mobile header */}
+            <div className="flex items-center justify-between border-b border-zinc-800 bg-zinc-900/50 px-3 py-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="gap-1.5 text-sm text-zinc-400 hover:text-zinc-100 h-9 px-2"
+                onClick={onClose}
+              >
+                <ChevronLeft className="size-4" />
+                Back
+              </Button>
+              <span className="text-sm font-medium text-zinc-300 flex items-center gap-1.5">
+                <TerminalIcon className="size-4" />
+                Terminal
+              </span>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="gap-1.5 text-sm text-zinc-400 hover:text-zinc-100 h-9 px-3"
+                onClick={() => setDialogOpen(true)}
+              >
+                <Plus className="size-4" />
+                New
+              </Button>
+            </div>
+            {/* Empty state body */}
+            <div className="flex flex-1 flex-col items-center justify-center gap-4 text-zinc-500">
+              <TerminalIcon className="size-12 opacity-30" />
+              <p className="text-sm">No terminals open</p>
+              <Button
+                variant="outline"
+                className="gap-2"
+                onClick={() => setDialogOpen(true)}
+              >
+                <Plus className="size-4" />
+                Open Terminal
+              </Button>
+            </div>
+          </div>
+
+          <NewTerminalDialog
+            open={dialogOpen}
+            onOpenChange={setDialogOpen}
+            runners={runners}
+            runnersLoading={runnersLoading}
+            selectedRunnerId={selectedRunnerId}
+            onRunnerChange={setSelectedRunnerId}
+            cwd={cwd}
+            onCwdChange={setCwd}
+            recentFolders={recentFolders}
+            spawning={spawning}
+            onSpawn={openNewTerminal}
+          />
+        </>
+      );
+    }
+
+    return (
+      <>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="gap-1.5 text-xs text-zinc-400 hover:text-zinc-100"
+          onClick={() => setDialogOpen(true)}
+        >
+          <TerminalIcon className="size-3.5" />
+          Terminal
+        </Button>
+
+        <NewTerminalDialog
+          open={dialogOpen}
+          onOpenChange={setDialogOpen}
+          runners={runners}
+          runnersLoading={runnersLoading}
+          selectedRunnerId={selectedRunnerId}
+          onRunnerChange={setSelectedRunnerId}
+          cwd={cwd}
+          onCwdChange={setCwd}
+          recentFolders={recentFolders}
+          spawning={spawning}
+          onSpawn={openNewTerminal}
+        />
+      </>
+    );
+  }
+
+  return (
+    <div className={cn("flex flex-col", className)}>
+      {/* Tab bar */}
+      <div className="flex items-center gap-1 border-b border-zinc-800 bg-zinc-900/30 px-2 py-1 overflow-x-auto">
+        {/* Mobile back button */}
+        {onClose && (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-8 shrink-0 text-zinc-500 hover:text-zinc-100 hover:bg-zinc-800 md:hidden"
+            onClick={onClose}
+            aria-label="Close terminal"
+          >
+            <ChevronLeft size={16} />
+          </Button>
+        )}
+        {terminals.map((tab) => (
+          <button
+            key={tab.terminalId}
+            onClick={() => setActiveTerminalId(tab.terminalId)}
+            className={cn(
+              "flex items-center gap-1.5 rounded px-2 py-1.5 text-xs transition-colors min-h-[36px] md:min-h-0 md:py-1",
+              activeTerminalId === tab.terminalId
+                ? "bg-zinc-800 text-zinc-100"
+                : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/50",
+            )}
+          >
+            <TerminalIcon className="size-3" />
+            <span className="max-w-[120px] truncate">{tab.label}</span>
+          </button>
+        ))}
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-8 shrink-0 text-zinc-500 hover:text-zinc-100 hover:bg-zinc-800 md:size-6"
+          onClick={() => setDialogOpen(true)}
+        >
+          <Plus size={14} className="md:hidden" />
+          <Plus size={12} className="hidden md:block" />
+        </Button>
+      </div>
+
+      {/* Terminal panels */}
+      <div className="flex-1 min-h-0 relative">
+        {terminals.map((tab) => (
+          <div
+            key={tab.terminalId}
+            className={cn(
+              "absolute inset-0",
+              activeTerminalId === tab.terminalId ? "z-10" : "z-0 invisible",
+            )}
+          >
+            <WebTerminal
+              terminalId={tab.terminalId}
+              onClose={() => closeTerminal(tab.terminalId)}
+              className="h-full rounded-none border-0"
+            />
+          </div>
+        ))}
+      </div>
+
+      <NewTerminalDialog
+        open={dialogOpen}
+        onOpenChange={setDialogOpen}
+        runners={runners}
+        runnersLoading={runnersLoading}
+        selectedRunnerId={selectedRunnerId}
+        onRunnerChange={setSelectedRunnerId}
+        cwd={cwd}
+        onCwdChange={setCwd}
+        recentFolders={recentFolders}
+        spawning={spawning}
+        onSpawn={openNewTerminal}
+      />
+    </div>
+  );
+}
+
+// ── New Terminal Dialog ───────────────────────────────────────────────────────
+
+interface NewTerminalDialogProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  runners: RunnerInfo[];
+  runnersLoading: boolean;
+  selectedRunnerId: string;
+  onRunnerChange: (id: string) => void;
+  cwd: string;
+  onCwdChange: (cwd: string) => void;
+  recentFolders: string[];
+  spawning: boolean;
+  onSpawn: () => void;
+}
+
+function NewTerminalDialog({
+  open,
+  onOpenChange,
+  runners,
+  runnersLoading,
+  selectedRunnerId,
+  onRunnerChange,
+  cwd,
+  onCwdChange,
+  recentFolders,
+  spawning,
+  onSpawn,
+}: NewTerminalDialogProps) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <TerminalIcon className="size-4" />
+            New Terminal
+          </DialogTitle>
+          <DialogDescription>
+            Open a shell on a connected runner machine.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-4 py-2">
+          <div className="space-y-2">
+            <Label>Runner</Label>
+            {runnersLoading ? (
+              <p className="text-xs text-zinc-500">Loading runners…</p>
+            ) : runners.length === 0 ? (
+              <p className="text-xs text-zinc-500">No runners connected</p>
+            ) : (
+              <Select value={selectedRunnerId} onValueChange={onRunnerChange}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select a runner" />
+                </SelectTrigger>
+                <SelectContent>
+                  {runners.map((r) => (
+                    <SelectItem key={r.runnerId} value={r.runnerId}>
+                      {r.name || r.runnerId.slice(0, 8)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+          </div>
+
+          <div className="space-y-2">
+            <Label>Working Directory (optional)</Label>
+            <Input
+              value={cwd}
+              onChange={(e) => onCwdChange(e.target.value)}
+              placeholder="e.g. /home/user/project"
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !spawning && selectedRunnerId) {
+                  e.preventDefault();
+                  onSpawn();
+                }
+              }}
+            />
+            {recentFolders.length > 0 && (
+              <div className="flex flex-wrap gap-1 mt-1">
+                {recentFolders.slice(0, 5).map((folder) => (
+                  <button
+                    key={folder}
+                    onClick={() => onCwdChange(folder)}
+                    className="rounded bg-zinc-800 px-2 py-0.5 text-[11px] text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200 transition-colors truncate max-w-[200px]"
+                  >
+                    {folder.split("/").pop() || folder}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button
+            onClick={onSpawn}
+            disabled={spawning || !selectedRunnerId || runners.length === 0}
+          >
+            {spawning ? "Opening…" : "Open Terminal"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}

@@ -1,10 +1,53 @@
 import { createAgentSession, DefaultResourceLoader } from "@mariozechner/pi-coding-agent";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { defaultAgentDir, loadConfig } from "../config.js";
-import { remoteExtension } from "../extensions/remote.js";
+import { homedir } from "node:os";
+import { defaultAgentDir, expandHome, loadConfig } from "../config.js";
+
+/**
+ * Build additional skill paths for the headless worker.
+ *
+ * ~/.pizzapi/skills/ is already discovered via agentDir, so we only need
+ * the project-local .pizzapi/skills/ plus Claude-style agents/ directories
+ * (both global and project-local) which map to pi skills.
+ */
+function buildSkillPaths(cwd: string, configSkills?: string[]): string[] {
+    const paths: string[] = [
+        join(cwd, ".pizzapi", "skills"),
+        join(homedir(), ".pizzapi", "agents"),
+        join(cwd, ".pizzapi", "agents"),
+        join(cwd, ".agents", "skills"),
+        join(cwd, ".agents", "agents"),
+    ];
+    if (Array.isArray(configSkills)) {
+        for (const p of configSkills) {
+            if (typeof p === "string" && p.trim()) {
+                paths.push(expandHome(p.trim()));
+            }
+        }
+    }
+    return paths;
+}
+
+/**
+ * Build additional prompt template paths for the headless worker.
+ *
+ * ~/.pizzapi/prompts/ is already discovered via agentDir, so we only need
+ * the project-local .pizzapi/prompts/ plus Claude-style commands/ directories
+ * (both global and project-local) which map to pi prompt templates.
+ */
+function buildPromptPaths(cwd: string): string[] {
+    return [
+        join(cwd, ".pizzapi", "prompts"),
+        join(homedir(), ".pizzapi", "commands"),
+        join(cwd, ".pizzapi", "commands"),
+        join(cwd, ".agents", "commands"),
+    ];
+}
+import { remoteExtension, forwardCliError } from "../extensions/remote.js";
 import { mcpExtension } from "../extensions/mcp-extension.js";
 import { restartExtension } from "../extensions/restart.js";
+import { setSessionNameExtension } from "../extensions/set-session-name.js";
 
 /**
  * Headless session worker.
@@ -50,7 +93,9 @@ async function main(): Promise<void> {
     const loader = new DefaultResourceLoader({
         cwd,
         agentDir,
-        extensionFactories: [remoteExtension, mcpExtension, restartExtension],
+        extensionFactories: [remoteExtension, mcpExtension, restartExtension, setSessionNameExtension],
+        additionalSkillPaths: buildSkillPaths(cwd, config.skills),
+        additionalPromptTemplatePaths: buildPromptPaths(cwd),
         ...(config.systemPrompt !== undefined && {
             systemPromptOverride: () => config.systemPrompt,
         }),
@@ -73,6 +118,33 @@ async function main(): Promise<void> {
 
     // Bind extensions in headless mode (no UI context)
     await session.bindExtensions({
+        commandContextActions: {
+            waitForIdle: () => session.agent.waitForIdle(),
+            newSession: async (options) => {
+                const success = await session.newSession(options);
+                return { cancelled: !success };
+            },
+            fork: async (entryId) => {
+                const result = await session.fork(entryId);
+                return { cancelled: result.cancelled };
+            },
+            navigateTree: async (targetId, options) => {
+                const result = await session.navigateTree(targetId, {
+                    summarize: options?.summarize,
+                    customInstructions: options?.customInstructions,
+                    replaceInstructions: options?.replaceInstructions,
+                    label: options?.label,
+                });
+                return { cancelled: result.cancelled };
+            },
+            switchSession: async (sessionPath) => {
+                const success = await session.switchSession(sessionPath);
+                return { cancelled: !success };
+            },
+            reload: async () => {
+                await session.reload();
+            },
+        },
         shutdownHandler: () => {
             try {
                 session.dispose();
@@ -83,6 +155,7 @@ async function main(): Promise<void> {
         onError: (err) => {
             console.error(`[extension] ${err.extensionPath}: ${err.error}`);
             if (err.stack) console.error(err.stack);
+            forwardCliError(err.error, err.extensionPath);
         },
     });
 

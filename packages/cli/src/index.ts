@@ -5,13 +5,37 @@ import {
     InteractiveMode,
     ModelRegistry,
 } from "@mariozechner/pi-coding-agent";
-import { existsSync, readFileSync } from "fs";
+import { existsSync } from "fs";
 import { readFile, readdir } from "fs/promises";
 import { join } from "path";
-import { defaultAgentDir, loadConfig } from "./config.js";
+import { homedir } from "os";
+import { defaultAgentDir, expandHome, loadConfig } from "./config.js";
+
+/**
+ * Build the list of additional skill paths for DefaultResourceLoader.
+ * Always includes:
+ *   - ~/.pizzapi/skills/  (global PizzaPi skills)
+ *   - <cwd>/.pizzapi/skills/  (project-local PizzaPi skills)
+ * Plus any paths declared in config.skills.
+ */
+function buildSkillPaths(cwd: string, _agentDir: string, configSkills?: string[]): string[] {
+    const paths: string[] = [
+        join(homedir(), ".pizzapi", "skills"),
+        join(cwd, ".pizzapi", "skills"),
+    ];
+    if (Array.isArray(configSkills)) {
+        for (const p of configSkills) {
+            if (typeof p === "string" && p.trim()) {
+                paths.push(expandHome(p.trim()));
+            }
+        }
+    }
+    return paths;
+}
 import { remoteExtension } from "./extensions/remote.js";
 import { mcpExtension } from "./extensions/mcp-extension.js";
 import { restartExtension } from "./extensions/restart.js";
+import { setSessionNameExtension } from "./extensions/set-session-name.js";
 import { runSetup } from "./setup.js";
 
 async function main() {
@@ -24,10 +48,23 @@ async function main() {
     }
 
     // Sub-command dispatch
+
+    // `runner` → outer supervisor (spawns daemon as a child process so that a
+    //   crash in the PTY layer only kills the child, not the supervisor).
     if (args[0] === "runner") {
+        const { runSupervisor } = await import("./runner/supervisor.js");
+        const code = await runSupervisor(args.slice(1));
+        process.exit(code);
+    }
+
+    // `_daemon` → internal entrypoint used by the supervisor subprocess.
+    //   Not intended to be called directly; the supervisor sets this arg when
+    //   it spawns the daemon child so that the daemon runs without any restart
+    //   loop of its own (restarts are the supervisor's responsibility).
+    if (args[0] === "_daemon") {
         const { runDaemon } = await import("./runner/daemon.js");
-        await runDaemon(args.slice(1));
-        return;
+        const code = await runDaemon(args.slice(1));
+        process.exit(code);
     }
 
     if (args[0] === "setup") {
@@ -288,9 +325,8 @@ async function main() {
     }
 
     if (args.includes("--version") || args.includes("-v")) {
-        const pkgPath = new URL("../package.json", import.meta.url);
-        const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
-        console.log(`pizzapi v${pkg.version}`);
+        const { default: pkg } = await import("../package.json");
+        console.log(`pizza v${pkg.version}`);
         return;
     }
 
@@ -304,9 +340,16 @@ async function main() {
         await runSetup();
     }
 
+    // Load AGENTS.md from cwd (if present)
+    const agentFiles: Array<{ path: string; content: string }> = [];
+    const agentsMdPath = join(cwd, "AGENTS.md");
+    if (existsSync(agentsMdPath)) {
+        const content = await readFile(agentsMdPath, "utf-8");
+        agentFiles.push({ path: agentsMdPath, content });
+    }
+
     // Load .agents/*.md files from cwd
     const dotAgentsDir = join(cwd, ".agents");
-    const agentFiles: Array<{ path: string; content: string }> = [];
     if (existsSync(dotAgentsDir)) {
         const files = await readdir(dotAgentsDir);
         const mdFiles = files.filter((file) => file.endsWith(".md"));
@@ -323,7 +366,8 @@ async function main() {
     const loader = new DefaultResourceLoader({
         cwd,
         agentDir,
-        extensionFactories: [remoteExtension, mcpExtension, restartExtension],
+        extensionFactories: [remoteExtension, mcpExtension, restartExtension, setSessionNameExtension],
+        additionalSkillPaths: buildSkillPaths(cwd, agentDir, config.skills),
         ...(config.systemPrompt !== undefined && {
             systemPromptOverride: () => config.systemPrompt,
         }),

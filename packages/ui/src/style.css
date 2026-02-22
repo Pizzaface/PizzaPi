@@ -176,3 +176,40 @@
     height: 100%;
   }
 }
+
+/* ── File / Edit card dialog — bottom sheet on mobile ─────────────────────── */
+@keyframes pp-sheet-open {
+  from { transform: translateY(100%); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
+@keyframes pp-sheet-close {
+  from { transform: translateY(0);    opacity: 1; }
+  to   { transform: translateY(100%); opacity: 0; }
+}
+
+@media (max-width: 639px) {
+  .pp-file-card-dialog {
+    /* Override the Radix centered-modal positioning.
+       Tailwind v4 uses the CSS `translate` property (not `transform`) for
+       translate-* utilities, so we must reset both. */
+    top: auto !important;
+    bottom: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    transform: none !important;
+    translate: none !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    max-height: 88dvh !important;
+    border-radius: 1.25rem 1.25rem 0 0 !important;
+    border-bottom: none !important;
+  }
+
+  .pp-file-card-dialog[data-state="open"] {
+    animation: pp-sheet-open 250ms cubic-bezier(0.16, 1, 0.3, 1) !important;
+  }
+
+  .pp-file-card-dialog[data-state="closed"] {
+    animation: pp-sheet-close 180ms ease-in !important;
+  }
+}

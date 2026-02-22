@@ -39,7 +39,15 @@ export async function handleWsUpgrade(
     }
 
     if (url.pathname === "/ws/runner") {
-        // Runner daemon connecting — token passed as Bearer token in Authorization header
+        // Runner daemon connecting — accepts API key (x-api-key) or legacy Bearer token
+        const apiKeyHeader = req.headers.get("x-api-key");
+        if (apiKeyHeader) {
+            const identity = await validateApiKey(req);
+            if (identity instanceof Response) return identity;
+            const upgraded = server.upgrade(req, { data: { role: "runner", userId: identity.userId, userName: identity.userName } });
+            if (upgraded) return;
+            return new Response("WebSocket upgrade failed", { status: 400 });
+        }
         const authHeader = req.headers.get("Authorization") ?? "";
         const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
         const expected = process.env.PIZZAPI_RUNNER_TOKEN;
@@ -47,6 +55,24 @@ export async function handleWsUpgrade(
             return new Response("Unauthorized", { status: 401 });
         }
         const upgraded = server.upgrade(req, { data: { role: "runner" } });
+        if (upgraded) return;
+        return new Response("WebSocket upgrade failed", { status: 400 });
+    }
+
+    if (url.pathname.startsWith("/ws/terminal/")) {
+        // Browser connecting to a terminal session — must have a valid session cookie
+        const session = await auth.api.getSession({ headers: req.headers });
+        if (!session) return new Response("Unauthorized", { status: 401 });
+        const terminalId = url.pathname.slice("/ws/terminal/".length);
+        if (!terminalId) return new Response("Missing terminal ID", { status: 400 });
+        const upgraded = server.upgrade(req, {
+            data: {
+                role: "terminal" as const,
+                terminalId,
+                userId: session.user.id,
+                userName: session.user.name,
+            },
+        });
         if (upgraded) return;
         return new Response("WebSocket upgrade failed", { status: 400 });
     }
