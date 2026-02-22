@@ -170,6 +170,12 @@ interface ResumeSessionOption {
   firstMessage?: string;
 }
 
+export interface TodoItem {
+  id: number;
+  text: string;
+  status: "pending" | "in_progress" | "done" | "cancelled";
+}
+
 interface SessionUiCacheEntry {
   messages: RelayMessage[];
   activeModel: ConfiguredModelInfo | null;
@@ -180,6 +186,7 @@ interface SessionUiCacheEntry {
   effortLevel: string | null;
   tokenUsage: TokenUsageInfo | null;
   lastHeartbeatAt: number | null;
+  todoList: TodoItem[];
 }
 
 function normalizeModel(raw: unknown): ConfiguredModelInfo | null {
@@ -279,6 +286,7 @@ export function App() {
   const [tokenUsage, setTokenUsage] = React.useState<TokenUsageInfo | null>(null);
   const [lastHeartbeatAt, setLastHeartbeatAt] = React.useState<number | null>(null);
   const [providerUsage, setProviderUsage] = React.useState<ProviderUsageMap | null>(null);
+  const [todoList, setTodoList] = React.useState<TodoItem[]>([]);
 
   // Sequence tracking for gap detection
   const lastSeqRef = React.useRef<number | null>(null);
@@ -398,6 +406,7 @@ export function App() {
       effortLevel: prev?.effortLevel ?? null,
       tokenUsage: prev?.tokenUsage ?? null,
       lastHeartbeatAt: prev?.lastHeartbeatAt ?? null,
+      todoList: prev?.todoList ?? [],
       ...patch,
     };
 
@@ -627,6 +636,28 @@ export function App() {
         cachePatch.sessionName = nextName;
       }
 
+      if (Array.isArray((hb as any).todoList)) {
+        const todos = (hb as any).todoList as TodoItem[];
+        setTodoList(todos);
+        cachePatch.todoList = todos;
+      }
+
+      // Restore pending AskUserQuestion state when reconnecting to a session.
+      if (Object.prototype.hasOwnProperty.call(hb, "pendingQuestion")) {
+        const pq = (hb as any).pendingQuestion as { toolCallId: string; question: string; options?: string[] } | null;
+        if (pq && typeof pq.question === "string" && pq.question.trim()) {
+          setPendingQuestion({
+            toolCallId: typeof pq.toolCallId === "string" ? pq.toolCallId : "ask-user-question",
+            question: pq.question.trim(),
+            options: Array.isArray(pq.options) ? (pq.options as unknown[]).filter((o): o is string => typeof o === "string") : undefined,
+          });
+          setViewerStatus("Waiting for answer…");
+        } else {
+          // Heartbeat explicitly says no pending question; clear any stale state.
+          setPendingQuestion(null);
+        }
+      }
+
       // Heartbeats also carry the current model; keep activeModel in sync.
       if (hb.model) {
         const m = normalizeModel(hb.model);
@@ -637,6 +668,13 @@ export function App() {
       }
 
       patchSessionCache(cachePatch);
+      return;
+    }
+
+    if (type === "todo_update") {
+      const todos = Array.isArray(evt.todos) ? (evt.todos as TodoItem[]) : [];
+      setTodoList(todos);
+      patchSessionCache({ todoList: todos });
       return;
     }
 
@@ -689,12 +727,17 @@ export function App() {
       const thinkingLevel = typeof state?.thinkingLevel === "string" ? state.thinkingLevel : null;
       setEffortLevel(thinkingLevel);
 
+      // Extract todoList from session snapshot
+      const stateTodos = Array.isArray(state?.todoList) ? (state.todoList as TodoItem[]) : [];
+      setTodoList(stateTodos);
+
       patchSessionCache({
         messages: normalizedMessages,
         activeModel: stateModel,
         ...(hasSessionName ? { sessionName: nextSessionName } : {}),
         availableModels: stateModels,
         effortLevel: thinkingLevel,
+        todoList: stateTodos,
       });
       return;
     }
@@ -1057,6 +1100,7 @@ export function App() {
     setEffortLevel(cached?.effortLevel ?? null);
     setTokenUsage(cached?.tokenUsage ?? null);
     setLastHeartbeatAt(cached?.lastHeartbeatAt ?? null);
+    setTodoList(cached?.todoList ?? []);
 
     const ws = new WebSocket(`${getRelayWsBase()}/ws/sessions/${relaySessionId}`);
     viewerWsRef.current = ws;
@@ -1487,8 +1531,8 @@ export function App() {
 
   if (isPending) {
     return (
-      <div className="flex h-screen w-screen items-center justify-center bg-background">
-        <span className="text-muted-foreground text-sm">Loading…</span>
+      <div className="flex h-[100dvh] w-full flex-col items-center justify-center bg-background gap-2 animate-in fade-in duration-300">
+        <Spinner className="size-8 text-primary/60" />
       </div>
     );
   }
@@ -1860,6 +1904,7 @@ export function App() {
                 onClearMessageQueue={clearMessageQueue}
                 onToggleTerminal={() => setShowTerminal((v) => !v)}
                 showTerminalButton
+                todoList={todoList}
               />
             )}
           </div>

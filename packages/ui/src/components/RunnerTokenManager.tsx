@@ -5,6 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Copy, Check, Shield, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Skeleton } from "@/components/ui/skeleton";
 
 interface ApiKey {
   id: string;
@@ -152,7 +153,10 @@ bun run dev:runner`}
         {error && <p className="text-sm text-destructive">{error}</p>}
 
         {loading ? (
-          <p className="text-sm text-muted-foreground">Loading…</p>
+          <div className="flex flex-col gap-2">
+            <Skeleton className="h-10 w-full" />
+            <Skeleton className="h-10 w-full" />
+          </div>
         ) : keys.length === 0 ? (
           <p className="text-sm text-muted-foreground italic">No runner tokens yet.</p>
         ) : (

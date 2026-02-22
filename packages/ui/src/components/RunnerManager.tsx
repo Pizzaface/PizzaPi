@@ -15,6 +15,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { SkillsManager, type SkillInfo } from "@/components/SkillsManager";
+import { Skeleton } from "@/components/ui/skeleton";
 
 interface RunnerInfo {
     runnerId: string;
@@ -199,9 +200,38 @@ export function RunnerManager({ onOpenSession }: RunnerManagerProps) {
 
     if (loading && runners.length === 0) {
         return (
-            <div className="flex flex-col items-center justify-center h-full p-8 text-muted-foreground gap-3">
-                <Loader2 className="h-6 w-6 animate-spin opacity-50" />
-                <span className="text-sm">Loading runners…</span>
+            <div className="flex flex-col gap-6 p-6 max-w-4xl mx-auto w-full animate-in fade-in duration-700">
+                <div className="flex items-start justify-between">
+                    <div className="space-y-2">
+                        <Skeleton className="h-8 w-32 rounded-md" />
+                        <Skeleton className="h-4 w-64 rounded-md" />
+                    </div>
+                    <Skeleton className="h-8 w-24 rounded-md" />
+                </div>
+                <div className="flex flex-col gap-4">
+                    {[1, 2].map((i) => (
+                        <div key={i} className="rounded-xl border border-border/40 bg-card p-4 space-y-4">
+                            <div className="flex items-start justify-between gap-3">
+                                <div className="flex items-center gap-3">
+                                    <Skeleton className="h-2 w-2 rounded-full" />
+                                    <div className="space-y-1.5">
+                                        <Skeleton className="h-4 w-32 rounded-md" />
+                                        <Skeleton className="h-3 w-48 rounded-md" />
+                                    </div>
+                                </div>
+                                <div className="flex gap-1.5">
+                                    <Skeleton className="h-7 w-24 rounded-md" />
+                                    <Skeleton className="h-7 w-20 rounded-md" />
+                                </div>
+                            </div>
+                            <div className="border-t border-border/40" />
+                            <div className="flex gap-6">
+                                <Skeleton className="h-4 w-24 rounded-md" />
+                                <Skeleton className="h-4 w-24 rounded-md" />
+                            </div>
+                        </div>
+                    ))}
+                </div>
             </div>
         );
     }

@@ -7,6 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Copy, Trash2, Plus, KeyRound, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Skeleton } from "@/components/ui/skeleton";
 
 interface ApiKey {
     id: string;
@@ -163,7 +164,11 @@ export function ApiKeyManager() {
 
                 {/* Key list */}
                 {loading ? (
-                    <p className="text-sm text-muted-foreground">Loading…</p>
+                    <div className="flex flex-col gap-2">
+                        <Skeleton className="h-10 w-full" />
+                        <Skeleton className="h-10 w-full" />
+                        <Skeleton className="h-10 w-full" />
+                    </div>
                 ) : keys.length === 0 ? (
                     <p className="text-sm text-muted-foreground italic">No API keys yet.</p>
                 ) : (

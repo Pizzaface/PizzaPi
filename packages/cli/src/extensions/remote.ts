@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { AuthStorage, buildSessionContext, SessionManager, type ExtensionContext, type ExtensionFactory, type SessionInfo } from "@mariozechner/pi-coding-agent";
 import { loadConfig, defaultAgentDir } from "../config.js";
 import { getMcpBridge } from "./mcp-bridge.js";
+import { getCurrentTodoList, setTodoUpdateCallback, type TodoItem } from "./update-todo.js";
 import type { RemoteExecRequest, RemoteExecResponse } from "./remote-commands.js";
 
 interface RelayState {
@@ -421,6 +422,12 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         forwardEvent({ type: "cli_error", message, source: source ?? null, ts: Date.now() });
     };
 
+    // Wire up todo update callback so the web UI gets live updates when the model
+    // calls the `update_todo` tool.
+    setTodoUpdateCallback((list: TodoItem[]) => {
+        forwardEvent({ type: "todo_update", todos: list, ts: Date.now() });
+    });
+
     function send(payload: unknown) {
         if (!relay || relay.ws.readyState !== WebSocket.OPEN) return;
         relay.ws.send(JSON.stringify(payload));
@@ -589,6 +596,14 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             uptime: sessionStartedAt !== null ? Date.now() - sessionStartedAt : null,
             ts: Date.now(),
             providerUsage: buildProviderUsage(),
+            todoList: getCurrentTodoList(),
+            pendingQuestion: pendingAskUserQuestion
+                ? {
+                      toolCallId: pendingAskUserQuestion.toolCallId,
+                      question: pendingAskUserQuestion.question,
+                      options: pendingAskUserQuestion.options,
+                  }
+                : null,
         };
     }
 
@@ -663,6 +678,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             sessionName: getCurrentSessionName(latestCtx),
             cwd: latestCtx.cwd,
             availableModels: getConfiguredModels(latestCtx),
+            todoList: getCurrentTodoList(),
         };
     }
 

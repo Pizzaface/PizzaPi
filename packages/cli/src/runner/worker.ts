@@ -48,6 +48,7 @@ import { remoteExtension, forwardCliError } from "../extensions/remote.js";
 import { mcpExtension } from "../extensions/mcp-extension.js";
 import { restartExtension } from "../extensions/restart.js";
 import { setSessionNameExtension } from "../extensions/set-session-name.js";
+import { updateTodoExtension } from "../extensions/update-todo.js";
 
 /**
  * Headless session worker.
@@ -93,7 +94,7 @@ async function main(): Promise<void> {
     const loader = new DefaultResourceLoader({
         cwd,
         agentDir,
-        extensionFactories: [remoteExtension, mcpExtension, restartExtension, setSessionNameExtension],
+        extensionFactories: [remoteExtension, mcpExtension, restartExtension, setSessionNameExtension, updateTodoExtension],
         additionalSkillPaths: buildSkillPaths(cwd, config.skills),
         additionalPromptTemplatePaths: buildPromptPaths(cwd),
         ...(config.systemPrompt !== undefined && {

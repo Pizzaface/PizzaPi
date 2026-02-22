@@ -54,9 +54,15 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { formatPathTail } from "@/lib/path";
 import { ProviderIcon } from "@/components/ProviderIcon";
-import { ArrowDownIcon, ChevronsUpDown, MessageSquare, OctagonX, PaperclipIcon, Plus, Zap, Clock, X, Trash2, TerminalIcon, DownloadIcon } from "lucide-react";
+import { ArrowDownIcon, CheckCircle2, ChevronsUpDown, Circle, CircleDashed, MessageSquare, OctagonX, PaperclipIcon, Plus, Zap, Clock, X, Trash2, TerminalIcon, DownloadIcon, XCircle } from "lucide-react";
 
 export type { RelayMessage } from "@/components/session-viewer/types";
+
+export interface TodoItem {
+  id: number;
+  text: string;
+  status: "pending" | "in_progress" | "done" | "cancelled";
+}
 
 export interface TokenUsage {
   input: number;
@@ -116,6 +122,8 @@ export interface SessionViewerProps {
   onToggleTerminal?: () => void;
   /** Whether to show the terminal button */
   showTerminalButton?: boolean;
+  /** Current agent todo list */
+  todoList?: TodoItem[];
 }
 
 function formatTokenCount(n: number): string {
@@ -348,7 +356,7 @@ function SessionSkeleton() {
   );
 }
 
-export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, messageQueue, onRemoveQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton }: SessionViewerProps) {
+export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, messageQueue, onRemoveQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, todoList = [] }: SessionViewerProps) {
   const [input, setInput] = React.useState("");
   const [composerError, setComposerError] = React.useState<string | null>(null);
   const [showClearDialog, setShowClearDialog] = React.useState(false);
