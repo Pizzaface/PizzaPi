@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, execSync, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -73,12 +73,15 @@ function acquireStateAndIdentity(statePath: string): { runnerId: string; runnerS
 
             // Check whether another live daemon holds the lock.
             const pid = typeof existing.pid === "number" ? existing.pid : NaN;
-            if (Number.isFinite(pid) && pid > 0 && isPidRunning(pid)) {
-                console.error(`❌ pizzapi runner already running (pid ${pid}, state: ${statePath}).`);
-                console.error("   Stop the existing runner process or delete the file if it is stale.");
-                process.exit(1);
+            if (Number.isFinite(pid) && pid > 0) {
+                if (isPidRunning(pid)) {
+                    console.error(`❌ pizzapi runner already running (pid ${pid}, state: ${statePath}).`);
+                    console.error("   Stop the existing runner process first, e.g.: kill ${pid}");
+                    process.exit(1);
+                }
+                // PID is gone or belongs to an unrelated process — stale lock.
+                console.log(`pizzapi runner: clearing stale lock (pid ${pid} is no longer a runner process)`);
             }
-            // PID is gone — stale lock, fall through and overwrite.
         }
 
         // Write the new lock (preserving identity if already present).
@@ -873,12 +876,38 @@ function isPidRunning(pid: number): boolean {
     if (!Number.isFinite(pid) || pid <= 0) return false;
     try {
         process.kill(pid, 0);
-        return true;
     } catch (err: any) {
         // ESRCH = process does not exist. EPERM = exists but no permission.
         if (err?.code === "ESRCH") return false;
-        return true;
+        // EPERM means the process exists but we can't signal it — treat as alive
+        // but fall through to the command-line check below.
     }
+
+    // The PID is alive, but it may have been reused by an unrelated process.
+    // Verify the command line contains a pizzapi / runner signature.
+    try {
+        const cmd = execSync(`ps -p ${pid} -o command=`, { encoding: "utf-8", timeout: 3000 }).trim();
+        // Match against known runner process patterns:
+        //   - "bun ... runner"          (dev: bun packages/cli/src/index.ts runner)
+        //   - "bun ... daemon.ts"       (dev: direct daemon run)
+        //   - "bun ... _daemon"         (supervisor-spawned child)
+        //   - "pizzapi ... runner"      (production CLI)
+        //   - "node ... runner"         (unlikely but possible)
+        const isRunner =
+            /\brunner\b/.test(cmd) ||
+            /\bdaemon\b/.test(cmd) ||
+            /\bpizzapi\b/.test(cmd) ||
+            /\b_daemon\b/.test(cmd);
+        if (!isRunner) {
+            // PID exists but belongs to an unrelated process — stale lock.
+            return false;
+        }
+    } catch {
+        // If we can't check the command (e.g. ps not available), fall back to
+        // assuming the process is the runner (safe default — avoids double-start).
+    }
+
+    return true;
 }
 
 function parseRoots(raw: string): string[] {
