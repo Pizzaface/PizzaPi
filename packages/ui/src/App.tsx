@@ -1483,7 +1483,10 @@ export function App() {
         const partial = assistantEvent.partial as Record<string, unknown>;
         const raw = augmentThinkingDurations({ ...partial, timestamp: undefined }, thinkingDurationsRef.current);
         if (isStreamingDelta) {
-          if (deltaType === "text_delta") pulseStreamingHaptic();
+          if (deltaType === "text_delta") {
+            const delta = typeof assistantEvent.delta === "string" ? assistantEvent.delta : undefined;
+            pulseStreamingHaptic(delta);
+          }
           upsertMessageDebounced(raw, "message-update-partial");
         } else {
           upsertMessage(raw, "message-update-partial");

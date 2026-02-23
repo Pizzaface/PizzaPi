@@ -1,9 +1,9 @@
 /**
  * Haptic feedback for streaming text.
  *
- * Fires a very short vibration pulse as text deltas arrive, throttled so
- * the motor isn't hammered on every token. The effect is a gentle "purr"
- * while the agent is typing.
+ * Fires a vibration pulse whose duration scales with the length of each
+ * text chunk — short words get a light tap, longer chunks get a meatier
+ * buzz. Throttled so the motor isn't hammered on every token.
  *
  * Only works on devices/browsers that support the Vibration API (Android
  * Chrome, etc.). iOS Safari ignores `navigator.vibrate()` silently.
@@ -44,18 +44,38 @@ export function supportsHaptics(): boolean {
 // --- Throttled stream pulse ---
 
 /** Minimum ms between vibration pulses while streaming */
-const THROTTLE_MS = 80;
+const THROTTLE_MS = 60;
 
-/** Duration of each vibration pulse in ms */
-const PULSE_MS = 8;
+/** Vibration duration range in ms */
+const MIN_PULSE_MS = 4;
+const MAX_PULSE_MS = 25;
+
+/** Text length range that maps to pulse duration */
+const SHORT_TEXT = 1;
+const LONG_TEXT = 30;
 
 let lastPulseAt = 0;
 
 /**
- * Call on every `text_delta` event. Fires a micro-vibration at most once
+ * Map a text delta length to a vibration duration.
+ *
+ *  - 1 char  →  4ms  (tiny tap)
+ *  - 5 chars →  ~8ms (light tap)
+ *  - 15 chars → ~15ms (medium buzz)
+ *  - 30+ chars → 25ms (full pulse)
+ */
+function pulseDuration(textLength: number): number {
+  const clamped = Math.max(SHORT_TEXT, Math.min(textLength, LONG_TEXT));
+  const t = (clamped - SHORT_TEXT) / (LONG_TEXT - SHORT_TEXT);
+  return Math.round(MIN_PULSE_MS + t * (MAX_PULSE_MS - MIN_PULSE_MS));
+}
+
+/**
+ * Call on every `text_delta` event with the delta text. Fires a
+ * micro-vibration scaled to the chunk length, throttled to at most once
  * per {@link THROTTLE_MS} ms.
  */
-export function pulseStreamingHaptic(): void {
+export function pulseStreamingHaptic(delta?: string): void {
   if (!readPref()) return;
   if (typeof navigator === "undefined" || typeof navigator.vibrate !== "function") return;
 
@@ -63,7 +83,8 @@ export function pulseStreamingHaptic(): void {
   if (now - lastPulseAt < THROTTLE_MS) return;
   lastPulseAt = now;
 
-  navigator.vibrate(PULSE_MS);
+  const len = delta ? delta.length : 1;
+  navigator.vibrate(pulseDuration(len));
 }
 
 /** Stop any ongoing vibration (e.g. when streaming ends). */
