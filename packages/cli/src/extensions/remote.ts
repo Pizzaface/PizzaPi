@@ -8,6 +8,7 @@ import { loadConfig, defaultAgentDir } from "../config.js";
 import { getMcpBridge } from "./mcp-bridge.js";
 import { getCurrentTodoList, setTodoUpdateCallback, type TodoItem } from "./update-todo.js";
 import type { RemoteExecRequest, RemoteExecResponse } from "./remote-commands.js";
+import { messageBus } from "./session-message-bus.js";
 
 interface RelayState {
     ws: WebSocket;
@@ -1454,6 +1455,20 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 };
                 setRelayStatus("Connected to Relay");
 
+                // Wire up the inter-session message bus now that we have a relay connection.
+                messageBus.setOwnSessionId(relaySessionId);
+                messageBus.setSendFn((targetSessionId: string, message: string) => {
+                    if (!relay || relay.ws.readyState !== WebSocket.OPEN) return false;
+                    relay.ws.send(JSON.stringify({
+                        type: "session_message",
+                        sessionId: relay.sessionId,
+                        token: relay.token,
+                        targetSessionId,
+                        message,
+                    }));
+                    return true;
+                });
+
                 forwardEvent({ type: "session_active", state: buildSessionState() });
                 void refreshAllUsage();
                 startHeartbeat();
@@ -1517,6 +1532,21 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                         typeof inputMsg.modelId === "string"
                     ) {
                         void setModelFromWeb(inputMsg.provider, inputMsg.modelId);
+                        return;
+                    }
+
+                    // Inter-session messaging: another agent sent us a message.
+                    if (
+                        inputMsg.type === "session_message" &&
+                        typeof inputMsg.fromSessionId === "string" &&
+                        typeof inputMsg.message === "string"
+                    ) {
+                        messageBus.receive({
+                            fromSessionId: inputMsg.fromSessionId,
+                            message: inputMsg.message,
+                            ts: typeof inputMsg.ts === "string" ? inputMsg.ts : new Date().toISOString(),
+                        });
+                        return;
                     }
                 };
             }
@@ -1541,6 +1571,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             reconnectTimer = null;
         }
         cancelPendingAskUserQuestion();
+        messageBus.setSendFn(null);
         if (relay) {
             send({ type: "session_end", sessionId: relay.sessionId, token: relay.token });
             relay.ws.close();

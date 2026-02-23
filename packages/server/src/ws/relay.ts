@@ -341,6 +341,46 @@ function handleTuiMessage(ws: ServerWebSocket<WsData>, msg: Record<string, unkno
         return;
     }
 
+    // ── Inter-session messaging ──────────────────────────────────────────────
+    if (msg.type === "session_message") {
+        // Validate sender token
+        if (!ws.data.sessionId || msg.token !== ws.data.token) {
+            ws.send(JSON.stringify({ type: "error", message: "Invalid token" }));
+            return;
+        }
+        const targetSessionId = typeof msg.targetSessionId === "string" ? msg.targetSessionId : "";
+        const messageText = typeof msg.message === "string" ? msg.message : "";
+        if (!targetSessionId || !messageText) {
+            ws.send(JSON.stringify({ type: "error", message: "session_message requires targetSessionId and message" }));
+            return;
+        }
+        const targetSession = getSharedSession(targetSessionId);
+        if (!targetSession) {
+            ws.send(JSON.stringify({
+                type: "session_message_error",
+                targetSessionId,
+                error: "Target session not found or not connected",
+            }));
+            return;
+        }
+        // Forward the message to the target session's TUI WebSocket.
+        try {
+            targetSession.tuiWs.send(JSON.stringify({
+                type: "session_message",
+                fromSessionId: ws.data.sessionId,
+                message: messageText,
+                ts: new Date().toISOString(),
+            }));
+        } catch {
+            ws.send(JSON.stringify({
+                type: "session_message_error",
+                targetSessionId,
+                error: "Failed to deliver message to target session",
+            }));
+        }
+        return;
+    }
+
     if (msg.type === "event" || msg.type === "session_end") {
         // Validate token
         if (!ws.data.sessionId || msg.token !== ws.data.token) {
