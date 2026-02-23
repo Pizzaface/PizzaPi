@@ -491,7 +491,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
             </Dialog>
 
             {/* Sidebar header */}
-            <div className="flex items-center justify-between px-3 py-2 border-b border-sidebar-border flex-shrink-0" style={{ paddingTop: "max(0.5rem, env(safe-area-inset-top))" }}>
+            <div className="flex items-center justify-between px-3 py-2 border-b border-sidebar-border flex-shrink-0">
                 <div className="flex items-center gap-2">
                     {/* Desktop: collapse button */}
                     <Button

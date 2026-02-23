@@ -1972,7 +1972,7 @@ export function App() {
 
       {/* ── Mobile header ─────────────────────────────────────────────── */}
       {/* Fixed so the keyboard sliding up never pushes the header off-screen */}
-      <header className={cn("md:hidden fixed top-0 left-0 right-0 z-50 flex items-center justify-between gap-2 border-b bg-background px-3 pp-safe-left pp-safe-right transition-opacity duration-200", sidebarOpen && "opacity-0 pointer-events-none")}
+      <header className="md:hidden fixed top-0 left-0 right-0 z-50 flex items-center justify-between gap-2 border-b bg-background px-3 pp-safe-left pp-safe-right"
         style={{ paddingTop: "calc(0.5rem + env(safe-area-inset-top))", paddingBottom: "0.5rem" }}
       >
         {/* Left: sidebar toggle */}
