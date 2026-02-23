@@ -154,8 +154,20 @@ export const SessionSidebar = React.memo(function SessionSidebar({
         isVertical: boolean; // true once we've committed to vertical scroll
         didSwipe: boolean; // true if any significant horizontal movement happened
     } | null>(null);
-    // Flag to suppress the click that fires after a swipe pointerUp
+    // Flag to suppress the click that fires after a swipe/long-press pointerUp
     const suppressClickRef = React.useRef(false);
+    // Long-press timer: fires the confirmation dialog if the user holds for 500ms
+    const longPressTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    const clearLongPress = React.useCallback(() => {
+        if (longPressTimerRef.current) {
+            clearTimeout(longPressTimerRef.current);
+            longPressTimerRef.current = null;
+        }
+    }, []);
+
+    // Cleanup long-press timer on unmount
+    React.useEffect(() => () => { clearLongPress(); }, [clearLongPress]);
 
     const handleSessionPointerDown = React.useCallback((e: React.PointerEvent, sessionId: string) => {
         // Only track primary button (left-click / single touch)
@@ -172,7 +184,21 @@ export const SessionSidebar = React.memo(function SessionSidebar({
         };
         // Capture the pointer so we get move/up even if the cursor leaves the element
         (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-    }, []);
+
+        // Start long-press timer — show confirmation after 500ms of holding
+        clearLongPress();
+        longPressTimerRef.current = setTimeout(() => {
+            longPressTimerRef.current = null;
+            // Only fire if the user hasn't started swiping or scrolling
+            const s = swipeRef.current;
+            if (s && !s.locked && !s.isVertical && !s.didSwipe) {
+                s.didSwipe = true; // prevent the click from firing
+                suppressClickRef.current = true;
+                requestAnimationFrame(() => { suppressClickRef.current = false; });
+                setConfirmEndSessionId(sessionId);
+            }
+        }, 500);
+    }, [clearLongPress]);
 
     const handleSessionPointerMove = React.useCallback((e: React.PointerEvent) => {
         const s = swipeRef.current;
@@ -180,6 +206,11 @@ export const SessionSidebar = React.memo(function SessionSidebar({
         s.curX = e.clientX;
         const dx = e.clientX - s.startX;
         const dy = e.clientY - s.startY;
+
+        // Any significant movement cancels the long-press timer
+        if (Math.abs(dx) > 5 || Math.abs(dy) > 5) {
+            clearLongPress();
+        }
 
         // Determine direction lock on first significant movement
         if (!s.locked && !s.isVertical) {
@@ -211,9 +242,10 @@ export const SessionSidebar = React.memo(function SessionSidebar({
             next.set(s.sessionId, clamped);
             return next;
         });
-    }, [revealedSessionId, REVEAL_WIDTH]);
+    }, [revealedSessionId, REVEAL_WIDTH, clearLongPress]);
 
     const handleSessionPointerUp = React.useCallback((e: React.PointerEvent) => {
+        clearLongPress();
         const s = swipeRef.current;
         if (!s || e.pointerId !== s.pointerId) return;
         const didSwipe = s.didSwipe;
@@ -250,7 +282,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
             });
             if (wasRevealed) setRevealedSessionId(null);
         }
-    }, [revealedSessionId, swipeOffsets, REVEAL_WIDTH]);
+    }, [revealedSessionId, swipeOffsets, REVEAL_WIDTH, clearLongPress]);
 
     // Close revealed item when clicking elsewhere
     const handleCloseRevealed = React.useCallback(() => {
@@ -612,6 +644,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                 onPointerDown={(e) => handleSessionPointerDown(e, s.sessionId)}
                                                 onPointerMove={handleSessionPointerMove}
                                                 onPointerUp={handleSessionPointerUp}
+                                                onContextMenu={(e) => e.preventDefault()}
                                                 className={cn(
                                                     "relative flex items-center gap-2.5 w-full min-w-0 px-2.5 py-3 md:py-2.5 rounded-lg text-left",
                                                     !hasOffset && "transition-transform duration-200 ease-out",
