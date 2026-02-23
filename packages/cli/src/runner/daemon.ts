@@ -13,6 +13,8 @@ import {
 } from "./terminal.js";
 import { join, dirname, relative, basename } from "node:path";
 import { fileURLToPath } from "node:url";
+import { io, type Socket } from "socket.io-client";
+import type { RunnerClientToServerEvents, RunnerServerToClientEvents } from "@pizzapi/protocol";
 
 interface RunnerSession {
     sessionId: string;
@@ -520,7 +522,45 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
 
     return new Promise((resolve) => {
         let isShuttingDown = false;
-        let ws: WebSocket | null = null;
+
+        // ── Socket.IO connection setup ────────────────────────────────────
+        const relayRaw = (process.env.PIZZAPI_RELAY_URL ?? "ws://localhost:3001")
+            .trim()
+            .replace(/\/$/, "");
+
+        // Convert ws(s):// → http(s):// for socket.io-client
+        const sioUrl = relayRaw
+            .replace(/^ws:\/\//, "http://")
+            .replace(/^wss:\/\//, "https://")
+            .replace(/^http:\/\//, "http://")
+            .replace(/^https:\/\//, "https://");
+
+        // Socket.IO runs on PORT+1 relative to the relay
+        const urlObj = new URL(sioUrl);
+        urlObj.port = String(
+            parseInt(urlObj.port || (urlObj.protocol === "https:" ? "443" : "80")) + 1,
+        );
+
+        const runningSessions = new Map<string, RunnerSession>();
+        const runnerName = process.env.PIZZAPI_RUNNER_NAME?.trim() || hostname();
+        let runnerId: string | null = null;
+
+        const socket: Socket<RunnerServerToClientEvents, RunnerClientToServerEvents> = io(
+            urlObj.origin + "/runner",
+            {
+                auth: {
+                    apiKey,
+                    runnerId: identity.runnerId,
+                    runnerSecret: identity.runnerSecret,
+                },
+                transports: ["websocket"],
+                reconnection: true,
+                reconnectionDelay: 1000,
+                reconnectionDelayMax: 30000,
+            },
+        );
+
+        console.log(`pizzapi runner: connecting to relay at ${urlObj.origin}/runner…`);
 
         const shutdown = (code: number) => {
             if (isShuttingDown) return;
@@ -528,531 +568,566 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             killAllTerminals();
             stopUsageRefreshLoop();
             releaseStateLock(statePath);
-            if (ws) {
-                ws.onclose = null;
-                ws.onerror = null;
-                ws.close();
-            }
+            socket.disconnect();
             resolve(code);
         };
 
         process.on("SIGINT", () => shutdown(0));
         process.on("SIGTERM", () => shutdown(0));
 
-        const relayBase = (process.env.PIZZAPI_RELAY_URL ?? "ws://localhost:3001")
-            .trim()
-            .replace(/\/$/, "")
-            .replace(/^http:\/\//, "ws://")
-            .replace(/^https:\/\//, "wss://");
-        const wsUrl = `${relayBase}/ws/runner`;
+        // ── Helper: emit registration ─────────────────────────────────────
+        const emitRegister = () => {
+            const skills = scanGlobalSkills();
+            socket.emit("register_runner", {
+                runnerId: identity.runnerId,
+                runnerSecret: identity.runnerSecret,
+                name: runnerName,
+                roots: getWorkspaceRoots(),
+                skills,
+            });
+        };
 
-        const runningSessions = new Map<string, RunnerSession>();
-        const runnerName = process.env.PIZZAPI_RUNNER_NAME?.trim() || hostname();
+        // ── Connection lifecycle ──────────────────────────────────────────
 
-        // Exponential backoff state (shared across connect() calls so it persists).
-        const RECONNECT_BASE = 1_000;   // 1 s
-        const RECONNECT_MAX  = 60_000;  // 60 s
-        let reconnectDelay = RECONNECT_BASE;
+        socket.on("connect", () => {
+            if (isShuttingDown) {
+                socket.disconnect();
+                return;
+            }
+            console.log(`pizzapi runner: connected. Registering as ${identity.runnerId}…`);
+            emitRegister();
+        });
 
-        console.log(`pizzapi runner: connecting to relay at ${wsUrl}…`);
-        connect();
+        socket.io.on("reconnect", () => {
+            console.log("pizzapi runner: reconnected. Re-registering…");
+            emitRegister();
+        });
 
-        function connect() {
+        socket.on("disconnect", (reason) => {
             if (isShuttingDown) return;
+            console.log(`pizzapi runner: disconnected (${reason}). Socket.IO will reconnect automatically.`);
+        });
 
-            ws = new WebSocket(wsUrl, {
-                headers: {
-                    ...(apiKey ? { "x-api-key": apiKey } : { Authorization: `Bearer ${token}` }),
-                },
-            } as any);
-            let runnerId: string | null = null;
+        // ── Registration confirmation ─────────────────────────────────────
 
-            ws.onopen = () => {
-                if (isShuttingDown) {
-                    ws?.close();
-                    return;
-                }
-                console.log(`pizzapi runner: connected. Registering as ${identity.runnerId}…`);
-                const skills = scanGlobalSkills();
-                ws?.send(
-                    JSON.stringify({
-                        type: "register_runner",
-                        runnerId: identity.runnerId,
-                        runnerSecret: identity.runnerSecret,
-                        name: runnerName,
-                        roots: getWorkspaceRoots(),
-                        skills,
-                    }),
+        socket.on("runner_registered", (data) => {
+            runnerId = data.runnerId;
+            if (runnerId !== identity.runnerId) {
+                console.warn(
+                    `pizzapi runner: server assigned unexpected ID ${runnerId} (expected ${identity.runnerId})`,
                 );
-                // Reset backoff on successful connection.
-                reconnectDelay = RECONNECT_BASE;
-            };
+            }
+            console.log(`pizzapi runner: registered as ${runnerId}`);
+        });
 
-            ws.onmessage = async (evt) => {
-                if (isShuttingDown) return;
-                let msg: Record<string, unknown>;
+        // ── Session management ────────────────────────────────────────────
+
+        socket.on("new_session", (data) => {
+            if (isShuttingDown) return;
+            const { sessionId, cwd: requestedCwd, prompt: requestedPrompt, model: requestedModel } = data;
+
+            if (!sessionId) {
+                socket.emit("session_error", { sessionId: sessionId ?? "", message: "Missing sessionId" });
+                return;
+            }
+
+            // The worker uses the runner's API key to register with /ws/sessions.
+            if (!apiKey) {
+                socket.emit("session_error", { sessionId, message: "Runner is missing PIZZAPI_API_KEY" });
+                return;
+            }
+
+            let isFirstSpawn = true;
+            const doSpawn = () => {
                 try {
-                    msg = JSON.parse(evt.data as string);
-                } catch {
-                    return;
+                    // Only pass initial prompt/model on the first spawn.
+                    // On restart (exit code 43), the session already has
+                    // the prompt in its history — re-sending would duplicate it.
+                    const spawnOpts = isFirstSpawn
+                        ? { prompt: requestedPrompt, model: requestedModel }
+                        : undefined;
+                    isFirstSpawn = false;
+                    spawnSession(sessionId, apiKey!, requestedCwd, runningSessions, doSpawn, spawnOpts);
+                    socket.emit("session_ready", { sessionId });
+                } catch (err) {
+                    socket.emit("session_error", {
+                        sessionId,
+                        message: err instanceof Error ? err.message : String(err),
+                    });
                 }
+            };
+            doSpawn();
+        });
 
-                switch (msg.type) {
-                    case "runner_registered": {
-                        runnerId = msg.runnerId as string;
-                        if (runnerId !== identity.runnerId) {
-                            console.warn(`pizzapi runner: server assigned unexpected ID ${runnerId} (expected ${identity.runnerId})`);
-                        }
-                        console.log(`pizzapi runner: registered as ${runnerId}`);
-                        break;
+        socket.on("kill_session", (data) => {
+            if (isShuttingDown) return;
+            const { sessionId } = data;
+            const entry = runningSessions.get(sessionId);
+            if (entry) {
+                try {
+                    entry.child.kill("SIGTERM");
+                } catch {}
+                runningSessions.delete(sessionId);
+                console.log(`pizzapi runner: killed session ${sessionId}`);
+                socket.emit("session_killed", { sessionId });
+            }
+        });
+
+        socket.on("list_sessions", () => {
+            if (isShuttingDown) return;
+            // sessions_list is not in the typed protocol yet — emit untyped
+            (socket as any).emit("sessions_list", {
+                sessions: Array.from(runningSessions.keys()),
+            });
+        });
+
+        // ── Daemon control ────────────────────────────────────────────────
+
+        socket.on("restart", () => {
+            console.log("pizzapi runner: restart request received. Exiting with code 42...");
+            setTimeout(() => {
+                shutdown(42);
+            }, 500);
+        });
+
+        socket.on("ping", () => {
+            if (isShuttingDown) return;
+            // pong is not in the typed protocol yet — emit untyped
+            (socket as any).emit("pong", { now: Date.now() });
+        });
+
+        // ── Terminal PTY management ───────────────────────────────────────
+
+        socket.on("new_terminal", (data) => {
+            if (isShuttingDown) return;
+            const { terminalId, cwd: requestedCwd, cols, rows, shell } = data;
+            console.log(
+                `[terminal] new_terminal received: terminalId=${terminalId} cwd=${requestedCwd ?? "(default)"} cols=${cols ?? 80} rows=${rows ?? 24} shell=${shell ?? "(default)"}`,
+            );
+            if (!terminalId) {
+                console.warn("[terminal] new_terminal: missing terminalId — rejecting");
+                socket.emit("terminal_error", { terminalId: "", message: "Missing terminalId" });
+                return;
+            }
+            if (requestedCwd && !isCwdAllowed(requestedCwd)) {
+                console.warn(
+                    `[terminal] new_terminal: cwd="${requestedCwd}" outside allowed roots — rejecting terminalId=${terminalId}`,
+                );
+                socket.emit("terminal_error", {
+                    terminalId,
+                    message: `cwd outside allowed roots: ${requestedCwd}`,
+                });
+                return;
+            }
+            // The terminal module calls termSend with { type: "terminal_*", ... } payloads.
+            // Extract the type field and emit it as a socket.io event.
+            const termSend = (payload: Record<string, unknown>) => {
+                try {
+                    const { type, runnerId: _drop, ...rest } = payload;
+                    if (typeof type === "string") {
+                        (socket as any).emit(type, rest);
                     }
+                } catch (err) {
+                    console.error(
+                        `[terminal] termSend: failed to send ${payload.type} for terminalId=${terminalId}:`,
+                        err,
+                    );
+                }
+            };
+            spawnTerminal(terminalId, termSend, {
+                cwd: requestedCwd,
+                cols,
+                rows,
+                shell,
+            });
+        });
 
-                    case "new_session": {
-                        const sessionId = msg.sessionId as string;
-                        const requestedCwd = typeof msg.cwd === "string" ? msg.cwd : undefined;
-                        const requestedPrompt = typeof msg.prompt === "string" ? msg.prompt : undefined;
-                        const requestedModel =
-                            msg.model && typeof msg.model === "object" &&
-                            typeof (msg.model as any).provider === "string" &&
-                            typeof (msg.model as any).id === "string"
-                                ? { provider: (msg.model as any).provider as string, id: (msg.model as any).id as string }
-                                : undefined;
+        socket.on("terminal_input", (data) => {
+            if (isShuttingDown) return;
+            const { terminalId, data: inputData } = data;
+            if (!terminalId || !inputData) {
+                console.warn(
+                    `[terminal] terminal_input: missing terminalId or data (terminalId=${terminalId} dataLen=${inputData?.length ?? 0})`,
+                );
+                return;
+            }
+            writeTerminalInput(terminalId, inputData);
+        });
 
-                        if (!sessionId) {
-                            ws?.send(
-                                JSON.stringify({
-                                    type: "session_error",
-                                    runnerId,
-                                    sessionId,
-                                    message: "Missing sessionId",
-                                }),
-                            );
-                            break;
-                        }
+        socket.on("terminal_resize", (data) => {
+            if (isShuttingDown) return;
+            const { terminalId, cols, rows } = data;
+            if (!terminalId) {
+                console.warn("[terminal] terminal_resize: missing terminalId");
+                return;
+            }
+            console.log(`[terminal] terminal_resize: terminalId=${terminalId} ${cols}x${rows}`);
+            resizeTerminal(terminalId, cols, rows);
+        });
 
-                        // The worker uses the runner's API key to register with /ws/sessions.
-                        if (!apiKey) {
-                            ws?.send(
-                                JSON.stringify({
-                                    type: "session_error",
-                                    runnerId,
-                                    sessionId,
-                                    message: "Runner is missing PIZZAPI_API_KEY",
-                                }),
-                            );
-                            break;
-                        }
+        socket.on("kill_terminal", (data) => {
+            if (isShuttingDown) return;
+            const { terminalId } = data;
+            if (!terminalId) {
+                console.warn("[terminal] kill_terminal: missing terminalId");
+                return;
+            }
+            console.log(`[terminal] kill_terminal: terminalId=${terminalId}`);
+            const killed = killTerminal(terminalId);
+            console.log(`[terminal] kill_terminal: result=${killed} terminalId=${terminalId}`);
+            if (killed) {
+                socket.emit("terminal_exit", { terminalId, exitCode: -1 });
+            } else {
+                socket.emit("terminal_error", { terminalId, message: "Terminal not found" });
+            }
+        });
 
-                        let isFirstSpawn = true;
-                        const doSpawn = () => {
+        socket.on("list_terminals", () => {
+            if (isShuttingDown) return;
+            const list = listTerminals();
+            console.log(`[terminal] list_terminals: ${list.length} active (${list.join(", ") || "none"})`);
+            // terminals_list is not in the typed protocol yet — emit untyped
+            (socket as any).emit("terminals_list", { terminals: list });
+        });
+
+        // ── Skills management ─────────────────────────────────────────────
+
+        socket.on("list_skills", (data) => {
+            if (isShuttingDown) return;
+            const requestId = data.requestId;
+            const skills = scanGlobalSkills();
+            socket.emit("skills_list", { skills, requestId });
+        });
+
+        socket.on("create_skill", async (data) => {
+            if (isShuttingDown) return;
+            const requestId = data.requestId;
+            const skillName = (data.name ?? "").trim();
+            const skillContent = data.content ?? "";
+
+            if (!skillName) {
+                socket.emit("skill_result", { requestId, ok: false, message: "Missing skill name" });
+                return;
+            }
+
+            if (!/^[a-z0-9][a-z0-9-]*[a-z0-9]$/.test(skillName) && !/^[a-z0-9]$/.test(skillName)) {
+                socket.emit("skill_result", {
+                    requestId,
+                    ok: false,
+                    message: "Invalid skill name: must be lowercase letters, numbers, and hyphens only",
+                });
+                return;
+            }
+
+            try {
+                await writeSkill(skillName, skillContent);
+                const skills = scanGlobalSkills();
+                socket.emit("skill_result", { requestId, ok: true, skills });
+            } catch (err) {
+                socket.emit("skill_result", {
+                    requestId,
+                    ok: false,
+                    message: err instanceof Error ? err.message : String(err),
+                });
+            }
+        });
+
+        socket.on("update_skill", async (data) => {
+            if (isShuttingDown) return;
+            const requestId = data.requestId;
+            const skillName = (data.name ?? "").trim();
+            const skillContent = data.content ?? "";
+
+            if (!skillName) {
+                socket.emit("skill_result", { requestId, ok: false, message: "Missing skill name" });
+                return;
+            }
+
+            if (!/^[a-z0-9][a-z0-9-]*[a-z0-9]$/.test(skillName) && !/^[a-z0-9]$/.test(skillName)) {
+                socket.emit("skill_result", {
+                    requestId,
+                    ok: false,
+                    message: "Invalid skill name: must be lowercase letters, numbers, and hyphens only",
+                });
+                return;
+            }
+
+            try {
+                await writeSkill(skillName, skillContent);
+                const skills = scanGlobalSkills();
+                socket.emit("skill_result", { requestId, ok: true, skills });
+            } catch (err) {
+                socket.emit("skill_result", {
+                    requestId,
+                    ok: false,
+                    message: err instanceof Error ? err.message : String(err),
+                });
+            }
+        });
+
+        socket.on("delete_skill", (data) => {
+            if (isShuttingDown) return;
+            const requestId = data.requestId;
+            const skillName = (data.name ?? "").trim();
+
+            if (!skillName) {
+                socket.emit("skill_result", { requestId, ok: false, message: "Missing skill name" });
+                return;
+            }
+
+            const deleted = deleteSkill(skillName);
+            const skills = scanGlobalSkills();
+            socket.emit("skill_result", {
+                requestId,
+                ok: deleted,
+                message: deleted ? undefined : "Skill not found",
+                skills,
+            });
+        });
+
+        socket.on("get_skill", (data) => {
+            if (isShuttingDown) return;
+            const requestId = data.requestId;
+            const skillName = (data.name ?? "").trim();
+            const content = skillName ? readSkillContent(skillName) : null;
+            if (content === null) {
+                socket.emit("skill_result", { requestId, ok: false, message: "Skill not found" });
+            } else {
+                socket.emit("skill_result", { requestId, ok: true, name: skillName, content });
+            }
+        });
+
+        // ── File Explorer ─────────────────────────────────────────────────
+
+        socket.on("list_files", async (data) => {
+            if (isShuttingDown) return;
+            const requestId = data.requestId;
+            const dirPath = data.path ?? "";
+            if (!dirPath) {
+                socket.emit("file_result", { requestId, ok: false, message: "Missing path" });
+                return;
+            }
+            if (!isCwdAllowed(dirPath)) {
+                socket.emit("file_result", { requestId, ok: false, message: "Path outside allowed roots" });
+                return;
+            }
+            try {
+                const entries = await readdir(dirPath, { withFileTypes: true });
+                const items = await Promise.all(
+                    entries
+                        .filter((e) => !e.name.startsWith(".") || e.name === ".gitignore" || e.name === ".env")
+                        .map(async (e) => {
+                            const fullPath = join(dirPath, e.name);
+                            let size: number | undefined;
                             try {
-                                // Only pass initial prompt/model on the first spawn.
-                                // On restart (exit code 43), the session already has
-                                // the prompt in its history — re-sending would duplicate it.
-                                const spawnOpts = isFirstSpawn
-                                    ? { prompt: requestedPrompt, model: requestedModel }
-                                    : undefined;
-                                isFirstSpawn = false;
-                                spawnSession(sessionId, apiKey!, requestedCwd, runningSessions, doSpawn, spawnOpts);
-                                ws?.send(JSON.stringify({ type: "session_ready", runnerId, sessionId }));
-                            } catch (err) {
-                                ws?.send(
-                                    JSON.stringify({
-                                        type: "session_error",
-                                        runnerId,
-                                        sessionId,
-                                        message: err instanceof Error ? err.message : String(err),
-                                    }),
-                                );
-                            }
-                        };
-                        doSpawn();
-                        break;
-                    }
-
-                    case "kill_session": {
-                        const sessionId = msg.sessionId as string;
-                        const entry = runningSessions.get(sessionId);
-                        if (entry) {
-                            try {
-                                entry.child.kill("SIGTERM");
+                                const s = await stat(fullPath);
+                                size = s.size;
                             } catch {}
-                            runningSessions.delete(sessionId);
-                            console.log(`pizzapi runner: killed session ${sessionId}`);
-                            ws?.send(JSON.stringify({ type: "session_killed", runnerId, sessionId }));
-                        }
-                        break;
-                    }
+                            return {
+                                name: e.name,
+                                path: fullPath,
+                                isDirectory: e.isDirectory(),
+                                isSymlink: e.isSymbolicLink(),
+                                size,
+                            };
+                        }),
+                );
+                // Directories first, then files, alphabetically
+                items.sort((a, b) => {
+                    if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
+                    return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+                });
+                socket.emit("file_result", { requestId, ok: true, files: items });
+            } catch (err) {
+                socket.emit("file_result", {
+                    requestId,
+                    ok: false,
+                    message: err instanceof Error ? err.message : String(err),
+                });
+            }
+        });
 
-                    case "list_sessions": {
-                        ws?.send(
-                            JSON.stringify({
-                                type: "sessions_list",
-                                runnerId,
-                                sessions: Array.from(runningSessions.keys()),
-                            }),
-                        );
-                        break;
-                    }
+        socket.on("read_file", async (data) => {
+            if (isShuttingDown) return;
+            const requestId = data.requestId;
+            const filePath = data.path ?? "";
+            const encoding = (data as any).encoding ?? "utf8";
+            const maxBytes = typeof (data as any).maxBytes === "number"
+                ? (data as any).maxBytes
+                : encoding === "base64"
+                    ? 10 * 1024 * 1024
+                    : 256 * 1024; // 10MB for base64, 256KB for text
 
-                    case "restart": {
-                        console.log("pizzapi runner: restart request received. Exiting with code 42...");
-                        // Give some time for the process to exit gracefully if needed
-                        setTimeout(() => {
-                            shutdown(42);
-                        }, 500);
-                        break;
-                    }
+            if (!filePath) {
+                socket.emit("file_result", { requestId, ok: false, message: "Missing path" });
+                return;
+            }
+            if (!isCwdAllowed(filePath)) {
+                socket.emit("file_result", { requestId, ok: false, message: "Path outside allowed roots" });
+                return;
+            }
+            try {
+                const s = await stat(filePath);
+                const truncated = s.size > maxBytes;
+                if (encoding === "base64") {
+                    const buf = await Bun.file(filePath).slice(0, maxBytes).arrayBuffer();
+                    const b64 = Buffer.from(buf).toString("base64");
+                    socket.emit("file_result", {
+                        requestId,
+                        ok: true,
+                        content: b64,
+                        encoding: "base64",
+                        size: s.size,
+                        truncated,
+                    });
+                } else {
+                    const fd = await Bun.file(filePath).slice(0, maxBytes).text();
+                    socket.emit("file_result", {
+                        requestId,
+                        ok: true,
+                        content: fd,
+                        size: s.size,
+                        truncated,
+                    });
+                }
+            } catch (err) {
+                socket.emit("file_result", {
+                    requestId,
+                    ok: false,
+                    message: err instanceof Error ? err.message : String(err),
+                });
+            }
+        });
 
-                    case "ping": {
-                        ws?.send(JSON.stringify({ type: "pong", runnerId, now: Date.now() }));
-                        break;
-                    }
+        // ── Git operations ────────────────────────────────────────────────
 
-                    // ── Terminal PTY management ───────────────────────────────
-                    case "new_terminal": {
-                        const terminalId = msg.terminalId as string;
-                        const requestedCwd = typeof msg.cwd === "string" ? msg.cwd : undefined;
-                        const cols = typeof msg.cols === "number" ? msg.cols : undefined;
-                        const rows = typeof msg.rows === "number" ? msg.rows : undefined;
-                        const shell = typeof msg.shell === "string" ? msg.shell : undefined;
-                        console.log(`[terminal] new_terminal received: terminalId=${terminalId} cwd=${requestedCwd ?? "(default)"} cols=${cols ?? 80} rows=${rows ?? 24} shell=${shell ?? "(default)"}`);
-                        if (!terminalId) {
-                            console.warn(`[terminal] new_terminal: missing terminalId — rejecting`);
-                            ws?.send(JSON.stringify({ type: "terminal_error", runnerId, terminalId: "", message: "Missing terminalId" }));
-                            break;
-                        }
-                        if (requestedCwd && !isCwdAllowed(requestedCwd)) {
-                            console.warn(`[terminal] new_terminal: cwd="${requestedCwd}" outside allowed roots — rejecting terminalId=${terminalId}`);
-                            ws?.send(JSON.stringify({ type: "terminal_error", runnerId, terminalId, message: `cwd outside allowed roots: ${requestedCwd}` }));
-                            break;
-                        }
-                        const termSend = (payload: Record<string, unknown>) => {
-                            try { ws?.send(JSON.stringify({ ...payload, runnerId })); } catch (err) {
-                                console.error(`[terminal] termSend: failed to send ${payload.type} for terminalId=${terminalId}:`, err);
-                            }
-                        };
-                        spawnTerminal(terminalId, termSend, {
-                            cwd: requestedCwd,
-                            cols,
-                            rows,
-                            shell,
+        socket.on("git_status", (data) => {
+            if (isShuttingDown) return;
+            const requestId = data.requestId;
+            const cwd = data.cwd ?? "";
+            if (!cwd) {
+                socket.emit("file_result", { requestId, ok: false, message: "Missing cwd" });
+                return;
+            }
+            if (!isCwdAllowed(cwd)) {
+                socket.emit("file_result", { requestId, ok: false, message: "Path outside allowed roots" });
+                return;
+            }
+            try {
+                // Get current branch
+                let branch = "";
+                try {
+                    branch = execSync("git rev-parse --abbrev-ref HEAD", {
+                        cwd,
+                        encoding: "utf-8",
+                        timeout: 5000,
+                    }).trim();
+                } catch {}
+
+                // Get status --porcelain=v1
+                let statusOutput = "";
+                try {
+                    statusOutput = execSync("git status --porcelain=v1 -uall", {
+                        cwd,
+                        encoding: "utf-8",
+                        timeout: 10000,
+                    });
+                } catch {}
+
+                // Get diff stat for staged changes
+                let diffStaged = "";
+                try {
+                    diffStaged = execSync("git diff --cached --stat", {
+                        cwd,
+                        encoding: "utf-8",
+                        timeout: 10000,
+                    });
+                } catch {}
+
+                // Parse porcelain output
+                const changes: Array<{ status: string; path: string; originalPath?: string }> = [];
+                for (const line of statusOutput.split("\n")) {
+                    if (!line.trim()) continue;
+                    const xy = line.substring(0, 2);
+                    const rest = line.substring(3);
+                    // Handle renames: "R  old -> new"
+                    const arrowIdx = rest.indexOf(" -> ");
+                    if (arrowIdx >= 0) {
+                        changes.push({
+                            status: xy.trim(),
+                            path: rest.substring(arrowIdx + 4),
+                            originalPath: rest.substring(0, arrowIdx),
                         });
-                        break;
-                    }
-
-                    case "terminal_input": {
-                        const terminalId = msg.terminalId as string;
-                        const data = msg.data as string;
-                        if (!terminalId || !data) {
-                            console.warn(`[terminal] terminal_input: missing terminalId or data (terminalId=${terminalId} dataLen=${data?.length ?? 0})`);
-                            break;
-                        }
-                        writeTerminalInput(terminalId, data);
-                        break;
-                    }
-
-                    case "terminal_resize": {
-                        const terminalId = msg.terminalId as string;
-                        const cols = typeof msg.cols === "number" ? msg.cols : 0;
-                        const rows = typeof msg.rows === "number" ? msg.rows : 0;
-                        if (!terminalId) {
-                            console.warn(`[terminal] terminal_resize: missing terminalId`);
-                            break;
-                        }
-                        console.log(`[terminal] terminal_resize: terminalId=${terminalId} ${cols}x${rows}`);
-                        resizeTerminal(terminalId, cols, rows);
-                        break;
-                    }
-
-                    case "kill_terminal": {
-                        const terminalId = msg.terminalId as string;
-                        if (!terminalId) {
-                            console.warn(`[terminal] kill_terminal: missing terminalId`);
-                            break;
-                        }
-                        console.log(`[terminal] kill_terminal: terminalId=${terminalId}`);
-                        const killed = killTerminal(terminalId);
-                        console.log(`[terminal] kill_terminal: result=${killed} terminalId=${terminalId}`);
-                        ws?.send(JSON.stringify({
-                            type: killed ? "terminal_exit" : "terminal_error",
-                            runnerId,
-                            terminalId,
-                            ...(killed ? { exitCode: -1 } : { message: "Terminal not found" }),
-                        }));
-                        break;
-                    }
-
-                    case "list_terminals": {
-                        const list = listTerminals();
-                        console.log(`[terminal] list_terminals: ${list.length} active (${list.join(", ") || "none"})`);
-                        ws?.send(JSON.stringify({ type: "terminals_list", runnerId, terminals: list }));
-                        break;
-                    }
-
-                    case "list_skills": {
-                        const requestId = typeof msg.requestId === "string" ? msg.requestId : undefined;
-                        const skills = scanGlobalSkills();
-                        ws?.send(JSON.stringify({ type: "skills_list", runnerId, requestId, skills }));
-                        break;
-                    }
-
-                    case "create_skill":
-                    case "update_skill": {
-                        const requestId = typeof msg.requestId === "string" ? msg.requestId : undefined;
-                        const skillName = typeof msg.name === "string" ? msg.name.trim() : "";
-                        const skillContent = typeof msg.content === "string" ? msg.content : "";
-
-                        if (!skillName) {
-                            ws?.send(JSON.stringify({ type: "skill_result", runnerId, requestId, ok: false, message: "Missing skill name" }));
-                            break;
-                        }
-
-                        // Validate name format per Agent Skills standard
-                        if (!/^[a-z0-9][a-z0-9-]*[a-z0-9]$/.test(skillName) && !/^[a-z0-9]$/.test(skillName)) {
-                            ws?.send(JSON.stringify({ type: "skill_result", runnerId, requestId, ok: false, message: "Invalid skill name: must be lowercase letters, numbers, and hyphens only" }));
-                            break;
-                        }
-
-                        try {
-                            await writeSkill(skillName, skillContent);
-                            const skills = scanGlobalSkills();
-                            ws?.send(JSON.stringify({ type: "skill_result", runnerId, requestId, ok: true, skills }));
-                        } catch (err) {
-                            ws?.send(JSON.stringify({ type: "skill_result", runnerId, requestId, ok: false, message: err instanceof Error ? err.message : String(err) }));
-                        }
-                        break;
-                    }
-
-                    case "delete_skill": {
-                        const requestId = typeof msg.requestId === "string" ? msg.requestId : undefined;
-                        const skillName = typeof msg.name === "string" ? msg.name.trim() : "";
-
-                        if (!skillName) {
-                            ws?.send(JSON.stringify({ type: "skill_result", runnerId, requestId, ok: false, message: "Missing skill name" }));
-                            break;
-                        }
-
-                        const deleted = deleteSkill(skillName);
-                        const skills = scanGlobalSkills();
-                        ws?.send(JSON.stringify({ type: "skill_result", runnerId, requestId, ok: deleted, message: deleted ? undefined : "Skill not found", skills }));
-                        break;
-                    }
-
-                    case "get_skill": {
-                        const requestId = typeof msg.requestId === "string" ? msg.requestId : undefined;
-                        const skillName = typeof msg.name === "string" ? msg.name.trim() : "";
-                        const content = skillName ? readSkillContent(skillName) : null;
-                        if (content === null) {
-                            ws?.send(JSON.stringify({ type: "skill_result", runnerId, requestId, ok: false, message: "Skill not found" }));
-                        } else {
-                            ws?.send(JSON.stringify({ type: "skill_result", runnerId, requestId, ok: true, name: skillName, content }));
-                        }
-                        break;
-                    }
-
-                    // ── File Explorer ─────────────────────────────────────────
-                    case "list_files": {
-                        const requestId = typeof msg.requestId === "string" ? msg.requestId : undefined;
-                        const dirPath = typeof msg.path === "string" ? msg.path : "";
-                        if (!dirPath) {
-                            ws?.send(JSON.stringify({ type: "file_result", runnerId, requestId, ok: false, message: "Missing path" }));
-                            break;
-                        }
-                        if (!isCwdAllowed(dirPath)) {
-                            ws?.send(JSON.stringify({ type: "file_result", runnerId, requestId, ok: false, message: "Path outside allowed roots" }));
-                            break;
-                        }
-                        try {
-                            const entries = await readdir(dirPath, { withFileTypes: true });
-                            const items = await Promise.all(
-                                entries
-                                    .filter((e) => !e.name.startsWith(".") || e.name === ".gitignore" || e.name === ".env")
-                                    .map(async (e) => {
-                                        const fullPath = join(dirPath, e.name);
-                                        let size: number | undefined;
-                                        try {
-                                            const s = await stat(fullPath);
-                                            size = s.size;
-                                        } catch {}
-                                        return {
-                                            name: e.name,
-                                            path: fullPath,
-                                            isDirectory: e.isDirectory(),
-                                            isSymlink: e.isSymbolicLink(),
-                                            size,
-                                        };
-                                    }),
-                            );
-                            // Directories first, then files, alphabetically
-                            items.sort((a, b) => {
-                                if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
-                                return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
-                            });
-                            ws?.send(JSON.stringify({ type: "file_result", runnerId, requestId, ok: true, files: items }));
-                        } catch (err) {
-                            ws?.send(JSON.stringify({ type: "file_result", runnerId, requestId, ok: false, message: err instanceof Error ? err.message : String(err) }));
-                        }
-                        break;
-                    }
-
-                    case "read_file": {
-                        const requestId = typeof msg.requestId === "string" ? msg.requestId : undefined;
-                        const filePath = typeof msg.path === "string" ? msg.path : "";
-                        const encoding = typeof msg.encoding === "string" ? msg.encoding : "utf8";
-                        const maxBytes = typeof msg.maxBytes === "number" ? msg.maxBytes : (encoding === "base64" ? 10 * 1024 * 1024 : 256 * 1024); // 10MB for base64, 256KB for text
-
-                        if (!filePath) {
-                            ws?.send(JSON.stringify({ type: "file_result", runnerId, requestId, ok: false, message: "Missing path" }));
-                            break;
-                        }
-                        if (!isCwdAllowed(filePath)) {
-                            ws?.send(JSON.stringify({ type: "file_result", runnerId, requestId, ok: false, message: "Path outside allowed roots" }));
-                            break;
-                        }
-                        try {
-                            const s = await stat(filePath);
-                            const truncated = s.size > maxBytes;
-                            if (encoding === "base64") {
-                                const buf = await Bun.file(filePath).slice(0, maxBytes).arrayBuffer();
-                                const b64 = Buffer.from(buf).toString("base64");
-                                ws?.send(JSON.stringify({
-                                    type: "file_result", runnerId, requestId, ok: true,
-                                    content: b64,
-                                    encoding: "base64",
-                                    size: s.size,
-                                    truncated,
-                                }));
-                            } else {
-                                const fd = await Bun.file(filePath).slice(0, maxBytes).text();
-                                ws?.send(JSON.stringify({
-                                    type: "file_result", runnerId, requestId, ok: true,
-                                    content: fd,
-                                    size: s.size,
-                                    truncated,
-                                }));
-                            }
-                        } catch (err) {
-                            ws?.send(JSON.stringify({ type: "file_result", runnerId, requestId, ok: false, message: err instanceof Error ? err.message : String(err) }));
-                        }
-                        break;
-                    }
-
-                    case "git_status": {
-                        const requestId = typeof msg.requestId === "string" ? msg.requestId : undefined;
-                        const cwd = typeof msg.cwd === "string" ? msg.cwd : "";
-                        if (!cwd) {
-                            ws?.send(JSON.stringify({ type: "file_result", runnerId, requestId, ok: false, message: "Missing cwd" }));
-                            break;
-                        }
-                        if (!isCwdAllowed(cwd)) {
-                            ws?.send(JSON.stringify({ type: "file_result", runnerId, requestId, ok: false, message: "Path outside allowed roots" }));
-                            break;
-                        }
-                        try {
-                            // Get current branch
-                            let branch = "";
-                            try {
-                                branch = execSync("git rev-parse --abbrev-ref HEAD", { cwd, encoding: "utf-8", timeout: 5000 }).trim();
-                            } catch {}
-
-                            // Get status --porcelain=v1
-                            let statusOutput = "";
-                            try {
-                                statusOutput = execSync("git status --porcelain=v1 -uall", { cwd, encoding: "utf-8", timeout: 10000 });
-                            } catch {}
-
-                            // Get diff stat for staged changes
-                            let diffStaged = "";
-                            try {
-                                diffStaged = execSync("git diff --cached --stat", { cwd, encoding: "utf-8", timeout: 10000 });
-                            } catch {}
-
-                            // Parse porcelain output
-                            const changes: Array<{ status: string; path: string; originalPath?: string }> = [];
-                            for (const line of statusOutput.split("\n")) {
-                                if (!line.trim()) continue;
-                                const xy = line.substring(0, 2);
-                                const rest = line.substring(3);
-                                // Handle renames: "R  old -> new"
-                                const arrowIdx = rest.indexOf(" -> ");
-                                if (arrowIdx >= 0) {
-                                    changes.push({
-                                        status: xy.trim(),
-                                        path: rest.substring(arrowIdx + 4),
-                                        originalPath: rest.substring(0, arrowIdx),
-                                    });
-                                } else {
-                                    changes.push({ status: xy.trim(), path: rest });
-                                }
-                            }
-
-                            // Get ahead/behind counts
-                            let ahead = 0;
-                            let behind = 0;
-                            try {
-                                const abOutput = execSync("git rev-list --left-right --count HEAD...@{u}", { cwd, encoding: "utf-8", timeout: 5000 }).trim();
-                                const [a, b] = abOutput.split(/\s+/);
-                                ahead = parseInt(a, 10) || 0;
-                                behind = parseInt(b, 10) || 0;
-                            } catch {}
-
-                            ws?.send(JSON.stringify({
-                                type: "file_result", runnerId, requestId, ok: true,
-                                branch,
-                                changes,
-                                ahead,
-                                behind,
-                                diffStaged,
-                            }));
-                        } catch (err) {
-                            ws?.send(JSON.stringify({ type: "file_result", runnerId, requestId, ok: false, message: err instanceof Error ? err.message : String(err) }));
-                        }
-                        break;
-                    }
-
-                    case "git_diff": {
-                        const requestId = typeof msg.requestId === "string" ? msg.requestId : undefined;
-                        const cwd = typeof msg.cwd === "string" ? msg.cwd : "";
-                        const filePath = typeof msg.path === "string" ? msg.path : "";
-                        const staged = msg.staged === true;
-
-                        if (!cwd || !filePath) {
-                            ws?.send(JSON.stringify({ type: "file_result", runnerId, requestId, ok: false, message: "Missing cwd or path" }));
-                            break;
-                        }
-                        if (!isCwdAllowed(cwd)) {
-                            ws?.send(JSON.stringify({ type: "file_result", runnerId, requestId, ok: false, message: "Path outside allowed roots" }));
-                            break;
-                        }
-                        try {
-                            const args = staged ? ["diff", "--cached", "--", filePath] : ["diff", "--", filePath];
-                            const diff = execSync(`git ${args.join(" ")}`, { cwd, encoding: "utf-8", timeout: 10000 });
-                            ws?.send(JSON.stringify({ type: "file_result", runnerId, requestId, ok: true, diff }));
-                        } catch (err) {
-                            ws?.send(JSON.stringify({ type: "file_result", runnerId, requestId, ok: false, message: err instanceof Error ? err.message : String(err) }));
-                        }
-                        break;
+                    } else {
+                        changes.push({ status: xy.trim(), path: rest });
                     }
                 }
-            };
 
-            ws.onerror = () => {
-                // error will be followed by close, which handles reconnect
-            };
+                // Get ahead/behind counts
+                let ahead = 0;
+                let behind = 0;
+                try {
+                    const abOutput = execSync("git rev-list --left-right --count HEAD...@{u}", {
+                        cwd,
+                        encoding: "utf-8",
+                        timeout: 5000,
+                    }).trim();
+                    const [a, b] = abOutput.split(/\s+/);
+                    ahead = parseInt(a, 10) || 0;
+                    behind = parseInt(b, 10) || 0;
+                } catch {}
 
-            ws.onclose = () => {
-                if (isShuttingDown) return;
-                console.log(`pizzapi runner: disconnected. Reconnecting in ${reconnectDelay / 1000}s…`);
-                const delay = reconnectDelay;
-                // Double for next attempt, capped at RECONNECT_MAX.
-                reconnectDelay = Math.min(reconnectDelay * 2, RECONNECT_MAX);
-                setTimeout(() => {
-                    if (isShuttingDown) return;
-                    connect();
-                }, delay);
-            };
-        }
+                socket.emit("file_result", {
+                    requestId,
+                    ok: true,
+                    branch,
+                    changes,
+                    ahead,
+                    behind,
+                    diffStaged,
+                });
+            } catch (err) {
+                socket.emit("file_result", {
+                    requestId,
+                    ok: false,
+                    message: err instanceof Error ? err.message : String(err),
+                });
+            }
+        });
+
+        socket.on("git_diff", (data) => {
+            if (isShuttingDown) return;
+            const requestId = data.requestId;
+            const cwd = data.cwd ?? "";
+            const filePath = (data as any).path ?? "";
+            const staged = (data as any).staged === true;
+
+            if (!cwd || !filePath) {
+                socket.emit("file_result", { requestId, ok: false, message: "Missing cwd or path" });
+                return;
+            }
+            if (!isCwdAllowed(cwd)) {
+                socket.emit("file_result", { requestId, ok: false, message: "Path outside allowed roots" });
+                return;
+            }
+            try {
+                const args = staged ? ["diff", "--cached", "--", filePath] : ["diff", "--", filePath];
+                const diff = execSync(`git ${args.join(" ")}`, { cwd, encoding: "utf-8", timeout: 10000 });
+                socket.emit("file_result", { requestId, ok: true, diff });
+            } catch (err) {
+                socket.emit("file_result", {
+                    requestId,
+                    ok: false,
+                    message: err instanceof Error ? err.message : String(err),
+                });
+            }
+        });
+
+        // ── Error handling ────────────────────────────────────────────────
+
+        socket.on("error", (data) => {
+            console.error(`pizzapi runner: server error: ${data.message}`);
+        });
     });
 }
 
