@@ -19,8 +19,6 @@ import {
     addViewer,
     removeViewer,
     getSessionSeq,
-    getSessionLastHeartbeat,
-    getSessionState,
     sendSnapshotToViewer,
     getLocalTuiSocket,
 } from "../sio-registry.js";
@@ -149,7 +147,14 @@ export function registerViewerNamespace(io: SocketIOServer): void {
             return;
         }
 
-        // Session is live — send connection info
+        // Session is live — send connection info and initial snapshot BEFORE
+        // joining the broadcast room. This avoids a race where live streaming
+        // deltas arrive (via the room) before the snapshot, causing the UI to
+        // show partial content that then gets replaced by the snapshot — making
+        // messages visibly "jump".
+        //
+        // Any events emitted between snapshot read and room join are detected
+        // by the client's sequence-gap logic (seq gap > 1 → resync request).
         const lastSeq = await getSessionSeq(sessionId);
         socket.emit("connected", {
             sessionId,
@@ -159,21 +164,30 @@ export function registerViewerNamespace(io: SocketIOServer): void {
             sessionName: session.sessionName,
         });
 
-        // Add viewer to the session room (must happen before snapshot send
-        // so the viewer doesn't miss events emitted in between)
+        // Send the snapshot while the viewer is NOT yet in the room.
+        // Inline the snapshot send using already-fetched session data to avoid
+        // an extra Redis round-trip (which would widen the race window).
+        if (session.lastHeartbeat) {
+            try {
+                socket.emit("event", { event: JSON.parse(session.lastHeartbeat), seq: lastSeq });
+            } catch {}
+        }
+        if (session.lastState) {
+            try {
+                socket.emit("event", { event: { type: "session_active", state: JSON.parse(session.lastState) }, seq: lastSeq });
+            } catch {}
+        } else {
+            // No in-memory state — fall back to event cache
+            await sendLatestSnapshotFromCache(socket, sessionId);
+        }
+
+        // NOW join the room for live events — any missed events between
+        // snapshot read and this point will be caught by gap detection.
         const ok = await addViewer(sessionId, socket);
         if (!ok) {
             socket.emit("disconnected", { reason: "Session ended" });
             socket.disconnect(true);
             return;
-        }
-
-        // Send the latest snapshot (heartbeat + state) from Redis
-        await sendSnapshotToViewer(sessionId, socket);
-
-        // If no in-memory state was available, fall back to event cache
-        if (!session.lastState) {
-            await sendLatestSnapshotFromCache(socket, sessionId);
         }
 
         // ── connected — viewer greeting, notify TUI ─────────────────────────

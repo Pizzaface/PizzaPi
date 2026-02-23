@@ -294,6 +294,12 @@ export function App() {
   // Sequence tracking for gap detection
   const lastSeqRef = React.useRef<number | null>(null);
 
+  // Snapshot guard: when connecting to a session, ignore streaming deltas
+  // until the initial snapshot (session_active / agent_end / heartbeat) arrives.
+  // This prevents pre-snapshot live events from rendering and then being
+  // replaced, which causes visible message "jumping".
+  const awaitingSnapshotRef = React.useRef(false);
+
   // Capabilities advertised by the runner (commands, models, etc.)
   const [availableCommands, setAvailableCommands] = React.useState<Array<{ name: string; description?: string }>>([]);
 
@@ -446,6 +452,7 @@ export function App() {
     viewerWsRef.current = null;
     activeSessionRef.current = null;
     lastSeqRef.current = null;
+    awaitingSnapshotRef.current = false;
     setActiveSessionId(null);
     setMessages([]);
     setViewerStatus("Idle");
@@ -594,6 +601,22 @@ export function App() {
 
     const evt = event as Record<string, unknown>;
     const type = typeof evt.type === "string" ? evt.type : "";
+
+    // Clear the snapshot guard when we receive a state-setting event.
+    // These events replace the entire message list, so any pre-snapshot
+    // deltas that snuck through are harmless (they'll be overwritten).
+    if (type === "session_active" || type === "agent_end" || type === "heartbeat") {
+      awaitingSnapshotRef.current = false;
+    }
+
+    // While awaiting the initial snapshot, skip streaming delta events.
+    // They'd render briefly and then be replaced when the snapshot arrives,
+    // causing visible "jumping".
+    if (awaitingSnapshotRef.current) {
+      if (type === "message_update" || type === "message_start" || type === "message_end" || type === "turn_end") {
+        return;
+      }
+    }
 
     if (type === "heartbeat") {
       const hb = evt as {
@@ -1085,6 +1108,7 @@ export function App() {
     localStorage.setItem("pp.lastSessionId", relaySessionId);
     activeSessionRef.current = relaySessionId;
     lastSeqRef.current = null;
+    awaitingSnapshotRef.current = true;
     setActiveSessionId(relaySessionId);
     setViewerStatus("Connecting…");
     setPendingQuestion(null);
