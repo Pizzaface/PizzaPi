@@ -170,6 +170,8 @@ export interface CombinedPanelTab {
   label: string;
   icon: React.ReactNode;
   onClose?: () => void;
+  /** When provided, dragging the tab triggers panel repositioning instead of tab switching */
+  onDragStart?: (e: React.PointerEvent) => void;
   content: React.ReactNode;
 }
 
@@ -192,6 +194,16 @@ export function CombinedPanel({
   onDragStart,
   className,
 }: CombinedPanelProps) {
+  // Track per-tab drag gestures so that dragging a tab detaches it
+  const tabDragRef = React.useRef<{
+    tabId: string;
+    startX: number;
+    startY: number;
+    onDragStart: (e: React.PointerEvent) => void;
+    pointerId: number;
+    activated: boolean;
+  } | null>(null);
+
   return (
     <div className={cn("flex flex-col bg-zinc-950 text-zinc-100", className)}>
       {/* Tab bar */}
@@ -199,16 +211,61 @@ export function CombinedPanel({
         <div className="flex items-center flex-1 overflow-x-auto gap-0.5 px-1">
           {tabs.map((tab) => {
             const isActive = activeTabId === tab.id;
+            const hasDrag = !!tab.onDragStart;
             return (
               <div
                 key={tab.id}
                 className={cn(
-                  "group flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium transition-colors cursor-pointer select-none",
+                  "group flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium transition-colors select-none",
                   isActive
                     ? "text-zinc-100 border-b-2 border-primary"
                     : "text-zinc-500 hover:text-zinc-300 border-b-2 border-transparent",
+                  hasDrag ? "cursor-grab active:cursor-grabbing" : "cursor-pointer",
                 )}
-                onClick={() => onActiveTabChange(tab.id)}
+                onClick={() => {
+                  // Suppress click if this pointer-down became a drag
+                  if (tabDragRef.current?.activated) {
+                    tabDragRef.current = null;
+                    return;
+                  }
+                  onActiveTabChange(tab.id);
+                }}
+                onPointerDown={hasDrag ? (e) => {
+                  if (e.button !== 0) return;
+                  tabDragRef.current = {
+                    tabId: tab.id,
+                    startX: e.clientX,
+                    startY: e.clientY,
+                    onDragStart: tab.onDragStart!,
+                    pointerId: e.pointerId,
+                    activated: false,
+                  };
+                  // Capture so move/up are reliable even if pointer leaves the tab
+                  (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+                } : undefined}
+                onPointerMove={hasDrag ? (e) => {
+                  const drag = tabDragRef.current;
+                  if (!drag || drag.tabId !== tab.id || drag.pointerId !== e.pointerId || drag.activated) return;
+                  const dx = e.clientX - drag.startX;
+                  const dy = e.clientY - drag.startY;
+                  // 4 px threshold to distinguish drag from click
+                  if (dx * dx + dy * dy > 16) {
+                    drag.activated = true;
+                    drag.onDragStart(e);
+                  }
+                } : undefined}
+                onPointerUp={hasDrag ? (e) => {
+                  const drag = tabDragRef.current;
+                  if (!drag || drag.tabId !== tab.id || drag.pointerId !== e.pointerId) return;
+                  if (!drag.activated) {
+                    // Was a click — null the ref so onClick fires normally
+                    tabDragRef.current = null;
+                  }
+                  // If activated, keep ref alive so onClick can detect and suppress it
+                } : undefined}
+                onPointerCancel={hasDrag ? () => {
+                  tabDragRef.current = null;
+                } : undefined}
               >
                 {tab.icon}
                 <span>{tab.label}</span>

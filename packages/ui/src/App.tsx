@@ -351,6 +351,15 @@ export function App() {
   // Ref to sync file explorer position when panels are combined (avoids forward-reference issues)
   const combinedDragSyncRef = React.useRef<((zone: "bottom" | "right" | "left") => void) | null>(null);
 
+  // Drag start handler for the Terminal tab inside the combined panel.
+  // Unlike the grip handle (which moves both panels together), this only moves
+  // the terminal panel so it can be detached from the files panel.
+  const handleTerminalTabDragStart = React.useCallback((e: React.PointerEvent) => {
+    // Clear the sync ref so handlePanelDragEnd doesn't also reposition the files panel
+    combinedDragSyncRef.current = null;
+    handlePanelDragStart(e);
+  }, [handlePanelDragStart]);
+
   const handlePanelDragEnd = React.useCallback(() => {
     if (!isPanelDragging.current) return;
     isPanelDragging.current = false;
@@ -2620,6 +2629,8 @@ export function App() {
                         label: "Terminal",
                         icon: <TerminalIcon className="size-3.5" />,
                         onClose: () => { setShowTerminal(false); setCombinedActiveTab("files"); },
+                        // Dragging the Terminal tab detaches it (moves only the terminal panel)
+                        onDragStart: handleTerminalTabDragStart,
                         content: (
                           <TerminalManager className="h-full" embedded />
                         ),
@@ -2629,6 +2640,8 @@ export function App() {
                         label: "Files",
                         icon: <FolderTree className="size-3.5" />,
                         onClose: () => { setShowFileExplorer(false); setCombinedActiveTab("terminal"); },
+                        // Dragging the Files tab detaches it (moves only the files panel)
+                        onDragStart: handleFilesDragStart,
                         content: (
                           <FileExplorer
                             runnerId={activeSessionInfo!.runnerId!}
