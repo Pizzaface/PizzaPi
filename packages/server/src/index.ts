@@ -19,6 +19,8 @@ import { Server as SocketIOServer } from "socket.io";
 import { createAdapter } from "@socket.io/redis-adapter";
 import { createClient } from "redis";
 import { registerNamespaces } from "./ws/namespaces/index.js";
+import { initSioRegistry } from "./ws/sio-registry.js";
+import { initStateRedis } from "./ws/sio-state.js";
 
 const PORT = parseInt(process.env.PORT ?? "3000");
 
@@ -104,6 +106,10 @@ try {
         adapter: createAdapter(pubClient, subClient, { key: "pizzapi-sio" }),
         transports: ["websocket", "polling"],
     });
+
+    // Initialize Redis-backed state layer for Socket.IO registry
+    await initStateRedis();
+    initSioRegistry(io);
 
     registerNamespaces(io);
 
