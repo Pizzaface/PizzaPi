@@ -5,7 +5,7 @@ import {
   ConversationEmptyState,
 } from "@/components/ai-elements/conversation";
 import type { RelayMessage } from "@/components/session-viewer/types";
-import { groupToolExecutionMessages } from "@/components/session-viewer/grouping";
+import { groupToolExecutionMessages, groupSubAgentConversations } from "@/components/session-viewer/grouping";
 import {
   hasVisibleContent,
 } from "@/components/session-viewer/utils";
@@ -282,6 +282,28 @@ const SessionMessageItem = React.memo(({ message, activeToolCalls, agentActive, 
   agentActive?: boolean;
   isLast: boolean;
 }) => {
+  // Sub-agent conversation cards render without the outer message wrapper
+  // (they have their own full-width card styling)
+  if (message.role === "subAgentConversation") {
+    return (
+      <div className="w-full px-4 py-1.5 max-w-3xl mx-auto">
+        {renderContent(
+          message.content,
+          activeToolCalls,
+          message.role,
+          message.toolName,
+          message.isError,
+          message.toolInput,
+          message.toolCallId ?? message.key,
+          agentActive && isLast && message.timestamp === undefined,
+          message.thinking,
+          message.thinkingDuration,
+          message.subAgentTurns,
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="w-full px-4 py-1.5">
       <Message from={toMessageRole(message.role)}>
@@ -584,7 +606,10 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     }
   }, [commandOpen, isResumeMode]);
 
-  const groupedMessages = React.useMemo(() => groupToolExecutionMessages(messages), [messages]);
+  const groupedMessages = React.useMemo(
+    () => groupSubAgentConversations(groupToolExecutionMessages(messages)),
+    [messages],
+  );
 
   // Stable sort: messages with a timestamp come first (ordered by timestamp);
   // messages with no timestamp are placed at the absolute end in their original
@@ -606,6 +631,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
 
   const visibleMessages = React.useMemo(
     () => sortedMessages.filter((message) => {
+      if (message.role === "subAgentConversation") return (message.subAgentTurns?.length ?? 0) > 0;
       if (hasVisibleContent(message.content)) return true;
       return (message.role === "toolResult" || message.role === "tool") && message.toolInput !== undefined;
     }),

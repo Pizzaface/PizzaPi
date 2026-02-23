@@ -1,8 +1,9 @@
-import type { RelayMessage } from "@/components/session-viewer/types";
+import type { RelayMessage, SubAgentTurn } from "@/components/session-viewer/types";
 
 import {
   hasVisibleContent,
   normalizeToolName,
+  extractTextFromToolContent,
 } from "@/components/session-viewer/utils";
 
 interface PendingToolCall {
@@ -352,4 +353,117 @@ export function groupToolExecutionMessages(messages: RelayMessage[]): RelayMessa
     seen.set(grouped[i].key, i);
   }
   return grouped.filter((_, i) => seen.get(grouped[i].key) === i);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Sub-agent conversation grouping
+// ─────────────────────────────────────────────────────────────────────────────
+
+const SUB_AGENT_TOOLS = new Set([
+  "send_message",
+  "wait_for_message",
+  "check_messages",
+]);
+
+function isSubAgentTool(toolName: string | undefined): boolean {
+  if (!toolName) return false;
+  const norm = normalizeToolName(toolName);
+  // strip MCP prefix (e.g. "mcp.send_message")
+  const bare = norm.includes(".") ? norm.split(".").pop()! : norm;
+  return SUB_AGENT_TOOLS.has(bare);
+}
+
+function messageToSubAgentTurn(msg: RelayMessage): SubAgentTurn {
+  const toolName = msg.toolName ?? "";
+  const norm = normalizeToolName(toolName);
+  const bare = norm.includes(".") ? norm.split(".").pop()! : norm;
+  const input = msg.toolInput && typeof msg.toolInput === "object"
+    ? (msg.toolInput as Record<string, unknown>)
+    : {};
+  const hasOutput = hasVisibleContent(msg.content);
+  const resultText = hasOutput ? extractTextFromToolContent(msg.content) : null;
+  const isStreaming = !hasOutput && !resultText;
+
+  if (bare === "send_message") {
+    const sessionId = typeof input.sessionId === "string" ? input.sessionId : "unknown";
+    const message = typeof input.message === "string" ? input.message : "";
+    const isError = resultText?.toLowerCase().startsWith("error") ?? false;
+    return { type: "sent", sessionId, message, isStreaming, isError };
+  }
+
+  if (bare === "wait_for_message") {
+    const fromSessionId = typeof input.fromSessionId === "string" ? input.fromSessionId : undefined;
+    const timeout = typeof input.timeout === "number" ? input.timeout : undefined;
+    const hasMessage = resultText?.startsWith("Message from session") ?? false;
+    const isTimedOut = resultText?.includes("No message received") ?? false;
+    const isCancelled = resultText === "Wait was cancelled.";
+
+    if (hasMessage && resultText) {
+      const match = resultText.match(/^Message from session (.+?):\n\n([\s\S]*)$/);
+      if (match) {
+        return { type: "received", fromSessionId: match[1]!, message: match[2]! };
+      }
+    }
+    return { type: "waiting", fromSessionId, timeout, isTimedOut, isCancelled, isStreaming };
+  }
+
+  // check_messages
+  const fromSessionId = typeof input.fromSessionId === "string" ? input.fromSessionId : undefined;
+  const isEmpty = resultText === "No pending messages.";
+  const parsedMessages: Array<{ fromSessionId: string; message: string }> = [];
+  if (resultText && !isEmpty) {
+    const body = resultText.replace(/^\d+ message\(s\) received:\n\n/, "");
+    const parts = body.split(/\n\n(?=\[)/);
+    for (const part of parts) {
+      const match = part.match(/^\[(.+?)\]\s([\s\S]*)$/);
+      if (match) parsedMessages.push({ fromSessionId: match[1]!, message: match[2]! });
+    }
+  }
+  return { type: "check", fromSessionId, messages: parsedMessages, isEmpty, isStreaming };
+}
+
+/**
+ * Second grouping pass: collapses consecutive send_message / wait_for_message /
+ * check_messages tool cards into a single "subAgentConversation" pseudo-message
+ * rendered as a compact chat window.
+ */
+export function groupSubAgentConversations(messages: RelayMessage[]): RelayMessage[] {
+  const result: RelayMessage[] = [];
+  let i = 0;
+
+  while (i < messages.length) {
+    const msg = messages[i];
+
+    if ((msg.role !== "tool" && msg.role !== "toolResult") || !isSubAgentTool(msg.toolName)) {
+      result.push(msg);
+      i++;
+      continue;
+    }
+
+    // Start of a sub-agent messaging run
+    const startKey = msg.key;
+    const turns: SubAgentTurn[] = [];
+    let lastTimestamp = msg.timestamp;
+
+    while (
+      i < messages.length &&
+      (messages[i]!.role === "tool" || messages[i]!.role === "toolResult") &&
+      isSubAgentTool(messages[i]!.toolName)
+    ) {
+      const curr = messages[i]!;
+      turns.push(messageToSubAgentTurn(curr));
+      lastTimestamp = curr.timestamp ?? lastTimestamp;
+      i++;
+    }
+
+    result.push({
+      key: `sub-agent-convo:${startKey}`,
+      role: "subAgentConversation",
+      timestamp: lastTimestamp,
+      content: null,
+      subAgentTurns: turns,
+    });
+  }
+
+  return result;
 }
