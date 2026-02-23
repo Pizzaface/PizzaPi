@@ -1,6 +1,6 @@
 import * as React from "react";
 import { Button } from "@/components/ui/button";
-import { RefreshCw, HardDrive, Hash, Loader2, Server, ChevronDown, Plus, FolderOpen, Terminal, Clock } from "lucide-react";
+import { RefreshCw, HardDrive, Hash, Loader2, Server, ChevronDown, Plus, FolderOpen, Terminal, Clock, Power } from "lucide-react";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 import { formatPathTail } from "@/lib/path";
@@ -46,6 +46,7 @@ export function RunnerManager({ onOpenSession }: RunnerManagerProps) {
     const [sessions, setSessions] = React.useState<LiveSession[]>([]);
     const [loading, setLoading] = React.useState(true);
     const [restarting, setRestarting] = React.useState<Set<string>>(new Set());
+    const [stopping, setStopping] = React.useState<Set<string>>(new Set());
 
     // New session dialog
     const [spawnRunnerId, setSpawnRunnerId] = React.useState<string | null>(null);
@@ -132,6 +133,34 @@ export function RunnerManager({ onOpenSession }: RunnerManagerProps) {
                 });
                 fetchData();
             }, 2000);
+        }
+    };
+
+    const handleStop = async (runnerId: string) => {
+        if (!confirm("Stop this runner? It will shut down completely and won't restart automatically.")) return;
+        setStopping((prev) => new Set(prev).add(runnerId));
+        try {
+            const res = await fetch("/api/runners/stop", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ runnerId }),
+                credentials: "include",
+            });
+            if (!res.ok) {
+                const data = await res.json();
+                alert(`Failed to stop runner: ${data.error || "Unknown error"}`);
+            }
+        } catch (error) {
+            console.error("Failed to stop runner:", error);
+        } finally {
+            setTimeout(() => {
+                setStopping((prev) => {
+                    const next = new Set(prev);
+                    next.delete(runnerId);
+                    return next;
+                });
+                fetchData();
+            }, 3000);
         }
     };
 
@@ -238,7 +267,7 @@ export function RunnerManager({ onOpenSession }: RunnerManagerProps) {
 
     return (
         <>
-            <div className="flex flex-col gap-6 p-6 max-w-4xl mx-auto w-full">
+            <div className="flex flex-col gap-6 p-4 sm:p-6 max-w-4xl mx-auto w-full">
                 {/* Header */}
                 <div className="flex items-start justify-between">
                     <div className="space-y-0.5">
@@ -259,7 +288,7 @@ export function RunnerManager({ onOpenSession }: RunnerManagerProps) {
 
                 {/* Empty state */}
                 {runners.length === 0 ? (
-                    <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-border/60 py-16 px-8 gap-4 text-center bg-muted/20">
+                    <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-border/60 py-10 px-4 sm:py-16 sm:px-8 gap-4 text-center bg-muted/20">
                         <div className="rounded-full bg-muted p-3">
                             <Server className="h-6 w-6 text-muted-foreground" />
                         </div>
@@ -282,7 +311,9 @@ export function RunnerManager({ onOpenSession }: RunnerManagerProps) {
                                     runner={runner}
                                     sessions={runnerSessions}
                                     isRestarting={restarting.has(runner.runnerId)}
+                                    isStopping={stopping.has(runner.runnerId)}
                                     onRestart={() => handleRestart(runner.runnerId)}
+                                    onStop={() => handleStop(runner.runnerId)}
                                     onNewSession={() => handleOpenNewSession(runner.runnerId)}
                                     onOpenSession={onOpenSession}
                                     onSkillsChange={(runnerId, updatedSkills) => {
@@ -388,7 +419,9 @@ interface RunnerCardProps {
     runner: RunnerInfo;
     sessions: LiveSession[];
     isRestarting: boolean;
+    isStopping: boolean;
     onRestart: () => void;
+    onStop: () => void;
     onNewSession: () => void;
     onOpenSession?: (sessionId: string) => void;
     onSkillsChange?: (runnerId: string, skills: SkillInfo[]) => void;
@@ -398,7 +431,7 @@ function formatTime(iso: string): string {
     return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-function RunnerCard({ runner, sessions, isRestarting, onRestart, onNewSession, onOpenSession, onSkillsChange }: RunnerCardProps) {
+function RunnerCard({ runner, sessions, isRestarting, isStopping, onRestart, onStop, onNewSession, onOpenSession, onSkillsChange }: RunnerCardProps) {
     const [sessionsOpen, setSessionsOpen] = React.useState(true);
 
     return (
@@ -406,20 +439,22 @@ function RunnerCard({ runner, sessions, isRestarting, onRestart, onNewSession, o
             {/* Subtle top accent line */}
             <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-green-500/40 to-transparent" />
 
-            <div className="p-4">
+            <div className="p-3 sm:p-4">
                 {/* Top row: name + status + actions */}
-                <div className="flex items-start justify-between gap-3">
-                    <div className="flex items-center gap-2.5 min-w-0">
+                <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-3 min-w-0">
                         {/* Online indicator dot */}
-                        <div className="relative flex-shrink-0 mt-0.5">
-                            <div className="h-2 w-2 rounded-full bg-green-500" />
-                            <div className="absolute inset-0 h-2 w-2 rounded-full bg-green-500 animate-ping opacity-50" />
+                        <div className="relative flex-shrink-0">
+                            <div className="h-2.5 w-2.5 rounded-full bg-green-500 shadow-sm" />
+                            <div className="absolute inset-0 h-2.5 w-2.5 rounded-full bg-green-500 animate-ping opacity-40" />
                         </div>
-                        <div className="min-w-0">
-                            <p className="font-semibold text-sm leading-tight truncate">
-                                {runner.name || "Unnamed Runner"}
-                            </p>
-                            <p className="font-mono text-[11px] text-muted-foreground/70 mt-0.5 truncate">
+                        <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2">
+                                <p className="font-semibold text-sm leading-none truncate">
+                                    {runner.name || "Unnamed Runner"}
+                                </p>
+                            </div>
+                            <p className="font-mono text-[10px] text-muted-foreground/60 mt-1 truncate">
                                 {runner.runnerId}
                             </p>
                         </div>
@@ -429,25 +464,42 @@ function RunnerCard({ runner, sessions, isRestarting, onRestart, onNewSession, o
                         <Button
                             variant="outline"
                             size="sm"
-                            className="h-7 px-2.5 text-xs border-border/60 text-muted-foreground hover:text-foreground hover:border-border transition-colors"
+                            className="h-8 w-8 sm:w-auto px-0 sm:px-3 text-xs border-border/60 hover:border-border hover:bg-accent/50 transition-all shadow-sm"
                             onClick={onNewSession}
+                            title="New Session"
                         >
-                            <Plus className="h-3 w-3 mr-1" />
-                            New Session
+                            <Plus className="h-4 w-4 sm:h-3.5 sm:w-3.5 sm:mr-1.5" />
+                            <span className="hidden sm:inline">New Session</span>
                         </Button>
                         <Button
                             variant="outline"
                             size="sm"
-                            className="h-7 px-2.5 text-xs border-border/60 text-muted-foreground hover:text-amber-500 hover:border-amber-500/40 hover:bg-amber-500/5 dark:hover:border-amber-500/30 dark:hover:bg-amber-500/10 transition-colors"
+                            className="h-8 w-8 sm:w-auto px-0 sm:px-3 text-xs border-border/60 hover:border-amber-500/40 hover:bg-amber-500/5 hover:text-amber-600 dark:hover:text-amber-400 transition-all"
                             onClick={onRestart}
-                            disabled={isRestarting}
+                            disabled={isRestarting || isStopping}
+                            title="Restart Runner"
                         >
                             {isRestarting ? (
-                                <Loader2 className="h-3 w-3 animate-spin mr-1" />
+                                <Loader2 className="h-3.5 w-3.5 animate-spin sm:mr-1.5" />
                             ) : (
-                                <RefreshCw className="h-3 w-3 mr-1" />
+                                <RefreshCw className="h-4 w-4 sm:h-3.5 sm:w-3.5 sm:mr-1.5" />
                             )}
-                            {isRestarting ? "Restarting…" : "Restart"}
+                            <span className="hidden sm:inline">{isRestarting ? "Restarting…" : "Restart"}</span>
+                        </Button>
+                        <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-8 w-8 sm:w-auto px-0 sm:px-3 text-xs border-border/60 hover:border-red-500/40 hover:bg-red-500/5 hover:text-red-600 dark:hover:text-red-400 transition-all"
+                            onClick={onStop}
+                            disabled={isRestarting || isStopping}
+                            title="Stop Runner"
+                        >
+                            {isStopping ? (
+                                <Loader2 className="h-3.5 w-3.5 animate-spin sm:mr-1.5" />
+                            ) : (
+                                <Power className="h-4 w-4 sm:h-3.5 sm:w-3.5 sm:mr-1.5" />
+                            )}
+                            <span className="hidden sm:inline">{isStopping ? "Stopping…" : "Stop"}</span>
                         </Button>
                     </div>
                 </div>
@@ -456,7 +508,7 @@ function RunnerCard({ runner, sessions, isRestarting, onRestart, onNewSession, o
                 <div className="my-3 border-t border-border/40" />
 
                 {/* Stats row */}
-                <div className="flex items-center gap-5">
+                <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
                     <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
                         <Hash className="h-3.5 w-3.5 opacity-60" />
                         <span>

@@ -41,6 +41,8 @@ export interface SessionSidebarProps {
     onRelayStatusChange?: (state: DotState) => void;
     /** Called whenever the live sessions list changes so the parent can use it (e.g. mobile switcher) */
     onSessionsChange?: (sessions: HubSession[]) => void;
+    /** Called when the user taps the close/back button on mobile */
+    onClose?: () => void;
 }
 
 function formatRelativeDate(isoString: string): string {
@@ -119,6 +121,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     activeModel,
     onRelayStatusChange,
     onSessionsChange,
+    onClose,
 }: SessionSidebarProps) {
     const [collapsed, setCollapsed] = React.useState(false);
 
@@ -283,6 +286,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
             {/* Sidebar header */}
             <div className="flex items-center justify-between px-3 py-2 border-b border-sidebar-border flex-shrink-0">
                 <div className="flex items-center gap-2">
+                    {/* Desktop: collapse button */}
                     <Button
                         variant="ghost"
                         size="icon"
@@ -292,6 +296,18 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                     >
                         <PanelLeftClose className="h-4 w-4" />
                     </Button>
+                    {/* Mobile: back/close button */}
+                    {onClose && (
+                        <Button
+                            variant="ghost"
+                            size="icon"
+                            className="md:hidden h-8 w-8 -ml-1 text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent"
+                            onClick={onClose}
+                            aria-label="Close sidebar"
+                        >
+                            <PanelLeftClose className="h-4 w-4" />
+                        </Button>
+                    )}
                     <span className="text-[0.7rem] font-semibold uppercase tracking-widest text-sidebar-foreground/60">
                         Sessions
                     </span>
@@ -326,7 +342,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                     <button
                         onClick={onShowRunners}
                         className={cn(
-                            "flex items-center gap-2.5 w-full px-3 py-2 rounded-lg text-sm font-medium transition-colors",
+                            "flex items-center gap-2.5 w-full px-3 py-3 md:py-2 rounded-lg text-sm font-medium transition-colors active:scale-[0.98]",
                             showRunners
                                 ? "bg-sidebar-accent text-sidebar-accent-foreground"
                                 : "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
@@ -340,7 +356,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                     </button>
                 </div>
 
-                <ScrollArea className="flex-1 px-2 pb-2">
+                <ScrollArea className="flex-1 px-2" style={{ paddingBottom: "max(0.5rem, env(safe-area-inset-bottom))" }}>
                     {!hasLoaded ? (
                         <SidebarSkeleton />
                     ) : liveGroups.size === 0 ? (
@@ -375,7 +391,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                             onClick={() => onOpenSession(s.sessionId)}
                                             title={`View session ${s.sessionId}`}
                                             className={cn(
-                                                "flex items-center gap-2.5 w-full min-w-0 px-2.5 py-2.5 rounded-lg text-left transition-colors",
+                                                "flex items-center gap-2.5 w-full min-w-0 px-2.5 py-3 md:py-2.5 rounded-lg text-left transition-colors active:scale-[0.98]",
                                                 isSelected
                                                     ? "bg-sidebar-accent text-sidebar-accent-foreground"
                                                     : "text-sidebar-foreground hover:bg-sidebar-accent/50",
@@ -446,25 +462,25 @@ export const SessionSidebar = React.memo(function SessionSidebar({
 
     if (effectiveCollapsed) {
         return (
-            <aside className="hidden md:flex flex-col h-full bg-sidebar border-r border-sidebar-border flex-shrink-0 w-10">
-                <div className="p-2 flex flex-col gap-2">
+            <aside className="hidden md:flex flex-col h-full bg-sidebar border-r border-sidebar-border flex-shrink-0 w-12">
+                <div className="flex flex-col items-center gap-1 py-2">
                     <Button
-                        variant="outline"
+                        variant="ghost"
                         size="icon"
-                        className="h-8 w-8 shadow-sm"
+                        className="h-8 w-8 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
                         onClick={() => setCollapsed(false)}
                         aria-label="Expand sidebar"
                     >
                         <PanelLeftOpen className="h-4 w-4" />
                     </Button>
                     <Button
-                        variant={showRunners ? "secondary" : "ghost"}
+                        variant="ghost"
                         size="icon"
-                        className="h-8 w-8"
+                        className={cn("h-8 w-8 hover:bg-sidebar-accent", showRunners ? "text-primary" : "text-sidebar-foreground/60 hover:text-sidebar-foreground")}
                         onClick={onShowRunners}
                         title="Runners"
                     >
-                        <HardDrive className={cn("h-4 w-4", showRunners && "text-primary")} />
+                        <HardDrive className="h-4 w-4" />
                     </Button>
                 </div>
             </aside>

@@ -117,6 +117,9 @@ export interface RunnerServerToClientEvents {
   /** Instructs runner to restart */
   restart: (data: Record<string, never>) => void;
 
+  /** Instructs runner to shut down completely (no respawn) */
+  shutdown: (data: Record<string, never>) => void;
+
   /** Health check ping */
   ping: (data: Record<string, never>) => void;
 

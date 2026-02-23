@@ -252,6 +252,47 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
         return Response.json({ ok: true });
     }
 
+    // ── Runner stop (clean shutdown, no respawn) ─────────────────────────────
+
+    if (url.pathname === "/api/runners/stop" && req.method === "POST") {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        let body: any = {};
+        try {
+            body = await req.json();
+        } catch {
+            body = {};
+        }
+
+        const runnerId = typeof body.runnerId === "string" ? body.runnerId : undefined;
+        if (!runnerId) {
+            return Response.json({ error: "Missing runnerId" }, { status: 400 });
+        }
+
+        const runner = await getRunnerData(runnerId);
+        if (!runner) {
+            return Response.json({ error: "Runner not found" }, { status: 404 });
+        }
+
+        if (runner.userId !== identity.userId) {
+            return Response.json({ error: "Forbidden" }, { status: 403 });
+        }
+
+        const runnerSocket = getLocalRunnerSocket(runnerId);
+        if (!runnerSocket) {
+            return Response.json({ error: "Runner is not connected to this server" }, { status: 502 });
+        }
+
+        try {
+            runnerSocket.emit("shutdown", {});
+        } catch {
+            return Response.json({ error: "Failed to send shutdown request to runner" }, { status: 502 });
+        }
+
+        return Response.json({ ok: true });
+    }
+
     // ── Terminal creation ────────────────────────────────────────────────────
 
     if (url.pathname === "/api/runners/terminal" && req.method === "POST") {

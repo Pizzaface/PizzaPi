@@ -54,6 +54,12 @@ async function main() {
 
     // `runner` → outer supervisor (spawns daemon as a child process so that a
     //   crash in the PTY layer only kills the child, not the supervisor).
+    if (args[0] === "runner" && args[1] === "stop") {
+        const { runStop } = await import("./runner/stop.js");
+        const code = await runStop();
+        process.exit(code);
+    }
+
     if (args[0] === "runner") {
         const { runSupervisor } = await import("./runner/supervisor.js");
         const code = await runSupervisor(args.slice(1));

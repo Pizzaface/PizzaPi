@@ -10,6 +10,7 @@ import { PizzaLogo } from "@/components/PizzaLogo";
 import { authClient, useSession, signOut } from "@/lib/auth-client";
 import { io, type Socket } from "socket.io-client";
 import type { ViewerServerToClientEvents, ViewerClientToServerEvents } from "@pizzapi/protocol";
+import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import {
@@ -1877,7 +1878,7 @@ export function App() {
       <div className="pp-shell flex flex-1 min-h-0 overflow-hidden relative">
         <div
           className={
-            "pp-sidebar-wrap absolute inset-y-0 left-0 z-40 w-72 max-w-[85vw] border-r border-sidebar-border bg-sidebar shadow-lg md:static md:z-auto md:w-auto md:max-w-none md:border-r-0 md:bg-transparent md:shadow-none " +
+            "pp-sidebar-wrap absolute inset-y-0 left-0 z-40 w-72 max-w-[85vw] border-r border-sidebar-border bg-sidebar shadow-2xl md:static md:z-auto md:w-auto md:max-w-none md:border-r-0 md:bg-transparent md:shadow-none transition-transform duration-200 ease-in-out md:transition-none will-change-transform " +
             (sidebarOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0")
           }
         >
@@ -1891,18 +1892,19 @@ export function App() {
             activeModel={activeModel}
             onRelayStatusChange={setRelayStatus}
             onSessionsChange={setLiveSessions}
+            onClose={() => setSidebarOpen(false)}
           />
         </div>
 
-        {/* Mobile overlay */}
-        {sidebarOpen && (
-          <button
-            className="pp-sidebar-overlay absolute inset-0 z-30 bg-black/40 md:hidden"
-            onClick={() => setSidebarOpen(false)}
-            aria-label="Close sidebar"
-            type="button"
-          />
-        )}
+        {/* Mobile overlay — fades in/out with the sidebar */}
+        <div
+          className={cn(
+            "pp-sidebar-overlay absolute inset-0 z-30 bg-black/50 md:hidden transition-opacity duration-200",
+            sidebarOpen ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none",
+          )}
+          onClick={() => setSidebarOpen(false)}
+          aria-hidden="true"
+        />
 
         <div className="flex flex-1 min-w-0 h-full overflow-hidden">
           {/* File Explorer side panel — desktop: right sidebar, mobile: full-screen overlay */}

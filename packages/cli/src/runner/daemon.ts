@@ -31,6 +31,7 @@ interface RunnerSession {
 // Schema:
 //   {
 //     "pid": 12345,            // PID of the currently-running daemon (lock)
+//     "supervisorPid": 12344,  // PID of the outer supervisor process
 //     "startedAt": "<iso>",    // ISO timestamp of that daemon start
 //     "runnerId": "<uuid>",    // stable runner identity (never changes)
 //     "runnerSecret": "<hex>"  // 32-byte secret used to re-authenticate
@@ -38,12 +39,13 @@ interface RunnerSession {
 
 interface RunnerState {
     pid: number;
+    supervisorPid?: number;
     startedAt: string;
     runnerId: string;
     runnerSecret: string;
 }
 
-function defaultStatePath(): string {
+export function defaultStatePath(): string {
     return process.env.PIZZAPI_RUNNER_STATE_PATH ?? join(homedir(), ".pizzapi", "runner.json");
 }
 
@@ -98,6 +100,7 @@ function acquireStateAndIdentity(statePath: string): { runnerId: string; runnerS
 
         const state: RunnerState = {
             pid: process.pid,
+            supervisorPid: typeof existing.supervisorPid === "number" ? existing.supervisorPid : undefined,
             startedAt: new Date().toISOString(),
             runnerId,
             runnerSecret,
@@ -126,6 +129,7 @@ function releaseStateLock(statePath: string) {
         // Only clear the lock fields; keep runnerId + runnerSecret intact.
         const updated = {
             pid: 0,
+            supervisorPid: 0,
             startedAt: "",
             runnerId: existing.runnerId ?? "",
             runnerSecret: existing.runnerSecret ?? "",
@@ -682,6 +686,13 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             }, 500);
         });
 
+        socket.on("shutdown", () => {
+            console.log("pizzapi runner: shutdown request received. Exiting cleanly...");
+            setTimeout(() => {
+                shutdown(0);
+            }, 500);
+        });
+
         socket.on("ping", () => {
             if (isShuttingDown) return;
             // pong is not in the typed protocol yet — emit untyped
@@ -1123,7 +1134,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
     });
 }
 
-function isPidRunning(pid: number): boolean {
+export function isPidRunning(pid: number): boolean {
     if (!Number.isFinite(pid) || pid <= 0) return false;
     try {
         process.kill(pid, 0);

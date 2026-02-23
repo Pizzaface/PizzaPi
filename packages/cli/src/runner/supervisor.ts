@@ -24,8 +24,9 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { defaultStatePath } from "./daemon.js";
 
 const RESTART_DELAY_BASE = 2_000;  // 2 s
 const RESTART_DELAY_MAX  = 60_000; // 60 s
@@ -57,6 +58,20 @@ export async function runSupervisor(_args: string[] = []): Promise<number> {
     };
     process.on("SIGINT",  () => forwardSignal("SIGINT"));
     process.on("SIGTERM", () => forwardSignal("SIGTERM"));
+
+    // Write the supervisor PID into the state file so `runner stop` can
+    // find and signal us.  The daemon will overwrite `pid` with its own PID
+    // when it acquires the lock, but `supervisorPid` is preserved.
+    const statePath = defaultStatePath();
+    try {
+        if (existsSync(statePath)) {
+            const state = JSON.parse(readFileSync(statePath, "utf-8"));
+            state.supervisorPid = process.pid;
+            writeFileSync(statePath, JSON.stringify(state, null, 2), { encoding: "utf-8", mode: 0o600 });
+        }
+    } catch {
+        // Best-effort — the daemon will create the file if it doesn't exist.
+    }
 
     console.log("pizzapi supervisor: starting runner daemon as subprocess…");
 
