@@ -11,6 +11,16 @@ const silent = { render: (_width: number): string[] => [], invalidate: () => {} 
 export const setSessionNameExtension: ExtensionFactory = (pi) => {
     let named = false;
 
+    // Reset naming state on each new/switched session so fresh sessions can be named.
+    // For resumed sessions pi.getSessionName() will be non-null, so before_agent_start
+    // will still skip the naming instruction via its own guard.
+    pi.on("session_start", () => {
+        named = false;
+    });
+    pi.on("session_switch", () => {
+        named = false;
+    });
+
     // A silent tool the model calls to name the session.
     // renderCall/renderResult return an empty component so nothing is shown in the TUI.
     pi.registerTool({

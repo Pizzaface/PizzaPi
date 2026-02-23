@@ -1531,6 +1531,17 @@ export function App() {
     }
   }, [spawningSession, spawnRunnerId, spawnCwd, handleOpenSession, waitForSessionToGoLive]);
 
+  // Derive runner/cwd for the active session (used by File Explorer)
+  const activeSessionInfo = React.useMemo(() => {
+    if (!activeSessionId) return null;
+    const liveSession = liveSessions.find((s) => s.sessionId === activeSessionId);
+    if (!liveSession) return null;
+    return {
+      runnerId: liveSession.runnerId ?? null,
+      cwd: liveSession.cwd ?? "",
+    };
+  }, [activeSessionId, liveSessions]);
+
   if (isPending) {
     return (
       <div className="flex h-[100dvh] w-full flex-col items-center justify-center bg-background gap-2 animate-in fade-in duration-300">
@@ -1566,17 +1577,6 @@ export function App() {
       .slice(0, 2);
     return parts.map((p) => p[0]?.toUpperCase()).join("") || "U";
   }
-
-  // Derive runner/cwd for the active session (used by File Explorer)
-  const activeSessionInfo = React.useMemo(() => {
-    if (!activeSessionId) return null;
-    const session = liveSessions.find((s) => s.sessionId === activeSessionId);
-    if (!session) return null;
-    return {
-      runnerId: session.runnerId ?? null,
-      cwd: session.cwd ?? "",
-    };
-  }, [activeSessionId, liveSessions]);
 
   const activeModelKey = activeModel ? `${activeModel.provider}/${activeModel.id}` : "";
   const modelGroups = new Map<string, ConfiguredModelInfo[]>();
