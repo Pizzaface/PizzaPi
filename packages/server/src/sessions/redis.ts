@@ -178,5 +178,14 @@ export async function deleteRelayEventCache(sessionId: string): Promise<void> {
 
 export async function deleteRelayEventCaches(sessionIds: string[]): Promise<void> {
     if (sessionIds.length === 0) return;
-    await Promise.all(sessionIds.map((sessionId) => deleteRelayEventCache(sessionId)));
+    if (isRedisDisabled()) return;
+    const redis = activeClient();
+    if (!redis) return;
+
+    try {
+        const keys = sessionIds.map((sessionId) => eventsKey(sessionId));
+        await redis.del(keys);
+    } catch (error) {
+        logUnavailableOnce("Failed to delete relay event caches from Redis", error);
+    }
 }
