@@ -544,6 +544,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         const runningSessions = new Map<string, RunnerSession>();
         const runnerName = process.env.PIZZAPI_RUNNER_NAME?.trim() || hostname();
         let runnerId: string | null = null;
+        let isFirstConnect = true;
 
         const socket: Socket<RunnerServerToClientEvents, RunnerClientToServerEvents> = io(
             urlObj.origin + "/runner",
@@ -594,12 +595,9 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 socket.disconnect();
                 return;
             }
-            console.log(`pizzapi runner: connected. Registering as ${identity.runnerId}…`);
-            emitRegister();
-        });
-
-        socket.io.on("reconnect", () => {
-            console.log("pizzapi runner: reconnected. Re-registering…");
+            const verb = isFirstConnect ? "connected" : "reconnected";
+            isFirstConnect = false;
+            console.log(`pizzapi runner: ${verb}. Registering as ${identity.runnerId}…`);
             emitRegister();
         });
 

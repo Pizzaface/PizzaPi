@@ -1,8 +1,4 @@
-import type { WsData } from "./ws/registry.js";
-import { onClose, onMessage, onOpen } from "./ws/relay.js";
 import { auth } from "./auth.js";
-import { handleWsUpgrade } from "./routes/ws.js";
-import { isLegacyWsEnabled, logLegacyConnection, legacyDisabledResponse } from "./ws/legacy-shim.js";
 import { handleApi } from "./routes/api.js";
 import {
     ensureRelaySessionTables,
@@ -10,7 +6,7 @@ import {
     pruneExpiredRelaySessions,
 } from "./sessions/store.js";
 import { deleteRelayEventCaches, initializeRelayRedisCache } from "./sessions/redis.js";
-import { sweepExpiredSharedSessions } from "./ws/registry.js";
+import { sweepExpiredSessions } from "./ws/sio-registry.js";
 import { sweepExpiredAttachments } from "./attachments/store.js";
 import { ensurePushSubscriptionTable } from "./push.js";
 
@@ -29,10 +25,11 @@ await ensureRelaySessionTables();
 await ensurePushSubscriptionTable();
 void initializeRelayRedisCache();
 
-const server = Bun.serve<WsData>({
+// ── HTTP server (REST API + auth) ─────────────────────────────────────────
+const server = Bun.serve({
     port: PORT,
 
-    async fetch(req, server) {
+    async fetch(req) {
         const url = new URL(req.url);
 
         // ── better-auth handler ────────────────────────────────────────────────
@@ -43,15 +40,6 @@ const server = Bun.serve<WsData>({
                 console.error("[auth] handler threw:", e);
                 return Response.json({ error: "Auth error" }, { status: 500 });
             }
-        }
-
-        // ── WebSocket upgrades (legacy raw WS — gated by PIZZAPI_LEGACY_WS) ──
-        if (url.pathname.startsWith("/ws/")) {
-            if (!isLegacyWsEnabled()) {
-                return legacyDisabledResponse();
-            }
-            const res = await handleWsUpgrade(req, url, server);
-            if (res !== undefined) return res;
         }
 
         // ── REST endpoints ─────────────────────────────────────────────────────
@@ -65,21 +53,11 @@ const server = Bun.serve<WsData>({
 
         return Response.json({ error: "Not found" }, { status: 404 });
     },
-
-    websocket: {
-        open: (ws) => {
-            logLegacyConnection(ws.data.role, ws.data);
-            onOpen(ws);
-        },
-        message: onMessage,
-        close: onClose,
-    },
 });
 
 // ── Socket.IO server (node:http, separate port) ───────────────────────────
 // Socket.IO cannot attach to Bun.serve() directly — it needs a node:http server.
 // This runs on a separate port alongside the existing Bun.serve server.
-// See packages/server/spike/FINDINGS.md for rationale.
 
 const SIO_PORT = parseInt(process.env.PIZZAPI_SOCKETIO_PORT ?? String(PORT + 1));
 const REDIS_URL = process.env.PIZZAPI_REDIS_URL ?? "redis://localhost:6379";
@@ -130,7 +108,7 @@ try {
 
 const sweepMs = getEphemeralSweepIntervalMs();
 setInterval(() => {
-    sweepExpiredSharedSessions();
+    void sweepExpiredSessions();
     void sweepExpiredAttachments();
     void pruneExpiredRelaySessions()
         .then((expiredIds) => {

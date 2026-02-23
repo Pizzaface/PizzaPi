@@ -2,8 +2,17 @@ import { getModel, getProviders, getModels } from "@mariozechner/pi-ai";
 import { Agent } from "@mariozechner/pi-agent-core";
 import type { AgentEvent } from "@mariozechner/pi-agent-core";
 import { createToolkit } from "@pizzapi/tools";
-import { getRunner, getRunners, getSessions, getSharedSession, linkSessionToRunner, recordRunnerSession, registerTerminal } from "../ws/registry.js";
-import { sendSkillCommand, sendRunnerCommand } from "../ws/relay.js";
+import {
+    getRunnerData,
+    getRunners,
+    getLocalRunnerSocket,
+    getSessions,
+    getSharedSession,
+    linkSessionToRunner,
+    recordRunnerSession,
+    registerTerminal,
+} from "../ws/sio-registry.js";
+import { sendSkillCommand, sendRunnerCommand } from "../ws/namespaces/runner.js";
 import { waitForSpawnAck } from "../ws/runner-control.js";
 import { apiKeyRateLimitConfig, auth, kysely } from "../auth.js";
 import { requireSession, validateApiKey } from "../middleware.js";
@@ -114,7 +123,7 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
     if (url.pathname === "/api/runners" && req.method === "GET") {
         const identity = await requireSession(req);
         if (identity instanceof Response) return identity;
-        return Response.json({ runners: getRunners(identity.userId) });
+        return Response.json({ runners: await getRunners(identity.userId) });
     }
 
     if (url.pathname === "/api/runners/spawn" && req.method === "POST") {
@@ -148,39 +157,40 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
         }
 
         const runnerId = requestedRunnerId;
-        const runner = getRunner(runnerId);
+        const runner = await getRunnerData(runnerId);
         if (!runner) {
             return Response.json({ error: "Runner not found" }, { status: 404 });
         }
-        const runnerUserId = (runner as any).userId as string | null | undefined;
-        if (!runnerUserId) {
+        if (!runner.userId) {
             return Response.json({ error: "Runner is not associated with a user" }, { status: 403 });
         }
-        if (runnerUserId !== identity.userId) {
+        if (runner.userId !== identity.userId) {
             return Response.json({ error: "Forbidden" }, { status: 403 });
         }
 
         if (requestedCwd) {
             // Safety check: server-side enforcement (runner also enforces).
             // If the runner declares workspace roots, do not allow spawning outside them.
-            const hasRoots = Array.isArray((runner as any).roots) && (runner as any).roots.length > 0;
-            if (hasRoots && !runnerHasCwdAccess(runner, requestedCwd)) {
+            const roots = parseJsonArray(runner.roots);
+            if (roots.length > 0 && !cwdMatchesRoots(roots, requestedCwd)) {
                 return Response.json({ error: `Runner cannot access cwd: ${requestedCwd}` }, { status: 400 });
             }
+        }
+
+        const runnerSocket = getLocalRunnerSocket(runnerId);
+        if (!runnerSocket) {
+            return Response.json({ error: "Runner is not connected to this server" }, { status: 502 });
         }
 
         const sessionId = crypto.randomUUID();
 
         try {
-            runner.ws.send(
-                JSON.stringify({
-                    type: "new_session",
-                    sessionId,
-                    cwd: requestedCwd,
-                    ...(requestedPrompt ? { prompt: requestedPrompt } : {}),
-                    ...(requestedModel ? { model: requestedModel } : {}),
-                }),
-            );
+            runnerSocket.emit("new_session", {
+                sessionId,
+                cwd: requestedCwd,
+                ...(requestedPrompt ? { prompt: requestedPrompt } : {}),
+                ...(requestedModel ? { model: requestedModel } : {}),
+            });
         } catch {
             return Response.json({ error: "Failed to send spawn request to runner" }, { status: 502 });
         }
@@ -192,8 +202,8 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
         }
 
         // Best-effort accounting
-        recordRunnerSession(runnerId, sessionId);
-        linkSessionToRunner(runnerId, sessionId);
+        await recordRunnerSession(runnerId, sessionId);
+        await linkSessionToRunner(runnerId, sessionId);
 
         // Persist this cwd as a recent folder for the runner (best-effort, fire-and-forget).
         if (requestedCwd) {
@@ -219,18 +229,22 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
             return Response.json({ error: "Missing runnerId" }, { status: 400 });
         }
 
-        const runner = getRunner(runnerId);
+        const runner = await getRunnerData(runnerId);
         if (!runner) {
             return Response.json({ error: "Runner not found" }, { status: 404 });
         }
 
-        const runnerUserId = (runner as any).userId as string | null | undefined;
-        if (runnerUserId !== identity.userId) {
+        if (runner.userId !== identity.userId) {
             return Response.json({ error: "Forbidden" }, { status: 403 });
         }
 
+        const runnerSocket = getLocalRunnerSocket(runnerId);
+        if (!runnerSocket) {
+            return Response.json({ error: "Runner is not connected to this server" }, { status: 502 });
+        }
+
         try {
-            runner.ws.send(JSON.stringify({ type: "restart" }));
+            runnerSocket.emit("restart", {});
         } catch {
             return Response.json({ error: "Failed to send restart request to runner" }, { status: 502 });
         }
@@ -256,13 +270,12 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
             return Response.json({ error: "Missing runnerId" }, { status: 400 });
         }
 
-        const runner = getRunner(runnerId);
+        const runner = await getRunnerData(runnerId);
         if (!runner) {
             return Response.json({ error: "Runner not found" }, { status: 404 });
         }
 
-        const runnerUserId = (runner as any).userId as string | null | undefined;
-        if (!runnerUserId || runnerUserId !== identity.userId) {
+        if (!runner.userId || runner.userId !== identity.userId) {
             return Response.json({ error: "Forbidden" }, { status: 403 });
         }
 
@@ -272,7 +285,7 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
         // it will be triggered when the viewer's WebSocket connects and sends its
         // first terminal_resize with real dimensions. This eliminates the race
         // where the PTY starts (and possibly exits) before the viewer is ready.
-        registerTerminal(terminalId, runnerId, identity.userId, {
+        await registerTerminal(terminalId, runnerId, identity.userId, {
             cwd: requestedCwd,
             cols,
             rows,
@@ -289,12 +302,11 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
         if (identity instanceof Response) return identity;
 
         const runnerId = decodeURIComponent(recentFoldersMatch[1]);
-        const runner = getRunner(runnerId);
+        const runner = await getRunnerData(runnerId);
         if (!runner) {
             return Response.json({ error: "Runner not found" }, { status: 404 });
         }
-        const runnerUserId = (runner as any).userId as string | null | undefined;
-        if (runnerUserId !== identity.userId) {
+        if (runner.userId !== identity.userId) {
             return Response.json({ error: "Forbidden" }, { status: 403 });
         }
 
@@ -316,15 +328,14 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
         const runnerId = decodeURIComponent(skillsMatch[1]);
         const skillName = skillsMatch[2] ? decodeURIComponent(skillsMatch[2]) : undefined;
 
-        const runner = getRunner(runnerId);
+        const runner = await getRunnerData(runnerId);
         if (!runner) return Response.json({ error: "Runner not found" }, { status: 404 });
 
-        const runnerUserId = (runner as any).userId as string | null | undefined;
-        if (runnerUserId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
+        if (runner.userId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
 
-        // GET /api/runners/:id/skills — list skills (from in-memory cache)
+        // GET /api/runners/:id/skills — list skills (from Redis cache)
         if (req.method === "GET" && !skillName) {
-            return Response.json({ skills: (runner as any).skills ?? [] });
+            return Response.json({ skills: parseJsonArray(runner.skills) });
         }
 
         // GET /api/runners/:id/skills/:name — get full skill content
@@ -390,10 +401,9 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
         if (identity instanceof Response) return identity;
 
         const runnerId = decodeURIComponent(filesMatch[1]);
-        const runner = getRunner(runnerId);
+        const runner = await getRunnerData(runnerId);
         if (!runner) return Response.json({ error: "Runner not found" }, { status: 404 });
-        const runnerUserId = (runner as any).userId as string | null | undefined;
-        if (runnerUserId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
+        if (runner.userId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
 
         let body: any = {};
         try { body = await req.json(); } catch { body = {}; }
@@ -416,10 +426,9 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
         if (identity instanceof Response) return identity;
 
         const runnerId = decodeURIComponent(readFileMatch[1]);
-        const runner = getRunner(runnerId);
+        const runner = await getRunnerData(runnerId);
         if (!runner) return Response.json({ error: "Runner not found" }, { status: 404 });
-        const runnerUserId = (runner as any).userId as string | null | undefined;
-        if (runnerUserId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
+        if (runner.userId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
 
         let body: any = {};
         try { body = await req.json(); } catch { body = {}; }
@@ -446,10 +455,9 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
         if (identity instanceof Response) return identity;
 
         const runnerId = decodeURIComponent(gitStatusMatch[1]);
-        const runner = getRunner(runnerId);
+        const runner = await getRunnerData(runnerId);
         if (!runner) return Response.json({ error: "Runner not found" }, { status: 404 });
-        const runnerUserId = (runner as any).userId as string | null | undefined;
-        if (runnerUserId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
+        if (runner.userId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
 
         let body: any = {};
         try { body = await req.json(); } catch { body = {}; }
@@ -472,10 +480,9 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
         if (identity instanceof Response) return identity;
 
         const runnerId = decodeURIComponent(gitDiffMatch[1]);
-        const runner = getRunner(runnerId);
+        const runner = await getRunnerData(runnerId);
         if (!runner) return Response.json({ error: "Runner not found" }, { status: 404 });
-        const runnerUserId = (runner as any).userId as string | null | undefined;
-        if (runnerUserId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
+        if (runner.userId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
 
         let body: any = {};
         try { body = await req.json(); } catch { body = {}; }
@@ -497,7 +504,7 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
     if (url.pathname === "/api/sessions" && req.method === "GET") {
         const identity = await requireSession(req);
         if (identity instanceof Response) return identity;
-        const sessions = getSessions(identity.userId);
+        const sessions = await getSessions(identity.userId);
         const persistedSessions = await listPersistedRelaySessionsForUser(identity.userId);
         return Response.json({ sessions, persistedSessions });
     }
@@ -514,7 +521,7 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
             return Response.json({ error: "Missing session ID" }, { status: 400 });
         }
 
-        const session = getSharedSession(sessionId);
+        const session = await getSharedSession(sessionId);
         if (!session) {
             return Response.json({ error: "Session is not live" }, { status: 404 });
         }
@@ -741,10 +748,19 @@ function normalizePath(value: string): string {
     return trimmed.length > 1 ? trimmed.replace(/\/+$/, "") : trimmed;
 }
 
-function runnerHasCwdAccess(runner: ReturnType<typeof getRunner>, cwd: string): boolean {
-    if (!runner) return false;
-    const roots = (runner as any).roots as string[] | undefined;
-    if (!roots || roots.length === 0) return false;
+/** Safely parse a JSON string that should be an array. Returns [] on failure. */
+function parseJsonArray(value: string | null | undefined): any[] {
+    if (!value) return [];
+    try {
+        const parsed = JSON.parse(value);
+        return Array.isArray(parsed) ? parsed : [];
+    } catch {
+        return [];
+    }
+}
+
+/** Check whether a cwd is inside one of the allowed roots. */
+function cwdMatchesRoots(roots: string[], cwd: string): boolean {
     const nCwd = normalizePath(cwd);
     return roots.some((root) => {
         const r = normalizePath(root);
@@ -752,19 +768,19 @@ function runnerHasCwdAccess(runner: ReturnType<typeof getRunner>, cwd: string): 
     });
 }
 
-function pickRunnerIdLeastLoaded(): string | null {
-    const runners = getRunners().slice().sort((a, b) => a.sessionCount - b.sessionCount);
+async function pickRunnerIdLeastLoaded(): Promise<string | null> {
+    const runners = (await getRunners()).slice().sort((a, b) => a.sessionCount - b.sessionCount);
     return runners.length > 0 ? runners[0].runnerId : null;
 }
 
-function pickRunnerIdForCwd(requestedCwd?: string): string | null {
+async function pickRunnerIdForCwd(requestedCwd?: string): Promise<string | null> {
     const cwd = requestedCwd?.trim() ? requestedCwd : undefined;
     if (!cwd) return null;
 
-    const all = getRunners().map((r) => ({
+    const all = (await getRunners()).map((r) => ({
         runnerId: r.runnerId,
         sessionCount: r.sessionCount,
-        roots: (r as any).roots as string[] | undefined,
+        roots: r.roots as string[] | undefined,
     }));
 
     const nCwd = normalizePath(cwd);
