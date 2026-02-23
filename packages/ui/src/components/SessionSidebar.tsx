@@ -2,6 +2,14 @@ import * as React from "react";
 import { Resizable } from "react-resizable";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import { io } from "socket.io-client";
 import type { HubServerToClientEvents, HubClientToServerEvents } from "@pizzapi/protocol";
@@ -43,6 +51,8 @@ export interface SessionSidebarProps {
     onSessionsChange?: (sessions: HubSession[]) => void;
     /** Called when the user taps the close/back button on mobile */
     onClose?: () => void;
+    /** Called when the user confirms ending a session via the swipe gesture */
+    onEndSession?: (sessionId: string) => void;
 }
 
 function formatRelativeDate(isoString: string): string {
@@ -122,8 +132,58 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     onRelayStatusChange,
     onSessionsChange,
     onClose,
+    onEndSession,
 }: SessionSidebarProps) {
     const [collapsed, setCollapsed] = React.useState(false);
+
+    // Two-finger swipe-to-end gesture state
+    const [confirmEndSessionId, setConfirmEndSessionId] = React.useState<string | null>(null);
+    const touchStateRef = React.useRef<{
+        sessionId: string;
+        startX: number;
+        startY: number;
+        curX: number;
+        curY: number;
+    } | null>(null);
+
+    const handleSessionTouchStart = React.useCallback((e: React.TouchEvent, sessionId: string) => {
+        if (e.touches.length === 2) {
+            const x = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+            const y = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+            touchStateRef.current = { sessionId, startX: x, startY: y, curX: x, curY: y };
+        } else {
+            touchStateRef.current = null;
+        }
+    }, []);
+
+    const handleSessionTouchMove = React.useCallback((e: React.TouchEvent) => {
+        if (!touchStateRef.current || e.touches.length !== 2) {
+            if (e.touches.length !== 2) touchStateRef.current = null;
+            return;
+        }
+        const x = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+        const y = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+        touchStateRef.current.curX = x;
+        touchStateRef.current.curY = y;
+        // Prevent scroll if we're clearly swiping horizontally
+        const dx = x - touchStateRef.current.startX;
+        const dy = y - touchStateRef.current.startY;
+        if (Math.abs(dx) > 10 && Math.abs(dx) > Math.abs(dy)) {
+            e.preventDefault();
+        }
+    }, []);
+
+    const handleSessionTouchEnd = React.useCallback((_e: React.TouchEvent) => {
+        const state = touchStateRef.current;
+        touchStateRef.current = null;
+        if (!state) return;
+        const dx = state.curX - state.startX;
+        const dy = state.curY - state.startY;
+        // Right swipe: at least 60px horizontal, more horizontal than vertical
+        if (dx > 60 && Math.abs(dy) < Math.abs(dx) * 0.8) {
+            setConfirmEndSessionId(state.sessionId);
+        }
+    }, []);
 
     const [isDesktop, setIsDesktop] = React.useState(() => {
         if (typeof window === "undefined") return true;
@@ -277,12 +337,48 @@ export const SessionSidebar = React.memo(function SessionSidebar({
         );
     }, [liveSessions]);
 
+    // Find session name for the confirm dialog
+    const confirmSession = confirmEndSessionId
+        ? liveSessions.find((s) => s.sessionId === confirmEndSessionId)
+        : null;
+    const confirmSessionLabel = confirmSession?.sessionName?.trim()
+        || (confirmEndSessionId ? `Session ${confirmEndSessionId.slice(0, 8)}…` : "");
+
     const sidebarContent = (
         <aside
             className={cn(
                 "flex flex-col h-full bg-sidebar border-r border-sidebar-border flex-shrink-0 overflow-hidden relative w-full",
             )}
         >
+            {/* End-session confirmation dialog */}
+            <Dialog open={!!confirmEndSessionId} onOpenChange={(open) => { if (!open) setConfirmEndSessionId(null); }}>
+                <DialogContent>
+                    <DialogHeader>
+                        <DialogTitle>End Session</DialogTitle>
+                        <DialogDescription>
+                            End <span className="font-medium text-foreground">{confirmSessionLabel}</span>? The agent process
+                            will be stopped and the session will be closed.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => setConfirmEndSessionId(null)}>
+                            Cancel
+                        </Button>
+                        <Button
+                            variant="destructive"
+                            onClick={() => {
+                                if (confirmEndSessionId && onEndSession) {
+                                    onEndSession(confirmEndSessionId);
+                                }
+                                setConfirmEndSessionId(null);
+                            }}
+                        >
+                            End Session
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
             {/* Sidebar header */}
             <div className="flex items-center justify-between px-3 py-2 border-b border-sidebar-border flex-shrink-0">
                 <div className="flex items-center gap-2">
@@ -390,6 +486,9 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                             key={s.sessionId}
                                             onClick={() => onOpenSession(s.sessionId)}
                                             title={`View session ${s.sessionId}`}
+                                            onTouchStart={(e) => handleSessionTouchStart(e, s.sessionId)}
+                                            onTouchMove={handleSessionTouchMove}
+                                            onTouchEnd={handleSessionTouchEnd}
                                             className={cn(
                                                 "flex items-center gap-2.5 w-full min-w-0 px-2.5 py-3 md:py-2.5 rounded-lg text-left transition-colors active:scale-[0.98]",
                                                 isSelected

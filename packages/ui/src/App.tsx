@@ -260,7 +260,218 @@ export function App() {
   const [showApiKeys, setShowApiKeys] = React.useState(false);
   const [showRunners, setShowRunners] = React.useState(false);
   const [showTerminal, setShowTerminal] = React.useState(false);
+  const [terminalPosition, setTerminalPosition] = React.useState<"bottom" | "right" | "left">(() => {
+    try { return (localStorage.getItem("pp-terminal-position") as "bottom" | "right" | "left") ?? "bottom"; } catch { return "bottom"; }
+  });
+  const [terminalHeight, setTerminalHeight] = React.useState<number>(() => {
+    try {
+      const saved = localStorage.getItem("pp-terminal-height");
+      if (saved) return Math.max(120, Math.min(parseInt(saved, 10), 900));
+    } catch {}
+    return 280;
+  });
+  const [terminalWidth, setTerminalWidth] = React.useState<number>(() => {
+    try {
+      const saved = localStorage.getItem("pp-terminal-width");
+      if (saved) return Math.max(200, Math.min(parseInt(saved, 10), 1400));
+    } catch {}
+    return 480;
+  });
+  const terminalColumnRef = React.useRef<HTMLDivElement>(null);
+  // "height" = bottom panel vertical drag, "width-right" = right panel, "width-left" = left panel
+  const resizeDir = React.useRef<"height" | "width-right" | "width-left" | null>(null);
+
+  // Single handler — direction is derived from current terminalPosition at drag start
+  const handleTerminalResizeStart = React.useCallback((e: React.PointerEvent) => {
+    e.preventDefault();
+    resizeDir.current = terminalPosition === "bottom" ? "height"
+      : terminalPosition === "right" ? "width-right"
+      : "width-left";
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  }, [terminalPosition]);
+
+  const handleTerminalResizeMove = React.useCallback((e: React.PointerEvent) => {
+    const dir = resizeDir.current;
+    if (!dir || !terminalColumnRef.current) return;
+    const rect = terminalColumnRef.current.getBoundingClientRect();
+    if (dir === "height") {
+      setTerminalHeight(Math.max(120, Math.min(rect.bottom - e.clientY, rect.height - 80)));
+    } else if (dir === "width-right") {
+      setTerminalWidth(Math.max(200, Math.min(rect.right - e.clientX, rect.width - 200)));
+    } else {
+      setTerminalWidth(Math.max(200, Math.min(e.clientX - rect.left, rect.width - 200)));
+    }
+  }, []);
+
+  const handleTerminalResizeEnd = React.useCallback(() => {
+    const dir = resizeDir.current;
+    if (!dir) return;
+    resizeDir.current = null;
+    if (dir === "height") {
+      setTerminalHeight((h) => { try { localStorage.setItem("pp-terminal-height", String(Math.round(h))); } catch {} return h; });
+    } else {
+      setTerminalWidth((w) => { try { localStorage.setItem("pp-terminal-width", String(Math.round(w))); } catch {} return w; });
+    }
+  }, []);
+
+  // Panel drag-to-reposition
+  const isPanelDragging = React.useRef(false);
+  const panelDragZoneRef = React.useRef<"bottom" | "right" | "left" | null>(null);
+  const [panelDragActive, setPanelDragActive] = React.useState(false);
+  const [panelDragZone, setPanelDragZone] = React.useState<"bottom" | "right" | "left" | null>(null);
+
+  const handleTerminalPositionChange = React.useCallback((pos: "bottom" | "right" | "left") => {
+    setTerminalPosition(pos);
+    try { localStorage.setItem("pp-terminal-position", pos); } catch {}
+  }, []);
+
+  const handlePanelDragStart = React.useCallback((e: React.PointerEvent) => {
+    e.preventDefault();
+    isPanelDragging.current = true;
+    panelDragZoneRef.current = null;
+    setPanelDragActive(true);
+    setPanelDragZone(null);
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  }, []);
+
+  const handlePanelDragMove = React.useCallback((e: React.PointerEvent) => {
+    if (!isPanelDragging.current || !terminalColumnRef.current) return;
+    const rect = terminalColumnRef.current.getBoundingClientRect();
+    const pctX = (e.clientX - rect.left) / rect.width;
+    const pctY = (e.clientY - rect.top) / rect.height;
+    let zone: "bottom" | "right" | "left" | null = null;
+    if (pctY > 0.55) zone = "bottom";
+    else if (pctX > 0.65) zone = "right";
+    else if (pctX < 0.35) zone = "left";
+    panelDragZoneRef.current = zone;
+    setPanelDragZone(zone);
+  }, []);
+
+  const handlePanelDragEnd = React.useCallback(() => {
+    if (!isPanelDragging.current) return;
+    isPanelDragging.current = false;
+    const zone = panelDragZoneRef.current;
+    panelDragZoneRef.current = null;
+    setPanelDragActive(false);
+    setPanelDragZone(null);
+    if (zone) handleTerminalPositionChange(zone);
+  }, [handleTerminalPositionChange]);
+
+  const handleOuterPointerMove = React.useCallback((e: React.PointerEvent) => {
+    handleTerminalResizeMove(e);
+    handlePanelDragMove(e);
+  }, [handleTerminalResizeMove, handlePanelDragMove]);
+
+  const handleOuterPointerUp = React.useCallback(() => {
+    handleTerminalResizeEnd();
+    handlePanelDragEnd();
+  }, [handleTerminalResizeEnd, handlePanelDragEnd]);
+
   const [showFileExplorer, setShowFileExplorer] = React.useState(false);
+  const [filesPosition, setFilesPosition] = React.useState<"left" | "right" | "bottom">(() => {
+    try { return (localStorage.getItem("pp-files-position") as "left" | "right" | "bottom") ?? "left"; } catch { return "left"; }
+  });
+  const [filesWidth, setFilesWidth] = React.useState<number>(() => {
+    try {
+      const saved = localStorage.getItem("pp-files-width");
+      if (saved) return Math.max(160, Math.min(parseInt(saved, 10), 800));
+    } catch {}
+    return 280;
+  });
+  const [filesHeight, setFilesHeight] = React.useState<number>(() => {
+    try {
+      const saved = localStorage.getItem("pp-files-height");
+      if (saved) return Math.max(150, Math.min(parseInt(saved, 10), 800));
+    } catch {}
+    return 280;
+  });
+  const filesContainerRef = React.useRef<HTMLDivElement>(null);
+  const filesResizeDir = React.useRef<"width-right" | "width-left" | "height" | null>(null);
+
+  const handleFilesWidthLeftResizeStart = React.useCallback((e: React.PointerEvent) => {
+    e.preventDefault();
+    filesResizeDir.current = "width-left";
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  }, []);
+  const handleFilesWidthRightResizeStart = React.useCallback((e: React.PointerEvent) => {
+    e.preventDefault();
+    filesResizeDir.current = "width-right";
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  }, []);
+  const handleFilesHeightResizeStart = React.useCallback((e: React.PointerEvent) => {
+    e.preventDefault();
+    filesResizeDir.current = "height";
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  }, []);
+  const handleFilesResizeMove = React.useCallback((e: React.PointerEvent) => {
+    const dir = filesResizeDir.current;
+    if (!dir || !filesContainerRef.current) return;
+    const rect = filesContainerRef.current.getBoundingClientRect();
+    if (dir === "width-right") {
+      setFilesWidth(Math.max(160, Math.min(rect.right - e.clientX, rect.width - 200)));
+    } else if (dir === "width-left") {
+      setFilesWidth(Math.max(160, Math.min(e.clientX - rect.left, rect.width - 200)));
+    } else {
+      setFilesHeight(Math.max(150, Math.min(rect.bottom - e.clientY, rect.height - 100)));
+    }
+  }, []);
+  const handleFilesResizeEnd = React.useCallback(() => {
+    const dir = filesResizeDir.current;
+    if (!dir) return;
+    filesResizeDir.current = null;
+    if (dir === "height") {
+      setFilesHeight((h) => { try { localStorage.setItem("pp-files-height", String(Math.round(h))); } catch {} return h; });
+    } else {
+      setFilesWidth((w) => { try { localStorage.setItem("pp-files-width", String(Math.round(w))); } catch {} return w; });
+    }
+  }, []);
+
+  const isFilesDragging = React.useRef(false);
+  const filesDragZoneRef = React.useRef<"left" | "right" | "bottom" | null>(null);
+  const [filesDragActive, setFilesDragActive] = React.useState(false);
+  const [filesDragZone, setFilesDragZone] = React.useState<"left" | "right" | "bottom" | null>(null);
+
+  const handleFilesPositionChange = React.useCallback((pos: "left" | "right" | "bottom") => {
+    setFilesPosition(pos);
+    try { localStorage.setItem("pp-files-position", pos); } catch {}
+  }, []);
+  const handleFilesDragStart = React.useCallback((e: React.PointerEvent) => {
+    e.preventDefault();
+    isFilesDragging.current = true;
+    filesDragZoneRef.current = null;
+    setFilesDragActive(true);
+    setFilesDragZone(null);
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  }, []);
+  const handleFilesDragMove = React.useCallback((e: React.PointerEvent) => {
+    if (!isFilesDragging.current || !filesContainerRef.current) return;
+    const rect = filesContainerRef.current.getBoundingClientRect();
+    const pctX = (e.clientX - rect.left) / rect.width;
+    const pctY = (e.clientY - rect.top) / rect.height;
+    let zone: "left" | "right" | "bottom" | null = null;
+    if (pctY > 0.55) zone = "bottom";
+    else if (pctX > 0.65) zone = "right";
+    else if (pctX < 0.35) zone = "left";
+    filesDragZoneRef.current = zone;
+    setFilesDragZone(zone);
+  }, []);
+  const handleFilesDragEnd = React.useCallback(() => {
+    if (!isFilesDragging.current) return;
+    isFilesDragging.current = false;
+    const zone = filesDragZoneRef.current;
+    filesDragZoneRef.current = null;
+    setFilesDragActive(false);
+    setFilesDragZone(null);
+    if (zone) handleFilesPositionChange(zone);
+  }, [handleFilesPositionChange]);
+  const handleFilesOuterPointerMove = React.useCallback((e: React.PointerEvent) => {
+    handleFilesResizeMove(e);
+    handleFilesDragMove(e);
+  }, [handleFilesResizeMove, handleFilesDragMove]);
+  const handleFilesOuterPointerUp = React.useCallback(() => {
+    handleFilesResizeEnd();
+    handleFilesDragEnd();
+  }, [handleFilesResizeEnd, handleFilesDragEnd]);
 
   type RunnerInfo = { runnerId: string; name?: string | null; roots?: string[]; sessionCount: number };
   const [newSessionOpen, setNewSessionOpen] = React.useState(false);
@@ -1399,6 +1610,47 @@ export function App() {
     }
   }, []);
 
+  /**
+   * End a session by session ID. If it's the currently active session the
+   * existing viewer socket is used; otherwise a temporary socket is opened
+   * for just the exec and then disconnected.
+   */
+  const handleEndSession = React.useCallback((sessionId: string) => {
+    // Active session: reuse the existing viewer socket
+    if (sessionId === activeSessionRef.current && viewerWsRef.current?.connected) {
+      sendRemoteExec({
+        type: "exec",
+        id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        command: "end_session",
+      });
+      return;
+    }
+
+    // Non-active session: open a temporary viewer socket, fire the exec, disconnect
+    const tempSocket: Socket<ViewerServerToClientEvents, ViewerClientToServerEvents> = io("/viewer", {
+      auth: { sessionId },
+      withCredentials: true,
+    });
+
+    const cleanup = () => tempSocket.disconnect();
+    const timeout = setTimeout(cleanup, 10_000);
+
+    tempSocket.on("connected", () => {
+      clearTimeout(timeout);
+      tempSocket.emit("exec", {
+        id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        command: "end_session",
+      } as any);
+      // Give the exec a moment to reach the runner before disconnecting
+      setTimeout(cleanup, 500);
+    });
+
+    tempSocket.on("connect_error", () => {
+      clearTimeout(timeout);
+      cleanup();
+    });
+  }, [sendRemoteExec]);
+
   const requestResumeSessions = React.useCallback(() => {
     if (!activeSessionRef.current) return false;
     setResumeSessionsLoading(true);
@@ -1893,6 +2145,7 @@ export function App() {
             onRelayStatusChange={setRelayStatus}
             onSessionsChange={setLiveSessions}
             onClose={() => setSidebarOpen(false)}
+            onEndSession={handleEndSession}
           />
         </div>
 
@@ -1906,8 +2159,44 @@ export function App() {
           aria-hidden="true"
         />
 
-        <div className="flex flex-1 min-w-0 h-full overflow-hidden">
-          {/* File Explorer side panel — desktop: right sidebar, mobile: full-screen overlay */}
+        <div
+          ref={filesContainerRef}
+          className={cn(
+            "relative flex flex-1 min-w-0 h-full overflow-hidden",
+            showFileExplorer && filesPosition === "bottom" ? "flex-col" : "flex-row",
+          )}
+          onPointerMove={showFileExplorer ? handleFilesOuterPointerMove : undefined}
+          onPointerUp={showFileExplorer ? handleFilesOuterPointerUp : undefined}
+          onPointerCancel={showFileExplorer ? handleFilesOuterPointerUp : undefined}
+        >
+          {/* Drop-zone overlay while dragging the file explorer header */}
+          {filesDragActive && (
+            <div className="absolute inset-0 z-50 pointer-events-none hidden md:block">
+              <div className={cn(
+                "absolute top-0 left-0 w-[35%] h-[55%] flex flex-col items-center justify-center gap-2 border-r-2 transition-colors duration-100",
+                filesDragZone === "left" ? "bg-blue-500/20 border-blue-500" : "bg-zinc-900/60 border-zinc-700/60",
+              )}>
+                <svg className={cn("size-6 transition-colors", filesDragZone === "left" ? "text-blue-400" : "text-zinc-500")} viewBox="0 0 16 16" fill="currentColor"><rect x="1" y="1" width="6" height="14" rx="1.5"/><rect x="9" y="1" width="6" height="14" rx="1.5" opacity=".3"/></svg>
+                <span className={cn("text-xs font-medium transition-colors", filesDragZone === "left" ? "text-blue-300" : "text-zinc-500")}>Left</span>
+              </div>
+              <div className={cn(
+                "absolute top-0 right-0 w-[35%] h-[55%] flex flex-col items-center justify-center gap-2 border-l-2 transition-colors duration-100",
+                filesDragZone === "right" ? "bg-blue-500/20 border-blue-500" : "bg-zinc-900/60 border-zinc-700/60",
+              )}>
+                <svg className={cn("size-6 transition-colors", filesDragZone === "right" ? "text-blue-400" : "text-zinc-500")} viewBox="0 0 16 16" fill="currentColor"><rect x="9" y="1" width="6" height="14" rx="1.5"/><rect x="1" y="1" width="6" height="14" rx="1.5" opacity=".3"/></svg>
+                <span className={cn("text-xs font-medium transition-colors", filesDragZone === "right" ? "text-blue-300" : "text-zinc-500")}>Right</span>
+              </div>
+              <div className={cn(
+                "absolute bottom-0 left-0 right-0 h-[40%] flex flex-col items-center justify-center gap-2 border-t-2 transition-colors duration-100",
+                filesDragZone === "bottom" ? "bg-blue-500/20 border-blue-500" : "bg-zinc-900/60 border-zinc-700/60",
+              )}>
+                <svg className={cn("size-6 transition-colors", filesDragZone === "bottom" ? "text-blue-400" : "text-zinc-500")} viewBox="0 0 16 16" fill="currentColor"><rect x="1" y="9" width="14" height="6" rx="1.5"/><rect x="1" y="1" width="14" height="6" rx="1.5" opacity=".3"/></svg>
+                <span className={cn("text-xs font-medium transition-colors", filesDragZone === "bottom" ? "text-blue-300" : "text-zinc-500")}>Bottom</span>
+              </div>
+            </div>
+          )}
+
+          {/* ── File Explorer panels ── */}
           {showFileExplorer && activeSessionInfo?.runnerId && activeSessionInfo?.cwd && (
             <>
               {/* Mobile: full-screen overlay */}
@@ -1920,22 +2209,99 @@ export function App() {
                   cwd={activeSessionInfo.cwd}
                   className="h-full"
                   onClose={() => setShowFileExplorer(false)}
+                  position={filesPosition}
+                  onPositionChange={handleFilesPositionChange}
+                  onDragStart={handleFilesDragStart}
                 />
               </div>
-              {/* Desktop: right side panel */}
-              <div className="hidden md:flex flex-col border-r border-zinc-800 bg-zinc-950 order-first" style={{ width: 280, minWidth: 200 }}>
-                <FileExplorer
-                  runnerId={activeSessionInfo.runnerId}
-                  cwd={activeSessionInfo.cwd}
-                  className="h-full"
-                  onClose={() => setShowFileExplorer(false)}
-                />
-              </div>
+
+              {/* Desktop: left panel */}
+              {filesPosition === "left" && (
+                <>
+                  <div className="hidden md:flex flex-col shrink-0" style={{ width: filesWidth }}>
+                    <FileExplorer
+                      runnerId={activeSessionInfo.runnerId}
+                      cwd={activeSessionInfo.cwd}
+                      className="h-full"
+                      onClose={() => setShowFileExplorer(false)}
+                      position={filesPosition}
+                      onPositionChange={handleFilesPositionChange}
+                      onDragStart={handleFilesDragStart}
+                    />
+                  </div>
+                  <div
+                    className="hidden md:flex w-[5px] cursor-col-resize shrink-0 items-center justify-center group"
+                    onPointerDown={handleFilesWidthLeftResizeStart}
+                  >
+                    <div className="h-full w-px bg-zinc-800 group-hover:bg-blue-500/60 group-active:bg-blue-500 transition-colors" />
+                  </div>
+                </>
+              )}
+
+              {/* Desktop: right panel — order-last so it appears after the terminal column */}
+              {filesPosition === "right" && (
+                <>
+                  <div
+                    className="hidden md:flex w-[5px] cursor-col-resize shrink-0 items-center justify-center group order-last"
+                    onPointerDown={handleFilesWidthRightResizeStart}
+                  >
+                    <div className="h-full w-px bg-zinc-800 group-hover:bg-blue-500/60 group-active:bg-blue-500 transition-colors" />
+                  </div>
+                  <div className="hidden md:flex flex-col shrink-0 order-last" style={{ width: filesWidth }}>
+                    <FileExplorer
+                      runnerId={activeSessionInfo.runnerId}
+                      cwd={activeSessionInfo.cwd}
+                      className="h-full"
+                      onClose={() => setShowFileExplorer(false)}
+                      position={filesPosition}
+                      onPositionChange={handleFilesPositionChange}
+                      onDragStart={handleFilesDragStart}
+                    />
+                  </div>
+                </>
+              )}
+
+              {/* Desktop: bottom panel — order-last so it appears below the terminal column */}
+              {filesPosition === "bottom" && (
+                <>
+                  <div
+                    className="hidden md:flex h-[5px] cursor-row-resize shrink-0 items-center justify-center group order-last"
+                    onPointerDown={handleFilesHeightResizeStart}
+                  >
+                    <div className="w-full h-px bg-zinc-800 group-hover:bg-blue-500/60 group-active:bg-blue-500 transition-colors" />
+                  </div>
+                  <div className="hidden md:flex flex-col shrink-0 order-last" style={{ height: filesHeight }}>
+                    <FileExplorer
+                      runnerId={activeSessionInfo.runnerId}
+                      cwd={activeSessionInfo.cwd}
+                      className="h-full"
+                      onClose={() => setShowFileExplorer(false)}
+                      position={filesPosition}
+                      onPositionChange={handleFilesPositionChange}
+                      onDragStart={handleFilesDragStart}
+                    />
+                  </div>
+                </>
+              )}
             </>
           )}
 
-          <div className="flex flex-col flex-1 min-w-0 h-full">
-            <div className={showTerminal ? "flex flex-col flex-1 min-h-0 overflow-hidden" : "flex flex-col flex-1 min-h-0"}>
+          <div
+            ref={terminalColumnRef}
+            className={cn(
+              "relative flex flex-1 min-w-0 h-full",
+              showTerminal && terminalPosition !== "bottom" ? "flex-row" : "flex-col",
+            )}
+            onPointerMove={showTerminal ? handleOuterPointerMove : undefined}
+            onPointerUp={showTerminal ? handleOuterPointerUp : undefined}
+            onPointerCancel={showTerminal ? handleOuterPointerUp : undefined}
+          >
+            <div className={cn(
+              "flex flex-col flex-1 min-h-0",
+              showTerminal && "overflow-hidden",
+              showTerminal && terminalPosition !== "bottom" && "min-w-0",
+              showTerminal && terminalPosition === "left" && "order-last",
+            )}>
               {showRunners ? (
                 <RunnerManager onOpenSession={(id) => { handleOpenSession(id); setShowRunners(false); }} />
               ) : (
@@ -1971,18 +2337,89 @@ export function App() {
             </div>
             {showTerminal && (
               <>
-                {/* Mobile: full-screen overlay above everything */}
+                {/* Mobile: full-screen overlay */}
                 <div
                   className="md:hidden fixed inset-0 z-[60] flex flex-col bg-zinc-950 pp-safe-left pp-safe-right"
                   style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
                 >
-                  <TerminalManager className="h-full" onClose={() => setShowTerminal(false)} />
+                  <TerminalManager
+                    className="h-full"
+                    onClose={() => setShowTerminal(false)}
+                    position={terminalPosition}
+                    onPositionChange={handleTerminalPositionChange}
+                    onDragStart={handlePanelDragStart}
+                  />
                 </div>
-                {/* Desktop: bottom split panel */}
-                <div className="hidden md:block border-t border-zinc-800" style={{ height: "40%", minHeight: 200 }}>
-                  <TerminalManager className="h-full" />
+
+                {/*
+                  Desktop: single always-mounted instance so xterm state survives position changes.
+                  CSS `order` repositions the handle and panel without unmounting:
+                    left   → panel(0)  handle(1)  session(9999 via order-last)
+                    right  → session(0) handle(9998) panel(9999)
+                    bottom → session(0) handle(9998) panel(9999)  [outer is flex-col]
+                */}
+                <div
+                  className={cn(
+                    "hidden md:flex shrink-0 items-center justify-center group",
+                    terminalPosition === "bottom"
+                      ? "h-[5px] cursor-row-resize"
+                      : "w-[5px] cursor-col-resize",
+                  )}
+                  style={{ order: terminalPosition === "left" ? 1 : 9998 }}
+                  onPointerDown={handleTerminalResizeStart}
+                >
+                  <div className={cn(
+                    "bg-zinc-800 group-hover:bg-blue-500/60 group-active:bg-blue-500 transition-colors",
+                    terminalPosition === "bottom" ? "w-full h-px" : "h-full w-px",
+                  )} />
+                </div>
+                <div
+                  className="hidden md:flex flex-col shrink-0"
+                  style={{
+                    order: terminalPosition === "left" ? 0 : 9999,
+                    ...(terminalPosition === "bottom"
+                      ? { height: terminalHeight }
+                      : { width: terminalWidth }),
+                  }}
+                >
+                  <TerminalManager
+                    className="h-full"
+                    position={terminalPosition}
+                    onPositionChange={handleTerminalPositionChange}
+                    onDragStart={handlePanelDragStart}
+                  />
                 </div>
               </>
+            )}
+
+            {/* Drop-zone overlay shown while dragging the panel header */}
+            {panelDragActive && (
+              <div className="absolute inset-0 z-50 pointer-events-none hidden md:block">
+                {/* Bottom zone */}
+                <div className={cn(
+                  "absolute bottom-0 left-0 right-0 h-[40%] flex flex-col items-center justify-center gap-2 border-t-2 transition-colors duration-100",
+                  panelDragZone === "bottom" ? "bg-blue-500/20 border-blue-500" : "bg-zinc-900/60 border-zinc-700/60",
+                )}>
+                  <svg className={cn("size-6 transition-colors", panelDragZone === "bottom" ? "text-blue-400" : "text-zinc-500")} viewBox="0 0 16 16" fill="currentColor"><rect x="1" y="9" width="14" height="6" rx="1.5"/><rect x="1" y="1" width="14" height="6" rx="1.5" opacity=".3"/></svg>
+                  <span className={cn("text-xs font-medium transition-colors", panelDragZone === "bottom" ? "text-blue-300" : "text-zinc-500")}>Bottom</span>
+                </div>
+                {/* Right zone */}
+                <div className={cn(
+                  "absolute top-0 right-0 w-[35%] h-[55%] flex flex-col items-center justify-center gap-2 border-l-2 transition-colors duration-100",
+                  panelDragZone === "right" ? "bg-blue-500/20 border-blue-500" : "bg-zinc-900/60 border-zinc-700/60",
+                )}>
+                  <svg className={cn("size-6 transition-colors", panelDragZone === "right" ? "text-blue-400" : "text-zinc-500")} viewBox="0 0 16 16" fill="currentColor"><rect x="9" y="1" width="6" height="14" rx="1.5"/><rect x="1" y="1" width="6" height="14" rx="1.5" opacity=".3"/></svg>
+                  <span className={cn("text-xs font-medium transition-colors", panelDragZone === "right" ? "text-blue-300" : "text-zinc-500")}>Right</span>
+                </div>
+                {/* Left zone */}
+                <div className={cn(
+                  "absolute top-0 left-0 w-[35%] h-[55%] flex flex-col items-center justify-center gap-2 border-r-2 transition-colors duration-100",
+                  panelDragZone === "left" ? "bg-blue-500/20 border-blue-500" : "bg-zinc-900/60 border-zinc-700/60",
+                )}>
+                  <svg className={cn("size-6 transition-colors", panelDragZone === "left" ? "text-blue-400" : "text-zinc-500")} viewBox="0 0 16 16" fill="currentColor"><rect x="1" y="1" width="6" height="14" rx="1.5"/><rect x="9" y="1" width="6" height="14" rx="1.5" opacity=".3"/></svg>
+                  <span className={cn("text-xs font-medium transition-colors", panelDragZone === "left" ? "text-blue-300" : "text-zinc-500")}>Left</span>
+                </div>
+              </div>
             )}
           </div>
         </div>
