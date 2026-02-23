@@ -259,10 +259,14 @@ export function WebTerminal({ terminalId, onClose, className }: WebTerminalProps
           </Button>
         </div>
       </div>
-      {/* Terminal container */}
+      {/* Terminal container — needs an explicit min-height so FitAddon has
+          something to measure if the flex height chain hasn't fully resolved
+          yet (common in mobile fixed overlays). Use a dvh-based cap so it
+          never overflows the screen on landscape phones. */}
       <div
         ref={containerRef}
         className="flex-1 min-h-0 p-1"
+        style={{ minHeight: isMaximized ? undefined : "min(300px, calc(100dvh - 120px))" }}
       />
       {/* Mobile keyboard shortcut bar */}
       <div className="md:hidden flex items-center gap-1.5 border-t border-zinc-800 bg-zinc-900/70 px-2 py-2 overflow-x-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
