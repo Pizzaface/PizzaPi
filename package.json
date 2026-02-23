@@ -27,14 +27,15 @@
         "dev:runner": "bun packages/cli/src/index.ts runner",
         "typecheck": "tsc --build",
         "migrate": "cd packages/server && bun run migrate",
-        "clean": "rm -rf packages/*/dist",
+        "clean": "bun -e \"['protocol','tools','server','ui','cli'].forEach(p=>require('fs').rmSync('packages/'+p+'/dist',{recursive:true,force:true}))\"",
         "postinstall": "true"
     },
     "dependencies": {
         "@mariozechner/pi-agent-core": "^0.53.0",
         "@mariozechner/pi-ai": "^0.53.0",
         "@mariozechner/pi-tui": "^0.53.0",
-        "motion": "^12.34.2"
+        "motion": "^12.34.2",
+        "pizzapi": "."
     },
     "devDependencies": {
         "@playwright/test": "^1.58.2",
