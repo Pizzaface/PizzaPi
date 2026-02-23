@@ -31,6 +31,7 @@ import {
     updateEnabledEvents,
 } from "../push.js";
 import { RateLimiter, isValidEmail, isValidPassword } from "../security.js";
+import { isValidSkillName } from "../validation.js";
 
 // 5 requests per 15 minutes
 const registerRateLimiter = new RateLimiter(5, 15 * 60 * 1000);
@@ -398,12 +399,16 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
 
         // GET /api/runners/:id/skills/:name — get full skill content
         if (req.method === "GET" && skillName) {
+            if (!isValidSkillName(skillName)) {
+                return Response.json({ error: "Invalid skill name" }, { status: 400 });
+            }
             try {
                 const result = await sendSkillCommand(runnerId, { type: "get_skill", name: skillName });
                 if (!result.ok) return Response.json({ error: result.message ?? "Skill not found" }, { status: 404 });
                 return Response.json({ name: result.name, content: result.content });
             } catch (err) {
-                return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 502 });
+                console.error(`[skills] GET ${skillName} failed:`, err);
+                return Response.json({ error: "Failed to retrieve skill" }, { status: 502 });
             }
         }
 
@@ -413,18 +418,27 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
             try { body = await req.json(); } catch {}
             const name = typeof body.name === "string" ? body.name.trim() : "";
             const content = typeof body.content === "string" ? body.content : "";
+
             if (!name) return Response.json({ error: "Missing skill name" }, { status: 400 });
+            if (!isValidSkillName(name)) {
+                return Response.json({ error: "Invalid skill name" }, { status: 400 });
+            }
+
             try {
                 const result = await sendSkillCommand(runnerId, { type: "create_skill", name, content });
                 if (!result.ok) return Response.json({ error: result.message ?? "Failed to create skill" }, { status: 400 });
                 return Response.json({ ok: true, skills: result.skills ?? [] });
             } catch (err) {
-                return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 502 });
+                console.error(`[skills] POST ${name} failed:`, err);
+                return Response.json({ error: "Failed to create skill" }, { status: 502 });
             }
         }
 
         // PUT /api/runners/:id/skills/:name — update a skill
         if (req.method === "PUT" && skillName) {
+            if (!isValidSkillName(skillName)) {
+                return Response.json({ error: "Invalid skill name" }, { status: 400 });
+            }
             let body: any = {};
             try { body = await req.json(); } catch {}
             const content = typeof body.content === "string" ? body.content : "";
@@ -433,18 +447,23 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
                 if (!result.ok) return Response.json({ error: result.message ?? "Failed to update skill" }, { status: 400 });
                 return Response.json({ ok: true, skills: result.skills ?? [] });
             } catch (err) {
-                return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 502 });
+                console.error(`[skills] PUT ${skillName} failed:`, err);
+                return Response.json({ error: "Failed to update skill" }, { status: 502 });
             }
         }
 
         // DELETE /api/runners/:id/skills/:name — delete a skill
         if (req.method === "DELETE" && skillName) {
+            if (!isValidSkillName(skillName)) {
+                return Response.json({ error: "Invalid skill name" }, { status: 400 });
+            }
             try {
                 const result = await sendSkillCommand(runnerId, { type: "delete_skill", name: skillName });
                 if (!result.ok) return Response.json({ error: result.message ?? "Skill not found" }, { status: 404 });
                 return Response.json({ ok: true, skills: result.skills ?? [] });
             } catch (err) {
-                return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 502 });
+                console.error(`[skills] DELETE ${skillName} failed:`, err);
+                return Response.json({ error: "Failed to delete skill" }, { status: 502 });
             }
         }
 
