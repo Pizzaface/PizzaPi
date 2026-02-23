@@ -598,7 +598,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                     return (
                                         <div
                                             key={s.sessionId}
-                                            className="relative overflow-hidden rounded-lg"
+                                            className="relative overflow-clip rounded-lg"
                                         >
                                             {/* "End" action behind the card — only rendered during swipe/reveal */}
                                             {(hasOffset || isRevealed) && <div
@@ -654,6 +654,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                 )}
                                                 style={{
                                                     transform: hasOffset ? `translateX(${swipeOffset}px)` : undefined,
+                                                    touchAction: "pan-y",
                                                 }}
                                             >
                                                 {/* Provider icon + activity dot */}
