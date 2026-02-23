@@ -137,6 +137,8 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     const [collapsed, setCollapsed] = React.useState(false);
 
     // Swipe-to-reveal "End" button state (iOS-style swipe-left pattern)
+    // Uses pointer events so it works on both touch screens AND desktop trackpads
+    // (touch events don't fire on macOS trackpad — only pointer/mouse events do).
     const [confirmEndSessionId, setConfirmEndSessionId] = React.useState<string | null>(null);
     const [revealedSessionId, setRevealedSessionId] = React.useState<string | null>(null);
     const [swipeOffsets, setSwipeOffsets] = React.useState<Map<string, number>>(new Map());
@@ -144,41 +146,48 @@ export const SessionSidebar = React.memo(function SessionSidebar({
 
     const swipeRef = React.useRef<{
         sessionId: string;
+        pointerId: number;
         startX: number;
         startY: number;
         curX: number;
         locked: boolean; // true once we've committed to horizontal movement
         isVertical: boolean; // true once we've committed to vertical scroll
+        didSwipe: boolean; // true if any significant horizontal movement happened
     } | null>(null);
+    // Flag to suppress the click that fires after a swipe pointerUp
+    const suppressClickRef = React.useRef(false);
 
-    const handleSessionTouchStart = React.useCallback((e: React.TouchEvent, sessionId: string) => {
-        if (e.touches.length !== 1) { swipeRef.current = null; return; }
-        const t = e.touches[0];
+    const handleSessionPointerDown = React.useCallback((e: React.PointerEvent, sessionId: string) => {
+        // Only track primary button (left-click / single touch)
+        if (e.button !== 0) return;
         swipeRef.current = {
             sessionId,
-            startX: t.clientX,
-            startY: t.clientY,
-            curX: t.clientX,
+            pointerId: e.pointerId,
+            startX: e.clientX,
+            startY: e.clientY,
+            curX: e.clientX,
             locked: false,
             isVertical: false,
+            didSwipe: false,
         };
+        // Capture the pointer so we get move/up even if the cursor leaves the element
+        (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     }, []);
 
-    const handleSessionTouchMove = React.useCallback((e: React.TouchEvent) => {
+    const handleSessionPointerMove = React.useCallback((e: React.PointerEvent) => {
         const s = swipeRef.current;
-        if (!s || e.touches.length !== 1) return;
-        const t = e.touches[0];
-        s.curX = t.clientX;
-        const dx = t.clientX - s.startX;
-        const dy = t.clientY - s.startY;
+        if (!s || e.pointerId !== s.pointerId) return;
+        s.curX = e.clientX;
+        const dx = e.clientX - s.startX;
+        const dy = e.clientY - s.startY;
 
         // Determine direction lock on first significant movement
         if (!s.locked && !s.isVertical) {
-            if (Math.abs(dy) > 10 && Math.abs(dy) > Math.abs(dx)) {
+            if (Math.abs(dy) > 8 && Math.abs(dy) > Math.abs(dx)) {
                 s.isVertical = true; // vertical scroll — bail out
                 return;
             }
-            if (Math.abs(dx) > 10 && Math.abs(dx) > Math.abs(dy)) {
+            if (Math.abs(dx) > 8 && Math.abs(dx) > Math.abs(dy)) {
                 s.locked = true; // horizontal swipe — we own the gesture
             }
         }
@@ -186,13 +195,15 @@ export const SessionSidebar = React.memo(function SessionSidebar({
         if (s.isVertical) return;
         if (!s.locked) return;
 
-        e.preventDefault(); // prevent vertical scroll while swiping
+        s.didSwipe = true;
+        e.preventDefault();
+        e.stopPropagation();
 
-        // If another session was previously revealed, account for that
+        // If this session was previously revealed, account for that
         const wasRevealed = revealedSessionId === s.sessionId;
         const base = wasRevealed ? -REVEAL_WIDTH : 0;
-        // Clamp: allow from -REVEAL_WIDTH to 0 (or slightly past for rubber-band)
         const raw = base + dx;
+        // Clamp: allow from -REVEAL_WIDTH (with slight overscroll) to 0 (with slight overscroll)
         const clamped = Math.max(-REVEAL_WIDTH - 20, Math.min(raw, wasRevealed ? 0 : 10));
 
         setSwipeOffsets((prev) => {
@@ -202,17 +213,29 @@ export const SessionSidebar = React.memo(function SessionSidebar({
         });
     }, [revealedSessionId, REVEAL_WIDTH]);
 
-    const handleSessionTouchEnd = React.useCallback((_e: React.TouchEvent) => {
+    const handleSessionPointerUp = React.useCallback((e: React.PointerEvent) => {
         const s = swipeRef.current;
+        if (!s || e.pointerId !== s.pointerId) return;
+        const didSwipe = s.didSwipe;
         swipeRef.current = null;
-        if (!s || s.isVertical || !s.locked) return;
+
+        try {
+            (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+        } catch { /* ignore */ }
+
+        if (didSwipe) {
+            // Suppress the click event that follows this pointerUp
+            suppressClickRef.current = true;
+            requestAnimationFrame(() => { suppressClickRef.current = false; });
+        }
+
+        if (s.isVertical || !s.locked) return;
 
         const wasRevealed = revealedSessionId === s.sessionId;
         const offset = swipeOffsets.get(s.sessionId) ?? 0;
 
         // Snap open if swiped past half the reveal width, otherwise snap closed
         if (offset < -REVEAL_WIDTH / 2) {
-            // Snap to fully revealed
             setSwipeOffsets((prev) => {
                 const next = new Map(prev);
                 next.set(s.sessionId, -REVEAL_WIDTH);
@@ -220,7 +243,6 @@ export const SessionSidebar = React.memo(function SessionSidebar({
             });
             setRevealedSessionId(s.sessionId);
         } else {
-            // Snap closed
             setSwipeOffsets((prev) => {
                 const next = new Map(prev);
                 next.delete(s.sessionId);
@@ -230,7 +252,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
         }
     }, [revealedSessionId, swipeOffsets, REVEAL_WIDTH]);
 
-    // Close revealed item when tapping elsewhere
+    // Close revealed item when clicking elsewhere
     const handleCloseRevealed = React.useCallback(() => {
         if (revealedSessionId) {
             setSwipeOffsets((prev) => {
@@ -546,8 +568,8 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                             key={s.sessionId}
                                             className="relative overflow-hidden rounded-lg"
                                         >
-                                            {/* "End" action behind the card */}
-                                            <div
+                                            {/* "End" action behind the card — only rendered during swipe/reveal */}
+                                            {(hasOffset || isRevealed) && <div
                                                 className="absolute inset-y-0 right-0 flex items-center justify-center bg-red-600 text-white"
                                                 style={{ width: REVEAL_WIDTH }}
                                             >
@@ -568,32 +590,37 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                     <X className="h-4 w-4" />
                                                     <span>End</span>
                                                 </button>
-                                            </div>
+                                            </div>}
 
                                             {/* Sliding session card */}
                                             <button
-                                                onClick={() => {
-                                                    if (revealedSessionId) {
+                                                onClick={(e) => {
+                                                    // Suppress click that fires after a swipe gesture
+                                                    if (suppressClickRef.current) { suppressClickRef.current = false; return; }
+                                                    // If THIS session is revealed, close it instead of navigating
+                                                    if (isRevealed) {
                                                         handleCloseRevealed();
                                                         return;
+                                                    }
+                                                    // If a DIFFERENT session is revealed, close that and still navigate
+                                                    if (revealedSessionId && revealedSessionId !== s.sessionId) {
+                                                        handleCloseRevealed();
                                                     }
                                                     onOpenSession(s.sessionId);
                                                 }}
                                                 title={`View session ${s.sessionId}`}
-                                                onTouchStart={(e) => handleSessionTouchStart(e, s.sessionId)}
-                                                onTouchMove={handleSessionTouchMove}
-                                                onTouchEnd={handleSessionTouchEnd}
+                                                onPointerDown={(e) => handleSessionPointerDown(e, s.sessionId)}
+                                                onPointerMove={handleSessionPointerMove}
+                                                onPointerUp={handleSessionPointerUp}
                                                 className={cn(
-                                                    "relative flex items-center gap-2.5 w-full min-w-0 px-2.5 py-3 md:py-2.5 rounded-lg text-left bg-sidebar",
+                                                    "relative flex items-center gap-2.5 w-full min-w-0 px-2.5 py-3 md:py-2.5 rounded-lg text-left",
                                                     !hasOffset && "transition-transform duration-200 ease-out",
                                                     isSelected
                                                         ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                                                        : "text-sidebar-foreground hover:bg-sidebar-accent/50",
+                                                        : "bg-sidebar text-sidebar-foreground hover:bg-sidebar-accent/50",
                                                 )}
                                                 style={{
                                                     transform: hasOffset ? `translateX(${swipeOffset}px)` : undefined,
-                                                    // Disable the scale-down active state while swiping
-                                                    ...(hasOffset ? {} : {}),
                                                 }}
                                             >
                                                 {/* Provider icon + activity dot */}
