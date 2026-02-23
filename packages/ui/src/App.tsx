@@ -1485,7 +1485,7 @@ export function App() {
         const partial = assistantEvent.partial as Record<string, unknown>;
         const raw = augmentThinkingDurations({ ...partial, timestamp: undefined }, thinkingDurationsRef.current);
         if (isStreamingDelta) {
-          if (deltaType === "text_delta") {
+          if (deltaType === "text_delta" || deltaType === "thinking_delta") {
             const delta = typeof assistantEvent.delta === "string" ? assistantEvent.delta : undefined;
             pulseStreamingHaptic(delta);
           }
@@ -1646,7 +1646,7 @@ export function App() {
       }
     });
 
-    socket.on("disconnect", () => {
+    socket.on("disconnect", (reason) => {
       if (activeSessionRef.current === relaySessionId) {
         const isRestarting = restartPendingSessionIdRef.current === relaySessionId;
         setViewerStatus((prev) =>
@@ -1660,6 +1660,21 @@ export function App() {
         setIsChangingModel(false);
         // Reset the stale clock so we don't fire immediately on reconnect.
         lastViewerEventAtRef.current = Date.now();
+
+        // When the server explicitly disconnects us (reason "io server disconnect"),
+        // socket.io permanently disables auto-reconnect on the client. This happens
+        // when the session isn't live yet — e.g. the server just restarted and the
+        // CLI hasn't re-registered. Schedule a manual reconnect so we pick up the
+        // session once it's available again.
+        // The activeSessionRef guard ensures this is a no-op if the user
+        // switches to a different session before the timer fires.
+        if (reason === "io server disconnect") {
+          setTimeout(() => {
+            if (activeSessionRef.current === relaySessionId && !socket.connected) {
+              socket.connect();
+            }
+          }, 2000);
+        }
       }
     });
   }, [handleRelayEvent, patchSessionCache]);

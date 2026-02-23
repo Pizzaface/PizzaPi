@@ -44,11 +44,11 @@ export function supportsHaptics(): boolean {
 // --- Throttled stream pulse ---
 
 /** Minimum ms between vibration pulses while streaming */
-const THROTTLE_MS = 60;
+const THROTTLE_MS = 30;
 
 /** Vibration duration range in ms */
-const MIN_PULSE_MS = 4;
-const MAX_PULSE_MS = 25;
+const MIN_PULSE_MS = 2;
+const MAX_PULSE_MS = 12;
 
 /** Text length range that maps to pulse duration */
 const SHORT_TEXT = 1;
@@ -59,10 +59,10 @@ let lastPulseAt = 0;
 /**
  * Map a text delta length to a vibration duration.
  *
- *  - 1 char  →  4ms  (tiny tap)
- *  - 5 chars →  ~8ms (light tap)
- *  - 15 chars → ~15ms (medium buzz)
- *  - 30+ chars → 25ms (full pulse)
+ *  - 1 char  →  2ms  (tiny tap)
+ *  - 5 chars →  ~4ms (light tap)
+ *  - 15 chars → ~8ms (medium buzz)
+ *  - 30+ chars → 12ms (full pulse)
  */
 function pulseDuration(textLength: number): number {
   const clamped = Math.max(SHORT_TEXT, Math.min(textLength, LONG_TEXT));

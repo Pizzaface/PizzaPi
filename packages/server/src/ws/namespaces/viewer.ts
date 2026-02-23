@@ -87,7 +87,7 @@ async function replayPersistedSnapshot(
             const snapshot = await getPersistedRelaySessionSnapshot(sessionId);
             if (!snapshot || snapshot.state === null || snapshot.state === undefined) {
                 socket.emit("error", { message: "Session not found" });
-                socket.disconnect(true);
+                socket.disconnect();
                 return;
             }
 
@@ -97,10 +97,14 @@ async function replayPersistedSnapshot(
         }
 
         socket.emit("disconnected", { reason: "Session is no longer live (snapshot replay)." });
-        socket.disconnect(true);
+        // Use disconnect() without `true` so the client can still auto-reconnect
+        // when the session comes back online. disconnect(true) sets reason to
+        // "io server disconnect" on the client, which permanently disables
+        // socket.io's auto-reconnect logic.
+        socket.disconnect();
     } catch (error) {
         socket.emit("error", { message: "Failed to load session snapshot" });
-        socket.disconnect(true);
+        socket.disconnect();
         console.error("[sio/viewer] Failed to replay persisted snapshot:", error);
     }
 }
@@ -186,7 +190,9 @@ export function registerViewerNamespace(io: SocketIOServer): void {
         const ok = await addViewer(sessionId, socket);
         if (!ok) {
             socket.emit("disconnected", { reason: "Session ended" });
-            socket.disconnect(true);
+            // Use disconnect() (not true) so the client can still auto-reconnect;
+            // the session may have just cycled and will come back shortly.
+            socket.disconnect();
             return;
         }
 

@@ -352,6 +352,21 @@ export function TerminalManager({
           >
             <Plus size={13} />
           </button>
+
+          {/* Close panel */}
+          {onClose && (
+            <>
+              <div className="w-px h-4 bg-zinc-700 mx-1 shrink-0" />
+              <button
+                onClick={onClose}
+                className="flex items-center justify-center size-7 rounded text-zinc-500 hover:text-zinc-100 hover:bg-zinc-800 transition-colors"
+                aria-label="Close terminal panel"
+                title="Close terminal panel"
+              >
+                <X size={13} />
+              </button>
+            </>
+          )}
         </div>
 
         {/* Mobile: add button only */}
