@@ -598,6 +598,44 @@ export async function sweepExpiredSessions(nowMs: number = Date.now()): Promise<
 
         await endSharedSession(sessionId, "Session expired");
     }
+
+    // Sweep orphaned sessions: sessions in Redis with no active relay socket
+    // whose last heartbeat is older than the staleness threshold. This handles
+    // the case where a server restart kills sockets without firing disconnect
+    // handlers, leaving stale session data in Redis.
+    await sweepOrphanedSessions(nowMs);
+}
+
+/** Max age (ms) for a session heartbeat before it's considered stale. */
+const HEARTBEAT_STALE_MS = 2 * 60 * 1000; // 2 minutes
+
+/** Clean up sessions that have no local relay socket and a stale heartbeat. */
+async function sweepOrphanedSessions(nowMs: number): Promise<void> {
+    const allSessions = await getAllSessions();
+
+    for (const session of allSessions) {
+        const { sessionId } = session;
+
+        // Skip sessions that have an active local relay socket
+        if (localTuiSockets.has(sessionId)) continue;
+
+        // Check if the relay socket exists on ANY server via Socket.IO rooms
+        const relaySockets = await io.of("/relay").in(relaySessionRoom(sessionId)).fetchSockets();
+        if (relaySockets.length > 0) continue;
+
+        // No relay socket anywhere — check heartbeat staleness
+        const lastHb = session.lastHeartbeatAt ? Date.parse(session.lastHeartbeatAt) : 0;
+        const startedAt = session.startedAt ? Date.parse(session.startedAt) : 0;
+        const lastActivity = Math.max(lastHb || 0, startedAt || 0);
+
+        if (nowMs - lastActivity > HEARTBEAT_STALE_MS) {
+            console.log(
+                `[sio-registry] Sweeping orphaned session ${sessionId} ` +
+                `(last activity: ${new Date(lastActivity).toISOString()})`,
+            );
+            await endSharedSession(sessionId, "Session orphaned (no active relay connection)");
+        }
+    }
 }
 
 // ── Viewer Management ───────────────────────────────────────────────────────
