@@ -8,7 +8,8 @@ import { RunnerTokenManager } from "@/components/RunnerTokenManager";
 import { RunnerManager } from "@/components/RunnerManager";
 import { PizzaLogo } from "@/components/PizzaLogo";
 import { authClient, useSession, signOut } from "@/lib/auth-client";
-import { getRelayWsBase } from "@/lib/relay";
+import { io, type Socket } from "socket.io-client";
+import type { ViewerServerToClientEvents, ViewerClientToServerEvents } from "@pizzapi/protocol";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import {
@@ -387,7 +388,7 @@ export function App() {
     };
   }, [newSessionOpen]);
 
-  const viewerWsRef = React.useRef<WebSocket | null>(null);
+  const viewerWsRef = React.useRef<Socket<ViewerServerToClientEvents, ViewerClientToServerEvents> | null>(null);
   const activeSessionRef = React.useRef<string | null>(null);
 
   // Cache last-known UI state per relay session so switching sessions feels instant.
@@ -435,13 +436,13 @@ export function App() {
 
   React.useEffect(() => {
     return () => {
-      viewerWsRef.current?.close();
+      viewerWsRef.current?.disconnect();
       viewerWsRef.current = null;
     };
   }, []);
 
   const clearSelection = React.useCallback(() => {
-    viewerWsRef.current?.close();
+    viewerWsRef.current?.disconnect();
     viewerWsRef.current = null;
     activeSessionRef.current = null;
     lastSeqRef.current = null;
@@ -1078,7 +1079,7 @@ export function App() {
   }, [upsertMessage, upsertMessageDebounced, cancelPendingDeltas, appendLocalSystemMessage]);
 
   const openSession = React.useCallback((relaySessionId: string) => {
-    viewerWsRef.current?.close();
+    viewerWsRef.current?.disconnect();
     viewerWsRef.current = null;
 
     localStorage.setItem("pp.lastSessionId", relaySessionId);
@@ -1104,93 +1105,84 @@ export function App() {
     setLastHeartbeatAt(cached?.lastHeartbeatAt ?? null);
     setTodoList(cached?.todoList ?? []);
 
-    const ws = new WebSocket(`${getRelayWsBase()}/ws/sessions/${relaySessionId}`);
-    viewerWsRef.current = ws;
+    const socket: Socket<ViewerServerToClientEvents, ViewerClientToServerEvents> = io("/viewer", {
+      auth: { sessionId: relaySessionId },
+      withCredentials: true,
+    });
+    viewerWsRef.current = socket;
 
-    ws.onmessage = (evt) => {
+    socket.on("connected", (data) => {
       if (activeSessionRef.current !== relaySessionId) return;
 
-      let msg: Record<string, unknown>;
-      try {
-        msg = JSON.parse(evt.data as string);
-      } catch {
-        return;
+      const replayOnly = data.replayOnly === true;
+      setViewerStatus(replayOnly ? "Snapshot replay" : "Connected");
+
+      // Seed the last known sequence number so gap detection works from the start.
+      if (typeof data.lastSeq === "number") {
+        lastSeqRef.current = data.lastSeq;
       }
 
-      if (msg.type === "connected") {
-        const replayOnly = msg.replayOnly === true;
-        setViewerStatus(replayOnly ? "Snapshot replay" : "Connected");
+      // Reflect initial active status from connected message.
+      if (typeof data.isActive === "boolean") {
+        setAgentActive(data.isActive);
+        patchSessionCache({ agentActive: data.isActive });
+      }
 
-        // Seed the last known sequence number so gap detection works from the start.
-        if (typeof msg.lastSeq === "number") {
-          lastSeqRef.current = msg.lastSeq;
+      if (Object.prototype.hasOwnProperty.call(data, "sessionName")) {
+        const nextName = normalizeSessionName(data.sessionName);
+        setSessionName(nextName);
+        patchSessionCache({ sessionName: nextName });
+      }
+
+      // Tell the runner we connected so it can push capabilities (models/commands/etc.)
+      socket.emit("connected", {});
+    });
+
+    socket.on("event", (data) => {
+      if (activeSessionRef.current !== relaySessionId) return;
+
+      // Detect sequence gaps; request a resync if we missed events.
+      const seq = typeof data.seq === "number" ? data.seq : null;
+      if (seq !== null && lastSeqRef.current !== null) {
+        const expected = lastSeqRef.current + 1;
+        if (seq > expected) {
+          // Gap detected — request a resync snapshot from the server.
+          console.warn(`[relay] Sequence gap: expected ${expected}, got ${seq}. Requesting resync.`);
+          socket.emit("resync", {});
         }
-
-        // Reflect initial active status from connected message.
-        if (typeof msg.isActive === "boolean") {
-          setAgentActive(msg.isActive);
-          patchSessionCache({ agentActive: msg.isActive });
-        }
-
-        if (Object.prototype.hasOwnProperty.call(msg, "sessionName")) {
-          const nextName = normalizeSessionName((msg as any).sessionName);
-          setSessionName(nextName);
-          patchSessionCache({ sessionName: nextName });
-        }
-
-        // Tell the runner we connected so it can push capabilities (models/commands/etc.)
-        try {
-          ws.send(JSON.stringify({ type: "connected" }));
-        } catch {}
-
-        return;
       }
+      if (seq !== null) lastSeqRef.current = seq;
 
-      if (msg.type === "event") {
-        // Detect sequence gaps; request a resync if we missed events.
-        const seq = typeof msg.seq === "number" ? msg.seq : null;
-        if (seq !== null && lastSeqRef.current !== null) {
-          const expected = lastSeqRef.current + 1;
-          if (seq > expected) {
-            // Gap detected — request a resync snapshot from the server.
-            console.warn(`[relay] Sequence gap: expected ${expected}, got ${seq}. Requesting resync.`);
-            try { ws.send(JSON.stringify({ type: "resync" })); } catch {}
-          }
-        }
-        if (seq !== null) lastSeqRef.current = seq;
+      handleRelayEvent(data.event, seq ?? undefined);
+    });
 
-        handleRelayEvent(msg.event, seq ?? undefined);
-        return;
+    socket.on("exec_result", (data) => {
+      if (activeSessionRef.current !== relaySessionId) return;
+      handleRelayEvent({ type: "exec_result", ...data });
+    });
+
+    socket.on("disconnected", (data) => {
+      if (activeSessionRef.current !== relaySessionId) return;
+      const isRestarting = restartPendingSessionIdRef.current === relaySessionId;
+      if (!isRestarting) {
+        setViewerStatus(data.reason || "Disconnected");
       }
+      setPendingQuestion(null);
+      setIsChangingModel(false);
+    });
 
-      if (msg.type === "exec_result") {
-        handleRelayEvent(msg);
-        return;
-      }
+    socket.on("error", (data) => {
+      if (activeSessionRef.current !== relaySessionId) return;
+      setViewerStatus(data.message || "Failed to load session");
+    });
 
-      if (msg.type === "disconnected") {
-        const isRestarting = restartPendingSessionIdRef.current === relaySessionId;
-        if (!isRestarting) {
-          const reason = typeof msg.reason === "string" ? msg.reason : "Disconnected";
-          setViewerStatus(reason);
-        }
-        setPendingQuestion(null);
-        setIsChangingModel(false);
-        return;
-      }
-
-      if (msg.type === "error") {
-        setViewerStatus(typeof msg.message === "string" ? msg.message : "Failed to load session");
-      }
-    };
-
-    ws.onerror = () => {
+    socket.on("connect_error", () => {
       if (activeSessionRef.current === relaySessionId) {
         setViewerStatus("Connection error");
       }
-    };
+    });
 
-    ws.onclose = () => {
+    socket.on("disconnect", () => {
       if (activeSessionRef.current === relaySessionId) {
         const isRestarting = restartPendingSessionIdRef.current === relaySessionId;
         setViewerStatus((prev) =>
@@ -1203,8 +1195,8 @@ export function App() {
         setPendingQuestion(null);
         setIsChangingModel(false);
       }
-    };
-  }, [handleRelayEvent]);
+    });
+  }, [handleRelayEvent, patchSessionCache]);
 
   // Auto-reopen the last viewed session once live sessions arrive.
   React.useEffect(() => {
@@ -1238,9 +1230,9 @@ export function App() {
 
 
   const sendSessionInput = React.useCallback(async (message: { text: string; files?: Array<{ mediaType?: string; filename?: string; url?: string }>; deliverAs?: "steer" | "followUp" } | string) => {
-    const ws = viewerWsRef.current;
+    const socket = viewerWsRef.current;
     const sessionId = activeSessionRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN || !sessionId) {
+    if (!socket || !socket.connected || !sessionId) {
       setViewerStatus("Not connected to a live session");
       return false;
     }
@@ -1318,13 +1310,12 @@ export function App() {
     const deliverAs = typeof message === "object" ? message.deliverAs : undefined;
 
     try {
-      ws.send(JSON.stringify({
-        type: "input",
+      socket.emit("input", {
         text: trimmed,
         attachments,
         client: "web",
         ...(deliverAs ? { deliverAs } : {}),
-      }));
+      });
 
       // Track queued messages when the agent is active
       if (deliverAs && trimmed) {
@@ -1364,8 +1355,8 @@ export function App() {
   }, []);
 
   const sendRemoteExec = React.useCallback((payload: any) => {
-    const ws = viewerWsRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN || !activeSessionRef.current) {
+    const socket = viewerWsRef.current;
+    if (!socket || !socket.connected || !activeSessionRef.current) {
       setViewerStatus("Not connected to a live session");
       return false;
     }
@@ -1374,7 +1365,8 @@ export function App() {
       setViewerStatus("Ending session…");
     }
     try {
-      ws.send(JSON.stringify(payload));
+      const { type: _type, ...rest } = payload;
+      socket.emit("exec", rest as any);
       return true;
     } catch {
       setViewerStatus("Failed to send command");
@@ -1405,8 +1397,8 @@ export function App() {
   }, []);
 
   const selectModel = React.useCallback((model: ConfiguredModelInfo) => {
-    const ws = viewerWsRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN || !activeSessionRef.current) {
+    const socket = viewerWsRef.current;
+    if (!socket || !socket.connected || !activeSessionRef.current) {
       setViewerStatus("Not connected to a live session");
       return;
     }
@@ -1414,7 +1406,7 @@ export function App() {
     try {
       setIsChangingModel(true);
       setViewerStatus(`Switching model to ${model.provider}/${model.id}…`);
-      ws.send(JSON.stringify({ type: "model_set", provider: model.provider, modelId: model.id }));
+      socket.emit("model_set", { provider: model.provider, modelId: model.id });
       setModelSelectorOpen(false);
     } catch {
       setIsChangingModel(false);

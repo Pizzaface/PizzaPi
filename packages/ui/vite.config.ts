@@ -115,6 +115,16 @@ export default defineConfig({
                     });
                 },
             },
+            "/socket.io": {
+                target: `http://localhost:${parseInt(API_PORT) + 1}`,
+                ws: true,
+                configure: (proxy) => {
+                    proxy.on("error", (err) => {
+                        if ((err as NodeJS.ErrnoException).code === "ECONNRESET" || err.message.includes("socket has been ended")) return;
+                        console.error("[socket.io proxy]", err);
+                    });
+                },
+            },
         },
     },
     build: {
