@@ -586,7 +586,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                     return (
                                         <div
                                             key={s.sessionId}
-                                            className="relative overflow-clip rounded-lg"
+                                            className="relative overflow-hidden rounded-lg"
                                         >
                                             {/* "End" action behind the card — only rendered during swipe/reveal */}
                                             {(hasOffset || isRevealed) && <div
