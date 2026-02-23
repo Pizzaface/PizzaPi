@@ -3,7 +3,8 @@ import { Terminal as XTerm } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
-import { getRelayWsBase } from "@/lib/relay";
+import { io, type Socket } from "socket.io-client";
+import type { TerminalServerToClientEvents, TerminalClientToServerEvents } from "@pizzapi/protocol";
 import { Button } from "@/components/ui/button";
 import { TerminalIcon, X, Maximize2, Minimize2 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -36,7 +37,7 @@ export function WebTerminal({ terminalId, onClose, className }: WebTerminalProps
   const containerRef = React.useRef<HTMLDivElement>(null);
   const xtermRef = React.useRef<XTerm | null>(null);
   const fitAddonRef = React.useRef<FitAddon | null>(null);
-  const wsRef = React.useRef<WebSocket | null>(null);
+  const wsRef = React.useRef<Socket<TerminalServerToClientEvents, TerminalClientToServerEvents> | null>(null);
   const [status, setStatus] = React.useState<"connecting" | "connected" | "disconnected" | "error">("connecting");
   const [isMaximized, setIsMaximized] = React.useState(false);
 
@@ -87,83 +88,65 @@ export function WebTerminal({ terminalId, onClose, className }: WebTerminalProps
       fitAddon.fit();
     });
 
-    // Connect to relay terminal WebSocket
-    const wsBase = getRelayWsBase();
-    const ws = new WebSocket(`${wsBase}/ws/terminal/${terminalId}`);
-    wsRef.current = ws;
+    // Connect to relay terminal via Socket.IO
+    const socket: Socket<TerminalServerToClientEvents, TerminalClientToServerEvents> = io("/terminal", {
+      auth: { terminalId },
+      withCredentials: true,
+    });
+    wsRef.current = socket;
 
-    ws.onopen = () => {
-      setStatus("connecting");
-    };
+    socket.on("terminal_connected", () => {
+      setStatus("connected");
+      term.focus();
+      // Send initial size — this also triggers the deferred PTY spawn on the
+      // server, so we must always send it (fall back to 80x24 if layout isn't ready).
+      const dims = fitAddon.proposeDimensions();
+      socket.emit("terminal_resize", {
+        terminalId,
+        cols: dims?.cols ?? 80,
+        rows: dims?.rows ?? 24,
+      });
+    });
 
-    ws.onmessage = (evt) => {
-      let msg: Record<string, unknown>;
-      try {
-        msg = JSON.parse(evt.data as string);
-      } catch {
-        return;
+    socket.on("terminal_ready", () => {
+      setStatus("connected");
+    });
+
+    socket.on("terminal_data", (data) => {
+      const raw = typeof data.data === "string" ? data.data : "";
+      if (raw) {
+        const decoded = atob(raw);
+        term.write(decoded);
       }
+    });
 
-      if (msg.type === "terminal_connected") {
-        setStatus("connected");
-        term.focus();
-        // Send initial size — this also triggers the deferred PTY spawn on the
-        // server, so we must always send it (fall back to 80x24 if layout isn't ready).
-        const dims = fitAddon.proposeDimensions();
-        ws.send(JSON.stringify({
-          type: "terminal_resize",
-          cols: dims?.cols ?? 80,
-          rows: dims?.rows ?? 24,
-        }));
-        return;
-      }
+    socket.on("terminal_exit", (data) => {
+      const exitCode = typeof data.exitCode === "number" ? data.exitCode : 0;
+      term.writeln(`\r\n\x1b[90m[Process exited with code ${exitCode}]\x1b[0m`);
+      setStatus("disconnected");
+    });
 
-      if (msg.type === "terminal_ready") {
-        setStatus("connected");
-        return;
-      }
-
-      if (msg.type === "terminal_data") {
-        const data = typeof msg.data === "string" ? msg.data : "";
-        if (data) {
-          const decoded = atob(data);
-          term.write(decoded);
-        }
-        return;
-      }
-
-      if (msg.type === "terminal_exit") {
-        const exitCode = typeof msg.exitCode === "number" ? msg.exitCode : 0;
-        term.writeln(`\r\n\x1b[90m[Process exited with code ${exitCode}]\x1b[0m`);
-        setStatus("disconnected");
-        return;
-      }
-
-      if (msg.type === "terminal_error") {
-        const message = typeof msg.message === "string" ? msg.message : "Unknown error";
-        term.writeln(`\r\n\x1b[31m[Error: ${message}]\x1b[0m`);
-        setStatus("error");
-        return;
-      }
-    };
-
-    ws.onerror = () => {
+    socket.on("terminal_error", (data) => {
+      const message = typeof data.message === "string" ? data.message : "Unknown error";
+      term.writeln(`\r\n\x1b[31m[Error: ${message}]\x1b[0m`);
       setStatus("error");
-    };
+    });
 
-    ws.onclose = () => {
-      if (status !== "error") {
-        setStatus("disconnected");
-      }
-    };
+    socket.on("connect_error", () => {
+      setStatus("error");
+    });
 
-    // Forward terminal input → WebSocket
+    socket.on("disconnect", () => {
+      setStatus("disconnected");
+    });
+
+    // Forward terminal input → Socket.IO
     const inputDisposable = term.onData((data: string) => {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({
-          type: "terminal_input",
+      if (socket.connected) {
+        socket.emit("terminal_input", {
+          terminalId,
           data: btoa(data),
-        }));
+        });
       }
     });
 
@@ -173,12 +156,12 @@ export function WebTerminal({ terminalId, onClose, className }: WebTerminalProps
         if (fitAddonRef.current) {
           fitAddonRef.current.fit();
           const dims = fitAddonRef.current.proposeDimensions();
-          if (dims && wsRef.current?.readyState === WebSocket.OPEN) {
-            wsRef.current.send(JSON.stringify({
-              type: "terminal_resize",
+          if (dims && wsRef.current?.connected) {
+            wsRef.current.emit("terminal_resize", {
+              terminalId,
               cols: dims.cols,
               rows: dims.rows,
-            }));
+            });
           }
         }
       });
@@ -188,7 +171,7 @@ export function WebTerminal({ terminalId, onClose, className }: WebTerminalProps
     return () => {
       inputDisposable.dispose();
       resizeObserver.disconnect();
-      ws.close();
+      socket.disconnect();
       wsRef.current = null;
       term.dispose();
       xtermRef.current = null;
@@ -205,11 +188,11 @@ export function WebTerminal({ terminalId, onClose, className }: WebTerminalProps
 
   const handleClose = React.useCallback(() => {
     // Send kill signal before closing
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: "kill_terminal" }));
+    if (wsRef.current?.connected) {
+      wsRef.current.emit("kill_terminal", { terminalId });
     }
     onClose?.();
-  }, [onClose]);
+  }, [onClose, terminalId]);
 
   const statusColor = {
     connecting: "text-yellow-500",
@@ -226,10 +209,10 @@ export function WebTerminal({ terminalId, onClose, className }: WebTerminalProps
   }[status];
 
   const sendShortcut = React.useCallback((data: string) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: "terminal_input", data: btoa(data) }));
+    if (wsRef.current?.connected) {
+      wsRef.current.emit("terminal_input", { terminalId, data: btoa(data) });
     }
-  }, []);
+  }, [terminalId]);
 
   return (
     <div

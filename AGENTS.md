@@ -141,6 +141,9 @@ These are appended to the agent's context alongside the built-in system prompt.
 | `PIZZAPI_RUNNER_API_KEY` | falls back to `PIZZAPI_API_KEY` | API key used by the runner daemon |
 | `PIZZAPI_WORKSPACE_ROOTS` | — | Comma-separated list of allowed `cwd` roots for runner-spawned sessions |
 | `PIZZAPI_WORKER_CWD` | — | Working directory for a headless worker, set by the runner daemon |
+| `PIZZAPI_WORKER_INITIAL_PROMPT` | — | Initial prompt to send when a worker starts (set by spawn_session tool via daemon) |
+| `PIZZAPI_WORKER_INITIAL_MODEL_PROVIDER` | — | Provider for the initial model (e.g. `anthropic`), set by spawn_session tool |
+| `PIZZAPI_WORKER_INITIAL_MODEL_ID` | — | Model ID for the initial model (e.g. `claude-sonnet-4-20250514`), set by spawn_session tool |
 | `PORT` | `3000` | Server HTTP/WS port |
 | `PIZZAPI_REDIS_URL` | — | Redis connection URL (e.g. `redis://localhost:6379`) |
 

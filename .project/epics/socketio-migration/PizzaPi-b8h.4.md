@@ -1,6 +1,6 @@
 ---
 name: Migrate Registry to Redis-Backed State and Socket.IO Rooms
-status: open
+status: done
 created: 2026-02-22T20:50:58Z
 updated: 2026-02-22T22:45:27Z
 beads_id: PizzaPi-b8h.4

@@ -8,7 +8,8 @@ import { RunnerTokenManager } from "@/components/RunnerTokenManager";
 import { RunnerManager } from "@/components/RunnerManager";
 import { PizzaLogo } from "@/components/PizzaLogo";
 import { authClient, useSession, signOut } from "@/lib/auth-client";
-import { getRelayWsBase } from "@/lib/relay";
+import { io, type Socket } from "socket.io-client";
+import type { ViewerServerToClientEvents, ViewerClientToServerEvents } from "@pizzapi/protocol";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import {
@@ -41,6 +42,7 @@ import { Sun, Moon, LogOut, KeyRound, X, User, ChevronsUpDown, PanelLeftOpen, Ha
 import { NotificationToggle, MobileNotificationMenuItem } from "@/components/NotificationToggle";
 import { UsageIndicator, type ProviderUsageMap } from "@/components/UsageIndicator";
 import { TerminalManager } from "@/components/TerminalManager";
+import { FileExplorer } from "@/components/FileExplorer";
 import {
   ModelSelector,
   ModelSelectorContent,
@@ -257,6 +259,7 @@ export function App() {
   const [showApiKeys, setShowApiKeys] = React.useState(false);
   const [showRunners, setShowRunners] = React.useState(false);
   const [showTerminal, setShowTerminal] = React.useState(false);
+  const [showFileExplorer, setShowFileExplorer] = React.useState(false);
 
   type RunnerInfo = { runnerId: string; name?: string | null; roots?: string[]; sessionCount: number };
   const [newSessionOpen, setNewSessionOpen] = React.useState(false);
@@ -290,6 +293,12 @@ export function App() {
 
   // Sequence tracking for gap detection
   const lastSeqRef = React.useRef<number | null>(null);
+
+  // Snapshot guard: when connecting to a session, ignore streaming deltas
+  // until the initial snapshot (session_active / agent_end / heartbeat) arrives.
+  // This prevents pre-snapshot live events from rendering and then being
+  // replaced, which causes visible message "jumping".
+  const awaitingSnapshotRef = React.useRef(false);
 
   // Capabilities advertised by the runner (commands, models, etc.)
   const [availableCommands, setAvailableCommands] = React.useState<Array<{ name: string; description?: string }>>([]);
@@ -385,7 +394,7 @@ export function App() {
     };
   }, [newSessionOpen]);
 
-  const viewerWsRef = React.useRef<WebSocket | null>(null);
+  const viewerWsRef = React.useRef<Socket<ViewerServerToClientEvents, ViewerClientToServerEvents> | null>(null);
   const activeSessionRef = React.useRef<string | null>(null);
 
   // Cache last-known UI state per relay session so switching sessions feels instant.
@@ -433,16 +442,17 @@ export function App() {
 
   React.useEffect(() => {
     return () => {
-      viewerWsRef.current?.close();
+      viewerWsRef.current?.disconnect();
       viewerWsRef.current = null;
     };
   }, []);
 
   const clearSelection = React.useCallback(() => {
-    viewerWsRef.current?.close();
+    viewerWsRef.current?.disconnect();
     viewerWsRef.current = null;
     activeSessionRef.current = null;
     lastSeqRef.current = null;
+    awaitingSnapshotRef.current = false;
     setActiveSessionId(null);
     setMessages([]);
     setViewerStatus("Idle");
@@ -591,6 +601,22 @@ export function App() {
 
     const evt = event as Record<string, unknown>;
     const type = typeof evt.type === "string" ? evt.type : "";
+
+    // Clear the snapshot guard when we receive a state-setting event.
+    // These events replace the entire message list, so any pre-snapshot
+    // deltas that snuck through are harmless (they'll be overwritten).
+    if (type === "session_active" || type === "agent_end" || type === "heartbeat") {
+      awaitingSnapshotRef.current = false;
+    }
+
+    // While awaiting the initial snapshot, skip streaming delta events.
+    // They'd render briefly and then be replaced when the snapshot arrives,
+    // causing visible "jumping".
+    if (awaitingSnapshotRef.current) {
+      if (type === "message_update" || type === "message_start" || type === "message_end" || type === "turn_end") {
+        return;
+      }
+    }
 
     if (type === "heartbeat") {
       const hb = evt as {
@@ -1076,12 +1102,13 @@ export function App() {
   }, [upsertMessage, upsertMessageDebounced, cancelPendingDeltas, appendLocalSystemMessage]);
 
   const openSession = React.useCallback((relaySessionId: string) => {
-    viewerWsRef.current?.close();
+    viewerWsRef.current?.disconnect();
     viewerWsRef.current = null;
 
     localStorage.setItem("pp.lastSessionId", relaySessionId);
     activeSessionRef.current = relaySessionId;
     lastSeqRef.current = null;
+    awaitingSnapshotRef.current = true;
     setActiveSessionId(relaySessionId);
     setViewerStatus("Connecting…");
     setPendingQuestion(null);
@@ -1102,93 +1129,84 @@ export function App() {
     setLastHeartbeatAt(cached?.lastHeartbeatAt ?? null);
     setTodoList(cached?.todoList ?? []);
 
-    const ws = new WebSocket(`${getRelayWsBase()}/ws/sessions/${relaySessionId}`);
-    viewerWsRef.current = ws;
+    const socket: Socket<ViewerServerToClientEvents, ViewerClientToServerEvents> = io("/viewer", {
+      auth: { sessionId: relaySessionId },
+      withCredentials: true,
+    });
+    viewerWsRef.current = socket;
 
-    ws.onmessage = (evt) => {
+    socket.on("connected", (data) => {
       if (activeSessionRef.current !== relaySessionId) return;
 
-      let msg: Record<string, unknown>;
-      try {
-        msg = JSON.parse(evt.data as string);
-      } catch {
-        return;
+      const replayOnly = data.replayOnly === true;
+      setViewerStatus(replayOnly ? "Snapshot replay" : "Connected");
+
+      // Seed the last known sequence number so gap detection works from the start.
+      if (typeof data.lastSeq === "number") {
+        lastSeqRef.current = data.lastSeq;
       }
 
-      if (msg.type === "connected") {
-        const replayOnly = msg.replayOnly === true;
-        setViewerStatus(replayOnly ? "Snapshot replay" : "Connected");
+      // Reflect initial active status from connected message.
+      if (typeof data.isActive === "boolean") {
+        setAgentActive(data.isActive);
+        patchSessionCache({ agentActive: data.isActive });
+      }
 
-        // Seed the last known sequence number so gap detection works from the start.
-        if (typeof msg.lastSeq === "number") {
-          lastSeqRef.current = msg.lastSeq;
+      if (Object.prototype.hasOwnProperty.call(data, "sessionName")) {
+        const nextName = normalizeSessionName(data.sessionName);
+        setSessionName(nextName);
+        patchSessionCache({ sessionName: nextName });
+      }
+
+      // Tell the runner we connected so it can push capabilities (models/commands/etc.)
+      socket.emit("connected", {});
+    });
+
+    socket.on("event", (data) => {
+      if (activeSessionRef.current !== relaySessionId) return;
+
+      // Detect sequence gaps; request a resync if we missed events.
+      const seq = typeof data.seq === "number" ? data.seq : null;
+      if (seq !== null && lastSeqRef.current !== null) {
+        const expected = lastSeqRef.current + 1;
+        if (seq > expected) {
+          // Gap detected — request a resync snapshot from the server.
+          console.warn(`[relay] Sequence gap: expected ${expected}, got ${seq}. Requesting resync.`);
+          socket.emit("resync", {});
         }
-
-        // Reflect initial active status from connected message.
-        if (typeof msg.isActive === "boolean") {
-          setAgentActive(msg.isActive);
-          patchSessionCache({ agentActive: msg.isActive });
-        }
-
-        if (Object.prototype.hasOwnProperty.call(msg, "sessionName")) {
-          const nextName = normalizeSessionName((msg as any).sessionName);
-          setSessionName(nextName);
-          patchSessionCache({ sessionName: nextName });
-        }
-
-        // Tell the runner we connected so it can push capabilities (models/commands/etc.)
-        try {
-          ws.send(JSON.stringify({ type: "connected" }));
-        } catch {}
-
-        return;
       }
+      if (seq !== null) lastSeqRef.current = seq;
 
-      if (msg.type === "event") {
-        // Detect sequence gaps; request a resync if we missed events.
-        const seq = typeof msg.seq === "number" ? msg.seq : null;
-        if (seq !== null && lastSeqRef.current !== null) {
-          const expected = lastSeqRef.current + 1;
-          if (seq > expected) {
-            // Gap detected — request a resync snapshot from the server.
-            console.warn(`[relay] Sequence gap: expected ${expected}, got ${seq}. Requesting resync.`);
-            try { ws.send(JSON.stringify({ type: "resync" })); } catch {}
-          }
-        }
-        if (seq !== null) lastSeqRef.current = seq;
+      handleRelayEvent(data.event, seq ?? undefined);
+    });
 
-        handleRelayEvent(msg.event, seq ?? undefined);
-        return;
+    socket.on("exec_result", (data) => {
+      if (activeSessionRef.current !== relaySessionId) return;
+      handleRelayEvent({ type: "exec_result", ...data });
+    });
+
+    socket.on("disconnected", (data) => {
+      if (activeSessionRef.current !== relaySessionId) return;
+      const isRestarting = restartPendingSessionIdRef.current === relaySessionId;
+      if (!isRestarting) {
+        setViewerStatus(data.reason || "Disconnected");
       }
+      setPendingQuestion(null);
+      setIsChangingModel(false);
+    });
 
-      if (msg.type === "exec_result") {
-        handleRelayEvent(msg);
-        return;
-      }
+    socket.on("error", (data) => {
+      if (activeSessionRef.current !== relaySessionId) return;
+      setViewerStatus(data.message || "Failed to load session");
+    });
 
-      if (msg.type === "disconnected") {
-        const isRestarting = restartPendingSessionIdRef.current === relaySessionId;
-        if (!isRestarting) {
-          const reason = typeof msg.reason === "string" ? msg.reason : "Disconnected";
-          setViewerStatus(reason);
-        }
-        setPendingQuestion(null);
-        setIsChangingModel(false);
-        return;
-      }
-
-      if (msg.type === "error") {
-        setViewerStatus(typeof msg.message === "string" ? msg.message : "Failed to load session");
-      }
-    };
-
-    ws.onerror = () => {
+    socket.on("connect_error", () => {
       if (activeSessionRef.current === relaySessionId) {
         setViewerStatus("Connection error");
       }
-    };
+    });
 
-    ws.onclose = () => {
+    socket.on("disconnect", () => {
       if (activeSessionRef.current === relaySessionId) {
         const isRestarting = restartPendingSessionIdRef.current === relaySessionId;
         setViewerStatus((prev) =>
@@ -1201,8 +1219,8 @@ export function App() {
         setPendingQuestion(null);
         setIsChangingModel(false);
       }
-    };
-  }, [handleRelayEvent]);
+    });
+  }, [handleRelayEvent, patchSessionCache]);
 
   // Auto-reopen the last viewed session once live sessions arrive.
   React.useEffect(() => {
@@ -1236,9 +1254,9 @@ export function App() {
 
 
   const sendSessionInput = React.useCallback(async (message: { text: string; files?: Array<{ mediaType?: string; filename?: string; url?: string }>; deliverAs?: "steer" | "followUp" } | string) => {
-    const ws = viewerWsRef.current;
+    const socket = viewerWsRef.current;
     const sessionId = activeSessionRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN || !sessionId) {
+    if (!socket || !socket.connected || !sessionId) {
       setViewerStatus("Not connected to a live session");
       return false;
     }
@@ -1316,13 +1334,12 @@ export function App() {
     const deliverAs = typeof message === "object" ? message.deliverAs : undefined;
 
     try {
-      ws.send(JSON.stringify({
-        type: "input",
+      socket.emit("input", {
         text: trimmed,
         attachments,
         client: "web",
         ...(deliverAs ? { deliverAs } : {}),
-      }));
+      });
 
       // Track queued messages when the agent is active
       if (deliverAs && trimmed) {
@@ -1362,8 +1379,8 @@ export function App() {
   }, []);
 
   const sendRemoteExec = React.useCallback((payload: any) => {
-    const ws = viewerWsRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN || !activeSessionRef.current) {
+    const socket = viewerWsRef.current;
+    if (!socket || !socket.connected || !activeSessionRef.current) {
       setViewerStatus("Not connected to a live session");
       return false;
     }
@@ -1372,7 +1389,8 @@ export function App() {
       setViewerStatus("Ending session…");
     }
     try {
-      ws.send(JSON.stringify(payload));
+      const { type: _type, ...rest } = payload;
+      socket.emit("exec", rest as any);
       return true;
     } catch {
       setViewerStatus("Failed to send command");
@@ -1403,8 +1421,8 @@ export function App() {
   }, []);
 
   const selectModel = React.useCallback((model: ConfiguredModelInfo) => {
-    const ws = viewerWsRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN || !activeSessionRef.current) {
+    const socket = viewerWsRef.current;
+    if (!socket || !socket.connected || !activeSessionRef.current) {
       setViewerStatus("Not connected to a live session");
       return;
     }
@@ -1412,7 +1430,7 @@ export function App() {
     try {
       setIsChangingModel(true);
       setViewerStatus(`Switching model to ${model.provider}/${model.id}…`);
-      ws.send(JSON.stringify({ type: "model_set", provider: model.provider, modelId: model.id }));
+      socket.emit("model_set", { provider: model.provider, modelId: model.id });
       setModelSelectorOpen(false);
     } catch {
       setIsChangingModel(false);
@@ -1528,6 +1546,17 @@ export function App() {
       setSpawningSession(false);
     }
   }, [spawningSession, spawnRunnerId, spawnCwd, handleOpenSession, waitForSessionToGoLive]);
+
+  // Derive runner/cwd for the active session (used by File Explorer)
+  const activeSessionInfo = React.useMemo(() => {
+    if (!activeSessionId) return null;
+    const liveSession = liveSessions.find((s) => s.sessionId === activeSessionId);
+    if (!liveSession) return null;
+    return {
+      runnerId: liveSession.runnerId ?? null,
+      cwd: liveSession.cwd ?? "",
+    };
+  }, [activeSessionId, liveSessions]);
 
   if (isPending) {
     return (
@@ -1875,54 +1904,85 @@ export function App() {
           />
         )}
 
-        <div className="flex flex-col flex-1 min-w-0 h-full">
-          <div className={showTerminal ? "flex flex-col flex-1 min-h-0 overflow-hidden" : "flex flex-col flex-1 min-h-0"}>
-            {showRunners ? (
-              <RunnerManager onOpenSession={(id) => { handleOpenSession(id); setShowRunners(false); }} />
-            ) : (
-              <SessionViewer
-                sessionId={activeSessionId}
-                sessionName={sessionName}
-                messages={messages}
-                activeModel={activeModel}
-                activeToolCalls={activeToolCalls}
-                pendingQuestion={pendingQuestion}
-                availableCommands={availableCommands}
-                resumeSessions={resumeSessions}
-                resumeSessionsLoading={resumeSessionsLoading}
-                onRequestResumeSessions={requestResumeSessions}
-                onSendInput={sendSessionInput}
-                onExec={sendRemoteExec}
-                onShowModelSelector={() => setModelSelectorOpen(true)}
-                agentActive={agentActive}
-                effortLevel={effortLevel}
-                tokenUsage={tokenUsage}
-                lastHeartbeatAt={lastHeartbeatAt}
-                viewerStatus={viewerStatus}
-                messageQueue={messageQueue}
-                onRemoveQueuedMessage={removeQueuedMessage}
-                onClearMessageQueue={clearMessageQueue}
-                onToggleTerminal={() => setShowTerminal((v) => !v)}
-                showTerminalButton
-                todoList={todoList}
-              />
-            )}
-          </div>
-          {showTerminal && (
+        <div className="flex flex-1 min-w-0 h-full overflow-hidden">
+          {/* File Explorer side panel — desktop: right sidebar, mobile: full-screen overlay */}
+          {showFileExplorer && activeSessionInfo?.runnerId && activeSessionInfo?.cwd && (
             <>
-              {/* Mobile: full-screen overlay above everything */}
+              {/* Mobile: full-screen overlay */}
               <div
                 className="md:hidden fixed inset-0 z-[60] flex flex-col bg-zinc-950 pp-safe-left pp-safe-right"
                 style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
               >
-                <TerminalManager className="h-full" onClose={() => setShowTerminal(false)} />
+                <FileExplorer
+                  runnerId={activeSessionInfo.runnerId}
+                  cwd={activeSessionInfo.cwd}
+                  className="h-full"
+                  onClose={() => setShowFileExplorer(false)}
+                />
               </div>
-              {/* Desktop: bottom split panel */}
-              <div className="hidden md:block border-t border-zinc-800" style={{ height: "40%", minHeight: 200 }}>
-                <TerminalManager className="h-full" />
+              {/* Desktop: right side panel */}
+              <div className="hidden md:flex flex-col border-r border-zinc-800 bg-zinc-950 order-first" style={{ width: 280, minWidth: 200 }}>
+                <FileExplorer
+                  runnerId={activeSessionInfo.runnerId}
+                  cwd={activeSessionInfo.cwd}
+                  className="h-full"
+                  onClose={() => setShowFileExplorer(false)}
+                />
               </div>
             </>
           )}
+
+          <div className="flex flex-col flex-1 min-w-0 h-full">
+            <div className={showTerminal ? "flex flex-col flex-1 min-h-0 overflow-hidden" : "flex flex-col flex-1 min-h-0"}>
+              {showRunners ? (
+                <RunnerManager onOpenSession={(id) => { handleOpenSession(id); setShowRunners(false); }} />
+              ) : (
+                <SessionViewer
+                  sessionId={activeSessionId}
+                  sessionName={sessionName}
+                  messages={messages}
+                  activeModel={activeModel}
+                  activeToolCalls={activeToolCalls}
+                  pendingQuestion={pendingQuestion}
+                  availableCommands={availableCommands}
+                  resumeSessions={resumeSessions}
+                  resumeSessionsLoading={resumeSessionsLoading}
+                  onRequestResumeSessions={requestResumeSessions}
+                  onSendInput={sendSessionInput}
+                  onExec={sendRemoteExec}
+                  onShowModelSelector={() => setModelSelectorOpen(true)}
+                  agentActive={agentActive}
+                  effortLevel={effortLevel}
+                  tokenUsage={tokenUsage}
+                  lastHeartbeatAt={lastHeartbeatAt}
+                  viewerStatus={viewerStatus}
+                  messageQueue={messageQueue}
+                  onRemoveQueuedMessage={removeQueuedMessage}
+                  onClearMessageQueue={clearMessageQueue}
+                  onToggleTerminal={() => setShowTerminal((v) => !v)}
+                  showTerminalButton
+                  onToggleFileExplorer={() => setShowFileExplorer((v) => !v)}
+                  showFileExplorerButton={!!activeSessionInfo?.runnerId && !!activeSessionInfo?.cwd}
+                  todoList={todoList}
+                />
+              )}
+            </div>
+            {showTerminal && (
+              <>
+                {/* Mobile: full-screen overlay above everything */}
+                <div
+                  className="md:hidden fixed inset-0 z-[60] flex flex-col bg-zinc-950 pp-safe-left pp-safe-right"
+                  style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
+                >
+                  <TerminalManager className="h-full" onClose={() => setShowTerminal(false)} />
+                </div>
+                {/* Desktop: bottom split panel */}
+                <div className="hidden md:block border-t border-zinc-800" style={{ height: "40%", minHeight: 200 }}>
+                  <TerminalManager className="h-full" />
+                </div>
+              </>
+            )}
+          </div>
         </div>
 
         <Dialog open={newSessionOpen} onOpenChange={(open) => { if (!spawningSession) setNewSessionOpen(open); }}>

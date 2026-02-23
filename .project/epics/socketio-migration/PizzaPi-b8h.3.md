@@ -1,6 +1,6 @@
 ---
 name: Integrate Socket.IO Server with Bun.serve and Redis Adapter
-status: open
+status: done
 created: 2026-02-22T20:50:58Z
 updated: 2026-02-22T22:45:27Z
 beads_id: PizzaPi-b8h.3

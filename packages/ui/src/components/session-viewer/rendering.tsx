@@ -48,7 +48,464 @@ import {
   normalizeToolName,
   tryParseJsonObject,
 } from "@/components/session-viewer/utils";
-import { ChevronDownIcon } from "lucide-react";
+import { ChevronDownIcon, ListTodoIcon, CircleDashedIcon, CircleDotIcon, CheckCircle2Icon, XCircleIcon as XCircleIcon2, TagIcon, WrenchIcon, RocketIcon, SendIcon, InboxIcon, ClockIcon, HashIcon, ExternalLinkIcon, MessageSquareIcon, Loader2Icon } from "lucide-react";
+
+interface TodoItem {
+  id: number;
+  text: string;
+  status: "pending" | "in_progress" | "done" | "cancelled";
+}
+
+function TodoCard({ todos }: { todos: TodoItem[] }) {
+  const done = todos.filter((t) => t.status === "done").length;
+  const total = todos.length;
+
+  const statusIcon = (status: TodoItem["status"]) => {
+    switch (status) {
+      case "done":
+        return <CheckCircle2Icon className="size-3.5 shrink-0 text-emerald-500" />;
+      case "in_progress":
+        return <CircleDotIcon className="size-3.5 shrink-0 text-blue-400 animate-pulse" />;
+      case "cancelled":
+        return <XCircleIcon2 className="size-3.5 shrink-0 text-zinc-500" />;
+      default:
+        return <CircleDashedIcon className="size-3.5 shrink-0 text-zinc-500" />;
+    }
+  };
+
+  return (
+    <div className="overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950 text-zinc-100 text-xs">
+      <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-2">
+        <div className="flex items-center gap-2 text-sm text-zinc-400">
+          <ListTodoIcon className="size-4 shrink-0" />
+          <span className="font-medium">Tasks</span>
+        </div>
+        <span className="text-[11px] text-zinc-500 tabular-nums">
+          {done}/{total} done
+        </span>
+      </div>
+      <ul className="divide-y divide-zinc-800/60">
+        {todos.map((item) => (
+          <li
+            key={item.id}
+            className={`flex items-start gap-2.5 px-4 py-2 ${
+              item.status === "done" || item.status === "cancelled"
+                ? "opacity-60"
+                : ""
+            }`}
+          >
+            <span className="mt-0.5">{statusIcon(item.status)}</span>
+            <span
+              className={`text-xs leading-relaxed ${
+                item.status === "done"
+                  ? "line-through text-zinc-500"
+                  : item.status === "cancelled"
+                    ? "line-through text-zinc-600"
+                    : item.status === "in_progress"
+                      ? "text-zinc-200"
+                      : "text-zinc-400"
+              }`}
+            >
+              {item.text}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function SessionNameCard({ name }: { name: string }) {
+  return (
+    <div className="flex items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-950 px-4 py-2.5 text-xs text-zinc-400">
+      <TagIcon className="size-3.5 shrink-0 text-zinc-500" />
+      <span>
+        Session named <span className="font-medium text-zinc-200">{name}</span>
+      </span>
+    </div>
+  );
+}
+
+// ── Inter-agent messaging cards ──────────────────────────────────────────────
+
+function truncateSessionId(id: string): string {
+  return id.length > 12 ? `${id.slice(0, 8)}…` : id;
+}
+
+/**
+ * Parse the text result of spawn_session to extract structured details.
+ */
+function parseSpawnResult(text: string | null): {
+  sessionId?: string;
+  runnerId?: string;
+  cwd?: string;
+  model?: string;
+  status?: string;
+  shareUrl?: string;
+  error?: string;
+} {
+  if (!text) return {};
+  const result: Record<string, string> = {};
+  const lines = text.split("\n");
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("Session ID:")) result.sessionId = trimmed.replace("Session ID:", "").trim();
+    else if (trimmed.startsWith("Runner:")) result.runnerId = trimmed.replace("Runner:", "").trim();
+    else if (trimmed.startsWith("Working directory:")) result.cwd = trimmed.replace("Working directory:", "").trim();
+    else if (trimmed.startsWith("Model:")) result.model = trimmed.replace("Model:", "").trim();
+    else if (trimmed.startsWith("Status:")) result.status = trimmed.replace("Status:", "").trim();
+    else if (trimmed.startsWith("Web UI:")) result.shareUrl = trimmed.replace("Web UI:", "").trim();
+    else if (trimmed.startsWith("Error")) result.error = trimmed;
+  }
+  return result;
+}
+
+function SpawnSessionCard({
+  prompt,
+  model,
+  cwd,
+  resultText,
+  isStreaming,
+}: {
+  prompt: string;
+  model?: { provider: string; id: string };
+  cwd?: string;
+  resultText: string | null;
+  isStreaming: boolean;
+}) {
+  const parsed = parseSpawnResult(resultText);
+  const isError = resultText?.startsWith("Error") ?? false;
+
+  return (
+    <div className="overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950 text-zinc-100 text-xs">
+      {/* Header */}
+      <div className="flex items-center justify-between gap-2 border-b border-zinc-800 px-4 py-2.5">
+        <div className="flex min-w-0 items-center gap-2">
+          <RocketIcon className="size-3.5 shrink-0 text-violet-400" />
+          <span className="text-sm font-medium text-zinc-300">Spawn Session</span>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          {isStreaming ? (
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-zinc-700 bg-zinc-800 px-2 py-0.5 text-[11px] text-zinc-400">
+              <Loader2Icon className="size-3 animate-spin" />
+              Spawning…
+            </span>
+          ) : isError ? (
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-red-800/60 bg-red-900/30 px-2 py-0.5 text-[11px] text-red-400">
+              <XCircleIcon2 className="size-3" />
+              Failed
+            </span>
+          ) : resultText ? (
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-800/60 bg-emerald-900/30 px-2 py-0.5 text-[11px] text-emerald-400">
+              <CheckCircle2Icon className="size-3" />
+              Spawned
+            </span>
+          ) : null}
+        </div>
+      </div>
+
+      {/* Prompt */}
+      <div className="border-b border-zinc-800/60 px-4 py-2.5">
+        <div className="mb-1 text-[10px] font-medium uppercase tracking-wider text-zinc-600">Prompt</div>
+        <p className="whitespace-pre-wrap break-words text-zinc-300 leading-relaxed line-clamp-4">
+          {prompt}
+        </p>
+      </div>
+
+      {/* Meta row */}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2 text-[11px] text-zinc-500">
+        {model && (
+          <span>
+            <span className="text-zinc-600">Model:</span>{" "}
+            <span className="text-zinc-400">{model.provider}/{model.id}</span>
+          </span>
+        )}
+        {(cwd || parsed.cwd) && (
+          <span className="truncate max-w-60">
+            <span className="text-zinc-600">CWD:</span>{" "}
+            <span className="font-mono text-zinc-400">{cwd || parsed.cwd}</span>
+          </span>
+        )}
+        {parsed.sessionId && (
+          <span>
+            <span className="text-zinc-600">ID:</span>{" "}
+            <span className="font-mono text-zinc-400">{truncateSessionId(parsed.sessionId)}</span>
+          </span>
+        )}
+      </div>
+
+      {/* Link to session */}
+      {parsed.shareUrl && (
+        <div className="border-t border-zinc-800/60 px-4 py-2">
+          <a
+            href={parsed.shareUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1.5 text-[11px] text-violet-400 hover:text-violet-300 transition-colors"
+          >
+            <ExternalLinkIcon className="size-3" />
+            Open in Web UI
+          </a>
+        </div>
+      )}
+
+      {/* Error display */}
+      {isError && resultText && (
+        <div className="border-t border-red-800/30 bg-red-950/20 px-4 py-2 text-red-400">
+          {resultText}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SendMessageCard({
+  targetSessionId,
+  message,
+  resultText,
+  isStreaming,
+}: {
+  targetSessionId: string;
+  message: string;
+  resultText: string | null;
+  isStreaming: boolean;
+}) {
+  const isError = resultText?.startsWith("Error") ?? false;
+
+  return (
+    <div className="overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950 text-zinc-100 text-xs">
+      {/* Header */}
+      <div className="flex items-center justify-between gap-2 border-b border-zinc-800 px-4 py-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <SendIcon className="size-3.5 shrink-0 text-blue-400" />
+          <span className="text-sm font-medium text-zinc-300">Message Sent</span>
+          <span className="rounded bg-zinc-800 px-1.5 py-0.5 font-mono text-[10px] text-zinc-500">
+            → {truncateSessionId(targetSessionId)}
+          </span>
+        </div>
+        <div className="flex shrink-0 items-center gap-1.5">
+          {isStreaming ? (
+            <Loader2Icon className="size-3 animate-spin text-zinc-500" />
+          ) : isError ? (
+            <XCircleIcon2 className="size-3.5 text-red-400" />
+          ) : resultText ? (
+            <CheckCircle2Icon className="size-3.5 text-emerald-500" />
+          ) : null}
+        </div>
+      </div>
+
+      {/* Message body */}
+      <div className="px-4 py-3">
+        <div className="rounded-lg rounded-br-sm bg-blue-600/15 border border-blue-500/20 px-3 py-2">
+          <p className="whitespace-pre-wrap break-words text-zinc-200 leading-relaxed">
+            {message}
+          </p>
+        </div>
+      </div>
+
+      {/* Error */}
+      {isError && resultText && (
+        <div className="border-t border-red-800/30 bg-red-950/20 px-4 py-2 text-red-400">
+          {resultText}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function WaitForMessageCard({
+  fromSessionId,
+  timeout,
+  resultText,
+  isStreaming,
+}: {
+  fromSessionId?: string;
+  timeout?: number;
+  resultText: string | null;
+  isStreaming: boolean;
+}) {
+  const isTimedOut = resultText?.includes("No message received") ?? false;
+  const isCancelled = resultText === "Wait was cancelled.";
+  const hasMessage = resultText?.startsWith("Message from session") ?? false;
+
+  // Parse received message
+  let senderSessionId: string | null = null;
+  let receivedMessage: string | null = null;
+  if (hasMessage && resultText) {
+    const match = resultText.match(/^Message from session (.+?):\n\n([\s\S]*)$/);
+    if (match) {
+      senderSessionId = match[1];
+      receivedMessage = match[2];
+    }
+  }
+
+  return (
+    <div className="overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950 text-zinc-100 text-xs">
+      {/* Header */}
+      <div className="flex items-center justify-between gap-2 border-b border-zinc-800 px-4 py-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <InboxIcon className="size-3.5 shrink-0 text-amber-400" />
+          <span className="text-sm font-medium text-zinc-300">
+            {isStreaming ? "Waiting for Message" : hasMessage ? "Message Received" : "Wait for Message"}
+          </span>
+          {fromSessionId && (
+            <span className="rounded bg-zinc-800 px-1.5 py-0.5 font-mono text-[10px] text-zinc-500">
+              ← {truncateSessionId(fromSessionId)}
+            </span>
+          )}
+          {!fromSessionId && !senderSessionId && (
+            <span className="rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-600">
+              any session
+            </span>
+          )}
+        </div>
+        <div className="flex shrink-0 items-center gap-1.5">
+          {isStreaming && (
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-800/60 bg-amber-900/20 px-2 py-0.5 text-[11px] text-amber-400">
+              <Loader2Icon className="size-3 animate-spin" />
+              Listening…
+            </span>
+          )}
+          {isTimedOut && (
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-zinc-700 bg-zinc-800 px-2 py-0.5 text-[11px] text-zinc-500">
+              <ClockIcon className="size-3" />
+              Timed out
+            </span>
+          )}
+          {isCancelled && (
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-zinc-700 bg-zinc-800 px-2 py-0.5 text-[11px] text-zinc-500">
+              Cancelled
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Received message */}
+      {hasMessage && receivedMessage !== null && (
+        <div className="px-4 py-3">
+          {senderSessionId && (
+            <div className="mb-1.5 flex items-center gap-1.5 text-[10px] text-zinc-500">
+              <MessageSquareIcon className="size-3 shrink-0" />
+              <span className="font-mono">{truncateSessionId(senderSessionId)}</span>
+            </div>
+          )}
+          <div className="rounded-lg rounded-bl-sm bg-amber-500/10 border border-amber-500/20 px-3 py-2">
+            <p className="whitespace-pre-wrap break-words text-zinc-200 leading-relaxed">
+              {receivedMessage}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Waiting state */}
+      {isStreaming && !hasMessage && (
+        <div className="flex items-center justify-center gap-2 px-4 py-6 text-zinc-500">
+          <Loader2Icon className="size-4 animate-spin" />
+          <span>Waiting for a message{fromSessionId ? ` from ${truncateSessionId(fromSessionId)}` : ""}…</span>
+          {timeout && <span className="text-zinc-600">({timeout}s timeout)</span>}
+        </div>
+      )}
+
+      {/* Timed out / cancelled */}
+      {(isTimedOut || isCancelled) && (
+        <div className="px-4 py-3 text-zinc-500">
+          {resultText}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CheckMessagesCard({
+  fromSessionId,
+  resultText,
+  isStreaming,
+}: {
+  fromSessionId?: string;
+  resultText: string | null;
+  isStreaming: boolean;
+}) {
+  const isEmpty = resultText === "No pending messages.";
+
+  // Parse multiple messages from result
+  const parsedMessages: Array<{ fromSessionId: string; message: string }> = [];
+  if (resultText && !isEmpty) {
+    const body = resultText.replace(/^\d+ message\(s\) received:\n\n/, "");
+    const parts = body.split(/\n\n(?=\[)/);
+    for (const part of parts) {
+      const match = part.match(/^\[(.+?)\]\s([\s\S]*)$/);
+      if (match) {
+        parsedMessages.push({ fromSessionId: match[1], message: match[2] });
+      }
+    }
+  }
+
+  return (
+    <div className="overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950 text-zinc-100 text-xs">
+      {/* Header */}
+      <div className="flex items-center justify-between gap-2 border-b border-zinc-800 px-4 py-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <InboxIcon className="size-3.5 shrink-0 text-teal-400" />
+          <span className="text-sm font-medium text-zinc-300">Check Messages</span>
+          {fromSessionId && (
+            <span className="rounded bg-zinc-800 px-1.5 py-0.5 font-mono text-[10px] text-zinc-500">
+              from {truncateSessionId(fromSessionId)}
+            </span>
+          )}
+        </div>
+        <div className="flex shrink-0 items-center gap-1.5">
+          {isStreaming ? (
+            <Loader2Icon className="size-3 animate-spin text-zinc-500" />
+          ) : parsedMessages.length > 0 ? (
+            <span className="inline-flex items-center gap-1 rounded-full border border-teal-800/60 bg-teal-900/30 px-2 py-0.5 text-[11px] text-teal-400">
+              {parsedMessages.length} message{parsedMessages.length !== 1 ? "s" : ""}
+            </span>
+          ) : resultText ? (
+            <span className="text-[11px] text-zinc-600">Empty</span>
+          ) : null}
+        </div>
+      </div>
+
+      {/* Messages */}
+      {parsedMessages.length > 0 && (
+        <div className="divide-y divide-zinc-800/60">
+          {parsedMessages.map((msg, i) => (
+            <div key={i} className="px-4 py-2.5">
+              <div className="mb-1 flex items-center gap-1.5 text-[10px] text-zinc-500">
+                <MessageSquareIcon className="size-3 shrink-0" />
+                <span className="font-mono">{truncateSessionId(msg.fromSessionId)}</span>
+              </div>
+              <div className="rounded-lg rounded-bl-sm bg-teal-500/10 border border-teal-500/20 px-3 py-2">
+                <p className="whitespace-pre-wrap break-words text-zinc-200 leading-relaxed">
+                  {msg.message}
+                </p>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Empty state */}
+      {isEmpty && (
+        <div className="flex items-center justify-center gap-2 px-4 py-4 text-zinc-600">
+          <InboxIcon className="size-3.5" />
+          <span>No pending messages</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function GetSessionIdCard({ sessionId }: { sessionId: string }) {
+  return (
+    <div className="flex items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-950 px-4 py-2.5 text-xs text-zinc-400">
+      <HashIcon className="size-3.5 shrink-0 text-zinc-500" />
+      <span>
+        Session ID: <span className="font-mono font-medium text-zinc-200">{sessionId}</span>
+      </span>
+    </div>
+  );
+}
 
 function CopyableCodeBlock({
   code,
@@ -628,28 +1085,218 @@ function renderGroupedToolExecution(
         </EditFileCard>
       );
     }
-  } else {
-    // Default / Generic
-    const commandLine = synthesizeCommandLine(toolName, toolInput);
-    const outputText = hasOutput ? extractTextFromToolContent(content) : null;
+  } else if (norm === "update_todo" || norm.endsWith(".update_todo")) {
+    // Todo list — render as a checklist card from the tool input
+    const inputArgs =
+      toolInput && typeof toolInput === "object"
+        ? (toolInput as Record<string, unknown>)
+        : {};
+    const todos = Array.isArray(inputArgs.todos) ? (inputArgs.todos as TodoItem[]) : [];
+    if (todos.length > 0) {
+      card = <TodoCard todos={todos} />;
+    } else {
+      // Empty or unparseable — hide
+      card = null;
+    }
+  } else if (norm === "set_session_name" || norm.endsWith(".set_session_name")) {
+    // Session name — render as a small inline badge
+    const inputArgs =
+      toolInput && typeof toolInput === "object"
+        ? (toolInput as Record<string, unknown>)
+        : {};
+    const name = typeof inputArgs.name === "string" ? inputArgs.name : null;
+    if (name) {
+      card = <SessionNameCard name={name} />;
+    } else {
+      card = null;
+    }
+  } else if (norm === "spawn_session" || norm.endsWith(".spawn_session")) {
+    const inputArgs =
+      toolInput && typeof toolInput === "object"
+        ? (toolInput as Record<string, unknown>)
+        : {};
+    const prompt = typeof inputArgs.prompt === "string" ? inputArgs.prompt : "";
+    const model =
+      inputArgs.model && typeof inputArgs.model === "object"
+        ? (inputArgs.model as { provider: string; id: string })
+        : undefined;
+    const cwd = typeof inputArgs.cwd === "string" ? inputArgs.cwd : undefined;
+    const resultText = hasOutput ? extractTextFromToolContent(content) : null;
+
     card = (
-      <Terminal output={outputText ?? ""} isStreaming={isStreaming} className="text-xs">
-        <TerminalHeader>
-          <TerminalTitle>{toolName}</TerminalTitle>
-          <div className="flex items-center gap-2">
-            <StatusBadge status={state} />
-            <TerminalStatus />
-            <TerminalActions>
-              {outputText && <TerminalCopyButton />}
-            </TerminalActions>
-          </div>
-        </TerminalHeader>
-        <div className="px-4 py-2 font-mono text-xs text-zinc-400 border-b border-zinc-800">
-          <span className="text-zinc-600 select-none mr-1">$</span>
-          <span className="text-zinc-300">{commandLine}</span>
+      <SpawnSessionCard
+        prompt={prompt}
+        model={model}
+        cwd={cwd}
+        resultText={resultText}
+        isStreaming={isStreaming}
+      />
+    );
+  } else if (norm === "send_message" || norm.endsWith(".send_message")) {
+    const inputArgs =
+      toolInput && typeof toolInput === "object"
+        ? (toolInput as Record<string, unknown>)
+        : {};
+    const targetSessionId = typeof inputArgs.sessionId === "string" ? inputArgs.sessionId : "unknown";
+    const message = typeof inputArgs.message === "string" ? inputArgs.message : "";
+    const resultText = hasOutput ? extractTextFromToolContent(content) : null;
+
+    card = (
+      <SendMessageCard
+        targetSessionId={targetSessionId}
+        message={message}
+        resultText={resultText}
+        isStreaming={isStreaming}
+      />
+    );
+  } else if (norm === "wait_for_message" || norm.endsWith(".wait_for_message")) {
+    const inputArgs =
+      toolInput && typeof toolInput === "object"
+        ? (toolInput as Record<string, unknown>)
+        : {};
+    const fromSessionId = typeof inputArgs.fromSessionId === "string" ? inputArgs.fromSessionId : undefined;
+    const timeout = typeof inputArgs.timeout === "number" ? inputArgs.timeout : undefined;
+    const resultText = hasOutput ? extractTextFromToolContent(content) : null;
+
+    card = (
+      <WaitForMessageCard
+        fromSessionId={fromSessionId}
+        timeout={timeout}
+        resultText={resultText}
+        isStreaming={isStreaming}
+      />
+    );
+  } else if (norm === "check_messages" || norm.endsWith(".check_messages")) {
+    const inputArgs =
+      toolInput && typeof toolInput === "object"
+        ? (toolInput as Record<string, unknown>)
+        : {};
+    const fromSessionId = typeof inputArgs.fromSessionId === "string" ? inputArgs.fromSessionId : undefined;
+    const resultText = hasOutput ? extractTextFromToolContent(content) : null;
+
+    card = (
+      <CheckMessagesCard
+        fromSessionId={fromSessionId}
+        resultText={resultText}
+        isStreaming={isStreaming}
+      />
+    );
+  } else if (norm === "get_session_id" || norm.endsWith(".get_session_id")) {
+    const resultText = hasOutput ? extractTextFromToolContent(content) : null;
+    const sessionId = resultText?.replace("This session's ID: ", "").trim() ?? null;
+
+    if (sessionId && !resultText?.startsWith("Not connected")) {
+      card = <GetSessionIdCard sessionId={sessionId} />;
+    } else if (isStreaming) {
+      card = (
+        <div className="flex items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-950 px-4 py-2.5 text-xs text-zinc-500">
+          <Loader2Icon className="size-3.5 animate-spin" />
+          <span>Getting session ID…</span>
         </div>
-        {hasOutput && <TerminalContent className="text-xs" />}
-      </Terminal>
+      );
+    } else {
+      card = resultText ? (
+        <div className="flex items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-950 px-4 py-2.5 text-xs text-red-400">
+          <XCircleIcon2 className="size-3.5" />
+          <span>{resultText}</span>
+        </div>
+      ) : null;
+    }
+  } else {
+    // Default / Generic tool card
+    const outputText = hasOutput ? extractTextFromToolContent(content) : null;
+    const inputArgs =
+      toolInput && typeof toolInput === "object"
+        ? (toolInput as Record<string, unknown>)
+        : null;
+
+    // Pick the most descriptive arg value as a subtitle
+    const subtitle = (() => {
+      if (!inputArgs) return null;
+      for (const key of ["file_path", "path", "command", "query", "url", "name", "ref", "text", "input"]) {
+        const v = inputArgs[key];
+        if (typeof v === "string" && v.trim()) {
+          const trimmed = v.trim();
+          return trimmed.length > 120 ? trimmed.slice(0, 117) + "…" : trimmed;
+        }
+      }
+      return null;
+    })();
+
+    // Short display name: strip MCP prefix for readability
+    const displayName = toolName.includes(".")
+      ? toolName.split(".").pop()!
+      : toolName;
+
+    card = (
+      <div className="overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950 text-zinc-100 text-xs">
+        {/* Header */}
+        <div className="flex items-center justify-between gap-2 px-4 py-2.5 border-b border-zinc-800">
+          <div className="flex min-w-0 items-center gap-2">
+            <WrenchIcon className="size-3.5 shrink-0 text-zinc-500" />
+            <span className="text-sm font-medium text-zinc-300 truncate">{displayName}</span>
+            {toolName.includes(".") && (
+              <span className="text-[10px] text-zinc-600 font-mono truncate hidden sm:inline">
+                {toolName.split(".").slice(0, -1).join(".")}
+              </span>
+            )}
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <StatusBadge status={state} />
+          </div>
+        </div>
+
+        {/* Subtitle — key argument */}
+        {subtitle && (
+          <div className="px-4 py-1.5 border-b border-zinc-800/60">
+            <span className="text-xs text-zinc-400 font-mono break-all line-clamp-2">{subtitle}</span>
+          </div>
+        )}
+
+        {/* Input args (collapsible) */}
+        {inputArgs && Object.keys(inputArgs).length > 0 && (
+          <details className="group/params">
+            <summary className="cursor-pointer list-none">
+              <div className="flex items-center justify-between gap-2 px-4 py-1.5 border-b border-zinc-800/60 hover:bg-zinc-900 transition-colors">
+                <span className="text-[11px] text-zinc-500 select-none">Parameters</span>
+                <ChevronDownIcon className="size-3 text-zinc-600 transition-transform group-open/params:rotate-180" />
+              </div>
+            </summary>
+            <div className="border-b border-zinc-800/60">
+              <CopyableCodeBlock
+                code={JSON.stringify(inputArgs, null, 2)}
+                language="json"
+                className="border-0 rounded-none"
+              />
+            </div>
+          </details>
+        )}
+
+        {/* Output (collapsible) */}
+        {(hasOutput || isStreaming) && (
+          <details open={isStreaming || undefined} className="group/output">
+            <summary className="cursor-pointer list-none">
+              <div className="flex items-center justify-between gap-2 px-4 py-1.5 hover:bg-zinc-900 transition-colors">
+                <span className="text-[11px] text-zinc-500 select-none">
+                  {isError ? "Error" : "Output"}
+                </span>
+                <ChevronDownIcon className="size-3 text-zinc-600 transition-transform group-open/output:rotate-180" />
+              </div>
+            </summary>
+            {outputText ? (
+              <CopyableCodeBlock
+                code={outputText}
+                language="markdown"
+                className="border-0 rounded-none"
+              />
+            ) : (
+              <div className="px-4 py-3 text-xs text-zinc-500">
+                {isStreaming ? "Running…" : "No output"}
+              </div>
+            )}
+          </details>
+        )}
+      </div>
     );
   }
 

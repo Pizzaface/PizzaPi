@@ -37,6 +37,8 @@ import { mcpExtension } from "./extensions/mcp-extension.js";
 import { restartExtension } from "./extensions/restart.js";
 import { setSessionNameExtension } from "./extensions/set-session-name.js";
 import { updateTodoExtension } from "./extensions/update-todo.js";
+import { spawnSessionExtension } from "./extensions/spawn-session.js";
+import { sessionMessagingExtension } from "./extensions/session-messaging.js";
 import { runSetup } from "./setup.js";
 
 async function main() {
@@ -367,7 +369,7 @@ async function main() {
     const loader = new DefaultResourceLoader({
         cwd,
         agentDir,
-        extensionFactories: [remoteExtension, mcpExtension, restartExtension, setSessionNameExtension, updateTodoExtension],
+        extensionFactories: [remoteExtension, mcpExtension, restartExtension, setSessionNameExtension, updateTodoExtension, spawnSessionExtension, sessionMessagingExtension],
         additionalSkillPaths: buildSkillPaths(cwd, agentDir, config.skills),
         ...(config.systemPrompt !== undefined && {
             systemPromptOverride: () => config.systemPrompt,

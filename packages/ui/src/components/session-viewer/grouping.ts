@@ -33,16 +33,14 @@ function parseToolArguments(argumentsValue: unknown): unknown {
  * Tool calls we want to render as *grouped tool execution cards* rather than as inline
  * <Tool /> blocks inside the assistant message.
  */
-function shouldGroupToolCall(toolName: string): boolean {
-  const norm = normalizeToolName(toolName);
-  return (
-    norm === "bash" ||
-    norm === "read" ||
-    norm === "edit" ||
-    norm.endsWith(".bash") ||
-    norm.endsWith(".read") ||
-    norm.endsWith(".edit")
-  );
+/**
+ * All tool calls are grouped with their results so they render as standalone
+ * cards in the conversation flow rather than inline in assistant messages.
+ * Custom rendering for specific tools (bash, read, edit, write, etc.) is
+ * handled in renderGroupedToolExecution; everything else gets a generic card.
+ */
+function shouldGroupToolCall(_toolName: string): boolean {
+  return true;
 }
 
 /**

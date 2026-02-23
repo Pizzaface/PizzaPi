@@ -3,7 +3,8 @@ import { Resizable } from "react-resizable";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
-import { getRelayWsBase } from "@/lib/relay";
+import { io } from "socket.io-client";
+import type { HubServerToClientEvents, HubClientToServerEvents } from "@pizzapi/protocol";
 import { formatPathTail } from "@/lib/path";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { PanelLeftClose, PanelLeftOpen, Plus, User, X, HardDrive } from "lucide-react";
@@ -169,100 +170,76 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     }, [liveSessions, onSessionsChange]);
 
     React.useEffect(() => {
-        let ws: WebSocket | null = null;
-        let retryDelay = 1000;
-        let destroyed = false;
+        const socket = io("/hub", { withCredentials: true });
 
-        function connect() {
-            if (destroyed) return;
-            try {
-                ws = new WebSocket(`${getRelayWsBase()}/ws/hub`);
+        socket.on("connect", () => {
+            setDotState("connected");
+        });
 
-                ws.onopen = () => {
-                    retryDelay = 1000;
-                    setDotState("connected");
-                };
+        socket.on("disconnect", () => {
+            setDotState("disconnected");
+        });
 
-                ws.onmessage = (evt) => {
-                    let msg: Record<string, unknown>;
-                    try { msg = JSON.parse(evt.data as string); } catch { return; }
+        socket.on("connect_error", () => {
+            setDotState("disconnected");
+        });
 
-                    if (msg.type === "sessions") {
-                        setLiveSessions((msg.sessions as HubSession[]) ?? []);
-                        setHasLoaded(true);
-                    } else if (msg.type === "session_added") {
-                        const s = msg as unknown as HubSession;
-                        setLiveSessions((prev) => {
-                            if (prev.some((p) => p.sessionId === s.sessionId)) return prev;
-                            return [
-                                ...prev,
-                                {
-                                    sessionId: s.sessionId,
-                                    shareUrl: s.shareUrl,
-                                    cwd: s.cwd,
-                                    startedAt: s.startedAt,
-                                    userId: s.userId,
-                                    userName: s.userName,
-                                    sessionName: (s as any).sessionName ?? null,
-                                    isEphemeral: s.isEphemeral,
-                                    expiresAt: s.expiresAt,
-                                    isActive: (s as any).isActive ?? false,
-                                    lastHeartbeatAt: (s as any).lastHeartbeatAt ?? null,
-                                    model: (s as any).model ?? null,
-                                    runnerId: (s as any).runnerId ?? null,
-                                    runnerName: (s as any).runnerName ?? null,
-                                },
-                            ];
-                        });
-                    } else if (msg.type === "session_removed") {
-                        setLiveSessions((prev) => prev.filter((s) => s.sessionId !== msg.sessionId));
-                    } else if (msg.type === "session_status") {
-                        // Update active status (and model) from heartbeat notifications.
-                        const { sessionId, isActive, lastHeartbeatAt, model, sessionName, runnerId, runnerName } = msg as {
-                            sessionId: string;
-                            isActive: boolean;
-                            lastHeartbeatAt: string;
-                            model?: { provider: string; id: string; name?: string } | null;
-                            sessionName?: string | null;
-                            runnerId?: string | null;
-                            runnerName?: string | null;
-                        };
-                        setLiveSessions((prev) =>
-                            prev.map((s) =>
-                                s.sessionId === sessionId
-                                    ? {
-                                          ...s,
-                                          isActive,
-                                          lastHeartbeatAt,
-                                          model: model === undefined ? (s.model ?? null) : model,
-                                          sessionName: sessionName === undefined ? (s.sessionName ?? null) : sessionName,
-                                          runnerId: runnerId === undefined ? (s.runnerId ?? null) : runnerId,
-                                          runnerName: runnerName === undefined ? (s.runnerName ?? null) : runnerName,
-                                      }
-                                    : s,
-                            ),
-                        );
-                    }
-                };
+        socket.on("sessions", (data) => {
+            setLiveSessions((data.sessions as HubSession[]) ?? []);
+            setHasLoaded(true);
+        });
 
-                ws.onclose = () => {
-                    setDotState("disconnected");
-                    if (!destroyed) {
-                        setTimeout(() => {
-                            retryDelay = Math.min(retryDelay * 2, 30_000);
-                            connect();
-                        }, retryDelay);
-                    }
-                };
-            } catch {
-                setDotState("disconnected");
-            }
-        }
+        socket.on("session_added", (data) => {
+            const s = data as unknown as HubSession;
+            setLiveSessions((prev) => {
+                if (prev.some((p) => p.sessionId === s.sessionId)) return prev;
+                return [
+                    ...prev,
+                    {
+                        sessionId: s.sessionId,
+                        shareUrl: s.shareUrl,
+                        cwd: s.cwd,
+                        startedAt: s.startedAt,
+                        userId: s.userId,
+                        userName: s.userName,
+                        sessionName: (s as any).sessionName ?? null,
+                        isEphemeral: s.isEphemeral,
+                        expiresAt: s.expiresAt,
+                        isActive: (s as any).isActive ?? false,
+                        lastHeartbeatAt: (s as any).lastHeartbeatAt ?? null,
+                        model: (s as any).model ?? null,
+                        runnerId: (s as any).runnerId ?? null,
+                        runnerName: (s as any).runnerName ?? null,
+                    },
+                ];
+            });
+        });
 
-        connect();
+        socket.on("session_removed", (data) => {
+            setLiveSessions((prev) => prev.filter((s) => s.sessionId !== data.sessionId));
+        });
+
+        socket.on("session_status", (data) => {
+            const { sessionId, isActive, lastHeartbeatAt, model, sessionName, runnerId, runnerName } = data;
+            setLiveSessions((prev) =>
+                prev.map((s) =>
+                    s.sessionId === sessionId
+                        ? {
+                              ...s,
+                              isActive,
+                              lastHeartbeatAt,
+                              model: model === undefined ? (s.model ?? null) : model,
+                              sessionName: sessionName === undefined ? (s.sessionName ?? null) : sessionName,
+                              runnerId: runnerId === undefined ? (s.runnerId ?? null) : runnerId,
+                              runnerName: runnerName === undefined ? (s.runnerName ?? null) : runnerName,
+                          }
+                        : s,
+                ),
+            );
+        });
+
         return () => {
-            destroyed = true;
-            ws?.close();
+            socket.disconnect();
         };
     }, []);
 

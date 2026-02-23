@@ -15,11 +15,15 @@
         "@better-auth/cli": "^1.4.18",
         "@mariozechner/pi-agent-core": "^0.53.0",
         "@mariozechner/pi-ai": "^0.53.0",
+        "@pizzapi/protocol": "workspace:*",
         "@pizzapi/tools": "workspace:*",
         "better-auth": "^1.4.18",
         "kysely": "^0.28.11",
         "kysely-bun-sqlite": "^0.4.0",
+        "@socket.io/redis-adapter": "^8.3.0",
         "redis": "^4.7.1",
+        "socket.io": "^4.8.1",
+        "socket.io-client": "^4.8.1",
         "web-push": "^3.6.7"
     },
     "devDependencies": {

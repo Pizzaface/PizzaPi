@@ -16,3 +16,21 @@ export function getRelayWsBase(): string {
 
     return normalized;
 }
+
+/**
+ * Return the base URL for the Socket.IO server.
+ *
+ * Socket.IO runs on the same port as the REST API, so in all environments
+ * (dev via Vite proxy, production) we simply return the current origin (or
+ * an empty string — socket.io-client treats that as "same origin").
+ *
+ * Can be overridden with the `VITE_SOCKETIO_URL` env var if needed.
+ */
+export function getSocketIOBase(): string {
+    // Explicit override
+    const configured = ((import.meta as any).env?.VITE_SOCKETIO_URL as string | undefined)?.trim();
+    if (configured && configured.length > 0) return configured.replace(/\/$/, "");
+
+    // Default: same origin (Socket.IO is on the same port as the REST API)
+    return "";
+}
