@@ -87,40 +87,46 @@ export function pulseStreamingHaptic(delta?: string): void {
   navigator.vibrate(pulseDuration(len));
 }
 
-// --- Continuous tool vibration ---
+// --- Tool "typing" haptic (repeating double-tap) ---
 
 /**
- * Max single vibration duration in ms. The Vibration API accepts up to
- * ~10 s on most browsers; we re-fire before it expires so the buzz
- * feels uninterrupted.
+ * Messenger-style "someone is typing" pattern:
+ * tap, pause, tap, long pause … repeat
+ *
+ * The vibrate() array alternates [vibrate, pause, vibrate, pause, …].
+ * We pack one full cycle into a single call and re-fire it on an
+ * interval so it loops seamlessly for the entire tool duration.
  */
-const TOOL_VIBRATE_MS = 5000;
-const TOOL_RENEW_MS = 4500; // re-fire slightly before expiry
+const TOOL_TAP_MS = 8;
+const TOOL_GAP_MS = 70;       // pause between the two taps
+const TOOL_CYCLE_MS = 1200;   // time between each double-tap cycle
+// Total pattern duration: tap + gap + tap = 86ms, then silence until next cycle
+const TOOL_PATTERN = [TOOL_TAP_MS, TOOL_GAP_MS, TOOL_TAP_MS];
 
-let toolVibrateTimer: ReturnType<typeof setInterval> | null = null;
+let toolTimer: ReturnType<typeof setInterval> | null = null;
 
-/** Start a continuous low vibration for the duration of a tool call. */
+/** Start a repeating double-tap while a tool is active. */
 export function startToolHaptic(): void {
   if (!readPref()) return;
   if (typeof navigator === "undefined" || typeof navigator.vibrate !== "function") return;
-  if (toolVibrateTimer !== null) return; // already running
+  if (toolTimer !== null) return; // already running
 
-  navigator.vibrate(TOOL_VIBRATE_MS);
+  navigator.vibrate(TOOL_PATTERN);
 
-  toolVibrateTimer = setInterval(() => {
+  toolTimer = setInterval(() => {
     if (!readPref()) {
       stopToolHaptic();
       return;
     }
-    navigator.vibrate(TOOL_VIBRATE_MS);
-  }, TOOL_RENEW_MS);
+    navigator.vibrate(TOOL_PATTERN);
+  }, TOOL_CYCLE_MS);
 }
 
-/** Stop the tool vibration immediately. */
+/** Stop the tool haptic immediately. */
 export function stopToolHaptic(): void {
-  if (toolVibrateTimer !== null) {
-    clearInterval(toolVibrateTimer);
-    toolVibrateTimer = null;
+  if (toolTimer !== null) {
+    clearInterval(toolTimer);
+    toolTimer = null;
   }
   if (typeof navigator !== "undefined" && typeof navigator.vibrate === "function") {
     navigator.vibrate(0);
