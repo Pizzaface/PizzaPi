@@ -2431,7 +2431,7 @@ export function App() {
                         icon: <TerminalIcon className="size-3.5" />,
                         onClose: () => { setShowTerminal(false); setCombinedActiveTab("files"); },
                         content: (
-                          <TerminalManager className="h-full" />
+                          <TerminalManager className="h-full" embedded />
                         ),
                       },
                       {

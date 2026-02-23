@@ -46,9 +46,11 @@ export interface TerminalManagerProps {
   onPositionChange?: (pos: "bottom" | "right" | "left") => void;
   /** Called when the user starts dragging the panel grip to reposition it. */
   onDragStart?: (e: React.PointerEvent) => void;
+  /** When true, hides the "Terminal" label and position controls (used when inside CombinedPanel). */
+  embedded?: boolean;
 }
 
-export function TerminalManager({ className, onClose, position = "bottom", onPositionChange, onDragStart }: TerminalManagerProps) {
+export function TerminalManager({ className, onClose, position = "bottom", onPositionChange, onDragStart, embedded }: TerminalManagerProps) {
   const [terminals, setTerminals] = React.useState<TerminalTab[]>([]);
   const [activeTerminalId, setActiveTerminalId] = React.useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = React.useState(false);
@@ -178,14 +180,16 @@ export function TerminalManager({ className, onClose, position = "bottom", onPos
           </Button>
         )}
 
-        {/* "Terminal" label — always visible */}
-        <div className="flex items-center gap-1.5 px-3 text-xs font-medium text-zinc-400 shrink-0 select-none">
-          <TerminalIcon className="size-3.5" />
-          <span>Terminal</span>
-        </div>
+        {/* "Terminal" label — hidden when embedded in CombinedPanel */}
+        {!embedded && (
+          <div className="flex items-center gap-1.5 px-3 text-xs font-medium text-zinc-400 shrink-0 select-none">
+            <TerminalIcon className="size-3.5" />
+            <span>Terminal</span>
+          </div>
+        )}
 
-        {/* Divider before tabs when there are any */}
-        {terminals.length > 0 && (
+        {/* Divider before tabs when there are any (and not embedded) */}
+        {!embedded && terminals.length > 0 && (
           <div className="w-px h-4 bg-zinc-700 shrink-0" />
         )}
 
@@ -224,8 +228,8 @@ export function TerminalManager({ className, onClose, position = "bottom", onPos
 
         {/* ── Right-side controls (desktop) ── */}
         <div className="hidden md:flex items-center gap-px shrink-0 pr-1">
-          {/* Drag-to-reposition grip */}
-          {onDragStart && (
+          {/* Drag-to-reposition grip — hidden when embedded */}
+          {!embedded && onDragStart && (
             <div
               className="flex items-center justify-center size-7 rounded cursor-grab active:cursor-grabbing text-zinc-600 hover:text-zinc-400 hover:bg-zinc-800 transition-colors touch-none select-none"
               onPointerDown={onDragStart}
@@ -236,10 +240,10 @@ export function TerminalManager({ className, onClose, position = "bottom", onPos
           )}
 
           {/* Separator */}
-          {onPositionChange && <div className="w-px h-4 bg-zinc-700 mx-1 shrink-0" />}
+          {!embedded && onPositionChange && <div className="w-px h-4 bg-zinc-700 mx-1 shrink-0" />}
 
-          {/* Position button with hold-to-reveal dropdown */}
-          {onPositionChange && (
+          {/* Position button with hold-to-reveal dropdown — hidden when embedded */}
+          {!embedded && onPositionChange && (
             <>
               <PositionPicker position={position} onPositionChange={onPositionChange} />
               <div className="w-px h-4 bg-zinc-700 mx-1 shrink-0" />

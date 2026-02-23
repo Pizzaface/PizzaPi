@@ -222,29 +222,28 @@ export function WebTerminal({ terminalId, onClose, className }: WebTerminalProps
         className,
       )}
     >
-      {/* Header bar */}
-      <div className="flex items-center justify-between border-zinc-800 border-b px-3 py-1.5 bg-zinc-900/50 min-h-[44px] md:min-h-0">
-        <div className="flex items-center gap-2 text-xs text-zinc-400">
-          <TerminalIcon className="size-3.5" />
-          <span>Terminal</span>
-          <span className={cn("text-[10px]", statusColor)}>● {statusLabel}</span>
+      {/* Header bar — compact status + controls */}
+      <div className="flex items-center justify-between border-zinc-800 border-b px-3 py-1 bg-zinc-900/50 min-h-[36px] md:min-h-0">
+        <div className="flex items-center gap-1.5 text-[11px] text-zinc-500">
+          <span className={cn("text-[10px]", statusColor)}>●</span>
+          <span className={statusColor}>{statusLabel}</span>
         </div>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-0.5">
           <Button
             variant="ghost"
             size="icon"
-            className="size-9 md:size-6 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800"
+            className="size-8 md:size-5 text-zinc-500 hover:text-zinc-100 hover:bg-zinc-800"
             onClick={() => setIsMaximized((v) => !v)}
           >
-            {isMaximized ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+            {isMaximized ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
           </Button>
           <Button
             variant="ghost"
             size="icon"
-            className="size-9 md:size-6 text-zinc-400 hover:text-red-400 hover:bg-zinc-800"
+            className="size-8 md:size-5 text-zinc-500 hover:text-red-400 hover:bg-zinc-800"
             onClick={handleClose}
           >
-            <X size={14} />
+            <X size={12} />
           </Button>
         </div>
       </div>
