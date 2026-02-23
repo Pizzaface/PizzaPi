@@ -239,25 +239,7 @@ export function WebTerminal({ terminalId, onClose, className }: WebTerminalProps
     }
   }, [terminalId]);
 
-  // Ref for the mobile shortcut bar container so we can attach a non-passive
-  // touchstart listener.  React's synthetic event delegation runs too late for
-  // e.preventDefault() to suppress the iOS virtual keyboard — the browser
-  // decides to show/restore the keyboard before the delegated handler fires.
-  // Attaching directly to the DOM node with { passive: false } intercepts the
-  // event early enough to reliably prevent the keyboard from appearing.
-  const shortcutBarRef = React.useRef<HTMLDivElement>(null);
-  React.useEffect(() => {
-    const bar = shortcutBarRef.current;
-    if (!bar) return;
-    const handler = (e: TouchEvent) => {
-      // Prevent focus from shifting to any element (which would show the
-      // virtual keyboard).  We send terminal input via the socket directly so
-      // xterm focus is not required.
-      e.preventDefault();
-    };
-    bar.addEventListener("touchstart", handler, { passive: false });
-    return () => bar.removeEventListener("touchstart", handler);
-  }, []);
+
 
   return (
     <div
@@ -301,25 +283,31 @@ export function WebTerminal({ terminalId, onClose, className }: WebTerminalProps
         className="flex-1 min-h-0 p-1"
         style={{ minHeight: isMaximized ? undefined : "min(300px, calc(100dvh - 120px))" }}
       />
-      {/* Mobile keyboard shortcut bar — non-passive touchstart is attached via
-          shortcutBarRef useEffect above to reliably suppress the iOS keyboard */}
-      <div
-        ref={shortcutBarRef}
-        className="md:hidden flex items-center gap-1.5 border-t border-zinc-800 bg-zinc-900/70 px-2 py-2 overflow-x-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
-      >
+      {/* Mobile keyboard shortcut bar */}
+      <div className="md:hidden flex items-center gap-1.5 border-t border-zinc-800 bg-zinc-900/70 px-2 py-2 overflow-x-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
         {MOBILE_SHORTCUTS.map(({ label, data }) => (
           <button
             key={label}
-            // tabIndex={-1} keeps the button out of the tab order and further
-            // prevents focus management from triggering the virtual keyboard.
+            // tabIndex={-1} keeps the button out of the tab order.
+            // <button> elements never trigger the iOS virtual keyboard — only
+            // <input>/<textarea>/contenteditable do.  So letting the button
+            // take focus naturally is safe: focus moves from the xterm textarea
+            // to the button, the keyboard hides (expected), and the shortcut
+            // fires.  Crucially, we do NOT call e.preventDefault() here:
+            // preventing the default on pointerdown caused iOS to "fall back"
+            // and re-focus the xterm textarea, which is what made the keyboard
+            // pop up unexpectedly.  Without preventDefault the touch events
+            // are left alone, which also keeps the horizontal scroll working.
             tabIndex={-1}
             className="flex-shrink-0 rounded bg-zinc-800 px-3 py-1.5 text-xs font-mono text-zinc-300 active:bg-zinc-600 select-none touch-manipulation min-w-[40px] text-center"
             onPointerDown={(e) => {
-              // Belt-and-suspenders: also preventDefault here for non-touch
-              // pointer devices and for browsers where the touchstart listener
-              // may not have fired (e.g. desktop with touch emulation).
-              e.preventDefault();
+              // Fire immediately on pointer-down for best responsiveness.
+              // We deliberately skip e.preventDefault() — see comment above.
               sendShortcut(data);
+              // Blur the button after sending so focus doesn't linger on it
+              // (keeps the xterm canvas as the "last active" element for the
+              // next time the user taps the terminal).
+              e.currentTarget.blur();
             }}
           >
             {label}
