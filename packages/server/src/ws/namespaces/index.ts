@@ -12,3 +12,7 @@ export function registerNamespaces(io: SocketIOServer): void {
   registerTerminalNamespace(io);
   registerHubNamespace(io);
 }
+
+// Re-export runner command functions for use by REST API routes
+// (Socket.IO path — parallel to the exports from ../relay.ts for raw WS)
+export { sendSkillCommand, sendRunnerCommand } from "./runner.js";
