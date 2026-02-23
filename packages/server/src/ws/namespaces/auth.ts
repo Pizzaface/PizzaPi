@@ -10,7 +10,7 @@
 // ============================================================================
 
 import type { Socket } from "socket.io";
-import { auth, kysely } from "../../auth.js";
+import { auth, kysely, trustedOrigins } from "../../auth.js";
 
 /**
  * Middleware for /relay and /runner namespaces.
@@ -62,6 +62,14 @@ export function apiKeyAuthMiddleware() {
 export function sessionCookieAuthMiddleware() {
     return async (socket: Socket, next: (err?: Error) => void): Promise<void> => {
         try {
+            // Validate Origin header to prevent Cross-Site WebSocket Hijacking (CSWSH).
+            // Browser WebSocket connections always include an Origin header; if the origin
+            // is not in our trusted list, reject the connection before processing cookies.
+            const origin = socket.handshake.headers.origin;
+            if (origin && !trustedOrigins.includes(origin)) {
+                return next(new Error("forbidden: untrusted origin"));
+            }
+
             const cookieHeader = socket.handshake.headers.cookie;
             if (!cookieHeader) {
                 return next(new Error("unauthorized"));

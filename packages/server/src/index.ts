@@ -1,4 +1,4 @@
-import { auth } from "./auth.js";
+import { auth, trustedOrigins } from "./auth.js";
 import { handleApi } from "./routes/api.js";
 import {
     ensureRelaySessionTables,
@@ -119,13 +119,7 @@ async function handleFetch(req: Request): Promise<Response> {
 
 const REDIS_URL = process.env.PIZZAPI_REDIS_URL ?? "redis://localhost:6379";
 
-const CORS_ORIGINS = [
-    process.env.PIZZAPI_BASE_URL ?? "http://localhost:5173",
-    "http://127.0.0.1:5173",
-    "http://jordans-mac-mini.tail65556b.ts.net:5173",
-    "https://jordans-mac-mini.tail65556b.ts.net:5173",
-    "https://jordans-mac-mini.tail65556b.ts.net",
-];
+// Use trustedOrigins from auth.ts as the single source of truth for CORS
 
 const httpServer = createServer(async (req, res) => {
     // Socket.IO handles its own /socket.io/ paths automatically (via the
@@ -153,7 +147,7 @@ try {
 
     io = new SocketIOServer(httpServer, {
         cors: {
-            origin: CORS_ORIGINS,
+            origin: trustedOrigins,
             credentials: true,
         },
         connectionStateRecovery: {
