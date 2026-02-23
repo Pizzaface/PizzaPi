@@ -2270,10 +2270,10 @@ export function App() {
           variant="ghost"
           size="icon"
           className="h-9 w-9 flex-shrink-0"
-          onClick={() => setSidebarOpen(true)}
-          aria-label="Open sidebar"
+          onClick={() => setSidebarOpen(prev => !prev)}
+          aria-label={sidebarOpen ? "Close sidebar" : "Open sidebar"}
         >
-          <PanelLeftOpen className="h-5 w-5" />
+          <PanelLeftOpen className={`h-5 w-5 transition-transform duration-300 ${sidebarOpen ? "rotate-180" : ""}`} />
         </Button>
 
         {/* Center: session switcher pill or logo */}
@@ -2457,7 +2457,7 @@ export function App() {
         <div
           className={
             "pp-sidebar-wrap absolute inset-y-0 left-0 z-40 w-72 max-w-[85vw] border-r border-sidebar-border bg-sidebar shadow-2xl md:static md:z-auto md:w-auto md:max-w-none md:border-r-0 md:bg-transparent md:shadow-none will-change-transform " +
-            (sidebarSwipeOffset !== 0 ? "" : "transition-transform duration-200 ease-in-out md:transition-none ") +
+            (sidebarSwipeOffset !== 0 ? "" : "transition-transform duration-300 ease-[cubic-bezier(0.32,0.72,0,1)] md:transition-none ") +
             (sidebarOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0")
           }
           style={sidebarSwipeOffset !== 0 ? { transform: `translateX(${sidebarSwipeOffset}px)` } : undefined}
@@ -2481,7 +2481,7 @@ export function App() {
             Swipe left anywhere on the backdrop to close; tap to close instantly. */}
         <div
           className={cn(
-            "pp-sidebar-overlay absolute inset-0 z-30 bg-black/50 md:hidden transition-opacity duration-200",
+            "pp-sidebar-overlay absolute inset-0 z-30 bg-black/50 md:hidden transition-opacity duration-300",
             sidebarOpen ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none",
           )}
           onPointerDown={sidebarOpen ? handleSidebarPointerDown : undefined}

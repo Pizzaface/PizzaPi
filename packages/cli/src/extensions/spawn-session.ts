@@ -192,4 +192,86 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
         renderCall: () => silent,
         renderResult: () => silent,
     });
+
+    pi.registerTool({
+        name: "list_models",
+        label: "List Models",
+        description:
+            "List models and providers available on this runner. Use this to discover what " +
+            "values are valid for the `model` parameter of spawn_session. " +
+            "Returns each model's provider, ID, display name, and whether credentials are configured.",
+        parameters: {
+            type: "object",
+            properties: {
+                onlyAvailable: {
+                    type: "boolean",
+                    description:
+                        "When true, only return models that have credentials configured and are ready to use. " +
+                        "Defaults to false (returns all registered models).",
+                },
+            },
+        } as any,
+
+        async execute(_toolCallId, rawParams, _signal, _onUpdate, ctx) {
+            const params = (rawParams ?? {}) as { onlyAvailable?: boolean };
+
+            const allModels = ctx.modelRegistry.getAll();
+            const availableModels = ctx.modelRegistry.getAvailable();
+            const availableKeys = new Set(availableModels.map((m) => `${m.provider}:${m.id}`));
+
+            const models = params.onlyAvailable ? availableModels : allModels;
+
+            if (models.length === 0) {
+                return {
+                    content: [{ type: "text" as const, text: "No models found." }],
+                    details: null as any,
+                };
+            }
+
+            // Group by provider
+            const byProvider = new Map<string, typeof models>();
+            for (const m of models) {
+                const providerKey = String(m.provider);
+                const list = byProvider.get(providerKey) ?? [];
+                list.push(m);
+                byProvider.set(providerKey, list);
+            }
+
+            const lines: string[] = [
+                `${models.length} model(s) — ${availableModels.length} with credentials\n`,
+            ];
+
+            for (const [provider, providerModels] of byProvider) {
+                lines.push(`Provider: ${provider}`);
+                for (const m of providerModels) {
+                    const available = availableKeys.has(`${m.provider}:${m.id}`);
+                    const flags = [
+                        available ? "✓ credentials" : "✗ no credentials",
+                        m.reasoning ? "reasoning" : null,
+                        `ctx:${(m.contextWindow / 1000).toFixed(0)}k`,
+                    ].filter(Boolean).join(", ");
+                    lines.push(`  ${m.id}  (${m.name})  [${flags}]`);
+                }
+                lines.push("");
+            }
+
+            const details = models.map((m) => ({
+                provider: String(m.provider),
+                id: m.id,
+                name: m.name,
+                available: availableKeys.has(`${m.provider}:${m.id}`),
+                reasoning: m.reasoning,
+                contextWindow: m.contextWindow,
+                maxTokens: m.maxTokens,
+            }));
+
+            return {
+                content: [{ type: "text" as const, text: lines.join("\n").trimEnd() }],
+                details: { models: details } as any,
+            };
+        },
+
+        renderCall: () => silent,
+        renderResult: () => silent,
+    });
 };

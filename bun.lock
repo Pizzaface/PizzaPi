@@ -5,6 +5,7 @@
     "": {
       "name": "pizzapi",
       "dependencies": {
+        "pizzapi": ".",
         "@mariozechner/pi-agent-core": "^0.53.0",
         "@mariozechner/pi-ai": "^0.53.0",
         "@mariozechner/pi-tui": "^0.53.0",
@@ -2324,6 +2325,8 @@
     "picocolors": ["picocolors@1.1.1", "", {}, "sha512-xceH2snhtb5M9liqDsmEw56le376mTZkEX/jEb/RxNFyegNul7eNslCXP9FDj/Lcu0X8KEyMceP2ntpaHrDEVA=="],
 
     "picomatch": ["picomatch@4.0.3", "", {}, "sha512-5gTmgEY/sqK6gFXLIsQNH19lWb4ebPDLA4SdLP7dsWkIXHWlG66oPuVvXSGFPppYZz8ZDZq0dYYrbHfBCVUb1Q=="],
+
+    "pizzapi": ["pizzapi@root:", {}],
 
     "pkce-challenge": ["pkce-challenge@5.0.1", "", {}, "sha512-wQ0b/W4Fr01qtpHlqSqspcj3EhBvimsdh0KlHhH8HRZnMsEa0ea2fTULOXOS9ccQr3om+GcGRk4e+isrZWV8qQ=="],
 

@@ -193,7 +193,7 @@ for (const platform of PLATFORMS) {
 
 // Main package.json
 const mainPkg = {
-    name: "pizzapi",
+    name: "@pizzapi/pizza",
     version,
     description:
         "PizzaPi — a self-hosted web interface and relay server for the pi coding agent. Stream live AI coding sessions to any browser.",

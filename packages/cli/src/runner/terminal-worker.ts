@@ -60,6 +60,10 @@ try {
             ...process.env,
             TERM: "xterm-256color",
             COLORTERM: "truecolor",
+            // Use Bun's built-in shell for `bun run` scripts instead of
+            // /bin/bash, which fails with EBADF in PTY environments.
+            // See: https://github.com/oven-sh/bun/issues/21447
+            BUN_OPTIONS: [process.env.BUN_OPTIONS, "--shell=bun"].filter(Boolean).join(" "),
         },
     });
 } catch (err) {
