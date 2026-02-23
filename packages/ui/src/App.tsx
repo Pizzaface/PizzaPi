@@ -537,6 +537,14 @@ export function App() {
   // Sequence tracking for gap detection
   const lastSeqRef = React.useRef<number | null>(null);
 
+  // Stale-connection detection: track the last time any event arrived from the relay.
+  // If the socket believes it's connected but nothing has arrived for STALE_THRESHOLD_MS
+  // (NAT timeout, middlebox drop, background tab, etc.) we force-reconnect.
+  const lastViewerEventAtRef = React.useRef<number>(0);
+  const staleCheckTimerRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
+  const STALE_THRESHOLD_MS = 45_000; // ~4.5 × 10s heartbeat interval
+  const STALE_CHECK_INTERVAL_MS = 15_000;
+
   // Snapshot guard: when connecting to a session, ignore streaming deltas
   // until the initial snapshot (session_active / agent_end / heartbeat) arrives.
   // This prevents pre-snapshot live events from rendering and then being
@@ -685,12 +693,20 @@ export function App() {
 
   React.useEffect(() => {
     return () => {
+      if (staleCheckTimerRef.current !== null) {
+        clearInterval(staleCheckTimerRef.current);
+        staleCheckTimerRef.current = null;
+      }
       viewerWsRef.current?.disconnect();
       viewerWsRef.current = null;
     };
   }, []);
 
   const clearSelection = React.useCallback(() => {
+    if (staleCheckTimerRef.current !== null) {
+      clearInterval(staleCheckTimerRef.current);
+      staleCheckTimerRef.current = null;
+    }
     viewerWsRef.current?.disconnect();
     viewerWsRef.current = null;
     activeSessionRef.current = null;
@@ -1348,9 +1364,16 @@ export function App() {
     viewerWsRef.current?.disconnect();
     viewerWsRef.current = null;
 
+    // Clear any existing stale-connection timer from a previous session.
+    if (staleCheckTimerRef.current !== null) {
+      clearInterval(staleCheckTimerRef.current);
+      staleCheckTimerRef.current = null;
+    }
+
     localStorage.setItem("pp.lastSessionId", relaySessionId);
     activeSessionRef.current = relaySessionId;
     lastSeqRef.current = null;
+    lastViewerEventAtRef.current = Date.now(); // treat open as an "event" so we don't fire immediately
     awaitingSnapshotRef.current = true;
     setActiveSessionId(relaySessionId);
     setViewerStatus("Connecting…");
@@ -1378,8 +1401,24 @@ export function App() {
     });
     viewerWsRef.current = socket;
 
+    // Stale-connection watchdog: if the socket thinks it's connected but
+    // no event has arrived for STALE_THRESHOLD_MS, force a reconnect.
+    // This catches NAT timeouts, middlebox drops, and backgrounded-tab
+    // scenarios where socket.io's own ping/pong doesn't fire in time.
+    staleCheckTimerRef.current = setInterval(() => {
+      if (activeSessionRef.current !== relaySessionId) return;
+      if (!socket.connected) return;
+      const elapsed = Date.now() - lastViewerEventAtRef.current;
+      if (elapsed > STALE_THRESHOLD_MS) {
+        console.warn(`[relay] Stale connection detected (${Math.round(elapsed / 1000)}s since last event). Reconnecting…`);
+        socket.disconnect();
+        socket.connect();
+      }
+    }, STALE_CHECK_INTERVAL_MS);
+
     socket.on("connected", (data) => {
       if (activeSessionRef.current !== relaySessionId) return;
+      lastViewerEventAtRef.current = Date.now();
 
       const replayOnly = data.replayOnly === true;
       setViewerStatus(replayOnly ? "Snapshot replay" : "Connected");
@@ -1407,6 +1446,7 @@ export function App() {
 
     socket.on("event", (data) => {
       if (activeSessionRef.current !== relaySessionId) return;
+      lastViewerEventAtRef.current = Date.now();
 
       // Detect sequence gaps; request a resync if we missed events.
       const seq = typeof data.seq === "number" ? data.seq : null;
@@ -1425,11 +1465,14 @@ export function App() {
 
     socket.on("exec_result", (data) => {
       if (activeSessionRef.current !== relaySessionId) return;
+      lastViewerEventAtRef.current = Date.now();
       handleRelayEvent({ type: "exec_result", ...data });
     });
 
     socket.on("disconnected", (data) => {
       if (activeSessionRef.current !== relaySessionId) return;
+      // Server is actively talking to us — reset stale clock.
+      lastViewerEventAtRef.current = Date.now();
       const isRestarting = restartPendingSessionIdRef.current === relaySessionId;
       if (!isRestarting) {
         setViewerStatus(data.reason || "Disconnected");
@@ -1440,6 +1483,8 @@ export function App() {
 
     socket.on("error", (data) => {
       if (activeSessionRef.current !== relaySessionId) return;
+      // Server is actively talking to us — reset stale clock.
+      lastViewerEventAtRef.current = Date.now();
       setViewerStatus(data.message || "Failed to load session");
     });
 
@@ -1461,6 +1506,8 @@ export function App() {
         );
         setPendingQuestion(null);
         setIsChangingModel(false);
+        // Reset the stale clock so we don't fire immediately on reconnect.
+        lastViewerEventAtRef.current = Date.now();
       }
     });
   }, [handleRelayEvent, patchSessionCache]);
