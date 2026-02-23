@@ -199,22 +199,6 @@ docker compose -f docker/compose.yml --profile dev up
 
 The server image is built from the root `Dockerfile` using a multi-stage build. The `builder` target is reused by the dev profile.
 
-## Inter-Agent Communication
-
-When you are spawned as a **sub-agent** by a parent session, the parent's session ID will be included in your initial prompt. You must use this to communicate back:
-
-- **Reply to the parent** — use `send_message` with the parent's session ID whenever the parent is waiting for a response or you finish your task:
-  ```
-  send_message({ sessionId: "<parent-session-id>", message: "..." })
-  ```
-- **Wait for instructions** — if told to wait for further direction, use `wait_for_message` (optionally filtered by `fromSessionId`) rather than polling in a tight loop.
-- **Check for messages** — use `check_messages` to non-blockingly poll for new instructions between work steps.
-- **Report your own ID** — if the parent didn't provide its ID but asks you to report yours, use `get_session_id` and send it back.
-
-**Critical rule:** If a parent session asks you a question or delegates a task that expects a reply, you MUST `send_message` back to that parent. Never assume the parent is watching your output directly — the only reliable channel is `send_message`.
-
----
-
 ## Landing the Plane (Session Completion)
 
 **When ending a work session**, you MUST complete ALL steps below. Work is NOT complete until `git push` succeeds.
