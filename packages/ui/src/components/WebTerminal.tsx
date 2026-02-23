@@ -83,10 +83,13 @@ export function WebTerminal({ terminalId, onClose, className }: WebTerminalProps
     xtermRef.current = term;
     fitAddonRef.current = fitAddon;
 
-    // Initial fit
-    requestAnimationFrame(() => {
-      fitAddon.fit();
-    });
+    // Initial fit — try immediately and then retry after short delays to
+    // handle mobile browsers where flex layout may not be settled in the
+    // first animation frame (e.g. inside a freshly-shown fixed overlay).
+    const doFit = () => { if (fitAddonRef.current) fitAddonRef.current.fit(); };
+    requestAnimationFrame(doFit);
+    const retryTimer1 = setTimeout(doFit, 50);
+    const retryTimer2 = setTimeout(doFit, 200);
 
     // Connect to relay terminal via Socket.IO
     const socket: Socket<TerminalServerToClientEvents, TerminalClientToServerEvents> = io("/terminal", {
@@ -97,9 +100,16 @@ export function WebTerminal({ terminalId, onClose, className }: WebTerminalProps
 
     socket.on("terminal_connected", () => {
       setStatus("connected");
-      term.focus();
+      // Only auto-focus on non-touch devices — on mobile, focusing the xterm
+      // textarea immediately triggers the virtual keyboard, which resizes the
+      // visual viewport and covers the terminal before it has a chance to fit.
+      if (!window.matchMedia("(pointer: coarse)").matches) {
+        term.focus();
+      }
       // Send initial size — this also triggers the deferred PTY spawn on the
       // server, so we must always send it (fall back to 80x24 if layout isn't ready).
+      // Re-fit first so proposeDimensions reflects the current layout.
+      fitAddon.fit();
       const dims = fitAddon.proposeDimensions();
       socket.emit("terminal_resize", {
         terminalId,
@@ -169,6 +179,8 @@ export function WebTerminal({ terminalId, onClose, className }: WebTerminalProps
     resizeObserver.observe(containerRef.current);
 
     return () => {
+      clearTimeout(retryTimer1);
+      clearTimeout(retryTimer2);
       inputDisposable.dispose();
       resizeObserver.disconnect();
       socket.disconnect();
@@ -251,7 +263,6 @@ export function WebTerminal({ terminalId, onClose, className }: WebTerminalProps
       <div
         ref={containerRef}
         className="flex-1 min-h-0 p-1"
-        style={{ minHeight: isMaximized ? undefined : 300 }}
       />
       {/* Mobile keyboard shortcut bar */}
       <div className="md:hidden flex items-center gap-1.5 border-t border-zinc-800 bg-zinc-900/70 px-2 py-2 overflow-x-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">

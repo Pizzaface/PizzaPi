@@ -725,6 +725,23 @@ export function App() {
     };
   }, [sidebarOpen]);
 
+  // Track visual viewport so mobile terminal overlay shrinks when the virtual
+  // keyboard appears (keyboard reduces visualViewport.height on iOS/Android).
+  const [mobileVvp, setMobileVvp] = React.useState<{ top: number; height: number } | null>(null);
+  React.useEffect(() => {
+    if (!showTerminal) { setMobileVvp(null); return; }
+    const vvp = window.visualViewport;
+    if (!vvp) { setMobileVvp(null); return; }
+    const update = () => setMobileVvp({ top: vvp.offsetTop, height: vvp.height });
+    update();
+    vvp.addEventListener("resize", update);
+    vvp.addEventListener("scroll", update);
+    return () => {
+      vvp.removeEventListener("resize", update);
+      vvp.removeEventListener("scroll", update);
+    };
+  }, [showTerminal]);
+
   // Fetch recent folders when a runner is selected in the new-session dialog.
   React.useEffect(() => {
     if (!newSessionOpen || !spawnRunnerId) {
@@ -2676,8 +2693,10 @@ export function App() {
             {/* Mobile: terminal overlay (always separate from combined) */}
             {showTerminal && (
               <div
-                className="md:hidden fixed inset-0 z-[60] flex flex-col bg-zinc-950 pp-safe-left pp-safe-right"
-                style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
+                className="md:hidden fixed z-[60] flex flex-col bg-zinc-950 pp-safe-left pp-safe-right"
+                style={mobileVvp
+                  ? { top: mobileVvp.top, left: 0, right: 0, height: mobileVvp.height }
+                  : { inset: 0, paddingBottom: "env(safe-area-inset-bottom)" }}
               >
                 <TerminalManager
                   className="h-full"
