@@ -522,7 +522,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                         variant="ghost"
                         size="icon"
                         className="h-8 w-8 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
-                        onClick={onClearSelection}
+                        onClick={() => { onClearSelection(); onClose?.(); }}
                         aria-label="Clear selected session"
                         title="Clear selected session"
                     >
