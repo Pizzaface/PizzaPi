@@ -118,7 +118,10 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
     }
 
     if (url.pathname === "/api/runners/spawn" && req.method === "POST") {
-        const identity = await requireSession(req);
+        const providedApiKey = req.headers.get("x-api-key") ?? undefined;
+        const identity = providedApiKey
+            ? await validateApiKey(req, providedApiKey)
+            : await requireSession(req);
         if (identity instanceof Response) return identity;
 
         let body: any = {};
