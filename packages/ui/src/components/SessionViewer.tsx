@@ -54,7 +54,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { formatPathTail } from "@/lib/path";
 import { ProviderIcon } from "@/components/ProviderIcon";
-import { ArrowDownIcon, CheckCircle2, ChevronsUpDown, Circle, CircleDashed, MessageSquare, OctagonX, PaperclipIcon, Plus, Zap, Clock, X, Trash2, TerminalIcon, DownloadIcon, XCircle } from "lucide-react";
+import { ArrowDownIcon, CheckCircle2, ChevronsUpDown, Circle, CircleDashed, MessageSquare, OctagonX, PaperclipIcon, Plus, Zap, Clock, X, Trash2, TerminalIcon, DownloadIcon, XCircle, FolderTree } from "lucide-react";
 
 export type { RelayMessage } from "@/components/session-viewer/types";
 
@@ -122,6 +122,10 @@ export interface SessionViewerProps {
   onToggleTerminal?: () => void;
   /** Whether to show the terminal button */
   showTerminalButton?: boolean;
+  /** Toggle the file explorer panel */
+  onToggleFileExplorer?: () => void;
+  /** Whether to show the file explorer button */
+  showFileExplorerButton?: boolean;
   /** Current agent todo list */
   todoList?: TodoItem[];
 }
@@ -233,13 +237,12 @@ function ComposerAttachmentButton() {
     <Button
       type="button"
       variant="ghost"
-      size="sm"
-      className="h-7 px-2 text-xs"
+      size="icon"
+      className="size-8 shrink-0 text-muted-foreground"
       onClick={() => attachments.openFileDialog()}
       title="Add attachments"
     >
-      <PaperclipIcon className="size-3.5" />
-      Attach
+      <PaperclipIcon className="size-4" />
     </Button>
   );
 }
@@ -356,7 +359,7 @@ function SessionSkeleton() {
   );
 }
 
-export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, messageQueue, onRemoveQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, todoList = [] }: SessionViewerProps) {
+export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, messageQueue, onRemoveQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [] }: SessionViewerProps) {
   const [input, setInput] = React.useState("");
   const [composerError, setComposerError] = React.useState<string | null>(null);
   const [showClearDialog, setShowClearDialog] = React.useState(false);
@@ -1064,82 +1067,83 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
         >
           <ComposerAttachments />
           <PromptInputBody>
-            <PromptInputTextarea
-              value={input}
-              onChange={(event) => {
-                const next = event.currentTarget.value;
-                setComposerError(null);
-                setInput(next);
-                const trimmed = next.trimStart();
-                if (trimmed.startsWith("/")) {
-                  setCommandOpen(true);
-                  setCommandQuery(trimmed.slice(1));
-                } else {
-                  setCommandOpen(false);
-                  setCommandQuery("");
-                }
-              }}
-              onKeyDown={(event) => {
-                if (!sessionId) return;
-
-                // Alt+Enter: toggle delivery mode (matches CLI behavior)
-                if (event.key === "Enter" && event.altKey && agentActive) {
-                  event.preventDefault();
-                  setDeliveryMode((m) => m === "steer" ? "followUp" : "steer");
-                  return;
-                }
-
-                // If we're in slash mode, show suggestions + allow selecting with Enter.
-                if (commandOpen) {
-                  if (event.key === "Escape") {
-                    event.preventDefault();
+            <div className="flex w-full items-end">
+              <PromptInputTextarea
+                value={input}
+                onChange={(event) => {
+                  const next = event.currentTarget.value;
+                  setComposerError(null);
+                  setInput(next);
+                  const trimmed = next.trimStart();
+                  if (trimmed.startsWith("/")) {
+                    setCommandOpen(true);
+                    setCommandQuery(trimmed.slice(1));
+                  } else {
                     setCommandOpen(false);
-                    return;
-                  }
-
-                  // Tab: autocomplete the first matching command and close the popover
-                  if (event.key === "Tab" && commandSuggestions.length > 0) {
-                    event.preventDefault();
-                    const first = commandSuggestions[0]!;
-                    setInput(`/${first.name} `);
                     setCommandQuery("");
-                    setCommandOpen(first.name === "resume");
+                  }
+                }}
+                onKeyDown={(event) => {
+                  if (!sessionId) return;
+
+                  // Alt+Enter: toggle delivery mode (matches CLI behavior)
+                  if (event.key === "Enter" && event.altKey && agentActive) {
+                    event.preventDefault();
+                    setDeliveryMode((m) => m === "steer" ? "followUp" : "steer");
                     return;
                   }
 
-                  // If the user presses Enter, we either execute the selected command
-                  // (cmdk handles selection) or fall back to the manual parser below.
+                  // If we're in slash mode, show suggestions + allow selecting with Enter.
+                  if (commandOpen) {
+                    if (event.key === "Escape") {
+                      event.preventDefault();
+                      setCommandOpen(false);
+                      return;
+                    }
+
+                    // Tab: autocomplete the first matching command and close the popover
+                    if (event.key === "Tab" && commandSuggestions.length > 0) {
+                      event.preventDefault();
+                      const first = commandSuggestions[0]!;
+                      setInput(`/${first.name} `);
+                      setCommandQuery("");
+                      setCommandOpen(first.name === "resume");
+                      return;
+                    }
+
+                    // If the user presses Enter, we either execute the selected command
+                    // (cmdk handles selection) or fall back to the manual parser below.
+                  }
+
+                  // Minimal slash-command exec for supported commands.
+                  if (event.key !== "Enter" || event.shiftKey) return;
+
+                  const trimmed = event.currentTarget.value.trim();
+                  if (!trimmed.startsWith("/")) return;
+
+                  if (executeSlashCommand(trimmed)) {
+                    event.preventDefault();
+                    return;
+                  }
+                }}
+                disabled={!sessionId}
+                placeholder={
+                  sessionId
+                    ? pendingQuestion
+                      ? `Answer: ${pendingQuestion.question}`
+                      : agentActive
+                        ? deliveryMode === "steer"
+                          ? "Type to steer the agent…"
+                          : "Type a follow-up message…"
+                        : "Send a message to this session…"
+                    : "Pick a session to chat"
                 }
-
-                // Minimal slash-command exec for supported commands.
-                if (event.key !== "Enter" || event.shiftKey) return;
-
-                const trimmed = event.currentTarget.value.trim();
-                if (!trimmed.startsWith("/")) return;
-
-                if (executeSlashCommand(trimmed)) {
-                  event.preventDefault();
-                  return;
-                }
-              }}
-              disabled={!sessionId}
-              placeholder={
-                sessionId
-                  ? pendingQuestion
-                    ? `Answer: ${pendingQuestion.question}`
-                    : agentActive
-                      ? deliveryMode === "steer"
-                        ? "Type to steer the agent…"
-                        : "Type a follow-up message…"
-                      : "Send a message to this session…"
-                  : "Pick a session to chat"
-              }
-              className="min-h-12 max-h-36"
-            />
+                className="min-h-12 max-h-36"
+              />
+            </div>
           </PromptInputBody>
           <PromptInputFooter>
             <PromptInputTools>
-              <ComposerAttachmentButton />
               {sessionId && onShowModelSelector ? (
                 <button
                   type="button"
@@ -1168,6 +1172,17 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                 >
                   <TerminalIcon className="size-3" />
                   <span className="hidden sm:inline">Terminal</span>
+                </button>
+              )}
+              {showFileExplorerButton && onToggleFileExplorer && (
+                <button
+                  type="button"
+                  onClick={onToggleFileExplorer}
+                  className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-muted/60 transition-colors"
+                  title="Toggle file explorer"
+                >
+                  <FolderTree className="size-3" />
+                  <span className="hidden sm:inline">Files</span>
                 </button>
               )}
               {sessionId && agentActive && (
@@ -1203,12 +1218,15 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                 </span>
               )}
             </PromptInputTools>
-            <ComposerSubmitButton
-              sessionId={sessionId}
-              input={input}
-              agentActive={agentActive}
-              onExec={onExec}
-            />
+            <div className="flex items-center gap-0.5">
+              <ComposerAttachmentButton />
+              <ComposerSubmitButton
+                sessionId={sessionId}
+                input={input}
+                agentActive={agentActive}
+                onExec={onExec}
+              />
+            </div>
           </PromptInputFooter>
         </PromptInput>
       </div>

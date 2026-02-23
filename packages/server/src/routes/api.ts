@@ -3,7 +3,7 @@ import { Agent } from "@mariozechner/pi-agent-core";
 import type { AgentEvent } from "@mariozechner/pi-agent-core";
 import { createToolkit } from "@pizzapi/tools";
 import { getRunner, getRunners, getSessions, getSharedSession, linkSessionToRunner, recordRunnerSession, registerTerminal } from "../ws/registry.js";
-import { sendSkillCommand } from "../ws/relay.js";
+import { sendSkillCommand, sendRunnerCommand } from "../ws/relay.js";
 import { waitForSpawnAck } from "../ws/runner-control.js";
 import { apiKeyRateLimitConfig, auth, kysely } from "../auth.js";
 import { requireSession, validateApiKey } from "../middleware.js";
@@ -380,6 +380,114 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
         }
 
         return undefined;
+    }
+
+    // ── File Explorer endpoints ───────────────────────────────────────────────
+
+    const filesMatch = url.pathname.match(/^\/api\/runners\/([^/]+)\/files$/);
+    if (filesMatch && req.method === "POST") {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        const runnerId = decodeURIComponent(filesMatch[1]);
+        const runner = getRunner(runnerId);
+        if (!runner) return Response.json({ error: "Runner not found" }, { status: 404 });
+        const runnerUserId = (runner as any).userId as string | null | undefined;
+        if (runnerUserId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
+
+        let body: any = {};
+        try { body = await req.json(); } catch { body = {}; }
+
+        const path = typeof body.path === "string" ? body.path : "";
+        if (!path) return Response.json({ error: "Missing path" }, { status: 400 });
+
+        try {
+            const result = await sendRunnerCommand(runnerId, { type: "list_files", path });
+            if (!(result as any).ok) return Response.json({ error: (result as any).message ?? "Failed to list files" }, { status: 500 });
+            return Response.json(result);
+        } catch (err) {
+            return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 502 });
+        }
+    }
+
+    const readFileMatch = url.pathname.match(/^\/api\/runners\/([^/]+)\/read-file$/);
+    if (readFileMatch && req.method === "POST") {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        const runnerId = decodeURIComponent(readFileMatch[1]);
+        const runner = getRunner(runnerId);
+        if (!runner) return Response.json({ error: "Runner not found" }, { status: 404 });
+        const runnerUserId = (runner as any).userId as string | null | undefined;
+        if (runnerUserId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
+
+        let body: any = {};
+        try { body = await req.json(); } catch { body = {}; }
+
+        const path = typeof body.path === "string" ? body.path : "";
+        if (!path) return Response.json({ error: "Missing path" }, { status: 400 });
+
+        try {
+            const result = await sendRunnerCommand(runnerId, { type: "read_file", path, maxBytes: 512 * 1024 });
+            if (!(result as any).ok) return Response.json({ error: (result as any).message ?? "Failed to read file" }, { status: 500 });
+            return Response.json(result);
+        } catch (err) {
+            return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 502 });
+        }
+    }
+
+    const gitStatusMatch = url.pathname.match(/^\/api\/runners\/([^/]+)\/git-status$/);
+    if (gitStatusMatch && req.method === "POST") {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        const runnerId = decodeURIComponent(gitStatusMatch[1]);
+        const runner = getRunner(runnerId);
+        if (!runner) return Response.json({ error: "Runner not found" }, { status: 404 });
+        const runnerUserId = (runner as any).userId as string | null | undefined;
+        if (runnerUserId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
+
+        let body: any = {};
+        try { body = await req.json(); } catch { body = {}; }
+
+        const cwd = typeof body.cwd === "string" ? body.cwd : "";
+        if (!cwd) return Response.json({ error: "Missing cwd" }, { status: 400 });
+
+        try {
+            const result = await sendRunnerCommand(runnerId, { type: "git_status", cwd });
+            if (!(result as any).ok) return Response.json({ error: (result as any).message ?? "Failed to get git status" }, { status: 500 });
+            return Response.json(result);
+        } catch (err) {
+            return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 502 });
+        }
+    }
+
+    const gitDiffMatch = url.pathname.match(/^\/api\/runners\/([^/]+)\/git-diff$/);
+    if (gitDiffMatch && req.method === "POST") {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        const runnerId = decodeURIComponent(gitDiffMatch[1]);
+        const runner = getRunner(runnerId);
+        if (!runner) return Response.json({ error: "Runner not found" }, { status: 404 });
+        const runnerUserId = (runner as any).userId as string | null | undefined;
+        if (runnerUserId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
+
+        let body: any = {};
+        try { body = await req.json(); } catch { body = {}; }
+
+        const cwd = typeof body.cwd === "string" ? body.cwd : "";
+        const path = typeof body.path === "string" ? body.path : "";
+        const staged = body.staged === true;
+        if (!cwd || !path) return Response.json({ error: "Missing cwd or path" }, { status: 400 });
+
+        try {
+            const result = await sendRunnerCommand(runnerId, { type: "git_diff", cwd, path, staged });
+            if (!(result as any).ok) return Response.json({ error: (result as any).message ?? "Failed to get diff" }, { status: 500 });
+            return Response.json(result);
+        } catch (err) {
+            return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 502 });
+        }
     }
 
     if (url.pathname === "/api/sessions" && req.method === "GET") {

@@ -119,6 +119,48 @@ export async function sendSkillCommand(
     });
 }
 
+// ── Generic runner command request/response ──────────────────────────────────
+// Maps requestId → { resolve, timer }. Used for file explorer / git commands.
+
+interface PendingRunnerCommand {
+    resolve: (result: Record<string, unknown>) => void;
+    timer: ReturnType<typeof setTimeout>;
+}
+
+const pendingRunnerCommands = new Map<string, PendingRunnerCommand>();
+
+/**
+ * Send a generic command to a runner and wait for the response.
+ * Returns the runner's file_result payload or throws on timeout.
+ */
+export async function sendRunnerCommand(
+    runnerId: string,
+    command: Record<string, unknown>,
+    timeoutMs = 15_000,
+): Promise<Record<string, unknown>> {
+    const runner = getRunner(runnerId);
+    if (!runner) throw new Error("Runner not found");
+
+    const requestId = Math.random().toString(36).slice(2) + Date.now().toString(36);
+
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+            pendingRunnerCommands.delete(requestId);
+            reject(new Error("Runner command timed out"));
+        }, timeoutMs);
+
+        pendingRunnerCommands.set(requestId, { resolve, timer });
+
+        try {
+            runner.ws.send(JSON.stringify({ ...command, requestId }));
+        } catch (err) {
+            clearTimeout(timer);
+            pendingRunnerCommands.delete(requestId);
+            reject(err);
+        }
+    });
+}
+
 function findLatestSnapshotEvent(cachedEvents: unknown[]): Record<string, unknown> | null {
     for (let i = cachedEvents.length - 1; i >= 0; i--) {
         const raw = cachedEvents[i];
@@ -625,6 +667,22 @@ function handleRunnerMessage(ws: ServerWebSocket<WsData>, msg: Record<string, un
         // If the runner also sent an updated skills list, persist it
         if (ws.data.runnerId && Array.isArray(msg.skills)) {
             updateRunnerSkills(ws.data.runnerId, msg.skills as any);
+        }
+        return;
+    }
+
+    // file_result: runner responding to list_files / read_file / git_status / git_diff
+    if (msg.type === "file_result") {
+        const requestId = typeof msg.requestId === "string" ? msg.requestId : undefined;
+        if (requestId) {
+            const pending = pendingRunnerCommands.get(requestId);
+            if (pending) {
+                clearTimeout(pending.timer);
+                pendingRunnerCommands.delete(requestId);
+                // Forward the entire message payload
+                const { type: _type, requestId: _rid, runnerId: _rId, ...rest } = msg;
+                pending.resolve(rest as Record<string, unknown>);
+            }
         }
         return;
     }

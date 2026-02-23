@@ -41,6 +41,7 @@ import { Sun, Moon, LogOut, KeyRound, X, User, ChevronsUpDown, PanelLeftOpen, Ha
 import { NotificationToggle, MobileNotificationMenuItem } from "@/components/NotificationToggle";
 import { UsageIndicator, type ProviderUsageMap } from "@/components/UsageIndicator";
 import { TerminalManager } from "@/components/TerminalManager";
+import { FileExplorer } from "@/components/FileExplorer";
 import {
   ModelSelector,
   ModelSelectorContent,
@@ -257,6 +258,7 @@ export function App() {
   const [showApiKeys, setShowApiKeys] = React.useState(false);
   const [showRunners, setShowRunners] = React.useState(false);
   const [showTerminal, setShowTerminal] = React.useState(false);
+  const [showFileExplorer, setShowFileExplorer] = React.useState(false);
 
   type RunnerInfo = { runnerId: string; name?: string | null; roots?: string[]; sessionCount: number };
   const [newSessionOpen, setNewSessionOpen] = React.useState(false);
@@ -1565,6 +1567,17 @@ export function App() {
     return parts.map((p) => p[0]?.toUpperCase()).join("") || "U";
   }
 
+  // Derive runner/cwd for the active session (used by File Explorer)
+  const activeSessionInfo = React.useMemo(() => {
+    if (!activeSessionId) return null;
+    const session = liveSessions.find((s) => s.sessionId === activeSessionId);
+    if (!session) return null;
+    return {
+      runnerId: session.runnerId ?? null,
+      cwd: session.cwd ?? "",
+    };
+  }, [activeSessionId, liveSessions]);
+
   const activeModelKey = activeModel ? `${activeModel.provider}/${activeModel.id}` : "";
   const modelGroups = new Map<string, ConfiguredModelInfo[]>();
   for (const model of availableModels) {
@@ -1875,54 +1888,85 @@ export function App() {
           />
         )}
 
-        <div className="flex flex-col flex-1 min-w-0 h-full">
-          <div className={showTerminal ? "flex flex-col flex-1 min-h-0 overflow-hidden" : "flex flex-col flex-1 min-h-0"}>
-            {showRunners ? (
-              <RunnerManager onOpenSession={(id) => { handleOpenSession(id); setShowRunners(false); }} />
-            ) : (
-              <SessionViewer
-                sessionId={activeSessionId}
-                sessionName={sessionName}
-                messages={messages}
-                activeModel={activeModel}
-                activeToolCalls={activeToolCalls}
-                pendingQuestion={pendingQuestion}
-                availableCommands={availableCommands}
-                resumeSessions={resumeSessions}
-                resumeSessionsLoading={resumeSessionsLoading}
-                onRequestResumeSessions={requestResumeSessions}
-                onSendInput={sendSessionInput}
-                onExec={sendRemoteExec}
-                onShowModelSelector={() => setModelSelectorOpen(true)}
-                agentActive={agentActive}
-                effortLevel={effortLevel}
-                tokenUsage={tokenUsage}
-                lastHeartbeatAt={lastHeartbeatAt}
-                viewerStatus={viewerStatus}
-                messageQueue={messageQueue}
-                onRemoveQueuedMessage={removeQueuedMessage}
-                onClearMessageQueue={clearMessageQueue}
-                onToggleTerminal={() => setShowTerminal((v) => !v)}
-                showTerminalButton
-                todoList={todoList}
-              />
-            )}
-          </div>
-          {showTerminal && (
+        <div className="flex flex-1 min-w-0 h-full overflow-hidden">
+          {/* File Explorer side panel — desktop: right sidebar, mobile: full-screen overlay */}
+          {showFileExplorer && activeSessionInfo?.runnerId && activeSessionInfo?.cwd && (
             <>
-              {/* Mobile: full-screen overlay above everything */}
+              {/* Mobile: full-screen overlay */}
               <div
                 className="md:hidden fixed inset-0 z-[60] flex flex-col bg-zinc-950 pp-safe-left pp-safe-right"
                 style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
               >
-                <TerminalManager className="h-full" onClose={() => setShowTerminal(false)} />
+                <FileExplorer
+                  runnerId={activeSessionInfo.runnerId}
+                  cwd={activeSessionInfo.cwd}
+                  className="h-full"
+                  onClose={() => setShowFileExplorer(false)}
+                />
               </div>
-              {/* Desktop: bottom split panel */}
-              <div className="hidden md:block border-t border-zinc-800" style={{ height: "40%", minHeight: 200 }}>
-                <TerminalManager className="h-full" />
+              {/* Desktop: right side panel */}
+              <div className="hidden md:flex flex-col border-r border-zinc-800 bg-zinc-950 order-first" style={{ width: 280, minWidth: 200 }}>
+                <FileExplorer
+                  runnerId={activeSessionInfo.runnerId}
+                  cwd={activeSessionInfo.cwd}
+                  className="h-full"
+                  onClose={() => setShowFileExplorer(false)}
+                />
               </div>
             </>
           )}
+
+          <div className="flex flex-col flex-1 min-w-0 h-full">
+            <div className={showTerminal ? "flex flex-col flex-1 min-h-0 overflow-hidden" : "flex flex-col flex-1 min-h-0"}>
+              {showRunners ? (
+                <RunnerManager onOpenSession={(id) => { handleOpenSession(id); setShowRunners(false); }} />
+              ) : (
+                <SessionViewer
+                  sessionId={activeSessionId}
+                  sessionName={sessionName}
+                  messages={messages}
+                  activeModel={activeModel}
+                  activeToolCalls={activeToolCalls}
+                  pendingQuestion={pendingQuestion}
+                  availableCommands={availableCommands}
+                  resumeSessions={resumeSessions}
+                  resumeSessionsLoading={resumeSessionsLoading}
+                  onRequestResumeSessions={requestResumeSessions}
+                  onSendInput={sendSessionInput}
+                  onExec={sendRemoteExec}
+                  onShowModelSelector={() => setModelSelectorOpen(true)}
+                  agentActive={agentActive}
+                  effortLevel={effortLevel}
+                  tokenUsage={tokenUsage}
+                  lastHeartbeatAt={lastHeartbeatAt}
+                  viewerStatus={viewerStatus}
+                  messageQueue={messageQueue}
+                  onRemoveQueuedMessage={removeQueuedMessage}
+                  onClearMessageQueue={clearMessageQueue}
+                  onToggleTerminal={() => setShowTerminal((v) => !v)}
+                  showTerminalButton
+                  onToggleFileExplorer={() => setShowFileExplorer((v) => !v)}
+                  showFileExplorerButton={!!activeSessionInfo?.runnerId && !!activeSessionInfo?.cwd}
+                  todoList={todoList}
+                />
+              )}
+            </div>
+            {showTerminal && (
+              <>
+                {/* Mobile: full-screen overlay above everything */}
+                <div
+                  className="md:hidden fixed inset-0 z-[60] flex flex-col bg-zinc-950 pp-safe-left pp-safe-right"
+                  style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
+                >
+                  <TerminalManager className="h-full" onClose={() => setShowTerminal(false)} />
+                </div>
+                {/* Desktop: bottom split panel */}
+                <div className="hidden md:block border-t border-zinc-800" style={{ height: "40%", minHeight: 200 }}>
+                  <TerminalManager className="h-full" />
+                </div>
+              </>
+            )}
+          </div>
         </div>
 
         <Dialog open={newSessionOpen} onOpenChange={(open) => { if (!spawningSession) setNewSessionOpen(open); }}>

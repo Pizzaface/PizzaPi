@@ -1,6 +1,6 @@
 import { spawn, execSync, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readdir, stat, readFile } from "node:fs/promises";
 import { randomBytes, randomUUID } from "node:crypto";
 import { homedir, hostname } from "node:os";
 import {
@@ -11,7 +11,7 @@ import {
     listTerminals,
     killAllTerminals,
 } from "./terminal.js";
-import { join, dirname } from "node:path";
+import { join, dirname, relative, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 
 interface RunnerSession {
@@ -847,6 +847,177 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                             ws?.send(JSON.stringify({ type: "skill_result", runnerId, requestId, ok: false, message: "Skill not found" }));
                         } else {
                             ws?.send(JSON.stringify({ type: "skill_result", runnerId, requestId, ok: true, name: skillName, content }));
+                        }
+                        break;
+                    }
+
+                    // ── File Explorer ─────────────────────────────────────────
+                    case "list_files": {
+                        const requestId = typeof msg.requestId === "string" ? msg.requestId : undefined;
+                        const dirPath = typeof msg.path === "string" ? msg.path : "";
+                        if (!dirPath) {
+                            ws?.send(JSON.stringify({ type: "file_result", runnerId, requestId, ok: false, message: "Missing path" }));
+                            break;
+                        }
+                        if (!isCwdAllowed(dirPath)) {
+                            ws?.send(JSON.stringify({ type: "file_result", runnerId, requestId, ok: false, message: "Path outside allowed roots" }));
+                            break;
+                        }
+                        try {
+                            const entries = await readdir(dirPath, { withFileTypes: true });
+                            const items = await Promise.all(
+                                entries
+                                    .filter((e) => !e.name.startsWith(".") || e.name === ".gitignore" || e.name === ".env")
+                                    .map(async (e) => {
+                                        const fullPath = join(dirPath, e.name);
+                                        let size: number | undefined;
+                                        try {
+                                            const s = await stat(fullPath);
+                                            size = s.size;
+                                        } catch {}
+                                        return {
+                                            name: e.name,
+                                            path: fullPath,
+                                            isDirectory: e.isDirectory(),
+                                            isSymlink: e.isSymbolicLink(),
+                                            size,
+                                        };
+                                    }),
+                            );
+                            // Directories first, then files, alphabetically
+                            items.sort((a, b) => {
+                                if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
+                                return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+                            });
+                            ws?.send(JSON.stringify({ type: "file_result", runnerId, requestId, ok: true, files: items }));
+                        } catch (err) {
+                            ws?.send(JSON.stringify({ type: "file_result", runnerId, requestId, ok: false, message: err instanceof Error ? err.message : String(err) }));
+                        }
+                        break;
+                    }
+
+                    case "read_file": {
+                        const requestId = typeof msg.requestId === "string" ? msg.requestId : undefined;
+                        const filePath = typeof msg.path === "string" ? msg.path : "";
+                        const maxBytes = typeof msg.maxBytes === "number" ? msg.maxBytes : 256 * 1024; // 256KB default
+
+                        if (!filePath) {
+                            ws?.send(JSON.stringify({ type: "file_result", runnerId, requestId, ok: false, message: "Missing path" }));
+                            break;
+                        }
+                        if (!isCwdAllowed(filePath)) {
+                            ws?.send(JSON.stringify({ type: "file_result", runnerId, requestId, ok: false, message: "Path outside allowed roots" }));
+                            break;
+                        }
+                        try {
+                            const s = await stat(filePath);
+                            const truncated = s.size > maxBytes;
+                            const fd = await Bun.file(filePath).slice(0, maxBytes).text();
+                            ws?.send(JSON.stringify({
+                                type: "file_result", runnerId, requestId, ok: true,
+                                content: fd,
+                                size: s.size,
+                                truncated,
+                            }));
+                        } catch (err) {
+                            ws?.send(JSON.stringify({ type: "file_result", runnerId, requestId, ok: false, message: err instanceof Error ? err.message : String(err) }));
+                        }
+                        break;
+                    }
+
+                    case "git_status": {
+                        const requestId = typeof msg.requestId === "string" ? msg.requestId : undefined;
+                        const cwd = typeof msg.cwd === "string" ? msg.cwd : "";
+                        if (!cwd) {
+                            ws?.send(JSON.stringify({ type: "file_result", runnerId, requestId, ok: false, message: "Missing cwd" }));
+                            break;
+                        }
+                        if (!isCwdAllowed(cwd)) {
+                            ws?.send(JSON.stringify({ type: "file_result", runnerId, requestId, ok: false, message: "Path outside allowed roots" }));
+                            break;
+                        }
+                        try {
+                            // Get current branch
+                            let branch = "";
+                            try {
+                                branch = execSync("git rev-parse --abbrev-ref HEAD", { cwd, encoding: "utf-8", timeout: 5000 }).trim();
+                            } catch {}
+
+                            // Get status --porcelain=v1
+                            let statusOutput = "";
+                            try {
+                                statusOutput = execSync("git status --porcelain=v1 -uall", { cwd, encoding: "utf-8", timeout: 10000 });
+                            } catch {}
+
+                            // Get diff stat for staged changes
+                            let diffStaged = "";
+                            try {
+                                diffStaged = execSync("git diff --cached --stat", { cwd, encoding: "utf-8", timeout: 10000 });
+                            } catch {}
+
+                            // Parse porcelain output
+                            const changes: Array<{ status: string; path: string; originalPath?: string }> = [];
+                            for (const line of statusOutput.split("\n")) {
+                                if (!line.trim()) continue;
+                                const xy = line.substring(0, 2);
+                                const rest = line.substring(3);
+                                // Handle renames: "R  old -> new"
+                                const arrowIdx = rest.indexOf(" -> ");
+                                if (arrowIdx >= 0) {
+                                    changes.push({
+                                        status: xy.trim(),
+                                        path: rest.substring(arrowIdx + 4),
+                                        originalPath: rest.substring(0, arrowIdx),
+                                    });
+                                } else {
+                                    changes.push({ status: xy.trim(), path: rest });
+                                }
+                            }
+
+                            // Get ahead/behind counts
+                            let ahead = 0;
+                            let behind = 0;
+                            try {
+                                const abOutput = execSync("git rev-list --left-right --count HEAD...@{u}", { cwd, encoding: "utf-8", timeout: 5000 }).trim();
+                                const [a, b] = abOutput.split(/\s+/);
+                                ahead = parseInt(a, 10) || 0;
+                                behind = parseInt(b, 10) || 0;
+                            } catch {}
+
+                            ws?.send(JSON.stringify({
+                                type: "file_result", runnerId, requestId, ok: true,
+                                branch,
+                                changes,
+                                ahead,
+                                behind,
+                                diffStaged,
+                            }));
+                        } catch (err) {
+                            ws?.send(JSON.stringify({ type: "file_result", runnerId, requestId, ok: false, message: err instanceof Error ? err.message : String(err) }));
+                        }
+                        break;
+                    }
+
+                    case "git_diff": {
+                        const requestId = typeof msg.requestId === "string" ? msg.requestId : undefined;
+                        const cwd = typeof msg.cwd === "string" ? msg.cwd : "";
+                        const filePath = typeof msg.path === "string" ? msg.path : "";
+                        const staged = msg.staged === true;
+
+                        if (!cwd || !filePath) {
+                            ws?.send(JSON.stringify({ type: "file_result", runnerId, requestId, ok: false, message: "Missing cwd or path" }));
+                            break;
+                        }
+                        if (!isCwdAllowed(cwd)) {
+                            ws?.send(JSON.stringify({ type: "file_result", runnerId, requestId, ok: false, message: "Path outside allowed roots" }));
+                            break;
+                        }
+                        try {
+                            const args = staged ? ["diff", "--cached", "--", filePath] : ["diff", "--", filePath];
+                            const diff = execSync(`git ${args.join(" ")}`, { cwd, encoding: "utf-8", timeout: 10000 });
+                            ws?.send(JSON.stringify({ type: "file_result", runnerId, requestId, ok: true, diff }));
+                        } catch (err) {
+                            ws?.send(JSON.stringify({ type: "file_result", runnerId, requestId, ok: false, message: err instanceof Error ? err.message : String(err) }));
                         }
                         break;
                     }
