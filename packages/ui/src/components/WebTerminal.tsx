@@ -261,6 +261,8 @@ export function WebTerminal({ terminalId, onClose, className }: WebTerminalProps
             size="icon"
             className="size-8 md:size-5 text-zinc-500 hover:text-zinc-100 hover:bg-zinc-800"
             onClick={() => setIsMaximized((v) => !v)}
+            aria-label={isMaximized ? "Restore terminal size" : "Maximize terminal"}
+            title={isMaximized ? "Restore terminal size" : "Maximize terminal"}
           >
             {isMaximized ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
           </Button>
@@ -269,6 +271,8 @@ export function WebTerminal({ terminalId, onClose, className }: WebTerminalProps
             size="icon"
             className="size-8 md:size-5 text-zinc-500 hover:text-red-400 hover:bg-zinc-800"
             onClick={handleClose}
+            aria-label="Close terminal"
+            title="Close terminal"
           >
             <X size={12} />
           </Button>
