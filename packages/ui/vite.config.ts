@@ -116,7 +116,7 @@ export default defineConfig({
                 },
             },
             "/socket.io": {
-                target: `http://localhost:${parseInt(API_PORT) + 1}`,
+                target: `http://localhost:${API_PORT}`,
                 ws: true,
                 configure: (proxy) => {
                     proxy.on("error", (err) => {

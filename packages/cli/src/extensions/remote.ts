@@ -1385,29 +1385,21 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         return process.env.PIZZAPI_API_KEY ?? loadConfig(process.cwd()).apiKey;
     }
 
-    /** Derive the Socket.IO base URL from the relay URL. */
+    /**
+     * Derive the Socket.IO base URL from the relay URL.
+     * Socket.IO now runs on the same port as the REST API.
+     */
     function socketIoUrl(): string {
         // Prefer explicit env var if set.
         const explicit = process.env.PIZZAPI_SOCKETIO_URL;
         if (explicit && explicit.trim()) return explicit.trim().replace(/\/$/, "");
 
-        // Derive from relay URL: ws→http, wss→https, port+1.
+        // Derive from relay URL: ws→http, wss→https (same port).
         const base = relayUrl();
-        let url = base
+        return base
             .replace(/^ws:/, "http:")
-            .replace(/^wss:/, "https:");
-
-        // Increment the port. If no port is explicit, assume 3001→3002 (default).
-        try {
-            const parsed = new URL(url);
-            const port = parsed.port ? parseInt(parsed.port, 10) : (parsed.protocol === "https:" ? 443 : 3001);
-            parsed.port = String(port + 1);
-            url = parsed.toString().replace(/\/$/, "");
-        } catch {
-            // URL parsing failed — use as-is.
-        }
-
-        return url;
+            .replace(/^wss:/, "https:")
+            .replace(/\/$/, "");
     }
 
     function connect() {

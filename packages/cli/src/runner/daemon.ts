@@ -528,18 +528,12 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             .trim()
             .replace(/\/$/, "");
 
-        // Convert ws(s):// → http(s):// for socket.io-client
+        // Convert ws(s):// → http(s):// for socket.io-client (same port)
         const sioUrl = relayRaw
             .replace(/^ws:\/\//, "http://")
             .replace(/^wss:\/\//, "https://")
             .replace(/^http:\/\//, "http://")
             .replace(/^https:\/\//, "https://");
-
-        // Socket.IO runs on PORT+1 relative to the relay
-        const urlObj = new URL(sioUrl);
-        urlObj.port = String(
-            parseInt(urlObj.port || (urlObj.protocol === "https:" ? "443" : "80")) + 1,
-        );
 
         const runningSessions = new Map<string, RunnerSession>();
         const runnerName = process.env.PIZZAPI_RUNNER_NAME?.trim() || hostname();
@@ -547,7 +541,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         let isFirstConnect = true;
 
         const socket: Socket<RunnerServerToClientEvents, RunnerClientToServerEvents> = io(
-            urlObj.origin + "/runner",
+            sioUrl + "/runner",
             {
                 auth: {
                     apiKey,
@@ -561,7 +555,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             },
         );
 
-        console.log(`pizzapi runner: connecting to relay at ${urlObj.origin}/runner…`);
+        console.log(`pizzapi runner: connecting to relay at ${sioUrl}/runner…`);
 
         const shutdown = (code: number) => {
             if (isShuttingDown) return;
@@ -629,7 +623,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 return;
             }
 
-            // The worker uses the runner's API key to register with /ws/sessions.
+            // The worker uses the runner's API key to register with the /relay namespace.
             if (!apiKey) {
                 socket.emit("session_error", { sessionId, message: "Runner is missing PIZZAPI_API_KEY" });
                 return;
