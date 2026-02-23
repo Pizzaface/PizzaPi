@@ -427,8 +427,12 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
         const path = typeof body.path === "string" ? body.path : "";
         if (!path) return Response.json({ error: "Missing path" }, { status: 400 });
 
+        const encoding = body.encoding === "base64" ? "base64" : "utf8";
+        const maxBytes = encoding === "base64" ? 10 * 1024 * 1024 : 512 * 1024; // 10MB for images, 512KB for text
+        const timeout = encoding === "base64" ? 30_000 : 15_000; // longer timeout for images
+
         try {
-            const result = await sendRunnerCommand(runnerId, { type: "read_file", path, maxBytes: 512 * 1024 });
+            const result = await sendRunnerCommand(runnerId, { type: "read_file", path, encoding, maxBytes }, timeout);
             if (!(result as any).ok) return Response.json({ error: (result as any).message ?? "Failed to read file" }, { status: 500 });
             return Response.json(result);
         } catch (err) {

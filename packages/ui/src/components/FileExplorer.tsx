@@ -22,6 +22,11 @@ import {
   HelpCircle,
   FileQuestion,
   X,
+  ZoomIn,
+  ZoomOut,
+  RotateCw,
+  Maximize2,
+  Image as ImageIcon,
 } from "lucide-react";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -77,6 +82,29 @@ function getFileIcon(name: string): string {
     zip: "📦", tar: "📦", gz: "📦", env: "🔐", gitignore: "🚫",
   };
   return icons[ext] ?? "";
+}
+
+const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico", "avif"]);
+
+function isImageFile(name: string): boolean {
+  const ext = name.split(".").pop()?.toLowerCase() ?? "";
+  return IMAGE_EXTENSIONS.has(ext);
+}
+
+function getMimeType(name: string): string {
+  const ext = name.split(".").pop()?.toLowerCase() ?? "";
+  const mimeMap: Record<string, string> = {
+    png: "image/png",
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    gif: "image/gif",
+    webp: "image/webp",
+    svg: "image/svg+xml",
+    bmp: "image/bmp",
+    ico: "image/x-icon",
+    avif: "image/avif",
+  };
+  return mimeMap[ext] ?? "image/png";
 }
 
 function gitStatusLabel(status: string): { label: string; color: string; icon: React.ReactNode } {
@@ -203,6 +231,220 @@ function FileTreeNode({
           onSelectFile={onSelectFile}
         />
       ))}
+    </div>
+  );
+}
+
+// ── Image Viewer ──────────────────────────────────────────────────────────────
+
+function ImageViewer({
+  runnerId,
+  filePath,
+  onClose,
+}: {
+  runnerId: string;
+  filePath: string;
+  onClose: () => void;
+}) {
+  const [dataUrl, setDataUrl] = React.useState<string | null>(null);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState<string | null>(null);
+  const [fileSize, setFileSize] = React.useState<number | undefined>();
+  const [zoom, setZoom] = React.useState(1);
+  const [naturalSize, setNaturalSize] = React.useState<{ w: number; h: number } | null>(null);
+  const [fitMode, setFitMode] = React.useState<"contain" | "actual">("contain");
+  const containerRef = React.useRef<HTMLDivElement>(null);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    setDataUrl(null);
+    setZoom(1);
+    setFitMode("contain");
+    setNaturalSize(null);
+
+    const fileName = filePath.split("/").pop() ?? filePath;
+    const mime = getMimeType(fileName);
+
+    void fetch(`/api/runners/${encodeURIComponent(runnerId)}/read-file`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify({ path: filePath, encoding: "base64" }),
+    })
+      .then((res) =>
+        res.ok
+          ? res.json()
+          : res.json().then((d) => Promise.reject(new Error(d.error || `HTTP ${res.status}`)))
+      )
+      .then((data: any) => {
+        if (cancelled) return;
+        const b64 = data.content ?? "";
+        setDataUrl(`data:${mime};base64,${b64}`);
+        setFileSize(typeof data.size === "number" ? data.size : undefined);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [runnerId, filePath]);
+
+  const handleImageLoad = React.useCallback((e: React.SyntheticEvent<HTMLImageElement>) => {
+    const img = e.currentTarget;
+    setNaturalSize({ w: img.naturalWidth, h: img.naturalHeight });
+  }, []);
+
+  const zoomIn = React.useCallback(() => setZoom((z) => Math.min(z * 1.5, 10)), []);
+  const zoomOut = React.useCallback(() => setZoom((z) => Math.max(z / 1.5, 0.1)), []);
+  const resetZoom = React.useCallback(() => {
+    setZoom(1);
+    setFitMode("contain");
+  }, []);
+  const toggleFit = React.useCallback(() => {
+    setFitMode((m) => (m === "contain" ? "actual" : "contain"));
+    setZoom(1);
+  }, []);
+
+  const fileName = filePath.split("/").pop() ?? filePath;
+
+  return (
+    <div className="flex flex-col h-full">
+      {/* Header */}
+      <div className="flex items-center gap-2 px-3 py-2 border-b border-zinc-800 bg-zinc-900/50 min-h-[40px]">
+        <button
+          type="button"
+          onClick={onClose}
+          className="text-zinc-400 hover:text-zinc-100 transition-colors"
+        >
+          <ChevronLeft className="size-4" />
+        </button>
+        <span className="text-xs text-zinc-500 mr-1">{getFileIcon(fileName)}</span>
+        <span className="text-sm font-mono truncate flex-1" title={filePath}>
+          {fileName}
+        </span>
+        {naturalSize && (
+          <span className="text-[0.6rem] text-zinc-500 tabular-nums flex-shrink-0">
+            {naturalSize.w}×{naturalSize.h}
+          </span>
+        )}
+        {fileSize !== undefined && (
+          <span className="text-[0.6rem] text-zinc-500 tabular-nums flex-shrink-0">
+            {formatSize(fileSize)}
+          </span>
+        )}
+      </div>
+
+      {/* Toolbar */}
+      {dataUrl && (
+        <div className="flex items-center gap-1 px-3 py-1.5 border-b border-zinc-800/50 bg-zinc-900/30">
+          <button
+            type="button"
+            onClick={zoomOut}
+            className="p-1 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 rounded transition-colors"
+            title="Zoom out"
+          >
+            <ZoomOut className="size-3.5" />
+          </button>
+          <span className="text-[0.65rem] text-zinc-500 tabular-nums w-12 text-center">
+            {Math.round(zoom * 100)}%
+          </span>
+          <button
+            type="button"
+            onClick={zoomIn}
+            className="p-1 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 rounded transition-colors"
+            title="Zoom in"
+          >
+            <ZoomIn className="size-3.5" />
+          </button>
+          <div className="w-px h-4 bg-zinc-700 mx-1" />
+          <button
+            type="button"
+            onClick={toggleFit}
+            className={cn(
+              "p-1 rounded transition-colors",
+              fitMode === "actual"
+                ? "text-zinc-100 bg-zinc-800"
+                : "text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800",
+            )}
+            title={fitMode === "contain" ? "Show actual size" : "Fit to view"}
+          >
+            <Maximize2 className="size-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={resetZoom}
+            className="p-1 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 rounded transition-colors"
+            title="Reset zoom"
+          >
+            <RotateCw className="size-3.5" />
+          </button>
+        </div>
+      )}
+
+      {/* Image content */}
+      <div
+        ref={containerRef}
+        className="flex-1 overflow-auto"
+      >
+        {loading && (
+          <div className="flex items-center justify-center p-8">
+            <Spinner className="size-5" />
+          </div>
+        )}
+        {error && <div className="p-4 text-sm text-red-400">{error}</div>}
+        {dataUrl && (
+          <div
+            className={cn(
+              "min-h-full",
+              fitMode === "contain"
+                ? "flex items-center justify-center p-4"
+                : "p-4",
+            )}
+          >
+            {/* Checkerboard background for transparency */}
+            <div
+              className="inline-block rounded-md shadow-lg"
+              style={{
+                backgroundImage:
+                  "repeating-conic-gradient(#27272a 0% 25%, #1c1c1e 0% 50%)",
+                backgroundSize: "16px 16px",
+              }}
+            >
+              <img
+                src={dataUrl}
+                alt={fileName}
+                onLoad={handleImageLoad}
+                className="block rounded-md"
+                draggable={false}
+                style={
+                  fitMode === "contain"
+                    ? {
+                        maxWidth: "100%",
+                        maxHeight: "calc(100vh - 160px)",
+                        transform: `scale(${zoom})`,
+                        transformOrigin: "center center",
+                        transition: "transform 0.15s ease",
+                      }
+                    : {
+                        transform: `scale(${zoom})`,
+                        transformOrigin: "top left",
+                        transition: "transform 0.15s ease",
+                      }
+                }
+              />
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -563,15 +805,26 @@ export function FileExplorer({ runnerId, cwd, className, onClose }: FileExplorer
     void fetchFiles();
   }, [fetchFiles]);
 
-  // If viewing a file, show the file viewer
+  // If viewing a file, show the appropriate viewer
   if (viewingFile) {
+    const viewingFileName = viewingFile.split("/").pop() ?? viewingFile;
+    const isImage = isImageFile(viewingFileName);
+
     return (
       <div className={cn("flex flex-col bg-zinc-950 text-zinc-100", className)}>
-        <FileViewer
-          runnerId={runnerId}
-          filePath={viewingFile}
-          onClose={() => setViewingFile(null)}
-        />
+        {isImage ? (
+          <ImageViewer
+            runnerId={runnerId}
+            filePath={viewingFile}
+            onClose={() => setViewingFile(null)}
+          />
+        ) : (
+          <FileViewer
+            runnerId={runnerId}
+            filePath={viewingFile}
+            onClose={() => setViewingFile(null)}
+          />
+        )}
       </div>
     );
   }

@@ -899,7 +899,8 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     case "read_file": {
                         const requestId = typeof msg.requestId === "string" ? msg.requestId : undefined;
                         const filePath = typeof msg.path === "string" ? msg.path : "";
-                        const maxBytes = typeof msg.maxBytes === "number" ? msg.maxBytes : 256 * 1024; // 256KB default
+                        const encoding = typeof msg.encoding === "string" ? msg.encoding : "utf8";
+                        const maxBytes = typeof msg.maxBytes === "number" ? msg.maxBytes : (encoding === "base64" ? 10 * 1024 * 1024 : 256 * 1024); // 10MB for base64, 256KB for text
 
                         if (!filePath) {
                             ws?.send(JSON.stringify({ type: "file_result", runnerId, requestId, ok: false, message: "Missing path" }));
@@ -912,13 +913,25 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                         try {
                             const s = await stat(filePath);
                             const truncated = s.size > maxBytes;
-                            const fd = await Bun.file(filePath).slice(0, maxBytes).text();
-                            ws?.send(JSON.stringify({
-                                type: "file_result", runnerId, requestId, ok: true,
-                                content: fd,
-                                size: s.size,
-                                truncated,
-                            }));
+                            if (encoding === "base64") {
+                                const buf = await Bun.file(filePath).slice(0, maxBytes).arrayBuffer();
+                                const b64 = Buffer.from(buf).toString("base64");
+                                ws?.send(JSON.stringify({
+                                    type: "file_result", runnerId, requestId, ok: true,
+                                    content: b64,
+                                    encoding: "base64",
+                                    size: s.size,
+                                    truncated,
+                                }));
+                            } else {
+                                const fd = await Bun.file(filePath).slice(0, maxBytes).text();
+                                ws?.send(JSON.stringify({
+                                    type: "file_result", runnerId, requestId, ok: true,
+                                    content: fd,
+                                    size: s.size,
+                                    truncated,
+                                }));
+                            }
                         } catch (err) {
                             ws?.send(JSON.stringify({ type: "file_result", runnerId, requestId, ok: false, message: err instanceof Error ? err.message : String(err) }));
                         }
