@@ -54,7 +54,7 @@ const PLATFORMS: Platform[] = [
         npmSuffix: "linux-x64",
         binaryDir: "linux-x64",
         binaryName: "pizza-linux-x64",
-        binOutputName: "pizzapi",
+        binOutputName: "pizza",
         os: "linux",
         cpu: "x64",
     },
@@ -62,7 +62,7 @@ const PLATFORMS: Platform[] = [
         npmSuffix: "linux-arm64",
         binaryDir: "linux-arm64",
         binaryName: "pizza-linux-arm64",
-        binOutputName: "pizzapi",
+        binOutputName: "pizza",
         os: "linux",
         cpu: "arm64",
     },
@@ -70,7 +70,7 @@ const PLATFORMS: Platform[] = [
         npmSuffix: "darwin-x64",
         binaryDir: "macos-x64",
         binaryName: "pizza-macos-x64",
-        binOutputName: "pizzapi",
+        binOutputName: "pizza",
         os: "darwin",
         cpu: "x64",
     },
@@ -78,7 +78,7 @@ const PLATFORMS: Platform[] = [
         npmSuffix: "darwin-arm64",
         binaryDir: "macos-arm64",
         binaryName: "pizza-macos-arm64",
-        binOutputName: "pizzapi",
+        binOutputName: "pizza",
         os: "darwin",
         cpu: "arm64",
     },
@@ -86,7 +86,7 @@ const PLATFORMS: Platform[] = [
         npmSuffix: "win32-x64",
         binaryDir: "windows-x64",
         binaryName: "pizza-windows-x64.exe",
-        binOutputName: "pizzapi.exe",
+        binOutputName: "pizza.exe",
         os: "win32",
         cpu: "x64",
     },
@@ -158,7 +158,7 @@ for (const platform of PLATFORMS) {
         os: [platform.os],
         cpu: [platform.cpu],
         bin: {
-            pizzapi: `bin/${platform.binOutputName}`,
+            pizza: `bin/${platform.binOutputName}`,
         },
         files: ["bin/"],
         publishConfig: {
@@ -199,7 +199,7 @@ const mainPkg = {
         "PizzaPi — a self-hosted web interface and relay server for the pi coding agent. Stream live AI coding sessions to any browser.",
     license: "MIT",
     bin: {
-        pizzapi: "bin/pizzapi.mjs",
+        pizza: "bin/pizza.mjs",
     },
     files: ["bin/", "README.md", "LICENSE"],
     optionalDependencies: optionalDeps,
@@ -229,8 +229,8 @@ const mainPkg = {
 writeFileSync(join(mainPkgDir, "package.json"), JSON.stringify(mainPkg, null, 2) + "\n");
 
 // Copy the launcher bin script
-cpSync(join(NPM_PKG, "bin", "pizzapi.mjs"), join(mainBinDir, "pizzapi.mjs"));
-chmodSync(join(mainBinDir, "pizzapi.mjs"), 0o755);
+cpSync(join(NPM_PKG, "bin", "pizza.mjs"), join(mainBinDir, "pizza.mjs"));
+chmodSync(join(mainBinDir, "pizza.mjs"), 0o755);
 
 // Copy README if exists, otherwise generate one
 const readmeSrc = join(NPM_PKG, "README.md");

@@ -786,7 +786,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
           {/* Right: badges + end session */}
           <div className="flex items-center gap-1.5 flex-shrink-0">
             <HeartbeatStaleBadge lastHeartbeatAt={lastHeartbeatAt} />
-            {activeModel?.reasoning && (
+            {(activeModel?.reasoning || effortLevel != null) && (
               <button
                 className="rounded-full border border-border bg-muted px-2 py-0.5 text-[0.65rem] font-medium text-muted-foreground uppercase tracking-wide hover:bg-muted/80 transition-colors cursor-pointer"
                 onClick={() => {

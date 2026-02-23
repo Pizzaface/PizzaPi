@@ -1504,11 +1504,15 @@ export function renderContent(
             const isLastBlock = i === (content as unknown[]).length - 1;
             const thinkingIsStreaming = isLastBlock && (isThinkingActive ?? false);
             const thinkingDuration = typeof b.durationSeconds === "number" ? b.durationSeconds : undefined;
+            const thinkingText = typeof b.thinking === "string" ? b.thinking : "";
+            // While streaming, strip trailing backticks so Streamdown doesn't
+            // eagerly flush an incomplete inline-code or code-fence token.
+            const displayText = thinkingIsStreaming ? thinkingText.replace(/`+$/, "") : thinkingText;
             return (
               <Reasoning key={i} isStreaming={thinkingIsStreaming} duration={thinkingDuration}>
                 <ReasoningTrigger />
                 <ReasoningContent>
-                  {typeof b.thinking === "string" ? b.thinking : ""}
+                  {displayText}
                 </ReasoningContent>
               </Reasoning>
             );
