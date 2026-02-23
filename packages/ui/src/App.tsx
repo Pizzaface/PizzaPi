@@ -39,11 +39,12 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Sun, Moon, LogOut, KeyRound, X, User, ChevronsUpDown, PanelLeftOpen, HardDrive, Bell, BellOff, Check, Plus } from "lucide-react";
+import { Sun, Moon, LogOut, KeyRound, X, User, ChevronsUpDown, PanelLeftOpen, HardDrive, Bell, BellOff, Check, Plus, TerminalIcon, FolderTree } from "lucide-react";
 import { NotificationToggle, MobileNotificationMenuItem } from "@/components/NotificationToggle";
 import { UsageIndicator, type ProviderUsageMap } from "@/components/UsageIndicator";
 import { TerminalManager } from "@/components/TerminalManager";
 import { FileExplorer } from "@/components/FileExplorer";
+import { CombinedPanel } from "@/components/CombinedPanel";
 import {
   ModelSelector,
   ModelSelectorContent,
@@ -347,6 +348,9 @@ export function App() {
     setPanelDragZone(zone);
   }, []);
 
+  // Ref to sync file explorer position when panels are combined (avoids forward-reference issues)
+  const combinedDragSyncRef = React.useRef<((zone: "bottom" | "right" | "left") => void) | null>(null);
+
   const handlePanelDragEnd = React.useCallback(() => {
     if (!isPanelDragging.current) return;
     isPanelDragging.current = false;
@@ -354,7 +358,11 @@ export function App() {
     panelDragZoneRef.current = null;
     setPanelDragActive(false);
     setPanelDragZone(null);
-    if (zone) handleTerminalPositionChange(zone);
+    if (zone) {
+      handleTerminalPositionChange(zone);
+      // When panels are combined (same position), also move file explorer
+      combinedDragSyncRef.current?.(zone);
+    }
   }, [handleTerminalPositionChange]);
 
   const handleOuterPointerMove = React.useCallback((e: React.PointerEvent) => {
@@ -366,6 +374,15 @@ export function App() {
     handleTerminalResizeEnd();
     handlePanelDragEnd();
   }, [handleTerminalResizeEnd, handlePanelDragEnd]);
+
+  const [combinedActiveTab, setCombinedActiveTab] = React.useState<"terminal" | "files">(() => {
+    try { return (localStorage.getItem("pp-combined-tab") as "terminal" | "files") ?? "terminal"; } catch { return "terminal"; }
+  });
+  const handleCombinedTabChange = React.useCallback((tab: string) => {
+    const t = tab as "terminal" | "files";
+    setCombinedActiveTab(t);
+    try { localStorage.setItem("pp-combined-tab", t); } catch {}
+  }, []);
 
   const [showFileExplorer, setShowFileExplorer] = React.useState(false);
   const [filesPosition, setFilesPosition] = React.useState<"left" | "right" | "bottom">(() => {
@@ -435,6 +452,20 @@ export function App() {
     setFilesPosition(pos);
     try { localStorage.setItem("pp-files-position", pos); } catch {}
   }, []);
+  const handleCombinedPositionChange = React.useCallback((pos: "left" | "right" | "bottom") => {
+    handleTerminalPositionChange(pos);
+    handleFilesPositionChange(pos);
+  }, [handleTerminalPositionChange, handleFilesPositionChange]);
+
+  // Keep the drag sync ref up-to-date so handlePanelDragEnd can sync file explorer
+  React.useEffect(() => {
+    if (showTerminal && showFileExplorer && terminalPosition === filesPosition) {
+      combinedDragSyncRef.current = handleFilesPositionChange;
+    } else {
+      combinedDragSyncRef.current = null;
+    }
+  }, [showTerminal, showFileExplorer, terminalPosition, filesPosition, handleFilesPositionChange]);
+
   const handleFilesDragStart = React.useCallback((e: React.PointerEvent) => {
     e.preventDefault();
     isFilesDragging.current = true;
@@ -1811,6 +1842,10 @@ export function App() {
     };
   }, [activeSessionId, liveSessions]);
 
+  // When both panels are at the same position, combine them into a single tabbed panel
+  const areCombined = showTerminal && showFileExplorer && terminalPosition === filesPosition
+    && !!activeSessionInfo?.runnerId && !!activeSessionInfo?.cwd;
+
   if (isPending) {
     return (
       <div className="flex h-[100dvh] w-full flex-col items-center justify-center bg-background gap-2 animate-in fade-in duration-300">
@@ -2197,24 +2232,27 @@ export function App() {
           )}
 
           {/* ── File Explorer panels ── */}
+          {/* Mobile overlay — always rendered when file explorer is open */}
           {showFileExplorer && activeSessionInfo?.runnerId && activeSessionInfo?.cwd && (
-            <>
-              {/* Mobile: full-screen overlay */}
-              <div
-                className="md:hidden fixed inset-0 z-[60] flex flex-col bg-zinc-950 pp-safe-left pp-safe-right"
-                style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
-              >
-                <FileExplorer
-                  runnerId={activeSessionInfo.runnerId}
-                  cwd={activeSessionInfo.cwd}
-                  className="h-full"
-                  onClose={() => setShowFileExplorer(false)}
-                  position={filesPosition}
-                  onPositionChange={handleFilesPositionChange}
-                  onDragStart={handleFilesDragStart}
-                />
-              </div>
+            <div
+              className="md:hidden fixed inset-0 z-[60] flex flex-col bg-zinc-950 pp-safe-left pp-safe-right"
+              style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
+            >
+              <FileExplorer
+                runnerId={activeSessionInfo.runnerId}
+                cwd={activeSessionInfo.cwd}
+                className="h-full"
+                onClose={() => setShowFileExplorer(false)}
+                position={filesPosition}
+                onPositionChange={handleFilesPositionChange}
+                onDragStart={handleFilesDragStart}
+              />
+            </div>
+          )}
 
+          {/* Desktop file explorer — only when NOT combined with terminal */}
+          {showFileExplorer && !areCombined && activeSessionInfo?.runnerId && activeSessionInfo?.cwd && (
+            <>
               {/* Desktop: left panel */}
               {filesPosition === "left" && (
                 <>
@@ -2336,24 +2374,90 @@ export function App() {
                 />
               )}
             </div>
+            {/* Mobile: terminal overlay (always separate from combined) */}
             {showTerminal && (
+              <div
+                className="md:hidden fixed inset-0 z-[60] flex flex-col bg-zinc-950 pp-safe-left pp-safe-right"
+                style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
+              >
+                <TerminalManager
+                  className="h-full"
+                  onClose={() => setShowTerminal(false)}
+                  position={terminalPosition}
+                  onPositionChange={handleTerminalPositionChange}
+                  onDragStart={handlePanelDragStart}
+                />
+              </div>
+            )}
+
+            {/* Desktop: Combined panel (terminal + file explorer at same position) */}
+            {areCombined && (
               <>
-                {/* Mobile: full-screen overlay */}
                 <div
-                  className="md:hidden fixed inset-0 z-[60] flex flex-col bg-zinc-950 pp-safe-left pp-safe-right"
-                  style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
+                  className={cn(
+                    "hidden md:flex shrink-0 items-center justify-center group",
+                    terminalPosition === "bottom"
+                      ? "h-[5px] cursor-row-resize"
+                      : "w-[5px] cursor-col-resize",
+                  )}
+                  style={{ order: terminalPosition === "left" ? 1 : 9998 }}
+                  onPointerDown={handleTerminalResizeStart}
                 >
-                  <TerminalManager
-                    className="h-full"
-                    onClose={() => setShowTerminal(false)}
+                  <div className={cn(
+                    "bg-zinc-800 group-hover:bg-blue-500/60 group-active:bg-blue-500 transition-colors",
+                    terminalPosition === "bottom" ? "w-full h-px" : "h-full w-px",
+                  )} />
+                </div>
+                <div
+                  className="hidden md:flex flex-col shrink-0"
+                  style={{
+                    order: terminalPosition === "left" ? 0 : 9999,
+                    ...(terminalPosition === "bottom"
+                      ? { height: terminalHeight }
+                      : { width: terminalWidth }),
+                  }}
+                >
+                  <CombinedPanel
+                    activeTabId={combinedActiveTab}
+                    onActiveTabChange={handleCombinedTabChange}
                     position={terminalPosition}
-                    onPositionChange={handleTerminalPositionChange}
+                    onPositionChange={handleCombinedPositionChange}
                     onDragStart={handlePanelDragStart}
+                    className="h-full"
+                    tabs={[
+                      {
+                        id: "terminal",
+                        label: "Terminal",
+                        icon: <TerminalIcon className="size-3.5" />,
+                        onClose: () => { setShowTerminal(false); setCombinedActiveTab("files"); },
+                        content: (
+                          <TerminalManager className="h-full" />
+                        ),
+                      },
+                      {
+                        id: "files",
+                        label: "Files",
+                        icon: <FolderTree className="size-3.5" />,
+                        onClose: () => { setShowFileExplorer(false); setCombinedActiveTab("terminal"); },
+                        content: (
+                          <FileExplorer
+                            runnerId={activeSessionInfo!.runnerId!}
+                            cwd={activeSessionInfo!.cwd}
+                            className="h-full"
+                          />
+                        ),
+                      },
+                    ]}
                   />
                 </div>
+              </>
+            )}
 
+            {/* Desktop: standalone terminal (when not combined) */}
+            {showTerminal && !areCombined && (
+              <>
                 {/*
-                  Desktop: single always-mounted instance so xterm state survives position changes.
+                  Single always-mounted instance so xterm state survives position changes.
                   CSS `order` repositions the handle and panel without unmounting:
                     left   → panel(0)  handle(1)  session(9999 via order-last)
                     right  → session(0) handle(9998) panel(9999)
