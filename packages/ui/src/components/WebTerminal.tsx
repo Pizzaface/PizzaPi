@@ -151,12 +151,25 @@ export function WebTerminal({ terminalId, onClose, className }: WebTerminalProps
     });
 
     // Forward terminal input → Socket.IO
+    //
+    // xterm.js fires onData for BOTH user keystrokes AND terminal query
+    // responses (DA, DA2, CPR, OSC replies, DECRPM).  Over a network relay
+    // those responses arrive at the PTY long after the shell timed-out
+    // waiting for them, so they get echoed as visible garbage.  Strip them
+    // here — shells always have fallbacks when responses don't arrive.
+    const TERM_RESPONSE_RE =
+      // eslint-disable-next-line no-control-regex
+      /\x1b\[[?>!]?[\d;]*[cRny]|\x1b\][\d;][^\x07\x1b]*(?:\x07|\x1b\\)|\x1bP[^\x1b]*\x1b\\/g;
+
     const inputDisposable = term.onData((data: string) => {
       if (socket.connected) {
-        socket.emit("terminal_input", {
-          terminalId,
-          data: btoa(data),
-        });
+        const filtered = data.replace(TERM_RESPONSE_RE, "");
+        if (filtered.length > 0) {
+          socket.emit("terminal_input", {
+            terminalId,
+            data: btoa(filtered),
+          });
+        }
       }
     });
 
