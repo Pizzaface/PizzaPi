@@ -11,6 +11,7 @@ import { authClient, useSession, signOut } from "@/lib/auth-client";
 import { io, type Socket } from "socket.io-client";
 import type { ViewerServerToClientEvents, ViewerClientToServerEvents } from "@pizzapi/protocol";
 import { cn } from "@/lib/utils";
+import { pulseStreamingHaptic, cancelHaptic } from "@/lib/haptics";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import {
@@ -41,6 +42,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Sun, Moon, LogOut, KeyRound, X, User, ChevronsUpDown, PanelLeftOpen, HardDrive, Bell, BellOff, Check, Plus, TerminalIcon, FolderTree, Keyboard } from "lucide-react";
 import { NotificationToggle, MobileNotificationMenuItem } from "@/components/NotificationToggle";
+import { HapticsToggle, MobileHapticsMenuItem } from "@/components/HapticsToggle";
 import { UsageIndicator, type ProviderUsageMap } from "@/components/UsageIndicator";
 import { TerminalManager, type TerminalTab } from "@/components/TerminalManager";
 import { FileExplorer } from "@/components/FileExplorer";
@@ -1452,6 +1454,7 @@ export function App() {
     }
 
     if (type === "agent_end") {
+      cancelHaptic();
       setActiveToolCalls(new Map());
     }
 
@@ -1480,6 +1483,7 @@ export function App() {
         const partial = assistantEvent.partial as Record<string, unknown>;
         const raw = augmentThinkingDurations({ ...partial, timestamp: undefined }, thinkingDurationsRef.current);
         if (isStreamingDelta) {
+          if (deltaType === "text_delta") pulseStreamingHaptic();
           upsertMessageDebounced(raw, "message-update-partial");
         } else {
           upsertMessage(raw, "message-update-partial");
@@ -1495,6 +1499,7 @@ export function App() {
     }
 
     if (type === "message_end" || type === "turn_end") {
+      cancelHaptic();
       upsertMessage(augmentThinkingDurations(evt.message, thinkingDurationsRef.current), type, true);
       // Reset for the next assistant message.
       thinkingStartTimesRef.current = new Map();
@@ -2173,6 +2178,7 @@ export function App() {
           </Button>
 
           <NotificationToggle />
+          <HapticsToggle />
 
           <Button
             variant="ghost"
@@ -2368,6 +2374,7 @@ export function App() {
                 {isDark ? "Light mode" : "Dark mode"}
               </DropdownMenuItem>
               <MobileNotificationMenuItem />
+              <MobileHapticsMenuItem />
               <DropdownMenuItem onSelect={() => { setShowApiKeys(true); setShowRunners(false); setSidebarOpen(false); }}>
                 <KeyRound className="h-4 w-4" />
                 API keys
