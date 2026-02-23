@@ -87,42 +87,40 @@ export function pulseStreamingHaptic(delta?: string): void {
   navigator.vibrate(pulseDuration(len));
 }
 
-// --- Tool execution heartbeat (o~ o~) ---
-
-/** Interval between double-tap pulses while a tool is running */
-const TOOL_HEARTBEAT_MS = 2000;
+// --- Continuous tool vibration ---
 
 /**
- * Double-tap pattern: buzz, pause, buzz
- * Feels like a gentle "o~ o~" nudge.
+ * Max single vibration duration in ms. The Vibration API accepts up to
+ * ~10 s on most browsers; we re-fire before it expires so the buzz
+ * feels uninterrupted.
  */
-const TOOL_PATTERN = [10, 80, 10];
+const TOOL_VIBRATE_MS = 5000;
+const TOOL_RENEW_MS = 4500; // re-fire slightly before expiry
 
-let toolHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
+let toolVibrateTimer: ReturnType<typeof setInterval> | null = null;
 
-/** Start a repeating double-tap while a tool is active. */
+/** Start a continuous low vibration for the duration of a tool call. */
 export function startToolHaptic(): void {
   if (!readPref()) return;
   if (typeof navigator === "undefined" || typeof navigator.vibrate !== "function") return;
-  if (toolHeartbeatTimer !== null) return; // already running
+  if (toolVibrateTimer !== null) return; // already running
 
-  // Immediate first pulse
-  navigator.vibrate(TOOL_PATTERN);
+  navigator.vibrate(TOOL_VIBRATE_MS);
 
-  toolHeartbeatTimer = setInterval(() => {
+  toolVibrateTimer = setInterval(() => {
     if (!readPref()) {
       stopToolHaptic();
       return;
     }
-    navigator.vibrate(TOOL_PATTERN);
-  }, TOOL_HEARTBEAT_MS);
+    navigator.vibrate(TOOL_VIBRATE_MS);
+  }, TOOL_RENEW_MS);
 }
 
-/** Stop the tool heartbeat vibration. */
+/** Stop the tool vibration immediately. */
 export function stopToolHaptic(): void {
-  if (toolHeartbeatTimer !== null) {
-    clearInterval(toolHeartbeatTimer);
-    toolHeartbeatTimer = null;
+  if (toolVibrateTimer !== null) {
+    clearInterval(toolVibrateTimer);
+    toolVibrateTimer = null;
   }
   if (typeof navigator !== "undefined" && typeof navigator.vibrate === "function") {
     navigator.vibrate(0);
