@@ -39,9 +39,13 @@ function shouldGroupToolCall(toolName: string): boolean {
     norm === "bash" ||
     norm === "read" ||
     norm === "edit" ||
+    norm === "update_todo" ||
+    norm === "set_session_name" ||
     norm.endsWith(".bash") ||
     norm.endsWith(".read") ||
-    norm.endsWith(".edit")
+    norm.endsWith(".edit") ||
+    norm.endsWith(".update_todo") ||
+    norm.endsWith(".set_session_name")
   );
 }
 

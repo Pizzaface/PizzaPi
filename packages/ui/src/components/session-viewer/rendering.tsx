@@ -48,7 +48,83 @@ import {
   normalizeToolName,
   tryParseJsonObject,
 } from "@/components/session-viewer/utils";
-import { ChevronDownIcon } from "lucide-react";
+import { ChevronDownIcon, ListTodoIcon, CircleDashedIcon, CircleDotIcon, CheckCircle2Icon, XCircleIcon as XCircleIcon2, TagIcon } from "lucide-react";
+
+interface TodoItem {
+  id: number;
+  text: string;
+  status: "pending" | "in_progress" | "done" | "cancelled";
+}
+
+function TodoCard({ todos }: { todos: TodoItem[] }) {
+  const done = todos.filter((t) => t.status === "done").length;
+  const total = todos.length;
+
+  const statusIcon = (status: TodoItem["status"]) => {
+    switch (status) {
+      case "done":
+        return <CheckCircle2Icon className="size-3.5 shrink-0 text-emerald-500" />;
+      case "in_progress":
+        return <CircleDotIcon className="size-3.5 shrink-0 text-blue-400 animate-pulse" />;
+      case "cancelled":
+        return <XCircleIcon2 className="size-3.5 shrink-0 text-zinc-500" />;
+      default:
+        return <CircleDashedIcon className="size-3.5 shrink-0 text-zinc-500" />;
+    }
+  };
+
+  return (
+    <div className="overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950 text-zinc-100 text-xs">
+      <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-2">
+        <div className="flex items-center gap-2 text-sm text-zinc-400">
+          <ListTodoIcon className="size-4 shrink-0" />
+          <span className="font-medium">Tasks</span>
+        </div>
+        <span className="text-[11px] text-zinc-500 tabular-nums">
+          {done}/{total} done
+        </span>
+      </div>
+      <ul className="divide-y divide-zinc-800/60">
+        {todos.map((item) => (
+          <li
+            key={item.id}
+            className={`flex items-start gap-2.5 px-4 py-2 ${
+              item.status === "done" || item.status === "cancelled"
+                ? "opacity-60"
+                : ""
+            }`}
+          >
+            <span className="mt-0.5">{statusIcon(item.status)}</span>
+            <span
+              className={`text-xs leading-relaxed ${
+                item.status === "done"
+                  ? "line-through text-zinc-500"
+                  : item.status === "cancelled"
+                    ? "line-through text-zinc-600"
+                    : item.status === "in_progress"
+                      ? "text-zinc-200"
+                      : "text-zinc-400"
+              }`}
+            >
+              {item.text}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function SessionNameCard({ name }: { name: string }) {
+  return (
+    <div className="flex items-center gap-2 rounded-lg border border-zinc-800 bg-zinc-950 px-4 py-2.5 text-xs text-zinc-400">
+      <TagIcon className="size-3.5 shrink-0 text-zinc-500" />
+      <span>
+        Session named <span className="font-medium text-zinc-200">{name}</span>
+      </span>
+    </div>
+  );
+}
 
 function CopyableCodeBlock({
   code,
@@ -627,6 +703,31 @@ function renderGroupedToolExecution(
           </div>
         </EditFileCard>
       );
+    }
+  } else if (norm === "update_todo" || norm.endsWith(".update_todo")) {
+    // Todo list — render as a checklist card from the tool input
+    const inputArgs =
+      toolInput && typeof toolInput === "object"
+        ? (toolInput as Record<string, unknown>)
+        : {};
+    const todos = Array.isArray(inputArgs.todos) ? (inputArgs.todos as TodoItem[]) : [];
+    if (todos.length > 0) {
+      card = <TodoCard todos={todos} />;
+    } else {
+      // Empty or unparseable — hide
+      card = null;
+    }
+  } else if (norm === "set_session_name" || norm.endsWith(".set_session_name")) {
+    // Session name — render as a small inline badge
+    const inputArgs =
+      toolInput && typeof toolInput === "object"
+        ? (toolInput as Record<string, unknown>)
+        : {};
+    const name = typeof inputArgs.name === "string" ? inputArgs.name : null;
+    if (name) {
+      card = <SessionNameCard name={name} />;
+    } else {
+      card = null;
     }
   } else {
     // Default / Generic
