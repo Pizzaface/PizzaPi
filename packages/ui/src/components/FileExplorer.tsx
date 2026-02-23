@@ -1,4 +1,5 @@
 import * as React from "react";
+import * as ReactDOM from "react-dom";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Spinner } from "@/components/ui/spinner";
@@ -27,6 +28,10 @@ import {
   RotateCw,
   Maximize2,
   Image as ImageIcon,
+  GripHorizontal,
+  PanelLeft,
+  PanelRight,
+  PanelBottom,
 } from "lucide-react";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -60,6 +65,12 @@ export interface FileExplorerProps {
   cwd: string;
   className?: string;
   onClose?: () => void;
+  /** Current docked position of the panel (desktop only). */
+  position?: "left" | "right" | "bottom";
+  /** Called when the user picks a new position via the header buttons. */
+  onPositionChange?: (pos: "left" | "right" | "bottom") => void;
+  /** Called when the user starts dragging the panel grip to reposition it. */
+  onDragStart?: (e: React.PointerEvent) => void;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -769,9 +780,169 @@ function GitChangesView({
   );
 }
 
+// ── Position Picker (click-and-hold dropdown) ────────────────────────────────
+
+const POSITION_OPTIONS = [
+  { pos: "left" as const, Icon: PanelLeft, label: "Left" },
+  { pos: "bottom" as const, Icon: PanelBottom, label: "Bottom" },
+  { pos: "right" as const, Icon: PanelRight, label: "Right" },
+] as const;
+
+const PositionDropdown = React.forwardRef<
+  HTMLDivElement,
+  {
+    containerRef: React.RefObject<HTMLDivElement | null>;
+    position: "left" | "right" | "bottom";
+    onSelect: (pos: "left" | "right" | "bottom") => void;
+  }
+>(function PositionDropdown({ containerRef, position, onSelect }, ref) {
+  const [coords, setCoords] = React.useState<{ top: number; left: number } | null>(null);
+
+  React.useLayoutEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const dropdownWidth = 3 * 28 + 2 * 2 + 8;
+    setCoords({
+      top: rect.top - 6 - 36,
+      left: rect.left + rect.width / 2 - dropdownWidth / 2,
+    });
+  }, [containerRef]);
+
+  if (!coords) return null;
+
+  return (
+    <div
+      ref={ref}
+      className="fixed flex items-center gap-0.5 rounded-lg bg-zinc-800 border border-zinc-700 p-1 shadow-xl z-[9999] animate-in fade-in zoom-in-95 duration-100"
+      style={{ top: coords.top, left: coords.left }}
+    >
+      {POSITION_OPTIONS.map(({ pos, Icon, label }) => (
+        <button
+          key={pos}
+          type="button"
+          onClick={() => onSelect(pos)}
+          className={cn(
+            "flex items-center justify-center size-7 rounded transition-colors",
+            position === pos
+              ? "bg-zinc-600 text-zinc-100"
+              : "text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700",
+          )}
+          title={label}
+          aria-label={`Move panel to ${label}`}
+        >
+          <Icon size={14} />
+        </button>
+      ))}
+    </div>
+  );
+});
+
+function PositionPicker({
+  position,
+  onPositionChange,
+}: {
+  position: "left" | "right" | "bottom";
+  onPositionChange: (pos: "left" | "right" | "bottom") => void;
+}) {
+  const [open, setOpen] = React.useState(false);
+  const holdTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const containerRef = React.useRef<HTMLDivElement>(null);
+  const dropdownRef = React.useRef<HTMLDivElement>(null);
+  const wasHeld = React.useRef(false);
+
+  const ActiveIcon = POSITION_OPTIONS.find((o) => o.pos === position)!.Icon;
+
+  React.useEffect(() => {
+    if (!open) return;
+    const handler = (e: PointerEvent) => {
+      const target = e.target as Node;
+      if (
+        containerRef.current && !containerRef.current.contains(target) &&
+        (!dropdownRef.current || !dropdownRef.current.contains(target))
+      ) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("pointerdown", handler, true);
+    return () => document.removeEventListener("pointerdown", handler, true);
+  }, [open]);
+
+  React.useEffect(() => {
+    if (!open) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [open]);
+
+  const clearHold = () => {
+    if (holdTimer.current) {
+      clearTimeout(holdTimer.current);
+      holdTimer.current = null;
+    }
+  };
+
+  const handlePointerDown = () => {
+    wasHeld.current = false;
+    holdTimer.current = setTimeout(() => {
+      wasHeld.current = true;
+      setOpen(true);
+    }, 300);
+  };
+
+  const handlePointerUp = () => {
+    clearHold();
+    if (!wasHeld.current) {
+      setOpen((v) => !v);
+    }
+  };
+
+  const handlePointerLeave = () => {
+    clearHold();
+  };
+
+  const handleSelect = (pos: "left" | "right" | "bottom") => {
+    onPositionChange(pos);
+    setOpen(false);
+  };
+
+  return (
+    <div ref={containerRef} className="relative">
+      <button
+        type="button"
+        onPointerDown={handlePointerDown}
+        onPointerUp={handlePointerUp}
+        onPointerLeave={handlePointerLeave}
+        className={cn(
+          "flex items-center justify-center size-7 rounded transition-colors",
+          open
+            ? "bg-zinc-700 text-zinc-200"
+            : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800",
+        )}
+        title="Panel position"
+        aria-label="Panel position"
+      >
+        <ActiveIcon size={13} />
+      </button>
+
+      {open && ReactDOM.createPortal(
+        <PositionDropdown
+          ref={dropdownRef}
+          containerRef={containerRef}
+          position={position}
+          onSelect={handleSelect}
+        />,
+        document.body,
+      )}
+    </div>
+  );
+}
+
 // ── Main File Explorer Component ──────────────────────────────────────────────
 
-export function FileExplorer({ runnerId, cwd, className, onClose }: FileExplorerProps) {
+export function FileExplorer({ runnerId, cwd, className, onClose, position = "left", onPositionChange, onDragStart }: FileExplorerProps) {
   const [tab, setTab] = React.useState<"files" | "git">("files");
   const [files, setFiles] = React.useState<FileEntry[] | null>(null);
   const [loading, setLoading] = React.useState(true);
@@ -888,17 +1059,37 @@ export function FileExplorer({ runnerId, cwd, className, onClose }: FileExplorer
           </button>
         )}
 
-        {/* Desktop close */}
-        {onClose && (
-          <button
-            type="button"
-            onClick={onClose}
-            className="text-zinc-500 hover:text-zinc-200 transition-colors px-2 py-1 hidden md:block"
-            title="Close file explorer"
-          >
-            <X className="size-3.5" />
-          </button>
-        )}
+        {/* Desktop: grip + position buttons + close */}
+        <div className="hidden md:flex items-center gap-px pr-1 shrink-0">
+          {onDragStart && (
+            <div
+              className="flex items-center justify-center size-7 rounded cursor-grab active:cursor-grabbing text-zinc-600 hover:text-zinc-400 hover:bg-zinc-800 transition-colors touch-none select-none"
+              onPointerDown={onDragStart}
+              title="Drag to reposition panel"
+            >
+              <GripHorizontal size={13} />
+            </div>
+          )}
+          {onPositionChange && (
+            <>
+              <div className="w-px h-4 bg-zinc-700 mx-1 shrink-0" />
+              <PositionPicker position={position} onPositionChange={onPositionChange} />
+              <div className="w-px h-4 bg-zinc-700 mx-1 shrink-0" />
+            </>
+          )}
+          {onClose && (
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex items-center justify-center size-7 rounded text-zinc-600 hover:text-zinc-200 hover:bg-zinc-800 transition-colors"
+              title="Close file explorer"
+            >
+              <X className="size-3.5" />
+            </button>
+          )}
+        </div>
+
+        {/* Mobile close (back button already handles this, but keep X for symmetry) */}
       </div>
 
       {/* Path breadcrumb */}

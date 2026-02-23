@@ -796,6 +796,32 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                 </span>
               </span>
             )}
+            {showTerminalButton && onToggleTerminal && (
+              <Button
+                className="h-7 w-7 sm:h-7 sm:w-auto sm:px-2.5 sm:text-[0.7rem]"
+                onClick={onToggleTerminal}
+                size="icon"
+                type="button"
+                variant="outline"
+                title="Toggle terminal"
+              >
+                <TerminalIcon className="size-3.5" />
+                <span className="hidden sm:inline ml-1">Terminal</span>
+              </Button>
+            )}
+            {showFileExplorerButton && onToggleFileExplorer && (
+              <Button
+                className="h-7 w-7 sm:h-7 sm:w-auto sm:px-2.5 sm:text-[0.7rem]"
+                onClick={onToggleFileExplorer}
+                size="icon"
+                type="button"
+                variant="outline"
+                title="Toggle file explorer"
+              >
+                <FolderTree className="size-3.5" />
+                <span className="hidden sm:inline ml-1">Files</span>
+              </Button>
+            )}
             <ConversationDownload
               messages={sortedMessages.map((m) => ({
                 role: toMessageRole(m.role),
@@ -1189,28 +1215,6 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                   {sessionId ? "Press Enter to send" : "Select a session to send messages"}
                 </span>
               ) : null}
-              {showTerminalButton && onToggleTerminal && (
-                <button
-                  type="button"
-                  onClick={onToggleTerminal}
-                  className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-muted/60 transition-colors"
-                  title="Toggle terminal"
-                >
-                  <TerminalIcon className="size-3" />
-                  <span className="hidden sm:inline">Terminal</span>
-                </button>
-              )}
-              {showFileExplorerButton && onToggleFileExplorer && (
-                <button
-                  type="button"
-                  onClick={onToggleFileExplorer}
-                  className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-muted/60 transition-colors"
-                  title="Toggle file explorer"
-                >
-                  <FolderTree className="size-3" />
-                  <span className="hidden sm:inline">Files</span>
-                </button>
-              )}
               {sessionId && agentActive && (
                 <div className="flex items-center gap-1.5">
                   <button

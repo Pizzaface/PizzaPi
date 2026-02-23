@@ -1,4 +1,5 @@
 import * as React from "react";
+import * as ReactDOM from "react-dom";
 import { WebTerminal } from "./WebTerminal";
 import { Button } from "@/components/ui/button";
 import {
@@ -18,7 +19,7 @@ import {
 } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { TerminalIcon, Plus, ChevronLeft } from "lucide-react";
+import { TerminalIcon, Plus, ChevronLeft, X, GripHorizontal, PanelBottom, PanelRight, PanelLeft } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface RunnerInfo {
@@ -39,9 +40,15 @@ export interface TerminalManagerProps {
   className?: string;
   /** Called when the user wants to close the entire terminal panel (used for the mobile overlay). */
   onClose?: () => void;
+  /** Current docked position of the panel (desktop only). */
+  position?: "bottom" | "right" | "left";
+  /** Called when the user picks a new position via the topbar buttons. */
+  onPositionChange?: (pos: "bottom" | "right" | "left") => void;
+  /** Called when the user starts dragging the panel grip to reposition it. */
+  onDragStart?: (e: React.PointerEvent) => void;
 }
 
-export function TerminalManager({ className, onClose }: TerminalManagerProps) {
+export function TerminalManager({ className, onClose, position = "bottom", onPositionChange, onDragStart }: TerminalManagerProps) {
   const [terminals, setTerminals] = React.useState<TerminalTab[]>([]);
   const [activeTerminalId, setActiveTerminalId] = React.useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = React.useState(false);
@@ -154,158 +161,150 @@ export function TerminalManager({ className, onClose }: TerminalManagerProps) {
     });
   }, [activeTerminalId]);
 
-  if (terminals.length === 0) {
-    // When used as a mobile full-screen overlay, show a proper panel instead of a tiny button
-    if (onClose) {
-      return (
-        <>
-          <div className="flex flex-col h-full bg-zinc-950">
-            {/* Mobile header */}
-            <div className="flex items-center justify-between border-b border-zinc-800 bg-zinc-900/50 px-3 py-2">
-              <Button
-                variant="ghost"
-                size="sm"
-                className="gap-1.5 text-sm text-zinc-400 hover:text-zinc-100 h-9 px-2"
-                onClick={onClose}
-              >
-                <ChevronLeft className="size-4" />
-                Back
-              </Button>
-              <span className="text-sm font-medium text-zinc-300 flex items-center gap-1.5">
-                <TerminalIcon className="size-4" />
-                Terminal
-              </span>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="gap-1.5 text-sm text-zinc-400 hover:text-zinc-100 h-9 px-3"
-                onClick={() => setDialogOpen(true)}
-              >
-                <Plus className="size-4" />
-                New
-              </Button>
-            </div>
-            {/* Empty state body */}
-            <div className="flex flex-1 flex-col items-center justify-center gap-4 text-zinc-500">
-              <TerminalIcon className="size-12 opacity-30" />
-              <p className="text-sm">No terminals open</p>
-              <Button
-                variant="outline"
-                className="gap-2"
-                onClick={() => setDialogOpen(true)}
-              >
-                <Plus className="size-4" />
-                Open Terminal
-              </Button>
-            </div>
-          </div>
-
-          <NewTerminalDialog
-            open={dialogOpen}
-            onOpenChange={setDialogOpen}
-            runners={runners}
-            runnersLoading={runnersLoading}
-            selectedRunnerId={selectedRunnerId}
-            onRunnerChange={setSelectedRunnerId}
-            cwd={cwd}
-            onCwdChange={setCwd}
-            recentFolders={recentFolders}
-            spawning={spawning}
-            onSpawn={openNewTerminal}
-          />
-        </>
-      );
-    }
-
-    return (
-      <>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="gap-1.5 text-xs text-zinc-400 hover:text-zinc-100"
-          onClick={() => setDialogOpen(true)}
-        >
-          <TerminalIcon className="size-3.5" />
-          Terminal
-        </Button>
-
-        <NewTerminalDialog
-          open={dialogOpen}
-          onOpenChange={setDialogOpen}
-          runners={runners}
-          runnersLoading={runnersLoading}
-          selectedRunnerId={selectedRunnerId}
-          onRunnerChange={setSelectedRunnerId}
-          cwd={cwd}
-          onCwdChange={setCwd}
-          recentFolders={recentFolders}
-          spawning={spawning}
-          onSpawn={openNewTerminal}
-        />
-      </>
-    );
-  }
-
   return (
-    <div className={cn("flex flex-col", className)}>
-      {/* Tab bar */}
-      <div className="flex items-center gap-1 border-b border-zinc-800 bg-zinc-900/30 px-2 py-1 overflow-x-auto">
-        {/* Mobile back button */}
+    <div className={cn("flex flex-col bg-zinc-950", className)}>
+      {/* ── Persistent topbar ─────────────────────────────────────────────── */}
+      <div className="flex items-center border-b border-zinc-800 bg-zinc-900/50 shrink-0 min-h-[36px] md:min-h-[32px]">
+        {/* Mobile: back button */}
         {onClose && (
           <Button
             variant="ghost"
             size="icon"
-            className="size-8 shrink-0 text-zinc-500 hover:text-zinc-100 hover:bg-zinc-800 md:hidden"
+            className="size-9 shrink-0 text-zinc-500 hover:text-zinc-100 hover:bg-zinc-800 md:hidden rounded-none"
             onClick={onClose}
             aria-label="Close terminal"
           >
             <ChevronLeft size={16} />
           </Button>
         )}
-        {terminals.map((tab) => (
+
+        {/* "Terminal" label — always visible */}
+        <div className="flex items-center gap-1.5 px-3 text-xs font-medium text-zinc-400 shrink-0 select-none">
+          <TerminalIcon className="size-3.5" />
+          <span>Terminal</span>
+        </div>
+
+        {/* Divider before tabs when there are any */}
+        {terminals.length > 0 && (
+          <div className="w-px h-4 bg-zinc-700 shrink-0" />
+        )}
+
+        {/* Tabs */}
+        <div className="flex items-center gap-0.5 overflow-x-auto px-1 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden flex-1">
+          {terminals.map((tab) => {
+            const isActive = activeTerminalId === tab.terminalId;
+            return (
+              <div
+                key={tab.terminalId}
+                className={cn(
+                  "group flex items-center gap-1 rounded px-2 py-1 text-xs transition-colors shrink-0 cursor-pointer select-none",
+                  isActive
+                    ? "bg-zinc-800 text-zinc-100"
+                    : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/50",
+                )}
+                onClick={() => setActiveTerminalId(tab.terminalId)}
+              >
+                <span className="max-w-[100px] truncate">{tab.label}</span>
+                <button
+                  className={cn(
+                    "rounded p-0.5 transition-colors",
+                    isActive
+                      ? "text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700"
+                      : "text-transparent group-hover:text-zinc-500 hover:!text-zinc-200 hover:bg-zinc-700",
+                  )}
+                  onClick={(e) => { e.stopPropagation(); closeTerminal(tab.terminalId); }}
+                  aria-label={`Close ${tab.label}`}
+                >
+                  <X size={10} />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* ── Right-side controls (desktop) ── */}
+        <div className="hidden md:flex items-center gap-px shrink-0 pr-1">
+          {/* Drag-to-reposition grip */}
+          {onDragStart && (
+            <div
+              className="flex items-center justify-center size-7 rounded cursor-grab active:cursor-grabbing text-zinc-600 hover:text-zinc-400 hover:bg-zinc-800 transition-colors touch-none select-none"
+              onPointerDown={onDragStart}
+              title="Drag to reposition panel"
+            >
+              <GripHorizontal size={13} />
+            </div>
+          )}
+
+          {/* Separator */}
+          {onPositionChange && <div className="w-px h-4 bg-zinc-700 mx-1 shrink-0" />}
+
+          {/* Position button with hold-to-reveal dropdown */}
+          {onPositionChange && (
+            <>
+              <PositionPicker position={position} onPositionChange={onPositionChange} />
+              <div className="w-px h-4 bg-zinc-700 mx-1 shrink-0" />
+            </>
+          )}
+
+          {/* Add tab */}
           <button
-            key={tab.terminalId}
-            onClick={() => setActiveTerminalId(tab.terminalId)}
-            className={cn(
-              "flex items-center gap-1.5 rounded px-2 py-1.5 text-xs transition-colors min-h-[36px] md:min-h-0 md:py-1",
-              activeTerminalId === tab.terminalId
-                ? "bg-zinc-800 text-zinc-100"
-                : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/50",
-            )}
+            onClick={() => setDialogOpen(true)}
+            className="flex items-center justify-center size-7 rounded text-zinc-500 hover:text-zinc-100 hover:bg-zinc-800 transition-colors"
+            aria-label="New terminal"
+            title="New terminal"
           >
-            <TerminalIcon className="size-3" />
-            <span className="max-w-[120px] truncate">{tab.label}</span>
+            <Plus size={13} />
           </button>
-        ))}
+        </div>
+
+        {/* Mobile: add button only */}
         <Button
           variant="ghost"
           size="icon"
-          className="size-8 shrink-0 text-zinc-500 hover:text-zinc-100 hover:bg-zinc-800 md:size-6"
+          className="md:hidden size-9 shrink-0 text-zinc-500 hover:text-zinc-100 hover:bg-zinc-800 rounded-none"
           onClick={() => setDialogOpen(true)}
+          aria-label="New terminal"
         >
-          <Plus size={14} className="md:hidden" />
-          <Plus size={12} className="hidden md:block" />
+          <Plus size={14} />
         </Button>
       </div>
 
-      {/* Terminal panels */}
-      <div className="flex-1 min-h-0 relative">
-        {terminals.map((tab) => (
-          <div
-            key={tab.terminalId}
-            className={cn(
-              "absolute inset-0",
-              activeTerminalId === tab.terminalId ? "z-10" : "z-0 invisible",
-            )}
+      {/* ── Body ──────────────────────────────────────────────────────────── */}
+      {terminals.length === 0 ? (
+        /* Empty state */
+        <div className="flex flex-1 flex-col items-center justify-center gap-4 text-zinc-500">
+          <TerminalIcon className="size-10 opacity-20" />
+          <p className="text-sm">No terminals open</p>
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-1.5"
+            onClick={() => setDialogOpen(true)}
           >
-            <WebTerminal
-              terminalId={tab.terminalId}
-              onClose={() => closeTerminal(tab.terminalId)}
-              className="h-full rounded-none border-0"
-            />
-          </div>
-        ))}
-      </div>
+            <Plus className="size-3.5" />
+            Open Terminal
+          </Button>
+        </div>
+      ) : (
+        /* Terminal panels */
+        <div className="flex-1 min-h-0 relative">
+          {terminals.map((tab) => (
+            <div
+              key={tab.terminalId}
+              className={cn(
+                "absolute inset-0",
+                activeTerminalId === tab.terminalId ? "z-10" : "z-0 invisible",
+              )}
+            >
+              <WebTerminal
+                terminalId={tab.terminalId}
+                onClose={() => closeTerminal(tab.terminalId)}
+                className="h-full rounded-none border-0"
+              />
+            </div>
+          ))}
+        </div>
+      )}
 
       <NewTerminalDialog
         open={dialogOpen}
@@ -320,6 +319,167 @@ export function TerminalManager({ className, onClose }: TerminalManagerProps) {
         spawning={spawning}
         onSpawn={openNewTerminal}
       />
+    </div>
+  );
+}
+
+// ── Position Picker (click-and-hold dropdown) ────────────────────────────────
+
+const POSITION_OPTIONS = [
+  { pos: "left" as const, Icon: PanelLeft, label: "Left" },
+  { pos: "bottom" as const, Icon: PanelBottom, label: "Bottom" },
+  { pos: "right" as const, Icon: PanelRight, label: "Right" },
+] as const;
+
+const PositionDropdown = React.forwardRef<
+  HTMLDivElement,
+  {
+    containerRef: React.RefObject<HTMLDivElement | null>;
+    position: "bottom" | "right" | "left";
+    onSelect: (pos: "bottom" | "right" | "left") => void;
+  }
+>(function PositionDropdown({ containerRef, position, onSelect }, ref) {
+  const [coords, setCoords] = React.useState<{ top: number; left: number } | null>(null);
+
+  React.useLayoutEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const dropdownWidth = 3 * 28 + 2 * 2 + 8;
+    setCoords({
+      top: rect.top - 6 - 36,
+      left: rect.left + rect.width / 2 - dropdownWidth / 2,
+    });
+  }, [containerRef]);
+
+  if (!coords) return null;
+
+  return (
+    <div
+      ref={ref}
+      className="fixed flex items-center gap-0.5 rounded-lg bg-zinc-800 border border-zinc-700 p-1 shadow-xl z-[9999] animate-in fade-in zoom-in-95 duration-100"
+      style={{ top: coords.top, left: coords.left }}
+    >
+      {POSITION_OPTIONS.map(({ pos, Icon, label }) => (
+        <button
+          key={pos}
+          onClick={() => onSelect(pos)}
+          className={cn(
+            "flex items-center justify-center size-7 rounded transition-colors",
+            position === pos
+              ? "bg-zinc-600 text-zinc-100"
+              : "text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700",
+          )}
+          title={label}
+          aria-label={`Move panel to ${label}`}
+        >
+          <Icon size={14} />
+        </button>
+      ))}
+    </div>
+  );
+});
+
+function PositionPicker({
+  position,
+  onPositionChange,
+}: {
+  position: "bottom" | "right" | "left";
+  onPositionChange: (pos: "bottom" | "right" | "left") => void;
+}) {
+  const [open, setOpen] = React.useState(false);
+  const holdTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const containerRef = React.useRef<HTMLDivElement>(null);
+  const dropdownRef = React.useRef<HTMLDivElement>(null);
+  const wasHeld = React.useRef(false);
+
+  const ActiveIcon = POSITION_OPTIONS.find((o) => o.pos === position)!.Icon;
+
+  // Close on outside click
+  React.useEffect(() => {
+    if (!open) return;
+    const handler = (e: PointerEvent) => {
+      const target = e.target as Node;
+      if (
+        containerRef.current && !containerRef.current.contains(target) &&
+        (!dropdownRef.current || !dropdownRef.current.contains(target))
+      ) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("pointerdown", handler, true);
+    return () => document.removeEventListener("pointerdown", handler, true);
+  }, [open]);
+
+  // Close on Escape
+  React.useEffect(() => {
+    if (!open) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [open]);
+
+  const clearHold = () => {
+    if (holdTimer.current) {
+      clearTimeout(holdTimer.current);
+      holdTimer.current = null;
+    }
+  };
+
+  const handlePointerDown = () => {
+    wasHeld.current = false;
+    holdTimer.current = setTimeout(() => {
+      wasHeld.current = true;
+      setOpen(true);
+    }, 300);
+  };
+
+  const handlePointerUp = () => {
+    clearHold();
+    // Short click toggles the dropdown
+    if (!wasHeld.current) {
+      setOpen((v) => !v);
+    }
+  };
+
+  const handlePointerLeave = () => {
+    clearHold();
+  };
+
+  const handleSelect = (pos: "bottom" | "right" | "left") => {
+    onPositionChange(pos);
+    setOpen(false);
+  };
+
+  return (
+    <div ref={containerRef} className="relative">
+      <button
+        onPointerDown={handlePointerDown}
+        onPointerUp={handlePointerUp}
+        onPointerLeave={handlePointerLeave}
+        className={cn(
+          "flex items-center justify-center size-7 rounded transition-colors",
+          open
+            ? "bg-zinc-700 text-zinc-200"
+            : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800",
+        )}
+        title="Panel position"
+        aria-label="Panel position"
+      >
+        <ActiveIcon size={13} />
+      </button>
+
+      {open && ReactDOM.createPortal(
+        <PositionDropdown
+          ref={dropdownRef}
+          containerRef={containerRef}
+          position={position}
+          onSelect={handleSelect}
+        />,
+        document.body,
+      )}
     </div>
   );
 }

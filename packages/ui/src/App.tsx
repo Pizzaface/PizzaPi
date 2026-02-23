@@ -2289,7 +2289,8 @@ export function App() {
           <div
             ref={terminalColumnRef}
             className={cn(
-              "relative flex flex-1 min-w-0 h-full",
+              "relative flex flex-1 min-w-0",
+              showFileExplorer && filesPosition === "bottom" ? "min-h-0" : "h-full",
               showTerminal && terminalPosition !== "bottom" ? "flex-row" : "flex-col",
             )}
             onPointerMove={showTerminal ? handleOuterPointerMove : undefined}
