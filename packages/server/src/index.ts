@@ -13,6 +13,13 @@ import { sweepExpiredSharedSessions } from "./ws/registry.js";
 import { sweepExpiredAttachments } from "./attachments/store.js";
 import { ensurePushSubscriptionTable } from "./push.js";
 
+// Socket.IO imports
+import { createServer } from "node:http";
+import { Server as SocketIOServer } from "socket.io";
+import { createAdapter } from "@socket.io/redis-adapter";
+import { createClient } from "redis";
+import { registerNamespaces } from "./ws/namespaces/index.js";
+
 const PORT = parseInt(process.env.PORT ?? "3000");
 
 await ensureRelaySessionTables();
@@ -59,6 +66,54 @@ const server = Bun.serve<WsData>({
         close: onClose,
     },
 });
+
+// ── Socket.IO server (node:http, separate port) ───────────────────────────
+// Socket.IO cannot attach to Bun.serve() directly — it needs a node:http server.
+// This runs on a separate port alongside the existing Bun.serve server.
+// See packages/server/spike/FINDINGS.md for rationale.
+
+const SIO_PORT = parseInt(process.env.PIZZAPI_SOCKETIO_PORT ?? String(PORT + 1));
+const REDIS_URL = process.env.PIZZAPI_REDIS_URL ?? "redis://localhost:6379";
+
+const CORS_ORIGINS = [
+    process.env.PIZZAPI_BASE_URL ?? "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://jordans-mac-mini.tail65556b.ts.net:5173",
+    "https://jordans-mac-mini.tail65556b.ts.net:5173",
+    "https://jordans-mac-mini.tail65556b.ts.net",
+];
+
+const sioHttpServer = createServer();
+
+let io: SocketIOServer | undefined;
+
+try {
+    const pubClient = createClient({ url: REDIS_URL });
+    const subClient = pubClient.duplicate();
+    await Promise.all([pubClient.connect(), subClient.connect()]);
+
+    io = new SocketIOServer(sioHttpServer, {
+        cors: {
+            origin: CORS_ORIGINS,
+            credentials: true,
+        },
+        connectionStateRecovery: {
+            maxDisconnectionDuration: 2 * 60 * 1000, // 2 minutes
+            skipMiddlewares: true,
+        },
+        adapter: createAdapter(pubClient, subClient, { key: "pizzapi-sio" }),
+        transports: ["websocket", "polling"],
+    });
+
+    registerNamespaces(io);
+
+    sioHttpServer.listen(SIO_PORT, () => {
+        console.log(`Socket.IO server running on http://localhost:${SIO_PORT}`);
+    });
+} catch (err) {
+    console.error("[Socket.IO] Failed to initialize (Redis may be unavailable):", err);
+    console.error("[Socket.IO] The server will continue without Socket.IO support.");
+}
 
 const sweepMs = getEphemeralSweepIntervalMs();
 setInterval(() => {
