@@ -160,18 +160,24 @@ export const apiKeyRateLimitConfig = {
     ),
 };
 
+/**
+ * Trusted origins for CORS and WebSocket Origin validation.
+ * Used by better-auth, Socket.IO CORS config, and the WebSocket auth middleware.
+ */
+export const trustedOrigins: string[] = [
+    process.env.PIZZAPI_BASE_URL ?? "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://jordans-mac-mini.tail65556b.ts.net:5173",
+    "https://jordans-mac-mini.tail65556b.ts.net:5173",
+    // Bare HTTPS Tailscale URL (port 443, served via `vite --https` with Tailscale cert)
+    "https://jordans-mac-mini.tail65556b.ts.net",
+];
+
 export const auth = betterAuth({
     baseURL: process.env.BETTER_AUTH_BASE_URL ?? `http://localhost:${process.env.PORT ?? "3000"}`,
     secret: process.env.BETTER_AUTH_SECRET,
     database: { dialect, type: "sqlite", transaction: true },
-    trustedOrigins: [
-        process.env.PIZZAPI_BASE_URL ?? "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://jordans-mac-mini.tail65556b.ts.net:5173",
-        "https://jordans-mac-mini.tail65556b.ts.net:5173",
-        // Bare HTTPS Tailscale URL (port 443, served via `vite --https` with Tailscale cert)
-        "https://jordans-mac-mini.tail65556b.ts.net",
-    ],
+    trustedOrigins,
     emailAndPassword: {
         enabled: true,
     },
