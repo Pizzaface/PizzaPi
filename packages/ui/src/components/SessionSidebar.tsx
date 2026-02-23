@@ -1,7 +1,6 @@
 import * as React from "react";
 import { Resizable } from "react-resizable";
 import { Button } from "@/components/ui/button";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Dialog,
   DialogContent,
@@ -172,6 +171,10 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     const handleSessionPointerDown = React.useCallback((e: React.PointerEvent, sessionId: string) => {
         // Only track primary button (left-click / single touch)
         if (e.button !== 0) return;
+        // Prevent the event from bubbling to the App-level sidebar swipe-to-close
+        // handler, which would steal pointer capture and interpret any horizontal
+        // movement on a session card as a "close sidebar" gesture.
+        e.stopPropagation();
         swipeRef.current = {
             sessionId,
             pointerId: e.pointerId,
@@ -551,7 +554,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                     </button>
                 </div>
 
-                <ScrollArea className="flex-1 px-2" style={{ paddingBottom: "max(0.5rem, env(safe-area-inset-bottom))" }}>
+                <div className="flex-1 px-2 overflow-y-auto overflow-x-hidden" style={{ paddingBottom: "max(0.5rem, env(safe-area-inset-bottom))" }}>
                     {!hasLoaded ? (
                         <SidebarSkeleton />
                     ) : liveGroups.size === 0 ? (
@@ -634,7 +637,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                 onPointerUp={handleSessionPointerUp}
                                                 onContextMenu={(e) => e.preventDefault()}
                                                 className={cn(
-                                                    "relative flex items-center gap-2.5 w-full min-w-0 px-2.5 py-3 md:py-2.5 rounded-lg text-left",
+                                                    "relative flex items-center gap-2.5 w-full min-w-0 px-2.5 py-3 md:py-2.5 text-left",
                                                     !hasOffset && "transition-transform duration-200 ease-out",
                                                     isSelected
                                                         ? "bg-sidebar-accent text-sidebar-accent-foreground"
@@ -704,7 +707,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                             </div>
                         ))
                     )}
-                </ScrollArea>
+                </div>
             </div>
         </aside>
     );
