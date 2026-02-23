@@ -3,9 +3,10 @@ import { authClient } from "@/lib/auth-client";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Copy, Check, Shield, Plus } from "lucide-react";
+import { Shield, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Skeleton } from "@/components/ui/skeleton";
+import { RevealedSecretBanner } from "@/components/ui/revealed-secret";
 
 interface ApiKey {
   id: string;
@@ -27,7 +28,6 @@ export function RunnerTokenManager() {
   const [loading, setLoading] = React.useState(true);
   const [creating, setCreating] = React.useState(false);
   const [newToken, setNewToken] = React.useState<string | null>(null);
-  const [copied, setCopied] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
   async function loadKeys() {
@@ -82,12 +82,6 @@ export function RunnerTokenManager() {
     }
   }
 
-  async function copyToken(value: string) {
-    await navigator.clipboard.writeText(value);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  }
-
   return (
     <Card className="w-full">
       <CardHeader>
@@ -103,29 +97,10 @@ export function RunnerTokenManager() {
 
       <CardContent className="flex flex-col gap-4">
         {newToken && (
-          <div className="flex items-center gap-2 rounded-md border border-green-500/30 bg-green-500/10 px-3 py-2">
-            <code className="flex-1 truncate font-mono text-xs text-green-700 dark:text-green-400">
-              {newToken}
-            </code>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-7 w-7 flex-shrink-0"
-              onClick={() => copyToken(newToken)}
-              title="Copy token"
-            >
-              {copied ? <Check className="h-3.5 w-3.5 text-green-600" /> : <Copy className="h-3.5 w-3.5" />}
-            </Button>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-7 w-7 flex-shrink-0 text-muted-foreground"
-              onClick={() => setNewToken(null)}
-              title="Dismiss"
-            >
-              ×
-            </Button>
-          </div>
+          <RevealedSecretBanner
+            value={newToken}
+            onDismiss={() => setNewToken(null)}
+          />
         )}
 
         <div className="rounded-md border bg-muted/20 px-3 py-2 text-xs">

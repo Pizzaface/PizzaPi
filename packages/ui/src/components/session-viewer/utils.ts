@@ -99,6 +99,24 @@ export function formatDateValue(value: unknown): string | null {
   return null;
 }
 
+/**
+ * Safely coerce `toolInput` to a plain object.
+ *
+ * Replaces the repeated pattern:
+ * ```ts
+ * const inputArgs = toolInput && typeof toolInput === "object"
+ *   ? (toolInput as Record<string, unknown>)
+ *   : {};
+ * ```
+ */
+export function parseToolInputArgs(
+  toolInput: unknown,
+): Record<string, unknown> {
+  return toolInput && typeof toolInput === "object"
+    ? (toolInput as Record<string, unknown>)
+    : {};
+}
+
 export function extToMime(path: string): string {
   const ext = path.split(".").pop()?.toLowerCase() ?? "";
   const map: Record<string, string> = {

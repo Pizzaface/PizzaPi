@@ -16,6 +16,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { SkillsManager, type SkillInfo } from "@/components/SkillsManager";
 import { Skeleton } from "@/components/ui/skeleton";
+import { ErrorAlert } from "@/components/ui/error-alert";
 
 interface RunnerInfo {
     runnerId: string;
@@ -387,7 +388,7 @@ export function RunnerManager({ onOpenSession }: RunnerManagerProps) {
                         )}
 
                         {spawnError && (
-                            <p className="text-xs text-destructive bg-destructive/10 px-3 py-2 rounded-md">{spawnError}</p>
+                            <ErrorAlert>{spawnError}</ErrorAlert>
                         )}
                     </div>
 

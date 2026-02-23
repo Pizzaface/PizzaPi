@@ -19,8 +19,8 @@ import {
     Trash2,
     ChevronDown,
     Wand2,
-    AlertCircle,
 } from "lucide-react";
+import { ErrorAlert } from "@/components/ui/error-alert";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 
@@ -288,12 +288,7 @@ function SkillEditorDialog({ runnerId, open, skill, onClose, onSaved }: SkillEdi
                         )}
                     </div>
 
-                    {error && (
-                        <div className="flex items-center gap-2 text-xs text-destructive bg-destructive/10 px-3 py-2 rounded-md">
-                            <AlertCircle className="h-3.5 w-3.5 flex-shrink-0" />
-                            {error}
-                        </div>
-                    )}
+                    {error && <ErrorAlert>{error}</ErrorAlert>}
                 </div>
 
                 <DialogFooter>
@@ -368,12 +363,7 @@ function DeleteSkillDialog({ runnerId, skill, onClose, onDeleted }: DeleteSkillD
                     </DialogDescription>
                 </DialogHeader>
 
-                {error && (
-                    <div className="flex items-center gap-2 text-xs text-destructive bg-destructive/10 px-3 py-2 rounded-md">
-                        <AlertCircle className="h-3.5 w-3.5 flex-shrink-0" />
-                        {error}
-                    </div>
-                )}
+                {error && <ErrorAlert>{error}</ErrorAlert>}
 
                 <DialogFooter>
                     <Button variant="ghost" onClick={onClose} disabled={deleting}>

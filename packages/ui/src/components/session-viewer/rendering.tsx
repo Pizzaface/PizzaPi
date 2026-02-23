@@ -46,9 +46,18 @@ import {
   formatDateValue,
   hasVisibleContent,
   normalizeToolName,
+  parseToolInputArgs,
   tryParseJsonObject,
 } from "@/components/session-viewer/utils";
 import { ChevronDownIcon, ListTodoIcon, CircleDashedIcon, CircleDotIcon, CheckCircle2Icon, XCircleIcon as XCircleIcon2, TagIcon, WrenchIcon, RocketIcon, SendIcon, InboxIcon, ClockIcon, HashIcon, ExternalLinkIcon, MessageSquareIcon, Loader2Icon, BotIcon } from "lucide-react";
+import {
+  ToolCardShell,
+  ToolCardHeader,
+  ToolCardTitle,
+  ToolCardActions,
+  ToolCardSection,
+  StatusPill,
+} from "@/components/ui/tool-card";
 import type { SubAgentTurn } from "@/components/session-viewer/types";
 
 interface TodoItem {
@@ -75,16 +84,15 @@ function TodoCard({ todos }: { todos: TodoItem[] }) {
   };
 
   return (
-    <div className="overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950 text-zinc-100 text-xs">
-      <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-2">
-        <div className="flex items-center gap-2 text-sm text-zinc-400">
-          <ListTodoIcon className="size-4 shrink-0" />
-          <span className="font-medium">Tasks</span>
-        </div>
+    <ToolCardShell>
+      <ToolCardHeader>
+        <ToolCardTitle icon={<ListTodoIcon className="size-4 shrink-0 text-zinc-400" />}>
+          <span className="text-sm font-medium text-zinc-400">Tasks</span>
+        </ToolCardTitle>
         <span className="text-[11px] text-zinc-500 tabular-nums">
           {done}/{total} done
         </span>
-      </div>
+      </ToolCardHeader>
       <ul className="divide-y divide-zinc-800/60">
         {todos.map((item) => (
           <li
@@ -112,7 +120,7 @@ function TodoCard({ todos }: { todos: TodoItem[] }) {
           </li>
         ))}
       </ul>
-    </div>
+    </ToolCardShell>
   );
 }
 
@@ -178,40 +186,29 @@ function SpawnSessionCard({
   const isError = resultText?.startsWith("Error") ?? false;
 
   return (
-    <div className="overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950 text-zinc-100 text-xs">
-      {/* Header */}
-      <div className="flex items-center justify-between gap-2 border-b border-zinc-800 px-4 py-2.5">
-        <div className="flex min-w-0 items-center gap-2">
-          <RocketIcon className="size-3.5 shrink-0 text-violet-400" />
+    <ToolCardShell>
+      <ToolCardHeader className="py-2.5">
+        <ToolCardTitle icon={<RocketIcon className="size-3.5 shrink-0 text-violet-400" />}>
           <span className="text-sm font-medium text-zinc-300">Spawn Session</span>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
+        </ToolCardTitle>
+        <ToolCardActions>
           {isStreaming ? (
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-zinc-700 bg-zinc-800 px-2 py-0.5 text-[11px] text-zinc-400">
-              <Loader2Icon className="size-3 animate-spin" />
-              Spawning…
-            </span>
+            <StatusPill variant="streaming">Spawning…</StatusPill>
           ) : isError ? (
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-red-800/60 bg-red-900/30 px-2 py-0.5 text-[11px] text-red-400">
-              <XCircleIcon2 className="size-3" />
-              Failed
-            </span>
+            <StatusPill variant="error">Failed</StatusPill>
           ) : resultText ? (
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-800/60 bg-emerald-900/30 px-2 py-0.5 text-[11px] text-emerald-400">
-              <CheckCircle2Icon className="size-3" />
-              Spawned
-            </span>
+            <StatusPill variant="success">Spawned</StatusPill>
           ) : null}
-        </div>
-      </div>
+        </ToolCardActions>
+      </ToolCardHeader>
 
       {/* Prompt */}
-      <div className="border-b border-zinc-800/60 px-4 py-2.5">
+      <ToolCardSection>
         <div className="mb-1 text-[10px] font-medium uppercase tracking-wider text-zinc-600">Prompt</div>
         <p className="whitespace-pre-wrap break-words text-zinc-300 leading-relaxed line-clamp-4">
           {prompt}
         </p>
-      </div>
+      </ToolCardSection>
 
       {/* Meta row */}
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2 text-[11px] text-zinc-500">
@@ -256,7 +253,7 @@ function SpawnSessionCard({
           {resultText}
         </div>
       )}
-    </div>
+    </ToolCardShell>
   );
 }
 
@@ -274,16 +271,14 @@ function SendMessageCard({
   const isError = resultText?.startsWith("Error") ?? false;
 
   return (
-    <div className="overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950 text-zinc-100 text-xs">
-      {/* Header */}
-      <div className="flex items-center justify-between gap-2 border-b border-zinc-800 px-4 py-2">
-        <div className="flex min-w-0 items-center gap-2">
-          <SendIcon className="size-3.5 shrink-0 text-blue-400" />
+    <ToolCardShell>
+      <ToolCardHeader>
+        <ToolCardTitle icon={<SendIcon className="size-3.5 shrink-0 text-blue-400" />}>
           <span className="text-sm font-medium text-zinc-300">Message Sent</span>
           <span className="rounded bg-zinc-800 px-1.5 py-0.5 font-mono text-[10px] text-zinc-500">
             → {truncateSessionId(targetSessionId)}
           </span>
-        </div>
+        </ToolCardTitle>
         <div className="flex shrink-0 items-center gap-1.5">
           {isStreaming ? (
             <Loader2Icon className="size-3 animate-spin text-zinc-500" />
@@ -293,7 +288,7 @@ function SendMessageCard({
             <CheckCircle2Icon className="size-3.5 text-emerald-500" />
           ) : null}
         </div>
-      </div>
+      </ToolCardHeader>
 
       {/* Message body */}
       <div className="px-4 py-3">
@@ -310,7 +305,7 @@ function SendMessageCard({
           {resultText}
         </div>
       )}
-    </div>
+    </ToolCardShell>
   );
 }
 
@@ -341,11 +336,9 @@ function WaitForMessageCard({
   }
 
   return (
-    <div className="overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950 text-zinc-100 text-xs">
-      {/* Header */}
-      <div className="flex items-center justify-between gap-2 border-b border-zinc-800 px-4 py-2">
-        <div className="flex min-w-0 items-center gap-2">
-          <InboxIcon className="size-3.5 shrink-0 text-amber-400" />
+    <ToolCardShell>
+      <ToolCardHeader>
+        <ToolCardTitle icon={<InboxIcon className="size-3.5 shrink-0 text-amber-400" />}>
           <span className="text-sm font-medium text-zinc-300">
             {isStreaming ? "Waiting for Message" : hasMessage ? "Message Received" : "Wait for Message"}
           </span>
@@ -359,27 +352,23 @@ function WaitForMessageCard({
               any session
             </span>
           )}
-        </div>
-        <div className="flex shrink-0 items-center gap-1.5">
+        </ToolCardTitle>
+        <ToolCardActions>
           {isStreaming && (
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-800/60 bg-amber-900/20 px-2 py-0.5 text-[11px] text-amber-400">
-              <Loader2Icon className="size-3 animate-spin" />
+            <StatusPill variant="info" icon={<Loader2Icon className="size-3 animate-spin" />}>
               Listening…
-            </span>
+            </StatusPill>
           )}
           {isTimedOut && (
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-zinc-700 bg-zinc-800 px-2 py-0.5 text-[11px] text-zinc-500">
-              <ClockIcon className="size-3" />
+            <StatusPill variant="neutral" icon={<ClockIcon className="size-3" />}>
               Timed out
-            </span>
+            </StatusPill>
           )}
           {isCancelled && (
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-zinc-700 bg-zinc-800 px-2 py-0.5 text-[11px] text-zinc-500">
-              Cancelled
-            </span>
+            <StatusPill variant="neutral">Cancelled</StatusPill>
           )}
-        </div>
-      </div>
+        </ToolCardActions>
+      </ToolCardHeader>
 
       {/* Received message */}
       {hasMessage && receivedMessage !== null && (
@@ -413,7 +402,7 @@ function WaitForMessageCard({
           {resultText}
         </div>
       )}
-    </div>
+    </ToolCardShell>
   );
 }
 
@@ -442,19 +431,17 @@ function CheckMessagesCard({
   }
 
   return (
-    <div className="overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950 text-zinc-100 text-xs">
-      {/* Header */}
-      <div className="flex items-center justify-between gap-2 border-b border-zinc-800 px-4 py-2">
-        <div className="flex min-w-0 items-center gap-2">
-          <InboxIcon className="size-3.5 shrink-0 text-teal-400" />
+    <ToolCardShell>
+      <ToolCardHeader>
+        <ToolCardTitle icon={<InboxIcon className="size-3.5 shrink-0 text-teal-400" />}>
           <span className="text-sm font-medium text-zinc-300">Check Messages</span>
           {fromSessionId && (
             <span className="rounded bg-zinc-800 px-1.5 py-0.5 font-mono text-[10px] text-zinc-500">
               from {truncateSessionId(fromSessionId)}
             </span>
           )}
-        </div>
-        <div className="flex shrink-0 items-center gap-1.5">
+        </ToolCardTitle>
+        <ToolCardActions>
           {isStreaming ? (
             <Loader2Icon className="size-3 animate-spin text-zinc-500" />
           ) : parsedMessages.length > 0 ? (
@@ -464,8 +451,8 @@ function CheckMessagesCard({
           ) : resultText ? (
             <span className="text-[11px] text-zinc-600">Empty</span>
           ) : null}
-        </div>
-      </div>
+        </ToolCardActions>
+      </ToolCardHeader>
 
       {/* Messages */}
       {parsedMessages.length > 0 && (
@@ -493,7 +480,7 @@ function CheckMessagesCard({
           <span>No pending messages</span>
         </div>
       )}
-    </div>
+    </ToolCardShell>
   );
 }
 
@@ -916,13 +903,13 @@ function renderGroupedToolExecution(
     const commandLine = synthesizeCommandLine(toolName, toolInput);
     const outputText = hasOutput ? extractTextFromToolContent(content) : null;
     card = (
-      <div className="flex flex-col overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950 text-zinc-100 text-xs">
-        <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-2 gap-2">
-          <div className="flex min-w-0 items-center gap-2 text-sm text-zinc-400">
-            <TerminalTitle>{toolName}</TerminalTitle>
-          </div>
-          <div className="flex shrink-0 items-center gap-2"><StatusBadge status={state} /></div>
-        </div>
+      <ToolCardShell className="flex flex-col">
+        <ToolCardHeader>
+          <ToolCardTitle icon={null}>
+            <span className="text-sm text-zinc-400"><TerminalTitle>{toolName}</TerminalTitle></span>
+          </ToolCardTitle>
+          <ToolCardActions><StatusBadge status={state} /></ToolCardActions>
+        </ToolCardHeader>
         <div className="px-4 py-2 font-mono text-xs border-b border-zinc-800">
           <span className="text-zinc-600 select-none mr-1">$</span>
           <span className="text-zinc-300 whitespace-pre-wrap break-all">
@@ -954,16 +941,13 @@ function renderGroupedToolExecution(
             </details>
           </Terminal>
         )}
-      </div>
+      </ToolCardShell>
     );
   } else if (norm === "read" || norm.endsWith(".read")) {
     if (hasOutput) {
       card = renderReadToolResult(content, isError, toolInput);
     } else {
-      const inputArgs =
-        toolInput && typeof toolInput === "object"
-          ? (toolInput as Record<string, unknown>)
-          : {};
+      const inputArgs = parseToolInputArgs(toolInput);
       const pendingPath =
         typeof inputArgs.file_path === "string"
           ? inputArgs.file_path
@@ -981,10 +965,7 @@ function renderGroupedToolExecution(
       );
     }
   } else if (norm === "edit" || norm.endsWith(".edit")) {
-    const inputArgs =
-      toolInput && typeof toolInput === "object"
-        ? (toolInput as Record<string, unknown>)
-        : {};
+    const inputArgs = parseToolInputArgs(toolInput);
     const resultText = hasOutput ? extractTextFromToolContent(content) : null;
     const resultObj = resultText ? tryParseJsonObject(resultText.trim()) : null;
     const contentObj =
@@ -1045,10 +1026,7 @@ function renderGroupedToolExecution(
     norm === "write_file" ||
     norm.endsWith(".write_file")
   ) {
-    const inputArgs =
-      toolInput && typeof toolInput === "object"
-        ? (toolInput as Record<string, unknown>)
-        : {};
+    const inputArgs = parseToolInputArgs(toolInput);
 
     const writePath =
       typeof inputArgs.file_path === "string"
@@ -1088,10 +1066,7 @@ function renderGroupedToolExecution(
     }
   } else if (norm === "update_todo" || norm.endsWith(".update_todo")) {
     // Todo list — render as a checklist card from the tool input
-    const inputArgs =
-      toolInput && typeof toolInput === "object"
-        ? (toolInput as Record<string, unknown>)
-        : {};
+    const inputArgs = parseToolInputArgs(toolInput);
     const todos = Array.isArray(inputArgs.todos) ? (inputArgs.todos as TodoItem[]) : [];
     if (todos.length > 0) {
       card = <TodoCard todos={todos} />;
@@ -1101,10 +1076,7 @@ function renderGroupedToolExecution(
     }
   } else if (norm === "set_session_name" || norm.endsWith(".set_session_name")) {
     // Session name — render as a small inline badge
-    const inputArgs =
-      toolInput && typeof toolInput === "object"
-        ? (toolInput as Record<string, unknown>)
-        : {};
+    const inputArgs = parseToolInputArgs(toolInput);
     const name = typeof inputArgs.name === "string" ? inputArgs.name : null;
     if (name) {
       card = <SessionNameCard name={name} />;
@@ -1112,10 +1084,7 @@ function renderGroupedToolExecution(
       card = null;
     }
   } else if (norm === "spawn_session" || norm.endsWith(".spawn_session")) {
-    const inputArgs =
-      toolInput && typeof toolInput === "object"
-        ? (toolInput as Record<string, unknown>)
-        : {};
+    const inputArgs = parseToolInputArgs(toolInput);
     const prompt = typeof inputArgs.prompt === "string" ? inputArgs.prompt : "";
     const model =
       inputArgs.model && typeof inputArgs.model === "object"
@@ -1134,10 +1103,7 @@ function renderGroupedToolExecution(
       />
     );
   } else if (norm === "send_message" || norm.endsWith(".send_message")) {
-    const inputArgs =
-      toolInput && typeof toolInput === "object"
-        ? (toolInput as Record<string, unknown>)
-        : {};
+    const inputArgs = parseToolInputArgs(toolInput);
     const targetSessionId = typeof inputArgs.sessionId === "string" ? inputArgs.sessionId : "unknown";
     const message = typeof inputArgs.message === "string" ? inputArgs.message : "";
     const resultText = hasOutput ? extractTextFromToolContent(content) : null;
@@ -1151,10 +1117,7 @@ function renderGroupedToolExecution(
       />
     );
   } else if (norm === "wait_for_message" || norm.endsWith(".wait_for_message")) {
-    const inputArgs =
-      toolInput && typeof toolInput === "object"
-        ? (toolInput as Record<string, unknown>)
-        : {};
+    const inputArgs = parseToolInputArgs(toolInput);
     const fromSessionId = typeof inputArgs.fromSessionId === "string" ? inputArgs.fromSessionId : undefined;
     const timeout = typeof inputArgs.timeout === "number" ? inputArgs.timeout : undefined;
     const resultText = hasOutput ? extractTextFromToolContent(content) : null;
@@ -1168,10 +1131,7 @@ function renderGroupedToolExecution(
       />
     );
   } else if (norm === "check_messages" || norm.endsWith(".check_messages")) {
-    const inputArgs =
-      toolInput && typeof toolInput === "object"
-        ? (toolInput as Record<string, unknown>)
-        : {};
+    const inputArgs = parseToolInputArgs(toolInput);
     const fromSessionId = typeof inputArgs.fromSessionId === "string" ? inputArgs.fromSessionId : undefined;
     const resultText = hasOutput ? extractTextFromToolContent(content) : null;
 
@@ -1209,7 +1169,7 @@ function renderGroupedToolExecution(
     const inputArgs =
       toolInput && typeof toolInput === "object"
         ? (toolInput as Record<string, unknown>)
-        : null;
+        : null; // null (not {}) so we can skip rendering when there's no input
 
     // Pick the most descriptive arg value as a subtitle
     const subtitle = (() => {
@@ -1230,22 +1190,20 @@ function renderGroupedToolExecution(
       : toolName;
 
     card = (
-      <div className="overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950 text-zinc-100 text-xs">
-        {/* Header */}
-        <div className="flex items-center justify-between gap-2 px-4 py-2.5 border-b border-zinc-800">
-          <div className="flex min-w-0 items-center gap-2">
-            <WrenchIcon className="size-3.5 shrink-0 text-zinc-500" />
+      <ToolCardShell>
+        <ToolCardHeader className="py-2.5">
+          <ToolCardTitle icon={<WrenchIcon className="size-3.5 shrink-0 text-zinc-500" />}>
             <span className="text-sm font-medium text-zinc-300 truncate">{displayName}</span>
             {toolName.includes(".") && (
               <span className="text-[10px] text-zinc-600 font-mono truncate hidden sm:inline">
                 {toolName.split(".").slice(0, -1).join(".")}
               </span>
             )}
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
+          </ToolCardTitle>
+          <ToolCardActions>
             <StatusBadge status={state} />
-          </div>
-        </div>
+          </ToolCardActions>
+        </ToolCardHeader>
 
         {/* Subtitle — key argument */}
         {subtitle && (
@@ -1297,7 +1255,7 @@ function renderGroupedToolExecution(
             )}
           </details>
         )}
-      </div>
+      </ToolCardShell>
     );
   }
 
@@ -1443,7 +1401,7 @@ function SubAgentConversationCard({ turns }: { turns: SubAgentTurn[] }) {
       (lastTurn.type === "check" && lastTurn.isStreaming));
 
   return (
-    <div className="overflow-hidden rounded-lg border border-zinc-700/80 bg-zinc-950 text-zinc-100 text-xs">
+    <ToolCardShell className="border-zinc-700/80">
       {/* Header */}
       <div className="flex items-center gap-2 border-b border-zinc-800 px-3 py-2">
         <BotIcon className="size-3.5 shrink-0 text-violet-400" />
@@ -1472,7 +1430,7 @@ function SubAgentConversationCard({ turns }: { turns: SubAgentTurn[] }) {
           <SubAgentTurnBubble key={i} turn={turn} />
         ))}
       </div>
-    </div>
+    </ToolCardShell>
   );
 }
 

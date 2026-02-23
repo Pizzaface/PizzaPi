@@ -5,9 +5,10 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Copy, Trash2, Plus, KeyRound, Check } from "lucide-react";
+import { Trash2, Plus, KeyRound } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Skeleton } from "@/components/ui/skeleton";
+import { RevealedSecretBanner } from "@/components/ui/revealed-secret";
 
 interface ApiKey {
     id: string;
@@ -25,7 +26,6 @@ export function ApiKeyManager() {
     const [creating, setCreating] = React.useState(false);
     const [newKeyName, setNewKeyName] = React.useState("");
     const [newKeyValue, setNewKeyValue] = React.useState<string | null>(null);
-    const [copied, setCopied] = React.useState(false);
     const [error, setError] = React.useState<string | null>(null);
 
     async function loadKeys() {
@@ -88,12 +88,6 @@ export function ApiKeyManager() {
         }
     }
 
-    async function copyKey(value: string) {
-        await navigator.clipboard.writeText(value);
-        setCopied(true);
-        setTimeout(() => setCopied(false), 2000);
-    }
-
     return (
         <Card className="w-full">
             <CardHeader>
@@ -109,33 +103,10 @@ export function ApiKeyManager() {
             <CardContent className="flex flex-col gap-4">
                 {/* New key revealed banner */}
                 {newKeyValue && (
-                    <div className="flex items-center gap-2 rounded-md border border-green-500/30 bg-green-500/10 px-3 py-2">
-                        <code className="flex-1 truncate font-mono text-xs text-green-700 dark:text-green-400">
-                            {newKeyValue}
-                        </code>
-                        <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-7 w-7 flex-shrink-0"
-                            onClick={() => copyKey(newKeyValue)}
-                            title="Copy key"
-                        >
-                            {copied ? (
-                                <Check className="h-3.5 w-3.5 text-green-600" />
-                            ) : (
-                                <Copy className="h-3.5 w-3.5" />
-                            )}
-                        </Button>
-                        <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-7 w-7 flex-shrink-0 text-muted-foreground"
-                            onClick={() => setNewKeyValue(null)}
-                            title="Dismiss"
-                        >
-                            ×
-                        </Button>
-                    </div>
+                    <RevealedSecretBanner
+                        value={newKeyValue}
+                        onDismiss={() => setNewKeyValue(null)}
+                    />
                 )}
                 {newKeyValue && (
                     <p className="text-xs text-amber-600 dark:text-amber-400">
