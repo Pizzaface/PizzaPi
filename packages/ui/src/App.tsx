@@ -632,16 +632,21 @@ export function App() {
   const [liveSessions, setLiveSessions] = React.useState<HubSession[]>([]);
   const [sessionSwitcherOpen, setSessionSwitcherOpen] = React.useState(false);
 
-  // Swipe-left-to-close for the mobile sidebar
+  // Swipe-left-to-close for the mobile sidebar — gesture lives on the overlay
+  // (the dim backdrop to the right of the sidebar) so it never conflicts with
+  // interactions inside the sidebar itself.
   const sidebarSwipeRef = React.useRef<{
     pointerId: number;
     startX: number;
     startY: number;
     locked: boolean;
     isVertical: boolean;
+    didSwipe: boolean;
   } | null>(null);
   const sidebarSwipeOffsetRef = React.useRef(0);
   const [sidebarSwipeOffset, setSidebarSwipeOffset] = React.useState(0);
+  // Suppresses the click that fires immediately after a swipe pointerUp
+  const suppressOverlayClickRef = React.useRef(false);
 
   const handleSidebarPointerDown = React.useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return;
@@ -651,6 +656,7 @@ export function App() {
       startY: e.clientY,
       locked: false,
       isVertical: false,
+      didSwipe: false,
     };
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
   }, []);
@@ -671,6 +677,7 @@ export function App() {
       }
     }
     if (s.isVertical || !s.locked) return;
+    s.didSwipe = true;
     // Only allow leftward swipes (negative dx), with a tiny rightward overscroll
     const clamped = Math.min(8, dx);
     sidebarSwipeOffsetRef.current = clamped;
@@ -682,10 +689,16 @@ export function App() {
     const s = sidebarSwipeRef.current;
     if (!s || e.pointerId !== s.pointerId) return;
     try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch { /* ignore */ }
+    const didSwipe = s.didSwipe;
     sidebarSwipeRef.current = null;
     const offset = sidebarSwipeOffsetRef.current;
     sidebarSwipeOffsetRef.current = 0;
     setSidebarSwipeOffset(0);
+    if (didSwipe) {
+      // Suppress the click that the browser fires right after pointerUp
+      suppressOverlayClickRef.current = true;
+      requestAnimationFrame(() => { suppressOverlayClickRef.current = false; });
+    }
     // Close if dragged more than 80 px to the left
     if (offset < -80) {
       setSidebarOpen(false);
@@ -2419,10 +2432,6 @@ export function App() {
             (sidebarOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0")
           }
           style={sidebarSwipeOffset !== 0 ? { transform: `translateX(${sidebarSwipeOffset}px)` } : undefined}
-          onPointerDown={sidebarOpen ? handleSidebarPointerDown : undefined}
-          onPointerMove={sidebarOpen ? handleSidebarPointerMove : undefined}
-          onPointerUp={sidebarOpen ? handleSidebarPointerUp : undefined}
-          onPointerCancel={sidebarOpen ? handleSidebarPointerUp : undefined}
         >
           <SessionSidebar
             onOpenSession={handleOpenSession}
@@ -2439,13 +2448,21 @@ export function App() {
           />
         </div>
 
-        {/* Mobile overlay — fades in/out with the sidebar */}
+        {/* Mobile overlay — fades in/out with the sidebar.
+            Swipe left anywhere on the backdrop to close; tap to close instantly. */}
         <div
           className={cn(
             "pp-sidebar-overlay absolute inset-0 z-30 bg-black/50 md:hidden transition-opacity duration-200",
             sidebarOpen ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none",
           )}
-          onClick={() => setSidebarOpen(false)}
+          onPointerDown={sidebarOpen ? handleSidebarPointerDown : undefined}
+          onPointerMove={sidebarOpen ? handleSidebarPointerMove : undefined}
+          onPointerUp={sidebarOpen ? handleSidebarPointerUp : undefined}
+          onPointerCancel={sidebarOpen ? handleSidebarPointerUp : undefined}
+          onClick={() => {
+            if (suppressOverlayClickRef.current) { suppressOverlayClickRef.current = false; return; }
+            setSidebarOpen(false);
+          }}
           aria-hidden="true"
         />
 
@@ -2767,6 +2784,7 @@ export function App() {
                 >
                   <TerminalManager
                     className="h-full"
+                    onClose={() => setShowTerminal(false)}
                     position={terminalPosition}
                     onPositionChange={handleTerminalPositionChange}
                     onDragStart={handlePanelDragStart}
