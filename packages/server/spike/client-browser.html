@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Socket.IO Spike — Browser Client</title>
+  <style>
+    body { font-family: monospace; padding: 1rem; background: #111; color: #eee; }
+    h1 { color: #7ec8c8; }
+    .ok  { color: #6fcb71; }
+    .err { color: #f06c6c; }
+    .log { color: #aaa; margin: 2px 0; }
+    pre  { background: #1e1e1e; padding: 1rem; border-radius: 6px; overflow: auto; }
+    button { margin: 4px; padding: 6px 12px; cursor: pointer; background: #2d2d2d; color: #eee; border: 1px solid #555; border-radius: 4px; }
+    button:hover { background: #3d3d3d; }
+  </style>
+</head>
+<body>
+  <h1>🍕 PizzaPi — Socket.IO Browser Spike</h1>
+  <p>Open the browser console for full logs. Results appear below.</p>
+
+  <h2>Controls</h2>
+  <button onclick="testRelay()">Test /relay</button>
+  <button onclick="testViewer()">Test /viewer</button>
+  <button onclick="testRunner()">Test /runner</button>
+  <button onclick="testAll()">Run All Tests</button>
+  <button onclick="clearLog()">Clear</button>
+
+  <h2>Results</h2>
+  <pre id="output"></pre>
+
+  <!-- Load socket.io-client from server1 (served automatically by Socket.IO) -->
+  <script src="http://localhost:3100/socket.io/socket.io.js"></script>
+  <script>
+    const SERVER1 = "http://localhost:3100";
+    const out = document.getElementById("output");
+
+    function log(msg, cls = "log") {
+      const el = document.createElement("div");
+      el.className = cls;
+      el.textContent = msg;
+      out.appendChild(el);
+      console.log(msg);
+    }
+    function ok(msg)  { log("✅ " + msg, "ok");  }
+    function err(msg) { log("❌ " + msg, "err"); }
+    function clearLog() { out.innerHTML = ""; }
+
+    function testRelay() {
+      log("── /relay (default transport negotiation) ──");
+      // Browser client uses default transports (polling → WS upgrade)
+      const s = io(SERVER1 + "/relay", { auth: { apiKey: "browser-spike-key" } });
+      s.on("connect", () => {
+        ok(`/relay connected  id=${s.id}  transport=${s.io.engine.transport.name}`);
+        s.emit("join_session", "browser-session-001");
+        s.emit("agent_event", { type: "browser_test", ts: Date.now() }, (ack) => {
+          ack ? ok("/relay ack received: " + JSON.stringify(ack)) : err("/relay ack not received");
+          s.disconnect();
+        });
+      });
+      s.on("connect_error", (e) => err("/relay connect_error: " + e.message));
+    }
+
+    function testViewer() {
+      log("── /viewer ──");
+      const s = io(SERVER1 + "/viewer");
+      s.on("connect", () => {
+        ok(`/viewer connected  id=${s.id}`);
+        s.emit("subscribe", "browser-session-001");
+        s.once("subscribed", (data) => {
+          ok("/viewer subscribed: " + JSON.stringify(data));
+          s.disconnect();
+        });
+      });
+      s.on("connect_error", (e) => err("/viewer connect_error: " + e.message));
+    }
+
+    function testRunner() {
+      log("── /runner ──");
+      const s = io(SERVER1 + "/runner", { auth: { apiKey: "browser-spike-key", runnerId: "browser-runner-01" } });
+      s.on("connect", () => {
+        ok(`/runner connected  id=${s.id}`);
+        const t0 = performance.now();
+        s.emit("runner_ping", {}, (ack) => {
+          const latency = (performance.now() - t0).toFixed(2);
+          ok(`/runner ack  latency=${latency}ms  ${JSON.stringify(ack)}`);
+          s.disconnect();
+        });
+      });
+      s.on("connect_error", (e) => err("/runner connect_error: " + e.message));
+    }
+
+    function testAll() {
+      clearLog();
+      log("Running all browser tests against " + SERVER1);
+      testRelay();
+      setTimeout(testViewer, 500);
+      setTimeout(testRunner, 1000);
+    }
+  </script>
+</body>
+</html>
