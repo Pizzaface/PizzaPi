@@ -2,6 +2,7 @@ import type { WsData } from "./ws/registry.js";
 import { onClose, onMessage, onOpen } from "./ws/relay.js";
 import { auth } from "./auth.js";
 import { handleWsUpgrade } from "./routes/ws.js";
+import { isLegacyWsEnabled, logLegacyConnection, legacyDisabledResponse } from "./ws/legacy-shim.js";
 import { handleApi } from "./routes/api.js";
 import {
     ensureRelaySessionTables,
@@ -44,8 +45,11 @@ const server = Bun.serve<WsData>({
             }
         }
 
-        // ── WebSocket upgrades ─────────────────────────────────────────────────
+        // ── WebSocket upgrades (legacy raw WS — gated by PIZZAPI_LEGACY_WS) ──
         if (url.pathname.startsWith("/ws/")) {
+            if (!isLegacyWsEnabled()) {
+                return legacyDisabledResponse();
+            }
             const res = await handleWsUpgrade(req, url, server);
             if (res !== undefined) return res;
         }
@@ -63,7 +67,10 @@ const server = Bun.serve<WsData>({
     },
 
     websocket: {
-        open: onOpen,
+        open: (ws) => {
+            logLegacyConnection(ws.data.role, ws.data);
+            onOpen(ws);
+        },
         message: onMessage,
         close: onClose,
     },
