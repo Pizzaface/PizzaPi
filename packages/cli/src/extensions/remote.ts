@@ -9,9 +9,10 @@ import { getMcpBridge } from "./mcp-bridge.js";
 import { getCurrentTodoList, setTodoUpdateCallback, type TodoItem } from "./update-todo.js";
 import type { RemoteExecRequest, RemoteExecResponse } from "./remote-commands.js";
 import { messageBus } from "./session-message-bus.js";
+import { io, type Socket } from "socket.io-client";
+import type { RelayClientToServerEvents, RelayServerToClientEvents } from "@pizzapi/protocol";
 
 interface RelayState {
-    ws: WebSocket;
     sessionId: string;
     token: string;
     shareUrl: string;
@@ -52,7 +53,6 @@ interface RelayModelInfo {
 }
 
 const RELAY_DEFAULT = "ws://localhost:3001";
-const RECONNECT_MAX_DELAY = 30_000;
 const RELAY_STATUS_KEY = "relay";
 const ASK_USER_TOOL_NAME = "AskUserQuestion";
 
@@ -88,8 +88,7 @@ export function forwardCliError(message: string, source?: string): void {
  */
 export const remoteExtension: ExtensionFactory = (pi) => {
     let relay: RelayState | null = null;
-    let reconnectDelay = 1000;
-    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let sioSocket: Socket<RelayServerToClientEvents, RelayClientToServerEvents> | null = null;
     let shuttingDown = false;
     let latestCtx: ExtensionContext | null = null;
     let pendingAskUserQuestion: PendingAskUserQuestion | null = null;
@@ -429,15 +428,10 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         forwardEvent({ type: "todo_update", todos: list, ts: Date.now() });
     });
 
-    function send(payload: unknown) {
-        if (!relay || relay.ws.readyState !== WebSocket.OPEN) return;
-        relay.ws.send(JSON.stringify(payload));
-    }
-
     function forwardEvent(event: unknown) {
-        if (!relay) return;
+        if (!relay || !sioSocket?.connected) return;
         const seq = ++relay.seq;
-        send({ type: "event", sessionId: relay.sessionId, token: relay.token, event, seq });
+        sioSocket.emit("event", { sessionId: relay.sessionId, token: relay.token, event, seq });
     }
 
     type RemoteInputAttachment = {
@@ -705,8 +699,10 @@ export const remoteExtension: ExtensionFactory = (pi) => {
     }
 
     function sendToWeb(payload: RemoteExecResponse) {
-        if (!relay) return;
-        send(payload);
+        if (!relay || !sioSocket?.connected) return;
+        // Strip the `type` discriminant — socket.io uses the event name instead.
+        const { type: _, ...data } = payload;
+        sioSocket.emit("exec_result", data);
     }
 
     async function listSessionsForResume(ctx: ExtensionContext): Promise<SessionInfo[]> {
@@ -1148,7 +1144,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         signal: AbortSignal | undefined,
         ctx: ExtensionContext,
     ): Promise<{ answer: string | null; source: "tui" | "web" | null }> {
-        const canAskViaWeb = !!relay && relay.ws.readyState === WebSocket.OPEN;
+        const canAskViaWeb = !!relay && !!sioSocket?.connected;
         const canAskViaTui = ctx.hasUI;
 
         if (!canAskViaWeb && !canAskViaTui) {
@@ -1383,19 +1379,35 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         });
     }
 
-    function scheduleReconnect() {
-        if (shuttingDown || isDisabled()) return;
-        reconnectTimer = setTimeout(() => {
-            reconnectTimer = null;
-            connect();
-        }, reconnectDelay);
-        reconnectDelay = Math.min(reconnectDelay * 2, RECONNECT_MAX_DELAY);
-    }
-
-    // ── WebSocket connection ──────────────────────────────────────────────────
+    // ── Socket.IO connection ─────────────────────────────────────────────────
 
     function apiKey(): string | undefined {
         return process.env.PIZZAPI_API_KEY ?? loadConfig(process.cwd()).apiKey;
+    }
+
+    /** Derive the Socket.IO base URL from the relay URL. */
+    function socketIoUrl(): string {
+        // Prefer explicit env var if set.
+        const explicit = process.env.PIZZAPI_SOCKETIO_URL;
+        if (explicit && explicit.trim()) return explicit.trim().replace(/\/$/, "");
+
+        // Derive from relay URL: ws→http, wss→https, port+1.
+        const base = relayUrl();
+        let url = base
+            .replace(/^ws:/, "http:")
+            .replace(/^wss:/, "https:");
+
+        // Increment the port. If no port is explicit, assume 3001→3002 (default).
+        try {
+            const parsed = new URL(url);
+            const port = parsed.port ? parseInt(parsed.port, 10) : (parsed.protocol === "https:" ? 443 : 3001);
+            parsed.port = String(port + 1);
+            url = parsed.toString().replace(/\/$/, "");
+        } catch {
+            // URL parsing failed — use as-is.
+        }
+
+        return url;
     }
 
     function connect() {
@@ -1410,173 +1422,154 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             return;
         }
 
-        const wsBase = toWebSocketBaseUrl(relayUrl());
-        const wsUrl = wsBase.endsWith("/ws/sessions") ? wsBase : `${wsBase}/ws/sessions`;
-
-        let ws: WebSocket;
-        try {
-            ws = new WebSocket(wsUrl, { headers: { "x-api-key": key } } as any);
-        } catch {
-            setRelayStatus(disconnectedStatusText());
-            scheduleReconnect();
-            return;
+        // Tear down any previous socket before creating a new one.
+        if (sioSocket) {
+            sioSocket.removeAllListeners();
+            sioSocket.disconnect();
+            sioSocket = null;
         }
 
-        ws.onopen = () => {
-            reconnectDelay = 1000; // reset backoff on success
-            ws.send(
-                JSON.stringify({
-                    type: "register",
-                    sessionId: relaySessionId,
-                    cwd: process.cwd(),
-                    collabMode: true,
-                    sessionName: getCurrentSessionName(latestCtx),
-                }),
-            );
-        };
+        const sioUrl = socketIoUrl();
 
-        ws.onmessage = (evt) => {
-            let msg: Record<string, unknown>;
-            try {
-                msg = JSON.parse(evt.data as string);
-            } catch {
+        const sock: Socket<RelayServerToClientEvents, RelayClientToServerEvents> = io(
+            sioUrl + "/relay",
+            {
+                auth: { apiKey: key },
+                transports: ["websocket"],
+                reconnection: true,
+                reconnectionDelay: 1000,
+                reconnectionDelayMax: 30_000,
+            },
+        );
+        sioSocket = sock;
+
+        // ── Connection lifecycle ──────────────────────────────────────────
+
+        sock.on("connect", () => {
+            sock.emit("register", {
+                sessionId: relaySessionId,
+                cwd: process.cwd(),
+                ephemeral: true,
+                collabMode: true,
+                sessionName: getCurrentSessionName(latestCtx) ?? undefined,
+            });
+        });
+
+        sock.on("registered", (data) => {
+            relaySessionId = data.sessionId;
+            relay = {
+                sessionId: data.sessionId,
+                token: data.token,
+                shareUrl: data.shareUrl,
+                seq: 0,
+                ackedSeq: 0,
+            };
+            setRelayStatus("Connected to Relay");
+
+            // Wire up the inter-session message bus now that we have a relay connection.
+            messageBus.setOwnSessionId(relaySessionId);
+            messageBus.setSendFn((targetSessionId: string, message: string) => {
+                if (!relay || !sioSocket?.connected) return false;
+                sioSocket.emit("session_message", {
+                    token: relay.token,
+                    targetSessionId,
+                    message,
+                });
+                return true;
+            });
+
+            forwardEvent({ type: "session_active", state: buildSessionState() });
+            void refreshAllUsage();
+            startHeartbeat();
+        });
+
+        // ── Incoming events from server ───────────────────────────────────
+
+        sock.on("event_ack", (data) => {
+            // Relay sends cumulative acks; keep only the highest seq we've seen.
+            if (relay && typeof data.seq === "number") {
+                relay.ackedSeq = Math.max(relay.ackedSeq, data.seq);
+            }
+        });
+
+        sock.on("connected", () => {
+            // A new viewer connected (web UI). Send capability snapshot.
+            forwardEvent(buildCapabilitiesState());
+            // Also send a fresh session snapshot so the viewer can populate models/messages.
+            forwardEvent({ type: "session_active", state: buildSessionState() });
+        });
+
+        sock.on("input", (data) => {
+            const inputText = data.text;
+            if (consumePendingAskUserQuestionFromWeb(inputText)) {
                 return;
             }
 
-            if (msg.type === "registered") {
-                relaySessionId = msg.sessionId as string;
-                relay = {
-                    ws,
-                    sessionId: relaySessionId,
-                    token: msg.token as string,
-                    shareUrl: msg.shareUrl as string,
-                    seq: 0,
-                    ackedSeq: 0,
-                };
-                setRelayStatus("Connected to Relay");
+            const attachments = normalizeRemoteInputAttachments(data.attachments);
+            const deliverAs = data.deliverAs === "followUp" ? "followUp" as const
+                : data.deliverAs === "steer" ? "steer" as const
+                : undefined;
+            void (async () => {
+                const message = await buildUserMessageFromRemoteInput(inputText, attachments);
+                pi.sendUserMessage(message as any, deliverAs ? { deliverAs } : undefined);
+            })();
+        });
 
-                // Wire up the inter-session message bus now that we have a relay connection.
-                messageBus.setOwnSessionId(relaySessionId);
-                messageBus.setSendFn((targetSessionId: string, message: string) => {
-                    if (!relay || relay.ws.readyState !== WebSocket.OPEN) return false;
-                    relay.ws.send(JSON.stringify({
-                        type: "session_message",
-                        sessionId: relay.sessionId,
-                        token: relay.token,
-                        targetSessionId,
-                        message,
-                    }));
-                    return true;
-                });
-
-                forwardEvent({ type: "session_active", state: buildSessionState() });
-                void refreshAllUsage();
-                startHeartbeat();
-
-                // Switch to steady-state message handler (collab input)
-                ws.onmessage = (inputEvt) => {
-                    let inputMsg: Record<string, unknown>;
-                    try {
-                        inputMsg = JSON.parse(inputEvt.data as string);
-                    } catch {
-                        return;
-                    }
-                    if (inputMsg.type === "event_ack" && typeof inputMsg.seq === "number") {
-                        // Relay sends cumulative acks; keep only the highest seq we've seen.
-                        if (relay) {
-                            relay.ackedSeq = Math.max(relay.ackedSeq, inputMsg.seq);
-                        }
-                        return;
-                    }
-
-                    if (inputMsg.type === "connected") {
-                        // A new viewer connected (web UI). Send capability snapshot.
-                        forwardEvent(buildCapabilitiesState());
-                        // Also send a fresh session snapshot so the viewer can populate models/messages.
-                        forwardEvent({ type: "session_active", state: buildSessionState() });
-                        return;
-                    }
-
-                    if (inputMsg.type === "command" && typeof inputMsg.text === "string") {
-                        // Back-compat: older web UIs send /slash commands as plain text.
-                        // This does NOT execute pi's TUI commands; it will be treated as a normal user message.
-                        pi.sendUserMessage(inputMsg.text);
-                        return;
-                    }
-
-                    if (inputMsg.type === "exec" && typeof inputMsg.id === "string" && typeof inputMsg.command === "string") {
-                        void handleExecFromWeb(inputMsg as any);
-                        return;
-                    }
-
-                    if (inputMsg.type === "input" && typeof inputMsg.text === "string") {
-                        const inputText = inputMsg.text;
-                        if (consumePendingAskUserQuestionFromWeb(inputText)) {
-                            return;
-                        }
-
-                        const attachments = normalizeRemoteInputAttachments(inputMsg.attachments);
-                        const deliverAs = inputMsg.deliverAs === "followUp" ? "followUp" as const
-                            : inputMsg.deliverAs === "steer" ? "steer" as const
-                            : undefined;
-                        void (async () => {
-                            const message = await buildUserMessageFromRemoteInput(inputText, attachments);
-                            pi.sendUserMessage(message as any, deliverAs ? { deliverAs } : undefined);
-                        })();
-                        return;
-                    }
-
-                    if (
-                        inputMsg.type === "model_set" &&
-                        typeof inputMsg.provider === "string" &&
-                        typeof inputMsg.modelId === "string"
-                    ) {
-                        void setModelFromWeb(inputMsg.provider, inputMsg.modelId);
-                        return;
-                    }
-
-                    // Inter-session messaging: another agent sent us a message.
-                    if (
-                        inputMsg.type === "session_message" &&
-                        typeof inputMsg.fromSessionId === "string" &&
-                        typeof inputMsg.message === "string"
-                    ) {
-                        messageBus.receive({
-                            fromSessionId: inputMsg.fromSessionId,
-                            message: inputMsg.message,
-                            ts: typeof inputMsg.ts === "string" ? inputMsg.ts : new Date().toISOString(),
-                        });
-                        return;
-                    }
-                };
+        sock.on("exec", (data) => {
+            if (typeof data.id === "string" && typeof data.command === "string") {
+                void handleExecFromWeb(data as any);
             }
-        };
+        });
 
-        ws.onerror = () => {
-            // close will fire next and handle reconnect
-        };
+        sock.on("model_set", (data) => {
+            void setModelFromWeb(data.provider, data.modelId);
+        });
 
-        ws.onclose = () => {
-            if (relay?.ws === ws) relay = null;
+        sock.on("session_message", (data) => {
+            messageBus.receive({
+                fromSessionId: data.fromSessionId,
+                message: data.message,
+                ts: typeof data.ts === "string" ? data.ts : new Date().toISOString(),
+            });
+        });
+
+        sock.on("session_expired", (data) => {
+            // Session was expired by the server — stop retrying.
+            shuttingDown = true;
+            relay = null;
+            setRelayStatus("Session expired");
+        });
+
+        sock.on("error", (data) => {
+            // Server-side error — log but don't tear down (socket.io will reconnect).
+            setRelayStatus(`Relay error: ${data.message}`);
+        });
+
+        // ── Disconnect / reconnect ────────────────────────────────────────
+
+        sock.on("disconnect", (_reason) => {
+            relay = null;
             cancelPendingAskUserQuestion();
             setRelayStatus(disconnectedStatusText());
-            if (!shuttingDown) scheduleReconnect();
-        };
+        });
+
+        // socket.io fires "connect" again on reconnect, which triggers
+        // re-registration automatically via the handler above.
     }
 
     function disconnect() {
         stopHeartbeat();
-        if (reconnectTimer) {
-            clearTimeout(reconnectTimer);
-            reconnectTimer = null;
-        }
         cancelPendingAskUserQuestion();
         messageBus.setSendFn(null);
-        if (relay) {
-            send({ type: "session_end", sessionId: relay.sessionId, token: relay.token });
-            relay.ws.close();
-            relay = null;
+        if (sioSocket) {
+            if (relay && sioSocket.connected) {
+                sioSocket.emit("session_end", { sessionId: relay.sessionId, token: relay.token });
+            }
+            sioSocket.removeAllListeners();
+            sioSocket.disconnect();
+            sioSocket = null;
         }
+        relay = null;
         setRelayStatus(disconnectedStatusText());
     }
 
@@ -1755,7 +1748,6 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             if (arg === "reconnect") {
                 disconnect();
                 shuttingDown = false;
-                reconnectDelay = 1000;
                 connect();
                 ctx.ui.notify("Reconnecting to relay…");
                 return;
