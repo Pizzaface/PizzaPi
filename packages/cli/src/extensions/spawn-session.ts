@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionFactory } from "@mariozechner/pi-coding-agent";
-import { loadConfig, defaultAgentDir } from "../config.js";
+import { loadConfig } from "../config.js";
 
 /** Minimal Component that renders nothing — keeps the tool call invisible in the TUI. */
 const silent = { render: (_width: number): string[] => [], invalidate: () => {} };
@@ -25,7 +25,7 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
 
         if (configured.toLowerCase() === "off") return null;
 
-        const trimmed = configured.trim().replace(/\/$/, "");
+        const trimmed = configured.trim().replace(/\/$/, "").replace(/\/ws\/sessions$/, "");
         // Normalize to HTTP(S) base URL
         if (trimmed.startsWith("ws://")) return `http://${trimmed.slice("ws://".length)}`;
         if (trimmed.startsWith("wss://")) return `https://${trimmed.slice("wss://".length)}`;
@@ -163,7 +163,7 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
 
                 const sessionId = result.sessionId as string;
                 const pending = result.pending === true;
-                const shareUrl = `${relayBase.replace(/^ws/, "http")}/session/${sessionId}`;
+                const shareUrl = `${relayBase}/session/${sessionId}`;
 
                 const summary = [
                     `Session spawned successfully.`,

@@ -36,8 +36,14 @@ export const initialPromptExtension: ExtensionFactory = (pi) => {
             const model = ctx.modelRegistry.find(initialModelProvider, initialModelId);
             if (model) {
                 try {
-                    await pi.setModel(model);
-                    console.log(`pizzapi worker: initial model set to ${initialModelProvider}/${initialModelId}`);
+                    const ok = await pi.setModel(model);
+                    if (ok) {
+                        console.log(`pizzapi worker: initial model set to ${initialModelProvider}/${initialModelId}`);
+                    } else {
+                        console.warn(
+                            `pizzapi worker: model ${initialModelProvider}/${initialModelId} selected but no valid credentials found — using default`,
+                        );
+                    }
                 } catch (err) {
                     console.warn(
                         `pizzapi worker: failed to set initial model ${initialModelProvider}/${initialModelId}: ${err instanceof Error ? err.message : String(err)}`,

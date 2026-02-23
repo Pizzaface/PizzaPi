@@ -640,12 +640,17 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                             break;
                         }
 
+                        let isFirstSpawn = true;
                         const doSpawn = () => {
                             try {
-                                spawnSession(sessionId, apiKey!, requestedCwd, runningSessions, doSpawn, {
-                                    prompt: requestedPrompt,
-                                    model: requestedModel,
-                                });
+                                // Only pass initial prompt/model on the first spawn.
+                                // On restart (exit code 43), the session already has
+                                // the prompt in its history — re-sending would duplicate it.
+                                const spawnOpts = isFirstSpawn
+                                    ? { prompt: requestedPrompt, model: requestedModel }
+                                    : undefined;
+                                isFirstSpawn = false;
+                                spawnSession(sessionId, apiKey!, requestedCwd, runningSessions, doSpawn, spawnOpts);
                                 ws?.send(JSON.stringify({ type: "session_ready", runnerId, sessionId }));
                             } catch (err) {
                                 ws?.send(
