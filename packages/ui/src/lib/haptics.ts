@@ -87,8 +87,51 @@ export function pulseStreamingHaptic(delta?: string): void {
   navigator.vibrate(pulseDuration(len));
 }
 
+// --- Tool execution heartbeat (o~ o~) ---
+
+/** Interval between double-tap pulses while a tool is running */
+const TOOL_HEARTBEAT_MS = 2000;
+
+/**
+ * Double-tap pattern: buzz, pause, buzz
+ * Feels like a gentle "o~ o~" nudge.
+ */
+const TOOL_PATTERN = [10, 80, 10];
+
+let toolHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
+
+/** Start a repeating double-tap while a tool is active. */
+export function startToolHaptic(): void {
+  if (!readPref()) return;
+  if (typeof navigator === "undefined" || typeof navigator.vibrate !== "function") return;
+  if (toolHeartbeatTimer !== null) return; // already running
+
+  // Immediate first pulse
+  navigator.vibrate(TOOL_PATTERN);
+
+  toolHeartbeatTimer = setInterval(() => {
+    if (!readPref()) {
+      stopToolHaptic();
+      return;
+    }
+    navigator.vibrate(TOOL_PATTERN);
+  }, TOOL_HEARTBEAT_MS);
+}
+
+/** Stop the tool heartbeat vibration. */
+export function stopToolHaptic(): void {
+  if (toolHeartbeatTimer !== null) {
+    clearInterval(toolHeartbeatTimer);
+    toolHeartbeatTimer = null;
+  }
+  if (typeof navigator !== "undefined" && typeof navigator.vibrate === "function") {
+    navigator.vibrate(0);
+  }
+}
+
 /** Stop any ongoing vibration (e.g. when streaming ends). */
 export function cancelHaptic(): void {
+  stopToolHaptic();
   if (typeof navigator !== "undefined" && typeof navigator.vibrate === "function") {
     navigator.vibrate(0);
   }

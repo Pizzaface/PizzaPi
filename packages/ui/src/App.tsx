@@ -11,7 +11,7 @@ import { authClient, useSession, signOut } from "@/lib/auth-client";
 import { io, type Socket } from "socket.io-client";
 import type { ViewerServerToClientEvents, ViewerClientToServerEvents } from "@pizzapi/protocol";
 import { cn } from "@/lib/utils";
-import { pulseStreamingHaptic, cancelHaptic } from "@/lib/haptics";
+import { pulseStreamingHaptic, cancelHaptic, startToolHaptic, stopToolHaptic } from "@/lib/haptics";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import {
@@ -1390,6 +1390,7 @@ export function App() {
         setActiveToolCalls((prev) => {
           const next = new Map(prev);
           next.set(toolCallId, toolName);
+          if (prev.size === 0) startToolHaptic();
           return next;
         });
       }
@@ -1401,6 +1402,7 @@ export function App() {
         setActiveToolCalls((prev) => {
           const next = new Map(prev);
           next.delete(toolCallId);
+          if (next.size === 0) stopToolHaptic();
           return next;
         });
       }
