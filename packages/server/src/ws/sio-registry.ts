@@ -97,8 +97,11 @@ const localTuiSockets = new Map<string, Socket>();
 /** Runner sockets: runnerId → Socket on /runner namespace. */
 const localRunnerSockets = new Map<string, Socket>();
 
-/** Terminal viewer sockets: terminalId → Socket on /terminal namespace. */
-const localTerminalViewerSockets = new Map<string, Socket>();
+/** Terminal viewer sockets: terminalId → Set of Sockets on /terminal namespace.
+ *  Multiple viewers per terminal are supported so that both the mobile overlay
+ *  and the desktop panel (which React mounts simultaneously but CSS-hides one)
+ *  both receive PTY data. */
+const localTerminalViewerSockets = new Map<string, Set<Socket>>();
 
 /** Terminal data buffer: terminalId → buffered messages (replayed when viewer connects). */
 const localTerminalBuffers = new Map<string, unknown[]>();
@@ -901,7 +904,9 @@ export async function setTerminalViewer(terminalId: string, socket: Socket): Pro
     const entry = await getTerminalState(terminalId);
     if (!entry) return false;
 
-    localTerminalViewerSockets.set(terminalId, socket);
+    const viewers = localTerminalViewerSockets.get(terminalId) ?? new Set<Socket>();
+    viewers.add(socket);
+    localTerminalViewerSockets.set(terminalId, viewers);
     await socket.join(terminalRoom(terminalId));
 
     // Clear pending-timeout timer
@@ -944,9 +949,12 @@ export async function markTerminalSpawned(terminalId: string): Promise<void> {
 
 /** Remove a terminal viewer socket. */
 export async function removeTerminalViewer(terminalId: string, socket: Socket): Promise<void> {
-    const current = localTerminalViewerSockets.get(terminalId);
-    if (current === socket) {
-        localTerminalViewerSockets.delete(terminalId);
+    const viewers = localTerminalViewerSockets.get(terminalId);
+    if (viewers) {
+        viewers.delete(socket);
+        if (viewers.size === 0) {
+            localTerminalViewerSockets.delete(terminalId);
+        }
     }
     socket.leave(terminalRoom(terminalId));
 
@@ -974,9 +982,9 @@ export async function removeTerminal(terminalId: string): Promise<void> {
 
     await updateTerminalFields(terminalId, { exited: true });
 
-    const viewer = localTerminalViewerSockets.get(terminalId);
-    if (viewer) {
-        // Viewer attached — clean up after short delay
+    const viewers = localTerminalViewerSockets.get(terminalId);
+    if (viewers && viewers.size > 0) {
+        // Viewer(s) attached — clean up after short delay
         const existingTimer = localTerminalGcTimers.get(terminalId);
         if (existingTimer) clearTimeout(existingTimer);
 
@@ -998,10 +1006,10 @@ export async function removeTerminal(terminalId: string): Promise<void> {
     localTerminalGcTimers.set(terminalId, timer);
 }
 
-/** Send data from runner to terminal viewer. Buffers if no viewer attached. */
+/** Send data from runner to all terminal viewers. Buffers if no viewer attached. */
 export function sendToTerminalViewer(terminalId: string, msg: unknown): void {
-    const viewer = localTerminalViewerSockets.get(terminalId);
-    if (!viewer) {
+    const viewers = localTerminalViewerSockets.get(terminalId);
+    if (!viewers || viewers.size === 0) {
         // Buffer for later replay
         const buffer = localTerminalBuffers.get(terminalId);
         if (buffer) {
@@ -1015,7 +1023,11 @@ export function sendToTerminalViewer(terminalId: string, msg: unknown): void {
 
     const msgObj = msg as Record<string, unknown>;
     const eventName = (msgObj.type as string) ?? "terminal_data";
-    viewer.emit(eventName, msg);
+    // Broadcast to all connected viewers (mobile overlay + desktop panel may
+    // both be mounted simultaneously with separate sockets).
+    for (const viewer of viewers) {
+        viewer.emit(eventName, msg);
+    }
 }
 
 /** Get all terminal IDs for a runner from Redis. */
