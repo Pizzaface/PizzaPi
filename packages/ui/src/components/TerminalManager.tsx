@@ -29,11 +29,13 @@ interface RunnerInfo {
   sessionCount: number;
 }
 
-interface TerminalTab {
+export interface TerminalTab {
   terminalId: string;
   runnerId: string;
   cwd?: string;
   label: string;
+  /** The relay session this terminal belongs to (null = not scoped) */
+  sessionId: string | null;
 }
 
 export interface TerminalManagerProps {
@@ -48,11 +50,42 @@ export interface TerminalManagerProps {
   onDragStart?: (e: React.PointerEvent) => void;
   /** When true, hides the "Terminal" label and position controls (used when inside CombinedPanel). */
   embedded?: boolean;
+
+  // ── Session context ──────────────────────────────────────────────────────
+  /** The active relay session ID — terminals are filtered to show only this session's tabs. */
+  sessionId?: string | null;
+  /** The runner that owns the active session (used to skip the dialog when spawning). */
+  runnerId?: string | null;
+  /** Default working directory for new terminals (pre-filled from the session's cwd). */
+  defaultCwd?: string;
+
+  // ── Controlled state (lifted to App so tabs survive panel remounts) ───────
+  tabs: TerminalTab[];
+  activeTabId: string | null;
+  onActiveTabChange: (id: string) => void;
+  /** Called after a new terminal is successfully spawned. */
+  onTabAdd: (tab: TerminalTab) => void;
+  /** Called when a tab's close button is pressed. */
+  onTabClose: (terminalId: string) => void;
 }
 
-export function TerminalManager({ className, onClose, position = "bottom", onPositionChange, onDragStart, embedded }: TerminalManagerProps) {
-  const [terminals, setTerminals] = React.useState<TerminalTab[]>([]);
-  const [activeTerminalId, setActiveTerminalId] = React.useState<string | null>(null);
+export function TerminalManager({
+  className,
+  onClose,
+  position = "bottom",
+  onPositionChange,
+  onDragStart,
+  embedded,
+  sessionId,
+  runnerId,
+  defaultCwd,
+  tabs,
+  activeTabId,
+  onActiveTabChange,
+  onTabAdd,
+  onTabClose,
+}: TerminalManagerProps) {
+  // ── Dialog / spawn UI state (fully local) ──────────────────────────────
   const [dialogOpen, setDialogOpen] = React.useState(false);
   const [runners, setRunners] = React.useState<RunnerInfo[]>([]);
   const [runnersLoading, setRunnersLoading] = React.useState(false);
@@ -61,7 +94,13 @@ export function TerminalManager({ className, onClose, position = "bottom", onPos
   const [spawning, setSpawning] = React.useState(false);
   const [recentFolders, setRecentFolders] = React.useState<string[]>([]);
 
-  // Fetch runners when dialog opens
+  // Tabs visible for the active session (others stay mounted for their WS connections)
+  const sessionTabs = React.useMemo(
+    () => (sessionId != null ? tabs.filter((t) => t.sessionId === sessionId) : tabs),
+    [tabs, sessionId],
+  );
+
+  // ── Fetch runners when dialog opens ──────────────────────────────────────
   React.useEffect(() => {
     if (!dialogOpen) return;
     let cancelled = false;
@@ -80,7 +119,6 @@ export function TerminalManager({ className, onClose, position = "bottom", onPos
           }))
           .filter((r: RunnerInfo) => r.runnerId);
         setRunners(normalized);
-        // Auto-select first runner
         if (normalized.length > 0 && !selectedRunnerId) {
           setSelectedRunnerId(normalized[0].runnerId);
         }
@@ -90,7 +128,7 @@ export function TerminalManager({ className, onClose, position = "bottom", onPos
     return () => { cancelled = true; };
   }, [dialogOpen]);
 
-  // Fetch recent folders when runner changes
+  // ── Fetch recent folders when runner changes ──────────────────────────────
   React.useEffect(() => {
     if (!dialogOpen || !selectedRunnerId) {
       setRecentFolders([]);
@@ -107,7 +145,60 @@ export function TerminalManager({ className, onClose, position = "bottom", onPos
     return () => { cancelled = true; };
   }, [dialogOpen, selectedRunnerId]);
 
-  const openNewTerminal = React.useCallback(async () => {
+  // ── Spawn helpers ─────────────────────────────────────────────────────────
+
+  /**
+   * Spawn a terminal directly (no dialog) using the known runner / cwd.
+   * Used when the panel is attached to an active session.
+   */
+  const spawnDirect = React.useCallback(async (runnerIdToUse: string, cwdToUse?: string) => {
+    setSpawning(true);
+    try {
+      const res = await fetch("/api/runners/terminal", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          runnerId: runnerIdToUse,
+          cwd: cwdToUse?.trim() || undefined,
+          cols: 120,
+          rows: 30,
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        alert((body as any)?.error || `Failed to create terminal (HTTP ${res.status})`);
+        return;
+      }
+      const data = await res.json() as { ok: boolean; terminalId: string; runnerId: string };
+      if (!data.ok || !data.terminalId) {
+        alert("Failed to create terminal");
+        return;
+      }
+
+      // Count existing session tabs to pick a numeric label
+      const siblingCount = tabs.filter((t) => t.sessionId === (sessionId ?? null)).length;
+      const baseName = cwdToUse?.trim()
+        ? (cwdToUse.trim().split("/").pop() || "terminal")
+        : "terminal";
+      const label = siblingCount === 0 ? baseName : `${baseName} ${siblingCount + 1}`;
+
+      onTabAdd({
+        terminalId: data.terminalId,
+        runnerId: data.runnerId,
+        cwd: cwdToUse?.trim() || undefined,
+        label,
+        sessionId: sessionId ?? null,
+      });
+    } finally {
+      setSpawning(false);
+    }
+  }, [tabs, sessionId, onTabAdd]);
+
+  /**
+   * Spawn from the dialog (when there's no session context or the user chose a specific runner).
+   */
+  const spawnFromDialog = React.useCallback(async () => {
     if (!selectedRunnerId) return;
     setSpawning(true);
     try {
@@ -124,7 +215,7 @@ export function TerminalManager({ className, onClose, position = "bottom", onPos
       });
       if (!res.ok) {
         const body = await res.json().catch(() => null);
-        alert(body?.error || `Failed to create terminal (HTTP ${res.status})`);
+        alert((body as any)?.error || `Failed to create terminal (HTTP ${res.status})`);
         return;
       }
       const data = await res.json() as { ok: boolean; terminalId: string; runnerId: string };
@@ -135,33 +226,34 @@ export function TerminalManager({ className, onClose, position = "bottom", onPos
 
       const runner = runners.find((r) => r.runnerId === selectedRunnerId);
       const label = cwd.trim()
-        ? cwd.trim().split("/").pop() || "Terminal"
-        : runner?.name || "Terminal";
+        ? (cwd.trim().split("/").pop() || "terminal")
+        : (runner?.name || "terminal");
 
-      const tab: TerminalTab = {
+      onTabAdd({
         terminalId: data.terminalId,
         runnerId: data.runnerId,
         cwd: cwd.trim() || undefined,
         label,
-      };
-      setTerminals((prev) => [...prev, tab]);
-      setActiveTerminalId(data.terminalId);
+        sessionId: sessionId ?? null,
+      });
       setDialogOpen(false);
       setCwd("");
     } finally {
       setSpawning(false);
     }
-  }, [selectedRunnerId, cwd, runners]);
+  }, [selectedRunnerId, cwd, runners, sessionId, onTabAdd]);
 
-  const closeTerminal = React.useCallback((terminalId: string) => {
-    setTerminals((prev) => {
-      const next = prev.filter((t) => t.terminalId !== terminalId);
-      if (activeTerminalId === terminalId) {
-        setActiveTerminalId(next.length > 0 ? next[next.length - 1].terminalId : null);
-      }
-      return next;
-    });
-  }, [activeTerminalId]);
+  /**
+   * Handle the "+" button — direct spawn when session context is available,
+   * otherwise open the dialog.
+   */
+  const handleAddTerminal = React.useCallback(() => {
+    if (runnerId) {
+      void spawnDirect(runnerId, defaultCwd);
+    } else {
+      setDialogOpen(true);
+    }
+  }, [runnerId, defaultCwd, spawnDirect]);
 
   return (
     <div className={cn("flex flex-col bg-zinc-950", className)}>
@@ -189,14 +281,14 @@ export function TerminalManager({ className, onClose, position = "bottom", onPos
         )}
 
         {/* Divider before tabs when there are any (and not embedded) */}
-        {!embedded && terminals.length > 0 && (
+        {!embedded && sessionTabs.length > 0 && (
           <div className="w-px h-4 bg-zinc-700 shrink-0" />
         )}
 
-        {/* Tabs */}
+        {/* Tabs — only show tabs for the active session */}
         <div className="flex items-center gap-0.5 overflow-x-auto px-1 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden flex-1">
-          {terminals.map((tab) => {
-            const isActive = activeTerminalId === tab.terminalId;
+          {sessionTabs.map((tab) => {
+            const isActive = activeTabId === tab.terminalId;
             return (
               <div
                 key={tab.terminalId}
@@ -206,7 +298,7 @@ export function TerminalManager({ className, onClose, position = "bottom", onPos
                     ? "bg-zinc-800 text-zinc-100"
                     : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/50",
                 )}
-                onClick={() => setActiveTerminalId(tab.terminalId)}
+                onClick={() => onActiveTabChange(tab.terminalId)}
               >
                 <span className="max-w-[100px] truncate">{tab.label}</span>
                 <button
@@ -216,7 +308,7 @@ export function TerminalManager({ className, onClose, position = "bottom", onPos
                       ? "text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700"
                       : "text-transparent group-hover:text-zinc-500 hover:!text-zinc-200 hover:bg-zinc-700",
                   )}
-                  onClick={(e) => { e.stopPropagation(); closeTerminal(tab.terminalId); }}
+                  onClick={(e) => { e.stopPropagation(); onTabClose(tab.terminalId); }}
                   aria-label={`Close ${tab.label}`}
                 >
                   <X size={10} />
@@ -242,7 +334,7 @@ export function TerminalManager({ className, onClose, position = "bottom", onPos
           {/* Separator */}
           {!embedded && onPositionChange && <div className="w-px h-4 bg-zinc-700 mx-1 shrink-0" />}
 
-          {/* Position button with hold-to-reveal dropdown — hidden when embedded */}
+          {/* Position picker — hidden when embedded */}
           {!embedded && onPositionChange && (
             <>
               <PositionPicker position={position} onPositionChange={onPositionChange} />
@@ -252,10 +344,11 @@ export function TerminalManager({ className, onClose, position = "bottom", onPos
 
           {/* Add tab */}
           <button
-            onClick={() => setDialogOpen(true)}
-            className="flex items-center justify-center size-7 rounded text-zinc-500 hover:text-zinc-100 hover:bg-zinc-800 transition-colors"
+            onClick={handleAddTerminal}
+            disabled={spawning}
+            className="flex items-center justify-center size-7 rounded text-zinc-500 hover:text-zinc-100 hover:bg-zinc-800 transition-colors disabled:opacity-40"
             aria-label="New terminal"
-            title="New terminal"
+            title={runnerId ? `New terminal in ${defaultCwd || "session directory"}` : "New terminal"}
           >
             <Plus size={13} />
           </button>
@@ -266,7 +359,8 @@ export function TerminalManager({ className, onClose, position = "bottom", onPos
           variant="ghost"
           size="icon"
           className="md:hidden size-9 shrink-0 text-zinc-500 hover:text-zinc-100 hover:bg-zinc-800 rounded-none"
-          onClick={() => setDialogOpen(true)}
+          onClick={handleAddTerminal}
+          disabled={spawning}
           aria-label="New terminal"
         >
           <Plus size={14} />
@@ -274,42 +368,62 @@ export function TerminalManager({ className, onClose, position = "bottom", onPos
       </div>
 
       {/* ── Body ──────────────────────────────────────────────────────────── */}
-      {terminals.length === 0 ? (
-        /* Empty state */
-        <div className="flex flex-1 flex-col items-center justify-center gap-4 text-zinc-500">
-          <TerminalIcon className="size-10 opacity-20" />
-          <p className="text-sm">No terminals open</p>
-          <Button
-            variant="outline"
-            size="sm"
-            className="gap-1.5"
-            onClick={() => setDialogOpen(true)}
+      <div className="flex-1 min-h-0 relative">
+        {/* All terminals always mounted (even from other sessions) to keep WS connections alive */}
+        {tabs.map((tab) => (
+          <div
+            key={tab.terminalId}
+            className={cn(
+              "absolute inset-0",
+              activeTabId === tab.terminalId ? "z-10" : "z-0 invisible",
+            )}
           >
-            <Plus className="size-3.5" />
-            Open Terminal
-          </Button>
-        </div>
-      ) : (
-        /* Terminal panels */
-        <div className="flex-1 min-h-0 relative">
-          {terminals.map((tab) => (
-            <div
-              key={tab.terminalId}
-              className={cn(
-                "absolute inset-0",
-                activeTerminalId === tab.terminalId ? "z-10" : "z-0 invisible",
-              )}
-            >
-              <WebTerminal
-                terminalId={tab.terminalId}
-                onClose={() => closeTerminal(tab.terminalId)}
-                className="h-full rounded-none border-0"
-              />
-            </div>
-          ))}
-        </div>
-      )}
+            <WebTerminal
+              terminalId={tab.terminalId}
+              onClose={() => onTabClose(tab.terminalId)}
+              className="h-full rounded-none border-0"
+            />
+          </div>
+        ))}
 
+        {/* Empty state overlay — shown when current session has no terminals */}
+        {sessionTabs.length === 0 && (
+          <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-4 text-zinc-500 bg-zinc-950">
+            <TerminalIcon className="size-10 opacity-20" />
+            {sessionId != null ? (
+              <>
+                <p className="text-sm">No terminals for this session</p>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-1.5"
+                  onClick={handleAddTerminal}
+                  disabled={spawning}
+                >
+                  <Plus className="size-3.5" />
+                  {spawning ? "Opening…" : runnerId ? "Open Terminal Here" : "Open Terminal"}
+                </Button>
+              </>
+            ) : (
+              <>
+                <p className="text-sm">No terminals open</p>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="gap-1.5"
+                  onClick={handleAddTerminal}
+                  disabled={spawning}
+                >
+                  <Plus className="size-3.5" />
+                  {spawning ? "Opening…" : "Open Terminal"}
+                </Button>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Dialog is only shown when there's no session context (no runnerId) */}
       <NewTerminalDialog
         open={dialogOpen}
         onOpenChange={setDialogOpen}
@@ -321,7 +435,7 @@ export function TerminalManager({ className, onClose, position = "bottom", onPos
         onCwdChange={setCwd}
         recentFolders={recentFolders}
         spawning={spawning}
-        onSpawn={openNewTerminal}
+        onSpawn={spawnFromDialog}
       />
     </div>
   );
@@ -442,7 +556,6 @@ function PositionPicker({
 
   const handlePointerUp = () => {
     clearHold();
-    // Short click toggles the dropdown
     if (!wasHeld.current) {
       setOpen((v) => !v);
     }

@@ -42,7 +42,7 @@ import {
 import { Sun, Moon, LogOut, KeyRound, X, User, ChevronsUpDown, PanelLeftOpen, HardDrive, Bell, BellOff, Check, Plus, TerminalIcon, FolderTree, Keyboard } from "lucide-react";
 import { NotificationToggle, MobileNotificationMenuItem } from "@/components/NotificationToggle";
 import { UsageIndicator, type ProviderUsageMap } from "@/components/UsageIndicator";
-import { TerminalManager } from "@/components/TerminalManager";
+import { TerminalManager, type TerminalTab } from "@/components/TerminalManager";
 import { FileExplorer } from "@/components/FileExplorer";
 import { CombinedPanel } from "@/components/CombinedPanel";
 import {
@@ -391,6 +391,62 @@ export function App() {
     const t = tab as "terminal" | "files";
     setCombinedActiveTab(t);
     try { localStorage.setItem("pp-combined-tab", t); } catch {}
+  }, []);
+
+  // ── Lifted terminal tab state ────────────────────────────────────────────
+  // Stored here (not inside TerminalManager) so tabs survive panel remounts
+  // (e.g., when the panel transitions between combined and standalone layouts).
+  const [terminalTabs, setTerminalTabs] = React.useState<TerminalTab[]>([]);
+  const [activeTerminalId, setActiveTerminalId] = React.useState<string | null>(null);
+
+  // Per-session last-active terminal: save/restore when switching sessions.
+  const sessionActiveTerminalRef = React.useRef<Map<string | null, string | null>>(new Map());
+  const prevSessionIdForTerminalRef = React.useRef<string | null>(null);
+  // Stable ref so the effect doesn't need activeTerminalId in its dep array
+  const activeTerminalIdRef = React.useRef<string | null>(null);
+  activeTerminalIdRef.current = activeTerminalId;
+
+  React.useEffect(() => {
+    const prev = prevSessionIdForTerminalRef.current;
+    if (prev === activeSessionId) return;
+    prevSessionIdForTerminalRef.current = activeSessionId;
+
+    // Save current active terminal for the outgoing session
+    sessionActiveTerminalRef.current.set(prev, activeTerminalIdRef.current);
+
+    // Restore the last-active terminal for the incoming session
+    const incoming = activeSessionId;
+    const sessionTabs = incoming != null
+      ? terminalTabs.filter((t) => t.sessionId === incoming)
+      : terminalTabs;
+    const savedActive = sessionActiveTerminalRef.current.get(incoming);
+
+    if (savedActive && sessionTabs.some((t) => t.terminalId === savedActive)) {
+      setActiveTerminalId(savedActive);
+    } else if (sessionTabs.length > 0) {
+      setActiveTerminalId(sessionTabs[sessionTabs.length - 1].terminalId);
+    } else {
+      setActiveTerminalId(null);
+    }
+  }, [activeSessionId, terminalTabs]);
+
+  const handleTerminalTabAdd = React.useCallback((tab: TerminalTab) => {
+    setTerminalTabs((prev) => [...prev, tab]);
+    setActiveTerminalId(tab.terminalId);
+  }, []);
+
+  const handleTerminalTabClose = React.useCallback((terminalId: string) => {
+    setTerminalTabs((prev) => {
+      const next = prev.filter((t) => t.terminalId !== terminalId);
+      setActiveTerminalId((current) => {
+        if (current !== terminalId) return current;
+        // Find the closest remaining tab in the same session
+        const removed = prev.find((t) => t.terminalId === terminalId);
+        const sameSess = next.filter((t) => t.sessionId === (removed?.sessionId ?? null));
+        return sameSess.length > 0 ? sameSess[sameSess.length - 1].terminalId : null;
+      });
+      return next;
+    });
   }, []);
 
   const [showFileExplorer, setShowFileExplorer] = React.useState(false);
@@ -2585,6 +2641,14 @@ export function App() {
                   position={terminalPosition}
                   onPositionChange={handleTerminalPositionChange}
                   onDragStart={handlePanelDragStart}
+                  sessionId={activeSessionId}
+                  runnerId={activeSessionInfo?.runnerId ?? undefined}
+                  defaultCwd={activeSessionInfo?.cwd || undefined}
+                  tabs={terminalTabs}
+                  activeTabId={activeTerminalId}
+                  onActiveTabChange={setActiveTerminalId}
+                  onTabAdd={handleTerminalTabAdd}
+                  onTabClose={handleTerminalTabClose}
                 />
               </div>
             )}
@@ -2632,7 +2696,18 @@ export function App() {
                         // Dragging the Terminal tab detaches it (moves only the terminal panel)
                         onDragStart: handleTerminalTabDragStart,
                         content: (
-                          <TerminalManager className="h-full" embedded />
+                          <TerminalManager
+                            className="h-full"
+                            embedded
+                            sessionId={activeSessionId}
+                            runnerId={activeSessionInfo?.runnerId ?? undefined}
+                            defaultCwd={activeSessionInfo?.cwd || undefined}
+                            tabs={terminalTabs}
+                            activeTabId={activeTerminalId}
+                            onActiveTabChange={setActiveTerminalId}
+                            onTabAdd={handleTerminalTabAdd}
+                            onTabClose={handleTerminalTabClose}
+                          />
                         ),
                       },
                       {
@@ -2695,6 +2770,14 @@ export function App() {
                     position={terminalPosition}
                     onPositionChange={handleTerminalPositionChange}
                     onDragStart={handlePanelDragStart}
+                    sessionId={activeSessionId}
+                    runnerId={activeSessionInfo?.runnerId ?? undefined}
+                    defaultCwd={activeSessionInfo?.cwd || undefined}
+                    tabs={terminalTabs}
+                    activeTabId={activeTerminalId}
+                    onActiveTabChange={setActiveTerminalId}
+                    onTabAdd={handleTerminalTabAdd}
+                    onTabClose={handleTerminalTabClose}
                   />
                 </div>
               </>
