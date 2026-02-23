@@ -136,54 +136,111 @@ export const SessionSidebar = React.memo(function SessionSidebar({
 }: SessionSidebarProps) {
     const [collapsed, setCollapsed] = React.useState(false);
 
-    // Two-finger swipe-to-end gesture state
+    // Swipe-to-reveal "End" button state (iOS-style swipe-left pattern)
     const [confirmEndSessionId, setConfirmEndSessionId] = React.useState<string | null>(null);
-    const touchStateRef = React.useRef<{
+    const [revealedSessionId, setRevealedSessionId] = React.useState<string | null>(null);
+    const [swipeOffsets, setSwipeOffsets] = React.useState<Map<string, number>>(new Map());
+    const REVEAL_WIDTH = 72; // px width of the revealed "End" button
+
+    const swipeRef = React.useRef<{
         sessionId: string;
         startX: number;
         startY: number;
         curX: number;
-        curY: number;
+        locked: boolean; // true once we've committed to horizontal movement
+        isVertical: boolean; // true once we've committed to vertical scroll
     } | null>(null);
 
     const handleSessionTouchStart = React.useCallback((e: React.TouchEvent, sessionId: string) => {
-        if (e.touches.length === 2) {
-            const x = (e.touches[0].clientX + e.touches[1].clientX) / 2;
-            const y = (e.touches[0].clientY + e.touches[1].clientY) / 2;
-            touchStateRef.current = { sessionId, startX: x, startY: y, curX: x, curY: y };
-        } else {
-            touchStateRef.current = null;
-        }
+        if (e.touches.length !== 1) { swipeRef.current = null; return; }
+        const t = e.touches[0];
+        swipeRef.current = {
+            sessionId,
+            startX: t.clientX,
+            startY: t.clientY,
+            curX: t.clientX,
+            locked: false,
+            isVertical: false,
+        };
     }, []);
 
     const handleSessionTouchMove = React.useCallback((e: React.TouchEvent) => {
-        if (!touchStateRef.current || e.touches.length !== 2) {
-            if (e.touches.length !== 2) touchStateRef.current = null;
-            return;
+        const s = swipeRef.current;
+        if (!s || e.touches.length !== 1) return;
+        const t = e.touches[0];
+        s.curX = t.clientX;
+        const dx = t.clientX - s.startX;
+        const dy = t.clientY - s.startY;
+
+        // Determine direction lock on first significant movement
+        if (!s.locked && !s.isVertical) {
+            if (Math.abs(dy) > 10 && Math.abs(dy) > Math.abs(dx)) {
+                s.isVertical = true; // vertical scroll — bail out
+                return;
+            }
+            if (Math.abs(dx) > 10 && Math.abs(dx) > Math.abs(dy)) {
+                s.locked = true; // horizontal swipe — we own the gesture
+            }
         }
-        const x = (e.touches[0].clientX + e.touches[1].clientX) / 2;
-        const y = (e.touches[0].clientY + e.touches[1].clientY) / 2;
-        touchStateRef.current.curX = x;
-        touchStateRef.current.curY = y;
-        // Prevent scroll if we're clearly swiping horizontally
-        const dx = x - touchStateRef.current.startX;
-        const dy = y - touchStateRef.current.startY;
-        if (Math.abs(dx) > 10 && Math.abs(dx) > Math.abs(dy)) {
-            e.preventDefault();
-        }
-    }, []);
+
+        if (s.isVertical) return;
+        if (!s.locked) return;
+
+        e.preventDefault(); // prevent vertical scroll while swiping
+
+        // If another session was previously revealed, account for that
+        const wasRevealed = revealedSessionId === s.sessionId;
+        const base = wasRevealed ? -REVEAL_WIDTH : 0;
+        // Clamp: allow from -REVEAL_WIDTH to 0 (or slightly past for rubber-band)
+        const raw = base + dx;
+        const clamped = Math.max(-REVEAL_WIDTH - 20, Math.min(raw, wasRevealed ? 0 : 10));
+
+        setSwipeOffsets((prev) => {
+            const next = new Map(prev);
+            next.set(s.sessionId, clamped);
+            return next;
+        });
+    }, [revealedSessionId, REVEAL_WIDTH]);
 
     const handleSessionTouchEnd = React.useCallback((_e: React.TouchEvent) => {
-        const state = touchStateRef.current;
-        touchStateRef.current = null;
-        if (!state) return;
-        const dx = state.curX - state.startX;
-        const dy = state.curY - state.startY;
-        // Right swipe: at least 60px horizontal, more horizontal than vertical
-        if (dx > 60 && Math.abs(dy) < Math.abs(dx) * 0.8) {
-            setConfirmEndSessionId(state.sessionId);
+        const s = swipeRef.current;
+        swipeRef.current = null;
+        if (!s || s.isVertical || !s.locked) return;
+
+        const wasRevealed = revealedSessionId === s.sessionId;
+        const offset = swipeOffsets.get(s.sessionId) ?? 0;
+
+        // Snap open if swiped past half the reveal width, otherwise snap closed
+        if (offset < -REVEAL_WIDTH / 2) {
+            // Snap to fully revealed
+            setSwipeOffsets((prev) => {
+                const next = new Map(prev);
+                next.set(s.sessionId, -REVEAL_WIDTH);
+                return next;
+            });
+            setRevealedSessionId(s.sessionId);
+        } else {
+            // Snap closed
+            setSwipeOffsets((prev) => {
+                const next = new Map(prev);
+                next.delete(s.sessionId);
+                return next;
+            });
+            if (wasRevealed) setRevealedSessionId(null);
         }
-    }, []);
+    }, [revealedSessionId, swipeOffsets, REVEAL_WIDTH]);
+
+    // Close revealed item when tapping elsewhere
+    const handleCloseRevealed = React.useCallback(() => {
+        if (revealedSessionId) {
+            setSwipeOffsets((prev) => {
+                const next = new Map(prev);
+                next.delete(revealedSessionId);
+                return next;
+            });
+            setRevealedSessionId(null);
+        }
+    }, [revealedSessionId]);
 
     const [isDesktop, setIsDesktop] = React.useState(() => {
         if (typeof window === "undefined") return true;
@@ -480,75 +537,119 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                     const timeLabel = isToday(s.startedAt)
                                         ? formatTime(s.lastHeartbeatAt ?? s.startedAt)
                                         : formatRelativeDate(s.startedAt);
+                                    const swipeOffset = swipeOffsets.get(s.sessionId) ?? 0;
+                                    const isRevealed = revealedSessionId === s.sessionId;
+                                    const hasOffset = swipeOffset !== 0;
 
                                     return (
-                                        <button
+                                        <div
                                             key={s.sessionId}
-                                            onClick={() => onOpenSession(s.sessionId)}
-                                            title={`View session ${s.sessionId}`}
-                                            onTouchStart={(e) => handleSessionTouchStart(e, s.sessionId)}
-                                            onTouchMove={handleSessionTouchMove}
-                                            onTouchEnd={handleSessionTouchEnd}
-                                            className={cn(
-                                                "flex items-center gap-2.5 w-full min-w-0 px-2.5 py-3 md:py-2.5 rounded-lg text-left transition-colors active:scale-[0.98]",
-                                                isSelected
-                                                    ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                                                    : "text-sidebar-foreground hover:bg-sidebar-accent/50",
-                                            )}
+                                            className="relative overflow-hidden rounded-lg"
                                         >
-                                            {/* Provider icon + activity dot */}
-                                            <div className="relative flex-shrink-0 flex items-center justify-center w-7 h-7 rounded-md bg-sidebar-accent/50">
-                                                <ProviderIcon
-                                                    provider={provider}
-                                                    className="size-4 text-sidebar-foreground/70"
-                                                    title={
-                                                        s.model?.provider
-                                                            ? `${s.model.provider} · ${s.model.name ?? s.model.id}`
-                                                            : activeSessionId === s.sessionId && activeModel?.provider
-                                                              ? `${activeModel.provider} · ${activeModel.name ?? activeModel.id}`
-                                                              : "unknown"
-                                                    }
-                                                />
-                                                <span
-                                                    className={cn(
-                                                        "absolute -top-0.5 -right-0.5 inline-block h-2 w-2 rounded-full border border-sidebar ring-1 ring-sidebar transition-colors",
-                                                        s.isActive
-                                                            ? "bg-blue-400 shadow-[0_0_4px_#60a5fa80] animate-pulse ring-blue-400/20"
-                                                            : "bg-green-600 ring-green-600/20",
-                                                    )}
-                                                    title={s.isActive ? "Actively generating" : "Session idle"}
-                                                />
+                                            {/* "End" action behind the card */}
+                                            <div
+                                                className="absolute inset-y-0 right-0 flex items-center justify-center bg-red-600 text-white"
+                                                style={{ width: REVEAL_WIDTH }}
+                                            >
+                                                <button
+                                                    className="flex flex-col items-center justify-center w-full h-full text-xs font-semibold gap-0.5 active:bg-red-700 transition-colors"
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        setConfirmEndSessionId(s.sessionId);
+                                                        // Close the revealed state
+                                                        setSwipeOffsets((prev) => {
+                                                            const next = new Map(prev);
+                                                            next.delete(s.sessionId);
+                                                            return next;
+                                                        });
+                                                        setRevealedSessionId(null);
+                                                    }}
+                                                >
+                                                    <X className="h-4 w-4" />
+                                                    <span>End</span>
+                                                </button>
                                             </div>
 
-                                            {/* Text info */}
-                                            <div className="flex-1 min-w-0">
-                                                <div className="flex items-baseline justify-between gap-1 min-w-0">
-                                                    <span className="truncate text-[0.8rem] font-medium leading-tight">
-                                                        {s.sessionName?.trim() || `Session ${s.sessionId.slice(0, 8)}…`}
-                                                    </span>
-                                                    <span className="text-[0.65rem] text-sidebar-foreground/45 flex-shrink-0">
-                                                        {timeLabel}
-                                                    </span>
-                                                </div>
-                                                {(s.userName || s.cwd) && (
-                                                    <div className="flex items-center gap-1 mt-0.5 min-w-0">
-                                                        {s.userName && (
-                                                            <span className="text-[0.65rem] text-sidebar-foreground/45 truncate">
-                                                                {s.userName}
-                                                            </span>
-                                                        )}
-                                                        {s.cwd && (
-                                                            <span
-                                                                className="text-[0.65rem] text-sidebar-foreground/35 truncate"
-                                                                title={s.cwd}
-                                                            >
-                                                                {s.userName ? "·" : ""} {formatPathTail(s.cwd, 2)}
-                                                            </span>
-                                                        )}
-                                                    </div>
+                                            {/* Sliding session card */}
+                                            <button
+                                                onClick={() => {
+                                                    if (revealedSessionId) {
+                                                        handleCloseRevealed();
+                                                        return;
+                                                    }
+                                                    onOpenSession(s.sessionId);
+                                                }}
+                                                title={`View session ${s.sessionId}`}
+                                                onTouchStart={(e) => handleSessionTouchStart(e, s.sessionId)}
+                                                onTouchMove={handleSessionTouchMove}
+                                                onTouchEnd={handleSessionTouchEnd}
+                                                className={cn(
+                                                    "relative flex items-center gap-2.5 w-full min-w-0 px-2.5 py-3 md:py-2.5 rounded-lg text-left bg-sidebar",
+                                                    !hasOffset && "transition-transform duration-200 ease-out",
+                                                    isSelected
+                                                        ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                                                        : "text-sidebar-foreground hover:bg-sidebar-accent/50",
                                                 )}
-                                            </div>
-                                        </button>
+                                                style={{
+                                                    transform: hasOffset ? `translateX(${swipeOffset}px)` : undefined,
+                                                    // Disable the scale-down active state while swiping
+                                                    ...(hasOffset ? {} : {}),
+                                                }}
+                                            >
+                                                {/* Provider icon + activity dot */}
+                                                <div className="relative flex-shrink-0 flex items-center justify-center w-7 h-7 rounded-md bg-sidebar-accent/50">
+                                                    <ProviderIcon
+                                                        provider={provider}
+                                                        className="size-4 text-sidebar-foreground/70"
+                                                        title={
+                                                            s.model?.provider
+                                                                ? `${s.model.provider} · ${s.model.name ?? s.model.id}`
+                                                                : activeSessionId === s.sessionId && activeModel?.provider
+                                                                  ? `${activeModel.provider} · ${activeModel.name ?? activeModel.id}`
+                                                                  : "unknown"
+                                                        }
+                                                    />
+                                                    <span
+                                                        className={cn(
+                                                            "absolute -top-0.5 -right-0.5 inline-block h-2 w-2 rounded-full border border-sidebar ring-1 ring-sidebar transition-colors",
+                                                            s.isActive
+                                                                ? "bg-blue-400 shadow-[0_0_4px_#60a5fa80] animate-pulse ring-blue-400/20"
+                                                                : "bg-green-600 ring-green-600/20",
+                                                        )}
+                                                        title={s.isActive ? "Actively generating" : "Session idle"}
+                                                    />
+                                                </div>
+
+                                                {/* Text info */}
+                                                <div className="flex-1 min-w-0">
+                                                    <div className="flex items-baseline justify-between gap-1 min-w-0">
+                                                        <span className="truncate text-[0.8rem] font-medium leading-tight">
+                                                            {s.sessionName?.trim() || `Session ${s.sessionId.slice(0, 8)}…`}
+                                                        </span>
+                                                        <span className="text-[0.65rem] text-sidebar-foreground/45 flex-shrink-0">
+                                                            {timeLabel}
+                                                        </span>
+                                                    </div>
+                                                    {(s.userName || s.cwd) && (
+                                                        <div className="flex items-center gap-1 mt-0.5 min-w-0">
+                                                            {s.userName && (
+                                                                <span className="text-[0.65rem] text-sidebar-foreground/45 truncate">
+                                                                    {s.userName}
+                                                                </span>
+                                                            )}
+                                                            {s.cwd && (
+                                                                <span
+                                                                    className="text-[0.65rem] text-sidebar-foreground/35 truncate"
+                                                                    title={s.cwd}
+                                                                >
+                                                                    {s.userName ? "·" : ""} {formatPathTail(s.cwd, 2)}
+                                                                </span>
+                                                            )}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            </button>
+                                        </div>
                                     );
                                 })}
                             </div>
