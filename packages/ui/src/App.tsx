@@ -39,7 +39,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Sun, Moon, LogOut, KeyRound, X, User, ChevronsUpDown, PanelLeftOpen, HardDrive, Bell, BellOff, Check, Plus, TerminalIcon, FolderTree } from "lucide-react";
+import { Sun, Moon, LogOut, KeyRound, X, User, ChevronsUpDown, PanelLeftOpen, HardDrive, Bell, BellOff, Check, Plus, TerminalIcon, FolderTree, Keyboard } from "lucide-react";
 import { NotificationToggle, MobileNotificationMenuItem } from "@/components/NotificationToggle";
 import { UsageIndicator, type ProviderUsageMap } from "@/components/UsageIndicator";
 import { TerminalManager } from "@/components/TerminalManager";
@@ -534,6 +534,10 @@ export function App() {
   const [providerUsage, setProviderUsage] = React.useState<ProviderUsageMap | null>(null);
   const [todoList, setTodoList] = React.useState<TodoItem[]>([]);
 
+  // Keyboard shortcuts
+  const isMac = React.useMemo(() => /Mac|iPhone|iPad/i.test(navigator.platform), []);
+  const [showShortcutsHelp, setShowShortcutsHelp] = React.useState(false);
+
   // Sequence tracking for gap detection
   const lastSeqRef = React.useRef<number | null>(null);
 
@@ -562,6 +566,66 @@ export function App() {
   const [sidebarOpen, setSidebarOpen] = React.useState(false);
   const [liveSessions, setLiveSessions] = React.useState<HubSession[]>([]);
   const [sessionSwitcherOpen, setSessionSwitcherOpen] = React.useState(false);
+
+  // Swipe-left-to-close for the mobile sidebar
+  const sidebarSwipeRef = React.useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    locked: boolean;
+    isVertical: boolean;
+  } | null>(null);
+  const sidebarSwipeOffsetRef = React.useRef(0);
+  const [sidebarSwipeOffset, setSidebarSwipeOffset] = React.useState(0);
+
+  const handleSidebarPointerDown = React.useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    sidebarSwipeRef.current = {
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      locked: false,
+      isVertical: false,
+    };
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  }, []);
+
+  const handleSidebarPointerMove = React.useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const s = sidebarSwipeRef.current;
+    if (!s || e.pointerId !== s.pointerId) return;
+    const dx = e.clientX - s.startX;
+    const dy = e.clientY - s.startY;
+    if (!s.locked && !s.isVertical) {
+      if (Math.abs(dy) > 8 && Math.abs(dy) > Math.abs(dx)) {
+        s.isVertical = true;
+        sidebarSwipeRef.current = null;
+        return;
+      }
+      if (Math.abs(dx) > 8 && Math.abs(dx) > Math.abs(dy)) {
+        s.locked = true;
+      }
+    }
+    if (s.isVertical || !s.locked) return;
+    // Only allow leftward swipes (negative dx), with a tiny rightward overscroll
+    const clamped = Math.min(8, dx);
+    sidebarSwipeOffsetRef.current = clamped;
+    setSidebarSwipeOffset(clamped);
+    e.preventDefault();
+  }, []);
+
+  const handleSidebarPointerUp = React.useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    const s = sidebarSwipeRef.current;
+    if (!s || e.pointerId !== s.pointerId) return;
+    try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch { /* ignore */ }
+    sidebarSwipeRef.current = null;
+    const offset = sidebarSwipeOffsetRef.current;
+    sidebarSwipeOffsetRef.current = 0;
+    setSidebarSwipeOffset(0);
+    // Close if dragged more than 80 px to the left
+    if (offset < -80) {
+      setSidebarOpen(false);
+    }
+  }, []);
 
   // Auto-reopen the last viewed session once live sessions arrive.
   // (restoredRef is declared here; the effect is placed after openSession is defined below)
@@ -1793,6 +1857,68 @@ export function App() {
     setSidebarOpen(false);
   }, [clearSelection]);
 
+  // Global keyboard shortcuts
+  React.useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement;
+      const inInput =
+        target.tagName === "INPUT" ||
+        target.tagName === "TEXTAREA" ||
+        target.isContentEditable;
+      const meta = isMac ? e.metaKey : e.ctrlKey;
+
+      // ? — Show shortcuts help (only when not in an input)
+      if (
+        e.key === "?" &&
+        !inInput &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        !e.shiftKey
+      ) {
+        setShowShortcutsHelp(true);
+        return;
+      }
+
+      // Cmd/Ctrl + K — Focus the prompt textarea
+      if (meta && !e.shiftKey && !e.altKey && e.key === "k") {
+        e.preventDefault();
+        document.querySelector<HTMLElement>("[data-pp-prompt]")?.focus();
+        return;
+      }
+
+      // Ctrl + ` — Toggle terminal (Ctrl always, avoids macOS Cmd+` window-switch conflict)
+      if (e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey && e.key === "`") {
+        e.preventDefault();
+        setShowTerminal((v) => !v);
+        return;
+      }
+
+      // Cmd/Ctrl + Shift + E — Toggle file explorer
+      if (meta && e.shiftKey && !e.altKey && e.key.toLowerCase() === "e") {
+        e.preventDefault();
+        setShowFileExplorer((v) => !v);
+        return;
+      }
+
+      // Cmd/Ctrl + . — Abort the active agent
+      if (meta && !e.shiftKey && !e.altKey && e.key === ".") {
+        e.preventDefault();
+        if (agentActive && activeSessionRef.current) {
+          sendRemoteExec({
+            type: "exec",
+            id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+            command: "abort",
+          });
+        }
+        return;
+      }
+    };
+
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [isMac, agentActive, sendRemoteExec]);
+
   const handleNewSession = React.useCallback(() => {
     setSpawnRunnerId(undefined);
     setSpawnCwd("");
@@ -1979,6 +2105,17 @@ export function App() {
             title="Manage API keys"
           >
             <KeyRound className="h-4 w-4" />
+          </Button>
+
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-9 w-9"
+            onClick={() => setShowShortcutsHelp(true)}
+            aria-label="Keyboard shortcuts"
+            title="Keyboard shortcuts (?)"
+          >
+            <Keyboard className="h-4 w-4" />
           </Button>
 
           <DropdownMenu>
@@ -2212,9 +2349,15 @@ export function App() {
       <div className="pp-shell flex flex-1 min-h-0 overflow-hidden relative">
         <div
           className={
-            "pp-sidebar-wrap absolute inset-y-0 left-0 z-40 w-72 max-w-[85vw] border-r border-sidebar-border bg-sidebar shadow-2xl md:static md:z-auto md:w-auto md:max-w-none md:border-r-0 md:bg-transparent md:shadow-none transition-transform duration-200 ease-in-out md:transition-none will-change-transform " +
+            "pp-sidebar-wrap absolute inset-y-0 left-0 z-40 w-72 max-w-[85vw] border-r border-sidebar-border bg-sidebar shadow-2xl md:static md:z-auto md:w-auto md:max-w-none md:border-r-0 md:bg-transparent md:shadow-none will-change-transform " +
+            (sidebarSwipeOffset !== 0 ? "" : "transition-transform duration-200 ease-in-out md:transition-none ") +
             (sidebarOpen ? "translate-x-0" : "-translate-x-full md:translate-x-0")
           }
+          style={sidebarSwipeOffset !== 0 ? { transform: `translateX(${sidebarSwipeOffset}px)` } : undefined}
+          onPointerDown={sidebarOpen ? handleSidebarPointerDown : undefined}
+          onPointerMove={sidebarOpen ? handleSidebarPointerMove : undefined}
+          onPointerUp={sidebarOpen ? handleSidebarPointerUp : undefined}
+          onPointerCancel={sidebarOpen ? handleSidebarPointerUp : undefined}
         >
           <SessionSidebar
             onOpenSession={handleOpenSession}
@@ -2702,6 +2845,39 @@ export function App() {
             </div>
           </div>
         )}
+
+        {/* Keyboard shortcuts help dialog */}
+        <Dialog open={showShortcutsHelp} onOpenChange={setShowShortcutsHelp}>
+          <DialogContent className="max-w-sm">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <Keyboard className="h-4 w-4" />
+                Keyboard Shortcuts
+              </DialogTitle>
+              <DialogDescription>
+                Available shortcuts for the PizzaPi web UI.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="flex flex-col gap-2.5 text-sm py-1">
+              {(
+                [
+                  { key: isMac ? "⌘K" : "Ctrl+K", action: "Focus prompt" },
+                  { key: "Ctrl+`", action: "Toggle terminal" },
+                  { key: isMac ? "⌘⇧E" : "Ctrl+Shift+E", action: "Toggle file explorer" },
+                  { key: isMac ? "⌘." : "Ctrl+.", action: "Abort active agent" },
+                  { key: "?", action: "Show this dialog" },
+                ] as { key: string; action: string }[]
+              ).map(({ key, action }) => (
+                <div key={key} className="flex items-center justify-between gap-4">
+                  <span className="text-muted-foreground">{action}</span>
+                  <kbd className="inline-flex items-center rounded border bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground whitespace-nowrap">
+                    {key}
+                  </kbd>
+                </div>
+              ))}
+            </div>
+          </DialogContent>
+        </Dialog>
       </div>
     </div>
   );

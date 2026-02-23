@@ -1121,6 +1121,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
           <PromptInputBody>
             <div className="flex w-full items-end">
               <PromptInputTextarea
+                data-pp-prompt=""
                 value={input}
                 onChange={(event) => {
                   const next = event.currentTarget.value;
