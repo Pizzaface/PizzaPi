@@ -2,13 +2,15 @@
     "name": "pizzapi",
     "private": true,
     "workspaces": [
+        "packages/protocol",
         "packages/tools",
         "packages/server",
         "packages/ui",
         "packages/cli"
     ],
     "scripts": {
-        "build": "bun run build:tools && bun run build:server && bun run build:ui && bun run build:cli",
+        "build": "bun run build:protocol && bun run build:tools && bun run build:server && bun run build:ui && bun run build:cli",
+        "build:protocol": "cd packages/protocol && bun run build",
         "build:tools": "cd packages/tools && bun run build",
         "build:server": "cd packages/server && bun run build",
         "build:ui": "cd packages/ui && bun run build",

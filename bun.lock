@@ -32,6 +32,13 @@
         "typescript": "^5.7.0",
       },
     },
+    "packages/protocol": {
+      "name": "@pizzapi/protocol",
+      "version": "0.1.0",
+      "devDependencies": {
+        "typescript": "^5.7.0",
+      },
+    },
     "packages/server": {
       "name": "@pizzapi/server",
       "version": "0.1.0",
@@ -668,6 +675,8 @@
     "@opentelemetry/api": ["@opentelemetry/api@1.9.0", "", {}, "sha512-3giAOQvZiH5F9bMlMiv8+GSPMeqg0dbaeo58/0SlA9sxSqZhnUtxzX9/2FzyhS9sWQf5S0GJE0AKBrFqjpeYcg=="],
 
     "@pizzapi/cli": ["@pizzapi/cli@workspace:packages/cli"],
+
+    "@pizzapi/protocol": ["@pizzapi/protocol@workspace:packages/protocol"],
 
     "@pizzapi/server": ["@pizzapi/server@workspace:packages/server"],
 
