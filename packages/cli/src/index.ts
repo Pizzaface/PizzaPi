@@ -335,7 +335,7 @@ async function main() {
 
     if (args.includes("--version") || args.includes("-v")) {
         const { default: pkg } = await import("../package.json");
-        console.log(`pizza v${pkg.version}`);
+        console.log(`pizzapi v${pkg.version}`);
         return;
     }
 

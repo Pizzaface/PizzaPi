@@ -1,0 +1,12 @@
+{
+    "name": "@pizzapi/npm",
+    "version": "0.1.0",
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "build": "bun build-npm.ts",
+        "build:skip-compile": "bun build-npm.ts --skip-compile",
+        "publish": "bun publish-npm.ts",
+        "publish:dry": "bun publish-npm.ts --dry-run"
+    }
+}

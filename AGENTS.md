@@ -12,6 +12,7 @@ packages/
   server/   Bun HTTP + WebSocket relay server (auth, session relay, attachments)
   ui/       React 19 PWA web interface (Vite, TailwindCSS v4, Radix UI / shadcn)
   tools/    Shared agent tools (bash, read-file, write-file, search, toolkit)
+  npm/      npm distribution — builds & publishes `npx pizzapi` packages
 
 docker/     Docker Compose (redis + server services)
 patches/    Bun patches for upstream pi packages (auto-applied on bun install)
@@ -62,6 +63,18 @@ bun run dev:cli
 
 # Run the runner daemon from source
 bun run dev:runner
+
+# Build npm packages (compile binaries + package for npm)
+bun run build:npm
+
+# Build npm packages (skip binary compilation, use existing binaries)
+bun run build:npm:skip-compile
+
+# Publish npm packages (platform binaries + main pizzapi package)
+bun run publish:npm
+
+# Dry-run publish (verify without actually publishing)
+bun run publish:npm:dry
 
 # Clean all dist/ directories
 bun run clean
