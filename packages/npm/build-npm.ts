@@ -200,6 +200,7 @@ const mainPkg = {
     license: "MIT",
     bin: {
         pizza: "bin/pizza.mjs",
+        pizzapi: "bin/pizza.mjs",
     },
     files: ["bin/", "README.md", "LICENSE"],
     optionalDependencies: optionalDeps,
@@ -219,7 +220,7 @@ const mainPkg = {
     ],
     repository: {
         type: "git",
-        url: "https://github.com/badlogic/PizzaPi",
+        url: "git+https://github.com/badlogic/PizzaPi.git",
     },
     homepage: "https://github.com/badlogic/PizzaPi",
     publishConfig: {

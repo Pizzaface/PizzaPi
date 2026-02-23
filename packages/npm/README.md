@@ -5,14 +5,14 @@ A self-hosted web interface and relay server for the [pi coding agent](https://g
 ## Quick Start
 
 ```bash
-npx pizzapi
+npx @pizzapi/pizza
 ```
 
 Or install globally:
 
 ```bash
-npm install -g pizzapi
-pizzapi
+npm install -g @pizzapi/pizza
+pizza
 ```
 
 ## What is PizzaPi?
