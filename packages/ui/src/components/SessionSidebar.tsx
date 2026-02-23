@@ -503,18 +503,6 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                     >
                         <PanelLeftClose className="h-4 w-4" />
                     </Button>
-                    {/* Mobile: back/close button */}
-                    {onClose && (
-                        <Button
-                            variant="ghost"
-                            size="icon"
-                            className="md:hidden h-8 w-8 -ml-1 text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent"
-                            onClick={onClose}
-                            aria-label="Close sidebar"
-                        >
-                            <PanelLeftClose className="h-4 w-4" />
-                        </Button>
-                    )}
                     <span className="text-[0.7rem] font-semibold uppercase tracking-widest text-sidebar-foreground/60">
                         Sessions
                     </span>
