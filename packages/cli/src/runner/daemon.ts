@@ -607,6 +607,13 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     case "new_session": {
                         const sessionId = msg.sessionId as string;
                         const requestedCwd = typeof msg.cwd === "string" ? msg.cwd : undefined;
+                        const requestedPrompt = typeof msg.prompt === "string" ? msg.prompt : undefined;
+                        const requestedModel =
+                            msg.model && typeof msg.model === "object" &&
+                            typeof (msg.model as any).provider === "string" &&
+                            typeof (msg.model as any).id === "string"
+                                ? { provider: (msg.model as any).provider as string, id: (msg.model as any).id as string }
+                                : undefined;
 
                         if (!sessionId) {
                             ws?.send(
@@ -635,7 +642,10 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
 
                         const doSpawn = () => {
                             try {
-                                spawnSession(sessionId, apiKey!, requestedCwd, runningSessions, doSpawn);
+                                spawnSession(sessionId, apiKey!, requestedCwd, runningSessions, doSpawn, {
+                                    prompt: requestedPrompt,
+                                    model: requestedModel,
+                                });
                                 ws?.send(JSON.stringify({ type: "session_ready", runnerId, sessionId }));
                             } catch (err) {
                                 ws?.send(
@@ -903,6 +913,10 @@ function spawnSession(
     requestedCwd: string | undefined,
     runningSessions: Map<string, RunnerSession>,
     onRestartRequested?: () => void,
+    options?: {
+        prompt?: string;
+        model?: { provider: string; id: string };
+    },
 ): void {
     console.log(`pizzapi runner: spawning headless worker for session ${sessionId}…`);
 
@@ -936,6 +950,12 @@ function spawnSession(
         // read quota data without making its own provider API calls.
         PIZZAPI_RUNNER_USAGE_CACHE_PATH: runnerUsageCacheFilePath(),
         ...(requestedCwd ? { PIZZAPI_WORKER_CWD: requestedCwd } : {}),
+        // Initial prompt and model for the new session (set by spawn_session tool).
+        ...(options?.prompt ? { PIZZAPI_WORKER_INITIAL_PROMPT: options.prompt } : {}),
+        ...(options?.model ? {
+            PIZZAPI_WORKER_INITIAL_MODEL_PROVIDER: options.model.provider,
+            PIZZAPI_WORKER_INITIAL_MODEL_ID: options.model.id,
+        } : {}),
     };
 
     const child = spawn(process.execPath, [workerPath], {

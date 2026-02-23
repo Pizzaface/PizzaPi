@@ -49,6 +49,8 @@ import { mcpExtension } from "../extensions/mcp-extension.js";
 import { restartExtension } from "../extensions/restart.js";
 import { setSessionNameExtension } from "../extensions/set-session-name.js";
 import { updateTodoExtension } from "../extensions/update-todo.js";
+import { spawnSessionExtension } from "../extensions/spawn-session.js";
+import { initialPromptExtension } from "../extensions/initial-prompt.js";
 
 /**
  * Headless session worker.
@@ -94,7 +96,7 @@ async function main(): Promise<void> {
     const loader = new DefaultResourceLoader({
         cwd,
         agentDir,
-        extensionFactories: [remoteExtension, mcpExtension, restartExtension, setSessionNameExtension, updateTodoExtension],
+        extensionFactories: [remoteExtension, mcpExtension, restartExtension, setSessionNameExtension, updateTodoExtension, spawnSessionExtension, initialPromptExtension],
         additionalSkillPaths: buildSkillPaths(cwd, config.skills),
         additionalPromptTemplatePaths: buildPromptPaths(cwd),
         ...(config.systemPrompt !== undefined && {

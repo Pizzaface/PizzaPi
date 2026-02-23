@@ -130,6 +130,13 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
 
         const requestedRunnerId = typeof body.runnerId === "string" ? body.runnerId : undefined;
         const requestedCwd = typeof body.cwd === "string" ? body.cwd : undefined;
+        const requestedPrompt = typeof body.prompt === "string" ? body.prompt : undefined;
+        const requestedModel =
+            body.model && typeof body.model === "object" &&
+            typeof (body.model as any).provider === "string" &&
+            typeof (body.model as any).id === "string"
+                ? { provider: (body.model as any).provider as string, id: (body.model as any).id as string }
+                : undefined;
 
         // Sessions are tied to a folder on a specific runner machine.
         // We do not attempt to infer which runner has which path — the client must choose.
@@ -167,6 +174,8 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
                     type: "new_session",
                     sessionId,
                     cwd: requestedCwd,
+                    ...(requestedPrompt ? { prompt: requestedPrompt } : {}),
+                    ...(requestedModel ? { model: requestedModel } : {}),
                 }),
             );
         } catch {
