@@ -399,6 +399,21 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     setComposerError(null);
   }, [sessionId]);
 
+  // Esc key stops an active agent turn (same as clicking the stop button).
+  // We skip this when a dialog or the command picker is open — those components
+  // handle Escape themselves via Radix's event propagation.
+  React.useEffect(() => {
+    if (!agentActive || !onExec) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (showClearDialog || showEndSessionDialog || commandOpen) return;
+      e.preventDefault();
+      onExec({ type: "exec", id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, command: "abort" });
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [agentActive, onExec, showClearDialog, showEndSessionDialog, commandOpen]);
+
   const executeSlashCommand = React.useCallback((text: string): boolean => {
     const trimmed = text.trim();
     if (!trimmed.startsWith("/")) return false;
