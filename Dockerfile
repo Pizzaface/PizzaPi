@@ -34,11 +34,10 @@ COPY packages/tools/ packages/tools/
 COPY packages/server/ packages/server/
 COPY packages/ui/ packages/ui/
 
-# Copy root tsconfig for project references
-COPY tsconfig.json ./
-
-# Build with tsc --build to resolve project references, then build UI
-RUN bunx tsc --build packages/server/tsconfig.json \
+# Build each package in dependency order
+RUN cd packages/protocol && bunx tsc \
+    && cd /app/packages/tools && bunx tsc \
+    && cd /app/packages/server && bunx tsc \
     && cd /app/packages/ui && bun run build
 
 # --- Production image ---
