@@ -62,18 +62,4 @@ export const setSessionNameExtension: ExtensionFactory = (pi) => {
                 "\n\nAt the start of your FIRST response only, call the `set_session_name` tool with a 3–6 word summary of the user's request. Do not output the session name as text in your response.",
         };
     });
-
-    pi.registerCommand("name", {
-        description: "Set the name of the current session (usage: /name My Session)",
-        handler: async (args, ctx) => {
-            const name = args.trim();
-            if (!name) {
-                ctx.ui.notify("Please provide a name, e.g. /name My Session", "error");
-                return;
-            }
-            pi.setSessionName(name);
-            named = true;
-            ctx.ui.notify(`Session name set to: ${name}`);
-        },
-    });
 };
