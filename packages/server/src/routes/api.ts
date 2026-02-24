@@ -30,7 +30,7 @@ import {
     getSubscriptionsForUser,
     updateEnabledEvents,
 } from "../push.js";
-import { RateLimiter, isValidEmail, isValidPassword } from "../security.js";
+import { RateLimiter, isValidEmail, isValidPassword, cwdMatchesRoots } from "../security.js";
 import { isValidSkillName } from "../validation.js";
 
 // 5 requests per 15 minutes
@@ -850,10 +850,6 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
     return undefined;
 }
 
-export function normalizePath(value: string): string {
-    const trimmed = value.trim().replace(/\\/g, "/");
-    return trimmed.length > 1 ? trimmed.replace(/\/+$/, "") : trimmed;
-}
 
 /** Safely parse a JSON string that should be an array. Returns [] on failure. */
 export function parseJsonArray(value: string | null | undefined): any[] {
@@ -866,14 +862,6 @@ export function parseJsonArray(value: string | null | undefined): any[] {
     }
 }
 
-/** Check whether a cwd is inside one of the allowed roots. */
-export function cwdMatchesRoots(roots: string[], cwd: string): boolean {
-    const nCwd = normalizePath(cwd);
-    return roots.some((root) => {
-        const r = normalizePath(root);
-        return nCwd === r || nCwd.startsWith(r + "/");
-    });
-}
 
 async function pickRunnerIdLeastLoaded(): Promise<string | null> {
     const runners = (await getRunners()).slice().sort((a, b) => a.sessionCount - b.sessionCount);
@@ -890,15 +878,10 @@ async function pickRunnerIdForCwd(requestedCwd?: string): Promise<string | null>
         roots: r.roots as string[] | undefined,
     }));
 
-    const nCwd = normalizePath(cwd);
-
     // 1) Prefer runners that declare roots AND match the cwd.
     const rootMatched = all
         .filter((r) => Array.isArray(r.roots) && r.roots.length > 0)
-        .filter((r) => (r.roots ?? []).some((root) => {
-            const nRoot = normalizePath(root);
-            return nCwd === nRoot || nCwd.startsWith(nRoot + "/");
-        }))
+        .filter((r) => cwdMatchesRoots(r.roots ?? [], cwd))
         .sort((a, b) => a.sessionCount - b.sessionCount);
 
     if (rootMatched.length > 0) return rootMatched[0].runnerId;
