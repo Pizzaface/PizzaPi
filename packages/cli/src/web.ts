@@ -67,22 +67,41 @@ function findRepoRoot(): string | null {
     return null;
 }
 
+const REPO_URL = "https://github.com/Pizzaface/PizzaPi.git";
+
 function getRepoPath(): string {
     const repoRoot = findRepoRoot();
     if (repoRoot) return repoRoot;
 
     // Check if we have a cloned repo in ~/.pizzapi/web/repo
     const clonedRepo = join(WEB_DIR, "repo");
-    if (existsSync(join(clonedRepo, "Dockerfile"))) return clonedRepo;
+    if (existsSync(join(clonedRepo, "Dockerfile"))) {
+        // Pull latest changes
+        console.log("Updating PizzaPi repository...");
+        try {
+            execSync("git pull --rebase", { cwd: clonedRepo, stdio: "inherit" });
+        } catch {
+            console.warn("Warning: Could not update repo, using existing version.");
+        }
+        return clonedRepo;
+    }
 
-    console.error(
-        "Error: Could not find the PizzaPi repository.\n\n" +
-        "To use `pizza web`, either:\n" +
-        "  1. Run from within the PizzaPi repo, or\n" +
-        "  2. Clone it first:\n\n" +
-        `     git clone https://github.com/your-org/pizzapi.git ${clonedRepo}\n`
-    );
-    process.exit(1);
+    // Auto-clone the repo
+    console.log("Cloning PizzaPi repository...");
+    mkdirSync(WEB_DIR, { recursive: true });
+    try {
+        execSync(`git clone --depth 1 ${REPO_URL} ${clonedRepo}`, { stdio: "inherit" });
+    } catch {
+        console.error(
+            "Error: Failed to clone the PizzaPi repository.\n\n" +
+            "You can clone it manually:\n" +
+            `  git clone ${REPO_URL} ${clonedRepo}\n\n` +
+            "Then run `pizza web` again."
+        );
+        process.exit(1);
+    }
+
+    return clonedRepo;
 }
 
 function generateComposeFile(repoPath: string, port: number): string {
