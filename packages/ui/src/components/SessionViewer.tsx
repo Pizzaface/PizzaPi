@@ -1018,22 +1018,29 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
             <span className="font-semibold">AskUserQuestion:</span> {pendingQuestion.question}
             {pendingQuestion.options && pendingQuestion.options.length > 0 && (
               <div className="mt-2 flex flex-wrap gap-2">
-                {pendingQuestion.options.map((option) => (
-                  <Button
-                    key={option}
-                    variant="outline"
-                    size="sm"
-                    className="h-7 border-amber-400/30 bg-background/20 text-amber-100 hover:bg-amber-400/20 hover:text-white"
-                    onClick={() => {
-                      if (onSendInput) {
-                        onSendInput(option);
-                        setInput("");
-                      }
-                    }}
-                  >
-                    {option}
-                  </Button>
-                ))}
+                {pendingQuestion.options.map((option) => {
+                  const isTypeYourOwn = option.toLowerCase().replace(/[^a-z]/g, "") === "typeyourown";
+                  return (
+                    <Button
+                      key={option}
+                      variant="outline"
+                      size="sm"
+                      className={`h-7 border-amber-400/30 bg-background/20 text-amber-100 hover:bg-amber-400/20 hover:text-white ${isTypeYourOwn ? "border-dashed" : ""}`}
+                      onClick={() => {
+                        if (isTypeYourOwn) {
+                          // Focus the composer input instead of sending
+                          const el = document.querySelector<HTMLTextAreaElement>("[data-pp-prompt]");
+                          el?.focus();
+                        } else if (onSendInput) {
+                          onSendInput(option);
+                          setInput("");
+                        }
+                      }}
+                    >
+                      {isTypeYourOwn ? "✏️ Type your own" : option}
+                    </Button>
+                  );
+                })}
               </div>
             )}
           </div>

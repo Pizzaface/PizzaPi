@@ -1626,10 +1626,10 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 options: {
                     type: "array",
                     items: { type: "string" },
-                    description: "Optional list of predefined choices for the user to select from.",
+                    description: "Predefined choices for the user to select from. Always include a \"Type your own\" option as the last choice to allow free-form input.",
                 },
             },
-            required: ["question"],
+            required: ["question", "options"],
             additionalProperties: false,
         } as any,
         async execute(toolCallId, rawParams, signal, onUpdate, ctx) {
