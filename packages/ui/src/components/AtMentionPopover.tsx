@@ -53,6 +53,14 @@ export interface AtMentionPopoverProps {
   onDrillInto: (path: string) => void;
   /** Called when the popover should close */
   onClose: () => void;
+  /** Called when navigating back. If not provided, internal back logic is used. */
+  onBack?: () => void;
+  /** Index of highlighted item for keyboard navigation (-1 for none) */
+  highlightedIndex?: number;
+  /** Callback when highlighted index changes */
+  onHighlightedIndexChange?: (index: number) => void;
+  /** Callback when highlighted entry changes (for Tab key handling) */
+  onHighlightedEntryChange?: (entry: Entry | null) => void;
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -65,6 +73,10 @@ export function AtMentionPopover({
   onSelectFile,
   onDrillInto,
   onClose,
+  onBack,
+  highlightedIndex = 0,
+  onHighlightedIndexChange,
+  onHighlightedEntryChange,
 }: AtMentionPopoverProps) {
   // Fetch files for the current path
   const { entries, loading, error } = useAtMentionFiles(runnerId, path || ".", open);
@@ -110,6 +122,10 @@ export function AtMentionPopover({
 
   // Handle back navigation
   const handleBack = React.useCallback(() => {
+    if (onBack) {
+      onBack();
+      return;
+    }
     if (!path) return;
     // Remove trailing slash, then find last slash to get parent
     const withoutTrailing = path.replace(/\/$/, "");
@@ -120,7 +136,24 @@ export function AtMentionPopover({
     } else {
       onDrillInto(withoutTrailing.slice(0, lastSlashIndex + 1));
     }
-  }, [path, onDrillInto]);
+  }, [path, onDrillInto, onBack]);
+
+  // Track the currently highlighted value for Tab handling
+  const [highlightedValue, setHighlightedValue] = React.useState<string>("");
+
+  // Reset highlighted index when entries change
+  React.useEffect(() => {
+    if (filteredEntries.length > 0) {
+      const firstEntry = filteredEntries[0] ?? null;
+      setHighlightedValue(firstEntry?.name ?? "");
+      onHighlightedIndexChange?.(0);
+      onHighlightedEntryChange?.(firstEntry);
+    } else {
+      setHighlightedValue("");
+      onHighlightedIndexChange?.(-1);
+      onHighlightedEntryChange?.(null);
+    }
+  }, [filteredEntries, onHighlightedIndexChange, onHighlightedEntryChange]);
 
   // Keyboard navigation
   const handleKeyDown = React.useCallback(
@@ -133,9 +166,33 @@ export function AtMentionPopover({
         // Go back when backspace is pressed with no query
         e.preventDefault();
         handleBack();
+      } else if (e.key === "Tab" && filteredEntries.length > 0) {
+        // Tab drills into highlighted folder
+        const entry = filteredEntries.find(e => e.name === highlightedValue) ?? filteredEntries[0];
+        if (entry?.isDirectory) {
+          e.preventDefault();
+          e.stopPropagation();
+          const newPath = path ? `${path}${entry.name}/` : `${entry.name}/`;
+          onDrillInto(newPath);
+        }
+      } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        // Track highlighted item for Tab functionality
+        const currentIndex = filteredEntries.findIndex(e => e.name === highlightedValue);
+        let newIndex: number;
+        if (e.key === "ArrowDown") {
+          newIndex = currentIndex < filteredEntries.length - 1 ? currentIndex + 1 : 0;
+        } else {
+          newIndex = currentIndex > 0 ? currentIndex - 1 : filteredEntries.length - 1;
+        }
+        const newEntry = filteredEntries[newIndex];
+        if (newEntry) {
+          setHighlightedValue(newEntry.name);
+          onHighlightedIndexChange?.(newIndex);
+          onHighlightedEntryChange?.(newEntry);
+        }
       }
     },
-    [onClose, query, path, handleBack]
+    [onClose, query, path, handleBack, filteredEntries, highlightedValue, onDrillInto, onHighlightedIndexChange, onHighlightedEntryChange]
   );
 
   if (!open) return null;

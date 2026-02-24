@@ -55,6 +55,8 @@ import { cn } from "@/lib/utils";
 import { formatPathTail } from "@/lib/path";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { ArrowDownIcon, CheckCircle2, ChevronsUpDown, Circle, CircleDashed, MessageSquare, OctagonX, PaperclipIcon, Plus, Zap, Clock, X, Trash2, TerminalIcon, DownloadIcon, XCircle, FolderTree } from "lucide-react";
+import { AtMentionPopover } from "@/components/AtMentionPopover";
+import type { Entry as AtMentionEntry } from "@/hooks/useAtMentionFiles";
 
 export type { RelayMessage } from "@/components/session-viewer/types";
 
@@ -399,6 +401,8 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
   const [atMentionPath, setAtMentionPath] = React.useState("");
   const [atMentionQuery, setAtMentionQuery] = React.useState("");
   const [atMentionTriggerOffset, setAtMentionTriggerOffset] = React.useState(0);
+  const [atMentionHighlightedIndex, setAtMentionHighlightedIndex] = React.useState(0);
+  const [atMentionHighlightedEntry, setAtMentionHighlightedEntry] = React.useState<AtMentionEntry | null>(null);
 
   React.useEffect(() => {
     if (!sessionId) {
@@ -586,6 +590,75 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     if (!query) return list;
     return list.filter((c) => c.name.toLowerCase().includes(query));
   }, [commandQuery, supportedWebCommands]);
+
+  // @-mention file selection: replace trigger to cursor with @{relativePath} 
+  const handleAtMentionSelectFile = React.useCallback((relativePath: string) => {
+    const textarea = document.querySelector<HTMLTextAreaElement>("[data-pp-prompt]");
+    if (!textarea) return;
+
+    const cursorPosition = textarea.selectionStart;
+    const value = input;
+
+    // Replace from trigger offset to cursor position with @{relativePath} (trailing space)
+    const newValue = value.slice(0, atMentionTriggerOffset) + "@" + relativePath + " " + value.slice(cursorPosition);
+    setInput(newValue);
+
+    // Position cursor after the inserted text
+    const newCursorPosition = atMentionTriggerOffset + 1 + relativePath.length + 1; // @ + path + space
+    requestAnimationFrame(() => {
+      textarea.setSelectionRange(newCursorPosition, newCursorPosition);
+      textarea.focus();
+    });
+
+    // Reset @-mention state
+    setAtMentionOpen(false);
+    setAtMentionQuery("");
+    setAtMentionPath("");
+    setAtMentionTriggerOffset(0);
+    setAtMentionHighlightedIndex(0);
+  }, [input, atMentionTriggerOffset]);
+
+  // @-mention drill into directory
+  const handleAtMentionDrillInto = React.useCallback((newPath: string) => {
+    setAtMentionPath(newPath);
+    setAtMentionQuery("");
+    setAtMentionHighlightedIndex(0);
+    // Update the input text to reflect the new path
+    const textarea = document.querySelector<HTMLTextAreaElement>("[data-pp-prompt]");
+    if (textarea) {
+      const cursorPosition = textarea.selectionStart;
+      const value = input;
+      // Replace from trigger offset to cursor with @{newPath}
+      const newValue = value.slice(0, atMentionTriggerOffset) + "@" + newPath + value.slice(cursorPosition);
+      setInput(newValue);
+      // Position cursor after the path
+      const newCursorPosition = atMentionTriggerOffset + 1 + newPath.length;
+      requestAnimationFrame(() => {
+        textarea.setSelectionRange(newCursorPosition, newCursorPosition);
+        textarea.focus();
+      });
+    }
+  }, [input, atMentionTriggerOffset]);
+
+  // @-mention back navigation: pop last path segment
+  const handleAtMentionBack = React.useCallback(() => {
+    if (!atMentionPath) return;
+    // Pop the last path segment: path.split('/').slice(0, -1).join('/')
+    const segments = atMentionPath.split("/").filter(Boolean);
+    const newPath = segments.slice(0, -1).join("/");
+    const newPathWithSlash = newPath ? newPath + "/" : "";
+    handleAtMentionDrillInto(newPathWithSlash);
+  }, [atMentionPath, handleAtMentionDrillInto]);
+
+  // @-mention close popover
+  const handleAtMentionClose = React.useCallback(() => {
+    setAtMentionOpen(false);
+    setAtMentionQuery("");
+    setAtMentionPath("");
+    setAtMentionTriggerOffset(0);
+    setAtMentionHighlightedIndex(0);
+    setAtMentionHighlightedEntry(null);
+  }, []);
 
   const trimmedInput = input.trimStart();
   const isResumeMode = /^\/resume(?:\s|$)/i.test(trimmedInput);
@@ -1132,15 +1205,22 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
           </div>
         )}
 
-        {/* @-mention file autocomplete popover (stub - will be replaced by AtMentionPopover component) */}
+        {/* @-mention file autocomplete popover */}
         {sessionId && runnerId && atMentionOpen && (
-          <div className="mb-2 rounded-md border border-border bg-popover text-popover-foreground shadow-sm px-3 py-2">
-            <div className="text-xs text-muted-foreground">
-              <span className="font-medium">@-mention files</span>
-              <span className="ml-2">Path: {atMentionPath || "/"}</span>
-              <span className="ml-2">Query: "{atMentionQuery}"</span>
-              <span className="ml-2 opacity-60">(AtMentionPopover pending)</span>
-            </div>
+          <div className="mb-2">
+            <AtMentionPopover
+              open={atMentionOpen}
+              runnerId={runnerId}
+              path={atMentionPath}
+              query={atMentionQuery}
+              onSelectFile={handleAtMentionSelectFile}
+              onDrillInto={handleAtMentionDrillInto}
+              onClose={handleAtMentionClose}
+              onBack={handleAtMentionBack}
+              highlightedIndex={atMentionHighlightedIndex}
+              onHighlightedIndexChange={setAtMentionHighlightedIndex}
+              onHighlightedEntryChange={setAtMentionHighlightedEntry}
+            />
           </div>
         )}
 
@@ -1262,8 +1342,35 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                     setAtMentionQuery("");
                     setAtMentionPath("");
                     setAtMentionTriggerOffset(0);
+                    setAtMentionHighlightedIndex(0);
+                    setAtMentionHighlightedEntry(null);
                     return;
                   }
+
+                  // Tab drills into highlighted folder when @-mention is open
+                  if (atMentionOpen && event.key === "Tab" && atMentionHighlightedEntry?.isDirectory) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    const newPath = atMentionPath ? `${atMentionPath}${atMentionHighlightedEntry.name}/` : `${atMentionHighlightedEntry.name}/`;
+                    handleAtMentionDrillInto(newPath);
+                    return;
+                  }
+
+                  // Enter selects highlighted file when @-mention is open
+                  if (atMentionOpen && event.key === "Enter" && !event.shiftKey && atMentionHighlightedEntry) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    if (atMentionHighlightedEntry.isDirectory) {
+                      const newPath = atMentionPath ? `${atMentionPath}${atMentionHighlightedEntry.name}/` : `${atMentionHighlightedEntry.name}/`;
+                      handleAtMentionDrillInto(newPath);
+                    } else {
+                      const relativePath = atMentionPath ? `${atMentionPath}${atMentionHighlightedEntry.name}` : atMentionHighlightedEntry.name;
+                      handleAtMentionSelectFile(relativePath);
+                    }
+                    return;
+                  }
+
+
 
                   // If we're in slash mode, show suggestions + allow selecting with Enter.
                   if (commandOpen) {
