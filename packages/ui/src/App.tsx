@@ -2672,6 +2672,7 @@ export function App() {
                   onToggleFileExplorer={() => setShowFileExplorer((v) => !v)}
                   showFileExplorerButton={!!activeSessionInfo?.runnerId && !!activeSessionInfo?.cwd}
                   todoList={todoList}
+                  runnerId={activeSessionInfo?.runnerId ?? undefined}
                 />
               )}
             </div>

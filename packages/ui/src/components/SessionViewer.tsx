@@ -128,6 +128,8 @@ export interface SessionViewerProps {
   showFileExplorerButton?: boolean;
   /** Current agent todo list */
   todoList?: TodoItem[];
+  /** Runner ID for the current session (used for runner files API) */
+  runnerId?: string;
 }
 
 function formatTokenCount(n: number): string {
