@@ -3,6 +3,7 @@ WORKDIR /app
 
 # Copy workspace config for layer caching
 COPY package.json bun.lock* ./
+COPY patches/ patches/
 COPY packages/protocol/package.json packages/protocol/
 COPY packages/tools/package.json packages/tools/
 COPY packages/server/package.json packages/server/
