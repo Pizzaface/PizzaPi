@@ -18,7 +18,7 @@ import type {
     RunnerSocketData,
     RunnerSkill,
 } from "@pizzapi/protocol";
-import { apiKeyAuthMiddleware } from "./auth.js";
+import { runnerAuthMiddleware } from "./auth.js";
 import {
     registerRunner,
     updateRunnerSkills,
@@ -149,8 +149,8 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
         RunnerSocketData
     > = io.of("/runner");
 
-    // Auth: validate API key from handshake
-    runner.use(apiKeyAuthMiddleware() as Parameters<typeof runner.use>[0]);
+    // Auth: validate API key or org-scoped JWT from handshake
+    runner.use(runnerAuthMiddleware() as Parameters<typeof runner.use>[0]);
 
     runner.on("connection", (socket) => {
         console.log(`[sio/runner] connected: ${socket.id}`);

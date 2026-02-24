@@ -16,6 +16,7 @@
 // ============================================================================
 
 import { createClient, type RedisClientType } from "redis";
+import { redisKey } from "../redis-prefix.js";
 
 // ── Redis connection ────────────────────────────────────────────────────────
 
@@ -47,51 +48,51 @@ export function getStateRedis(): RedisClientType | null {
 
 // ── Key helpers ─────────────────────────────────────────────────────────────
 
-const KEY_PREFIX = "pizzapi:sio";
+const KEY_BASE = "pizzapi:sio";
 
 function sessionKey(sessionId: string): string {
-    return `${KEY_PREFIX}:session:${sessionId}`;
+    return redisKey(`${KEY_BASE}:session:${sessionId}`);
 }
 
 function runnerKey(runnerId: string): string {
-    return `${KEY_PREFIX}:runner:${runnerId}`;
+    return redisKey(`${KEY_BASE}:runner:${runnerId}`);
 }
 
 function terminalKey(terminalId: string): string {
-    return `${KEY_PREFIX}:terminal:${terminalId}`;
+    return redisKey(`${KEY_BASE}:terminal:${terminalId}`);
 }
 
 function seqKey(sessionId: string): string {
-    return `${KEY_PREFIX}:seq:${sessionId}`;
+    return redisKey(`${KEY_BASE}:seq:${sessionId}`);
 }
 
 function runnerLinkKey(sessionId: string): string {
-    return `${KEY_PREFIX}:runner-link:${sessionId}`;
+    return redisKey(`${KEY_BASE}:runner-link:${sessionId}`);
 }
 
 /** Index key listing all session IDs for a given user. */
 function userSessionsKey(userId: string): string {
-    return `${KEY_PREFIX}:user-sessions:${userId}`;
+    return redisKey(`${KEY_BASE}:user-sessions:${userId}`);
 }
 
 /** Global set of all active session IDs. */
 function allSessionsKey(): string {
-    return `${KEY_PREFIX}:all-sessions`;
+    return redisKey(`${KEY_BASE}:all-sessions`);
 }
 
 /** Index key listing all runner IDs for a given user. */
 function userRunnersKey(userId: string): string {
-    return `${KEY_PREFIX}:user-runners:${userId}`;
+    return redisKey(`${KEY_BASE}:user-runners:${userId}`);
 }
 
 /** Global set of all active runner IDs. */
 function allRunnersKey(): string {
-    return `${KEY_PREFIX}:all-runners`;
+    return redisKey(`${KEY_BASE}:all-runners`);
 }
 
 /** Index key listing all terminal IDs for a given runner. */
 function runnerTerminalsKey(runnerId: string): string {
-    return `${KEY_PREFIX}:runner-terminals:${runnerId}`;
+    return redisKey(`${KEY_BASE}:runner-terminals:${runnerId}`);
 }
 
 // ── TTL constants ───────────────────────────────────────────────────────────

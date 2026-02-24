@@ -18,6 +18,7 @@ import { createAdapter } from "@socket.io/redis-adapter";
 import { createClient } from "redis";
 import { registerNamespaces } from "./ws/namespaces/index.js";
 import { initSioRegistry } from "./ws/sio-registry.js";
+import { redisKey } from "./redis-prefix.js";
 import { initStateRedis } from "./ws/sio-state.js";
 
 const PORT = parseInt(process.env.PORT ?? "3000");
@@ -159,7 +160,7 @@ try {
             maxDisconnectionDuration: 2 * 60 * 1000, // 2 minutes
             skipMiddlewares: true,
         },
-        adapter: createAdapter(pubClient, subClient, { key: "pizzapi-sio" }),
+        adapter: createAdapter(pubClient, subClient, { key: redisKey("pizzapi-sio") }),
         transports: ["websocket", "polling"],
     });
 

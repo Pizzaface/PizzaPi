@@ -1,5 +1,6 @@
 import { createClient } from "redis";
 import { getEphemeralTtlMs } from "./store.js";
+import { redisKey } from "../redis-prefix.js";
 
 const DEFAULT_REDIS_URL = "redis://127.0.0.1:6379";
 const DEFAULT_EVENT_BUFFER_SIZE = 1000;
@@ -39,7 +40,7 @@ function ttlMsForSession(isEphemeral: boolean | undefined): number {
 }
 
 function eventsKey(sessionId: string): string {
-    return `pizzapi:relay:session:${sessionId}:events`;
+    return redisKey(`pizzapi:relay:session:${sessionId}:events`);
 }
 
 type RelayRedisClient = ReturnType<typeof createClient>;
