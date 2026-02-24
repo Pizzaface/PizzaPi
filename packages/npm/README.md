@@ -60,7 +60,7 @@ PizzaPi is designed to be self-hosted. You'll need:
 1. A PizzaPi relay server (the web UI + API)
 2. One or more PizzaPi CLI nodes connected to the relay
 
-See the [full documentation](https://github.com/badlogic/PizzaPi) for server setup instructions.
+See the [full documentation](https://github.com/Pizzaface/PizzaPi) for server setup instructions.
 
 ## Configuration
 

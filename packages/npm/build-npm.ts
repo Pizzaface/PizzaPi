@@ -220,9 +220,9 @@ const mainPkg = {
     ],
     repository: {
         type: "git",
-        url: "git+https://github.com/badlogic/PizzaPi.git",
+        url: "git+https://github.com/Pizzaface/PizzaPi.git",
     },
-    homepage: "https://github.com/badlogic/PizzaPi",
+    homepage: "https://github.com/Pizzaface/PizzaPi",
     publishConfig: {
         access: "public",
     },
