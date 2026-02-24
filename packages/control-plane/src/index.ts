@@ -1,6 +1,7 @@
 import { auth, kysely } from "./auth.js";
 import { ensureSigningKey, issueOrgToken, getJwks } from "./jwt.js";
 import { provisionInstance, deprovisionInstance } from "./provisioner.js";
+import { startHealthCheckLoop } from "./health-check.js";
 
 const PORT = parseInt(process.env.PORT ?? "3100");
 
@@ -152,8 +153,55 @@ const server = Bun.serve({
         }
 
         // Routes with :slug
+        const orgStatusMatch = pathname.match(/^\/api\/orgs\/([a-z0-9-]+)\/status$/);
         const orgSlugMatch = pathname.match(/^\/api\/orgs\/([a-z0-9-]+)$/);
         const orgMembersMatch = pathname.match(/^\/api\/orgs\/([a-z0-9-]+)\/members$/);
+
+        // GET /api/orgs/:slug/status — instance health info
+        if (orgStatusMatch && req.method === "GET") {
+            const session = await getSession(req);
+            if (!session?.user) return json({ error: "Unauthorized" }, 401);
+
+            const slug = orgStatusMatch[1];
+            const org = await kysely
+                .selectFrom("organizations")
+                .select("id")
+                .where("slug", "=", slug)
+                .where("status", "!=", "deleted")
+                .executeTakeFirst();
+
+            if (!org) return json({ error: "Not found" }, 404);
+
+            const membership = await kysely
+                .selectFrom("org_memberships")
+                .select("role")
+                .where("org_id", "=", org.id)
+                .where("user_id", "=", session.user.id)
+                .executeTakeFirst();
+
+            if (!membership) return json({ error: "Not found" }, 404);
+
+            const instance = await kysely
+                .selectFrom("org_instances")
+                .select(["id", "status", "health_checked_at", "host", "port", "created_at"])
+                .where("org_id", "=", org.id)
+                .where("status", "!=", "stopped")
+                .executeTakeFirst();
+
+            return json({
+                org_slug: slug,
+                instance: instance
+                    ? {
+                          id: instance.id,
+                          status: instance.status,
+                          health_checked_at: instance.health_checked_at,
+                          host: instance.host,
+                          port: instance.port,
+                          created_at: instance.created_at,
+                      }
+                    : null,
+            });
+        }
 
         // GET /api/orgs/:slug
         if (orgSlugMatch && req.method === "GET") {
@@ -333,4 +381,5 @@ const server = Bun.serve({
     },
 });
 
+startHealthCheckLoop();
 console.log(`Control-plane server running on http://localhost:${server.port}`);
