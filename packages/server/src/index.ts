@@ -1,5 +1,6 @@
 import { auth, trustedOrigins } from "./auth.js";
 import { handleApi } from "./routes/api.js";
+import { serveStaticFile } from "./static.js";
 import {
     ensureRelaySessionTables,
     getEphemeralSweepIntervalMs,
@@ -111,6 +112,10 @@ async function handleFetch(req: Request): Promise<Response> {
         console.error("[api] handleApi threw:", e);
         return Response.json({ error: "Internal server error" }, { status: 500 });
     }
+
+    // ── Static UI files (SPA fallback) ───────────────────────────────────
+    const staticRes = await serveStaticFile(url.pathname);
+    if (staticRes) return staticRes;
 
     return Response.json({ error: "Not found" }, { status: 404 });
 }

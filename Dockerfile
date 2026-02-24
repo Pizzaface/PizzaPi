@@ -23,5 +23,8 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/packages ./packages
 COPY --from=builder /app/package.json ./
 
+ENV PIZZAPI_UI_DIR=/app/packages/ui/dist
+ENV AUTH_DB_PATH=/app/data/auth.db
+
 EXPOSE 3000
 CMD ["bun", "run", "packages/server/dist/index.js"]

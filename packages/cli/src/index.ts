@@ -91,6 +91,12 @@ async function main() {
         process.exit(code);
     }
 
+    if (args[0] === "web") {
+        const { runWeb } = await import("./web.js");
+        await runWeb(args.slice(1));
+        return;
+    }
+
     if (args[0] === "setup") {
         await runSetup({ force: true });
         return;

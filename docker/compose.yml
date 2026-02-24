@@ -15,6 +15,8 @@ services:
     environment:
       - PORT=3000
       - PIZZAPI_REDIS_URL=redis://redis:6379
+    volumes:
+      - pizzapi-data:/app/data
     depends_on:
       - redis
     restart: unless-stopped
@@ -37,3 +39,6 @@ services:
       - /app/node_modules
     profiles:
       - dev
+
+volumes:
+  pizzapi-data:
