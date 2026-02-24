@@ -1,84 +1,162 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="512" height="512">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="30 70 540 540" width="512" height="512">
   <defs>
-    <filter id="burnt-cheese" x="0%" y="0%" width="100%" height="100%">
-      <feTurbulence type="fractalNoise" baseFrequency="0.85" numOctaves="3" result="noise"/>
-      <feColorMatrix type="matrix"
-        values="0 0 0 0 0
-                0 0 0 0 0
-                0 0 0 0 0
-                0 0 0 18 -10"
-        in="noise" result="speckles-alpha"/>
-      <feFlood floodColor="#92400e" floodOpacity="0.5" result="brown-flood"/>
-      <feComposite operator="in" in="brown-flood" in2="speckles-alpha" result="colored-speckles"/>
-      <feComposite operator="over" in="colored-speckles" in2="SourceGraphic"/>
+    <filter id="ts" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="1.5" dy="2.5" stdDeviation="1.5" flood-opacity="0.5" flood-color="#000"/>
     </filter>
+
+    <g id="pepperoni" filter="url(#ts)">
+      <circle cx="0" cy="0" r="25" fill="#d13838" stroke="#a82222" stroke-width="2"/>
+      <circle cx="-10" cy="-8" r="2.5" fill="#8c1616"/>
+      <circle cx="12" cy="-4" r="3" fill="#8c1616"/>
+      <circle cx="-2" cy="12" r="2" fill="#8c1616"/>
+      <circle cx="8" cy="10" r="2.5" fill="#8c1616"/>
+      <circle cx="-12" cy="8" r="1.5" fill="#8c1616"/>
+      <circle cx="4" cy="-12" r="2" fill="#8c1616"/>
+      <path d="M -15 -15 Q 0 -22 15 -15" fill="none" stroke="#e86161" stroke-width="1.5" stroke-linecap="round" opacity="0.6"/>
+    </g>
+
+    <g id="mushroom" filter="url(#ts)">
+      <path d="M -14 0 C -14 -12 14 -12 14 0 C 14 4 10 7 4 7 L 4 15 C 4 18 -4 18 -4 15 L -4 7 C -10 7 -14 4 -14 0 Z" fill="#e3dacc" stroke="#bdae97" stroke-width="1.5"/>
+      <path d="M -8 -2 C -8 -6 -2 -8 0 -8" fill="none" stroke="#bdae97" stroke-width="1.5" stroke-linecap="round"/>
+      <path d="M 4 -2 C 4 -5 2 -7 0 -7" fill="none" stroke="#bdae97" stroke-width="1.5" stroke-linecap="round"/>
+    </g>
+
+    <g id="olive" filter="url(#ts)">
+      <circle cx="0" cy="0" r="8" fill="#141414" stroke="#2b2b2b" stroke-width="3"/>
+      <circle cx="-3.5" cy="-3.5" r="1.5" fill="#5c5c5c"/>
+    </g>
+
+    <g id="pepper" filter="url(#ts)">
+      <path d="M -15 -5 Q -8 -15 0 -10 Q 8 -15 15 -5 Q 10 10 0 15 Q -10 10 -15 -5 Z" fill="none" stroke="#388e3c" stroke-width="4.5" stroke-linejoin="round"/>
+      <path d="M -15 -5 Q -8 -15 0 -10 Q 8 -15 15 -5 Q 10 10 0 15 Q -10 10 -15 -5 Z" fill="none" stroke="#66bb6a" stroke-width="1.5" stroke-linejoin="round" opacity="0.8"/>
+    </g>
+
+    <g id="basil" filter="url(#ts)">
+      <path d="M 0 -18 C 12 -18 18 -6 18 0 C 18 12 0 18 0 18 C 0 18 -18 12 -18 0 C -18 -6 -12 -18 0 -18 Z" fill="#2e7d32" stroke="#1b5e20" stroke-width="1"/>
+      <path d="M 0 -16 L 0 16" fill="none" stroke="#1b5e20" stroke-width="1.5"/>
+      <path d="M 0 0 Q 6 -4 10 -2 M 0 6 Q -6 2 -10 4 M 0 -8 Q -6 -12 -10 -10" fill="none" stroke="#1b5e20" stroke-width="1"/>
+    </g>
+
+    <g id="burn">
+      <ellipse cx="0" cy="0" rx="16" ry="6" fill="#a6581c" opacity="0.3"/>
+      <ellipse cx="2" cy="1" rx="8" ry="3" fill="#803e0b" opacity="0.4"/>
+    </g>
   </defs>
 
-  <!-- Background circle (so maskable icons look good) -->
-  <circle cx="50" cy="50" r="50" fill="#1c1917"/>
+  <!-- Dark background circle for maskable icon -->
+  <circle cx="300" cy="340" r="270" fill="#1c1917"/>
 
-  <!-- Rotate the whole pie -30deg so first slice is centered at top -->
-  <g transform="rotate(-30 50 50)">
+  <!-- Crust -->
+  <circle cx="300" cy="340" r="250" fill="#edb574"/>
+  <circle cx="300" cy="340" r="236" fill="none" stroke="#d99c52" stroke-width="12"/>
+  <circle cx="300" cy="340" r="248" fill="none" stroke="#fce4c5" stroke-width="3" opacity="0.5"/>
 
-    <!-- Slice 0: rot 0° -->
-    <g transform="rotate(0 50 50)">
-      <path d="M 50 50 L 50 2 A 48 48 0 0 1 91.6 26 Z" fill="#b45309" stroke="#78350f" stroke-width="1"/>
-      <path d="M 50 50 L 50 9 A 41 41 0 0 1 85.5 29.5 Z" fill="#fcd34d" filter="url(#burnt-cheese)"/>
-      <circle cx="62" cy="25" r="3.5" fill="#ef4444" opacity="0.9"/>
-      <circle cx="56" cy="38" r="3.5" fill="#ef4444" opacity="0.9"/>
-      <circle cx="70" cy="36" r="2.5" fill="#ef4444" opacity="0.9"/>
-      <circle cx="65" cy="18" r="2.8" fill="#ef4444" opacity="0.9"/>
-    </g>
+  <!-- Burns -->
+  <use href="#burn" transform="translate(300, 105)"/>
+  <use href="#burn" transform="translate(465, 175) rotate(45)"/>
+  <use href="#burn" transform="translate(535, 340) rotate(90)"/>
+  <use href="#burn" transform="translate(465, 505) rotate(135)"/>
+  <use href="#burn" transform="translate(300, 575) rotate(180)"/>
+  <use href="#burn" transform="translate(135, 505) rotate(225)"/>
+  <use href="#burn" transform="translate(65, 340) rotate(270)"/>
+  <use href="#burn" transform="translate(135, 175) rotate(315)"/>
 
-    <!-- Slice 1: rot 60° -->
-    <g transform="rotate(60 50 50)">
-      <path d="M 50 50 L 50 2 A 48 48 0 0 1 91.6 26 Z" fill="#b45309" stroke="#78350f" stroke-width="1"/>
-      <path d="M 50 50 L 50 9 A 41 41 0 0 1 85.5 29.5 Z" fill="#fcd34d" filter="url(#burnt-cheese)"/>
-      <circle cx="65" cy="30" r="3.5" fill="#ef4444" opacity="0.9"/>
-      <circle cx="54" cy="35" r="3.5" fill="#ef4444" opacity="0.9"/>
-      <circle cx="72" cy="22" r="2.5" fill="#ef4444" opacity="0.9"/>
-      <circle cx="60" cy="20" r="3.0" fill="#ef4444" opacity="0.9"/>
-    </g>
+  <!-- Sauce -->
+  <circle cx="300" cy="340" r="225" fill="#cc3721"/>
+  <circle cx="300" cy="340" r="218" fill="none" stroke="#a3200e" stroke-width="5" opacity="0.5"/>
 
-    <!-- Slice 2: rot 120° -->
-    <g transform="rotate(120 50 50)">
-      <path d="M 50 50 L 50 2 A 48 48 0 0 1 91.6 26 Z" fill="#b45309" stroke="#78350f" stroke-width="1"/>
-      <path d="M 50 50 L 50 9 A 41 41 0 0 1 85.5 29.5 Z" fill="#fcd34d" filter="url(#burnt-cheese)"/>
-      <circle cx="60" cy="22" r="3.5" fill="#ef4444" opacity="0.9"/>
-      <circle cx="58" cy="40" r="3.5" fill="#ef4444" opacity="0.9"/>
-      <circle cx="75" cy="32" r="2.5" fill="#ef4444" opacity="0.9"/>
-      <circle cx="66" cy="16" r="2.8" fill="#ef4444" opacity="0.9"/>
-    </g>
+  <!-- Cheese -->
+  <circle cx="300" cy="340" r="215" fill="#f7d54d"/>
+  <circle cx="200" cy="250" r="45" fill="#fae178"/>
+  <circle cx="380" cy="260" r="50" fill="#fae178"/>
+  <circle cx="260" cy="450" r="60" fill="#fae178"/>
+  <circle cx="340" cy="180" r="40" fill="#fae178"/>
+  <circle cx="430" cy="360" r="35" fill="#fae178"/>
+  <circle cx="410" cy="410" r="40" fill="#eebb2a"/>
+  <circle cx="280" cy="200" r="45" fill="#eebb2a"/>
+  <circle cx="180" cy="380" r="35" fill="#eebb2a"/>
+  <circle cx="280" cy="330" r="45" fill="#eebb2a"/>
 
-    <!-- Slice 3: rot 180° -->
-    <g transform="rotate(180 50 50)">
-      <path d="M 50 50 L 50 2 A 48 48 0 0 1 91.6 26 Z" fill="#b45309" stroke="#78350f" stroke-width="1"/>
-      <path d="M 50 50 L 50 9 A 41 41 0 0 1 85.5 29.5 Z" fill="#fcd34d" filter="url(#burnt-cheese)"/>
-      <circle cx="64" cy="26" r="3.5" fill="#ef4444" opacity="0.9"/>
-      <circle cx="53" cy="36" r="3.5" fill="#ef4444" opacity="0.9"/>
-      <circle cx="68" cy="42" r="2.5" fill="#ef4444" opacity="0.9"/>
-      <circle cx="62" cy="15" r="2.8" fill="#ef4444" opacity="0.9"/>
-    </g>
-
-    <!-- Slice 4: rot 240° -->
-    <g transform="rotate(240 50 50)">
-      <path d="M 50 50 L 50 2 A 48 48 0 0 1 91.6 26 Z" fill="#b45309" stroke="#78350f" stroke-width="1"/>
-      <path d="M 50 50 L 50 9 A 41 41 0 0 1 85.5 29.5 Z" fill="#fcd34d" filter="url(#burnt-cheese)"/>
-      <circle cx="66" cy="32" r="3.5" fill="#ef4444" opacity="0.9"/>
-      <circle cx="55" cy="28" r="3.5" fill="#ef4444" opacity="0.9"/>
-      <circle cx="72" cy="40" r="2.5" fill="#ef4444" opacity="0.9"/>
-      <circle cx="58" cy="18" r="3.0" fill="#ef4444" opacity="0.9"/>
-    </g>
-
-    <!-- Slice 5: rot 300° -->
-    <g transform="rotate(300 50 50)">
-      <path d="M 50 50 L 50 2 A 48 48 0 0 1 91.6 26 Z" fill="#b45309" stroke="#78350f" stroke-width="1"/>
-      <path d="M 50 50 L 50 9 A 41 41 0 0 1 85.5 29.5 Z" fill="#fcd34d" filter="url(#burnt-cheese)"/>
-      <circle cx="61" cy="24" r="3.5" fill="#ef4444" opacity="0.9"/>
-      <circle cx="57" cy="38" r="3.5" fill="#ef4444" opacity="0.9"/>
-      <circle cx="74" cy="28" r="2.5" fill="#ef4444" opacity="0.9"/>
-      <circle cx="68" cy="18" r="3.0" fill="#ef4444" opacity="0.9"/>
-    </g>
-
+  <!-- Oregano -->
+  <g fill="#4e5c27" opacity="0.6">
+    <circle cx="300" cy="340" r="1.5"/><circle cx="290" cy="350" r="1"/><circle cx="310" cy="360" r="2"/><circle cx="305" cy="325" r="1.5"/>
+    <circle cx="210" cy="220" r="1.5"/><circle cx="215" cy="225" r="1"/><circle cx="225" cy="215" r="2"/><circle cx="190" cy="240" r="1.5"/>
+    <circle cx="350" cy="200" r="1.5"/><circle cx="360" cy="190" r="1"/><circle cx="380" cy="210" r="2"/><circle cx="390" cy="190" r="1"/>
+    <circle cx="400" cy="350" r="1.5"/><circle cx="410" cy="360" r="1.5"/><circle cx="430" cy="340" r="1"/><circle cx="420" cy="380" r="2"/>
+    <circle cx="180" cy="320" r="1.5"/><circle cx="190" cy="330" r="1"/><circle cx="170" cy="350" r="2"/><circle cx="200" cy="370" r="1.5"/>
   </g>
+
+  <!-- Slice lines -->
+  <g stroke="#d6a924" stroke-width="2.5" opacity="0.5" stroke-linecap="round">
+    <line x1="300" y1="125" x2="300" y2="555"/>
+    <line x1="85" y1="340" x2="515" y2="340"/>
+    <line x1="148" y1="188" x2="452" y2="492"/>
+    <line x1="148" y1="492" x2="452" y2="188"/>
+  </g>
+
+  <!-- Toppings (shifted down slightly) -->
+  <g transform="translate(0, 30)">
+
+  <!-- Pepperonis -->
+  <use href="#pepperoni" transform="translate(300, 340)"/>
+  <use href="#pepperoni" transform="translate(220, 260)"/>
+  <use href="#pepperoni" transform="translate(380, 250)"/>
+  <use href="#pepperoni" transform="translate(250, 180)"/>
+  <use href="#pepperoni" transform="translate(360, 170)"/>
+  <use href="#pepperoni" transform="translate(160, 320)"/>
+  <use href="#pepperoni" transform="translate(440, 330)"/>
+  <use href="#pepperoni" transform="translate(200, 420)"/>
+  <use href="#pepperoni" transform="translate(300, 450)"/>
+  <use href="#pepperoni" transform="translate(400, 420)"/>
+  <use href="#pepperoni" transform="translate(260, 300)"/>
+  <use href="#pepperoni" transform="translate(340, 380)"/>
+
+  <!-- Mushrooms -->
+  <use href="#mushroom" transform="translate(280, 210) rotate(20)"/>
+  <use href="#mushroom" transform="translate(330, 290) rotate(-45)"/>
+  <use href="#mushroom" transform="translate(210, 340) rotate(80)"/>
+  <use href="#mushroom" transform="translate(380, 350) rotate(-10)"/>
+  <use href="#mushroom" transform="translate(270, 400) rotate(110)"/>
+  <use href="#mushroom" transform="translate(180, 270) rotate(-70)"/>
+  <use href="#mushroom" transform="translate(410, 280) rotate(45)"/>
+  <use href="#mushroom" transform="translate(330, 470) rotate(15)"/>
+  <use href="#mushroom" transform="translate(240, 480) rotate(-30)"/>
+  <use href="#mushroom" transform="translate(460, 400) rotate(60)"/>
+
+  <!-- Olives -->
+  <use href="#olive" transform="translate(310, 170)"/>
+  <use href="#olive" transform="translate(250, 230)"/>
+  <use href="#olive" transform="translate(360, 210)"/>
+  <use href="#olive" transform="translate(180, 370)"/>
+  <use href="#olive" transform="translate(420, 380)"/>
+  <use href="#olive" transform="translate(230, 380)"/>
+  <use href="#olive" transform="translate(310, 410)"/>
+  <use href="#olive" transform="translate(370, 460)"/>
+  <use href="#olive" transform="translate(200, 300)"/>
+  <use href="#olive" transform="translate(430, 230)"/>
+  <use href="#olive" transform="translate(280, 270)"/>
+  <use href="#olive" transform="translate(360, 310)"/>
+  <use href="#olive" transform="translate(260, 470)"/>
+  <use href="#olive" transform="translate(130, 270)"/>
+
+  <!-- Green Peppers -->
+  <use href="#pepper" transform="translate(240, 200) rotate(35)"/>
+  <use href="#pepper" transform="translate(390, 210) rotate(-25)"/>
+  <use href="#pepper" transform="translate(190, 240) rotate(115)"/>
+  <use href="#pepper" transform="translate(440, 290) rotate(85)"/>
+  <use href="#pepper" transform="translate(230, 450) rotate(-65)"/>
+  <use href="#pepper" transform="translate(380, 410) rotate(45)"/>
+  <use href="#pepper" transform="translate(300, 270) rotate(15)"/>
+  <use href="#pepper" transform="translate(170, 420) rotate(-15)"/>
+  <use href="#pepper" transform="translate(310, 490) rotate(70)"/>
+
+  <!-- Basil -->
+  <use href="#basil" transform="translate(300, 340) rotate(15)"/>
+  <use href="#basil" transform="translate(250, 260) rotate(-45)"/>
+  <use href="#basil" transform="translate(370, 280) rotate(60)"/>
+  <use href="#basil" transform="translate(280, 430) rotate(-80)"/>
+  <use href="#basil" transform="translate(400, 370) rotate(110)"/>
+  <use href="#basil" transform="translate(200, 180) rotate(30)"/>
+
+  </g><!-- end toppings offset -->
 </svg>
