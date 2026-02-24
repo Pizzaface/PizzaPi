@@ -203,6 +203,8 @@ export function AtMentionPopover({
     <div
       className="rounded-md border border-border bg-popover text-popover-foreground shadow-sm"
       onKeyDown={handleKeyDown}
+      role="listbox"
+      aria-label="File mentions"
     >
       <Command className="w-full" shouldFilter={false}>
         {/* Breadcrumb header */}
@@ -227,7 +229,7 @@ export function AtMentionPopover({
           )}
         </div>
 
-        <CommandList className="max-h-48">
+        <CommandList className="max-h-[50vh] overflow-y-auto">
           {/* Loading state */}
           {loading && (
             <div className="flex items-center justify-center py-4 gap-2">
@@ -253,14 +255,17 @@ export function AtMentionPopover({
           {/* File/folder list */}
           {!loading && !error && filteredEntries.length > 0 && (
             <CommandGroup>
-              {filteredEntries.map((entry) => {
+              {filteredEntries.map((entry, index) => {
                 const emoji = !entry.isDirectory ? getFileIcon(entry.name) : null;
+                const isHighlighted = highlightedValue === entry.name;
                 return (
                   <CommandItem
                     key={entry.path}
                     value={entry.name}
                     onSelect={() => handleSelect(entry)}
                     className="cursor-pointer"
+                    role="option"
+                    aria-selected={isHighlighted}
                   >
                     {entry.isDirectory ? (
                       <FolderIcon />
