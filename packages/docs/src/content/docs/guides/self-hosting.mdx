@@ -94,6 +94,10 @@ Configure the server by setting environment variables in Docker Compose or your 
 |----------|---------|-------------|
 | `PORT` | `3000` | HTTP/WebSocket listen port |
 | `PIZZAPI_REDIS_URL` | — | Redis connection URL, e.g. `redis://localhost:6379` |
+| `PIZZAPI_BASE_URL` | `http://localhost:5173` | Public URL of the UI, added to CORS trusted origins |
+| `PIZZAPI_EXTRA_ORIGINS` | — | Comma-separated extra trusted origins (e.g. a Tailscale URL). Added to CORS and WebSocket auth without hardcoding hostnames. Example: `https://myhost.ts.net,http://myhost.ts.net:5173` |
+
+See the [Environment Variables reference](/reference/environment-variables) for the full list.
 
 ### Custom `docker/compose.yml` overrides
 

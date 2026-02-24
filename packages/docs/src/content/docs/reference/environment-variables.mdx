@@ -39,6 +39,7 @@ These are read by the PizzaPi CLI runner process (`pizzapi` / daemon).
 | `PORT` | HTTP / WebSocket listen port. | `3000` |
 | `PIZZAPI_REDIS_URL` | Redis connection URL. | `redis://127.0.0.1:6379` |
 | `PIZZAPI_BASE_URL` | Public base URL of the PizzaPi server (used for share links, CORS origins, etc.). | `http://localhost:5173` |
+| `PIZZAPI_EXTRA_ORIGINS` | Comma-separated list of additional trusted origins for CORS and WebSocket auth. Use this to allow access from custom hostnames such as a Tailscale URL without hardcoding them. e.g. `https://myhost.ts.net,http://myhost.ts.net:5173`. These are also used to populate Vite's `allowedHosts` in development. | — |
 | `PIZZAPI_UI_DIR` | Absolute path to the directory containing the built UI static assets. When unset the server does not serve a UI. | — |
 
 ### Authentication
