@@ -14,7 +14,7 @@ import { io } from "socket.io-client";
 import type { HubServerToClientEvents, HubClientToServerEvents } from "@pizzapi/protocol";
 import { formatPathTail } from "@/lib/path";
 import { ProviderIcon } from "@/components/ProviderIcon";
-import { PanelLeftClose, PanelLeftOpen, Plus, User, X, HardDrive } from "lucide-react";
+import { PanelLeftClose, PanelLeftOpen, Plus, User, X, HardDrive, FolderOpen } from "lucide-react";
 
 interface HubSession {
     sessionId: string;
@@ -420,20 +420,32 @@ export const SessionSidebar = React.memo(function SessionSidebar({
         };
     }, []);
 
+    interface ProjectGroup {
+        cwd: string;
+        label: string;
+        sessions: HubSession[];
+    }
+    interface RunnerGroup {
+        key: string;      // runnerId or "__local__"
+        label: string;    // runner display name
+        isLocal: boolean;
+        projects: ProjectGroup[];
+    }
+
     const liveGroups = React.useMemo(() => {
-        // Group key: runnerId (or "__local__" for sessions not tied to a runner).
-        const groups = new Map<string, { label: string; sessions: HubSession[] }>();
+        // Step 1: group sessions by runnerId.
+        const runnerMap = new Map<string, { label: string; sessions: HubSession[] }>();
         for (const s of liveSessions) {
             const key = s.runnerId ?? "__local__";
-            if (!groups.has(key)) {
+            if (!runnerMap.has(key)) {
                 const label = s.runnerName?.trim() || (s.runnerId ? `Runner ${s.runnerId.slice(0, 8)}…` : "Local");
-                groups.set(key, { label, sessions: [] });
+                runnerMap.set(key, { label, sessions: [] });
             }
-            groups.get(key)!.sessions.push(s);
+            runnerMap.get(key)!.sessions.push(s);
         }
 
-        // Sort sessions within each group by most recently active/started.
-        for (const entry of groups.values()) {
+        // Step 2: sort sessions within each runner by most recently active/started.
+        for (const entry of runnerMap.values()) {
             entry.sessions.sort((a, b) => {
                 const aT = Date.parse(a.lastHeartbeatAt ?? a.startedAt);
                 const bT = Date.parse(b.lastHeartbeatAt ?? b.startedAt);
@@ -441,37 +453,43 @@ export const SessionSidebar = React.memo(function SessionSidebar({
             });
         }
 
-        // For the local group, if sessions span multiple working directories split
-        // them into per-directory sub-groups so they're visually separated.
-        const localEntry = groups.get("__local__");
-        if (localEntry) {
+        // Step 3: for every runner, split sessions into per-cwd project groups.
+        const result: RunnerGroup[] = [];
+        for (const [key, { label, sessions }] of runnerMap) {
+            const isLocal = key === "__local__";
             const cwdMap = new Map<string, HubSession[]>();
-            for (const s of localEntry.sessions) {
+            for (const s of sessions) {
                 const cwd = s.cwd || "";
                 if (!cwdMap.has(cwd)) cwdMap.set(cwd, []);
                 cwdMap.get(cwd)!.push(s);
             }
-            if (cwdMap.size > 1) {
-                groups.delete("__local__");
-                for (const [cwd, sessions] of cwdMap) {
-                    groups.set(`__local__::${cwd}`, {
-                        label: cwd ? formatPathTail(cwd, 2) : "Local",
-                        sessions,
-                    });
-                }
-            }
+
+            const projects: ProjectGroup[] = Array.from(cwdMap.entries()).map(([cwd, cwdSessions]) => ({
+                cwd,
+                label: cwd ? formatPathTail(cwd, 2) : (isLocal ? "Local" : label),
+                sessions: cwdSessions,
+            }));
+
+            // Sort projects by most recently active session.
+            projects.sort((a, b) => {
+                const latestTs = (grp: ProjectGroup) =>
+                    Math.max(0, ...grp.sessions
+                        .map((s) => Date.parse(s.lastHeartbeatAt ?? s.startedAt))
+                        .filter(Number.isFinite));
+                return latestTs(b) - latestTs(a);
+            });
+
+            result.push({ key, label, isLocal, projects });
         }
 
-        // Sort groups: named runners first (alphabetically), then unnamed, then local.
-        return new Map(
-            Array.from(groups.entries()).sort(([aKey, aVal], [bKey, bVal]) => {
-                const aIsLocal = aKey === "__local__" || aKey.startsWith("__local__::");
-                const bIsLocal = bKey === "__local__" || bKey.startsWith("__local__::");
-                if (aIsLocal && !bIsLocal) return 1;
-                if (!aIsLocal && bIsLocal) return -1;
-                return aVal.label.localeCompare(bVal.label);
-            }),
-        );
+        // Step 4: sort runners — named runners first (alphabetically), then unnamed, then local.
+        result.sort((a, b) => {
+            if (a.isLocal && !b.isLocal) return 1;
+            if (!a.isLocal && b.isLocal) return -1;
+            return a.label.localeCompare(b.label);
+        });
+
+        return result;
     }, [liveSessions]);
 
     // Find session name for the confirm dialog
@@ -580,153 +598,174 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                 <div className="flex-1 px-2 overflow-y-auto overflow-x-hidden" style={{ paddingBottom: "max(0.5rem, env(safe-area-inset-bottom))" }}>
                     {!hasLoaded ? (
                         <SidebarSkeleton />
-                    ) : liveGroups.size === 0 ? (
+                    ) : liveGroups.length === 0 ? (
                         <p className="px-2 py-3 text-xs italic text-sidebar-foreground/40 text-center">No live sessions</p>
                     ) : (
-                        Array.from(liveGroups.entries()).map(([groupKey, { label, sessions }]) => (
-                            <div key={groupKey} className="flex flex-col mb-2">
-                                {/* Group header */}
+                        liveGroups.map((runnerGroup) => (
+                            <div key={runnerGroup.key} className="flex flex-col mb-2">
+                                {/* Runner header */}
                                 <div className="flex items-center gap-1.5 px-1.5 py-1 min-w-0">
                                     <HardDrive className="h-3 w-3 text-sidebar-foreground/35 flex-shrink-0" />
                                     <span
                                         className="text-[0.65rem] font-medium text-sidebar-foreground/45 truncate flex-1"
-                                        title={label}
+                                        title={runnerGroup.label}
                                     >
-                                        {label}
+                                        {runnerGroup.label}
                                     </span>
                                 </div>
 
-                                {/* Session cards */}
-                                {sessions.map((s) => {
-                                    const isSelected = !showRunners && activeSessionId === s.sessionId;
-                                    const provider = s.model?.provider ??
-                                        (activeSessionId === s.sessionId ? activeModel?.provider : undefined) ??
-                                        "unknown";
-                                    const timeLabel = isToday(s.startedAt)
-                                        ? formatTime(s.lastHeartbeatAt ?? s.startedAt)
-                                        : formatRelativeDate(s.startedAt);
-                                    const swipeOffset = swipeOffsets.get(s.sessionId) ?? 0;
-                                    const isRevealed = revealedSessionId === s.sessionId;
-                                    const hasOffset = swipeOffset !== 0;
-
-                                    return (
-                                        <div
-                                            key={s.sessionId}
-                                            className="relative overflow-hidden rounded-lg"
-                                        >
-                                            {/* "End" action behind the card — only rendered during swipe/reveal */}
-                                            {(hasOffset || isRevealed) && <div
-                                                className="absolute inset-y-0 right-0 flex items-center justify-center bg-red-600 text-white"
-                                                style={{ width: REVEAL_WIDTH }}
-                                            >
-                                                <button
-                                                    className="flex flex-col items-center justify-center w-full h-full text-xs font-semibold gap-0.5 active:bg-red-700 transition-colors"
-                                                    onClick={(e) => {
-                                                        e.stopPropagation();
-                                                        setConfirmEndSessionId(s.sessionId);
-                                                        // Close the revealed state
-                                                        setSwipeOffsets((prev) => {
-                                                            const next = new Map(prev);
-                                                            next.delete(s.sessionId);
-                                                            return next;
-                                                        });
-                                                        setRevealedSessionId(null);
-                                                    }}
+                                {/* Project groups within this runner */}
+                                {runnerGroup.projects.map((project) => (
+                                    <div key={project.cwd || "__root__"}>
+                                        {/* Project sub-header — only shown when there are multiple projects */}
+                                        {runnerGroup.projects.length > 1 && (
+                                            <div className="flex items-center gap-1.5 pl-4 pr-1.5 py-0.5 min-w-0">
+                                                <FolderOpen className="h-2.5 w-2.5 text-sidebar-foreground/25 flex-shrink-0" />
+                                                <span
+                                                    className="text-[0.6rem] font-medium text-sidebar-foreground/35 truncate flex-1"
+                                                    title={project.cwd || project.label}
                                                 >
-                                                    <X className="h-4 w-4" />
-                                                    <span>End</span>
-                                                </button>
-                                            </div>}
+                                                    {project.label}
+                                                </span>
+                                            </div>
+                                        )}
 
-                                            {/* Sliding session card */}
-                                            <button
-                                                onClick={(e) => {
-                                                    // Suppress click that fires after a swipe gesture
-                                                    if (suppressClickRef.current) { suppressClickRef.current = false; return; }
-                                                    // If THIS session is revealed, close it instead of navigating
-                                                    if (isRevealed) {
-                                                        handleCloseRevealed();
-                                                        return;
-                                                    }
-                                                    // If a DIFFERENT session is revealed, close that and still navigate
-                                                    if (revealedSessionId && revealedSessionId !== s.sessionId) {
-                                                        handleCloseRevealed();
-                                                    }
-                                                    onOpenSession(s.sessionId);
-                                                }}
-                                                title={`View session ${s.sessionId}`}
-                                                onPointerDown={(e) => handleSessionPointerDown(e, s.sessionId)}
-                                                onPointerMove={handleSessionPointerMove}
-                                                onPointerUp={handleSessionPointerUp}
-                                                onContextMenu={(e) => e.preventDefault()}
-                                                className={cn(
-                                                    "relative flex items-center gap-2.5 w-full min-w-0 px-2.5 py-3 md:py-2.5 text-left",
-                                                    !hasOffset && "transition-transform duration-200 ease-out",
-                                                    isSelected
-                                                        ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                                                        : "bg-sidebar text-sidebar-foreground hover:bg-sidebar-accent/50",
-                                                )}
-                                                style={{
-                                                    transform: hasOffset ? `translateX(${swipeOffset}px)` : undefined,
-                                                    touchAction: "pan-y",
-                                                }}
-                                            >
-                                                {/* Provider icon + activity dot */}
-                                                <div className="relative flex-shrink-0 flex items-center justify-center w-7 h-7 rounded-md bg-sidebar-accent/50">
-                                                    <ProviderIcon
-                                                        provider={provider}
-                                                        className="size-4 text-sidebar-foreground/70"
-                                                        title={
-                                                            s.model?.provider
-                                                                ? `${s.model.provider} · ${s.model.name ?? s.model.id}`
-                                                                : activeSessionId === s.sessionId && activeModel?.provider
-                                                                  ? `${activeModel.provider} · ${activeModel.name ?? activeModel.id}`
-                                                                  : "unknown"
-                                                        }
-                                                    />
-                                                    <span
+                                        {/* Session cards */}
+                                        {project.sessions.map((s) => {
+                                            // Hide cwd on individual cards when the runner is already
+                                            // split into project sub-groups (avoids redundant display).
+                                            const showCwd = runnerGroup.projects.length === 1;
+                                            const isSelected = !showRunners && activeSessionId === s.sessionId;
+                                            const provider = s.model?.provider ??
+                                                (activeSessionId === s.sessionId ? activeModel?.provider : undefined) ??
+                                                "unknown";
+                                            const timeLabel = isToday(s.startedAt)
+                                                ? formatTime(s.lastHeartbeatAt ?? s.startedAt)
+                                                : formatRelativeDate(s.startedAt);
+                                            const swipeOffset = swipeOffsets.get(s.sessionId) ?? 0;
+                                            const isRevealed = revealedSessionId === s.sessionId;
+                                            const hasOffset = swipeOffset !== 0;
+
+                                            return (
+                                                <div
+                                                    key={s.sessionId}
+                                                    className="relative overflow-hidden rounded-lg"
+                                                >
+                                                    {/* "End" action behind the card — only rendered during swipe/reveal */}
+                                                    {(hasOffset || isRevealed) && <div
+                                                        className="absolute inset-y-0 right-0 flex items-center justify-center bg-red-600 text-white"
+                                                        style={{ width: REVEAL_WIDTH }}
+                                                    >
+                                                        <button
+                                                            className="flex flex-col items-center justify-center w-full h-full text-xs font-semibold gap-0.5 active:bg-red-700 transition-colors"
+                                                            onClick={(e) => {
+                                                                e.stopPropagation();
+                                                                setConfirmEndSessionId(s.sessionId);
+                                                                // Close the revealed state
+                                                                setSwipeOffsets((prev) => {
+                                                                    const next = new Map(prev);
+                                                                    next.delete(s.sessionId);
+                                                                    return next;
+                                                                });
+                                                                setRevealedSessionId(null);
+                                                            }}
+                                                        >
+                                                            <X className="h-4 w-4" />
+                                                            <span>End</span>
+                                                        </button>
+                                                    </div>}
+
+                                                    {/* Sliding session card */}
+                                                    <button
+                                                        onClick={(e) => {
+                                                            // Suppress click that fires after a swipe gesture
+                                                            if (suppressClickRef.current) { suppressClickRef.current = false; return; }
+                                                            // If THIS session is revealed, close it instead of navigating
+                                                            if (isRevealed) {
+                                                                handleCloseRevealed();
+                                                                return;
+                                                            }
+                                                            // If a DIFFERENT session is revealed, close that and still navigate
+                                                            if (revealedSessionId && revealedSessionId !== s.sessionId) {
+                                                                handleCloseRevealed();
+                                                            }
+                                                            onOpenSession(s.sessionId);
+                                                        }}
+                                                        title={`View session ${s.sessionId}`}
+                                                        onPointerDown={(e) => handleSessionPointerDown(e, s.sessionId)}
+                                                        onPointerMove={handleSessionPointerMove}
+                                                        onPointerUp={handleSessionPointerUp}
+                                                        onContextMenu={(e) => e.preventDefault()}
                                                         className={cn(
-                                                            "absolute -top-0.5 -right-0.5 inline-block h-2 w-2 rounded-full border border-sidebar ring-1 ring-sidebar transition-colors",
-                                                            s.isActive
-                                                                ? "bg-blue-400 shadow-[0_0_4px_#60a5fa80] animate-pulse ring-blue-400/20"
-                                                                : "bg-green-600 ring-green-600/20",
+                                                            "relative flex items-center gap-2.5 w-full min-w-0 px-2.5 py-3 md:py-2.5 text-left",
+                                                            !hasOffset && "transition-transform duration-200 ease-out",
+                                                            isSelected
+                                                                ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                                                                : "bg-sidebar text-sidebar-foreground hover:bg-sidebar-accent/50",
                                                         )}
-                                                        title={s.isActive ? "Actively generating" : "Session idle"}
-                                                    />
-                                                </div>
+                                                        style={{
+                                                            transform: hasOffset ? `translateX(${swipeOffset}px)` : undefined,
+                                                            touchAction: "pan-y",
+                                                        }}
+                                                    >
+                                                        {/* Provider icon + activity dot */}
+                                                        <div className="relative flex-shrink-0 flex items-center justify-center w-7 h-7 rounded-md bg-sidebar-accent/50">
+                                                            <ProviderIcon
+                                                                provider={provider}
+                                                                className="size-4 text-sidebar-foreground/70"
+                                                                title={
+                                                                    s.model?.provider
+                                                                        ? `${s.model.provider} · ${s.model.name ?? s.model.id}`
+                                                                        : activeSessionId === s.sessionId && activeModel?.provider
+                                                                          ? `${activeModel.provider} · ${activeModel.name ?? activeModel.id}`
+                                                                          : "unknown"
+                                                                }
+                                                            />
+                                                            <span
+                                                                className={cn(
+                                                                    "absolute -top-0.5 -right-0.5 inline-block h-2 w-2 rounded-full border border-sidebar ring-1 ring-sidebar transition-colors",
+                                                                    s.isActive
+                                                                        ? "bg-blue-400 shadow-[0_0_4px_#60a5fa80] animate-pulse ring-blue-400/20"
+                                                                        : "bg-green-600 ring-green-600/20",
+                                                                )}
+                                                                title={s.isActive ? "Actively generating" : "Session idle"}
+                                                            />
+                                                        </div>
 
-                                                {/* Text info */}
-                                                <div className="flex-1 min-w-0">
-                                                    <div className="flex items-baseline justify-between gap-1 min-w-0">
-                                                        <span className="truncate text-[0.8rem] font-medium leading-tight">
-                                                            {s.sessionName?.trim() || `Session ${s.sessionId.slice(0, 8)}…`}
-                                                        </span>
-                                                        <span className="text-[0.65rem] text-sidebar-foreground/45 flex-shrink-0">
-                                                            {timeLabel}
-                                                        </span>
-                                                    </div>
-                                                    {(s.userName || s.cwd) && (
-                                                        <div className="flex items-center gap-1 mt-0.5 min-w-0">
-                                                            {s.userName && (
-                                                                <span className="text-[0.65rem] text-sidebar-foreground/45 truncate">
-                                                                    {s.userName}
+                                                        {/* Text info */}
+                                                        <div className="flex-1 min-w-0">
+                                                            <div className="flex items-baseline justify-between gap-1 min-w-0">
+                                                                <span className="truncate text-[0.8rem] font-medium leading-tight">
+                                                                    {s.sessionName?.trim() || `Session ${s.sessionId.slice(0, 8)}…`}
                                                                 </span>
-                                                            )}
-                                                            {s.cwd && (
-                                                                <span
-                                                                    className="text-[0.65rem] text-sidebar-foreground/35 truncate"
-                                                                    title={s.cwd}
-                                                                >
-                                                                    {s.userName ? "·" : ""} {formatPathTail(s.cwd, 2)}
+                                                                <span className="text-[0.65rem] text-sidebar-foreground/45 flex-shrink-0">
+                                                                    {timeLabel}
                                                                 </span>
+                                                            </div>
+                                                            {(s.userName || (showCwd && s.cwd)) && (
+                                                                <div className="flex items-center gap-1 mt-0.5 min-w-0">
+                                                                    {s.userName && (
+                                                                        <span className="text-[0.65rem] text-sidebar-foreground/45 truncate">
+                                                                            {s.userName}
+                                                                        </span>
+                                                                    )}
+                                                                    {showCwd && s.cwd && (
+                                                                        <span
+                                                                            className="text-[0.65rem] text-sidebar-foreground/35 truncate"
+                                                                            title={s.cwd}
+                                                                        >
+                                                                            {s.userName ? "·" : ""} {formatPathTail(s.cwd, 2)}
+                                                                        </span>
+                                                                    )}
+                                                                </div>
                                                             )}
                                                         </div>
-                                                    )}
+                                                    </button>
                                                 </div>
-                                            </button>
-                                        </div>
-                                    );
-                                })}
+                                            );
+                                        })}
+                                    </div>
+                                ))}
                             </div>
                         ))
                     )}
