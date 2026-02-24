@@ -1,9 +1,10 @@
 ---
 name: at-file-mentions
-status: open
+status: completed
 created: 2026-02-24T17:39:52Z
-updated: 2026-02-24T17:58:00Z
-progress: 0%
+updated: 2026-02-24T19:06:53Z
+completed: 2026-02-24T19:06:53Z
+progress: 100%
 prd: .project/prds/at-file-mentions.md
 beads_id: PizzaPi-rc3
 ---

@@ -55,6 +55,8 @@ import { cn } from "@/lib/utils";
 import { formatPathTail } from "@/lib/path";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { ArrowDownIcon, CheckCircle2, ChevronsUpDown, Circle, CircleDashed, MessageSquare, OctagonX, PaperclipIcon, Plus, Zap, Clock, X, Trash2, TerminalIcon, DownloadIcon, XCircle, FolderTree } from "lucide-react";
+import { AtMentionPopover } from "@/components/AtMentionPopover";
+import type { Entry as AtMentionEntry } from "@/hooks/useAtMentionFiles";
 
 export type { RelayMessage } from "@/components/session-viewer/types";
 
@@ -128,6 +130,8 @@ export interface SessionViewerProps {
   showFileExplorerButton?: boolean;
   /** Current agent todo list */
   todoList?: TodoItem[];
+  /** Runner ID for the current session (used for runner files API) */
+  runnerId?: string;
 }
 
 function formatTokenCount(n: number): string {
@@ -381,7 +385,7 @@ function SessionSkeleton() {
   );
 }
 
-export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, messageQueue, onRemoveQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [] }: SessionViewerProps) {
+export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, messageQueue, onRemoveQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], runnerId }: SessionViewerProps) {
   const [input, setInput] = React.useState("");
   const [composerError, setComposerError] = React.useState<string | null>(null);
   const [showClearDialog, setShowClearDialog] = React.useState(false);
@@ -392,6 +396,14 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
   const [commandOpen, setCommandOpen] = React.useState(false);
   const [commandQuery, setCommandQuery] = React.useState("");
 
+  // @-mention popover state
+  const [atMentionOpen, setAtMentionOpen] = React.useState(false);
+  const [atMentionPath, setAtMentionPath] = React.useState("");
+  const [atMentionQuery, setAtMentionQuery] = React.useState("");
+  const [atMentionTriggerOffset, setAtMentionTriggerOffset] = React.useState(0);
+  const [atMentionHighlightedIndex, setAtMentionHighlightedIndex] = React.useState(0);
+  const [atMentionHighlightedEntry, setAtMentionHighlightedEntry] = React.useState<AtMentionEntry | null>(null);
+
   React.useEffect(() => {
     if (!sessionId) {
       setInput("");
@@ -400,19 +412,19 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
   }, [sessionId]);
 
   // Esc key stops an active agent turn (same as clicking the stop button).
-  // We skip this when a dialog or the command picker is open — those components
-  // handle Escape themselves via Radix's event propagation.
+  // We skip this when a dialog or the command picker or @-mention popover is open —
+  // those components handle Escape themselves via Radix's event propagation.
   React.useEffect(() => {
     if (!agentActive || !onExec) return;
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
-      if (showClearDialog || showEndSessionDialog || commandOpen) return;
+      if (showClearDialog || showEndSessionDialog || commandOpen || atMentionOpen) return;
       e.preventDefault();
       onExec({ type: "exec", id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, command: "abort" });
     };
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [agentActive, onExec, showClearDialog, showEndSessionDialog, commandOpen]);
+  }, [agentActive, onExec, showClearDialog, showEndSessionDialog, commandOpen, atMentionOpen]);
 
   const executeSlashCommand = React.useCallback((text: string): boolean => {
     const trimmed = text.trim();
@@ -542,8 +554,13 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
 
       Promise.resolve(onSendInput(payload))
         .then((result) => {
-          if (result !== false) setInput("");
-          else setComposerError("Failed to send message.");
+          if (result !== false) {
+            setInput("");
+            setCommandOpen(false);
+            setCommandQuery("");
+          } else {
+            setComposerError("Failed to send message.");
+          }
         })
         .catch(() => {
           setComposerError("Failed to send message.");
@@ -578,6 +595,75 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     if (!query) return list;
     return list.filter((c) => c.name.toLowerCase().includes(query));
   }, [commandQuery, supportedWebCommands]);
+
+  // @-mention file selection: replace trigger to cursor with @{relativePath} 
+  const handleAtMentionSelectFile = React.useCallback((relativePath: string) => {
+    const textarea = document.querySelector<HTMLTextAreaElement>("[data-pp-prompt]");
+    if (!textarea) return;
+
+    const cursorPosition = textarea.selectionStart;
+    const value = input;
+
+    // Replace from trigger offset to cursor position with @{relativePath} (trailing space)
+    const newValue = value.slice(0, atMentionTriggerOffset) + "@" + relativePath + " " + value.slice(cursorPosition);
+    setInput(newValue);
+
+    // Position cursor after the inserted text
+    const newCursorPosition = atMentionTriggerOffset + 1 + relativePath.length + 1; // @ + path + space
+    requestAnimationFrame(() => {
+      textarea.setSelectionRange(newCursorPosition, newCursorPosition);
+      textarea.focus();
+    });
+
+    // Reset @-mention state
+    setAtMentionOpen(false);
+    setAtMentionQuery("");
+    setAtMentionPath("");
+    setAtMentionTriggerOffset(0);
+    setAtMentionHighlightedIndex(0);
+  }, [input, atMentionTriggerOffset]);
+
+  // @-mention drill into directory
+  const handleAtMentionDrillInto = React.useCallback((newPath: string) => {
+    setAtMentionPath(newPath);
+    setAtMentionQuery("");
+    setAtMentionHighlightedIndex(0);
+    // Update the input text to reflect the new path
+    const textarea = document.querySelector<HTMLTextAreaElement>("[data-pp-prompt]");
+    if (textarea) {
+      const cursorPosition = textarea.selectionStart;
+      const value = input;
+      // Replace from trigger offset to cursor with @{newPath}
+      const newValue = value.slice(0, atMentionTriggerOffset) + "@" + newPath + value.slice(cursorPosition);
+      setInput(newValue);
+      // Position cursor after the path
+      const newCursorPosition = atMentionTriggerOffset + 1 + newPath.length;
+      requestAnimationFrame(() => {
+        textarea.setSelectionRange(newCursorPosition, newCursorPosition);
+        textarea.focus();
+      });
+    }
+  }, [input, atMentionTriggerOffset]);
+
+  // @-mention back navigation: pop last path segment
+  const handleAtMentionBack = React.useCallback(() => {
+    if (!atMentionPath) return;
+    // Pop the last path segment: path.split('/').slice(0, -1).join('/')
+    const segments = atMentionPath.split("/").filter(Boolean);
+    const newPath = segments.slice(0, -1).join("/");
+    const newPathWithSlash = newPath ? newPath + "/" : "";
+    handleAtMentionDrillInto(newPathWithSlash);
+  }, [atMentionPath, handleAtMentionDrillInto]);
+
+  // @-mention close popover
+  const handleAtMentionClose = React.useCallback(() => {
+    setAtMentionOpen(false);
+    setAtMentionQuery("");
+    setAtMentionPath("");
+    setAtMentionTriggerOffset(0);
+    setAtMentionHighlightedIndex(0);
+    setAtMentionHighlightedEntry(null);
+  }, []);
 
   const trimmedInput = input.trimStart();
   const isResumeMode = /^\/resume(?:\s|$)/i.test(trimmedInput);
@@ -1124,6 +1210,25 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
           </div>
         )}
 
+        {/* @-mention file autocomplete popover */}
+        {sessionId && runnerId && atMentionOpen && (
+          <div className="mb-2">
+            <AtMentionPopover
+              open={atMentionOpen}
+              runnerId={runnerId}
+              path={atMentionPath}
+              query={atMentionQuery}
+              onSelectFile={handleAtMentionSelectFile}
+              onDrillInto={handleAtMentionDrillInto}
+              onClose={handleAtMentionClose}
+              onBack={handleAtMentionBack}
+              highlightedIndex={atMentionHighlightedIndex}
+              onHighlightedIndexChange={setAtMentionHighlightedIndex}
+              onHighlightedEntryChange={setAtMentionHighlightedEntry}
+            />
+          </div>
+        )}
+
         {composerError && (
           <div className="mb-2 rounded-md border border-destructive/40 bg-destructive/10 px-2.5 py-2 text-xs text-destructive">
             {composerError}
@@ -1149,13 +1254,79 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                   const next = event.currentTarget.value;
                   setComposerError(null);
                   setInput(next);
+
+                  // Slash command detection
                   const trimmed = next.trimStart();
                   if (trimmed.startsWith("/")) {
                     setCommandOpen(true);
                     setCommandQuery(trimmed.slice(1));
+                    // Close @-mention popover when slash command opens (mutual exclusivity)
+                    if (atMentionOpen) {
+                      setAtMentionOpen(false);
+                      setAtMentionQuery("");
+                      setAtMentionPath("");
+                      setAtMentionTriggerOffset(0);
+                    }
+                    return;
+                  }
+
+                  setCommandOpen(false);
+                  setCommandQuery("");
+
+                  // @-mention detection (only when runner is connected)
+                  if (!runnerId) {
+                    if (atMentionOpen) {
+                      setAtMentionOpen(false);
+                      setAtMentionQuery("");
+                      setAtMentionPath("");
+                      setAtMentionTriggerOffset(0);
+                    }
+                    return;
+                  }
+
+                  // Find the last @ that is at a word boundary
+                  // Word boundary: preceded by space, newline, or start of string
+                  let lastAtIndex = -1;
+                  for (let i = next.length - 1; i >= 0; i--) {
+                    if (next[i] === "@") {
+                      // Check if at word boundary
+                      if (i === 0 || next[i - 1] === " " || next[i - 1] === "\n" || next[i - 1] === "\t") {
+                        lastAtIndex = i;
+                        break;
+                      }
+                    }
+                  }
+
+                  if (lastAtIndex === -1) {
+                    // No valid @ trigger found
+                    if (atMentionOpen) {
+                      setAtMentionOpen(false);
+                      setAtMentionQuery("");
+                      setAtMentionPath("");
+                      setAtMentionTriggerOffset(0);
+                    }
+                    return;
+                  }
+
+                  // Extract query after @ (the portion user is typing)
+                  const query = next.slice(lastAtIndex + 1);
+
+                  // If there's a space after the query, user has finished typing
+                  // Don't close - let the popover decide when to close
+                  
+                  // Open popover and update state
+                  setAtMentionOpen(true);
+                  setAtMentionTriggerOffset(lastAtIndex);
+                  setAtMentionQuery(query);
+
+                  // Extract path component for directory traversal
+                  // e.g., "src/components/" -> path is "src/components/", query is "src/components/"
+                  // The useAtMentionFiles hook will handle extracting the directory portion
+                  const lastSlash = query.lastIndexOf("/");
+                  if (lastSlash !== -1) {
+                    setAtMentionPath(query.slice(0, lastSlash + 1));
                   } else {
-                    setCommandOpen(false);
-                    setCommandQuery("");
+                    setAtMentionPath("");
                   }
                 }}
                 onKeyDown={(event) => {
@@ -1167,6 +1338,44 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                     setDeliveryMode((m) => m === "steer" ? "followUp" : "steer");
                     return;
                   }
+
+                  // Close @-mention popover on Escape (prevent propagation to abort shortcut)
+                  if (atMentionOpen && event.key === "Escape") {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setAtMentionOpen(false);
+                    setAtMentionQuery("");
+                    setAtMentionPath("");
+                    setAtMentionTriggerOffset(0);
+                    setAtMentionHighlightedIndex(0);
+                    setAtMentionHighlightedEntry(null);
+                    return;
+                  }
+
+                  // Tab drills into highlighted folder when @-mention is open
+                  if (atMentionOpen && event.key === "Tab" && atMentionHighlightedEntry?.isDirectory) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    const newPath = atMentionPath ? `${atMentionPath}${atMentionHighlightedEntry.name}/` : `${atMentionHighlightedEntry.name}/`;
+                    handleAtMentionDrillInto(newPath);
+                    return;
+                  }
+
+                  // Enter selects highlighted file when @-mention is open
+                  if (atMentionOpen && event.key === "Enter" && !event.shiftKey && atMentionHighlightedEntry) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    if (atMentionHighlightedEntry.isDirectory) {
+                      const newPath = atMentionPath ? `${atMentionPath}${atMentionHighlightedEntry.name}/` : `${atMentionHighlightedEntry.name}/`;
+                      handleAtMentionDrillInto(newPath);
+                    } else {
+                      const relativePath = atMentionPath ? `${atMentionPath}${atMentionHighlightedEntry.name}` : atMentionHighlightedEntry.name;
+                      handleAtMentionSelectFile(relativePath);
+                    }
+                    return;
+                  }
+
+
 
                   // If we're in slash mode, show suggestions + allow selecting with Enter.
                   if (commandOpen) {
