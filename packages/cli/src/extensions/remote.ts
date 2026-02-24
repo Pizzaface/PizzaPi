@@ -281,12 +281,6 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             const secondary = toWindow(raw.rate_limit?.secondary_window ?? raw.rate_limit?.secondary, "Secondary");
             if (secondary) windows.push(secondary);
 
-            const review = toWindow(raw.code_review_rate_limit?.primary_window, "Code Review");
-            if (review) {
-                review.label = "Code Review";
-                windows.push(review);
-            }
-
             // Additional metered features (e.g. background tasks)
             for (const extra of raw.additional_rate_limits ?? []) {
                 const w = toWindow(extra.rate_limit?.primary_window ?? extra.rate_limit?.primary, extra.limit_name);
