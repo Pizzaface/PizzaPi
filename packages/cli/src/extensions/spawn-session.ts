@@ -30,11 +30,16 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
         if (trimmed.startsWith("ws://")) return `http://${trimmed.slice("ws://".length)}`;
         if (trimmed.startsWith("wss://")) return `https://${trimmed.slice("wss://".length)}`;
         if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) return trimmed;
-        return trimmed;
+        // No scheme — treat as a secure remote host (e.g. "example.com" or "example.com:5173")
+        return `https://${trimmed}`;
     }
 
     function getApiKey(): string | undefined {
-        return process.env.PIZZAPI_API_KEY ?? loadConfig(process.cwd()).apiKey;
+        return (
+            process.env.PIZZAPI_API_KEY ??
+            process.env.PIZZAPI_API_TOKEN ??
+            loadConfig(process.cwd()).apiKey
+        );
     }
 
     function getRunnerIdFromState(): string | null {

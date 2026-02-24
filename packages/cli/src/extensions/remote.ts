@@ -409,7 +409,8 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         if (trimmed.startsWith("https://")) {
             return `wss://${trimmed.slice("https://".length)}`;
         }
-        return trimmed;
+        // No scheme — treat as a secure remote host (e.g. "example.com" or "example.com:5173")
+        return `wss://${trimmed}`;
     }
 
     function isDisabled(): boolean {
@@ -1382,7 +1383,11 @@ export const remoteExtension: ExtensionFactory = (pi) => {
     // ── Socket.IO connection ─────────────────────────────────────────────────
 
     function apiKey(): string | undefined {
-        return process.env.PIZZAPI_API_KEY ?? loadConfig(process.cwd()).apiKey;
+        return (
+            process.env.PIZZAPI_API_KEY ??
+            process.env.PIZZAPI_API_TOKEN ??
+            loadConfig(process.cwd()).apiKey
+        );
     }
 
     /**

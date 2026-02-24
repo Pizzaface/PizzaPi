@@ -515,11 +515,14 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
     // the moment they are spawned.  One daemon refresh covers all sessions on this node.
     startUsageRefreshLoop();
 
-    const apiKey = process.env.PIZZAPI_RUNNER_API_KEY ?? process.env.PIZZAPI_API_KEY;
+    const apiKey =
+        process.env.PIZZAPI_RUNNER_API_KEY ??
+        process.env.PIZZAPI_API_KEY ??
+        process.env.PIZZAPI_API_TOKEN;
     const token = process.env.PIZZAPI_RUNNER_TOKEN;
 
     if (!apiKey && !token) {
-        console.error("❌ Set PIZZAPI_API_KEY (recommended) or PIZZAPI_RUNNER_TOKEN to run the runner daemon.");
+        console.error("❌ Set PIZZAPI_API_KEY (or PIZZAPI_API_TOKEN) to run the runner daemon.");
         releaseStateLock(statePath);
         process.exit(1);
     }
@@ -532,12 +535,17 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             .trim()
             .replace(/\/$/, "");
 
-        // Convert ws(s):// → http(s):// for socket.io-client (same port)
-        const sioUrl = relayRaw
-            .replace(/^ws:\/\//, "http://")
-            .replace(/^wss:\/\//, "https://")
-            .replace(/^http:\/\//, "http://")
-            .replace(/^https:\/\//, "https://");
+        // Normalise the relay URL for socket.io-client (needs http(s)://).
+        // If the user supplies a bare hostname (no scheme), default to https://.
+        function normaliseRelayUrl(raw: string): string {
+            if (raw.startsWith("ws://"))      return raw.replace(/^ws:\/\//, "http://");
+            if (raw.startsWith("wss://"))     return raw.replace(/^wss:\/\//, "https://");
+            if (raw.startsWith("http://"))    return raw;
+            if (raw.startsWith("https://"))   return raw;
+            // No scheme — treat as an https host (e.g. "example.com" or "example.com:5173")
+            return `https://${raw}`;
+        }
+        const sioUrl = normaliseRelayUrl(relayRaw);
 
         const runningSessions = new Map<string, RunnerSession>();
         const runnerName = process.env.PIZZAPI_RUNNER_NAME?.trim() || hostname();
