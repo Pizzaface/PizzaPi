@@ -554,8 +554,13 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
 
       Promise.resolve(onSendInput(payload))
         .then((result) => {
-          if (result !== false) setInput("");
-          else setComposerError("Failed to send message.");
+          if (result !== false) {
+            setInput("");
+            setCommandOpen(false);
+            setCommandQuery("");
+          } else {
+            setComposerError("Failed to send message.");
+          }
         })
         .catch(() => {
           setComposerError("Failed to send message.");
