@@ -38,7 +38,7 @@ COPY packages/ui/ packages/ui/
 COPY tsconfig.json ./
 
 # Build with tsc --build to resolve project references, then build UI
-RUN npx tsc --build packages/server/tsconfig.json \
+RUN bunx tsc --build packages/server/tsconfig.json \
     && cd /app/packages/ui && bun run build
 
 # --- Production image ---
