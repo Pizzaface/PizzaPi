@@ -34,10 +34,12 @@ COPY packages/tools/ packages/tools/
 COPY packages/server/ packages/server/
 COPY packages/ui/ packages/ui/
 
-# Build each package in dependency order
-RUN cd packages/protocol && bunx tsc \
-    && cd /app/packages/tools && bunx tsc \
-    && cd /app/packages/server && bunx tsc \
+# Copy root tsconfig (needed for tsc --build project references)
+COPY tsconfig.json ./
+
+# tsc --build follows project references to resolve workspace deps
+# that bun doesn't symlink in node_modules.
+RUN bunx tsc --build packages/server/tsconfig.json \
     && cd /app/packages/ui && bun run build
 
 # --- Production image ---
