@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeAll, afterAll } from "bun:test";
-import { RateLimiter, isValidEmail, isValidPassword } from "./security";
+import { RateLimiter, isValidEmail, isValidPassword, cwdMatchesRoots } from "./security";
 
 describe("RateLimiter", () => {
     test("allows requests within limit", () => {
@@ -47,5 +47,29 @@ describe("Validation", () => {
     test("isValidPassword", () => {
         expect(isValidPassword("12345678")).toBe(true);
         expect(isValidPassword("short")).toBe(false);
+    });
+
+    test("cwdMatchesRoots", () => {
+        const root = "/home/user/project";
+        // Exact match
+        expect(cwdMatchesRoots([root], "/home/user/project")).toBe(true);
+        // Child directory
+        expect(cwdMatchesRoots([root], "/home/user/project/src")).toBe(true);
+
+        // Path traversal attempts
+        expect(cwdMatchesRoots([root], "/home/user/project/../../etc/passwd")).toBe(false);
+        expect(cwdMatchesRoots([root], "/home/user/project/src/../../../etc/passwd")).toBe(false);
+
+        // Partial folder name match (should fail)
+        expect(cwdMatchesRoots([root], "/home/user/project-secret")).toBe(false);
+
+        // Outside directory
+        expect(cwdMatchesRoots([root], "/etc/passwd")).toBe(false);
+
+        // Multiple roots
+        const roots = ["/app/data", "/tmp"];
+        expect(cwdMatchesRoots(roots, "/app/data/file.txt")).toBe(true);
+        expect(cwdMatchesRoots(roots, "/tmp/temp.txt")).toBe(true);
+        expect(cwdMatchesRoots(roots, "/app/config")).toBe(false);
     });
 });

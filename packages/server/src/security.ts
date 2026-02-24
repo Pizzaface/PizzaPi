@@ -1,3 +1,5 @@
+import { posix as path } from "path";
+
 export class RateLimiter {
     private hits = new Map<string, { count: number; resetTime: number }>();
     private cleanupInterval: ReturnType<typeof setInterval>;
@@ -60,4 +62,30 @@ export function isValidEmail(email: string): boolean {
 
 export function isValidPassword(password: string): boolean {
     return password.length >= 8;
+}
+
+function normalizePath(value: string): string {
+    const trimmed = value.trim().replace(/\\/g, "/");
+    return trimmed.length > 1 ? trimmed.replace(/\/+$/, "") : trimmed;
+}
+
+/** Check whether a cwd is inside one of the allowed roots. */
+export function cwdMatchesRoots(roots: string[], cwd: string): boolean {
+    // 1. Normalize slashes first
+    const nCwd = normalizePath(cwd);
+
+    // 2. Resolve '..' segments using path.posix.normalize
+    const resolvedCwd = path.normalize(nCwd);
+
+    return roots.some((root) => {
+        const nRoot = normalizePath(root);
+        const resolvedRoot = path.normalize(nRoot);
+
+        // Check if resolvedCwd starts with resolvedRoot
+        // Important: Append '/' to ensure we don't match partial folder names
+        // e.g. /home/admin matches /home/admin-secret
+
+        if (resolvedCwd === resolvedRoot) return true;
+        return resolvedCwd.startsWith(resolvedRoot + "/");
+    });
 }
