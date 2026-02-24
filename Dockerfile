@@ -3,17 +3,20 @@ WORKDIR /app
 
 # Copy workspace config for layer caching
 COPY package.json bun.lock* ./
+COPY packages/protocol/package.json packages/protocol/
 COPY packages/tools/package.json packages/tools/
 COPY packages/server/package.json packages/server/
 COPY packages/ui/package.json packages/ui/
+COPY packages/cli/package.json packages/cli/
+COPY packages/docs/package.json packages/docs/
 
 RUN bun install --frozen-lockfile || bun install
 
 # Copy source
 COPY . .
 
-# Build all packages
-RUN bun run build
+# Build only what the server needs (protocol → tools → server + ui)
+RUN bun run build:protocol && bun run build:tools && bun run build:server && bun run build:ui
 
 # --- Production image ---
 FROM oven/bun:1-slim
