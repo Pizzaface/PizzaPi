@@ -11,6 +11,7 @@ A self-hosted web interface and relay server for the [pi coding agent](https://g
   - [Option A — Use the Hosted Relay (Quickest)](#option-a--use-the-hosted-relay-quickest)
   - [Option B — Self-Host the Relay Server](#option-b--self-host-the-relay-server)
 - [CLI Reference](#cli-reference)
+  - [`pizza web` — One-Command Self-Hosting](#pizza-web--one-command-self-hosting)
 - [Configuration](#configuration)
 - [Runner Daemon](#runner-daemon)
 - [Development](#development)
@@ -95,6 +96,8 @@ cd PizzaPi
 
 #### 2. Start the server stack
 
+> **💡 Tip:** If you just want to get up and running quickly, skip the manual Docker setup and use [`pizza web`](#pizza-web--one-command-self-hosting) instead — it handles everything automatically.
+
 ```bash
 docker compose -f docker/compose.yml up -d
 ```
@@ -167,9 +170,58 @@ pizzapi usage --json
 pizzapi models
 pizzapi models --json
 
+# Start the web hub (relay server + UI) via Docker
+pizzapi web
+pizzapi web --port 8080
+pizzapi web stop
+pizzapi web logs
+pizzapi web status
+
 # Show version
 pizzapi --version
 ```
+
+### `pizza web` — One-Command Self-Hosting
+
+`pizza web` is the easiest way to self-host the PizzaPi relay server and web UI. It manages Docker Compose for you — no need to clone the repo or write config files.
+
+**Requirements:** Docker with Docker Compose
+
+```bash
+# Start the hub on the default port (3000)
+pizzapi web
+
+# Start on a custom port
+pizzapi web --port 8080
+
+# Run in the foreground (useful for debugging)
+pizzapi web --foreground
+```
+
+On first run, if you're not inside the PizzaPi repo, the command will automatically clone it to `~/.pizzapi/web/repo`. On subsequent runs it pulls the latest changes.
+
+The generated Docker Compose config and persistent data (auth database) are stored in `~/.pizzapi/web/`.
+
+#### Management Commands
+
+```bash
+# View live logs
+pizzapi web logs
+
+# Check running status
+pizzapi web status
+
+# Stop the hub
+pizzapi web stop
+```
+
+#### How It Works
+
+1. Checks for Docker and Docker Compose
+2. Locates (or clones) the PizzaPi repository
+3. Generates a `compose.yml` in `~/.pizzapi/web/` with your chosen port
+4. Runs `docker compose up` to build and start Redis + the server
+5. The web UI is available at `http://localhost:<port>`
 
 ---
 

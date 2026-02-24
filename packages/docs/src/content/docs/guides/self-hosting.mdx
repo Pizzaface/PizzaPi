@@ -11,7 +11,44 @@ Self-hosting gives you full control over your data, no rate limits, and the abil
 
 ---
 
-## Quick Start with Docker Compose
+## Quickest: `pizza web`
+
+The fastest way to self-host is with a single command. No cloning, no config files — just Docker.
+
+```bash
+pizzapi web
+```
+
+This automatically:
+1. Clones the PizzaPi repo (if not already present) to `~/.pizzapi/web/repo`
+2. Generates a Docker Compose file in `~/.pizzapi/web/`
+3. Builds and starts Redis + the relay server
+4. Serves the web UI at **http://localhost:3000**
+
+On subsequent runs, it pulls the latest changes and rebuilds if needed.
+
+```bash
+# Custom port
+pizzapi web --port 8080
+
+# Run in the foreground
+pizzapi web --foreground
+
+# Management
+pizzapi web logs      # Tail container logs
+pizzapi web status    # Show running containers
+pizzapi web stop      # Stop the hub
+```
+
+Persistent data (SQLite database) is stored in `~/.pizzapi/web/data/`.
+
+<Aside type="tip">
+  `pizza web` is ideal for personal use or quick evaluation. For production deployments with custom domains and TLS, see the manual Docker Compose setup below.
+</Aside>
+
+---
+
+## Manual Docker Compose
 
 <Steps>
 1. **Clone the repository**
