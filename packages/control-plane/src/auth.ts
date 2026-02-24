@@ -79,6 +79,14 @@ export interface OrgInstanceTable {
     created_at: string;
 }
 
+export interface JwtKeysTable {
+    id: string;
+    public_key: string;
+    private_key: string;
+    active: number;
+    created_at: string;
+}
+
 export interface DB {
     user: UserTable;
     session: SessionTable;
@@ -87,6 +95,7 @@ export interface DB {
     organizations: OrganizationTable;
     org_memberships: OrgMembershipTable;
     org_instances: OrgInstanceTable;
+    jwt_keys: JwtKeysTable;
 }
 
 // ── Instances ─────────────────────────────────────────────────────────────────

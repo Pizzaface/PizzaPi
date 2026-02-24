@@ -12,6 +12,7 @@
     },
     "dependencies": {
         "better-auth": "^1.4.18",
+        "jose": "^6.1.3",
         "kysely": "^0.28.11",
         "kysely-bun-sqlite": "^0.4.0"
     },

@@ -1,4 +1,5 @@
 import { auth, kysely } from "./auth.js";
+import { ensureSigningKey, issueOrgToken, getJwks } from "./jwt.js";
 
 const PORT = parseInt(process.env.PORT ?? "3100");
 
@@ -32,6 +33,9 @@ function json(data: unknown, status = 200) {
 }
 
 // ── Server ─────────────────────────────────────────────────────────────────────
+
+// Initialize signing key on startup
+await ensureSigningKey();
 
 const server = Bun.serve({
     port: PORT,
@@ -241,6 +245,47 @@ const server = Bun.serve({
                 .execute();
 
             return json({ id: membershipId, user_id, org_id: org.id, role, created_at: now }, 201);
+        }
+
+        // GET /.well-known/jwks.json
+        if (pathname === "/.well-known/jwks.json" && req.method === "GET") {
+            const jwks = await getJwks();
+            return json(jwks);
+        }
+
+        // POST /api/auth/org-token — issue JWT for org context
+        if (pathname === "/api/auth/org-token" && req.method === "POST") {
+            const session = await getSession(req);
+            if (!session?.user) return json({ error: "Unauthorized" }, 401);
+
+            const body = (await req.json()) as { orgSlug?: string };
+            const orgSlug = body.orgSlug?.trim();
+            if (!orgSlug) return json({ error: "orgSlug required" }, 400);
+
+            const org = await kysely
+                .selectFrom("organizations")
+                .select(["id", "slug"])
+                .where("slug", "=", orgSlug)
+                .where("status", "!=", "deleted")
+                .executeTakeFirst();
+            if (!org) return json({ error: "Organization not found" }, 404);
+
+            const membership = await kysely
+                .selectFrom("org_memberships")
+                .select("role")
+                .where("org_id", "=", org.id)
+                .where("user_id", "=", session.user.id)
+                .executeTakeFirst();
+            if (!membership) return json({ error: "Not a member of this organization" }, 403);
+
+            const token = await issueOrgToken({
+                sub: session.user.id,
+                org_id: org.id,
+                org_slug: org.slug,
+                role: membership.role,
+            });
+
+            return json({ token });
         }
 
         return json({ error: "Not found" }, 404);
