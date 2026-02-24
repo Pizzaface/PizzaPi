@@ -1,0 +1,139 @@
+---
+title: Getting Started
+description: Get PizzaPi running in under five minutes — connect to a hosted relay or spin up your own.
+sidebar:
+  order: 1
+---
+
+import { Tabs, TabItem, Steps, Aside } from "@astrojs/starlight/components";
+
+PizzaPi has two parts:
+
+| Part | What it does |
+|------|-------------|
+| **CLI** (`pizzapi`) | Wraps `pi` on your dev machine and streams session events to the relay |
+| **Relay Server** | Buffers and broadcasts events; hosts the web UI |
+
+You always need the CLI. The relay can be **hosted by someone else** (quickest) or **run yourself** with Docker.
+
+---
+
+## Option A — Use a Hosted Relay (Quickest)
+
+<Steps>
+1. **Install the CLI**
+
+   <Tabs>
+     <TabItem label="npx (no install)">
+     ```bash
+     npx @pizzapi/pizza
+     ```
+     </TabItem>
+     <TabItem label="npm (global)">
+     ```bash
+     npm install -g @pizzapi/pizza
+     pizzapi
+     ```
+     </TabItem>
+     <TabItem label="Bun (global)">
+     ```bash
+     bun install -g @pizzapi/pizza
+     pizzapi
+     ```
+     </TabItem>
+   </Tabs>
+
+2. **Run first-time setup**
+
+   The first time you run `pizzapi` without a saved config it launches the setup wizard automatically:
+
+   ```
+   ┌─────────────────────────────────────────┐
+   │        PizzaPi — first-run setup        │
+   └─────────────────────────────────────────┘
+
+   Relay server URL [http://localhost:3000]: https://relay.example.com
+   Your name (leave blank if account exists): Jordan
+   Email: you@example.com
+   Password: ••••••••
+
+   Connecting to relay server… ✓
+   ✓ API key saved to ~/.pizzapi/config.json
+   ✓ Relay: wss://relay.example.com
+   ```
+
+   You can re-run setup at any time:
+
+   ```bash
+   pizzapi setup
+   ```
+
+3. **Start a session**
+
+   ```bash
+   pizzapi
+   ```
+
+   Open the relay's web UI in your browser — your session is streaming live!
+</Steps>
+
+---
+
+## Option B — Self-Host the Relay
+
+Want complete control? Run the relay + web UI yourself.
+
+<Steps>
+1. **Clone the repository**
+
+   ```bash
+   git clone https://github.com/Pizzaface/PizzaPi.git
+   cd PizzaPi
+   ```
+
+2. **Start the server stack**
+
+   ```bash
+   docker compose -f docker/compose.yml up -d
+   ```
+
+   | Service | Port | Description |
+   |---------|------|-------------|
+   | `redis` | 6379 | Session event buffer |
+   | `server` | 3000 | Relay API + Web UI |
+
+   The web UI is now live at **http://localhost:3000**.
+
+3. **Install the CLI & connect**
+
+   ```bash
+   npm install -g @pizzapi/pizza
+   pizzapi setup
+   # Relay server URL: http://localhost:3000
+   # Email: you@example.com
+   # Password: your-password
+   ```
+
+4. **Start your first session**
+
+   ```bash
+   cd /your/project
+   pizzapi
+   ```
+
+   Then open **http://localhost:3000** to watch it live.
+</Steps>
+
+<Aside type="tip" title="No Docker?">
+  You can run the server directly with Bun for local development. See the [Development guide](/PizzaPi/reference/architecture/#development) for instructions.
+</Aside>
+
+---
+
+## What's Next?
+
+- [**Installation details**](/PizzaPi/guides/installation/) — binary downloads, platform notes
+- [**CLI reference**](/PizzaPi/guides/cli-reference/) — all commands and flags
+- [**Configuration**](/PizzaPi/guides/configuration/) — config files and environment variables
+- [**Runner daemon**](/PizzaPi/guides/runner-daemon/) — headless session spawning from the web UI
+- [**Self-hosting guide**](/PizzaPi/guides/self-hosting/) — production Docker setup

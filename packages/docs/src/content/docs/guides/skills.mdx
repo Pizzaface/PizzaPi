@@ -1,0 +1,119 @@
+---
+title: Skills & Extensions
+description: Extend PizzaPi with custom skills that give the agent specialized knowledge and capabilities.
+sidebar:
+  order: 6
+---
+
+import { Aside, FileTree } from "@astrojs/starlight/components";
+
+**Skills** are markdown (or MDX) files that give the `pi` agent specialized knowledge, workflows, or instructions for a particular domain. PizzaPi automatically loads skills from well-known directories and makes them available to every session.
+
+---
+
+## Skill Discovery
+
+PizzaPi searches for skills in these locations (all merged):
+
+| Path | Scope |
+|------|-------|
+| `~/.pizzapi/skills/` | Global — available in all projects |
+| `<cwd>/.pizzapi/skills/` | Project-local — scoped to this repo |
+| Paths in the `skills` config array | Custom locations |
+
+---
+
+## Writing a Skill
+
+A skill is a directory containing a `SKILL.md` file:
+
+<FileTree>
+- .pizzapi/
+  - skills/
+    - my-skill/
+      - **SKILL.md**
+      - helpers.md
+      - examples/
+        - example-1.md
+</FileTree>
+
+### `SKILL.md` structure
+
+```markdown
+# My Skill Name
+
+A one-line description of what this skill does.
+
+## When to Use This Skill
+
+Describe the situations where the agent should apply this skill.
+
+## Instructions
+
+Step-by-step guidance, rules, or domain knowledge the agent should follow.
+
+## Examples
+
+Include examples to help the agent understand expected behavior.
+```
+
+<Aside type="tip">
+  Skills are loaded into the agent's context at startup. Keep them focused and concise — one skill per domain works best.
+</Aside>
+
+---
+
+## Built-in PizzaPi Extensions
+
+PizzaPi ships with several built-in extensions that are always active:
+
+| Extension | What it does |
+|-----------|-------------|
+| **remote** | Streams all session events (tokens, tool calls, file diffs) to the relay server |
+| **mcp** | Bridges Model Context Protocol (MCP) servers into the agent's tool set |
+| **restart** | Allows the agent to restart itself within a session |
+| **set-session-name** | Gives the agent the `set_session_name` tool to title sessions in the UI |
+| **update-todo** | Gives the agent the `update_todo` tool to maintain a live task list in the UI |
+| **spawn-session** | Gives the agent the `spawn_session` tool to launch sub-sessions via the runner |
+| **session-messaging** | Gives the agent `send_message`, `wait_for_message`, and `check_messages` tools for inter-agent communication |
+
+---
+
+## MCP (Model Context Protocol) Servers
+
+PizzaPi supports connecting **MCP servers** to the agent, giving it access to additional tools (web search, file access, databases, etc.).
+
+### Configuration
+
+MCP servers are configured in your `pi` configuration (not PizzaPi config). Refer to the [pi documentation](https://github.com/mariozechner/pi) for MCP setup details.
+
+PizzaPi's `mcp-extension` automatically bridges any configured MCP servers into the agent's tool set for every session.
+
+---
+
+## Example: Project-Local Skill
+
+Create `.pizzapi/skills/nextjs/SKILL.md` in your Next.js project:
+
+```markdown
+# Next.js 15 App Router
+
+Use this skill when working on Next.js projects.
+
+## Rules
+
+- Always use TypeScript
+- Use the App Router (not Pages Router)
+- Server Components by default; add `"use client"` only when needed
+- Use `next/image` for all images
+- API routes go in `app/api/route.ts`
+
+## File Structure
+
+- `app/` — pages and layouts
+- `app/api/` — API routes
+- `components/` — shared UI components
+- `lib/` — utilities and server-only code
+```
+
+This skill will automatically be available to every `pizzapi` session started from that project directory.

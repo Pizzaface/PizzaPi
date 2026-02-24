@@ -1,0 +1,68 @@
+---
+title: Environment Variables
+description: Complete reference for all environment variables recognized by PizzaPi CLI and the relay server.
+sidebar:
+  order: 2
+---
+
+## CLI Environment Variables
+
+These variables are read by the `pizzapi` CLI at startup:
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `PIZZAPI_API_KEY` | API key for authenticating with the relay server. Overrides the value from `~/.pizzapi/config.json`. | `pk_live_abc123...` |
+| `PIZZAPI_RELAY_URL` | WebSocket URL of the relay server. Overrides the config file value. | `wss://relay.example.com` |
+
+### Usage
+
+```bash
+# Use environment variables instead of (or alongside) the config file
+export PIZZAPI_API_KEY="pk_live_abc123..."
+export PIZZAPI_RELAY_URL="wss://relay.example.com"
+pizzapi
+```
+
+Environment variables are ideal for:
+- CI/CD pipelines
+- Docker containers (avoid mounting config files)
+- Switching between relay servers quickly without editing config
+
+---
+
+## Server Environment Variables
+
+These variables are read by the relay server (`packages/server`):
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PORT` | `3000` | HTTP and WebSocket listen port |
+| `PIZZAPI_REDIS_URL` | — | Redis connection string (required). Example: `redis://localhost:6379` |
+
+### Usage in Docker Compose
+
+```yaml
+services:
+  server:
+    environment:
+      PORT: "3000"
+      PIZZAPI_REDIS_URL: "redis://redis:6379"
+```
+
+### Usage without Docker
+
+```bash
+PORT=3000 PIZZAPI_REDIS_URL=redis://localhost:6379 bun run start
+```
+
+---
+
+## Precedence
+
+For the CLI, configuration is resolved in this order (later values win):
+
+1. Built-in defaults
+2. `~/.pizzapi/config.json`
+3. `<cwd>/.pizzapi/config.json`
+4. `PIZZAPI_API_KEY` environment variable
+5. `PIZZAPI_RELAY_URL` environment variable

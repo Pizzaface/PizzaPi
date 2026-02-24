@@ -1,0 +1,163 @@
+---
+title: Runner Daemon
+description: Use the PizzaPi runner daemon to spawn headless agent sessions on demand from the web UI or via the spawn_session tool.
+sidebar:
+  order: 4
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+The **runner daemon** lets you spawn agent sessions on demand — from the web UI or programmatically via the `spawn_session` tool — **without needing a terminal open**. It's the key piece that makes PizzaPi work like a proper remote agent platform.
+
+---
+
+## How It Works
+
+```
+┌──────────────────────────────────────────────┐
+│  PizzaPi Web UI / spawn_session tool         │
+└─────────────────────┬────────────────────────┘
+                      │  HTTP request to relay
+                      ▼
+┌──────────────────────────────────────────────┐
+│  Relay Server                                │
+│  → routes spawn request to registered runner │
+└─────────────────────┬────────────────────────┘
+                      │  WebSocket command
+                      ▼
+┌──────────────────────────────────────────────┐
+│  Runner Supervisor (pizzapi runner)          │
+│  → spawns daemon child process               │
+└─────────────────────┬────────────────────────┘
+                      │  fork
+                      ▼
+┌──────────────────────────────────────────────┐
+│  Runner Daemon (_daemon)                     │
+│  → spawns Worker for each session request    │
+└─────────────────────┬────────────────────────┘
+                      │  fork
+                      ▼
+┌──────────────────────────────────────────────┐
+│  Session Worker (_worker)                    │
+│  → runs pizzapi session, streams events      │
+└──────────────────────────────────────────────┘
+```
+
+The **supervisor** manages crash recovery — if the daemon dies, the supervisor restarts it. Each session runs in an isolated **worker** process so a crash never affects other sessions.
+
+---
+
+## Starting the Runner
+
+```bash
+# Start in the foreground (Ctrl+C to stop)
+pizzapi runner
+
+# Start in the background
+pizzapi runner &
+
+# Stop the runner
+pizzapi runner stop
+```
+
+<Aside type="tip">
+  For persistent operation, run the runner under a process manager like `systemd`, `pm2`, or inside a `tmux`/`screen` session.
+</Aside>
+
+---
+
+## Runner Identity
+
+On first start, the runner generates a stable ID and saves it to `~/.pizzapi/runner.json`. This ID is used to register the runner with the relay server.
+
+```json
+// ~/.pizzapi/runner.json  (auto-generated, do not edit)
+{
+  "id": "runner_a1b2c3d4e5f6",
+  "name": "my-macbook"
+}
+```
+
+The runner appears in the web UI under its ID and can be targeted by `spawn_session` calls.
+
+---
+
+## Spawning Sessions Programmatically
+
+Agents can spawn sub-sessions using the built-in `spawn_session` tool:
+
+```typescript
+// Inside a pi agent session:
+const { sessionId, shareUrl } = await spawn_session({
+  prompt: "Fix all TypeScript errors in packages/server/src/",
+  cwd: "/path/to/project",
+  runnerId: "runner_a1b2c3d4e5f6",   // optional — defaults to current runner
+});
+```
+
+The sub-session streams to the same relay and appears as a child in the web UI session tree.
+
+---
+
+## Process Hierarchy
+
+```
+pizzapi runner          ← supervisor (PID saved to ~/.pizzapi/runner.pid)
+  └── pizzapi _daemon  ← daemon (restarted on crash by supervisor)
+        ├── pizzapi _worker   ← session A
+        ├── pizzapi _worker   ← session B
+        └── pizzapi _worker   ← session C
+```
+
+<Aside type="caution">
+  Do **not** call `pizzapi _daemon` or `pizzapi _worker` directly. These are internal entrypoints managed by the supervisor.
+</Aside>
+
+---
+
+## Running as a System Service
+
+### systemd (Linux)
+
+```ini
+# /etc/systemd/system/pizzapi-runner.service
+[Unit]
+Description=PizzaPi Runner Daemon
+After=network.target
+
+[Service]
+Type=simple
+User=youruser
+ExecStart=/usr/local/bin/pizzapi runner
+Restart=on-failure
+RestartSec=5
+Environment=PIZZAPI_API_KEY=pk_live_abc123...
+Environment=PIZZAPI_RELAY_URL=wss://relay.example.com
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now pizzapi-runner
+sudo systemctl status pizzapi-runner
+```
+
+### pm2
+
+```bash
+pm2 start "pizzapi runner" --name pizzapi-runner
+pm2 save
+pm2 startup   # generate startup script
+```
+
+---
+
+## Stopping the Runner
+
+```bash
+pizzapi runner stop
+```
+
+This sends a graceful shutdown signal. Active session workers are allowed to finish before the daemon exits.

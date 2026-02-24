@@ -1,0 +1,144 @@
+---
+title: Architecture
+description: How PizzaPi works — the relay protocol, component layout, and data flow.
+sidebar:
+  order: 1
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+## System Overview
+
+PizzaPi is built around a **relay pattern**: the CLI on your dev machine connects outward to the relay server over a persistent WebSocket, so the relay never needs to reach into your firewall.
+
+```
+┌────────────────────────────────────────────────────────┐
+│  Your Dev Machine                                      │
+│                                                        │
+│  ┌───────────────────────────────────────────────────┐ │
+│  │  pizzapi CLI                                      │ │
+│  │   ├─ pi coding agent (LLM + tools)               │ │
+│  │   ├─ remote extension (event serializer)         │ │
+│  │   └─ runner daemon (optional)                    │ │
+│  └───────────────────────┬───────────────────────────┘ │
+└──────────────────────────┼─────────────────────────────┘
+                           │ WebSocket (outbound)
+                           ▼
+┌────────────────────────────────────────────────────────┐
+│  Relay Server                                          │
+│                                                        │
+│  ┌──────────────┐   ┌──────────────┐  ┌────────────┐  │
+│  │  Bun HTTP/WS │   │  Redis       │  │  SQLite DB │  │
+│  │  server      │──►│  event buffer│  │  (users,   │  │
+│  │              │   │              │  │   sessions)│  │
+│  └──────┬───────┘   └──────────────┘  └────────────┘  │
+│         │                                              │
+└─────────┼──────────────────────────────────────────────┘
+          │ HTTP + WebSocket
+          ▼
+┌────────────────────────────────────────────────────────┐
+│  Browser / Mobile Web UI                               │
+│   ├─ Live session stream (tokens, tool calls, diffs)   │
+│   ├─ Send messages to the agent                        │
+│   ├─ Manage runners and spawn sessions                 │
+│   └─ API key management and settings                   │
+└────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Package Layout
+
+The monorepo is organized into focused packages:
+
+| Package | Description |
+|---------|-------------|
+| `packages/protocol` | Shared TypeScript types for the relay wire protocol |
+| `packages/tools` | Shared agent tools (bash, read-file, write-file, search) |
+| `packages/server` | Bun HTTP + WebSocket relay server |
+| `packages/ui` | React 19 PWA web interface |
+| `packages/cli` | CLI wrapper — launches pi with PizzaPi extensions |
+| `packages/docs` | This documentation site (Astro Starlight) |
+
+**Build order**: `protocol` → `tools` → `server` → `ui` → `cli`
+
+---
+
+## Tech Stack
+
+| Layer | Technology |
+|-------|------------|
+| Runtime / package manager | **Bun** |
+| Language | TypeScript (strict, ESM) |
+| Server | Bun.serve, better-auth, Kysely + SQLite, Redis, web-push |
+| UI | React 19, Vite 6, TailwindCSS v4, Radix UI, shadcn/ui |
+| Agent core | `@mariozechner/pi-coding-agent`, `@mariozechner/pi-ai` |
+
+---
+
+## Event Flow
+
+When you run `pizzapi`:
+
+1. The CLI starts a `pi` agent session with PizzaPi extensions injected
+2. The **remote extension** opens a WebSocket to the relay server, authenticated with your API key
+3. Every agent event (tokens, tool calls, file writes, errors) is serialized and sent over that WebSocket
+4. The relay server **buffers** recent events in Redis and **broadcasts** to any connected browser clients
+5. The web UI receives events and renders them in real time — tokens stream as they arrive, tool calls show inputs/outputs, file changes appear as diffs
+
+```
+Agent event
+    │
+    ▼
+remote extension
+    │  serialize → JSON
+    ▼
+WebSocket → Relay Server
+    │
+    ├──► Redis (ring buffer, last ~1000 events per session)
+    │
+    └──► WebSocket broadcast → all connected browser tabs
+```
+
+---
+
+## Authentication
+
+The server uses **better-auth** for account management:
+
+- Email/password registration and login
+- Session cookies for the web UI
+- **API keys** for the CLI and runner — issued at registration, stored in `~/.pizzapi/config.json`
+
+All WebSocket connections from the CLI require a valid API key in the connection headers.
+
+---
+
+## Runner Architecture
+
+See the [Runner Daemon guide](/PizzaPi/guides/runner-daemon/) for the full process hierarchy diagram. In summary:
+
+- The **supervisor** (`pizzapi runner`) is the stable outer process
+- It spawns the **daemon** as a child and restarts it on crash
+- The daemon spawns one **worker** per session request, isolated so a crash never affects other sessions
+
+---
+
+## Development
+
+```bash
+# Prerequisites: Bun, Redis
+bun install
+bun run dev
+# API server → http://localhost:3001
+# Vite UI   → http://localhost:5173
+
+# Type-check all packages
+bun run typecheck
+
+# Build everything
+bun run build
+
+# Run DB migrations
+bun run migrate
+```

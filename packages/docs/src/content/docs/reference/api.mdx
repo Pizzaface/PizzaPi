@@ -1,0 +1,271 @@
+---
+title: Server API Reference
+description: HTTP and WebSocket API endpoints exposed by the PizzaPi relay server.
+sidebar:
+  order: 3
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+The relay server exposes a REST-like HTTP API used by both the web UI and the CLI. Most endpoints require authentication via an **API key** (CLI) or **session cookie** (browser).
+
+<Aside type="note">
+  This is an internal API — it's used by the official clients. It may change between versions.
+</Aside>
+
+---
+
+## Authentication
+
+### API Key (CLI)
+
+Pass your API key in the `Authorization` header:
+
+```http
+Authorization: Bearer pk_live_abc123...
+```
+
+### Session Cookie (Browser)
+
+The web UI uses cookie-based sessions managed by [better-auth](https://better-auth.com). Log in via `POST /api/auth/sign-in/email`.
+
+---
+
+## Health
+
+### `GET /health`
+
+Returns server status. No authentication required.
+
+```http
+GET /health
+```
+
+**Response:**
+
+```json
+{ "status": "ok" }
+```
+
+---
+
+## Authentication Endpoints
+
+Authentication is handled by **better-auth** at the `/api/auth/*` prefix. See the better-auth documentation for the full list of endpoints.
+
+### `POST /api/register`
+
+Register a new account or log in to an existing one and issue a CLI API key. Used by `pizzapi setup`.
+
+**Rate-limited:** 5 requests per 15 minutes per IP.
+
+**Request body:**
+
+```json
+{
+  "name": "Jordan",      // Required for new accounts; omit for existing
+  "email": "you@example.com",
+  "password": "••••••••"
+}
+```
+
+**Response:**
+
+```json
+{ "ok": true, "key": "pk_live_abc123..." }
+```
+
+---
+
+## Models
+
+### `GET /api/models`
+
+List available AI models across all configured providers.
+
+**Auth:** API key or session cookie.
+
+**Response:**
+
+```json
+[
+  { "id": "claude-opus-4-5", "provider": "anthropic", "name": "Claude Opus 4.5" },
+  { "id": "gemini-2.5-pro", "provider": "google",    "name": "Gemini 2.5 Pro" }
+]
+```
+
+---
+
+## Runners
+
+### `GET /api/runners`
+
+List all registered runner daemons.
+
+**Auth:** Session cookie.
+
+**Response:**
+
+```json
+[
+  {
+    "id": "runner_a1b2c3",
+    "name": "my-macbook",
+    "connected": true,
+    "sessions": ["session_x1y2z3"]
+  }
+]
+```
+
+---
+
+### `POST /api/runners/spawn`
+
+Spawn a new agent session on a runner.
+
+**Auth:** API key or session cookie.
+
+**Request body:**
+
+```json
+{
+  "runnerId": "runner_a1b2c3",
+  "prompt": "Fix all TypeScript errors",
+  "cwd": "/path/to/project",
+  "model": "claude-opus-4-5"
+}
+```
+
+**Response:**
+
+```json
+{
+  "sessionId": "session_x1y2z3",
+  "shareUrl": "https://relay.example.com/sessions/session_x1y2z3"
+}
+```
+
+---
+
+### `POST /api/runners/restart`
+
+Restart an agent session.
+
+---
+
+### `POST /api/runners/stop`
+
+Stop a running session.
+
+---
+
+### `POST /api/runners/terminal`
+
+Register a terminal (xterm) for a session.
+
+---
+
+### `GET /api/runners/{runnerId}/recent-folders`
+
+Get recently used working directories for a runner.
+
+---
+
+### `GET /api/runners/{runnerId}/skills`
+
+List available skills on a runner.
+
+---
+
+### `GET /api/runners/{runnerId}/files`
+
+List files in a directory on the runner.
+
+---
+
+### `GET /api/runners/{runnerId}/read-file`
+
+Read the contents of a file on the runner.
+
+---
+
+### `GET /api/runners/{runnerId}/git-status`
+
+Get the Git status of the runner's working directory.
+
+---
+
+### `GET /api/runners/{runnerId}/git-diff`
+
+Get a Git diff for the runner's working directory.
+
+---
+
+## Sessions
+
+### `GET /api/sessions`
+
+List all sessions for the authenticated user.
+
+**Auth:** Session cookie.
+
+---
+
+### `POST /api/sessions/{sessionId}/attachments`
+
+Upload a file attachment to a session (e.g. for the agent to process).
+
+**Auth:** Session cookie.
+
+**Content-Type:** `multipart/form-data`
+
+**Max file size:** Configured by the server (default: 10 MB).
+
+---
+
+### `GET /api/attachments/{attachmentId}`
+
+Download a previously uploaded attachment.
+
+---
+
+## Chat
+
+### `POST /api/chat`
+
+Send a message to the agent in an active session.
+
+**Auth:** API key or session cookie.
+
+**Request body:**
+
+```json
+{
+  "sessionId": "session_x1y2z3",
+  "message": "Now refactor the auth module to use JWT."
+}
+```
+
+---
+
+## Push Notifications
+
+### `GET /api/push/vapid-public-key`
+
+Get the VAPID public key for Web Push subscription.
+
+### `POST /api/push/subscribe`
+
+Subscribe the browser to push notifications.
+
+### `POST /api/push/unsubscribe`
+
+Unsubscribe the browser from push notifications.
+
+### `GET /api/push/subscriptions`
+
+List push subscriptions for the authenticated user.
+
+### `PUT /api/push/events`
+
+Update which events trigger push notifications.

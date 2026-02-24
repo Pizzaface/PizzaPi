@@ -1,0 +1,68 @@
+---
+title: PizzaPi
+description: A self-hosted web interface and relay server for the pi coding agent. Stream live AI coding sessions to any browser and interact remotely from mobile or desktop.
+template: splash
+hero:
+  tagline: Watch your AI coding agent live — from any device, anywhere.
+  image:
+    file: ../../assets/logo.svg
+  actions:
+    - text: Get Started
+      link: /PizzaPi/getting-started/
+      icon: right-arrow
+      variant: primary
+    - text: View on GitHub
+      link: https://github.com/Pizzaface/PizzaPi
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid, LinkButton } from "@astrojs/starlight/components";
+
+## What is PizzaPi?
+
+**PizzaPi** is a self-hosted relay server and web UI that wraps the [`pi` coding agent](https://github.com/mariozechner/pi). It streams every event from your local agent session to a browser in real time — so you can monitor, interact, and review code changes from your phone, tablet, or another computer.
+
+```
+┌─────────────────────┐     WebSocket      ┌──────────────────────┐
+│   pizzapi  CLI      │ ─────────────────► │  PizzaPi Relay Server │
+│  (your dev machine) │                    │  (self-hosted / cloud)│
+└─────────────────────┘                    └──────────┬───────────┘
+                                                      │  HTTP / WS
+                                            ┌─────────▼──────────┐
+                                            │   Browser / Mobile  │
+                                            │   Web UI            │
+                                            └─────────────────────┘
+```
+
+<CardGrid stagger>
+  <Card title="Stream live sessions" icon="laptop">
+    Every token, tool call, and file change streams to your browser in real time. No polling, no refresh.
+  </Card>
+  <Card title="Control from anywhere" icon="rocket">
+    Send messages to the agent, manage runners, and spawn new sessions from mobile or desktop — no terminal required.
+  </Card>
+  <Card title="Self-hosted & private" icon="shield">
+    Deploy your own relay with Docker Compose. Your code and API keys stay on your infrastructure.
+  </Card>
+  <Card title="Headless runner daemon" icon="setting">
+    Spawn agent sessions on demand from the web UI or via the `spawn_session` tool — no terminal session needed.
+  </Card>
+</CardGrid>
+
+## Quick Install
+
+```bash
+# Run without installing (npx)
+npx @pizzapi/pizza
+
+# — or — install globally
+npm install -g @pizzapi/pizza
+pizzapi
+```
+
+<div style="margin-top: 2rem; display: flex; gap: 1rem; flex-wrap: wrap;">
+  <LinkButton href="/PizzaPi/getting-started/" variant="primary" icon="right-arrow">Get Started</LinkButton>
+  <LinkButton href="/PizzaPi/guides/installation/" variant="secondary">Full Installation Guide</LinkButton>
+  <LinkButton href="/PizzaPi/guides/self-hosting/" variant="minimal" icon="external">Self-Host with Docker</LinkButton>
+</div>

@@ -1,0 +1,153 @@
+---
+title: CLI Reference
+description: Complete reference for all pizzapi command-line commands and flags.
+sidebar:
+  order: 2
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+## Synopsis
+
+```
+pizzapi [command] [options]
+```
+
+When called without a command, `pizzapi` starts an **interactive coding session** and streams it to the configured relay server.
+
+---
+
+## Commands
+
+### `pizzapi` (default)
+
+Start an interactive `pi` coding session and relay it to the web UI.
+
+```bash
+pizzapi
+pizzapi --cwd /path/to/project
+```
+
+| Flag | Description |
+|------|-------------|
+| `--cwd <path>` | Working directory for the session (default: current directory) |
+
+The session ID is derived from the runner configuration and displayed on startup. Open the relay server's web UI to watch the session live.
+
+---
+
+### `pizzapi setup`
+
+Run (or re-run) the first-time setup wizard. Prompts for the relay server URL, email, and password, then saves the API key to `~/.pizzapi/config.json`.
+
+```bash
+pizzapi setup
+```
+
+<Aside type="tip">
+  You can re-run setup at any time to switch relay servers or update credentials.
+</Aside>
+
+---
+
+### `pizzapi runner`
+
+Start the **headless runner daemon**. The daemon registers with the relay server and waits for session-spawn requests from the web UI or from agents using the `spawn_session` tool.
+
+```bash
+# Start the runner (foreground)
+pizzapi runner
+
+# Start the runner in the background
+pizzapi runner &
+
+# Stop a running daemon
+pizzapi runner stop
+```
+
+See the [Runner Daemon guide](/PizzaPi/guides/runner-daemon/) for detailed usage.
+
+---
+
+### `pizzapi runner stop`
+
+Send a stop signal to the currently running runner daemon.
+
+```bash
+pizzapi runner stop
+```
+
+---
+
+### `pizzapi usage`
+
+Show accumulated API usage across all providers.
+
+```bash
+# Summary for all providers
+pizzapi usage
+
+# Filter to a specific provider
+pizzapi usage anthropic
+pizzapi usage gemini
+pizzapi usage openai
+
+# Machine-readable JSON output
+pizzapi usage --json
+```
+
+Output format:
+
+```
+Provider       Tokens In    Tokens Out    Cost
+─────────────────────────────────────────────
+anthropic      1,234,567    456,789       $12.34
+gemini         234,567      89,012         $2.10
+─────────────────────────────────────────────
+Total                                     $14.44
+```
+
+---
+
+### `pizzapi models`
+
+List all AI models available through the configured providers.
+
+```bash
+# Human-readable table
+pizzapi models
+
+# Machine-readable JSON
+pizzapi models --json
+```
+
+---
+
+### `pizzapi --version`
+
+Print the installed version number and exit.
+
+```bash
+pizzapi --version
+# 1.2.3
+```
+
+---
+
+## Global Flags
+
+| Flag | Description |
+|------|-------------|
+| `--version` | Print version and exit |
+| `--cwd <path>` | Override working directory (applies to the default session command) |
+
+---
+
+## Internal Commands
+
+These commands are used internally by the daemon and should not be called directly:
+
+| Command | Description |
+|---------|-------------|
+| `pizzapi _daemon` | Internal daemon entrypoint (spawned by the supervisor) |
+| `pizzapi _worker` | Internal worker entrypoint (spawned by the daemon for each session) |

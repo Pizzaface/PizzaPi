@@ -6,10 +6,13 @@
         "packages/tools",
         "packages/server",
         "packages/ui",
-        "packages/cli"
+        "packages/cli",
+        "packages/docs"
     ],
     "scripts": {
         "build": "bun run build:protocol && bun run build:tools && bun run build:server && bun run build:ui && bun run build:cli",
+        "build:docs": "cd packages/docs && bun run build",
+        "dev:docs": "cd packages/docs && bun run dev",
         "build:protocol": "cd packages/protocol && bun run build",
         "build:tools": "cd packages/tools && bun run build",
         "build:server": "cd packages/server && bun run build",
@@ -27,7 +30,7 @@
         "dev:runner": "bun packages/cli/src/index.ts runner",
         "typecheck": "tsc --build",
         "migrate": "cd packages/server && bun run migrate",
-        "clean": "bun -e \"['protocol','tools','server','ui','cli'].forEach(p=>require('fs').rmSync('packages/'+p+'/dist',{recursive:true,force:true}))\"",
+        "clean": "bun -e \"['protocol','tools','server','ui','cli','docs'].forEach(p=>require('fs').rmSync('packages/'+p+'/dist',{recursive:true,force:true}))\"",
         "postinstall": "true"
     },
     "dependencies": {

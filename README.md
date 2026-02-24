@@ -89,7 +89,7 @@ Run the relay + web UI yourself with Docker Compose. You need Docker and Docker 
 #### 1. Clone the repository
 
 ```bash
-git clone https://github.com/badlogic/PizzaPi.git
+git clone https://github.com/Pizzaface/PizzaPi.git
 cd PizzaPi
 ```
 

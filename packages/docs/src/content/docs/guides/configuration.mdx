@@ -1,0 +1,127 @@
+---
+title: Configuration
+description: Configure PizzaPi using JSON config files or environment variables.
+sidebar:
+  order: 3
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+PizzaPi loads configuration from two JSON files merged together — project-local settings win over global ones:
+
+| File | Scope |
+|------|-------|
+| `~/.pizzapi/config.json` | Global — applies to all projects |
+| `.pizzapi/config.json` | Project-local — overrides global for this project |
+
+You can also override any setting with **environment variables**.
+
+---
+
+## Config File Reference
+
+```jsonc
+// ~/.pizzapi/config.json  (or  .pizzapi/config.json in your project)
+{
+  // API key issued by the relay server during `pizzapi setup`
+  "apiKey": "pk_live_abc123...",
+
+  // WebSocket URL of the relay server
+  // Default: ws://localhost:3001
+  "relayUrl": "wss://relay.example.com",
+
+  // Replace the default system prompt entirely
+  "systemPrompt": "You are a helpful coding assistant.",
+
+  // Append to the default system prompt without replacing it
+  "appendSystemPrompt": "Always write tests for new code.",
+
+  // Override the agent config directory (skills, extensions, etc.)
+  // Default: ~/.pizzapi
+  "agentDir": "~/.pizzapi",
+
+  // Additional skill paths — merged on top of the default locations:
+  //   ~/.pizzapi/skills/  and  <cwd>/.pizzapi/skills/
+  "skills": [
+    "~/my-custom-skills",
+    "/absolute/path/to/skills"
+  ]
+}
+```
+
+---
+
+## All Options
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `apiKey` | `string` | — | API key for authenticating with the relay server. Issued during `pizzapi setup`. |
+| `relayUrl` | `string` | `ws://localhost:3001` | WebSocket URL of the relay server |
+| `systemPrompt` | `string` | *(pi default)* | Fully replace the default system prompt |
+| `appendSystemPrompt` | `string` | — | Append to the default system prompt |
+| `agentDir` | `string` | `~/.pizzapi` | Agent config directory (skills, extensions, etc.) |
+| `skills` | `string[]` | `[]` | Additional skill directories. Supports `~` expansion. |
+
+---
+
+## Environment Variables
+
+Every config option can also be set as an environment variable. Environment variables take effect for the current process only and do **not** override saved config values in JSON files — the JSON is loaded first, then env vars for the relay connection are applied on top.
+
+| Variable | Equivalent config key |
+|----------|-----------------------|
+| `PIZZAPI_API_KEY` | `apiKey` |
+| `PIZZAPI_RELAY_URL` | `relayUrl` |
+
+**Example:**
+
+```bash
+export PIZZAPI_API_KEY="pk_live_abc123..."
+export PIZZAPI_RELAY_URL="wss://relay.example.com"
+pizzapi
+```
+
+<Aside type="tip">
+  Environment variables are useful in CI/CD pipelines or when you want to avoid storing credentials in a file.
+</Aside>
+
+---
+
+## Merge Order
+
+When PizzaPi starts, config is resolved in this order (later entries win):
+
+1. Built-in defaults
+2. `~/.pizzapi/config.json` (global)
+3. `<cwd>/.pizzapi/config.json` (project-local)
+4. Environment variables (`PIZZAPI_API_KEY`, `PIZZAPI_RELAY_URL`)
+
+---
+
+## Skills Search Paths
+
+PizzaPi automatically looks for skills in these locations (all merged):
+
+1. `~/.pizzapi/skills/` — your global personal skills
+2. `<cwd>/.pizzapi/skills/` — project-local skills
+3. Any paths listed in the `skills` config array
+
+See the [Skills & Extensions guide](/PizzaPi/guides/skills/) for how to write and use skills.
+
+---
+
+## Example: Per-Project Configuration
+
+Create `.pizzapi/config.json` in your project root to customize behavior for that repo:
+
+```jsonc
+// my-project/.pizzapi/config.json
+{
+  "appendSystemPrompt": "This is a Next.js 15 project using the App Router. Always use TypeScript.",
+  "skills": [
+    ".pi/skills"
+  ]
+}
+```
+
+Commit this file to share it with your team — just keep `apiKey` out of project-local config (use the global file or environment variables instead).

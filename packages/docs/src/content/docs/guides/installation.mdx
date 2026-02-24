@@ -1,0 +1,119 @@
+---
+title: Installation
+description: Install the PizzaPi CLI on Linux, macOS, or Windows using npm, Bun, or a pre-built binary.
+sidebar:
+  order: 1
+---
+
+import { Tabs, TabItem, Aside } from "@astrojs/starlight/components";
+
+## Requirements
+
+| Requirement | Minimum |
+|-------------|---------|
+| Node.js or Bun | Node 18+ **or** Bun 1.x |
+| OS | Linux, macOS, Windows |
+| For self-hosting | Docker + Docker Compose |
+
+---
+
+## Install the CLI
+
+<Tabs>
+  <TabItem label="npm (recommended)">
+  ```bash
+  npm install -g @pizzapi/pizza
+  pizzapi --version
+  ```
+  </TabItem>
+  <TabItem label="Bun">
+  ```bash
+  bun install -g @pizzapi/pizza
+  pizzapi --version
+  ```
+  </TabItem>
+  <TabItem label="npx (no install)">
+  ```bash
+  # Run without installing — always uses the latest version
+  npx @pizzapi/pizza
+  ```
+  </TabItem>
+  <TabItem label="Pre-built binary">
+  Download a binary for your platform from the [GitHub Releases page](https://github.com/Pizzaface/PizzaPi/releases) and put it on your `PATH`.
+
+  | Platform | Architectures |
+  |----------|--------------|
+  | Linux | x64, arm64 |
+  | macOS | x64, arm64 (Apple Silicon) |
+  | Windows | x64 |
+
+  ```bash
+  # Linux / macOS example
+  curl -L https://github.com/Pizzaface/PizzaPi/releases/latest/download/pizzapi-linux-x64 \
+    -o pizzapi
+  chmod +x pizzapi
+  sudo mv pizzapi /usr/local/bin/
+  pizzapi --version
+  ```
+  </TabItem>
+</Tabs>
+
+---
+
+## First-Run Setup
+
+Connect the CLI to your relay server:
+
+```bash
+pizzapi setup
+```
+
+You'll be prompted for:
+
+| Prompt | Default | Description |
+|--------|---------|-------------|
+| Relay server URL | `http://localhost:3000` | HTTP(S) address of the relay server |
+| Your name | — | Optional; only used when creating a new account |
+| Email | — | Account email |
+| Password | — | Account password |
+
+On success the CLI saves your API key to `~/.pizzapi/config.json` and prints the derived WebSocket URL used for streaming.
+
+<Aside type="note">
+  Already have an account? Leave **Your name** blank and just provide email + password.
+</Aside>
+
+---
+
+## Verify the Installation
+
+```bash
+# Show the installed version
+pizzapi --version
+
+# List available AI models
+pizzapi models
+
+# Show API usage
+pizzapi usage
+```
+
+---
+
+## Updating
+
+```bash
+npm update -g @pizzapi/pizza
+# — or —
+bun update -g @pizzapi/pizza
+```
+
+---
+
+## Uninstalling
+
+```bash
+npm uninstall -g @pizzapi/pizza
+# Remove saved config
+rm -rf ~/.pizzapi
+```
