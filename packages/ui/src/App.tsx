@@ -1515,6 +1515,9 @@ export function App() {
   }, [upsertMessage, upsertMessageDebounced, cancelPendingDeltas, appendLocalSystemMessage]);
 
   const openSession = React.useCallback((relaySessionId: string) => {
+    // Stop any in-flight haptics from the previous session immediately.
+    cancelHaptic();
+
     viewerWsRef.current?.disconnect();
     viewerWsRef.current = null;
 
