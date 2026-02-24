@@ -441,11 +441,34 @@ export const SessionSidebar = React.memo(function SessionSidebar({
             });
         }
 
+        // For the local group, if sessions span multiple working directories split
+        // them into per-directory sub-groups so they're visually separated.
+        const localEntry = groups.get("__local__");
+        if (localEntry) {
+            const cwdMap = new Map<string, HubSession[]>();
+            for (const s of localEntry.sessions) {
+                const cwd = s.cwd || "";
+                if (!cwdMap.has(cwd)) cwdMap.set(cwd, []);
+                cwdMap.get(cwd)!.push(s);
+            }
+            if (cwdMap.size > 1) {
+                groups.delete("__local__");
+                for (const [cwd, sessions] of cwdMap) {
+                    groups.set(`__local__::${cwd}`, {
+                        label: cwd ? formatPathTail(cwd, 2) : "Local",
+                        sessions,
+                    });
+                }
+            }
+        }
+
         // Sort groups: named runners first (alphabetically), then unnamed, then local.
         return new Map(
             Array.from(groups.entries()).sort(([aKey, aVal], [bKey, bVal]) => {
-                if (aKey === "__local__") return 1;
-                if (bKey === "__local__") return -1;
+                const aIsLocal = aKey === "__local__" || aKey.startsWith("__local__::");
+                const bIsLocal = bKey === "__local__" || bKey.startsWith("__local__::");
+                if (aIsLocal && !bIsLocal) return 1;
+                if (!aIsLocal && bIsLocal) return -1;
                 return aVal.label.localeCompare(bVal.label);
             }),
         );
