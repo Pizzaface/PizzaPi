@@ -59,6 +59,34 @@ const server = Bun.serve({
             }
         }
 
+        // ── Caddy on_demand_tls validation ────────────────────────────────
+        if (pathname === "/api/caddy/validate" && req.method === "GET") {
+            const domain = url.searchParams.get("domain");
+            if (!domain) return json({ error: "domain required" }, 400);
+
+            const suffix = process.env.PIZZAPI_DOMAIN_SUFFIX ?? "pizzapi.example.com";
+            if (!domain.endsWith(`.${suffix}`)) {
+                return json({ error: "Invalid domain" }, 404);
+            }
+
+            const slug = domain.replace(`.${suffix}`, "");
+            if (!slug || slug.includes(".")) {
+                return json({ error: "Invalid subdomain" }, 404);
+            }
+
+            const org = await kysely
+                .selectFrom("organizations")
+                .select("id")
+                .where("slug", "=", slug)
+                .where("status", "=", "active")
+                .executeTakeFirst();
+
+            if (!org) return json({ error: "Unknown org" }, 404);
+
+            // 200 = Caddy should issue a certificate for this domain
+            return json({ ok: true });
+        }
+
         // ── Authenticated routes ───────────────────────────────────────────
 
         // POST /api/orgs — create org

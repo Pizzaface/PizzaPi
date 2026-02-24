@@ -1,5 +1,6 @@
 import Docker from "dockerode";
 import { kysely } from "./auth.js";
+import { registerUpstream, deregisterUpstream } from "./caddy.js";
 
 const docker = new Docker({ socketPath: "/var/run/docker.sock" });
 
@@ -88,6 +89,14 @@ export async function provisionInstance(orgId: string, orgSlug: string): Promise
             .where("id", "=", instanceId)
             .execute();
 
+        // Register upstream with Caddy reverse proxy
+        try {
+            await registerUpstream(orgSlug, containerName, port);
+        } catch (err) {
+            console.error(`[provisioner] Caddy upstream registration failed for ${orgSlug}:`, err);
+            // Non-fatal: container is running, Caddy can be retried
+        }
+
         await kysely
             .updateTable("organizations")
             .set({ status: "active", updated_at: new Date().toISOString() })
@@ -119,6 +128,13 @@ export async function deprovisionInstance(orgId: string, orgSlug: string): Promi
         .where("org_id", "=", orgId)
         .where("status", "!=", "stopped")
         .executeTakeFirst();
+
+    // Deregister upstream from Caddy first
+    try {
+        await deregisterUpstream(orgSlug);
+    } catch (err) {
+        console.error(`[provisioner] Caddy upstream deregistration failed for ${orgSlug}:`, err);
+    }
 
     if (instance?.container_id) {
         try {

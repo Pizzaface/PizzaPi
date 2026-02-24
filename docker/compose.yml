@@ -6,6 +6,22 @@ services:
       - "6379:6379"
     restart: unless-stopped
 
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+      - "2019:2019"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - redis
+    restart: unless-stopped
+    networks:
+      - pizzapi-net
+
   server:
     build:
       context: ..
@@ -37,3 +53,11 @@ services:
       - /app/node_modules
     profiles:
       - dev
+
+volumes:
+  caddy_data:
+  caddy_config:
+
+networks:
+  pizzapi-net:
+    driver: bridge

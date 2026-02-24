@@ -1,0 +1,38 @@
+{
+	# Enable admin API for dynamic upstream registration
+	admin 0.0.0.0:2019
+
+	# On-demand TLS with validation endpoint
+	on_demand_tls {
+		ask http://control-plane:3100/api/caddy/validate
+	}
+}
+
+# Control plane dashboard
+control.pizzapi.example.com {
+	tls {
+		on_demand
+	}
+
+	reverse_proxy control-plane:3100
+}
+
+# Wildcard org subdomains — handled via on_demand_tls + dynamic upstreams
+# Caddy admin API is used to register per-org routes at provision time.
+# See packages/control-plane/src/caddy.ts for the registration logic.
+#
+# Fallback: unrecognized subdomains get a 502
+*.pizzapi.example.com {
+	tls {
+		on_demand
+	}
+
+	@websocket {
+		header Connection *Upgrade*
+		header Upgrade websocket
+	}
+
+	# Dynamic upstreams are injected via Caddy admin API as named routes.
+	# This block acts as a fallback for subdomains without a registered upstream.
+	respond "Organization not found or not yet provisioned" 502
+}
