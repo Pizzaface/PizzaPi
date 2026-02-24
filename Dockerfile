@@ -22,7 +22,9 @@ COPY packages/tools/package.json packages/tools/
 COPY packages/server/package.json packages/server/
 COPY packages/ui/package.json packages/ui/
 
-RUN bun install --frozen-lockfile || bun install
+# --ignore-scripts skips native builds (better-sqlite3 from @better-auth/cli)
+# that aren't needed at runtime since the server uses bun:sqlite
+RUN bun install --no-save --ignore-scripts
 
 # Copy source for needed packages only
 COPY tsconfig.base.json ./
