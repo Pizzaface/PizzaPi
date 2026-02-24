@@ -12,12 +12,14 @@
     },
     "dependencies": {
         "better-auth": "^1.4.18",
+        "dockerode": "^4.0.9",
         "jose": "^6.1.3",
         "kysely": "^0.28.11",
         "kysely-bun-sqlite": "^0.4.0"
     },
     "devDependencies": {
         "@types/bun": "^1.3.9",
+        "@types/dockerode": "^4.0.1",
         "typescript": "^5.7.0"
     }
 }

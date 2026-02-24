@@ -1,5 +1,6 @@
 import { auth, kysely } from "./auth.js";
 import { ensureSigningKey, issueOrgToken, getJwks } from "./jwt.js";
+import { provisionInstance, deprovisionInstance } from "./provisioner.js";
 
 const PORT = parseInt(process.env.PORT ?? "3100");
 
@@ -98,6 +99,11 @@ const server = Bun.serve({
                 .values({ id: uuid(), user_id: session.user.id, org_id: orgId, role: "owner", created_at: now })
                 .execute();
 
+            // Fire-and-forget provisioning
+            provisionInstance(orgId, slug).catch((err) => {
+                console.error(`[api] Background provisioning failed for ${slug}:`, err);
+            });
+
             return json({ id: orgId, slug, name, status: "active", created_at: now, updated_at: now }, 201);
         }
 
@@ -173,6 +179,13 @@ const server = Bun.serve({
 
             if (membership?.role !== "owner") {
                 return json({ error: "Forbidden: owner only" }, 403);
+            }
+
+            // Deprovision container first
+            try {
+                await deprovisionInstance(org.id, slug);
+            } catch (err) {
+                console.error(`[api] Deprovision error for ${slug}:`, err);
             }
 
             await kysely

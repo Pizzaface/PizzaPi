@@ -1,5 +1,6 @@
 import { auth, trustedOrigins } from "./auth.js";
 import { handleApi } from "./routes/api.js";
+import { orgContextMiddleware } from "./middleware/org-context.js";
 import {
     ensureRelaySessionTables,
     getEphemeralSweepIntervalMs,
@@ -92,6 +93,10 @@ async function sendFetchResponse(res: ServerResponse, response: Response): Promi
 
 async function handleFetch(req: Request): Promise<Response> {
     const url = new URL(req.url);
+
+    // ── org-context JWT middleware (multi-tenant mode) ──────────────────────
+    const orgResponse = await orgContextMiddleware(req);
+    if (orgResponse) return orgResponse;
 
     // ── better-auth handler ────────────────────────────────────────────────
     if (url.pathname.startsWith("/api/auth")) {
