@@ -7,8 +7,17 @@ import fs from "fs";
 
 const API_PORT = process.env.PORT ?? "3001";
 
+// Derive extra allowed hosts from the PIZZAPI_EXTRA_ORIGINS env var so the
+// Vite dev server accepts requests from those origins without hardcoding them.
+// e.g. PIZZAPI_EXTRA_ORIGINS=https://myhost.ts.net,http://myhost.ts.net:5173
+const extraAllowedHosts: string[] = process.env.PIZZAPI_EXTRA_ORIGINS
+    ? process.env.PIZZAPI_EXTRA_ORIGINS.split(",")
+          .map((o) => { try { return new URL(o.trim()).hostname; } catch { return ""; } })
+          .filter(Boolean)
+    : [];
+
 // Load Tailscale TLS certs for HTTPS dev server if they exist.
-// Generate them once with: sudo tailscale cert --cert-file certs/ts.crt --key-file certs/ts.key jordans-mac-mini.tail65556b.ts.net
+// Generate them once with: sudo tailscale cert --cert-file certs/ts.crt --key-file certs/ts.key <your-tailscale-hostname>
 const CERT_FILE = path.resolve(__dirname, "../../certs/ts.crt");
 const KEY_FILE = path.resolve(__dirname, "../../certs/ts.key");
 const tlsConfig =
@@ -101,26 +110,17 @@ export default defineConfig({
     },
     server: {
         port: 5173,
-        allowedHosts: ["jordans-mac-mini.tail65556b.ts.net"],
+        allowedHosts: extraAllowedHosts.length ? extraAllowedHosts : undefined,
         https: tlsConfig,
         proxy: {
             "/api": `http://localhost:${API_PORT}`,
-            "/ws": {
-                target: `http://localhost:${API_PORT}`,
-                ws: true,
-                configure: (proxy) => {
-                    proxy.on("error", (err) => {
-                        if ((err as NodeJS.ErrnoException).code === "ECONNRESET" || err.message.includes("socket has been ended")) return;
-                        console.error("[ws proxy]", err);
-                    });
-                },
-            },
             "/socket.io": {
                 target: `http://localhost:${API_PORT}`,
                 ws: true,
                 configure: (proxy) => {
                     proxy.on("error", (err) => {
-                        if ((err as NodeJS.ErrnoException).code === "ECONNRESET" || err.message.includes("socket has been ended")) return;
+                        const code = (err as NodeJS.ErrnoException).code;
+                        if (code === "ECONNRESET" || err.message.includes("socket has been ended") || err.message.includes("socket hang up")) return;
                         console.error("[socket.io proxy]", err);
                     });
                 },
