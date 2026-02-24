@@ -27,6 +27,16 @@ const MOBILE_SHORTCUTS: { label: string; data: string }[] = [
   { label: "End", data: "\x1b[F" },
 ];
 
+/** Encode a string as base64 (UTF-8 safe). */
+function utf8ToBase64(str: string): string {
+  const bytes = new TextEncoder().encode(str);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
 export interface WebTerminalProps {
   terminalId: string;
   onClose?: () => void;
@@ -125,8 +135,15 @@ export function WebTerminal({ terminalId, onClose, className }: WebTerminalProps
     socket.on("terminal_data", (data) => {
       const raw = typeof data.data === "string" ? data.data : "";
       if (raw) {
-        const decoded = atob(raw);
-        term.write(decoded);
+        // Decode base64 → Uint8Array → UTF-8 string.
+        // atob() alone produces a Latin-1 string which corrupts multi-byte
+        // UTF-8 characters (emoji, box-drawing, spinners, etc.).
+        const binary = atob(raw);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) {
+          bytes[i] = binary.charCodeAt(i);
+        }
+        term.write(bytes);
       }
     });
 
@@ -167,7 +184,7 @@ export function WebTerminal({ terminalId, onClose, className }: WebTerminalProps
         if (filtered.length > 0) {
           socket.emit("terminal_input", {
             terminalId,
-            data: btoa(filtered),
+            data: utf8ToBase64(filtered),
           });
         }
       }
@@ -235,7 +252,7 @@ export function WebTerminal({ terminalId, onClose, className }: WebTerminalProps
 
   const sendShortcut = React.useCallback((data: string) => {
     if (wsRef.current?.connected) {
-      wsRef.current.emit("terminal_input", { terminalId, data: btoa(data) });
+      wsRef.current.emit("terminal_input", { terminalId, data: utf8ToBase64(data) });
     }
   }, [terminalId]);
 
