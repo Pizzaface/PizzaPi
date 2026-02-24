@@ -51,11 +51,42 @@ export interface VerificationTable {
     updatedAt: string;
 }
 
+export interface OrganizationTable {
+    id: string;
+    slug: string;
+    name: string;
+    status: "active" | "suspended" | "deleted";
+    created_at: string;
+    updated_at: string;
+}
+
+export interface OrgMembershipTable {
+    id: string;
+    user_id: string;
+    org_id: string;
+    role: "owner" | "admin" | "member";
+    created_at: string;
+}
+
+export interface OrgInstanceTable {
+    id: string;
+    org_id: string;
+    container_id: string | null;
+    host: string | null;
+    port: number | null;
+    status: "provisioning" | "healthy" | "unhealthy" | "stopped";
+    health_checked_at: string | null;
+    created_at: string;
+}
+
 export interface DB {
     user: UserTable;
     session: SessionTable;
     account: AccountTable;
     verification: VerificationTable;
+    organizations: OrganizationTable;
+    org_memberships: OrgMembershipTable;
+    org_instances: OrgInstanceTable;
 }
 
 // ── Instances ─────────────────────────────────────────────────────────────────
