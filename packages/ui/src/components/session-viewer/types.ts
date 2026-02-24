@@ -11,6 +11,10 @@ export interface RelayMessage {
   thinkingDuration?: number;
   /** Populated when role === "subAgentConversation" */
   subAgentTurns?: SubAgentTurn[];
+  /** For assistant messages: reason the message stopped (e.g. "error", "stop", "aborted") */
+  stopReason?: string;
+  /** For assistant messages with stopReason === "error": the error description */
+  errorMessage?: string;
 }
 
 // ── Sub-agent conversation types ─────────────────────────────────────────────

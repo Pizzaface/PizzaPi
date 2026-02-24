@@ -377,6 +377,17 @@ export const remoteExtension: ExtensionFactory = (pi) => {
     let sessionStartedAt: number | null = null;
     let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
+    // ── Auto-retry tracking ──────────────────────────────────────────────────
+    // The pi agent core emits auto_retry_start/end events on its internal event
+    // bus, but they are NOT forwarded through the extension event API.  We detect
+    // retryable errors from `message_end` (stopReason === "error") and track them
+    // so the heartbeat can inform the web UI.
+    interface RetryState {
+        errorMessage: string;
+        detectedAt: number;
+    }
+    let lastRetryableError: RetryState | null = null;
+
     // ── Session name sync state ───────────────────────────────────────────────
     // Keeps web viewers in sync when /name is run directly in the TUI.
     let sessionNameSyncTimer: ReturnType<typeof setInterval> | null = null;
@@ -592,6 +603,12 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                       toolCallId: pendingAskUserQuestion.toolCallId,
                       question: pendingAskUserQuestion.question,
                       options: pendingAskUserQuestion.options,
+                  }
+                : null,
+            retryState: lastRetryableError
+                ? {
+                      errorMessage: lastRetryableError.errorMessage,
+                      detectedAt: lastRetryableError.detectedAt,
                   }
                 : null,
         };
@@ -1758,12 +1775,16 @@ export const remoteExtension: ExtensionFactory = (pi) => {
 
     pi.on("agent_start", (event) => {
         isAgentActive = true;
+        // Clear any previous retry state when a new agent loop starts (retry succeeded).
+        lastRetryableError = null;
         forwardEvent(event);
         // Push an immediate heartbeat so viewers see "active" without waiting 10s.
         forwardEvent(buildHeartbeat());
     });
     pi.on("agent_end", (event) => {
         isAgentActive = false;
+        // Clear retry state on agent end — retries are done (succeeded or exhausted).
+        lastRetryableError = null;
         forwardEvent(event);
         // Push a heartbeat immediately so viewers see "idle" after the turn.
         forwardEvent(buildHeartbeat());
@@ -1772,7 +1793,34 @@ export const remoteExtension: ExtensionFactory = (pi) => {
     pi.on("turn_end", (event) => forwardEvent(event));
     pi.on("message_start", (event) => forwardEvent(event));
     pi.on("message_update", (event) => forwardEvent(event));
-    pi.on("message_end", (event) => forwardEvent(event));
+    pi.on("message_end", (event) => {
+        forwardEvent(event);
+
+        // Detect provider errors from assistant messages and forward as cli_error
+        // so the web UI can surface them even if the message content is empty.
+        const msg = (event as any).message;
+        if (msg && msg.role === "assistant" && msg.stopReason === "error" && msg.errorMessage) {
+            const errorText = String(msg.errorMessage);
+
+            // Track for heartbeat retry state reporting.
+            lastRetryableError = {
+                errorMessage: errorText,
+                detectedAt: Date.now(),
+            };
+
+            // Also emit a cli_error event so the UI shows a visible error banner
+            // in the message list (independent of the assistant message rendering).
+            forwardEvent({
+                type: "cli_error",
+                message: errorText,
+                source: "provider",
+                ts: Date.now(),
+            });
+
+            // Push an immediate heartbeat with the retry state.
+            forwardEvent(buildHeartbeat());
+        }
+    });
     pi.on("tool_execution_start", (event) => forwardEvent(event));
     pi.on("tool_execution_update", (event) => forwardEvent(event));
     pi.on("tool_execution_end", (event) => forwardEvent(event));

@@ -77,6 +77,9 @@ function toRelayMessage(raw: unknown, fallbackId: string): RelayMessage | null {
         ? `${role}:ts:${timestamp}`
         : `${role}:fallback:${fallbackId}`;
 
+  const stopReason = typeof msg.stopReason === "string" ? msg.stopReason : undefined;
+  const errorMessage = typeof msg.errorMessage === "string" ? msg.errorMessage : undefined;
+
   return {
     key,
     role,
@@ -84,7 +87,9 @@ function toRelayMessage(raw: unknown, fallbackId: string): RelayMessage | null {
     content: msg.content,
     toolName: typeof msg.toolName === "string" ? msg.toolName : undefined,
     toolCallId: toolCallId || undefined,
-    isError: msg.isError === true,
+    isError: msg.isError === true || stopReason === "error",
+    stopReason,
+    errorMessage,
   };
 }
 
@@ -259,6 +264,7 @@ export function App() {
   const [activeSessionId, setActiveSessionId] = React.useState<string | null>(null);
   const [messages, setMessages] = React.useState<RelayMessage[]>([]);
   const [viewerStatus, setViewerStatus] = React.useState("Idle");
+  const [retryState, setRetryState] = React.useState<{ errorMessage: string; detectedAt: number } | null>(null);
   const [relayStatus, setRelayStatus] = React.useState<DotState>("connecting");
   const [showApiKeys, setShowApiKeys] = React.useState(false);
   const [showRunners, setShowRunners] = React.useState(false);
@@ -862,6 +868,7 @@ export function App() {
     setMessages([]);
     setViewerStatus("Idle");
     setPendingQuestion(null);
+    setRetryState(null);
     setActiveToolCalls(new Map());
     setMessageQueue([]);
     setActiveModel(null);
@@ -1089,6 +1096,12 @@ export function App() {
         }
       }
 
+      // Track auto-retry state from CLI so we can show a retry indicator.
+      if (Object.prototype.hasOwnProperty.call(hb, "retryState")) {
+        const rs = (hb as any).retryState as { errorMessage: string; detectedAt: number } | null;
+        setRetryState(rs);
+      }
+
       // Heartbeats also carry the current model; keep activeModel in sync.
       if (hb.model) {
         const m = normalizeModel(hb.model);
@@ -1179,6 +1192,7 @@ export function App() {
       setMessages(normalized);
       patchSessionCache({ messages: normalized });
       setPendingQuestion(null);
+      setRetryState(null);
       // Clear message queue — the agent processed any queued steer/followUp messages
       setMessageQueue([]);
       return;
@@ -1535,6 +1549,7 @@ export function App() {
     setActiveSessionId(relaySessionId);
     setViewerStatus("Connecting…");
     setPendingQuestion(null);
+    setRetryState(null);
     setActiveToolCalls(new Map());
     setIsChangingModel(false);
     setResumeSessions([]);
@@ -2667,6 +2682,7 @@ export function App() {
                   tokenUsage={tokenUsage}
                   lastHeartbeatAt={lastHeartbeatAt}
                   viewerStatus={viewerStatus}
+                  retryState={retryState}
                   messageQueue={messageQueue}
                   onRemoveQueuedMessage={removeQueuedMessage}
                   onClearMessageQueue={clearMessageQueue}

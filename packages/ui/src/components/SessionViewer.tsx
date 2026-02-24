@@ -54,7 +54,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { formatPathTail } from "@/lib/path";
 import { ProviderIcon } from "@/components/ProviderIcon";
-import { ArrowDownIcon, CheckCircle2, ChevronsUpDown, Circle, CircleDashed, MessageSquare, OctagonX, PaperclipIcon, Plus, Zap, Clock, X, Trash2, TerminalIcon, DownloadIcon, XCircle, FolderTree } from "lucide-react";
+import { AlertTriangleIcon, ArrowDownIcon, CheckCircle2, ChevronsUpDown, Circle, CircleDashed, MessageSquare, OctagonX, PaperclipIcon, Plus, Zap, Clock, X, Trash2, TerminalIcon, DownloadIcon, XCircle, FolderTree } from "lucide-react";
 import { AtMentionPopover } from "@/components/AtMentionPopover";
 import type { Entry as AtMentionEntry } from "@/hooks/useAtMentionFiles";
 
@@ -114,6 +114,8 @@ export interface SessionViewerProps {
   lastHeartbeatAt?: number | null;
   /** Human-readable connection/activity status */
   viewerStatus?: string;
+  /** Auto-retry state from the CLI (provider error being retried) */
+  retryState?: { errorMessage: string; detectedAt: number } | null;
   /** Messages queued while the agent is active */
   messageQueue?: QueuedMessage[];
   /** Remove a single queued message */
@@ -341,6 +343,12 @@ const SessionMessageItem = React.memo(({ message, activeToolCalls, agentActive, 
             message.thinking,
             message.thinkingDuration,
           )}
+          {message.stopReason === "error" && message.errorMessage && (
+            <div className="mt-2 flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              <AlertTriangleIcon className="mt-0.5 size-4 shrink-0" />
+              <span className="min-w-0 break-words">{message.errorMessage}</span>
+            </div>
+          )}
         </MessageContent>
       </Message>
     </div>
@@ -385,7 +393,7 @@ function SessionSkeleton() {
   );
 }
 
-export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, messageQueue, onRemoveQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], runnerId }: SessionViewerProps) {
+export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], runnerId }: SessionViewerProps) {
   const [input, setInput] = React.useState("");
   const [composerError, setComposerError] = React.useState<string | null>(null);
   const [showClearDialog, setShowClearDialog] = React.useState(false);
@@ -1096,6 +1104,16 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                 </div>
               ))}
             </div>
+          </div>
+        )}
+
+        {retryState && agentActive && (
+          <div className="mb-2 flex items-center gap-2 rounded-md border border-amber-400/40 bg-amber-500/10 px-2.5 py-2 text-xs text-amber-200">
+            <Clock className="size-3.5 shrink-0 animate-spin" style={{ animationDuration: "3s" }} />
+            <span>
+              <span className="font-semibold">Auto-retrying:</span>{" "}
+              {retryState.errorMessage}
+            </span>
           </div>
         )}
 
