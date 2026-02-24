@@ -578,6 +578,39 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
         }
     }
 
+    // GET /api/sessions/:id/status — get a single session's status
+    const sessionStatusMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/status$/);
+    if (sessionStatusMatch && req.method === "GET") {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        const sessionId = decodeURIComponent(sessionStatusMatch[1]);
+        const session = await getSharedSession(sessionId);
+        if (!session) {
+            return Response.json({ error: "Session not found" }, { status: 404 });
+        }
+
+        // Only allow the session owner to view status
+        if (session.userId && session.userId !== identity.userId) {
+            return Response.json({ error: "Forbidden" }, { status: 403 });
+        }
+
+        const heartbeat = session.lastHeartbeat ? (() => { try { return JSON.parse(session.lastHeartbeat!); } catch { return null; } })() : null;
+
+        return Response.json({
+            sessionId: session.sessionId,
+            sessionName: session.sessionName,
+            cwd: session.cwd,
+            startedAt: session.startedAt,
+            isActive: session.isActive,
+            lastHeartbeatAt: session.lastHeartbeatAt,
+            runnerId: session.runnerId,
+            runnerName: session.runnerName,
+            model: heartbeat?.model ?? null,
+            shareUrl: session.shareUrl,
+        });
+    }
+
     if (url.pathname === "/api/sessions" && req.method === "GET") {
         const identity = await requireSession(req);
         if (identity instanceof Response) return identity;
