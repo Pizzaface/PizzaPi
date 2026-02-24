@@ -5,7 +5,7 @@ sidebar:
   order: 1
 ---
 
-import { Tabs, TabItem, Steps, Aside } from "@astrojs/starlight/components";
+import { Tabs, TabItem, Steps, Aside, Card, CardGrid } from "@astrojs/starlight/components";
 
 PizzaPi has two parts:
 
@@ -15,6 +15,20 @@ PizzaPi has two parts:
 | **Relay Server** | Buffers and broadcasts events; hosts the web UI |
 
 You always need the CLI. The relay can be **hosted by someone else** (quickest) or **run yourself** with Docker.
+
+---
+
+## Prerequisites
+
+Before you start, make sure you have:
+
+- **Node.js 18+** (or Bun) installed
+- **An AI provider API key** — PizzaPi uses the `pi` coding agent under the hood, which needs an API key from at least one provider (Anthropic, OpenAI, Google, etc.). Alternatively, a [Claude Pro/Max subscription](https://claude.ai) works via the Claude Code OAuth flow.
+- **A relay server URL** — either a hosted relay someone has shared with you, or you'll self-host one in Option B below.
+
+<Aside type="note">
+  Don't have an API key yet? [Anthropic](https://console.anthropic.com/), [OpenAI](https://platform.openai.com/), and [Google AI Studio](https://aistudio.google.com/) all offer free-tier credits to get started.
+</Aside>
 
 ---
 
@@ -130,10 +144,55 @@ Want complete control? Run the relay + web UI yourself.
 
 ---
 
+## What You'll See
+
+Once your session is running, open the web UI. Here's what to expect:
+
+<CardGrid>
+  <Card title="Live Token Stream" icon="document">
+    The agent's response streams in token-by-token — just like watching it type. Markdown is rendered inline with syntax highlighting.
+  </Card>
+  <Card title="Tool Calls & Results" icon="setting">
+    Every file read, bash command, and edit appears as a collapsible tool call with full input/output. You can see exactly what the agent is doing.
+  </Card>
+  <Card title="File Diffs" icon="list-format">
+    File edits show as syntax-highlighted diffs so you can review changes at a glance before the agent moves on.
+  </Card>
+  <Card title="Todo List" icon="approve-check">
+    If the agent creates a task plan, it appears as a live-updating todo list in the sidebar — items move from pending → in progress → done.
+  </Card>
+</CardGrid>
+
+You can type messages in the chat input at the bottom to ask questions, give corrections, or steer the agent — all without touching the terminal.
+
+---
+
 ## What's Next?
 
-- [**Installation details**](/PizzaPi/guides/installation/) — binary downloads, platform notes
-- [**CLI reference**](/PizzaPi/guides/cli-reference/) — all commands and flags
-- [**Configuration**](/PizzaPi/guides/configuration/) — config files and environment variables
-- [**Runner daemon**](/PizzaPi/guides/runner-daemon/) — headless session spawning from the web UI
-- [**Self-hosting guide**](/PizzaPi/guides/self-hosting/) — production Docker setup
+<CardGrid>
+  <Card title="Installation Details" icon="document">
+    Platform-specific notes, binary downloads, and alternative install methods.
+
+    [Installation guide →](/PizzaPi/guides/installation/)
+  </Card>
+  <Card title="CLI Reference" icon="list-format">
+    All `pizzapi` commands and flags — setup, session management, config overrides.
+
+    [CLI reference →](/PizzaPi/guides/cli-reference/)
+  </Card>
+  <Card title="Configuration" icon="setting">
+    Customize config files, environment variables, model defaults, and relay settings.
+
+    [Configuration →](/PizzaPi/guides/configuration/)
+  </Card>
+  <Card title="Runner Daemon" icon="rocket">
+    Run a headless daemon that lets you spawn and manage agent sessions entirely from the web UI.
+
+    [Runner daemon →](/PizzaPi/guides/runner-daemon/)
+  </Card>
+  <Card title="Self-Hosting Guide" icon="shield">
+    Production Docker setup with HTTPS, custom domains, backups, and scaling.
+
+    [Self-hosting →](/PizzaPi/guides/self-hosting/)
+  </Card>
+</CardGrid>

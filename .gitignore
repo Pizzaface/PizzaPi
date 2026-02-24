@@ -5,3 +5,5 @@ dist/
 .DS_Store
 certs/
 auth.db
+docs-homepage.png
+docs-getting-started.png

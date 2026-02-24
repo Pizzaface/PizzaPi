@@ -1,68 +1,87 @@
 ---
 title: Environment Variables
-description: Complete reference for all environment variables recognized by PizzaPi CLI and the relay server.
+description: All environment variables used by PizzaPi's CLI and server.
 sidebar:
   order: 2
 ---
 
-## CLI Environment Variables
+import { Aside } from "@astrojs/starlight/components";
 
-These variables are read by the `pizzapi` CLI at startup:
+PizzaPi is configured primarily through environment variables. This reference lists every variable recognized by the CLI runner and the server.
 
-| Variable | Description | Example |
-|----------|-------------|---------|
-| `PIZZAPI_API_KEY` | API key for authenticating with the relay server. Overrides the value from `~/.pizzapi/config.json`. | `pk_live_abc123...` |
-| `PIZZAPI_RELAY_URL` | WebSocket URL of the relay server. Overrides the config file value. | `wss://relay.example.com` |
-
-### Usage
-
-```bash
-# Use environment variables instead of (or alongside) the config file
-export PIZZAPI_API_KEY="pk_live_abc123..."
-export PIZZAPI_RELAY_URL="wss://relay.example.com"
-pizzapi
-```
-
-Environment variables are ideal for:
-- CI/CD pipelines
-- Docker containers (avoid mounting config files)
-- Switching between relay servers quickly without editing config
+<Aside type="tip">
+  Variables without a default are **required** (or the feature they control is disabled when unset).
+</Aside>
 
 ---
 
-## Server Environment Variables
+## CLI / Runner Variables
 
-These variables are read by the relay server (`packages/server`):
+These are read by the PizzaPi CLI runner process (`pizzapi` / daemon).
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PORT` | `3000` | HTTP and WebSocket listen port |
-| `PIZZAPI_REDIS_URL` | — | Redis connection string (required). Example: `redis://localhost:6379` |
-
-### Usage in Docker Compose
-
-```yaml
-services:
-  server:
-    environment:
-      PORT: "3000"
-      PIZZAPI_REDIS_URL: "redis://redis:6379"
-```
-
-### Usage without Docker
-
-```bash
-PORT=3000 PIZZAPI_REDIS_URL=redis://localhost:6379 bun run start
-```
+| Variable | Description | Default |
+|---|---|---|
+| `PIZZAPI_API_KEY` | API key used to authenticate with the relay server. `PIZZAPI_RUNNER_API_KEY` and `PIZZAPI_API_TOKEN` are accepted as aliases. | — |
+| `PIZZAPI_RUNNER_TOKEN` | Runner session token (alternative to API key auth). | — |
+| `PIZZAPI_RELAY_URL` | WebSocket URL of the relay server the runner connects to. | `ws://localhost:3000` |
+| `PIZZAPI_RUNNER_NAME` | Human-readable name for this runner (shown in the UI). | System hostname |
+| `PIZZAPI_RUNNER_STATE_PATH` | Path to the runner state JSON file. | `~/.pizzapi/runner.json` |
+| `PIZZAPI_WORKSPACE_ROOTS` | Comma-separated list of workspace root directories. `PIZZAPI_WORKSPACE_ROOT` (single) and `PIZZAPI_RUNNER_ROOTS` (legacy) are also accepted. | — |
 
 ---
 
-## Precedence
+## Server Variables
 
-For the CLI, configuration is resolved in this order (later values win):
+### Core
 
-1. Built-in defaults
-2. `~/.pizzapi/config.json`
-3. `<cwd>/.pizzapi/config.json`
-4. `PIZZAPI_API_KEY` environment variable
-5. `PIZZAPI_RELAY_URL` environment variable
+| Variable | Description | Default |
+|---|---|---|
+| `PORT` | HTTP / WebSocket listen port. | `3000` |
+| `PIZZAPI_REDIS_URL` | Redis connection URL. | `redis://127.0.0.1:6379` |
+| `PIZZAPI_BASE_URL` | Public base URL of the PizzaPi server (used for share links, CORS origins, etc.). | `http://localhost:5173` |
+| `PIZZAPI_UI_DIR` | Absolute path to the directory containing the built UI static assets. When unset the server does not serve a UI. | — |
+
+### Authentication
+
+| Variable | Description | Default |
+|---|---|---|
+| `AUTH_DB_PATH` | Path to the SQLite database used by better-auth. | `auth.db` |
+| `BETTER_AUTH_SECRET` | Secret key used by better-auth for session signing. **Must be set in production.** | — |
+| `BETTER_AUTH_BASE_URL` | Base URL that better-auth uses for its own endpoints. | `http://localhost:<PORT>` |
+
+### Rate Limiting
+
+| Variable | Description | Default |
+|---|---|---|
+| `PIZZAPI_API_KEY_RATE_LIMIT_ENABLED` | Enable rate limiting on API-key-authenticated requests (`true` / `false`). | `false` |
+| `PIZZAPI_API_KEY_RATE_LIMIT_MAX_REQUESTS` | Maximum number of requests allowed per time window. | `10` |
+| `PIZZAPI_API_KEY_RATE_LIMIT_TIME_WINDOW_MS` | Length of the rate-limit sliding window in milliseconds. | `86400000` (24 h) |
+
+### Attachments
+
+| Variable | Description | Default |
+|---|---|---|
+| `PIZZAPI_ATTACHMENT_DIR` | Directory where uploaded attachments are stored. | `.pizzapi/uploads` (relative to cwd) |
+| `PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES` | Maximum allowed upload file size in bytes. | `20971520` (20 MB) |
+| `PIZZAPI_ATTACHMENT_TTL_MS` | Time-to-live for stored attachments in milliseconds. Expired files are cleaned up automatically. | `900000` (15 min) |
+
+### Relay / Events
+
+| Variable | Description | Default |
+|---|---|---|
+| `PIZZAPI_RELAY_EVENT_BUFFER_SIZE` | Maximum number of events kept in the per-session Redis ring buffer. | `1000` |
+| `PIZZAPI_RELAY_EVENT_TTL_MS` | TTL for relay events stored in Redis, in milliseconds. | `86400000` (24 h) |
+| `PIZZAPI_EPHEMERAL_TTL_MS` | TTL for ephemeral in-memory session data in milliseconds. | `600000` (10 min) |
+| `PIZZAPI_EPHEMERAL_SWEEP_MS` | Interval between ephemeral data sweep/cleanup runs in milliseconds. | `60000` (1 min) |
+
+### Push Notifications
+
+| Variable | Description | Default |
+|---|---|---|
+| `VAPID_PUBLIC_KEY` | VAPID public key for Web Push. Generate a key pair with `bunx web-push generate-vapid-keys`. | — |
+| `VAPID_PRIVATE_KEY` | VAPID private key for Web Push. | — |
+| `VAPID_SUBJECT` | VAPID subject, typically a `mailto:` URI identifying the server operator. | `mailto:admin@pizzapi.local` |
+
+<Aside type="caution">
+  `BETTER_AUTH_SECRET` must be a strong, unique secret in production. If left unset, better-auth will warn or refuse to start.
+</Aside>

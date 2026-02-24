@@ -34,6 +34,8 @@ pizzapi --cwd /path/to/project
 
 The session ID is derived from the runner configuration and displayed on startup. Open the relay server's web UI to watch the session live.
 
+If no API key is configured and the relay is not disabled, the CLI will automatically launch the setup wizard before starting the session.
+
 ---
 
 ### `pizzapi setup`
@@ -79,33 +81,100 @@ pizzapi runner stop
 
 ---
 
-### `pizzapi usage`
+### `pizzapi web`
 
-Show accumulated API usage across all providers.
+Start the **PizzaPi web hub** (relay server + web UI) using Docker Compose. This is the easiest way to self-host the relay — no need to clone the repo or configure Docker manually.
 
 ```bash
-# Summary for all providers
+# Start on the default port (3000)
+pizzapi web
+
+# Start on a custom port
+pizzapi web --port 8080
+
+# Run in the foreground (don't detach)
+pizzapi web --foreground
+
+# Stop the hub
+pizzapi web stop
+
+# View logs
+pizzapi web logs
+
+# Check running status
+pizzapi web status
+```
+
+<Aside type="note">
+  Requires **Docker** with Docker Compose installed. If you're not running from the PizzaPi repository, the command will automatically clone it to `~/.pizzapi/web/repo`.
+</Aside>
+
+| Subcommand | Description |
+|------------|-------------|
+| *(none)* | Build and start the relay server + web UI |
+| `stop` | Stop the running web hub |
+| `logs` | Tail the container logs |
+| `status` | Show running container status |
+
+| Flag | Description |
+|------|-------------|
+| `--port <number>` | HTTP port to expose (default: `3000`) |
+| `--foreground`, `-f` | Run in the foreground instead of detaching |
+
+The generated Docker Compose file and persistent data (SQLite database) are stored in `~/.pizzapi/web/`.
+
+---
+
+### `pizzapi usage`
+
+Show API usage and quota information for your authenticated providers.
+
+```bash
+# Show usage for all providers
 pizzapi usage
 
 # Filter to a specific provider
 pizzapi usage anthropic
 pizzapi usage gemini
-pizzapi usage openai
 
 # Machine-readable JSON output
 pizzapi usage --json
 ```
 
-Output format:
+#### Anthropic (Claude)
+
+For Anthropic OAuth subscriptions, the command fetches quota utilization from the Anthropic API:
 
 ```
-Provider       Tokens In    Tokens Out    Cost
-─────────────────────────────────────────────
-anthropic      1,234,567    456,789       $12.34
-gemini         234,567      89,012         $2.10
-─────────────────────────────────────────────
-Total                                     $14.44
+Claude usage (OAuth subscription)
+──────────────────────────────────────────────────────
+  5-hour window            12.3%  (resets 2/24/2026, 2:15:00 PM)
+  7-day window              8.1%  (resets 3/1/2026, 9:00:00 AM)
+  7-day (OAuth apps)        4.2%  (resets 3/1/2026, 9:00:00 AM)
+  7-day (Opus)              2.0%  (resets 3/1/2026, 9:00:00 AM)
+  7-day (Sonnet)            6.5%  (resets 3/1/2026, 9:00:00 AM)
+
+  Extra usage enabled
+    Monthly limit:   $100
+    Credits used:    $12.34
+    Utilization:     12.3%
 ```
+
+#### Gemini (Google Cloud Code Assist)
+
+For Gemini OAuth credentials, the command fetches quota buckets from the Google Cloud Code Assist endpoint:
+
+```
+Gemini usage (Google Cloud Code Assist, OAuth)
+  Project: my-project-123
+──────────────────────────────────────────────────────
+  INPUT / gemini-2.5-pro       85.0% remaining (850 left)  resets 3/1/2026, 12:00:00 AM
+  OUTPUT / gemini-2.5-pro      92.3% remaining (923 left)  resets 3/1/2026, 12:00:00 AM
+```
+
+<Aside type="tip">
+  If no credentials are found, log in with `/login` inside a `pizzapi` session to authenticate with your AI provider.
+</Aside>
 
 ---
 
@@ -121,6 +190,16 @@ pizzapi models
 pizzapi models --json
 ```
 
+Example output:
+
+```
+provider   model                    notes
+---------  -----------------------  -----
+anthropic  claude-opus-4-5          reasoning • 200,000 ctx • Claude Opus 4.5
+anthropic  claude-sonnet-4-20250514            200,000 ctx • Claude Sonnet 4
+google     gemini-2.5-pro           reasoning • 1,000,000 ctx • Gemini 2.5 Pro
+```
+
 ---
 
 ### `pizzapi --version`
@@ -129,7 +208,7 @@ Print the installed version number and exit.
 
 ```bash
 pizzapi --version
-# 1.2.3
+# pizzapi v1.2.3
 ```
 
 ---
@@ -138,7 +217,7 @@ pizzapi --version
 
 | Flag | Description |
 |------|-------------|
-| `--version` | Print version and exit |
+| `--version`, `-v` | Print version and exit |
 | `--cwd <path>` | Override working directory (applies to the default session command) |
 
 ---
@@ -151,3 +230,4 @@ These commands are used internally by the daemon and should not be called direct
 |---------|-------------|
 | `pizzapi _daemon` | Internal daemon entrypoint (spawned by the supervisor) |
 | `pizzapi _worker` | Internal worker entrypoint (spawned by the daemon for each session) |
+| `pizzapi _terminal-worker` | Internal terminal PTY worker (spawned by the daemon for terminal sessions) |

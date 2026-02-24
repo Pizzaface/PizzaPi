@@ -17,7 +17,7 @@ hero:
       variant: minimal
 ---
 
-import { Card, CardGrid, LinkButton } from "@astrojs/starlight/components";
+import { Card, CardGrid, LinkButton, Aside, Steps } from "@astrojs/starlight/components";
 
 ## What is PizzaPi?
 
@@ -50,6 +50,47 @@ import { Card, CardGrid, LinkButton } from "@astrojs/starlight/components";
   </Card>
 </CardGrid>
 
+---
+
+## Why PizzaPi?
+
+PizzaPi goes beyond basic terminal access to give you a full remote development experience:
+
+<CardGrid>
+  <Card title="📱 Installable PWA" icon="document">
+    Install PizzaPi as a Progressive Web App on your phone or tablet. Get a native app experience with offline support and home screen access.
+  </Card>
+  <Card title="🔔 Push Notifications" icon="approve-check">
+    Get notified when sessions complete, agents need input, or errors occur — even when the browser tab is closed.
+  </Card>
+  <Card title="💬 Inter-Agent Messaging" icon="comment">
+    Agents can communicate with each other via `send_message` and `wait_for_message`. Orchestrate complex multi-agent workflows from the UI.
+  </Card>
+  <Card title="🖥️ Multi-Runner Support" icon="list-format">
+    Connect multiple dev machines (runners) to a single relay. Switch between them from the web UI and manage all your projects in one place.
+  </Card>
+</CardGrid>
+
+---
+
+## How It Works
+
+<Steps>
+1. **Install the CLI on your dev machine**
+
+   Run `npx @pizzapi/pizza` (or install globally). The CLI wraps the `pi` coding agent and adds relay streaming.
+
+2. **Connect to a relay server**
+
+   On first run, the setup wizard asks for your relay URL and credentials. The CLI opens a persistent WebSocket connection and streams all session events.
+
+3. **Open the web UI in any browser**
+
+   Navigate to your relay's URL. You'll see live token streaming, tool call results, file diffs, and a chat input — all in real time. Works on desktop and mobile.
+</Steps>
+
+---
+
 ## Quick Install
 
 ```bash
@@ -61,8 +102,25 @@ npm install -g @pizzapi/pizza
 pizzapi
 ```
 
+<Aside type="tip" title="First run?">
+  The first time you run `pizzapi`, a setup wizard walks you through connecting to a relay server and signing in. It takes about 30 seconds — see the [Getting Started](/PizzaPi/getting-started/) guide for details.
+</Aside>
+
 <div style="margin-top: 2rem; display: flex; gap: 1rem; flex-wrap: wrap;">
   <LinkButton href="/PizzaPi/getting-started/" variant="primary" icon="right-arrow">Get Started</LinkButton>
   <LinkButton href="/PizzaPi/guides/installation/" variant="secondary">Full Installation Guide</LinkButton>
   <LinkButton href="/PizzaPi/guides/self-hosting/" variant="minimal" icon="external">Self-Host with Docker</LinkButton>
 </div>
+
+---
+
+## Built With
+
+| Layer | Technology |
+|-------|------------|
+| Agent Core | [`pi` coding agent](https://github.com/mariozechner/pi) by Mario Zechner |
+| Runtime | [Bun](https://bun.sh) |
+| Server | Bun.serve, [better-auth](https://www.better-auth.com/), Kysely + SQLite, Redis |
+| Web UI | React 19, Vite 6, TailwindCSS v4, Radix UI / shadcn/ui |
+| Notifications | Web Push (VAPID) |
+| Deployment | Docker Compose |

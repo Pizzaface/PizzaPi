@@ -18,8 +18,8 @@ PizzaPi is built around a **relay pattern**: the CLI on your dev machine connect
 │  ┌───────────────────────────────────────────────────┐ │
 │  │  pizzapi CLI                                      │ │
 │  │   ├─ pi coding agent (LLM + tools)               │ │
-│  │   ├─ remote extension (event serializer)         │ │
-│  │   └─ runner daemon (optional)                    │ │
+│  │   ├─ remote extension (event serializer)          │ │
+│  │   └─ runner daemon (optional)                     │ │
 │  └───────────────────────┬───────────────────────────┘ │
 └──────────────────────────┼─────────────────────────────┘
                            │ WebSocket (outbound)
@@ -55,12 +55,18 @@ The monorepo is organized into focused packages:
 |---------|-------------|
 | `packages/protocol` | Shared TypeScript types for the relay wire protocol |
 | `packages/tools` | Shared agent tools (bash, read-file, write-file, search) |
-| `packages/server` | Bun HTTP + WebSocket relay server |
-| `packages/ui` | React 19 PWA web interface |
-| `packages/cli` | CLI wrapper — launches pi with PizzaPi extensions |
+| `packages/server` | Bun HTTP + WebSocket relay server (auth, sessions, push notifications) |
+| `packages/ui` | React 19 PWA web interface (Vite, TailwindCSS v4, Radix UI) |
+| `packages/cli` | CLI wrapper — launches `pi` with PizzaPi extensions and the runner daemon |
+| `packages/control-plane` | Multi-tenant provisioner — org management, JWT auth, Caddy config, and database migrations for hosted deployments |
 | `packages/docs` | This documentation site (Astro Starlight) |
+| `packages/npm` | npm distribution tooling — builds and publishes the `npx pizzapi` packages |
 
 **Build order**: `protocol` → `tools` → `server` → `ui` → `cli`
+
+<Aside type="note">
+  `docs` and `npm` are built independently and are not part of the main build chain. The `control-plane` package is only needed for multi-tenant hosted deployments.
+</Aside>
 
 ---
 
@@ -95,7 +101,7 @@ remote extension
     ▼
 WebSocket → Relay Server
     │
-    ├──► Redis (ring buffer, last ~1000 events per session)
+    ├──► Redis (ring buffer, configurable size via PIZZAPI_RELAY_EVENT_BUFFER_SIZE)
     │
     └──► WebSocket broadcast → all connected browser tabs
 ```
@@ -126,19 +132,45 @@ See the [Runner Daemon guide](/PizzaPi/guides/runner-daemon/) for the full proce
 
 ## Development
 
+### With Docker
+
 ```bash
-# Prerequisites: Bun, Redis
+# Dev stack with hot-reload (Redis + server + UI in one container)
+docker compose -f docker/compose.yml --profile dev up
+```
+
+The dev profile starts a single container exposing:
+
+| Port | Description |
+|------|-------------|
+| 3000 | Bun dev server (API + WebSocket relay) |
+| 5173 | Vite UI dev server (hot module reload) |
+
+### Without Docker
+
+```bash
+# Prerequisites: Bun, Redis running locally
 bun install
 bun run dev
 # API server → http://localhost:3001
 # Vite UI   → http://localhost:5173
+```
 
+### Useful Commands
+
+```bash
 # Type-check all packages
 bun run typecheck
 
-# Build everything
+# Build everything (protocol → tools → server → ui → cli)
 bun run build
+
+# Build docs separately
+bun run build:docs
 
 # Run DB migrations
 bun run migrate
+
+# Clean all dist/ directories
+bun run clean
 ```
