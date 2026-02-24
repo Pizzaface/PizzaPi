@@ -7,6 +7,9 @@ import { ApiKeyManager } from "@/components/ApiKeyManager";
 import { RunnerTokenManager } from "@/components/RunnerTokenManager";
 import { RunnerManager } from "@/components/RunnerManager";
 import { PizzaLogo } from "@/components/PizzaLogo";
+import { OrgSwitcher } from "@/components/OrgSwitcher";
+import { AdminPage } from "@/components/AdminPage";
+import { OrgSettingsPage } from "@/components/OrgSettingsPage";
 import { authClient, useSession, signOut } from "@/lib/auth-client";
 import { io, type Socket } from "socket.io-client";
 import type { ViewerServerToClientEvents, ViewerClientToServerEvents } from "@pizzapi/protocol";
@@ -40,7 +43,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Sun, Moon, LogOut, KeyRound, X, User, ChevronsUpDown, PanelLeftOpen, HardDrive, Bell, BellOff, Check, Plus, TerminalIcon, FolderTree, Keyboard } from "lucide-react";
+import { Sun, Moon, LogOut, KeyRound, X, User, ChevronsUpDown, PanelLeftOpen, HardDrive, Bell, BellOff, Check, Plus, TerminalIcon, FolderTree, Keyboard, Building2 } from "lucide-react";
 import { NotificationToggle, MobileNotificationMenuItem } from "@/components/NotificationToggle";
 import { HapticsToggle, MobileHapticsMenuItem } from "@/components/HapticsToggle";
 import { UsageIndicator, type ProviderUsageMap } from "@/components/UsageIndicator";
@@ -262,6 +265,8 @@ export function App() {
   const [relayStatus, setRelayStatus] = React.useState<DotState>("connecting");
   const [showApiKeys, setShowApiKeys] = React.useState(false);
   const [showRunners, setShowRunners] = React.useState(false);
+  const [showAdminPage, setShowAdminPage] = React.useState(() => window.location.pathname === "/admin");
+  const [showOrgSettings, setShowOrgSettings] = React.useState(() => window.location.pathname === "/settings/org");
   const [showTerminal, setShowTerminal] = React.useState(false);
   const [terminalPosition, setTerminalPosition] = React.useState<"bottom" | "right" | "left">(() => {
     try { return (localStorage.getItem("pp-terminal-position") as "bottom" | "right" | "left") ?? "bottom"; } catch { return "bottom"; }
@@ -2175,6 +2180,8 @@ export function App() {
           <PizzaLogo />
           <span className="text-sm font-semibold">PizzaPi</span>
           <Separator orientation="vertical" className="h-5" />
+          <OrgSwitcher />
+          <Separator orientation="vertical" className="h-5" />
           <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
             <span className={relayStatusDot(relayStatus)} />
             <span>{relayStatusLabel(relayStatus)}</span>
@@ -2249,6 +2256,10 @@ export function App() {
               <DropdownMenuItem onSelect={() => { setShowRunners(true); setShowApiKeys(false); setActiveSessionId(null); }}>
                 <HardDrive className="h-4 w-4" />
                 Runners
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => { setShowOrgSettings(true); setShowAdminPage(false); }}>
+                <Building2 className="h-4 w-4" />
+                Org settings
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem variant="destructive" onSelect={() => signOut()}>
@@ -2642,7 +2653,11 @@ export function App() {
               showTerminal && terminalPosition !== "bottom" && "min-w-0",
               showTerminal && terminalPosition === "left" && "order-last",
             )}>
-              {showRunners ? (
+              {showAdminPage ? (
+                <AdminPage onClose={() => { setShowAdminPage(false); window.history.pushState({}, "", "/"); }} />
+              ) : showOrgSettings ? (
+                <OrgSettingsPage onClose={() => { setShowOrgSettings(false); window.history.pushState({}, "", "/"); }} />
+              ) : showRunners ? (
                 <RunnerManager onOpenSession={(id) => { handleOpenSession(id); setShowRunners(false); }} />
               ) : (
                 <SessionViewer
