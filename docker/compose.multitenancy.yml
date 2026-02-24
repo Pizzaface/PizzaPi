@@ -1,0 +1,77 @@
+# Multi-tenant PizzaPi stack
+#
+# Usage:
+#   docker compose -f docker/compose.multitenancy.yml up
+#
+# This brings up:
+#   - control-plane: org management, JWT issuance, provisioning
+#   - caddy: reverse proxy with wildcard subdomain routing
+#   - redis: shared Redis with per-org key prefixes
+#
+# The control plane provisions org server instances as Docker containers
+# on the same network. See the epic docs for architecture details.
+
+services:
+  control-plane:
+    build:
+      context: ..
+      dockerfile: packages/control-plane/Dockerfile
+    ports:
+      - "3100:3100"
+    environment:
+      - PORT=3100
+      - DATABASE_URL=file:/data/control-plane.db
+      - REDIS_URL=redis://redis:6379
+      - DOCKER_HOST=unix:///var/run/docker.sock
+      - BASE_DOMAIN=${PIZZAPI_BASE_DOMAIN:-pizzapi.example.com}
+      - JWT_SECRET=${PIZZAPI_JWT_SECRET:-change-me-in-production}
+      - CADDY_ADMIN_URL=http://caddy:2019
+      # Network for provisioned org containers
+      - ORG_NETWORK=pizzapi-net
+      - ORG_SERVER_IMAGE=${PIZZAPI_SERVER_IMAGE:-pizzapi-server:latest}
+    volumes:
+      - control-plane-data:/data
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      redis:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - pizzapi-net
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+      - "2019:2019"
+    volumes:
+      - ./Caddyfile.multitenancy:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - control-plane
+    restart: unless-stopped
+    networks:
+      - pizzapi-net
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "60", "1", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+    networks:
+      - pizzapi-net
+
+volumes:
+  control-plane-data:
+  caddy_data:
+  caddy_config:
+  redis-data:
+
+networks:
+  pizzapi-net:
+    driver: bridge

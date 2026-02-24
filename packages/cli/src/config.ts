@@ -19,6 +19,12 @@ export interface PizzaPiConfig {
      * Supports ~ expansion and absolute paths.
      */
     skills?: string[];
+    /**
+     * Organization slug for multi-tenant mode.
+     * When set, the runner connects to {slug}.pizzapi.example.com
+     * and authenticates with an org-scoped JWT token.
+     */
+    org?: string;
 }
 
 function readJsonSafe(path: string): Partial<PizzaPiConfig> {

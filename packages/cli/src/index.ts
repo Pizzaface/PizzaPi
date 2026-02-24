@@ -52,6 +52,16 @@ async function main() {
         args.splice(cwdFlagIdx, 2);
     }
 
+    // --org <slug> flag for multi-tenant runner registration
+    const orgFlagIdx = args.indexOf("--org");
+    const orgSlug = orgFlagIdx !== -1 && args[orgFlagIdx + 1] ? args[orgFlagIdx + 1] : undefined;
+    if (orgFlagIdx !== -1) {
+        args.splice(orgFlagIdx, 2);
+        if (orgSlug) {
+            process.env.PIZZAPI_ORG_SLUG = orgSlug;
+        }
+    }
+
     // Sub-command dispatch
 
     // `runner` → outer supervisor (spawns daemon as a child process so that a

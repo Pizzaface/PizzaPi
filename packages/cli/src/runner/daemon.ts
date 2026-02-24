@@ -492,6 +492,46 @@ function stopUsageRefreshLoop(): void {
     }
 }
 
+// ── Org-scoped token helpers ──────────────────────────────────────────────────
+
+/**
+ * Fetch an org-scoped JWT from the control plane.
+ * The control plane URL defaults to PIZZAPI_CONTROL_PLANE_URL or
+ * https://pizzapi.example.com (the root domain).
+ *
+ * Requires existing session credentials (cookie or API key) to authenticate.
+ * Returns the org-scoped token string, or null if the request fails.
+ */
+async function fetchOrgToken(orgSlug: string): Promise<string | null> {
+    const controlPlaneUrl = (
+        process.env.PIZZAPI_CONTROL_PLANE_URL ?? "https://pizzapi.example.com"
+    ).replace(/\/$/, "");
+
+    const apiKey = process.env.PIZZAPI_API_KEY ?? process.env.PIZZAPI_RUNNER_API_KEY;
+    if (!apiKey) return null;
+
+    try {
+        const res = await fetch(`${controlPlaneUrl}/api/orgs/${orgSlug}/token`, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${apiKey}`,
+            },
+        });
+        if (!res.ok) {
+            console.warn(`pizzapi runner: failed to fetch org token for "${orgSlug}" (HTTP ${res.status})`);
+            return null;
+        }
+        const body = (await res.json()) as { token?: string };
+        return body.token ?? null;
+    } catch (err) {
+        console.warn(
+            `pizzapi runner: could not reach control plane for org token: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        return null;
+    }
+}
+
 /**
  * Remote Runner daemon.
  *
@@ -524,13 +564,38 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         process.exit(1);
     }
 
+    // ── Org-scoped multi-tenant support ─────────────────────────────────
+    const orgSlug = process.env.PIZZAPI_ORG_SLUG?.trim() || undefined;
+
+    // Pre-fetch org token before entering the promise/socket setup
+    let prefetchedOrgToken = process.env.PIZZAPI_ORG_TOKEN?.trim() || undefined;
+    if (orgSlug && !prefetchedOrgToken) {
+        console.log(`pizzapi runner: fetching org token for "${orgSlug}" from control plane…`);
+        const fetched = await fetchOrgToken(orgSlug);
+        if (fetched) {
+            prefetchedOrgToken = fetched;
+            console.log(`pizzapi runner: org token acquired for "${orgSlug}"`);
+        } else {
+            console.warn(`pizzapi runner: no org token available — connection may fail`);
+        }
+    }
+
     return new Promise((resolve) => {
         let isShuttingDown = false;
 
         // ── Socket.IO connection setup ────────────────────────────────────
-        const relayRaw = (process.env.PIZZAPI_RELAY_URL ?? "ws://localhost:3001")
-            .trim()
-            .replace(/\/$/, "");
+        let relayRaw: string;
+        if (orgSlug) {
+            // Multi-tenant mode: connect to the org-specific subdomain
+            const baseDomain = process.env.PIZZAPI_BASE_DOMAIN ?? "pizzapi.example.com";
+            const protocol = process.env.PIZZAPI_RELAY_PROTOCOL ?? "https";
+            relayRaw = `${protocol}://${orgSlug}.${baseDomain}`;
+            console.log(`pizzapi runner: org mode enabled — connecting to ${relayRaw}`);
+        } else {
+            relayRaw = (process.env.PIZZAPI_RELAY_URL ?? "ws://localhost:3001")
+                .trim()
+                .replace(/\/$/, "");
+        }
 
         // Convert ws(s):// → http(s):// for socket.io-client (same port)
         const sioUrl = relayRaw
@@ -544,14 +609,20 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         let runnerId: string | null = null;
         let isFirstConnect = true;
 
+        // Build auth payload — include org token when in multi-tenant mode
+        const orgToken = prefetchedOrgToken;
+        const socketAuth: Record<string, string | undefined> = {
+            apiKey,
+            runnerId: identity.runnerId,
+            runnerSecret: identity.runnerSecret,
+            ...(orgSlug ? { orgSlug } : {}),
+            ...(orgToken ? { orgToken } : {}),
+        };
+
         const socket: Socket<RunnerServerToClientEvents, RunnerClientToServerEvents> = io(
             sioUrl + "/runner",
             {
-                auth: {
-                    apiKey,
-                    runnerId: identity.runnerId,
-                    runnerSecret: identity.runnerSecret,
-                },
+                auth: socketAuth,
                 transports: ["websocket"],
                 reconnection: true,
                 reconnectionDelay: 1000,
