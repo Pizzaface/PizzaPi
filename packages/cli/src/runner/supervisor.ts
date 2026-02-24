@@ -33,15 +33,27 @@ const RESTART_DELAY_MAX  = 60_000; // 60 s
 
 export async function runSupervisor(_args: string[] = []): Promise<number> {
     // Resolve the CLI entry point so we can re-spawn it with `_daemon`.
-    // Works both from TypeScript source (bun run dev:runner) and from the
-    // compiled dist (bun runner).
-    const ext       = import.meta.url.endsWith(".ts") ? "ts" : "js";
-    const cliEntry  = fileURLToPath(new URL(`../index.${ext}`, import.meta.url));
-    if (!existsSync(cliEntry)) {
-        const alt = fileURLToPath(new URL(`../index.${ext === "ts" ? "js" : "ts"}`, import.meta.url));
-        if (!existsSync(alt)) {
-            throw new Error(`Cannot locate CLI entry point: ${cliEntry}`);
+    // Works from TypeScript source, compiled dist, and standalone binaries.
+    const isCompiledBinary = import.meta.url.startsWith("file:///$bunfs/");
+    let cliEntry: string | null = null;
+    let spawnArgs: string[];
+
+    if (isCompiledBinary) {
+        // Standalone compiled binary — process.execPath IS the CLI.
+        // Just pass `_daemon` directly; no separate entry file needed.
+        spawnArgs = ["_daemon"];
+    } else {
+        const ext       = import.meta.url.endsWith(".ts") ? "ts" : "js";
+        cliEntry  = fileURLToPath(new URL(`../index.${ext}`, import.meta.url));
+        if (!existsSync(cliEntry)) {
+            const alt = fileURLToPath(new URL(`../index.${ext === "ts" ? "js" : "ts"}`, import.meta.url));
+            if (existsSync(alt)) {
+                cliEntry = alt;
+            } else {
+                throw new Error(`Cannot locate CLI entry point: ${cliEntry}`);
+            }
         }
+        spawnArgs = [cliEntry, "_daemon"];
     }
 
     let restartDelay = RESTART_DELAY_BASE;
@@ -77,7 +89,7 @@ export async function runSupervisor(_args: string[] = []): Promise<number> {
 
     while (true) {
         const exitCode = await new Promise<number>((resolve) => {
-            child = spawn(process.execPath, [cliEntry, "_daemon"], {
+            child = spawn(process.execPath, spawnArgs, {
                 env:   process.env as Record<string, string>,
                 stdio: ["ignore", "inherit", "inherit"],
             });

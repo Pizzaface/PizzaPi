@@ -71,6 +71,20 @@ async function main() {
     //   Not intended to be called directly; the supervisor sets this arg when
     //   it spawns the daemon child so that the daemon runs without any restart
     //   loop of its own (restarts are the supervisor's responsibility).
+    // `_worker` → internal entrypoint used by the daemon to spawn session workers
+    //   inside compiled binaries. Not intended to be called directly.
+    if (args[0] === "_worker") {
+        await import("./runner/worker.js");
+        return;
+    }
+
+    // `_terminal-worker` → internal entrypoint for terminal PTY workers
+    //   inside compiled binaries. Not intended to be called directly.
+    if (args[0] === "_terminal-worker") {
+        await import("./runner/terminal-worker.js");
+        return;
+    }
+
     if (args[0] === "_daemon") {
         const { runDaemon } = await import("./runner/daemon.js");
         const code = await runDaemon(args.slice(1));

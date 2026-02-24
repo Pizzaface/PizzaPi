@@ -33,16 +33,22 @@ export interface TerminalEntry {
 
 const runningTerminals = new Map<string, TerminalEntry>();
 
-/** Resolve the terminal-worker entry point (works for .ts and .js). */
-function resolveWorkerPath(): string {
+/** Is this process running inside a compiled Bun single-file binary? */
+const isCompiledBinary = import.meta.url.startsWith("file:///$bunfs/");
+
+/** Resolve the terminal-worker spawn args (works for .ts, .js, and compiled binaries). */
+function resolveWorkerSpawnArgs(): string[] {
+    if (isCompiledBinary) {
+        return ["_terminal-worker"];
+    }
     const ext = import.meta.url.endsWith(".ts") ? "ts" : "js";
     const url = new URL(`./terminal-worker.${ext}`, import.meta.url);
     const path = fileURLToPath(url);
-    if (existsSync(path)) return path;
+    if (existsSync(path)) return [path];
     // Fallback: try the other extension
     const altExt = ext === "ts" ? "js" : "ts";
     const alt = fileURLToPath(new URL(`./terminal-worker.${altExt}`, import.meta.url));
-    if (existsSync(alt)) return alt;
+    if (existsSync(alt)) return [alt];
     throw new Error(`terminal-worker entry point not found: ${path}`);
 }
 
@@ -78,9 +84,9 @@ export function spawnTerminal(
     const rows = opts.rows && opts.rows > 0 ? opts.rows : 24;
     const cwd = opts.cwd || process.env.HOME || "/";
 
-    let workerPath: string;
+    let workerSpawnArgs: string[];
     try {
-        workerPath = resolveWorkerPath();
+        workerSpawnArgs = resolveWorkerSpawnArgs();
     } catch (err) {
         send({
             type: "terminal_error",
@@ -92,7 +98,7 @@ export function spawnTerminal(
 
     // Spawn the worker with IPC enabled so we can pass structured messages.
     // Each worker owns exactly one PTY; if it crashes it only kills the worker.
-    const worker = spawn(process.execPath, [workerPath], {
+    const worker = spawn(process.execPath, workerSpawnArgs, {
         env: {
             ...process.env,
             TERMINAL_WORKER_ID:    terminalId,

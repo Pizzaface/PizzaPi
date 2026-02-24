@@ -1234,7 +1234,7 @@ function spawnSession(
         }
     }
 
-    const workerPath = resolveWorkerEntryPoint();
+    const workerArgs = resolveWorkerSpawnArgs();
 
     const env: Record<string, string> = {
         ...Object.fromEntries(Object.entries(process.env).filter(([, v]) => typeof v === "string")) as any,
@@ -1254,7 +1254,7 @@ function spawnSession(
         } : {}),
     };
 
-    const child = spawn(process.execPath, [workerPath], {
+    const child = spawn(process.execPath, workerArgs, {
         env,
         stdio: ["ignore", "inherit", "inherit"],
     });
@@ -1274,18 +1274,29 @@ function spawnSession(
     console.log(`pizzapi runner: session ${sessionId} worker spawned (pid=${child.pid})`);
 }
 
-function resolveWorkerEntryPoint(): string {
-    // When running from TS sources via `bun`, import.meta.url ends with .ts.
-    // When running from built output, it ends with .js.
+/** Is this process running inside a compiled Bun single-file binary? */
+const isCompiledBinary = import.meta.url.startsWith("file:///$bunfs/");
+
+/**
+ * Returns the spawn arguments for starting a worker subprocess.
+ * - Compiled binary: `[process.execPath, ["_worker"]]`
+ * - Source / built JS: `[process.execPath, [workerFilePath]]`
+ */
+function resolveWorkerSpawnArgs(): string[] {
+    if (isCompiledBinary) {
+        // In a compiled binary, the worker code is embedded. We re-invoke
+        // the same binary with the `_worker` subcommand.
+        return ["_worker"];
+    }
+
     const ext = import.meta.url.endsWith(".ts") ? "ts" : "js";
     const url = new URL(`./worker.${ext}`, import.meta.url);
     const path = fileURLToPath(url);
     if (!existsSync(path)) {
-        // Fallback: try the other extension.
         const altExt = ext === "ts" ? "js" : "ts";
         const alt = fileURLToPath(new URL(`./worker.${altExt}`, import.meta.url));
-        if (existsSync(alt)) return alt;
+        if (existsSync(alt)) return [alt];
         throw new Error(`Runner worker entrypoint not found: ${path}`);
     }
-    return path;
+    return [path];
 }
