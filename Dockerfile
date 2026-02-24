@@ -23,8 +23,9 @@ COPY packages/server/package.json packages/server/
 COPY packages/ui/package.json packages/ui/
 
 # --ignore-scripts skips native builds (better-sqlite3 from @better-auth/cli)
-# that aren't needed at runtime since the server uses bun:sqlite
-RUN bun install --no-save --ignore-scripts
+# that aren't needed at runtime since the server uses bun:sqlite.
+# Can't use --frozen-lockfile since we trimmed the workspace list.
+RUN bun install --ignore-scripts
 
 # Copy source for needed packages only
 COPY tsconfig.base.json ./
@@ -33,10 +34,11 @@ COPY packages/tools/ packages/tools/
 COPY packages/server/ packages/server/
 COPY packages/ui/ packages/ui/
 
-# Build protocol → tools → server + ui
-RUN cd packages/protocol && bun run build \
-    && cd /app/packages/tools && bun run build \
-    && cd /app/packages/server && bun run build \
+# Copy root tsconfig for project references
+COPY tsconfig.json ./
+
+# Build with tsc --build to resolve project references, then build UI
+RUN npx tsc --build packages/server/tsconfig.json \
     && cd /app/packages/ui && bun run build
 
 # --- Production image ---
