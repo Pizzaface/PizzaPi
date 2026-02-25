@@ -28,6 +28,7 @@
         "dev:ui": "cd packages/ui && bun run dev",
         "dev:cli": "bun packages/cli/src/index.ts",
         "dev:runner": "bun packages/cli/src/index.ts runner",
+        "test": "bun test packages/",
         "typecheck": "tsc --build",
         "migrate": "cd packages/server && bun run migrate",
         "clean": "bun -e \"['protocol','tools','server','ui','cli','docs'].forEach(p=>require('fs').rmSync('packages/'+p+'/dist',{recursive:true,force:true}))\"",
