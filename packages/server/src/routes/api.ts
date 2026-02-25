@@ -497,6 +497,36 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
         }
     }
 
+    // ── Search files (recursive, respects .gitignore) ───────────────────────
+    const searchFilesMatch = url.pathname.match(/^\/api\/runners\/([^/]+)\/search-files$/);
+    if (searchFilesMatch && req.method === "POST") {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        const runnerId = decodeURIComponent(searchFilesMatch[1]);
+        const runner = await getRunnerData(runnerId);
+        if (!runner) return Response.json({ error: "Runner not found" }, { status: 404 });
+        if (runner.userId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
+
+        let body: any = {};
+        try { body = await req.json(); } catch { body = {}; }
+
+        const cwd = typeof body.cwd === "string" ? body.cwd : "";
+        const query = typeof body.query === "string" ? body.query : "";
+        const limit = typeof body.limit === "number" ? body.limit : 100;
+
+        if (!cwd) return Response.json({ error: "Missing cwd" }, { status: 400 });
+        if (!query) return Response.json({ ok: true, files: [] });
+
+        try {
+            const result = await sendRunnerCommand(runnerId, { type: "search_files", cwd, query, limit });
+            if (!(result as any).ok) return Response.json({ error: (result as any).message ?? "Search failed" }, { status: 500 });
+            return Response.json(result);
+        } catch (err) {
+            return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 502 });
+        }
+    }
+
     const readFileMatch = url.pathname.match(/^\/api\/runners\/([^/]+)\/read-file$/);
     if (readFileMatch && req.method === "POST") {
         const identity = await requireSession(req);

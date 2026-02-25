@@ -191,6 +191,14 @@ export interface RunnerServerToClientEvents {
     path: string;
   }) => void;
 
+  /** Recursively searches for files by name (respects .gitignore) */
+  search_files: (data: {
+    requestId?: string;
+    cwd: string;
+    query: string;
+    limit?: number;
+  }) => void;
+
   /** Reads a file's content */
   read_file: (data: {
     requestId?: string;

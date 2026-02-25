@@ -958,6 +958,62 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             }
         });
 
+        socket.on("search_files", async (data) => {
+            if (isShuttingDown) return;
+            const requestId = data.requestId;
+            const cwd = (data as any).cwd ?? "";
+            const query = (data as any).query ?? "";
+            const limit = typeof (data as any).limit === "number" ? (data as any).limit : 100;
+
+            if (!cwd) {
+                socket.emit("file_result", { requestId, ok: false, message: "Missing cwd" });
+                return;
+            }
+            if (!isCwdAllowed(cwd)) {
+                socket.emit("file_result", { requestId, ok: false, message: "Path outside allowed roots" });
+                return;
+            }
+            if (!query) {
+                socket.emit("file_result", { requestId, ok: true, files: [] });
+                return;
+            }
+            try {
+                // Use git ls-files to get tracked + untracked-not-ignored files
+                const result = Bun.spawnSync(
+                    ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
+                    { cwd, stdout: "pipe", stderr: "pipe" },
+                );
+                const stdout = result.stdout.toString();
+                if (result.exitCode !== 0) {
+                    // Not a git repo or git error — fall back to empty
+                    socket.emit("file_result", { requestId, ok: true, files: [] });
+                    return;
+                }
+                const lowerQuery = query.toLowerCase();
+                const files = stdout
+                    .split("\n")
+                    .filter((line) => {
+                        if (!line) return false;
+                        return line.toLowerCase().includes(lowerQuery);
+                    })
+                    .slice(0, limit)
+                    .map((relativePath) => ({
+                        name: relativePath.split("/").pop() ?? relativePath,
+                        path: join(cwd, relativePath),
+                        relativePath,
+                        isDirectory: false,
+                        isSymlink: false,
+                    }));
+                socket.emit("file_result", { requestId, ok: true, files });
+            } catch (err) {
+                socket.emit("file_result", {
+                    requestId,
+                    ok: false,
+                    message: err instanceof Error ? err.message : String(err),
+                });
+            }
+        });
+
         socket.on("read_file", async (data) => {
             if (isShuttingDown) return;
             const requestId = data.requestId;

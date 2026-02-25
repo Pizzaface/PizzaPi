@@ -8,7 +8,8 @@ import {
 } from "@/components/ui/command";
 import { Spinner } from "@/components/ui/spinner";
 import { useAtMentionFiles, type Entry } from "@/hooks/useAtMentionFiles";
-import { ChevronLeft, File, Folder } from "lucide-react";
+import { useAtMentionSearch } from "@/hooks/useAtMentionSearch";
+import { ChevronLeft, File, Folder, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 // ── Icons ─────────────────────────────────────────────────────────────────────
@@ -81,12 +82,29 @@ export function AtMentionPopover({
   onHighlightedIndexChange,
   onHighlightedEntryChange,
 }: AtMentionPopoverProps) {
-  // Fetch files for the current path
-  const { entries, loading, error } = useAtMentionFiles(runnerId, path, open, sessionCwd);
+  // Recursive search mode: query present but no directory path navigated to
+  const isSearchMode = !!query && !path;
+
+  // Fetch directory listing (used when browsing or when in a specific path)
+  const { entries: dirEntries, loading: dirLoading, error: dirError } = useAtMentionFiles(
+    runnerId, path, open && !isSearchMode, sessionCwd
+  );
+
+  // Recursive search (used when typing a query at root level)
+  const { entries: searchEntries, loading: searchLoading, error: searchError } = useAtMentionSearch(
+    runnerId, query, open && isSearchMode, sessionCwd
+  );
+
+  const entries = isSearchMode ? searchEntries : dirEntries;
+  const loading = isSearchMode ? searchLoading : dirLoading;
+  const error = isSearchMode ? searchError : dirError;
 
   // Filter and sort entries
   const filteredEntries = React.useMemo(() => {
     if (!entries) return [];
+
+    // In search mode, entries are already filtered by the server
+    if (isSearchMode) return entries;
 
     // Filter out dot-files/folders
     let filtered = entries.filter((entry) => !entry.name.startsWith("."));
@@ -105,19 +123,19 @@ export function AtMentionPopover({
       if (!a.isDirectory && b.isDirectory) return 1;
       return a.name.localeCompare(b.name);
     });
-  }, [entries, query]);
+  }, [entries, query, isSearchMode]);
 
   // Handle item selection
   const handleSelect = React.useCallback(
-    (entry: Entry) => {
+    (entry: Entry & { relativePath?: string }) => {
       if (entry.isDirectory) {
         // Drill into directory
         const newPath = path ? `${path}${entry.name}/` : `${entry.name}/`;
         onDrillInto(newPath);
       } else {
-        // Select file - return relative path from cwd
-        const relativePath = path ? `${path}${entry.name}` : entry.name;
-        onSelectFile(relativePath);
+        // Select file - use relativePath from search results, or construct from path
+        const relPath = entry.relativePath ?? (path ? `${path}${entry.name}` : entry.name);
+        onSelectFile(relPath);
       }
     },
     [path, onDrillInto, onSelectFile]
@@ -144,11 +162,16 @@ export function AtMentionPopover({
   // Track the currently highlighted value for Tab handling
   const [highlightedValue, setHighlightedValue] = React.useState<string>("");
 
+  // Helper to get the value key for an entry (relativePath in search mode, name otherwise)
+  const getEntryValue = React.useCallback((entry: Entry & { relativePath?: string }) => {
+    return isSearchMode ? (entry.relativePath ?? entry.name) : entry.name;
+  }, [isSearchMode]);
+
   // Reset highlighted index when entries change
   React.useEffect(() => {
     if (filteredEntries.length > 0) {
       const firstEntry = filteredEntries[0] ?? null;
-      setHighlightedValue(firstEntry?.name ?? "");
+      setHighlightedValue(firstEntry ? getEntryValue(firstEntry as Entry & { relativePath?: string }) : "");
       onHighlightedIndexChange?.(0);
       onHighlightedEntryChange?.(firstEntry);
     } else {
@@ -156,7 +179,7 @@ export function AtMentionPopover({
       onHighlightedIndexChange?.(-1);
       onHighlightedEntryChange?.(null);
     }
-  }, [filteredEntries, onHighlightedIndexChange, onHighlightedEntryChange]);
+  }, [filteredEntries, onHighlightedIndexChange, onHighlightedEntryChange, getEntryValue]);
 
   // Keyboard navigation
   const handleKeyDown = React.useCallback(
@@ -171,7 +194,7 @@ export function AtMentionPopover({
         handleBack();
       } else if (e.key === "Tab" && filteredEntries.length > 0) {
         // Tab drills into highlighted folder
-        const entry = filteredEntries.find(e => e.name === highlightedValue) ?? filteredEntries[0];
+        const entry = filteredEntries.find(e => getEntryValue(e as Entry & { relativePath?: string }) === highlightedValue) ?? filteredEntries[0];
         if (entry?.isDirectory) {
           e.preventDefault();
           e.stopPropagation();
@@ -180,7 +203,7 @@ export function AtMentionPopover({
         }
       } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         // Track highlighted item for Tab functionality
-        const currentIndex = filteredEntries.findIndex(e => e.name === highlightedValue);
+        const currentIndex = filteredEntries.findIndex(e => getEntryValue(e as Entry & { relativePath?: string }) === highlightedValue);
         let newIndex: number;
         if (e.key === "ArrowDown") {
           newIndex = currentIndex < filteredEntries.length - 1 ? currentIndex + 1 : 0;
@@ -189,13 +212,13 @@ export function AtMentionPopover({
         }
         const newEntry = filteredEntries[newIndex];
         if (newEntry) {
-          setHighlightedValue(newEntry.name);
+          setHighlightedValue(getEntryValue(newEntry as Entry & { relativePath?: string }));
           onHighlightedIndexChange?.(newIndex);
           onHighlightedEntryChange?.(newEntry);
         }
       }
     },
-    [onClose, query, path, handleBack, filteredEntries, highlightedValue, onDrillInto, onHighlightedIndexChange, onHighlightedEntryChange]
+    [onClose, query, path, handleBack, filteredEntries, highlightedValue, onDrillInto, onHighlightedIndexChange, onHighlightedEntryChange, getEntryValue]
   );
 
   if (!open) return null;
@@ -212,7 +235,7 @@ export function AtMentionPopover({
       <Command className="w-full" shouldFilter={false}>
         {/* Breadcrumb header */}
         <div className="flex items-center gap-2 px-3 py-2 border-b border-border/50 text-xs">
-          {!isAtRoot && (
+          {!isAtRoot && !isSearchMode && (
             <button
               type="button"
               onClick={handleBack}
@@ -222,15 +245,26 @@ export function AtMentionPopover({
               <span>Back</span>
             </button>
           )}
-          <span className="font-mono text-muted-foreground truncate flex-1">
-            {isAtRoot
-              ? (sessionCwd ? sessionCwd.split("/").filter(Boolean).pop() ?? "/" : "/")
-              : `${sessionCwd ? sessionCwd.split("/").filter(Boolean).pop() + "/" : "/"}${path}`}
-          </span>
-          {query && (
-            <span className="text-muted-foreground/60">
-              filter: "{query}"
-            </span>
+          {isSearchMode ? (
+            <>
+              <Search className="size-3 text-muted-foreground" />
+              <span className="font-mono text-muted-foreground truncate flex-1">
+                search: "{query}"
+              </span>
+            </>
+          ) : (
+            <>
+              <span className="font-mono text-muted-foreground truncate flex-1">
+                {isAtRoot
+                  ? (sessionCwd ? sessionCwd.split("/").filter(Boolean).pop() ?? "/" : "/")
+                  : `${sessionCwd ? sessionCwd.split("/").filter(Boolean).pop() + "/" : "/"}${path}`}
+              </span>
+              {query && (
+                <span className="text-muted-foreground/60">
+                  filter: "{query}"
+                </span>
+              )}
+            </>
           )}
         </div>
 
@@ -261,13 +295,15 @@ export function AtMentionPopover({
           {!loading && !error && filteredEntries.length > 0 && (
             <CommandGroup>
               {filteredEntries.map((entry, index) => {
+                const searchEntry = entry as Entry & { relativePath?: string };
                 const emoji = !entry.isDirectory ? getFileIcon(entry.name) : null;
-                const isHighlighted = highlightedValue === entry.name;
+                const isHighlighted = highlightedValue === (isSearchMode ? (searchEntry.relativePath ?? entry.name) : entry.name);
+                const itemValue = isSearchMode ? (searchEntry.relativePath ?? entry.name) : entry.name;
                 return (
                   <CommandItem
                     key={entry.path}
-                    value={entry.name}
-                    onSelect={() => handleSelect(entry)}
+                    value={itemValue}
+                    onSelect={() => handleSelect(searchEntry)}
                     className="cursor-pointer"
                     role="option"
                     aria-selected={isHighlighted}
@@ -279,7 +315,9 @@ export function AtMentionPopover({
                     )}
                     <span className="truncate flex-1">
                       {emoji && <span className="mr-1 text-xs">{emoji}</span>}
-                      {entry.name}
+                      {isSearchMode && searchEntry.relativePath
+                        ? searchEntry.relativePath
+                        : entry.name}
                     </span>
                     {entry.isDirectory && (
                       <span className="text-xs text-muted-foreground">→</span>
