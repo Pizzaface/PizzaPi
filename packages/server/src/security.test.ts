@@ -45,7 +45,15 @@ describe("Validation", () => {
     });
 
     test("isValidPassword", () => {
-        expect(isValidPassword("12345678")).toBe(true);
-        expect(isValidPassword("short")).toBe(false);
+        expect(isValidPassword("short")).toBe(false); // too short
+        expect(isValidPassword("password")).toBe(false); // no uppercase, no number
+        expect(isValidPassword("PASSWORD")).toBe(false); // no lowercase, no number
+        expect(isValidPassword("12345678")).toBe(false); // no letters
+        expect(isValidPassword("Password")).toBe(false); // no number
+        expect(isValidPassword("password123")).toBe(false); // no uppercase
+        expect(isValidPassword("PASSWORD123")).toBe(false); // no lowercase
+
+        expect(isValidPassword("Password123")).toBe(true); // valid
+        expect(isValidPassword("StrongP@ssw0rd")).toBe(true); // valid with special char
     });
 });

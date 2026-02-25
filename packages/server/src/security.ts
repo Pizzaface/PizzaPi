@@ -59,5 +59,12 @@ export function isValidEmail(email: string): boolean {
 }
 
 export function isValidPassword(password: string): boolean {
-    return password.length >= 8;
+    if (password.length < 8) return false;
+    // Require at least one uppercase letter
+    if (!/[A-Z]/.test(password)) return false;
+    // Require at least one lowercase letter
+    if (!/[a-z]/.test(password)) return false;
+    // Require at least one digit
+    if (!/[0-9]/.test(password)) return false;
+    return true;
 }
