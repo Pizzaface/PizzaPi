@@ -264,6 +264,16 @@ export function groupToolExecutionMessages(messages: RelayMessage[]): RelayMessa
 
       // Flush remaining assistant content after the last tool call.
       pushAssistantPart(false);
+
+      // If this assistant message carries an error (e.g. model not found) but had
+      // no visible content blocks, make sure it still appears in the output so the
+      // error banner renders.
+      if (message.stopReason === "error" && message.errorMessage) {
+        const alreadyEmitted = grouped.some((g) => g.key === message.key || g.key.startsWith(`${message.key}:assistant:`));
+        if (!alreadyEmitted) {
+          grouped.push(message);
+        }
+      }
       continue;
     }
 

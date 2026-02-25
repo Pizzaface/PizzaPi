@@ -744,6 +744,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     () => sortedMessages.filter((message) => {
       if (message.role === "subAgentConversation") return (message.subAgentTurns?.length ?? 0) > 0;
       if (hasVisibleContent(message.content)) return true;
+      if (message.stopReason === "error" && message.errorMessage) return true;
       return (message.role === "toolResult" || message.role === "tool") && message.toolInput !== undefined;
     }),
     [sortedMessages],
