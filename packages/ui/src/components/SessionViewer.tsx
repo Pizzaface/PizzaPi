@@ -134,6 +134,8 @@ export interface SessionViewerProps {
   todoList?: TodoItem[];
   /** Runner ID for the current session (used for runner files API) */
   runnerId?: string;
+  /** Absolute working directory of the current session (used as base for @-mention file paths) */
+  sessionCwd?: string;
 }
 
 function formatTokenCount(n: number): string {
@@ -393,7 +395,7 @@ function SessionSkeleton() {
   );
 }
 
-export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], runnerId }: SessionViewerProps) {
+export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], runnerId, sessionCwd }: SessionViewerProps) {
   const [input, setInput] = React.useState("");
   const [composerError, setComposerError] = React.useState<string | null>(null);
   const [showClearDialog, setShowClearDialog] = React.useState(false);
@@ -1240,6 +1242,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
               onDrillInto={handleAtMentionDrillInto}
               onClose={handleAtMentionClose}
               onBack={handleAtMentionBack}
+              sessionCwd={sessionCwd}
               highlightedIndex={atMentionHighlightedIndex}
               onHighlightedIndexChange={setAtMentionHighlightedIndex}
               onHighlightedEntryChange={setAtMentionHighlightedEntry}

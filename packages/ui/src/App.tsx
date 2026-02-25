@@ -2692,6 +2692,7 @@ export function App() {
                   showFileExplorerButton={!!activeSessionInfo?.runnerId && !!activeSessionInfo?.cwd}
                   todoList={todoList}
                   runnerId={activeSessionInfo?.runnerId ?? undefined}
+                  sessionCwd={activeSessionInfo?.cwd || undefined}
                 />
               )}
             </div>

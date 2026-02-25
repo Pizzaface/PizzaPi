@@ -29,13 +29,15 @@ interface UseAtMentionFilesResult {
  * Provides per-session path-keyed caching and ~100ms debounce.
  *
  * @param runnerId - Runner ID to fetch files from
- * @param path - Directory path to list
+ * @param path - Relative directory path to list (e.g., "", "src/", "src/components/")
  * @param enabled - Whether fetching is enabled (cache clears on true → false)
+ * @param basePath - Absolute base path (session CWD) to resolve relative paths against
  */
 export function useAtMentionFiles(
     runnerId: string | undefined,
     path: string,
-    enabled: boolean
+    enabled: boolean,
+    basePath?: string,
 ): UseAtMentionFilesResult {
     const [entries, setEntries] = useState<Entry[]>([]);
     const [loading, setLoading] = useState(false);
@@ -73,6 +75,18 @@ export function useAtMentionFiles(
         };
     }, []);
 
+    // Resolve a relative path against the base path (session CWD)
+    const resolvePath = useCallback(
+        (relativePath: string): string => {
+            if (!basePath) return relativePath || ".";
+            if (!relativePath || relativePath === ".") return basePath;
+            // Strip trailing slash for joining, then re-add if present
+            const base = basePath.replace(/\/+$/, "");
+            return `${base}/${relativePath}`;
+        },
+        [basePath]
+    );
+
     const fetchFiles = useCallback(
         async (targetPath: string, signal: AbortSignal) => {
             if (!runnerId) return;
@@ -81,10 +95,11 @@ export function useAtMentionFiles(
             setError(null);
 
             try {
+                const absolutePath = resolvePath(targetPath);
                 const response = await fetch(`/api/runners/${encodeURIComponent(runnerId)}/files`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ path: targetPath }),
+                    body: JSON.stringify({ path: absolutePath }),
                     credentials: "include",
                     signal,
                 });
@@ -122,7 +137,7 @@ export function useAtMentionFiles(
                 }
             }
         },
-        [runnerId]
+        [runnerId, resolvePath]
     );
 
     // Main effect: debounced fetch with caching

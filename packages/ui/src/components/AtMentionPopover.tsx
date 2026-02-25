@@ -55,6 +55,8 @@ export interface AtMentionPopoverProps {
   onClose: () => void;
   /** Called when navigating back. If not provided, internal back logic is used. */
   onBack?: () => void;
+  /** Absolute working directory of the session (used as base for file paths) */
+  sessionCwd?: string;
   /** Index of highlighted item for keyboard navigation (-1 for none) */
   highlightedIndex?: number;
   /** Callback when highlighted index changes */
@@ -74,12 +76,13 @@ export function AtMentionPopover({
   onDrillInto,
   onClose,
   onBack,
+  sessionCwd,
   highlightedIndex = 0,
   onHighlightedIndexChange,
   onHighlightedEntryChange,
 }: AtMentionPopoverProps) {
   // Fetch files for the current path
-  const { entries, loading, error } = useAtMentionFiles(runnerId, path || ".", open);
+  const { entries, loading, error } = useAtMentionFiles(runnerId, path, open, sessionCwd);
 
   // Filter and sort entries
   const filteredEntries = React.useMemo(() => {
@@ -220,7 +223,9 @@ export function AtMentionPopover({
             </button>
           )}
           <span className="font-mono text-muted-foreground truncate flex-1">
-            {isAtRoot ? "/" : `/${path}`}
+            {isAtRoot
+              ? (sessionCwd ? sessionCwd.split("/").filter(Boolean).pop() ?? "/" : "/")
+              : `${sessionCwd ? sessionCwd.split("/").filter(Boolean).pop() + "/" : "/"}${path}`}
           </span>
           {query && (
             <span className="text-muted-foreground/60">
