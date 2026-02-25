@@ -118,6 +118,12 @@ const runnerSecrets = new Map<string, string>();
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
+/** Throttle interval for touchSessionActivity to reduce DB writes. */
+const TOUCH_THROTTLE_MS = 2000;
+
+/** Last time a session was touched: sessionId → timestamp (ms). */
+const lastTouchTimes = new Map<string, number>();
+
 function nextEphemeralExpiry(): string {
     return new Date(Date.now() + getEphemeralTtlMs()).toISOString();
 }
@@ -426,6 +432,14 @@ export async function getSessionState(sessionId: string): Promise<unknown | unde
 
 /** Refresh ephemeral session expiry and SQLite touch. */
 export async function touchSessionActivity(sessionId: string): Promise<void> {
+    const now = Date.now();
+    const lastTouch = lastTouchTimes.get(sessionId) || 0;
+
+    if (now - lastTouch < TOUCH_THROTTLE_MS) {
+        return;
+    }
+    lastTouchTimes.set(sessionId, now);
+
     const session = await getSession(sessionId);
     if (!session) return;
 
@@ -574,6 +588,7 @@ export async function endSharedSession(sessionId: string, reason: string = "Sess
 
     // Clean up local socket reference
     localTuiSockets.delete(sessionId);
+    lastTouchTimes.delete(sessionId);
 
     // Notify the runner daemon so it can clean up its runningSessions map
     // (especially important for adopted sessions after a daemon restart).
