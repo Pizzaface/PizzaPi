@@ -15,7 +15,7 @@
 
 import { $ } from "bun";
 import { join, dirname } from "path";
-import { existsSync, mkdirSync, cpSync } from "fs";
+import { existsSync, mkdirSync, cpSync, readdirSync } from "fs";
 import { platform as osPlatform, arch as osArch } from "os";
 
 // ---------------------------------------------------------------------------
@@ -101,6 +101,8 @@ function copyPtyLib(target: Target, outDir: string): boolean {
     }
 
     const ptyPlatformPkg = `@zenyr/bun-pty-${target.ptyOs}-${target.ptyCpu}`;
+
+    // Strategy 1: Try import.meta.resolve (works when hoisted)
     try {
         const entryUrl = import.meta.resolve(ptyPlatformPkg);
         const pkgDir = dirname(new URL(entryUrl).pathname);
@@ -110,6 +112,26 @@ function copyPtyLib(target: Target, outDir: string): boolean {
             return true;
         }
     } catch {}
+
+    // Strategy 2: Search Bun's deduplicated store (node_modules/.bun/...)
+    // Bun stores optional deps at node_modules/.bun/@scope+name@version/node_modules/@scope/name/
+    const rootNodeModules = join(import.meta.dirname, "node_modules");
+    const workspaceNodeModules = join(import.meta.dirname, "..", "..", "node_modules");
+    for (const nmDir of [rootNodeModules, workspaceNodeModules]) {
+        const bunDir = join(nmDir, ".bun");
+        if (!existsSync(bunDir)) continue;
+        try {
+            for (const entry of readdirSync(bunDir)) {
+                if (entry.startsWith("@zenyr+bun-pty-" + target.ptyOs + "-" + target.ptyCpu)) {
+                    const libSrc = join(bunDir, entry, "node_modules", "@zenyr", `bun-pty-${target.ptyOs}-${target.ptyCpu}`, target.ptyLibName);
+                    if (existsSync(libSrc)) {
+                        cpSync(libSrc, join(outDir, target.ptyLibName));
+                        return true;
+                    }
+                }
+            }
+        } catch {}
+    }
 
     return false;
 }
