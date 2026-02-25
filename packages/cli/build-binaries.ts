@@ -16,6 +16,7 @@
 import { $ } from "bun";
 import { join, dirname } from "path";
 import { existsSync, mkdirSync, cpSync } from "fs";
+import { platform as osPlatform, arch as osArch } from "os";
 
 // ---------------------------------------------------------------------------
 // Platform targets
@@ -25,14 +26,20 @@ interface Target {
     id: string;
     bunTarget: string;
     exeName: string;
+    /** OS name as used by @zenyr/bun-pty platform packages (e.g. "darwin") */
+    ptyOs: string;
+    /** CPU arch as used by @zenyr/bun-pty platform packages (e.g. "arm64") */
+    ptyCpu: string;
+    /** Native shared library filename for this platform */
+    ptyLibName: string;
 }
 
 const ALL_TARGETS: Target[] = [
-    { id: "linux-x64",   bunTarget: "bun-linux-x64",   exeName: "pizza-linux-x64" },
-    { id: "linux-arm64", bunTarget: "bun-linux-arm64",  exeName: "pizza-linux-arm64" },
-    { id: "macos-x64",   bunTarget: "bun-darwin-x64",   exeName: "pizza-macos-x64" },
-    { id: "macos-arm64", bunTarget: "bun-darwin-arm64",  exeName: "pizza-macos-arm64" },
-    { id: "windows-x64", bunTarget: "bun-windows-x64",  exeName: "pizza-windows-x64.exe" },
+    { id: "linux-x64",   bunTarget: "bun-linux-x64",   exeName: "pizza-linux-x64",        ptyOs: "linux",  ptyCpu: "x64",   ptyLibName: "librust_pty.so" },
+    { id: "linux-arm64", bunTarget: "bun-linux-arm64",  exeName: "pizza-linux-arm64",       ptyOs: "linux",  ptyCpu: "arm64", ptyLibName: "librust_pty_arm64.so" },
+    { id: "macos-x64",   bunTarget: "bun-darwin-x64",   exeName: "pizza-macos-x64",        ptyOs: "darwin", ptyCpu: "x64",   ptyLibName: "librust_pty.dylib" },
+    { id: "macos-arm64", bunTarget: "bun-darwin-arm64",  exeName: "pizza-macos-arm64",      ptyOs: "darwin", ptyCpu: "arm64", ptyLibName: "librust_pty_arm64.dylib" },
+    { id: "windows-x64", bunTarget: "bun-windows-x64",  exeName: "pizza-windows-x64.exe",  ptyOs: "win32",  ptyCpu: "x64",   ptyLibName: "rust_pty.dll" },
 ];
 
 // ---------------------------------------------------------------------------
@@ -71,6 +78,40 @@ function copyAssets(piPkgDir: string, outDir: string): void {
     if (existsSync(exportSrc)) {
         cpSync(exportSrc, join(outDir, "export-html"), { recursive: true });
     }
+}
+
+// ---------------------------------------------------------------------------
+// Copy PTY native library
+// ---------------------------------------------------------------------------
+
+/**
+ * Copy the @zenyr/bun-pty native shared library for the target platform
+ * alongside the compiled binary.  At runtime the terminal worker sets
+ * BUN_PTY_LIB pointing to this file so the FFI layer can find it.
+ *
+ * We can only copy the library for the current host platform (the .dylib/.so
+ * for other platforms isn't installed via optionalDependencies).
+ */
+function copyPtyLib(target: Target, outDir: string): boolean {
+    // Only copy when we're building for the current host platform
+    const hostOs = osPlatform();   // "darwin", "linux", "win32"
+    const hostCpu = osArch();      // "arm64", "x64"
+    if (target.ptyOs !== hostOs || target.ptyCpu !== hostCpu) {
+        return false;
+    }
+
+    const ptyPlatformPkg = `@zenyr/bun-pty-${target.ptyOs}-${target.ptyCpu}`;
+    try {
+        const entryUrl = import.meta.resolve(ptyPlatformPkg);
+        const pkgDir = dirname(new URL(entryUrl).pathname);
+        const libSrc = join(pkgDir, target.ptyLibName);
+        if (existsSync(libSrc)) {
+            cpSync(libSrc, join(outDir, target.ptyLibName));
+            return true;
+        }
+    } catch {}
+
+    return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -118,6 +159,12 @@ for (const target of targets) {
 
     copyAssets(piPkgDir, outDir);
     console.log(`  ✓ Assets copied`);
+
+    if (copyPtyLib(target, outDir)) {
+        console.log(`  ✓ PTY native library copied (${target.ptyLibName})`);
+    } else {
+        console.log(`  ⚠ PTY native library not available for ${target.ptyOs}-${target.ptyCpu} (cross-compile — must be added separately)`);
+    }
 }
 
 if (failed) {

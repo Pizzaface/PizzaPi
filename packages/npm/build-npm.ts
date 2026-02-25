@@ -140,12 +140,22 @@ for (const platform of PLATFORMS) {
         chmodSync(destBinary, 0o755);
     }
 
-    // Copy assets (package.json from pi, theme/, export-html/)
+    // Copy assets (package.json from pi, theme/, export-html/, PTY native lib)
     const assetDir = join(BINARIES_DIR, platform.binaryDir);
     for (const asset of ["package.json", "theme", "export-html"]) {
         const src = join(assetDir, asset);
         if (existsSync(src)) {
             cpSync(src, join(binDir, asset), { recursive: true });
+        }
+    }
+
+    // Copy PTY native library (*.dylib, *.so, *.dll) if present
+    const ptyLibNames = ["librust_pty_arm64.dylib", "librust_pty.dylib", "librust_pty_arm64.so", "librust_pty.so", "rust_pty.dll"];
+    for (const lib of ptyLibNames) {
+        const src = join(assetDir, lib);
+        if (existsSync(src)) {
+            cpSync(src, join(binDir, lib));
+            console.log(`    + PTY lib: ${lib}`);
         }
     }
 

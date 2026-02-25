@@ -22,7 +22,8 @@
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
-import { platform } from "node:os";
+import { platform, arch } from "node:os";
+import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export interface TerminalEntry {
@@ -35,6 +36,52 @@ const runningTerminals = new Map<string, TerminalEntry>();
 
 /** Is this process running inside a compiled Bun single-file binary? */
 const isCompiledBinary = import.meta.url.startsWith("file:///$bunfs/");
+
+/**
+ * Resolve the path to the @zenyr/bun-pty native shared library.
+ *
+ * When running from a compiled binary, the build step places the .dylib/.so
+ * next to the executable.  We return its path so we can set BUN_PTY_LIB for
+ * the terminal worker subprocess (which also runs inside the compiled binary
+ * and can't resolve node_modules paths).
+ */
+function resolvePtyLibPath(): string | undefined {
+    // If already set by the user, respect it.
+    if (process.env.BUN_PTY_LIB && existsSync(process.env.BUN_PTY_LIB)) {
+        return process.env.BUN_PTY_LIB;
+    }
+
+    const os = platform();
+    const cpu = arch();
+
+    const libName =
+        os === "darwin"
+            ? cpu === "arm64" ? "librust_pty_arm64.dylib" : "librust_pty.dylib"
+            : os === "win32"
+                ? "rust_pty.dll"
+                : cpu === "arm64" ? "librust_pty_arm64.so" : "librust_pty.so";
+
+    if (isCompiledBinary) {
+        // Compiled binary — library should be next to the executable.
+        const exeDir = dirname(process.execPath);
+        const candidate = join(exeDir, libName);
+        if (existsSync(candidate)) return candidate;
+    }
+
+    // Also check node_modules for the platform-specific package (dev/npm installs).
+    try {
+        const platformPkg = `@zenyr/bun-pty-${os}-${cpu}`;
+        const entryUrl = import.meta.resolve(platformPkg);
+        const pkgDir = dirname(fileURLToPath(entryUrl));
+        const candidate = join(pkgDir, libName);
+        if (existsSync(candidate)) return candidate;
+    } catch {}
+
+    return undefined;
+}
+
+/** Cached PTY library path (resolved once at startup). */
+const ptyLibPath = resolvePtyLibPath();
 
 /** Resolve the terminal-worker spawn args (works for .ts, .js, and compiled binaries). */
 function resolveWorkerSpawnArgs(): string[] {
@@ -98,15 +145,23 @@ export function spawnTerminal(
 
     // Spawn the worker with IPC enabled so we can pass structured messages.
     // Each worker owns exactly one PTY; if it crashes it only kills the worker.
+    const workerEnv: Record<string, string> = {
+        ...process.env as Record<string, string>,
+        TERMINAL_WORKER_ID:    terminalId,
+        TERMINAL_WORKER_CWD:   cwd,
+        TERMINAL_WORKER_SHELL: shell,
+        TERMINAL_WORKER_COLS:  String(cols),
+        TERMINAL_WORKER_ROWS:  String(rows),
+    };
+
+    // Point the worker at the native PTY shared library so @zenyr/bun-pty
+    // can find it even when running inside a compiled Bun binary.
+    if (ptyLibPath) {
+        workerEnv.BUN_PTY_LIB = ptyLibPath;
+    }
+
     const worker = spawn(process.execPath, workerSpawnArgs, {
-        env: {
-            ...process.env,
-            TERMINAL_WORKER_ID:    terminalId,
-            TERMINAL_WORKER_CWD:   cwd,
-            TERMINAL_WORKER_SHELL: shell,
-            TERMINAL_WORKER_COLS:  String(cols),
-            TERMINAL_WORKER_ROWS:  String(rows),
-        } as Record<string, string>,
+        env: workerEnv,
         stdio: ["ignore", "ignore", "pipe", "ipc"],
     });
 
