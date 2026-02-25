@@ -31,7 +31,7 @@ const uploadRoot = path.resolve(process.env.PIZZAPI_ATTACHMENT_DIR ?? path.join(
 
 const attachments = new Map<string, StoredAttachment>();
 
-function sanitizeFilename(filename: string): string {
+export function sanitizeFilename(filename: string): string {
     return filename.replace(/[^a-zA-Z0-9._-]/g, "_");
 }
 

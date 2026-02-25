@@ -820,13 +820,13 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
     return undefined;
 }
 
-function normalizePath(value: string): string {
+export function normalizePath(value: string): string {
     const trimmed = value.trim().replace(/\\/g, "/");
     return trimmed.length > 1 ? trimmed.replace(/\/+$/, "") : trimmed;
 }
 
 /** Safely parse a JSON string that should be an array. Returns [] on failure. */
-function parseJsonArray(value: string | null | undefined): any[] {
+export function parseJsonArray(value: string | null | undefined): any[] {
     if (!value) return [];
     try {
         const parsed = JSON.parse(value);
@@ -837,7 +837,7 @@ function parseJsonArray(value: string | null | undefined): any[] {
 }
 
 /** Check whether a cwd is inside one of the allowed roots. */
-function cwdMatchesRoots(roots: string[], cwd: string): boolean {
+export function cwdMatchesRoots(roots: string[], cwd: string): boolean {
     const nCwd = normalizePath(cwd);
     return roots.some((root) => {
         const r = normalizePath(root);

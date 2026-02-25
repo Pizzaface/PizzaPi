@@ -3,7 +3,7 @@ import { RateLimiter, isValidEmail, isValidPassword } from "./security";
 
 describe("RateLimiter", () => {
     test("allows requests within limit", () => {
-        const limiter = new RateLimiter(2, 1000); // 2 requests per 1000ms
+        const limiter = new RateLimiter(2, 1000);
         const ip = "127.0.0.1";
 
         expect(limiter.check(ip)).toBe(true);
@@ -22,7 +22,7 @@ describe("RateLimiter", () => {
     });
 
     test("resets after window expires", async () => {
-        const limiter = new RateLimiter(1, 100); // 1 request per 100ms
+        const limiter = new RateLimiter(1, 100);
         const ip = "127.0.0.3";
 
         expect(limiter.check(ip)).toBe(true);
@@ -33,19 +33,88 @@ describe("RateLimiter", () => {
         expect(limiter.check(ip)).toBe(true);
         limiter.destroy();
     });
-});
 
-describe("Validation", () => {
-    test("isValidEmail", () => {
-        expect(isValidEmail("test@example.com")).toBe(true);
-        expect(isValidEmail("user.name+tag@sub.domain.co.uk")).toBe(true);
-        expect(isValidEmail("invalid")).toBe(false);
-        expect(isValidEmail("user@")).toBe(false);
-        expect(isValidEmail("@domain.com")).toBe(false);
+    test("tracks different keys independently", () => {
+        const limiter = new RateLimiter(1, 1000);
+        expect(limiter.check("ip-a")).toBe(true);
+        expect(limiter.check("ip-b")).toBe(true);
+        expect(limiter.check("ip-a")).toBe(false);
+        expect(limiter.check("ip-b")).toBe(false);
+        limiter.destroy();
     });
 
-    test("isValidPassword", () => {
+    test("limit of 1 blocks second request immediately", () => {
+        const limiter = new RateLimiter(1, 60000);
+        expect(limiter.check("x")).toBe(true);
+        expect(limiter.check("x")).toBe(false);
+        expect(limiter.check("x")).toBe(false);
+        limiter.destroy();
+    });
+
+    test("cleanup removes expired entries", async () => {
+        const limiter = new RateLimiter(1, 50);
+        limiter.check("a");
+        limiter.check("b");
+        // Both should have entries now
+        expect(limiter.check("a")).toBe(false);
+
+        await new Promise(resolve => setTimeout(resolve, 100));
+
+        // After window expires, both should be allowed again
+        expect(limiter.check("a")).toBe(true);
+        expect(limiter.check("b")).toBe(true);
+        limiter.destroy();
+    });
+});
+
+describe("isValidEmail", () => {
+    test("accepts standard emails", () => {
+        expect(isValidEmail("test@example.com")).toBe(true);
+        expect(isValidEmail("user.name+tag@sub.domain.co.uk")).toBe(true);
+        expect(isValidEmail("a@b.c")).toBe(true);
+    });
+
+    test("rejects emails without @", () => {
+        expect(isValidEmail("invalid")).toBe(false);
+        expect(isValidEmail("just-text")).toBe(false);
+    });
+
+    test("rejects emails with missing parts", () => {
+        expect(isValidEmail("user@")).toBe(false);
+        expect(isValidEmail("@domain.com")).toBe(false);
+        expect(isValidEmail("@")).toBe(false);
+    });
+
+    test("rejects emails with spaces", () => {
+        expect(isValidEmail("user @example.com")).toBe(false);
+        expect(isValidEmail("user@ example.com")).toBe(false);
+        expect(isValidEmail(" user@example.com")).toBe(false);
+    });
+
+    test("rejects empty string", () => {
+        expect(isValidEmail("")).toBe(false);
+    });
+
+    test("rejects emails without TLD dot", () => {
+        expect(isValidEmail("user@domain")).toBe(false);
+    });
+});
+
+describe("isValidPassword", () => {
+    test("accepts passwords >= 8 characters", () => {
         expect(isValidPassword("12345678")).toBe(true);
+        expect(isValidPassword("a very long password with spaces")).toBe(true);
+        expect(isValidPassword("abcdefgh")).toBe(true);
+    });
+
+    test("rejects passwords < 8 characters", () => {
         expect(isValidPassword("short")).toBe(false);
+        expect(isValidPassword("1234567")).toBe(false);
+        expect(isValidPassword("")).toBe(false);
+    });
+
+    test("boundary: exactly 8 characters", () => {
+        expect(isValidPassword("12345678")).toBe(true);
+        expect(isValidPassword("1234567")).toBe(false);
     });
 });
