@@ -520,6 +520,16 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
     const statePath = defaultStatePath();
     const identity = acquireStateAndIdentity(statePath);
 
+    // Read CLI version from package.json for reporting to the server.
+    let cliVersion: string | undefined;
+    try {
+        const pkgPath = join(dirname(fileURLToPath(import.meta.url)), "../../package.json");
+        const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
+        cliVersion = typeof pkg.version === "string" ? pkg.version : undefined;
+    } catch {
+        // Best-effort — version will be omitted if unreadable.
+    }
+
     // Start fetching provider usage immediately so workers have cached data from
     // the moment they are spawned.  One daemon refresh covers all sessions on this node.
     startUsageRefreshLoop();
@@ -600,6 +610,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 name: runnerName,
                 roots: getWorkspaceRoots(),
                 skills,
+                version: cliVersion,
             });
         };
 

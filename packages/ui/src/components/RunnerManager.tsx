@@ -24,6 +24,7 @@ interface RunnerInfo {
     roots: string[];
     sessionCount: number;
     skills: SkillInfo[];
+    version: string | null;
 }
 
 interface LiveSession {
@@ -72,6 +73,7 @@ export function RunnerManager({ onOpenSession }: RunnerManagerProps) {
                     roots: r.roots ?? [],
                     sessionCount: r.sessionCount ?? 0,
                     skills: Array.isArray(r.skills) ? r.skills : [],
+                    version: r.version ?? null,
                 })));
             }
             if (sessionsRes.ok) {
@@ -454,6 +456,11 @@ function RunnerCard({ runner, sessions, isRestarting, isStopping, onRestart, onS
                                 <p className="font-semibold text-sm leading-none truncate">
                                     {runner.name || "Unnamed Runner"}
                                 </p>
+                                {runner.version && (
+                                    <span className="inline-flex items-center text-[10px] font-mono px-1.5 py-0.5 rounded-full bg-muted/60 border border-border/40 text-muted-foreground leading-none">
+                                        v{runner.version}
+                                    </span>
+                                )}
                             </div>
                             <p className="font-mono text-[10px] text-muted-foreground/60 mt-1 truncate">
                                 {runner.runnerId}

@@ -35,6 +35,7 @@ export interface RunnerInfo {
   roots: string[];
   sessionCount: number;
   skills: RunnerSkill[];
+  version: string | null;
 }
 
 /** A skill available on a runner */

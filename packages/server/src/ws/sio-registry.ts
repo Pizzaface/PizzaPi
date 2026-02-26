@@ -698,6 +698,7 @@ export interface RegisterRunnerOpts {
     skills?: RunnerSkill[];
     userId?: string | null;
     userName?: string | null;
+    version?: string | null;
 }
 
 /**
@@ -747,6 +748,7 @@ export async function registerRunner(
         name: opts.name?.trim() || null,
         roots: JSON.stringify(roots),
         skills: JSON.stringify(skills),
+        version: typeof opts.version === "string" ? opts.version : null,
     };
 
     await setRunner(runnerId, runnerData);
@@ -848,6 +850,7 @@ export async function getRunners(filterUserId?: string): Promise<RunnerInfo[]> {
             roots: safeJsonParse(r.roots) ?? [],
             sessionCount,
             skills: safeJsonParse(r.skills) ?? [],
+            version: r.version ?? null,
         });
     }
 

@@ -145,6 +145,8 @@ export interface RedisRunnerData {
     roots: string;
     /** JSON-stringified RunnerSkill[] */
     skills: string;
+    /** Runner CLI version (e.g. "0.1.30") */
+    version: string | null;
 }
 
 export interface RedisTerminalData {
@@ -209,6 +211,7 @@ function parseRunnerFromHash(hash: Record<string, string>): RedisRunnerData | nu
         name: hash.name || null,
         roots: hash.roots || "[]",
         skills: hash.skills || "[]",
+        version: hash.version || null,
     };
 }
 

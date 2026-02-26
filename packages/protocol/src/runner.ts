@@ -16,6 +16,7 @@ export interface RunnerClientToServerEvents {
     runnerId?: string;
     runnerSecret?: string;
     skills?: RunnerSkill[];
+    version?: string;
   }) => void;
 
   /** Runner responds with its list of skills */

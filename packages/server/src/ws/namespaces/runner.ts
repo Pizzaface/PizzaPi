@@ -172,6 +172,7 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
             const requestedRunnerId = data.runnerId;
             const runnerSecret = data.runnerSecret;
             const skills = data.skills ?? [];
+            const version = data.version ?? null;
 
             const result = await registerRunner(socket, {
                 name,
@@ -179,6 +180,7 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
                 requestedRunnerId,
                 runnerSecret,
                 skills,
+                version,
                 userId: (socket.data as RunnerSocketData & { userId?: string }).userId ?? null,
                 userName: (socket.data as RunnerSocketData & { userName?: string }).userName ?? null,
             });
