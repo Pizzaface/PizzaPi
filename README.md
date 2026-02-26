@@ -225,6 +225,79 @@ pizzapi web stop
 
 ---
 
+### Exposing the Web UI over HTTPS with Tailscale
+
+If you're running PizzaPi on a machine in your [Tailscale](https://tailscale.com) network, you can use **Tailscale Serve** to expose the web UI over HTTPS with a valid TLS certificate — no reverse proxy or manual cert management needed.
+
+#### 1. Generate a TLS certificate
+
+Tailscale can provision a Let's Encrypt certificate for your machine's Tailscale hostname:
+
+```bash
+tailscale cert your-hostname.tail12345.ts.net
+```
+
+This writes `your-hostname.tail12345.ts.net.crt` and `.key` to the current directory. Tailscale Serve uses these automatically — you don't need to configure them manually.
+
+#### 2. Start Tailscale Serve
+
+Proxy HTTPS traffic to the local PizzaPi port (default 3001 if using `pizza web`):
+
+```bash
+tailscale serve --bg http://localhost:3001
+```
+
+The web UI is now available at:
+
+```
+https://your-hostname.tail12345.ts.net/
+```
+
+Tailscale handles TLS termination and certificate renewal automatically.
+
+#### 3. Update allowed origins
+
+The server validates request origins for security. Add your Tailscale HTTPS URL to `PIZZAPI_EXTRA_ORIGINS` in `~/.pizzapi/web/compose.yml`:
+
+```yaml
+environment:
+  - PIZZAPI_EXTRA_ORIGINS=https://your-hostname.tail12345.ts.net
+```
+
+> **Important:** Do not include a trailing slash — browser origins never have one.
+
+Then restart the server:
+
+```bash
+pizzapi web stop && pizzapi web
+```
+
+#### 4. Verify
+
+Open `https://your-hostname.tail12345.ts.net/` in your browser. You should see a valid certificate issued by Let's Encrypt.
+
+#### Tailscale Serve management
+
+```bash
+# Check current serve config
+tailscale serve status
+
+# Stop serving
+tailscale serve --https=443 off
+```
+
+#### Troubleshooting
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| SSL/certificate error in browser | Tailscale Serve not running, or accessing `:3001` directly over HTTPS | Use the default HTTPS URL (port 443) and ensure `tailscale serve` is active |
+| Blank page | Serve configured with `https+insecure://` backend | Use `http://localhost:3001` (plain HTTP) as the backend — the server doesn't speak TLS |
+| "Invalid origin" error | `PIZZAPI_EXTRA_ORIGINS` doesn't match the URL, or has a trailing slash | Set it to `https://your-hostname.tail12345.ts.net` (no trailing slash) and restart |
+| 502 Bad Gateway | Tailscale Serve config was lost (e.g. after reboot) | Re-run `tailscale serve --bg http://localhost:3001` |
+| Port already allocated | Another container or process is using the port | Run `docker ps -a --filter "publish=3001"` to find the conflict, stop it, then retry |
+
+---
+
 ## Configuration
 
 Config is merged from two JSON files — project-local overrides global:

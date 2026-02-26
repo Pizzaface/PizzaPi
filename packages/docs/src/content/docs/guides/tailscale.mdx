@@ -1,0 +1,187 @@
+---
+title: Tailscale Setup
+description: Expose the PizzaPi web UI over HTTPS using Tailscale Serve — no reverse proxy or manual certificate management needed.
+sidebar:
+  order: 6
+---
+
+import { Steps, Aside, Tabs, TabItem } from "@astrojs/starlight/components";
+
+If you're running PizzaPi on a machine in your [Tailscale](https://tailscale.com) network, you can use **Tailscale Serve** to expose the web UI over HTTPS with a valid TLS certificate — no reverse proxy or manual cert management needed.
+
+---
+
+## Prerequisites
+
+- A working PizzaPi deployment (see [Self-Hosting](/guides/self-hosting/))
+- [Tailscale](https://tailscale.com/download) installed and logged in on the host machine
+- MagicDNS enabled in your Tailscale admin console (enabled by default)
+
+---
+
+## Setup
+
+<Steps>
+1. **Generate a TLS certificate**
+
+   Tailscale can provision a Let's Encrypt certificate for your machine's Tailscale hostname:
+
+   ```bash
+   tailscale cert your-hostname.tail12345.ts.net
+   ```
+
+   This writes `your-hostname.tail12345.ts.net.crt` and `.key` to the current directory. Tailscale Serve uses these automatically — you don't need to configure them manually.
+
+   <Aside type="tip">
+     Find your Tailscale hostname with `tailscale status --self` or in the [admin console](https://login.tailscale.com/admin/machines).
+   </Aside>
+
+2. **Start Tailscale Serve**
+
+   Proxy HTTPS traffic to the local PizzaPi port (default `3000`):
+
+   ```bash
+   tailscale serve --bg http://localhost:3000
+   ```
+
+   The web UI is now available at:
+
+   ```
+   https://your-hostname.tail12345.ts.net/
+   ```
+
+   Tailscale handles TLS termination and certificate renewal automatically.
+
+3. **Update allowed origins**
+
+   The server validates request origins for security. Add your Tailscale HTTPS URL to `PIZZAPI_EXTRA_ORIGINS`.
+
+   <Tabs>
+     <TabItem label="pizza web (Docker)">
+       Edit `~/.pizzapi/web/compose.yml`:
+
+       ```yaml
+       environment:
+         - PIZZAPI_EXTRA_ORIGINS=https://your-hostname.tail12345.ts.net
+       ```
+
+       Then restart:
+
+       ```bash
+       pizzapi web stop && pizzapi web
+       ```
+     </TabItem>
+     <TabItem label="Manual Docker Compose">
+       Add the variable to `docker/compose.override.yml`:
+
+       ```yaml
+       services:
+         server:
+           environment:
+             PIZZAPI_EXTRA_ORIGINS: "https://your-hostname.tail12345.ts.net"
+       ```
+
+       Then restart:
+
+       ```bash
+       docker compose -f docker/compose.yml up -d
+       ```
+     </TabItem>
+     <TabItem label="Without Docker">
+       Export the variable before starting the server:
+
+       ```bash
+       export PIZZAPI_EXTRA_ORIGINS=https://your-hostname.tail12345.ts.net
+       cd packages/server && bun run start
+       ```
+     </TabItem>
+   </Tabs>
+
+   <Aside type="caution">
+     Do **not** include a trailing slash — browser origins never have one.
+   </Aside>
+
+4. **Verify**
+
+   Open `https://your-hostname.tail12345.ts.net/` in your browser. You should see a valid certificate issued by Let's Encrypt and the PizzaPi login page.
+</Steps>
+
+---
+
+## Tailscale Serve Management
+
+```bash
+# Check current serve config
+tailscale serve status
+
+# Stop serving
+tailscale serve --https=443 off
+```
+
+<Aside type="note">
+  `tailscale serve --bg` persists across Tailscale restarts, but may need to be re-applied after a machine reboot depending on your OS and Tailscale configuration.
+</Aside>
+
+---
+
+## Tailscale Funnel (Public Access)
+
+If you want to expose PizzaPi to the **public internet** (not just your Tailnet), you can use [Tailscale Funnel](https://tailscale.com/kb/1223/funnel/) instead of Serve:
+
+```bash
+tailscale funnel --bg http://localhost:3000
+```
+
+This makes your instance available to anyone at `https://your-hostname.tail12345.ts.net/` — no VPN required for visitors.
+
+<Aside type="caution">
+  Funnel exposes your server to the public internet. Make sure you have authentication enabled (PizzaPi enables it by default) and use a strong password.
+</Aside>
+
+---
+
+## Development with Tailscale TLS
+
+For contributors running the dev stack, PizzaPi's Vite config can automatically load Tailscale TLS certificates for the dev server.
+
+<Steps>
+1. **Generate certificates into the `certs/` directory**
+
+   ```bash
+   sudo tailscale cert \
+     --cert-file certs/ts.crt \
+     --key-file certs/ts.key \
+     your-hostname.tail12345.ts.net
+   ```
+
+2. **Set the extra origins env var**
+
+   ```bash
+   export PIZZAPI_EXTRA_ORIGINS=https://your-hostname.tail12345.ts.net:5173
+   ```
+
+3. **Start the dev server**
+
+   ```bash
+   bun run dev
+   ```
+
+   Vite detects `certs/ts.crt` and `certs/ts.key` and serves the UI over HTTPS automatically.
+</Steps>
+
+<Aside type="tip">
+  The `certs/` directory is already in `.gitignore` — your keys won't be committed accidentally.
+</Aside>
+
+---
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| SSL/certificate error in browser | Tailscale Serve not running, or accessing `:3000` directly over HTTPS | Use the default HTTPS URL (port 443) and ensure `tailscale serve` is active |
+| Blank page | Serve configured with `https+insecure://` backend | Use `http://localhost:3000` (plain HTTP) as the backend — the server doesn't speak TLS |
+| "Invalid origin" error | `PIZZAPI_EXTRA_ORIGINS` doesn't match the URL, or has a trailing slash | Set it to `https://your-hostname.tail12345.ts.net` (no trailing slash) and restart |
+| 502 Bad Gateway | Tailscale Serve config was lost (e.g. after reboot) | Re-run `tailscale serve --bg http://localhost:3000` |
+| Port already allocated | Another container or process is using the port | Run `docker ps -a --filter "publish=3000"` to find the conflict, stop it, then retry |
+| Can't reach from other Tailnet devices | Tailscale ACLs blocking access | Check your [ACL policy](https://login.tailscale.com/admin/acls) allows traffic on port 443 |
