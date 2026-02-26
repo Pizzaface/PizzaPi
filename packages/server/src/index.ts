@@ -155,6 +155,12 @@ try {
             origin: trustedOrigins,
             credentials: true,
         },
+        // Generous ping settings to prevent disconnects during heavy agent
+        // processing (long bash commands, large file reads, etc.).
+        // Defaults are pingInterval=25s, pingTimeout=20s which is too tight
+        // when the runner/worker event loop is briefly saturated.
+        pingInterval: 30_000,   // 30 s between pings
+        pingTimeout: 60_000,    // 60 s to respond before disconnect
         connectionStateRecovery: {
             maxDisconnectionDuration: 2 * 60 * 1000, // 2 minutes
             skipMiddlewares: true,

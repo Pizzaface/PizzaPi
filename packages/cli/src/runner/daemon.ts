@@ -1,4 +1,7 @@
-import { spawn, execSync, type ChildProcess } from "node:child_process";
+import { spawn, exec, execSync, type ChildProcess } from "node:child_process";
+import { promisify } from "node:util";
+
+const execAsync = promisify(exec);
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { mkdir, readdir, stat, readFile } from "node:fs/promises";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -978,17 +981,13 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 return;
             }
             try {
-                // Use git ls-files to get tracked + untracked-not-ignored files
-                const result = Bun.spawnSync(
-                    ["git", "ls-files", "--cached", "--others", "--exclude-standard"],
-                    { cwd, stdout: "pipe", stderr: "pipe" },
+                // Use git ls-files to get tracked + untracked-not-ignored files.
+                // Use async exec to avoid blocking the event loop (which would
+                // prevent Socket.IO pings from being answered).
+                const { stdout } = await execAsync(
+                    "git ls-files --cached --others --exclude-standard",
+                    { cwd, timeout: 10000, maxBuffer: 10 * 1024 * 1024 },
                 );
-                const stdout = result.stdout.toString();
-                if (result.exitCode !== 0) {
-                    // Not a git repo or git error — fall back to empty
-                    socket.emit("file_result", { requestId, ok: true, files: [] });
-                    return;
-                }
                 const lowerQuery = query.toLowerCase();
                 const files = stdout
                     .split("\n")
@@ -1006,6 +1005,12 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     }));
                 socket.emit("file_result", { requestId, ok: true, files });
             } catch (err) {
+                // If git fails (not a git repo, etc.), return empty list
+                const isGitError = err instanceof Error && (err as any).code !== undefined;
+                if (isGitError) {
+                    socket.emit("file_result", { requestId, ok: true, files: [] });
+                    return;
+                }
                 socket.emit("file_result", {
                     requestId,
                     ok: false,
@@ -1068,7 +1073,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
 
         // ── Git operations ────────────────────────────────────────────────
 
-        socket.on("git_status", (data) => {
+        socket.on("git_status", async (data) => {
             if (isShuttingDown) return;
             const requestId = data.requestId;
             const cwd = data.cwd ?? "";
@@ -1081,35 +1086,19 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 return;
             }
             try {
-                // Get current branch
-                let branch = "";
-                try {
-                    branch = execSync("git rev-parse --abbrev-ref HEAD", {
-                        cwd,
-                        encoding: "utf-8",
-                        timeout: 5000,
-                    }).trim();
-                } catch {}
+                // Run all git commands asynchronously to avoid blocking the
+                // event loop (which would prevent Socket.IO pings from being
+                // answered, causing spurious disconnects).
+                const [branchResult, statusResult, diffStagedResult, abResult] = await Promise.allSettled([
+                    execAsync("git rev-parse --abbrev-ref HEAD", { cwd, timeout: 5000 }),
+                    execAsync("git status --porcelain=v1 -uall", { cwd, timeout: 10000 }),
+                    execAsync("git diff --cached --stat", { cwd, timeout: 10000 }),
+                    execAsync("git rev-list --left-right --count HEAD...@{u}", { cwd, timeout: 5000 }),
+                ]);
 
-                // Get status --porcelain=v1
-                let statusOutput = "";
-                try {
-                    statusOutput = execSync("git status --porcelain=v1 -uall", {
-                        cwd,
-                        encoding: "utf-8",
-                        timeout: 10000,
-                    });
-                } catch {}
-
-                // Get diff stat for staged changes
-                let diffStaged = "";
-                try {
-                    diffStaged = execSync("git diff --cached --stat", {
-                        cwd,
-                        encoding: "utf-8",
-                        timeout: 10000,
-                    });
-                } catch {}
+                const branch = branchResult.status === "fulfilled" ? branchResult.value.stdout.trim() : "";
+                const statusOutput = statusResult.status === "fulfilled" ? statusResult.value.stdout : "";
+                const diffStaged = diffStagedResult.status === "fulfilled" ? diffStagedResult.value.stdout : "";
 
                 // Parse porcelain output
                 const changes: Array<{ status: string; path: string; originalPath?: string }> = [];
@@ -1133,16 +1122,12 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 // Get ahead/behind counts
                 let ahead = 0;
                 let behind = 0;
-                try {
-                    const abOutput = execSync("git rev-list --left-right --count HEAD...@{u}", {
-                        cwd,
-                        encoding: "utf-8",
-                        timeout: 5000,
-                    }).trim();
+                if (abResult.status === "fulfilled") {
+                    const abOutput = abResult.value.stdout.trim();
                     const [a, b] = abOutput.split(/\s+/);
                     ahead = parseInt(a, 10) || 0;
                     behind = parseInt(b, 10) || 0;
-                } catch {}
+                }
 
                 socket.emit("file_result", {
                     requestId,
@@ -1162,7 +1147,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             }
         });
 
-        socket.on("git_diff", (data) => {
+        socket.on("git_diff", async (data) => {
             if (isShuttingDown) return;
             const requestId = data.requestId;
             const cwd = data.cwd ?? "";
@@ -1179,7 +1164,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             }
             try {
                 const args = staged ? ["diff", "--cached", "--", filePath] : ["diff", "--", filePath];
-                const diff = execSync(`git ${args.join(" ")}`, { cwd, encoding: "utf-8", timeout: 10000 });
+                const { stdout: diff } = await execAsync(`git ${args.join(" ")}`, { cwd, timeout: 10000 });
                 socket.emit("file_result", { requestId, ok: true, diff });
             } catch (err) {
                 socket.emit("file_result", {
@@ -1303,7 +1288,7 @@ function spawnSession(
     const env: Record<string, string> = {
         ...Object.fromEntries(Object.entries(process.env).filter(([, v]) => typeof v === "string")) as any,
         // Ensure relay URL is present for the remote extension in the worker.
-        PIZZAPI_RELAY_URL: process.env.PIZZAPI_RELAY_URL ?? "ws://localhost:3000",
+        PIZZAPI_RELAY_URL: process.env.PIZZAPI_RELAY_URL ?? "ws://localhost:3001",
         PIZZAPI_API_KEY: apiKey,
         PIZZAPI_SESSION_ID: sessionId,
         // Tell the worker where the runner-managed usage cache lives so it can
