@@ -32,6 +32,7 @@ import {
     removeTerminal,
     getTerminalIdsForRunner,
     getTerminalEntry,
+    getConnectedSessionsForRunner,
 } from "../sio-registry.js";
 import { resolveSpawnReady, resolveSpawnError } from "../runner-control.js";
 
@@ -180,7 +181,14 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
             }
 
             socket.data.runnerId = result;
-            socket.emit("runner_registered", { runnerId: result });
+
+            // Look up sessions still connected to the relay that belong to this runner.
+            // This allows the daemon to re-adopt orphaned worker processes after a restart.
+            const existingSessions = await getConnectedSessionsForRunner(result);
+            socket.emit("runner_registered", {
+                runnerId: result,
+                ...(existingSessions.length > 0 ? { existingSessions } : {}),
+            });
         });
 
         // ── skills_list — runner reports updated skills ──────────────────────

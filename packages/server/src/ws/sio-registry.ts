@@ -805,6 +805,24 @@ export async function removeRunnerSession(runnerId: string, sessionId: string): 
     }
 }
 
+/**
+ * Return sessions that are still connected to the relay and belong to the given runner.
+ * Used after a runner daemon restart to let it re-adopt orphaned worker processes.
+ */
+export async function getConnectedSessionsForRunner(runnerId: string): Promise<Array<{ sessionId: string; cwd: string }>> {
+    const allSessions = await getAllSessions();
+    const results: Array<{ sessionId: string; cwd: string }> = [];
+    for (const s of allSessions) {
+        if (s.runnerId !== runnerId) continue;
+        // Only include sessions whose TUI socket is still connected (worker is alive)
+        const tuiSocket = localTuiSockets.get(s.sessionId);
+        if (tuiSocket && tuiSocket.connected) {
+            results.push({ sessionId: s.sessionId, cwd: s.cwd });
+        }
+    }
+    return results;
+}
+
 /** Get all runners as RunnerInfo, optionally filtered by user. */
 export async function getRunners(filterUserId?: string): Promise<RunnerInfo[]> {
     const runners = await getAllRunners(filterUserId);

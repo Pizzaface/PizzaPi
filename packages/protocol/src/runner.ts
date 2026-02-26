@@ -95,6 +95,11 @@ export interface RunnerServerToClientEvents {
   /** Confirms runner registration */
   runner_registered: (data: {
     runnerId: string;
+    /** Sessions still connected to the relay that belong to this runner (for re-adoption after restart). */
+    existingSessions?: Array<{
+      sessionId: string;
+      cwd: string;
+    }>;
   }) => void;
 
   /** Instructs runner to spawn a new session */

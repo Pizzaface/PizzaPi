@@ -21,8 +21,14 @@ import type { RunnerClientToServerEvents, RunnerServerToClientEvents } from "@pi
 
 interface RunnerSession {
     sessionId: string;
-    child: ChildProcess;
+    child: ChildProcess | null;
     startedAt: number;
+    /**
+     * True if this session was re-adopted after a daemon restart.
+     * Adopted sessions have no child process handle — the worker is still
+     * running independently with its own relay connection.
+     */
+    adopted?: boolean;
 }
 
 // ── Runner state file (~/.pizzapi/runner.json) ────────────────────────────────
@@ -625,6 +631,26 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 );
             }
             console.log(`pizzapi runner: registered as ${runnerId}`);
+
+            // Re-adopt orphaned sessions that survived a daemon restart.
+            // Their worker processes are still running and connected to the relay.
+            const existingSessions = data.existingSessions ?? [];
+            if (existingSessions.length > 0) {
+                let adopted = 0;
+                for (const { sessionId, cwd } of existingSessions) {
+                    if (runningSessions.has(sessionId)) continue; // already tracked
+                    runningSessions.set(sessionId, {
+                        sessionId,
+                        child: null,
+                        startedAt: Date.now(),
+                        adopted: true,
+                    });
+                    adopted++;
+                }
+                if (adopted > 0) {
+                    console.log(`pizzapi runner: re-adopted ${adopted} orphaned session(s): ${existingSessions.map(s => s.sessionId.slice(0, 8)).join(", ")}`);
+                }
+            }
         });
 
         // ── Session management ────────────────────────────────────────────
@@ -671,11 +697,16 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             const { sessionId } = data;
             const entry = runningSessions.get(sessionId);
             if (entry) {
-                try {
-                    entry.child.kill("SIGTERM");
-                } catch {}
+                if (entry.child) {
+                    try {
+                        entry.child.kill("SIGTERM");
+                    } catch {}
+                }
+                // For adopted sessions (no child handle) we can only remove
+                // our tracking — the relay will disconnect the worker's socket
+                // when we emit session_killed, causing the worker to exit.
                 runningSessions.delete(sessionId);
-                console.log(`pizzapi runner: killed session ${sessionId}`);
+                console.log(`pizzapi runner: killed session ${sessionId}${entry.adopted ? " (adopted)" : ""}`);
                 socket.emit("session_killed", { sessionId });
             }
         });
