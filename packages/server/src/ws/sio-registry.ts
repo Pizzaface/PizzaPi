@@ -810,10 +810,20 @@ export async function getRunners(filterUserId?: string): Promise<RunnerInfo[]> {
     const runners = await getAllRunners(filterUserId);
     const results: RunnerInfo[] = [];
 
+    // Optimization: fetch sessions once rather than N+1 times
+    const allSessions = filterUserId
+        ? await getAllSessions(filterUserId)
+        : await getAllSessions();
+
+    const sessionCounts = new Map<string, number>();
+    for (const s of allSessions) {
+        if (s.runnerId) {
+            sessionCounts.set(s.runnerId, (sessionCounts.get(s.runnerId) || 0) + 1);
+        }
+    }
+
     for (const r of runners) {
-        // Count sessions linked to this runner
-        const allSessions = await getAllSessions(r.userId ?? undefined);
-        const sessionCount = allSessions.filter((s) => s.runnerId === r.runnerId).length;
+        const sessionCount = sessionCounts.get(r.runnerId) || 0;
 
         results.push({
             runnerId: r.runnerId,
