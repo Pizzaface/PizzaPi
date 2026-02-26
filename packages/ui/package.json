@@ -1,6 +1,6 @@
 {
   "name": "@pizzapi/ui",
-  "version": "0.1.29",
+  "version": "0.1.31",
   "type": "module",
   "scripts": {
     "build": "vite build",
