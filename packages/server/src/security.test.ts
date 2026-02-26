@@ -101,20 +101,27 @@ describe("isValidEmail", () => {
 });
 
 describe("isValidPassword", () => {
-    test("accepts passwords >= 8 characters", () => {
-        expect(isValidPassword("12345678")).toBe(true);
-        expect(isValidPassword("a very long password with spaces")).toBe(true);
-        expect(isValidPassword("abcdefgh")).toBe(true);
+    test("accepts valid passwords", () => {
+        expect(isValidPassword("1234Aa78")).toBe(true);
+        expect(isValidPassword("AVeryLongPassword1")).toBe(true);
+        expect(isValidPassword("PassWord123")).toBe(true);
     });
 
     test("rejects passwords < 8 characters", () => {
-        expect(isValidPassword("short")).toBe(false);
-        expect(isValidPassword("1234567")).toBe(false);
+        expect(isValidPassword("Short1A")).toBe(false);
+        expect(isValidPassword("12345A7")).toBe(false);
         expect(isValidPassword("")).toBe(false);
     });
 
-    test("boundary: exactly 8 characters", () => {
-        expect(isValidPassword("12345678")).toBe(true);
-        expect(isValidPassword("1234567")).toBe(false);
+    test("rejects passwords without uppercase", () => {
+        expect(isValidPassword("password123")).toBe(false);
+    });
+
+    test("rejects passwords without lowercase", () => {
+        expect(isValidPassword("PASSWORD123")).toBe(false);
+    });
+
+    test("rejects passwords without number", () => {
+        expect(isValidPassword("PasswordPassword")).toBe(false);
     });
 });
