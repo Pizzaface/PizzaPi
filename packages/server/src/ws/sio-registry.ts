@@ -575,6 +575,15 @@ export async function endSharedSession(sessionId: string, reason: string = "Sess
     // Clean up local socket reference
     localTuiSockets.delete(sessionId);
 
+    // Notify the runner daemon so it can clean up its runningSessions map
+    // (especially important for adopted sessions after a daemon restart).
+    if (session.runnerId) {
+        const runnerSocket = localRunnerSockets.get(session.runnerId);
+        if (runnerSocket?.connected) {
+            runnerSocket.emit("session_ended", { sessionId });
+        }
+    }
+
     // Delete from Redis
     await deleteSession(sessionId);
 

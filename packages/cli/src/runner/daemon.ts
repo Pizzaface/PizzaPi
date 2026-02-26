@@ -701,13 +701,25 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     try {
                         entry.child.kill("SIGTERM");
                     } catch {}
+                } else if (entry.adopted) {
+                    // No child handle — ask the relay to disconnect the worker's
+                    // socket, which sends end_session then force-disconnects.
+                    socket.emit("disconnect_session", { sessionId });
                 }
-                // For adopted sessions (no child handle) we can only remove
-                // our tracking — the relay will disconnect the worker's socket
-                // when we emit session_killed, causing the worker to exit.
                 runningSessions.delete(sessionId);
                 console.log(`pizzapi runner: killed session ${sessionId}${entry.adopted ? " (adopted)" : ""}`);
                 socket.emit("session_killed", { sessionId });
+            }
+        });
+
+        // ── session_ended — relay notifies us a worker disconnected ───────
+        socket.on("session_ended", (data) => {
+            if (isShuttingDown) return;
+            const { sessionId } = data;
+            const entry = runningSessions.get(sessionId);
+            if (entry) {
+                runningSessions.delete(sessionId);
+                console.log(`pizzapi runner: session ${sessionId} ended on relay${entry.adopted ? " (adopted)" : ""}`);
             }
         });
 

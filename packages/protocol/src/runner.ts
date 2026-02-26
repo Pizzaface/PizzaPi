@@ -63,6 +63,12 @@ export interface RunnerClientToServerEvents {
     sessionId: string;
   }) => void;
 
+  /** Request the relay to disconnect an adopted session's worker socket.
+   *  Used to kill sessions the daemon doesn't have a child process handle for. */
+  disconnect_session: (data: {
+    sessionId: string;
+  }) => void;
+
   /** Terminal is ready for interaction */
   terminal_ready: (data: {
     terminalId: string;
@@ -113,6 +119,12 @@ export interface RunnerServerToClientEvents {
 
   /** Instructs runner to kill a session */
   kill_session: (data: {
+    sessionId: string;
+  }) => void;
+
+  /** Notifies the runner that a session's worker disconnected from the relay.
+   *  Allows the daemon to clean up its runningSessions map for adopted sessions. */
+  session_ended: (data: {
     sessionId: string;
   }) => void;
 

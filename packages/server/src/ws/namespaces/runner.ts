@@ -28,6 +28,7 @@ import {
     removeRunnerSession,
     removeRunner,
     getLocalRunnerSocket,
+    getLocalTuiSocket,
     sendToTerminalViewer,
     removeTerminal,
     getTerminalIdsForRunner,
@@ -277,6 +278,28 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
             const runnerId = socket.data.runnerId;
             if (runnerId && data.sessionId) {
                 await removeRunnerSession(runnerId, data.sessionId);
+            }
+        });
+
+        // ── disconnect_session — runner asks relay to disconnect a worker ─────
+        // Used to kill adopted sessions where the daemon has no child process handle.
+        socket.on("disconnect_session", (data) => {
+            const sessionId = data.sessionId;
+            if (!sessionId) return;
+
+            const tuiSocket = getLocalTuiSocket(sessionId);
+            if (tuiSocket && tuiSocket.connected) {
+                // Send an end_session exec command so the worker shuts down cleanly
+                tuiSocket.emit("exec", {
+                    id: `disconnect-${sessionId}-${Date.now()}`,
+                    command: "end_session",
+                });
+                // Give the worker a moment to shut down gracefully, then force-disconnect
+                setTimeout(() => {
+                    if (tuiSocket.connected) {
+                        tuiSocket.disconnect(true);
+                    }
+                }, 3_000);
             }
         });
 
