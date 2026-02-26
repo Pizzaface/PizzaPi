@@ -1167,6 +1167,10 @@ export function App() {
       setPendingQuestion(null);
       setIsChangingModel(false);
 
+      // Clear queued messages — the snapshot contains the full conversation
+      // including any follow-ups that were consumed by the agent.
+      setMessageQueue([]);
+
       // Extract thinkingLevel from session snapshot too
       const thinkingLevel = typeof state?.thinkingLevel === "string" ? state.thinkingLevel : null;
       setEffortLevel(thinkingLevel);
@@ -1517,11 +1521,15 @@ export function App() {
 
     if (type === "message_start") {
       upsertMessage(evt.message, type);
+      // When a user message appears in the stream, remove the matching queued message
+      removeQueuedMessageByContent(evt.message);
     }
 
     if (type === "message_end" || type === "turn_end") {
       cancelHaptic();
       upsertMessage(augmentThinkingDurations(evt.message, thinkingDurationsRef.current), type, true);
+      // When a user message appears in the stream, remove the matching queued message
+      removeQueuedMessageByContent(evt.message);
       // Reset for the next assistant message.
       thinkingStartTimesRef.current = new Map();
       thinkingDurationsRef.current = new Map();
@@ -1932,6 +1940,34 @@ export function App() {
 
   const removeQueuedMessage = React.useCallback((id: string) => {
     setMessageQueue((prev) => prev.filter((m) => m.id !== id));
+  }, []);
+
+  /** Remove a queued message whose text matches an incoming user message from the stream. */
+  const removeQueuedMessageByContent = React.useCallback((rawMessage: unknown) => {
+    if (!rawMessage || typeof rawMessage !== "object") return;
+    const msg = rawMessage as Record<string, unknown>;
+    if (msg.role !== "user") return;
+
+    // Extract text from user message content (string or array of text blocks)
+    let text = "";
+    if (typeof msg.content === "string") {
+      text = msg.content;
+    } else if (Array.isArray(msg.content)) {
+      text = (msg.content as Array<Record<string, unknown>>)
+        .filter((b) => b && typeof b === "object" && b.type === "text" && typeof b.text === "string")
+        .map((b) => b.text as string)
+        .join("");
+    }
+    if (!text) return;
+
+    const trimmed = text.trim();
+    setMessageQueue((prev) => {
+      if (prev.length === 0) return prev;
+      // Find the first queued message whose text matches and remove it
+      const idx = prev.findIndex((qm) => qm.text.trim() === trimmed);
+      if (idx === -1) return prev;
+      return [...prev.slice(0, idx), ...prev.slice(idx + 1)];
+    });
   }, []);
 
   const clearMessageQueue = React.useCallback(() => {
