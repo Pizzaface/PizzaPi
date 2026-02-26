@@ -9,3 +9,7 @@
 ## 2026-02-25 - Tree View Accessibility in File Explorer
 **Learning:** The File Explorer tree view used generic `div` and `button` elements without `aria-expanded` state, making it impossible for screen reader users to know if a folder is open or closed.
 **Action:** When implementing custom tree views, always ensure `aria-expanded` is present on the toggle control, and use `aria-label` to provide context (e.g., "Folder [name]").
+
+## 2025-05-20 - Title Attribute Insufficiency
+**Learning:** Icon-only buttons in `SessionViewer` relied solely on `title` for accessibility. While `title` provides a tooltip, it is not reliably announced by all screen readers and does not replace `aria-label` for providing an accessible name.
+**Action:** Ensure all icon-only buttons have an explicit `aria-label`, even if they already have a `title`.
