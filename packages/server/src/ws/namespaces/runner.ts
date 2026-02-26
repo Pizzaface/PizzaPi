@@ -34,6 +34,7 @@ import {
     getTerminalIdsForRunner,
     getTerminalEntry,
     getConnectedSessionsForRunner,
+    touchRunner,
 } from "../sio-registry.js";
 import { resolveSpawnReady, resolveSpawnError } from "../runner-control.js";
 
@@ -157,6 +158,13 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
     runner.on("connection", (socket) => {
         console.log(`[sio/runner] connected: ${socket.id}`);
 
+        // ── Periodic Redis TTL refresh ───────────────────────────────────────
+        // The runner's Redis key has a 2-hour TTL. Without periodic refresh,
+        // idle runners (0 sessions, no skill changes) silently expire from
+        // Redis while their Socket.IO connection stays alive — making them
+        // appear disconnected in the UI.  Refresh every 30 minutes.
+        let runnerTtlTimer: ReturnType<typeof setInterval> | null = null;
+
         // ── register_runner ──────────────────────────────────────────────────
         socket.on("register_runner", async (data) => {
             const name = data.name ?? null;
@@ -182,6 +190,12 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
             }
 
             socket.data.runnerId = result;
+
+            // Start periodic Redis TTL refresh for this runner
+            if (runnerTtlTimer) clearInterval(runnerTtlTimer);
+            runnerTtlTimer = setInterval(() => {
+                void touchRunner(result);
+            }, 30 * 60 * 1000); // every 30 minutes
 
             // Look up sessions still connected to the relay that belong to this runner.
             // This allows the daemon to re-adopt orphaned worker processes after a restart.
@@ -361,6 +375,10 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
         // ── disconnect — clean up runner resources ───────────────────────────
         socket.on("disconnect", async (reason) => {
             console.log(`[sio/runner] disconnected: ${socket.id} (${reason})`);
+            if (runnerTtlTimer) {
+                clearInterval(runnerTtlTimer);
+                runnerTtlTimer = null;
+            }
             const runnerId = socket.data.runnerId;
             if (runnerId) {
                 // Clean up any terminals owned by this runner
