@@ -14,7 +14,7 @@ import { io } from "socket.io-client";
 import type { HubServerToClientEvents, HubClientToServerEvents } from "@pizzapi/protocol";
 import { formatPathTail } from "@/lib/path";
 import { ProviderIcon } from "@/components/ProviderIcon";
-import { PanelLeftClose, PanelLeftOpen, Plus, User, X, HardDrive, FolderOpen } from "lucide-react";
+import { PanelLeftClose, PanelLeftOpen, Plus, User, X, HardDrive, FolderOpen, CheckSquare, Square, CheckCheck, Trash2 } from "lucide-react";
 
 interface HubSession {
     sessionId: string;
@@ -134,6 +134,25 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     onEndSession,
 }: SessionSidebarProps) {
     const [collapsed, setCollapsed] = React.useState(false);
+
+    // Multi-select mode state
+    const [selectMode, setSelectMode] = React.useState(false);
+    const [selectedSessionIds, setSelectedSessionIds] = React.useState<Set<string>>(new Set());
+    const [confirmEndMultiple, setConfirmEndMultiple] = React.useState(false);
+
+    const toggleSelectSession = React.useCallback((sessionId: string) => {
+        setSelectedSessionIds((prev) => {
+            const next = new Set(prev);
+            if (next.has(sessionId)) next.delete(sessionId);
+            else next.add(sessionId);
+            return next;
+        });
+    }, []);
+
+    const exitSelectMode = React.useCallback(() => {
+        setSelectMode(false);
+        setSelectedSessionIds(new Set());
+    }, []);
 
     // Swipe-to-reveal "End" button state (iOS-style swipe-left pattern)
     // Uses pointer events so it works on both touch screens AND desktop trackpads
@@ -338,6 +357,28 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     const [dotState, setDotState] = React.useState<DotState>("connecting");
     const [hasLoaded, setHasLoaded] = React.useState(false);
 
+    const selectAllSessions = React.useCallback(() => {
+        setSelectedSessionIds(new Set(liveSessions.map((s) => s.sessionId)));
+    }, [liveSessions]);
+
+    // Exit select mode when there are no sessions left
+    React.useEffect(() => {
+        if (selectMode && liveSessions.length === 0) {
+            exitSelectMode();
+        }
+    }, [selectMode, liveSessions.length, exitSelectMode]);
+
+    // Prune selected IDs that no longer exist
+    React.useEffect(() => {
+        if (!selectMode) return;
+        const ids = new Set(liveSessions.map((s) => s.sessionId));
+        setSelectedSessionIds((prev) => {
+            const next = new Set([...prev].filter((id) => ids.has(id)));
+            if (next.size === prev.size) return prev;
+            return next;
+        });
+    }, [selectMode, liveSessions]);
+
     React.useEffect(() => {
         onRelayStatusChange?.(dotState);
     }, [dotState, onRelayStatusChange]);
@@ -534,46 +575,144 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                 </DialogContent>
             </Dialog>
 
+            {/* Multi-select end confirmation dialog */}
+            <Dialog open={confirmEndMultiple} onOpenChange={(open) => { if (!open) setConfirmEndMultiple(false); }}>
+                <DialogContent>
+                    <DialogHeader>
+                        <DialogTitle>End {selectedSessionIds.size} Session{selectedSessionIds.size !== 1 ? "s" : ""}</DialogTitle>
+                        <DialogDescription>
+                            End <span className="font-medium text-foreground">{selectedSessionIds.size} selected session{selectedSessionIds.size !== 1 ? "s" : ""}</span>? The agent processes
+                            will be stopped and the sessions will be closed.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => setConfirmEndMultiple(false)}>
+                            Cancel
+                        </Button>
+                        <Button
+                            variant="destructive"
+                            onClick={() => {
+                                if (onEndSession) {
+                                    for (const id of selectedSessionIds) {
+                                        onEndSession(id);
+                                    }
+                                }
+                                setConfirmEndMultiple(false);
+                                exitSelectMode();
+                            }}
+                        >
+                            End {selectedSessionIds.size} Session{selectedSessionIds.size !== 1 ? "s" : ""}
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
             {/* Sidebar header */}
-            <div className="flex items-center justify-between px-3 py-2 border-b border-sidebar-border flex-shrink-0">
-                <div className="flex items-center gap-2">
-                    {/* Desktop: collapse button */}
-                    <Button
-                        variant="ghost"
-                        size="icon"
-                        className="hidden md:inline-flex h-7 w-7 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
-                        onClick={() => setCollapsed(true)}
-                        aria-label="Collapse sidebar"
-                    >
-                        <PanelLeftClose className="h-4 w-4" />
-                    </Button>
-                    <span className="text-[0.7rem] font-semibold uppercase tracking-widest text-sidebar-foreground/60">
-                        Sessions
-                    </span>
+            {selectMode ? (
+                <div className="flex items-center justify-between px-3 py-2 border-b border-sidebar-border flex-shrink-0">
+                    <div className="flex items-center gap-2">
+                        <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 text-xs text-sidebar-foreground/70 hover:text-sidebar-foreground hover:bg-sidebar-accent px-2"
+                            onClick={exitSelectMode}
+                        >
+                            Cancel
+                        </Button>
+                        <span className="text-[0.7rem] font-medium text-sidebar-foreground/60">
+                            {selectedSessionIds.size} selected
+                        </span>
+                    </div>
+                    <div className="flex items-center gap-1">
+                        <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
+                            onClick={() => {
+                                if (selectedSessionIds.size === liveSessions.length) {
+                                    setSelectedSessionIds(new Set());
+                                } else {
+                                    selectAllSessions();
+                                }
+                            }}
+                            aria-label={selectedSessionIds.size === liveSessions.length ? "Deselect all" : "Select all"}
+                            title={selectedSessionIds.size === liveSessions.length ? "Deselect all" : "Select all"}
+                        >
+                            <CheckCheck className="h-4 w-4" />
+                        </Button>
+                        <Button
+                            variant="ghost"
+                            size="icon"
+                            className={cn(
+                                "h-7 w-7",
+                                selectedSessionIds.size > 0
+                                    ? "text-red-500 hover:text-red-600 hover:bg-red-500/10"
+                                    : "text-sidebar-foreground/30 cursor-not-allowed",
+                            )}
+                            onClick={() => {
+                                if (selectedSessionIds.size > 0) setConfirmEndMultiple(true);
+                            }}
+                            disabled={selectedSessionIds.size === 0}
+                            aria-label="End selected sessions"
+                            title="End selected sessions"
+                        >
+                            <Trash2 className="h-4 w-4" />
+                        </Button>
+                    </div>
                 </div>
-                <div className="flex items-center gap-1">
-                    <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-8 w-8 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
-                        onClick={onNewSession}
-                        aria-label="New session"
-                        title="New session"
-                    >
-                        <Plus className="h-4 w-4" />
-                    </Button>
-                    <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-8 w-8 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
-                        onClick={onClose}
-                        aria-label="Clear selected session"
-                        title="Clear selected session"
-                    >
-                        <X className="h-4 w-4" />
-                    </Button>
+            ) : (
+                <div className="flex items-center justify-between px-3 py-2 border-b border-sidebar-border flex-shrink-0">
+                    <div className="flex items-center gap-2">
+                        {/* Desktop: collapse button */}
+                        <Button
+                            variant="ghost"
+                            size="icon"
+                            className="hidden md:inline-flex h-7 w-7 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
+                            onClick={() => setCollapsed(true)}
+                            aria-label="Collapse sidebar"
+                        >
+                            <PanelLeftClose className="h-4 w-4" />
+                        </Button>
+                        <span className="text-[0.7rem] font-semibold uppercase tracking-widest text-sidebar-foreground/60">
+                            Sessions
+                        </span>
+                    </div>
+                    <div className="flex items-center gap-1">
+                        {liveSessions.length > 0 && (
+                            <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
+                                onClick={() => setSelectMode(true)}
+                                aria-label="Select sessions"
+                                title="Select sessions"
+                            >
+                                <CheckSquare className="h-4 w-4" />
+                            </Button>
+                        )}
+                        <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
+                            onClick={onNewSession}
+                            aria-label="New session"
+                            title="New session"
+                        >
+                            <Plus className="h-4 w-4" />
+                        </Button>
+                        <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
+                            onClick={onClose}
+                            aria-label="Clear selected session"
+                            title="Clear selected session"
+                        >
+                            <X className="h-4 w-4" />
+                        </Button>
+                    </div>
                 </div>
-            </div>
+            )}
 
             <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
                 {/* Runners nav item / Live sessions header */}
@@ -635,7 +774,8 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                             // Hide cwd on individual cards when the runner is already
                                             // split into project sub-groups (avoids redundant display).
                                             const showCwd = runnerGroup.projects.length === 1;
-                                            const isSelected = !showRunners && activeSessionId === s.sessionId;
+                                            const isActiveSession = !showRunners && activeSessionId === s.sessionId;
+                                            const isChecked = selectedSessionIds.has(s.sessionId);
                                             const provider = s.model?.provider ??
                                                 (activeSessionId === s.sessionId ? activeModel?.provider : undefined) ??
                                                 "unknown";
@@ -651,8 +791,8 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                     key={s.sessionId}
                                                     className="relative overflow-hidden rounded-lg"
                                                 >
-                                                    {/* "End" action behind the card — only rendered during swipe/reveal */}
-                                                    {(hasOffset || isRevealed) && <div
+                                                    {/* "End" action behind the card — only rendered during swipe/reveal (not in select mode) */}
+                                                    {!selectMode && (hasOffset || isRevealed) && <div
                                                         className="absolute inset-y-0 right-0 flex items-center justify-center bg-red-600 text-white"
                                                         style={{ width: REVEAL_WIDTH }}
                                                     >
@@ -678,6 +818,10 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                     {/* Sliding session card */}
                                                     <button
                                                         onClick={(e) => {
+                                                            if (selectMode) {
+                                                                toggleSelectSession(s.sessionId);
+                                                                return;
+                                                            }
                                                             // Suppress click that fires after a swipe gesture
                                                             if (suppressClickRef.current) { suppressClickRef.current = false; return; }
                                                             // If THIS session is revealed, close it instead of navigating
@@ -691,23 +835,36 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                             }
                                                             onOpenSession(s.sessionId);
                                                         }}
-                                                        title={`View session ${s.sessionId}`}
-                                                        onPointerDown={(e) => handleSessionPointerDown(e, s.sessionId)}
-                                                        onPointerMove={handleSessionPointerMove}
-                                                        onPointerUp={handleSessionPointerUp}
+                                                        title={selectMode ? `Toggle selection for ${s.sessionName?.trim() || s.sessionId.slice(0, 8)}` : `View session ${s.sessionId}`}
+                                                        onPointerDown={selectMode ? undefined : (e) => handleSessionPointerDown(e, s.sessionId)}
+                                                        onPointerMove={selectMode ? undefined : handleSessionPointerMove}
+                                                        onPointerUp={selectMode ? undefined : handleSessionPointerUp}
                                                         onContextMenu={(e) => e.preventDefault()}
                                                         className={cn(
                                                             "relative flex items-center gap-2.5 w-full min-w-0 px-2.5 py-3 md:py-2.5 text-left",
                                                             !hasOffset && "transition-transform duration-200 ease-out",
-                                                            isSelected
+                                                            selectMode && isChecked
                                                                 ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                                                                : "bg-sidebar text-sidebar-foreground hover:bg-sidebar-accent/50",
+                                                                : isActiveSession
+                                                                    ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                                                                    : "bg-sidebar text-sidebar-foreground hover:bg-sidebar-accent/50",
                                                         )}
                                                         style={{
-                                                            transform: hasOffset ? `translateX(${swipeOffset}px)` : undefined,
-                                                            touchAction: "pan-y",
+                                                            transform: !selectMode && hasOffset ? `translateX(${swipeOffset}px)` : undefined,
+                                                            touchAction: selectMode ? undefined : "pan-y",
                                                         }}
                                                     >
+                                                        {/* Select mode checkbox */}
+                                                        {selectMode && (
+                                                            <div className="flex-shrink-0 flex items-center justify-center w-5 h-5">
+                                                                {isChecked ? (
+                                                                    <CheckSquare className="h-4 w-4 text-primary" />
+                                                                ) : (
+                                                                    <Square className="h-4 w-4 text-sidebar-foreground/40" />
+                                                                )}
+                                                            </div>
+                                                        )}
+
                                                         {/* Provider icon + activity dot */}
                                                         <div className="relative flex-shrink-0 flex items-center justify-center w-7 h-7 rounded-md bg-sidebar-accent/50">
                                                             <ProviderIcon
