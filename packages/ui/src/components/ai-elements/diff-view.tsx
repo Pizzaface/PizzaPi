@@ -162,8 +162,8 @@ function DiffContent({
   }
 
   return (
-    <div className="overflow-x-auto">
-      <pre className="m-0 p-0 text-xs font-mono leading-5">
+    <div className="overflow-x-auto min-h-full bg-background">
+      <pre className="m-0 p-0 text-xs font-mono leading-5 min-h-full">
         <code>
           {rows.map((row, i) => (
             <span
