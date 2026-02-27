@@ -34,11 +34,12 @@ const RESTART_DELAY_MAX  = 60_000; // 60 s
 export async function runSupervisor(_args: string[] = []): Promise<number> {
     // Resolve the CLI entry point so we can re-spawn it with `_daemon`.
     // Works from TypeScript source, compiled dist, and standalone binaries.
-    // On Unix, compiled Bun binaries use file:///$bunfs/…
-    // On Windows, compiled Bun binaries use file:///X:/~BUN/… (drive letter varies)
-    const isCompiledBinary =
-        import.meta.url.startsWith("file:///$bunfs/") ||
-        /^file:\/\/\/[A-Za-z]:\/~BUN\//i.test(import.meta.url);
+    // Detect compiled Bun single-file binary.
+    // - Unix: import.meta.url contains "$bunfs"
+    // - Windows: import.meta.url contains "~BUN" (drive letter/format varies)
+    const metaUrl = import.meta.url;
+    const isCompiledBinary = metaUrl.includes("$bunfs") || metaUrl.includes("~BUN");
+
     let cliEntry: string | null = null;
     let spawnArgs: string[];
 
