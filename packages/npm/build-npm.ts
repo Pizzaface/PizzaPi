@@ -160,6 +160,10 @@ for (const platform of PLATFORMS) {
     }
 
     // Write package.json
+    // NOTE: No `bin` field here — the platform binary is invoked by the
+    // launcher in @pizzapi/pizza, not via npm bin linking.  Having a `bin`
+    // field causes EEXIST conflicts on global installs since both packages
+    // would try to claim the `pizza` command.
     const pkg = {
         name: pkgName,
         version,
@@ -167,9 +171,6 @@ for (const platform of PLATFORMS) {
         license: "MIT",
         os: [platform.os],
         cpu: [platform.cpu],
-        bin: {
-            pizza: `bin/${platform.binOutputName}`,
-        },
         files: ["bin/"],
         repository: {
             type: "git",
@@ -213,6 +214,9 @@ const mainPkg = {
     description:
         "PizzaPi — a self-hosted web interface and relay server for the pi coding agent. Stream live AI coding sessions to any browser.",
     license: "MIT",
+    scripts: {
+        postinstall: "node bin/install.mjs",
+    },
     bin: {
         pizza: "bin/pizza.mjs",
         pizzapi: "bin/pizza.mjs",
@@ -244,9 +248,12 @@ const mainPkg = {
 };
 writeFileSync(join(mainPkgDir, "package.json"), JSON.stringify(mainPkg, null, 2) + "\n");
 
-// Copy the launcher bin script
+// Copy the launcher bin script and postinstall script
 cpSync(join(NPM_PKG, "bin", "pizza.mjs"), join(mainBinDir, "pizza.mjs"));
 chmodSync(join(mainBinDir, "pizza.mjs"), 0o755);
+
+cpSync(join(NPM_PKG, "bin", "install.mjs"), join(mainBinDir, "install.mjs"));
+chmodSync(join(mainBinDir, "install.mjs"), 0o755);
 
 // Copy README if exists, otherwise generate one
 const readmeSrc = join(NPM_PKG, "README.md");
