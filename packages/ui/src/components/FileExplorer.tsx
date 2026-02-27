@@ -337,6 +337,7 @@ function ImageViewer({
           type="button"
           onClick={onClose}
           className="text-zinc-400 hover:text-zinc-100 transition-colors"
+          title="Back to file list"
           aria-label="Back to file list"
         >
           <ChevronLeft className="size-4" />
@@ -523,6 +524,7 @@ function FileViewer({
           type="button"
           onClick={onClose}
           className="text-zinc-400 hover:text-zinc-100 transition-colors"
+          title="Back to file list"
           aria-label="Back to file list"
         >
           <ChevronLeft className="size-4" />
@@ -658,7 +660,8 @@ function GitChangesView({
             type="button"
             onClick={() => setSelectedDiff(null)}
             className="text-zinc-400 hover:text-zinc-100 transition-colors"
-            aria-label="Back to file list"
+            title="Back to changes"
+            aria-label="Back to changes"
           >
             <ChevronLeft className="size-4" />
           </button>
