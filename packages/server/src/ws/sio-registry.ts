@@ -852,18 +852,24 @@ export async function getConnectedSessionsForRunner(runnerId: string): Promise<A
 /** Get all runners as RunnerInfo, optionally filtered by user. */
 export async function getRunners(filterUserId?: string): Promise<RunnerInfo[]> {
     const runners = await getAllRunners(filterUserId);
+    const allSessions = await getAllSessions(filterUserId);
+
+    // Aggregate session counts by runnerId in memory
+    const sessionCounts = new Map<string, number>();
+    for (const s of allSessions) {
+        if (s.runnerId) {
+            sessionCounts.set(s.runnerId, (sessionCounts.get(s.runnerId) ?? 0) + 1);
+        }
+    }
+
     const results: RunnerInfo[] = [];
 
     for (const r of runners) {
-        // Count sessions linked to this runner
-        const allSessions = await getAllSessions(r.userId ?? undefined);
-        const sessionCount = allSessions.filter((s) => s.runnerId === r.runnerId).length;
-
         results.push({
             runnerId: r.runnerId,
             name: r.name,
             roots: safeJsonParse(r.roots) ?? [],
-            sessionCount,
+            sessionCount: sessionCounts.get(r.runnerId) ?? 0,
             skills: safeJsonParse(r.skills) ?? [],
             version: r.version ?? null,
         });
