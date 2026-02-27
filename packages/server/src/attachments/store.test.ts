@@ -54,4 +54,48 @@ describe("attachmentMaxFileSizeBytes", () => {
             delete process.env.PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES;
         }
     });
+
+    test("returns the configured size for a valid env var", () => {
+        const original = process.env.PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES;
+        process.env.PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES = "10485760"; // 10MB
+        expect(attachmentMaxFileSizeBytes()).toBe(10 * 1024 * 1024);
+        if (original !== undefined) {
+            process.env.PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES = original;
+        } else {
+            delete process.env.PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES;
+        }
+    });
+
+    test("returns default for a zero size", () => {
+        const original = process.env.PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES;
+        process.env.PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES = "0";
+        expect(attachmentMaxFileSizeBytes()).toBe(20 * 1024 * 1024);
+        if (original !== undefined) {
+            process.env.PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES = original;
+        } else {
+            delete process.env.PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES;
+        }
+    });
+
+    test("returns default for a negative size", () => {
+        const original = process.env.PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES;
+        process.env.PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES = "-500000";
+        expect(attachmentMaxFileSizeBytes()).toBe(20 * 1024 * 1024);
+        if (original !== undefined) {
+            process.env.PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES = original;
+        } else {
+            delete process.env.PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES;
+        }
+    });
+
+    test("returns default for an empty string", () => {
+        const original = process.env.PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES;
+        process.env.PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES = "";
+        expect(attachmentMaxFileSizeBytes()).toBe(20 * 1024 * 1024);
+        if (original !== undefined) {
+            process.env.PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES = original;
+        } else {
+            delete process.env.PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES;
+        }
+    });
 });
