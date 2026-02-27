@@ -79,12 +79,18 @@ function extractGroupedToolCallIds(message: RelayMessage): Set<string> {
 function deduplicateAssistantMessages(messages: RelayMessage[]): RelayMessage[] {
   // Build a map: toolCallId → last index of an assistant message that references it.
   const lastIndexForToolCallId = new Map<string, number>();
+  // Cache the extracted IDs for each message index to avoid re-parsing the content during the filter pass.
+  const messageIdsMap = new Map<number, Set<string>>();
+
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
     if (msg.role !== "assistant") continue;
     const ids = extractGroupedToolCallIds(msg);
-    for (const id of ids) {
-      lastIndexForToolCallId.set(id, i);
+    if (ids.size > 0) {
+      messageIdsMap.set(i, ids);
+      for (const id of ids) {
+        lastIndexForToolCallId.set(id, i);
+      }
     }
   }
 
@@ -94,8 +100,9 @@ function deduplicateAssistantMessages(messages: RelayMessage[]): RelayMessage[] 
   // last message to reference all of those tool call IDs.
   return messages.filter((msg, i) => {
     if (msg.role !== "assistant") return true;
-    const ids = extractGroupedToolCallIds(msg);
-    if (ids.size === 0) return true;
+    // Use cached IDs if available; otherwise (e.g. if empty) treat as having no IDs.
+    const ids = messageIdsMap.get(i);
+    if (!ids || ids.size === 0) return true;
     // Keep only if this index is the last for every id it contains.
     for (const id of ids) {
       if (lastIndexForToolCallId.get(id) !== i) return false;
