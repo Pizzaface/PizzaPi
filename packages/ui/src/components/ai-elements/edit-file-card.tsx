@@ -85,11 +85,19 @@ export function EditFileCard({
 
       {/* ── Modal ─────────────────────────────────────────────────────────── */}
       <Dialog open={open} onOpenChange={setOpen}>
-        {/*
-          - max-h uses dvh so mobile browser chrome doesn't cut content off.
-          - pr-12 on the inner header row leaves room for the absolute close button.
-        */}
-        <DialogContent className="pp-file-card-dialog sm:max-w-3xl max-h-[90dvh] sm:max-h-[85dvh] flex flex-col gap-0 p-0 overflow-hidden">
+        <DialogContent
+          className={cn(
+            "pp-file-card-dialog flex flex-col gap-0 p-0 overflow-hidden",
+            // Mobile: bottom-sheet layout
+            "max-w-full w-full rounded-t-xl rounded-b-none",
+            "top-auto bottom-0 left-0 translate-x-0 translate-y-0",
+            "max-h-[90dvh]",
+            // Desktop: centred dialog
+            "sm:max-w-3xl sm:w-auto sm:rounded-lg",
+            "sm:top-[50%] sm:bottom-auto sm:left-[50%] sm:translate-x-[-50%] sm:translate-y-[-50%]",
+            "sm:max-h-[85dvh]",
+          )}
+        >
           <DialogHeader className="pl-4 sm:pl-5 pr-12 pt-4 sm:pt-5 pb-3 border-b border-border/60 shrink-0">
             <div className="flex items-center gap-2.5 min-w-0">
               {/* Icon */}
@@ -125,7 +133,7 @@ export function EditFileCard({
             </div>
           </DialogHeader>
 
-          <div className="flex-1 overflow-auto p-0">
+          <div className="flex-1 overflow-auto p-0 min-h-0">
             {children}
           </div>
         </DialogContent>
