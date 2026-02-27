@@ -1,8 +1,5 @@
-diff --git a/node_modules/@mariozechner/pi-coding-agent/.bun-tag-d41a26f43baa0d6 b/.bun-tag-d41a26f43baa0d6
-new file mode 100644
-index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
 diff --git a/dist/core/extensions/loader.js b/dist/core/extensions/loader.js
-index 0f555eefcaaabc0878624ee302f01054791bfa7f..f2a1011cd1a89e5a41cd0199c1ef2c671bcbd381 100644
+index 5125e76b6490f859fa63cea32b0f1df9fb7aed50..cc2a11988ec12fad5afacc81c43aad46dea3b628 100644
 --- a/dist/core/extensions/loader.js
 +++ b/dist/core/extensions/loader.js
 @@ -97,6 +97,9 @@ export function createExtensionRuntime() {
@@ -30,7 +27,7 @@ index 0f555eefcaaabc0878624ee302f01054791bfa7f..f2a1011cd1a89e5a41cd0199c1ef2c67
      };
      return api;
 diff --git a/dist/core/extensions/runner.js b/dist/core/extensions/runner.js
-index d6c4f3f361f37c81796e793016d8b4812d1e8fff..987f9cc181ed3caf981d9b09aa1cf1108c9fdcae 100644
+index da287dd66dc0b4a356d4a615addd1e5cf40073ec..4f50eb5748741e68669a960f1a01c1042a99bc4a 100644
 --- a/dist/core/extensions/runner.js
 +++ b/dist/core/extensions/runner.js
 @@ -148,6 +148,9 @@ export class ExtensionRunner {
@@ -53,7 +50,7 @@ index d6c4f3f361f37c81796e793016d8b4812d1e8fff..987f9cc181ed3caf981d9b09aa1cf110
      setUIContext(uiContext) {
          this.uiContext = uiContext ?? noOpUIContext;
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index dc6dba1e27586be88ea134d2121747a207e97a49..afd76a0335c90a32ce7084607386dbde2c90e0fc 100644
+index 920f62d9c4370c034ab0a052cd02050e2e6be37e..3eda732f3e555894b0fe9913d54a3d9ece78b8ed 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
 @@ -355,12 +355,6 @@ export class InteractiveMode {
@@ -69,7 +66,7 @@ index dc6dba1e27586be88ea134d2121747a207e97a49..afd76a0335c90a32ce7084607386dbde
          // Show startup warnings
          const { migratedProviders, modelFallbackMessage, initialMessage, initialImages, initialMessages } = this.options;
          if (migratedProviders && migratedProviders.length > 0) {
-@@ -406,27 +400,6 @@ export class InteractiveMode {
+@@ -406,29 +400,6 @@ export class InteractiveMode {
              }
          }
      }
@@ -77,10 +74,12 @@ index dc6dba1e27586be88ea134d2121747a207e97a49..afd76a0335c90a32ce7084607386dbde
 -     * Check npm registry for a newer version.
 -     */
 -    async checkForNewVersion() {
--        if (process.env.PI_SKIP_VERSION_CHECK)
+-        if (process.env.PI_SKIP_VERSION_CHECK || process.env.PI_OFFLINE)
 -            return undefined;
 -        try {
--            const response = await fetch("https://registry.npmjs.org/@mariozechner/pi-coding-agent/latest");
+-            const response = await fetch("https://registry.npmjs.org/@mariozechner/pi-coding-agent/latest", {
+-                signal: AbortSignal.timeout(10000),
+-            });
 -            if (!response.ok)
 -                return undefined;
 -            const data = (await response.json());
@@ -97,7 +96,7 @@ index dc6dba1e27586be88ea134d2121747a207e97a49..afd76a0335c90a32ce7084607386dbde
      /**
       * Get changelog entries to display on startup.
       * Only shows new entries since last seen version, skips for resumed sessions.
-@@ -2325,17 +2298,6 @@ export class InteractiveMode {
+@@ -2330,17 +2301,6 @@ export class InteractiveMode {
          this.chatContainer.addChild(new Text(theme.fg("warning", `Warning: ${warningMessage}`), 1, 0));
          this.ui.requestRender();
      }
@@ -115,3 +114,9 @@ index dc6dba1e27586be88ea134d2121747a207e97a49..afd76a0335c90a32ce7084607386dbde
      /**
       * Get all queued messages (read-only).
       * Combines session queue and compaction queue.
+diff --git a/examples/server-web-client/node_modules/.vite/deps/_metadata.json b/Users/jordan/.bun/install/cache/@mariozechner/pi-coding-agent@0.55.1@@@1/examples/server-web-client/node_modules/.vite/deps/_metadata.json
+deleted file mode 100644
+index 8c3d274affafed48bf93b210b1f55815c06c028a..0000000000000000000000000000000000000000
+diff --git a/examples/server-web-client/node_modules/.vite/deps/package.json b/Users/jordan/.bun/install/cache/@mariozechner/pi-coding-agent@0.55.1@@@1/examples/server-web-client/node_modules/.vite/deps/package.json
+deleted file mode 100644
+index 3dbc1ca591c0557e35b6004aeba250e6a70b56e3..0000000000000000000000000000000000000000

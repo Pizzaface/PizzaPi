@@ -12,8 +12,8 @@
     },
     "dependencies": {
         "@aws-sdk/client-s3": "^3.995.0",
-        "@mariozechner/pi-agent-core": "^0.53.0",
-        "@mariozechner/pi-ai": "^0.53.0",
+        "@mariozechner/pi-agent-core": "^0.55.1",
+        "@mariozechner/pi-ai": "^0.55.1",
         "@pizzapi/protocol": "workspace:*",
         "@pizzapi/tools": "workspace:*",
         "better-auth": "^1.4.18",
