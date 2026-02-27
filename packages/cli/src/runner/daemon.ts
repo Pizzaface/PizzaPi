@@ -1381,7 +1381,7 @@ function spawnSession(
 // Detect compiled Bun single-file binary.
 // - Unix: import.meta.url contains "$bunfs"
 // - Windows: import.meta.url contains "~BUN" (drive letter/format varies)
-const isCompiledBinary = import.meta.url.includes("$bunfs") || import.meta.url.includes("~BUN");
+const isCompiledBinary = import.meta.url.includes("$bunfs") || import.meta.url.includes("~BUN") || import.meta.url.includes("%7EBUN");
 
 /**
  * Returns the spawn arguments for starting a worker subprocess.

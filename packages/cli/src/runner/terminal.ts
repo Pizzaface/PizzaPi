@@ -38,7 +38,7 @@ const runningTerminals = new Map<string, TerminalEntry>();
 // Detect compiled Bun single-file binary.
 // - Unix: import.meta.url contains "$bunfs"
 // - Windows: import.meta.url contains "~BUN" (drive letter/format varies)
-const isCompiledBinary = import.meta.url.includes("$bunfs") || import.meta.url.includes("~BUN");
+const isCompiledBinary = import.meta.url.includes("$bunfs") || import.meta.url.includes("~BUN") || import.meta.url.includes("%7EBUN");
 
 /**
  * Resolve the path to the @zenyr/bun-pty native shared library.

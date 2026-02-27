@@ -37,8 +37,9 @@ export async function runSupervisor(_args: string[] = []): Promise<number> {
     // Detect compiled Bun single-file binary.
     // - Unix: import.meta.url contains "$bunfs"
     // - Windows: import.meta.url contains "~BUN" (drive letter/format varies)
+    //   Note: some Bun versions URL-encode the ~ as %7E, so check both forms
     const metaUrl = import.meta.url;
-    const isCompiledBinary = metaUrl.includes("$bunfs") || metaUrl.includes("~BUN");
+    const isCompiledBinary = metaUrl.includes("$bunfs") || metaUrl.includes("~BUN") || metaUrl.includes("%7EBUN");
 
     let cliEntry: string | null = null;
     let spawnArgs: string[];
