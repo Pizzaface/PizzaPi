@@ -121,25 +121,25 @@ function getMimeType(name: string): string {
 function gitStatusLabel(status: string): { label: string; color: string; icon: React.ReactNode } {
   switch (status) {
     case "M":
-      return { label: "Modified", color: "text-amber-400", icon: <Edit3 className="size-3" /> };
+      return { label: "Modified", color: "text-amber-500 dark:text-amber-400", icon: <Edit3 className="size-3" /> };
     case "A":
-      return { label: "Added", color: "text-green-400", icon: <Plus className="size-3" /> };
+      return { label: "Added", color: "text-green-600 dark:text-green-400", icon: <Plus className="size-3" /> };
     case "D":
-      return { label: "Deleted", color: "text-red-400", icon: <Minus className="size-3" /> };
+      return { label: "Deleted", color: "text-red-500 dark:text-red-400", icon: <Minus className="size-3" /> };
     case "R":
-      return { label: "Renamed", color: "text-blue-400", icon: <Edit3 className="size-3" /> };
+      return { label: "Renamed", color: "text-blue-500 dark:text-blue-400", icon: <Edit3 className="size-3" /> };
     case "C":
-      return { label: "Copied", color: "text-blue-400", icon: <Plus className="size-3" /> };
+      return { label: "Copied", color: "text-blue-500 dark:text-blue-400", icon: <Plus className="size-3" /> };
     case "??":
-      return { label: "Untracked", color: "text-zinc-400", icon: <FileQuestion className="size-3" /> };
+      return { label: "Untracked", color: "text-muted-foreground", icon: <FileQuestion className="size-3" /> };
     case "!!":
-      return { label: "Ignored", color: "text-zinc-600", icon: <HelpCircle className="size-3" /> };
+      return { label: "Ignored", color: "text-muted-foreground/60", icon: <HelpCircle className="size-3" /> };
     case "MM":
-      return { label: "Modified (staged+unstaged)", color: "text-amber-400", icon: <Edit3 className="size-3" /> };
+      return { label: "Modified (staged+unstaged)", color: "text-amber-500 dark:text-amber-400", icon: <Edit3 className="size-3" /> };
     case "AM":
-      return { label: "Added + Modified", color: "text-green-400", icon: <Plus className="size-3" /> };
+      return { label: "Added + Modified", color: "text-green-600 dark:text-green-400", icon: <Plus className="size-3" /> };
     default:
-      return { label: status, color: "text-zinc-400", icon: <File className="size-3" /> };
+      return { label: status, color: "text-muted-foreground", icon: <File className="size-3" /> };
   }
 }
 
@@ -198,14 +198,14 @@ function FileTreeNode({
 
   const icon = entry.isDirectory
     ? expanded
-      ? <FolderOpen className="size-4 text-amber-400" />
-      : <Folder className="size-4 text-amber-400/70" />
-    : <File className="size-4 text-zinc-400" />;
+      ? <FolderOpen className="size-4 text-amber-500 dark:text-amber-400" />
+      : <Folder className="size-4 text-amber-500/70 dark:text-amber-400/70" />
+    : <File className="size-4 text-muted-foreground" />;
 
   const chevron = entry.isDirectory
     ? expanded
-      ? <ChevronDown className="size-3 text-zinc-500" />
-      : <ChevronRight className="size-3 text-zinc-500" />
+      ? <ChevronDown className="size-3 text-muted-foreground" />
+      : <ChevronRight className="size-3 text-muted-foreground" />
     : <span className="size-3" />;
 
   const emoji = !entry.isDirectory ? getFileIcon(entry.name) : null;
@@ -218,7 +218,7 @@ function FileTreeNode({
         aria-expanded={entry.isDirectory ? expanded : undefined}
         aria-label={entry.isDirectory ? `Folder ${entry.name}` : `File ${entry.name}`}
         className={cn(
-          "flex items-center gap-1 w-full text-left px-2 py-1 text-sm hover:bg-zinc-800/60 transition-colors rounded-sm group",
+          "flex items-center gap-1 w-full text-left px-2 py-1 text-sm hover:bg-accent/60 transition-colors rounded-sm group",
           !entry.isDirectory && "cursor-pointer",
         )}
         style={{ paddingLeft: `${depth * 16 + 8}px` }}
@@ -228,10 +228,10 @@ function FileTreeNode({
         <span className="truncate flex-1" title={entry.name}>
           {emoji ? <span className="mr-1 text-xs">{emoji}</span> : null}
           {entry.name}
-          {entry.isSymlink && <span className="text-xs text-zinc-500 ml-1">→</span>}
+          {entry.isSymlink && <span className="text-xs text-muted-foreground ml-1">→</span>}
         </span>
         {!entry.isDirectory && entry.size !== undefined && (
-          <span className="text-[0.6rem] text-zinc-600 tabular-nums flex-shrink-0">{formatSize(entry.size)}</span>
+          <span className="text-[0.6rem] text-muted-foreground/60 tabular-nums flex-shrink-0">{formatSize(entry.size)}</span>
         )}
         {loading && <Spinner className="size-3 flex-shrink-0" />}
       </button>
@@ -332,27 +332,27 @@ function ImageViewer({
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <div className="flex items-center gap-2 px-3 py-2 border-b border-zinc-800 bg-zinc-900/50 min-h-[40px]">
+      <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-muted/50 min-h-[40px]">
         <button
           type="button"
           onClick={onClose}
-          className="text-zinc-400 hover:text-zinc-100 transition-colors"
+          className="text-muted-foreground hover:text-foreground transition-colors"
           title="Back to file list"
           aria-label="Back to file list"
         >
           <ChevronLeft className="size-4" />
         </button>
-        <span className="text-xs text-zinc-500 mr-1">{getFileIcon(fileName)}</span>
+        <span className="text-xs text-muted-foreground mr-1">{getFileIcon(fileName)}</span>
         <span className="text-sm font-mono truncate flex-1" title={filePath}>
           {fileName}
         </span>
         {naturalSize && (
-          <span className="text-[0.6rem] text-zinc-500 tabular-nums flex-shrink-0">
+          <span className="text-[0.6rem] text-muted-foreground tabular-nums flex-shrink-0">
             {naturalSize.w}×{naturalSize.h}
           </span>
         )}
         {fileSize !== undefined && (
-          <span className="text-[0.6rem] text-zinc-500 tabular-nums flex-shrink-0">
+          <span className="text-[0.6rem] text-muted-foreground tabular-nums flex-shrink-0">
             {formatSize(fileSize)}
           </span>
         )}
@@ -360,37 +360,37 @@ function ImageViewer({
 
       {/* Toolbar */}
       {dataUrl && (
-        <div className="flex items-center gap-1 px-3 py-1.5 border-b border-zinc-800/50 bg-zinc-900/30">
+        <div className="flex items-center gap-1 px-3 py-1.5 border-b border-border/50 bg-muted/30">
           <button
             type="button"
             onClick={zoomOut}
-            className="p-1 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 rounded transition-colors"
+            className="p-1 text-muted-foreground hover:text-foreground hover:bg-accent rounded transition-colors"
             title="Zoom out"
             aria-label="Zoom out"
           >
             <ZoomOut className="size-3.5" />
           </button>
-          <span className="text-[0.65rem] text-zinc-500 tabular-nums w-12 text-center">
+          <span className="text-[0.65rem] text-muted-foreground tabular-nums w-12 text-center">
             {Math.round(zoom * 100)}%
           </span>
           <button
             type="button"
             onClick={zoomIn}
-            className="p-1 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 rounded transition-colors"
+            className="p-1 text-muted-foreground hover:text-foreground hover:bg-accent rounded transition-colors"
             title="Zoom in"
             aria-label="Zoom in"
           >
             <ZoomIn className="size-3.5" />
           </button>
-          <div className="w-px h-4 bg-zinc-700 mx-1" />
+          <div className="w-px h-4 bg-border mx-1" />
           <button
             type="button"
             onClick={toggleFit}
             className={cn(
               "p-1 rounded transition-colors",
               fitMode === "actual"
-                ? "text-zinc-100 bg-zinc-800"
-                : "text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800",
+                ? "text-foreground bg-accent"
+                : "text-muted-foreground hover:text-foreground hover:bg-accent",
             )}
             title={fitMode === "contain" ? "Show actual size" : "Fit to view"}
             aria-label={fitMode === "contain" ? "Show actual size" : "Fit to view"}
@@ -400,7 +400,7 @@ function ImageViewer({
           <button
             type="button"
             onClick={resetZoom}
-            className="p-1 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 rounded transition-colors"
+            className="p-1 text-muted-foreground hover:text-foreground hover:bg-accent rounded transition-colors"
             title="Reset zoom"
             aria-label="Reset zoom"
           >
@@ -434,7 +434,7 @@ function ImageViewer({
               className="inline-block rounded-md shadow-lg"
               style={{
                 backgroundImage:
-                  "repeating-conic-gradient(#27272a 0% 25%, #1c1c1e 0% 50%)",
+                  "repeating-conic-gradient(var(--checker-dark, #27272a) 0% 25%, var(--checker-light, #1c1c1e) 0% 50%)",
                 backgroundSize: "16px 16px",
               }}
             >
@@ -519,20 +519,20 @@ function FileViewer({
 
   return (
     <div className="flex flex-col h-full">
-      <div className="flex items-center gap-2 px-3 py-2 border-b border-zinc-800 bg-zinc-900/50 min-h-[40px]">
+      <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-muted/50 min-h-[40px]">
         <button
           type="button"
           onClick={onClose}
-          className="text-zinc-400 hover:text-zinc-100 transition-colors"
+          className="text-muted-foreground hover:text-foreground transition-colors"
           title="Back to file list"
           aria-label="Back to file list"
         >
           <ChevronLeft className="size-4" />
         </button>
-        <span className="text-xs text-zinc-500 mr-1">{getFileIcon(fileName)}</span>
+        <span className="text-xs text-muted-foreground mr-1">{getFileIcon(fileName)}</span>
         <span className="text-sm font-mono truncate flex-1" title={filePath}>{fileName}</span>
         {fileSize !== undefined && (
-          <span className="text-[0.6rem] text-zinc-500 tabular-nums">{formatSize(fileSize)}</span>
+          <span className="text-[0.6rem] text-muted-foreground tabular-nums">{formatSize(fileSize)}</span>
         )}
       </div>
       <div className="flex-1 overflow-auto">
@@ -547,11 +547,11 @@ function FileViewer({
         {content !== null && (
           <div className="relative">
             {truncated && (
-              <div className="sticky top-0 z-10 bg-amber-500/10 border-b border-amber-500/20 px-3 py-1 text-xs text-amber-400">
+              <div className="sticky top-0 z-10 bg-amber-500/10 border-b border-amber-500/20 px-3 py-1 text-xs text-amber-600 dark:text-amber-400">
                 File truncated (showing first 512 KB of {formatSize(fileSize)})
               </div>
             )}
-            <pre className="p-3 text-xs font-mono text-zinc-300 leading-relaxed whitespace-pre-wrap break-all">
+            <pre className="p-3 text-xs font-mono text-foreground/80 leading-relaxed whitespace-pre-wrap break-all">
               {content}
             </pre>
           </div>
@@ -655,11 +655,11 @@ function GitChangesView({
   if (selectedDiff) {
     return (
       <div className="flex flex-col h-full">
-        <div className="flex items-center gap-2 px-3 py-2 border-b border-zinc-800 bg-zinc-900/50">
+        <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-muted/50">
           <button
             type="button"
             onClick={() => setSelectedDiff(null)}
-            className="text-zinc-400 hover:text-zinc-100 transition-colors"
+            className="text-muted-foreground hover:text-foreground transition-colors"
             title="Back to changes"
             aria-label="Back to changes"
           >
@@ -670,11 +670,11 @@ function GitChangesView({
         <div className="flex-1 overflow-auto">
           <pre className="p-3 text-xs font-mono leading-relaxed whitespace-pre-wrap break-all">
             {selectedDiff.diff.split("\n").map((line, i) => {
-              let color = "text-zinc-400";
-              if (line.startsWith("+") && !line.startsWith("+++")) color = "text-green-400";
-              else if (line.startsWith("-") && !line.startsWith("---")) color = "text-red-400";
-              else if (line.startsWith("@@")) color = "text-blue-400";
-              else if (line.startsWith("diff ") || line.startsWith("index ")) color = "text-zinc-500";
+              let color = "text-muted-foreground";
+              if (line.startsWith("+") && !line.startsWith("+++")) color = "text-green-600 dark:text-green-400";
+              else if (line.startsWith("-") && !line.startsWith("---")) color = "text-red-600 dark:text-red-400";
+              else if (line.startsWith("@@")) color = "text-blue-600 dark:text-blue-400";
+              else if (line.startsWith("diff ") || line.startsWith("index ")) color = "text-muted-foreground/70";
               return (
                 <div key={i} className={cn(color, "min-h-[1.25em]")}>
                   {line || "\u00A0"}
@@ -694,24 +694,24 @@ function GitChangesView({
   return (
     <div className="flex flex-col h-full">
       {/* Branch header */}
-      <div className="flex items-center gap-2 px-3 py-2 border-b border-zinc-800 bg-zinc-900/50">
-        <GitBranch className="size-4 text-green-400" />
-        <span className="text-sm font-medium text-zinc-200">{gitStatus.branch || "detached"}</span>
+      <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-muted/50">
+        <GitBranch className="size-4 text-green-600 dark:text-green-400" />
+        <span className="text-sm font-medium text-foreground">{gitStatus.branch || "detached"}</span>
         <div className="flex-1" />
         {gitStatus.ahead > 0 && (
-          <span className="inline-flex items-center gap-0.5 text-[0.65rem] text-green-400" title={`${gitStatus.ahead} commit(s) ahead`}>
+          <span className="inline-flex items-center gap-0.5 text-[0.65rem] text-green-600 dark:text-green-400" title={`${gitStatus.ahead} commit(s) ahead`}>
             <ArrowUp className="size-3" /> {gitStatus.ahead}
           </span>
         )}
         {gitStatus.behind > 0 && (
-          <span className="inline-flex items-center gap-0.5 text-[0.65rem] text-amber-400" title={`${gitStatus.behind} commit(s) behind`}>
+          <span className="inline-flex items-center gap-0.5 text-[0.65rem] text-amber-500 dark:text-amber-400" title={`${gitStatus.behind} commit(s) behind`}>
             <ArrowDown className="size-3" /> {gitStatus.behind}
           </span>
         )}
         <button
           type="button"
           onClick={fetchStatus}
-          className="text-zinc-500 hover:text-zinc-200 transition-colors"
+          className="text-muted-foreground hover:text-foreground transition-colors"
           title="Refresh git status"
           aria-label="Refresh git status"
         >
@@ -721,7 +721,7 @@ function GitChangesView({
 
       <div className="flex-1 overflow-auto">
         {!hasChanges ? (
-          <div className="flex flex-col items-center justify-center py-8 text-zinc-500 gap-2">
+          <div className="flex flex-col items-center justify-center py-8 text-muted-foreground gap-2">
             <GitCommit className="size-8 opacity-30" />
             <p className="text-sm">Working tree clean</p>
           </div>
@@ -730,7 +730,7 @@ function GitChangesView({
             {/* Staged changes */}
             {staged.length > 0 && (
               <div className="mb-2">
-                <div className="px-3 py-1.5 text-[0.65rem] font-semibold uppercase tracking-wider text-zinc-500">
+                <div className="px-3 py-1.5 text-[0.65rem] font-semibold uppercase tracking-wider text-muted-foreground">
                   Staged Changes ({staged.length})
                 </div>
                 {staged.map((change) => {
@@ -740,10 +740,10 @@ function GitChangesView({
                       key={`staged-${change.path}`}
                       type="button"
                       onClick={() => viewDiff(change.path)}
-                      className="flex items-center gap-2 w-full px-3 py-1.5 text-sm hover:bg-zinc-800/60 transition-colors text-left"
+                      className="flex items-center gap-2 w-full px-3 py-1.5 text-sm hover:bg-accent/60 transition-colors text-left"
                     >
                       <span className={cn("flex-shrink-0", info.color)} title={info.label}>{info.icon}</span>
-                      <span className="truncate flex-1 font-mono text-xs text-zinc-300">{change.path}</span>
+                      <span className="truncate flex-1 font-mono text-xs text-foreground/80">{change.path}</span>
                       <span className={cn("text-[0.6rem] flex-shrink-0", info.color)}>{change.status[0]}</span>
                     </button>
                   );
@@ -754,7 +754,7 @@ function GitChangesView({
             {/* Unstaged/untracked changes */}
             {unstaged.length > 0 && (
               <div>
-                <div className="px-3 py-1.5 text-[0.65rem] font-semibold uppercase tracking-wider text-zinc-500">
+                <div className="px-3 py-1.5 text-[0.65rem] font-semibold uppercase tracking-wider text-muted-foreground">
                   Changes ({unstaged.length})
                 </div>
                 {unstaged.map((change) => {
@@ -767,12 +767,12 @@ function GitChangesView({
                       onClick={() => viewDiff(change.path)}
                       disabled={change.status === "??"}
                       className={cn(
-                        "flex items-center gap-2 w-full px-3 py-1.5 text-sm hover:bg-zinc-800/60 transition-colors text-left",
+                        "flex items-center gap-2 w-full px-3 py-1.5 text-sm hover:bg-accent/60 transition-colors text-left",
                         change.status === "??" && "cursor-default hover:bg-transparent",
                       )}
                     >
                       <span className={cn("flex-shrink-0", info.color)} title={info.label}>{info.icon}</span>
-                      <span className="truncate flex-1 font-mono text-xs text-zinc-300">{change.path}</span>
+                      <span className="truncate flex-1 font-mono text-xs text-foreground/80">{change.path}</span>
                       <span className={cn("text-[0.6rem] flex-shrink-0", info.color)}>{displayStatus}</span>
                     </button>
                   );
@@ -784,9 +784,9 @@ function GitChangesView({
       </div>
 
       {diffLoading && (
-        <div className="flex items-center justify-center py-4 border-t border-zinc-800">
+        <div className="flex items-center justify-center py-4 border-t border-border">
           <Spinner className="size-4" />
-          <span className="text-xs text-zinc-500 ml-2">Loading diff…</span>
+          <span className="text-xs text-muted-foreground ml-2">Loading diff…</span>
         </div>
       )}
     </div>
@@ -827,7 +827,7 @@ const PositionDropdown = React.forwardRef<
   return (
     <div
       ref={ref}
-      className="fixed flex items-center gap-0.5 rounded-lg bg-zinc-800 border border-zinc-700 p-1 shadow-xl z-[9999] animate-in fade-in zoom-in-95 duration-100"
+      className="fixed flex items-center gap-0.5 rounded-lg bg-popover border border-border p-1 shadow-xl z-[9999] animate-in fade-in zoom-in-95 duration-100"
       style={{ top: coords.top, left: coords.left }}
     >
       {POSITION_OPTIONS.map(({ pos, Icon, label }) => (
@@ -838,8 +838,8 @@ const PositionDropdown = React.forwardRef<
           className={cn(
             "flex items-center justify-center size-7 rounded transition-colors",
             position === pos
-              ? "bg-zinc-600 text-zinc-100"
-              : "text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700",
+              ? "bg-accent text-foreground"
+              : "text-muted-foreground hover:text-foreground hover:bg-accent",
           )}
           title={label}
           aria-label={`Move panel to ${label}`}
@@ -931,8 +931,8 @@ function PositionPicker({
         className={cn(
           "flex items-center justify-center size-7 rounded transition-colors",
           open
-            ? "bg-zinc-700 text-zinc-200"
-            : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800",
+            ? "bg-accent text-foreground"
+            : "text-muted-foreground hover:text-foreground hover:bg-accent",
         )}
         title="Panel position"
         aria-label="Panel position"
@@ -995,7 +995,7 @@ export function FileExplorer({ runnerId, cwd, className, onClose, position = "le
     const isImage = isImageFile(viewingFileName);
 
     return (
-      <div className={cn("flex flex-col bg-zinc-950 text-zinc-100", className)}>
+      <div className={cn("flex flex-col bg-background text-foreground", className)}>
         {isImage ? (
           <ImageViewer
             runnerId={runnerId}
@@ -1014,15 +1014,15 @@ export function FileExplorer({ runnerId, cwd, className, onClose, position = "le
   }
 
   return (
-    <div className={cn("flex flex-col bg-zinc-950 text-zinc-100", className)}>
+    <div className={cn("flex flex-col bg-background text-foreground", className)}>
       {/* Header with tabs */}
-      <div className="flex items-center border-b border-zinc-800 bg-zinc-900/50">
+      <div className="flex items-center border-b border-border bg-muted/50">
         {/* Mobile back button */}
         {onClose && (
           <Button
             variant="ghost"
             size="sm"
-            className="gap-1.5 text-sm text-zinc-400 hover:text-zinc-100 h-9 px-2 md:hidden"
+            className="gap-1.5 text-sm text-muted-foreground hover:text-foreground h-9 px-2 md:hidden"
             onClick={onClose}
           >
             <ChevronLeft className="size-4" />
@@ -1038,8 +1038,8 @@ export function FileExplorer({ runnerId, cwd, className, onClose, position = "le
             className={cn(
               "flex items-center gap-1.5 px-3 py-2 text-sm font-medium transition-colors border-b-2",
               tab === "files"
-                ? "border-primary text-zinc-100"
-                : "border-transparent text-zinc-500 hover:text-zinc-300",
+                ? "border-primary text-foreground"
+                : "border-transparent text-muted-foreground hover:text-foreground",
             )}
           >
             <FolderTree className="size-3.5" />
@@ -1051,8 +1051,8 @@ export function FileExplorer({ runnerId, cwd, className, onClose, position = "le
             className={cn(
               "flex items-center gap-1.5 px-3 py-2 text-sm font-medium transition-colors border-b-2",
               tab === "git"
-                ? "border-primary text-zinc-100"
-                : "border-transparent text-zinc-500 hover:text-zinc-300",
+                ? "border-primary text-foreground"
+                : "border-transparent text-muted-foreground hover:text-foreground",
             )}
           >
             <GitBranch className="size-3.5" />
@@ -1065,7 +1065,7 @@ export function FileExplorer({ runnerId, cwd, className, onClose, position = "le
           <button
             type="button"
             onClick={fetchFiles}
-            className="text-zinc-500 hover:text-zinc-200 transition-colors px-2 py-1"
+            className="text-muted-foreground hover:text-foreground transition-colors px-2 py-1"
             title="Refresh file list"
             aria-label="Refresh file list"
           >
@@ -1077,7 +1077,7 @@ export function FileExplorer({ runnerId, cwd, className, onClose, position = "le
         <div className="hidden md:flex items-center gap-px pr-1 shrink-0">
           {onDragStart && (
             <div
-              className="flex items-center justify-center size-7 rounded cursor-grab active:cursor-grabbing text-zinc-600 hover:text-zinc-400 hover:bg-zinc-800 transition-colors touch-none select-none"
+              className="flex items-center justify-center size-7 rounded cursor-grab active:cursor-grabbing text-muted-foreground/60 hover:text-muted-foreground hover:bg-accent transition-colors touch-none select-none"
               onPointerDown={onDragStart}
               title="Drag to reposition panel"
               aria-label="Drag to reposition panel"
@@ -1087,16 +1087,16 @@ export function FileExplorer({ runnerId, cwd, className, onClose, position = "le
           )}
           {onPositionChange && (
             <>
-              <div className="w-px h-4 bg-zinc-700 mx-1 shrink-0" />
+              <div className="w-px h-4 bg-border mx-1 shrink-0" />
               <PositionPicker position={position} onPositionChange={onPositionChange} />
-              <div className="w-px h-4 bg-zinc-700 mx-1 shrink-0" />
+              <div className="w-px h-4 bg-border mx-1 shrink-0" />
             </>
           )}
           {onClose && (
             <button
               type="button"
               onClick={onClose}
-              className="flex items-center justify-center size-7 rounded text-zinc-600 hover:text-zinc-200 hover:bg-zinc-800 transition-colors"
+              className="flex items-center justify-center size-7 rounded text-muted-foreground/60 hover:text-foreground hover:bg-accent transition-colors"
               title="Close file explorer"
               aria-label="Close file explorer"
             >
@@ -1109,7 +1109,7 @@ export function FileExplorer({ runnerId, cwd, className, onClose, position = "le
       </div>
 
       {/* Path breadcrumb */}
-      <div className="px-3 py-1.5 text-[0.65rem] text-zinc-500 font-mono truncate border-b border-zinc-800/50" title={cwd}>
+      <div className="px-3 py-1.5 text-[0.65rem] text-muted-foreground font-mono truncate border-b border-border/50" title={cwd}>
         {cwd}
       </div>
 
@@ -1128,7 +1128,7 @@ export function FileExplorer({ runnerId, cwd, className, onClose, position = "le
               </Button>
             </div>
           ) : files && files.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-8 text-zinc-500 gap-2">
+            <div className="flex flex-col items-center justify-center py-8 text-muted-foreground gap-2">
               <Folder className="size-8 opacity-30" />
               <p className="text-sm">Empty directory</p>
             </div>

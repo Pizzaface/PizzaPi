@@ -256,15 +256,15 @@ export function TerminalManager({
   }, [runnerId, defaultCwd, spawnDirect]);
 
   return (
-    <div className={cn("flex flex-col bg-zinc-950", className)}>
+    <div className={cn("flex flex-col bg-background", className)}>
       {/* ── Persistent topbar ─────────────────────────────────────────────── */}
-      <div className="flex items-center border-b border-zinc-800 bg-zinc-900/50 shrink-0 min-h-[36px] md:min-h-[32px]">
+      <div className="flex items-center border-b border-border bg-muted/50 shrink-0 min-h-[36px] md:min-h-[32px]">
         {/* Mobile: back button */}
         {onClose && (
           <Button
             variant="ghost"
             size="icon"
-            className="size-9 shrink-0 text-zinc-500 hover:text-zinc-100 hover:bg-zinc-800 md:hidden rounded-none"
+            className="size-9 shrink-0 text-muted-foreground hover:text-foreground hover:bg-accent md:hidden rounded-none"
             onClick={onClose}
             aria-label="Close terminal"
           >
@@ -274,7 +274,7 @@ export function TerminalManager({
 
         {/* "Terminal" label — hidden when embedded in CombinedPanel */}
         {!embedded && (
-          <div className="flex items-center gap-1.5 px-3 text-xs font-medium text-zinc-400 shrink-0 select-none">
+          <div className="flex items-center gap-1.5 px-3 text-xs font-medium text-muted-foreground shrink-0 select-none">
             <TerminalIcon className="size-3.5" />
             <span>Terminal</span>
           </div>
@@ -282,7 +282,7 @@ export function TerminalManager({
 
         {/* Divider before tabs when there are any (and not embedded) */}
         {!embedded && sessionTabs.length > 0 && (
-          <div className="w-px h-4 bg-zinc-700 shrink-0" />
+          <div className="w-px h-4 bg-border shrink-0" />
         )}
 
         {/* Tabs — only show tabs for the active session */}
@@ -295,8 +295,8 @@ export function TerminalManager({
                 className={cn(
                   "group flex items-center gap-1 rounded px-2 py-1 text-xs transition-colors shrink-0 cursor-pointer select-none",
                   isActive
-                    ? "bg-zinc-800 text-zinc-100"
-                    : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/50",
+                    ? "bg-accent text-foreground"
+                    : "text-muted-foreground hover:text-foreground hover:bg-accent/50",
                 )}
                 onClick={() => onActiveTabChange(tab.terminalId)}
               >
@@ -305,8 +305,8 @@ export function TerminalManager({
                   className={cn(
                     "rounded p-0.5 transition-colors",
                     isActive
-                      ? "text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700"
-                      : "text-transparent group-hover:text-zinc-500 hover:!text-zinc-200 hover:bg-zinc-700",
+                      ? "text-muted-foreground hover:text-foreground hover:bg-accent"
+                      : "text-transparent group-hover:text-muted-foreground hover:!text-foreground hover:bg-accent",
                   )}
                   onClick={(e) => { e.stopPropagation(); onTabClose(tab.terminalId); }}
                   aria-label={`Close ${tab.label}`}
@@ -323,7 +323,7 @@ export function TerminalManager({
           {/* Drag-to-reposition grip — hidden when embedded */}
           {!embedded && onDragStart && (
             <div
-              className="flex items-center justify-center size-7 rounded cursor-grab active:cursor-grabbing text-zinc-600 hover:text-zinc-400 hover:bg-zinc-800 transition-colors touch-none select-none"
+              className="flex items-center justify-center size-7 rounded cursor-grab active:cursor-grabbing text-muted-foreground/60 hover:text-muted-foreground hover:bg-accent transition-colors touch-none select-none"
               onPointerDown={onDragStart}
               title="Drag to reposition panel"
             >
@@ -332,13 +332,13 @@ export function TerminalManager({
           )}
 
           {/* Separator */}
-          {!embedded && onPositionChange && <div className="w-px h-4 bg-zinc-700 mx-1 shrink-0" />}
+          {!embedded && onPositionChange && <div className="w-px h-4 bg-border mx-1 shrink-0" />}
 
           {/* Position picker — hidden when embedded */}
           {!embedded && onPositionChange && (
             <>
               <PositionPicker position={position} onPositionChange={onPositionChange} />
-              <div className="w-px h-4 bg-zinc-700 mx-1 shrink-0" />
+              <div className="w-px h-4 bg-border mx-1 shrink-0" />
             </>
           )}
 
@@ -346,7 +346,7 @@ export function TerminalManager({
           <button
             onClick={handleAddTerminal}
             disabled={spawning}
-            className="flex items-center justify-center size-7 rounded text-zinc-500 hover:text-zinc-100 hover:bg-zinc-800 transition-colors disabled:opacity-40"
+            className="flex items-center justify-center size-7 rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors disabled:opacity-40"
             aria-label="New terminal"
             title={runnerId ? `New terminal in ${defaultCwd || "session directory"}` : "New terminal"}
           >
@@ -356,10 +356,10 @@ export function TerminalManager({
           {/* Close panel */}
           {onClose && (
             <>
-              <div className="w-px h-4 bg-zinc-700 mx-1 shrink-0" />
+              <div className="w-px h-4 bg-border mx-1 shrink-0" />
               <button
                 onClick={onClose}
-                className="flex items-center justify-center size-7 rounded text-zinc-500 hover:text-zinc-100 hover:bg-zinc-800 transition-colors"
+                className="flex items-center justify-center size-7 rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
                 aria-label="Close terminal panel"
                 title="Close terminal panel"
               >
@@ -373,7 +373,7 @@ export function TerminalManager({
         <Button
           variant="ghost"
           size="icon"
-          className="md:hidden size-9 shrink-0 text-zinc-500 hover:text-zinc-100 hover:bg-zinc-800 rounded-none"
+          className="md:hidden size-9 shrink-0 text-muted-foreground hover:text-foreground hover:bg-accent rounded-none"
           onClick={handleAddTerminal}
           disabled={spawning}
           aria-label="New terminal"
@@ -403,7 +403,7 @@ export function TerminalManager({
 
         {/* Empty state overlay — shown when current session has no terminals */}
         {sessionTabs.length === 0 && (
-          <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-4 text-zinc-500 bg-zinc-950">
+          <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-4 text-muted-foreground bg-background">
             <TerminalIcon className="size-10 opacity-20" />
             {sessionId != null ? (
               <>
@@ -490,7 +490,7 @@ const PositionDropdown = React.forwardRef<
   return (
     <div
       ref={ref}
-      className="fixed flex items-center gap-0.5 rounded-lg bg-zinc-800 border border-zinc-700 p-1 shadow-xl z-[9999] animate-in fade-in zoom-in-95 duration-100"
+      className="fixed flex items-center gap-0.5 rounded-lg bg-popover border border-border p-1 shadow-xl z-[9999] animate-in fade-in zoom-in-95 duration-100"
       style={{ top: coords.top, left: coords.left }}
     >
       {POSITION_OPTIONS.map(({ pos, Icon, label }) => (
@@ -500,8 +500,8 @@ const PositionDropdown = React.forwardRef<
           className={cn(
             "flex items-center justify-center size-7 rounded transition-colors",
             position === pos
-              ? "bg-zinc-600 text-zinc-100"
-              : "text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700",
+              ? "bg-accent text-foreground"
+              : "text-muted-foreground hover:text-foreground hover:bg-accent",
           )}
           title={label}
           aria-label={`Move panel to ${label}`}
@@ -594,8 +594,8 @@ function PositionPicker({
         className={cn(
           "flex items-center justify-center size-7 rounded transition-colors",
           open
-            ? "bg-zinc-700 text-zinc-200"
-            : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800",
+            ? "bg-accent text-foreground"
+            : "text-muted-foreground hover:text-foreground hover:bg-accent",
         )}
         title="Panel position"
         aria-label="Panel position"
@@ -662,9 +662,9 @@ function NewTerminalDialog({
           <div className="space-y-2">
             <Label>Runner</Label>
             {runnersLoading ? (
-              <p className="text-xs text-zinc-500">Loading runners…</p>
+              <p className="text-xs text-muted-foreground">Loading runners…</p>
             ) : runners.length === 0 ? (
-              <p className="text-xs text-zinc-500">No runners connected</p>
+              <p className="text-xs text-muted-foreground">No runners connected</p>
             ) : (
               <Select value={selectedRunnerId} onValueChange={onRunnerChange}>
                 <SelectTrigger>
@@ -700,7 +700,7 @@ function NewTerminalDialog({
                   <button
                     key={folder}
                     onClick={() => onCwdChange(folder)}
-                    className="rounded bg-zinc-800 px-2 py-0.5 text-[11px] text-zinc-400 hover:bg-zinc-700 hover:text-zinc-200 transition-colors truncate max-w-[200px]"
+                    className="rounded bg-secondary px-2 py-0.5 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground transition-colors truncate max-w-[200px]"
                   >
                     {folder.split("/").pop() || folder}
                   </button>

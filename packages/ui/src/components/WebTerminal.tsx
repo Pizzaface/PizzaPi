@@ -9,6 +9,69 @@ import { Button } from "@/components/ui/button";
 import { TerminalIcon, X, Maximize2, Minimize2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
+const DARK_THEME = {
+  background: "#09090b",
+  foreground: "#fafafa",
+  cursor: "#fafafa",
+  selectionBackground: "#3f3f46",
+  black: "#09090b",
+  red: "#ef4444",
+  green: "#22c55e",
+  yellow: "#eab308",
+  blue: "#3b82f6",
+  magenta: "#a855f7",
+  cyan: "#06b6d4",
+  white: "#fafafa",
+  brightBlack: "#52525b",
+  brightRed: "#f87171",
+  brightGreen: "#4ade80",
+  brightYellow: "#facc15",
+  brightBlue: "#60a5fa",
+  brightMagenta: "#c084fc",
+  brightCyan: "#22d3ee",
+  brightWhite: "#ffffff",
+} as const;
+
+const LIGHT_THEME = {
+  background: "#ffffff",
+  foreground: "#1c1917",
+  cursor: "#1c1917",
+  selectionBackground: "#d4d4d8",
+  black: "#1c1917",
+  red: "#dc2626",
+  green: "#16a34a",
+  yellow: "#ca8a04",
+  blue: "#2563eb",
+  magenta: "#9333ea",
+  cyan: "#0891b2",
+  white: "#fafafa",
+  brightBlack: "#71717a",
+  brightRed: "#ef4444",
+  brightGreen: "#22c55e",
+  brightYellow: "#eab308",
+  brightBlue: "#3b82f6",
+  brightMagenta: "#a855f7",
+  brightCyan: "#06b6d4",
+  brightWhite: "#ffffff",
+} as const;
+
+/** Returns true when the app is in dark mode (.dark on <html>). */
+function useIsDark(): boolean {
+  const [isDark, setIsDark] = React.useState(() =>
+    document.documentElement.classList.contains("dark"),
+  );
+
+  React.useEffect(() => {
+    const observer = new MutationObserver(() => {
+      setIsDark(document.documentElement.classList.contains("dark"));
+    });
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+    return () => observer.disconnect();
+  }, []);
+
+  return isDark;
+}
+
 const MOBILE_SHORTCUTS: { label: string; data: string }[] = [
   { label: "Tab", data: "\t" },
   { label: "Esc", data: "\x1b" },
@@ -50,36 +113,25 @@ export function WebTerminal({ terminalId, onClose, className }: WebTerminalProps
   const wsRef = React.useRef<Socket<TerminalServerToClientEvents, TerminalClientToServerEvents> | null>(null);
   const [status, setStatus] = React.useState<"connecting" | "connected" | "disconnected" | "error">("connecting");
   const [isMaximized, setIsMaximized] = React.useState(false);
+  const isDark = useIsDark();
+
+  // Update xterm theme when dark/light mode changes
+  React.useEffect(() => {
+    const term = xtermRef.current;
+    if (!term) return;
+    term.options.theme = isDark ? DARK_THEME : LIGHT_THEME;
+  }, [isDark]);
 
   React.useEffect(() => {
     if (!containerRef.current) return;
+
+    const initialTheme = document.documentElement.classList.contains("dark") ? DARK_THEME : LIGHT_THEME;
 
     const term = new XTerm({
       cursorBlink: true,
       fontSize: 14,
       fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', Menlo, Monaco, 'Courier New', monospace",
-      theme: {
-        background: "#09090b",
-        foreground: "#fafafa",
-        cursor: "#fafafa",
-        selectionBackground: "#3f3f46",
-        black: "#09090b",
-        red: "#ef4444",
-        green: "#22c55e",
-        yellow: "#eab308",
-        blue: "#3b82f6",
-        magenta: "#a855f7",
-        cyan: "#06b6d4",
-        white: "#fafafa",
-        brightBlack: "#52525b",
-        brightRed: "#f87171",
-        brightGreen: "#4ade80",
-        brightYellow: "#facc15",
-        brightBlue: "#60a5fa",
-        brightMagenta: "#c084fc",
-        brightCyan: "#22d3ee",
-        brightWhite: "#ffffff",
-      },
+      theme: initialTheme,
       allowProposedApi: true,
       scrollback: 10000,
     });
@@ -237,10 +289,10 @@ export function WebTerminal({ terminalId, onClose, className }: WebTerminalProps
   }, [onClose, terminalId]);
 
   const statusColor = {
-    connecting: "text-yellow-500",
-    connected: "text-green-500",
-    disconnected: "text-zinc-500",
-    error: "text-red-500",
+    connecting: "text-yellow-600 dark:text-yellow-500",
+    connected: "text-green-600 dark:text-green-500",
+    disconnected: "text-muted-foreground",
+    error: "text-red-600 dark:text-red-500",
   }[status];
 
   const statusLabel = {
@@ -261,14 +313,14 @@ export function WebTerminal({ terminalId, onClose, className }: WebTerminalProps
   return (
     <div
       className={cn(
-        "flex flex-col overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950",
+        "flex flex-col overflow-hidden rounded-lg border border-border bg-background",
         isMaximized && "fixed inset-0 z-50 rounded-none border-0",
         className,
       )}
     >
       {/* Header bar — compact status + controls */}
-      <div className="flex items-center justify-between border-zinc-800 border-b px-3 py-1 bg-zinc-900/50 min-h-[36px] md:min-h-0">
-        <div className="flex items-center gap-1.5 text-[11px] text-zinc-500">
+      <div className="flex items-center justify-between border-border border-b px-3 py-1 bg-muted/50 min-h-[36px] md:min-h-0">
+        <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
           <span className={cn("text-[10px]", statusColor)}>●</span>
           <span className={statusColor}>{statusLabel}</span>
         </div>
@@ -276,7 +328,7 @@ export function WebTerminal({ terminalId, onClose, className }: WebTerminalProps
           <Button
             variant="ghost"
             size="icon"
-            className="size-8 md:size-5 text-zinc-500 hover:text-zinc-100 hover:bg-zinc-800"
+            className="size-8 md:size-5 text-muted-foreground hover:text-foreground hover:bg-accent"
             onClick={() => setIsMaximized((v) => !v)}
             aria-label={isMaximized ? "Restore terminal size" : "Maximize terminal"}
             title={isMaximized ? "Restore terminal size" : "Maximize terminal"}
@@ -286,7 +338,7 @@ export function WebTerminal({ terminalId, onClose, className }: WebTerminalProps
           <Button
             variant="ghost"
             size="icon"
-            className="size-8 md:size-5 text-zinc-500 hover:text-red-400 hover:bg-zinc-800"
+            className="size-8 md:size-5 text-muted-foreground hover:text-red-500 hover:bg-accent"
             onClick={handleClose}
             aria-label="Close terminal"
             title="Close terminal"
@@ -305,7 +357,7 @@ export function WebTerminal({ terminalId, onClose, className }: WebTerminalProps
         style={{ minHeight: isMaximized ? undefined : "min(300px, calc(100dvh - 120px))" }}
       />
       {/* Mobile keyboard shortcut bar */}
-      <div className="md:hidden flex items-center gap-1.5 border-t border-zinc-800 bg-zinc-900/70 px-2 py-2 overflow-x-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+      <div className="md:hidden flex items-center gap-1.5 border-t border-border bg-muted/70 px-2 py-2 overflow-x-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
         {MOBILE_SHORTCUTS.map(({ label, data }) => (
           <button
             key={label}
@@ -320,7 +372,7 @@ export function WebTerminal({ terminalId, onClose, className }: WebTerminalProps
             // pop up unexpectedly.  Without preventDefault the touch events
             // are left alone, which also keeps the horizontal scroll working.
             tabIndex={-1}
-            className="flex-shrink-0 rounded bg-zinc-800 px-3 py-1.5 text-xs font-mono text-zinc-300 active:bg-zinc-600 select-none touch-manipulation min-w-[40px] text-center"
+            className="flex-shrink-0 rounded bg-secondary px-3 py-1.5 text-xs font-mono text-secondary-foreground active:bg-accent select-none touch-manipulation min-w-[40px] text-center"
             onPointerDown={(e) => {
               // Fire immediately on pointer-down for best responsiveness.
               // We deliberately skip e.preventDefault() — see comment above.

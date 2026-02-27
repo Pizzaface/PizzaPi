@@ -37,7 +37,7 @@ const PositionDropdown = React.forwardRef<
   return (
     <div
       ref={ref}
-      className="fixed flex items-center gap-0.5 rounded-lg bg-zinc-800 border border-zinc-700 p-1 shadow-xl z-[9999] animate-in fade-in zoom-in-95 duration-100"
+      className="fixed flex items-center gap-0.5 rounded-lg bg-popover border border-border p-1 shadow-xl z-[9999] animate-in fade-in zoom-in-95 duration-100"
       style={{ top: coords.top, left: coords.left }}
     >
       {POSITION_OPTIONS.map(({ pos, Icon, label }) => (
@@ -48,8 +48,8 @@ const PositionDropdown = React.forwardRef<
           className={cn(
             "flex items-center justify-center size-7 rounded transition-colors",
             position === pos
-              ? "bg-zinc-600 text-zinc-100"
-              : "text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700",
+              ? "bg-accent text-foreground"
+              : "text-muted-foreground hover:text-foreground hover:bg-accent",
           )}
           title={label}
           aria-label={`Move panel to ${label}`}
@@ -141,8 +141,8 @@ function PositionPicker({
         className={cn(
           "flex items-center justify-center size-7 rounded transition-colors",
           open
-            ? "bg-zinc-700 text-zinc-200"
-            : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800",
+            ? "bg-accent text-foreground"
+            : "text-muted-foreground hover:text-foreground hover:bg-accent",
         )}
         title="Panel position"
         aria-label="Panel position"
@@ -205,9 +205,9 @@ export function CombinedPanel({
   } | null>(null);
 
   return (
-    <div className={cn("flex flex-col bg-zinc-950 text-zinc-100", className)}>
+    <div className={cn("flex flex-col bg-background text-foreground", className)}>
       {/* Tab bar */}
-      <div className="flex items-center border-b border-zinc-800 bg-zinc-900/50 shrink-0 min-h-[32px]">
+      <div className="flex items-center border-b border-border bg-muted/50 shrink-0 min-h-[32px]">
         <div className="flex items-center flex-1 overflow-x-auto gap-0.5 px-1">
           {tabs.map((tab) => {
             const isActive = activeTabId === tab.id;
@@ -218,8 +218,8 @@ export function CombinedPanel({
                 className={cn(
                   "group flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium transition-colors select-none",
                   isActive
-                    ? "text-zinc-100 border-b-2 border-primary"
-                    : "text-zinc-500 hover:text-zinc-300 border-b-2 border-transparent",
+                    ? "text-foreground border-b-2 border-primary"
+                    : "text-muted-foreground hover:text-foreground border-b-2 border-transparent",
                   hasDrag ? "cursor-grab active:cursor-grabbing" : "cursor-pointer",
                 )}
                 onClick={() => {
@@ -276,8 +276,8 @@ export function CombinedPanel({
                     className={cn(
                       "rounded p-0.5 transition-colors ml-0.5",
                       isActive
-                        ? "text-zinc-400 hover:text-zinc-100 hover:bg-zinc-700"
-                        : "text-transparent group-hover:text-zinc-500 hover:!text-zinc-200 hover:bg-zinc-700",
+                        ? "text-muted-foreground hover:text-foreground hover:bg-accent"
+                        : "text-transparent group-hover:text-muted-foreground hover:!text-foreground hover:bg-accent",
                     )}
                     aria-label={`Close ${tab.label}`}
                   >
@@ -293,7 +293,7 @@ export function CombinedPanel({
         <div className="flex items-center gap-px pr-1 shrink-0">
           {onDragStart && (
             <div
-              className="flex items-center justify-center size-7 rounded cursor-grab active:cursor-grabbing text-zinc-600 hover:text-zinc-400 hover:bg-zinc-800 transition-colors touch-none select-none"
+              className="flex items-center justify-center size-7 rounded cursor-grab active:cursor-grabbing text-muted-foreground/60 hover:text-muted-foreground hover:bg-accent transition-colors touch-none select-none"
               onPointerDown={onDragStart}
               title="Drag to reposition panel"
             >
@@ -302,7 +302,7 @@ export function CombinedPanel({
           )}
           {onPositionChange && (
             <>
-              <div className="w-px h-4 bg-zinc-700 mx-1 shrink-0" />
+              <div className="w-px h-4 bg-border mx-1 shrink-0" />
               <PositionPicker position={position} onPositionChange={onPositionChange} />
             </>
           )}
