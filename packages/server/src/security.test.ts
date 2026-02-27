@@ -101,20 +101,24 @@ describe("isValidEmail", () => {
 });
 
 describe("isValidPassword", () => {
-    test("accepts passwords >= 8 characters", () => {
-        expect(isValidPassword("12345678")).toBe(true);
-        expect(isValidPassword("a very long password with spaces")).toBe(true);
-        expect(isValidPassword("abcdefgh")).toBe(true);
+    test("accepts valid passwords (>=8 chars, 1 upper, 1 lower, 1 number)", () => {
+        expect(isValidPassword("Abc12345")).toBe(true);
+        expect(isValidPassword("ComplexPass1")).toBe(true);
+        expect(isValidPassword("1234Abcd")).toBe(true);
     });
 
     test("rejects passwords < 8 characters", () => {
-        expect(isValidPassword("short")).toBe(false);
+        expect(isValidPassword("Short1A")).toBe(false);
         expect(isValidPassword("1234567")).toBe(false);
         expect(isValidPassword("")).toBe(false);
     });
 
-    test("boundary: exactly 8 characters", () => {
-        expect(isValidPassword("12345678")).toBe(true);
-        expect(isValidPassword("1234567")).toBe(false);
+    test("rejects passwords missing required character types", () => {
+        // No uppercase
+        expect(isValidPassword("abcdefg1")).toBe(false);
+        // No lowercase
+        expect(isValidPassword("ABCDEFG1")).toBe(false);
+        // No number
+        expect(isValidPassword("Abcdefgh")).toBe(false);
     });
 });
