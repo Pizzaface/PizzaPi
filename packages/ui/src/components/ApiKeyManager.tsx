@@ -11,6 +11,62 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { RevealedSecretBanner } from "@/components/ui/revealed-secret";
 import { Spinner } from "@/components/ui/spinner";
 
+function DeleteKeyButton({ onDelete, isDeleting }: { onDelete: () => void; isDeleting: boolean }) {
+    const [confirming, setConfirming] = React.useState(false);
+
+    React.useEffect(() => {
+        if (!confirming) return;
+        const timer = setTimeout(() => setConfirming(false), 3000);
+        return () => clearTimeout(timer);
+    }, [confirming]);
+
+    if (isDeleting) {
+        return (
+            <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7 flex-shrink-0 text-destructive"
+                disabled
+            >
+                <Spinner className="h-3.5 w-3.5" />
+            </Button>
+        );
+    }
+
+    if (confirming) {
+        return (
+            <Button
+                variant="destructive"
+                size="sm"
+                className="h-7 px-2 text-xs animate-in fade-in zoom-in duration-200"
+                onClick={(e) => {
+                    e.stopPropagation();
+                    onDelete();
+                    setConfirming(false);
+                }}
+            >
+                Sure?
+            </Button>
+        );
+    }
+
+    return (
+        <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 flex-shrink-0 text-muted-foreground hover:text-destructive transition-colors"
+            onClick={(e) => {
+                e.stopPropagation();
+                setConfirming(true);
+            }}
+            title="Revoke key"
+            aria-label="Revoke key"
+        >
+            <Trash2 className="h-3.5 w-3.5" />
+        </Button>
+    );
+}
+
 interface ApiKey {
     id: string;
     name: string | null;
@@ -130,13 +186,22 @@ export function ApiKeyManager() {
                             onChange={(e) => setNewKeyName(e.target.value)}
                         />
                     </div>
-                    <Button type="submit" disabled={creating} className="flex-shrink-0">
-                        <Plus className="h-4 w-4 mr-1" />
-                        {creating ? "Creating…" : "Create"}
+                    <Button type="submit" disabled={creating} className="flex-shrink-0 min-w-[80px]">
+                        {creating ? (
+                            <Spinner className="h-4 w-4" />
+                        ) : (
+                            <>
+                                <Plus className="h-4 w-4 mr-1" /> Create
+                            </>
+                        )}
                     </Button>
                 </form>
 
-                {error && <p className="text-sm text-destructive">{error}</p>}
+                {error && (
+                    <p className="text-sm text-destructive" role="alert" aria-live="polite">
+                        {error}
+                    </p>
+                )}
 
                 {/* Key list */}
                 {loading ? (
@@ -170,21 +235,10 @@ export function ApiKeyManager() {
                                                 : " · no expiry"}
                                         </span>
                                     </div>
-                                    <Button
-                                        variant="ghost"
-                                        size="icon"
-                                        className="h-7 w-7 flex-shrink-0 text-destructive hover:text-destructive"
-                                        onClick={() => handleDelete(k.id)}
-                                        disabled={deletingKeyId === k.id}
-                                        title="Revoke key"
-                                        aria-label="Revoke key"
-                                    >
-                                        {deletingKeyId === k.id ? (
-                                            <Spinner className="h-3.5 w-3.5" />
-                                        ) : (
-                                            <Trash2 className="h-3.5 w-3.5" />
-                                        )}
-                                    </Button>
+                                    <DeleteKeyButton
+                                        onDelete={() => handleDelete(k.id)}
+                                        isDeleting={deletingKeyId === k.id}
+                                    />
                                 </div>
                             ))}
                         </div>
