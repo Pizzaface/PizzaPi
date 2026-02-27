@@ -35,7 +35,11 @@ export interface TerminalEntry {
 const runningTerminals = new Map<string, TerminalEntry>();
 
 /** Is this process running inside a compiled Bun single-file binary? */
-const isCompiledBinary = import.meta.url.startsWith("file:///$bunfs/");
+// On Unix, compiled Bun binaries use file:///$bunfs/…
+// On Windows, compiled Bun binaries use file:///X:/~BUN/… (drive letter varies)
+const isCompiledBinary =
+    import.meta.url.startsWith("file:///$bunfs/") ||
+    /^file:\/\/\/[A-Za-z]:\/~BUN\//i.test(import.meta.url);
 
 /**
  * Resolve the path to the @zenyr/bun-pty native shared library.

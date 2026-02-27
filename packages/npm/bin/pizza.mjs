@@ -33,7 +33,7 @@ if (!pkgName) {
     console.error(
         `Error: PizzaPi does not have a prebuilt binary for your platform (${platformKey}).\n` +
             `Supported platforms: ${Object.keys(PLATFORM_PACKAGES).join(", ")}\n\n` +
-            `You can build from source: https://github.com/badlogic/PizzaPi`,
+            `You can build from source: https://github.com/Pizzaface/PizzaPi`,
     );
     process.exit(1);
 }
@@ -53,7 +53,18 @@ function findBinary() {
         // not found via require
     }
 
-    // Strategy 2: Check common node_modules layouts (hoisted, nested)
+    const parts = pkgName.split("/");
+
+    // Strategy 2: Sibling scoped package — both packages live under
+    // node_modules/@pizzapi/, so the platform package is a sibling of ours.
+    // __dirname = .../node_modules/@pizzapi/pizza/bin
+    // sibling  = .../node_modules/@pizzapi/cli-win32-x64/bin/pizza.exe
+    {
+        const siblingPath = join(__dirname, "..", "..", parts[1], "bin", binName);
+        if (existsSync(siblingPath)) return siblingPath;
+    }
+
+    // Strategy 3: Check common node_modules layouts (hoisted, nested)
     const searchRoots = [
         join(__dirname, "..", "node_modules"),
         join(__dirname, "..", "..", "node_modules"),
@@ -61,8 +72,6 @@ function findBinary() {
     ];
 
     for (const root of searchRoots) {
-        // Scoped package: node_modules/@pizzapi/cli-<platform>/bin/pizzapi
-        const parts = pkgName.split("/");
         const binPath = join(root, parts[0], parts[1], "bin", binName);
         if (existsSync(binPath)) return binPath;
     }
@@ -78,10 +87,10 @@ if (!binaryPath) {
             `The platform-specific package "${pkgName}" should have been installed\n` +
             `automatically as an optional dependency.\n\n` +
             `Try reinstalling:\n` +
-            `  npm install pizzapi\n\n` +
+            `  npm install @pizzapi/pizza\n\n` +
             `If the problem persists, install the platform package directly:\n` +
             `  npm install ${pkgName}\n\n` +
-            `Or build from source: https://github.com/badlogic/PizzaPi`,
+            `Or build from source: https://github.com/Pizzaface/PizzaPi`,
     );
     process.exit(1);
 }

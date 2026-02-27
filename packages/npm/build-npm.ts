@@ -171,6 +171,11 @@ for (const platform of PLATFORMS) {
             pizza: `bin/${platform.binOutputName}`,
         },
         files: ["bin/"],
+        repository: {
+            type: "git",
+            url: "git+https://github.com/Pizzaface/PizzaPi.git",
+        },
+        homepage: "https://github.com/Pizzaface/PizzaPi",
         publishConfig: {
             access: "public",
         },

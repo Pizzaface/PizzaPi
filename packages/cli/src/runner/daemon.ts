@@ -1378,7 +1378,11 @@ function spawnSession(
 }
 
 /** Is this process running inside a compiled Bun single-file binary? */
-const isCompiledBinary = import.meta.url.startsWith("file:///$bunfs/");
+// On Unix, compiled Bun binaries use file:///$bunfs/…
+// On Windows, compiled Bun binaries use file:///X:/~BUN/… (drive letter varies)
+const isCompiledBinary =
+    import.meta.url.startsWith("file:///$bunfs/") ||
+    /^file:\/\/\/[A-Za-z]:\/~BUN\//i.test(import.meta.url);
 
 /**
  * Returns the spawn arguments for starting a worker subprocess.
