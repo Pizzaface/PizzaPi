@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { normalizePath, parseJsonArray, cwdMatchesRoots } from "./api";
+import { parseJsonArray } from "./api";
+import { normalizePath, cwdMatchesRoots } from "../security";
 
 // ── normalizePath ───────────────────────────────────────────────────────────
 

@@ -68,7 +68,7 @@ export function isValidPassword(password: string): boolean {
     return hasUpperCase && hasLowerCase && hasNumber;
 }
 
-function normalizePath(value: string): string {
+export function normalizePath(value: string): string {
     const trimmed = value.trim().replace(/\\/g, "/");
     return trimmed.length > 1 ? trimmed.replace(/\/+$/, "") : trimmed;
 }
