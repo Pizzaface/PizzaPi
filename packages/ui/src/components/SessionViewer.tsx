@@ -249,6 +249,7 @@ function ComposerAttachmentButton() {
       className="size-8 shrink-0 text-muted-foreground"
       onClick={() => attachments.openFileDialog()}
       title="Add attachments"
+      aria-label="Add attachments"
     >
       <PaperclipIcon className="size-4" />
     </Button>
@@ -892,6 +893,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                   }
                 }}
                 title="Click to cycle effort level"
+                aria-label={`Cycle reasoning effort level (current: ${effortLevel && effortLevel !== "off" ? effortLevel : "off"})`}
                 type="button"
               >
                 {effortLevel && effortLevel !== "off" ? effortLevel : "off"}
@@ -916,6 +918,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                 type="button"
                 variant="outline"
                 title="Toggle terminal"
+                aria-label="Toggle terminal"
               >
                 <TerminalIcon className="size-3.5" />
                 <span className="hidden sm:inline ml-1">Terminal</span>
@@ -929,6 +932,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                 type="button"
                 variant="outline"
                 title="Toggle file explorer"
+                aria-label="Toggle file explorer"
               >
                 <FolderTree className="size-3.5" />
                 <span className="hidden sm:inline ml-1">Files</span>
@@ -947,6 +951,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
               variant="outline"
               size="icon"
               title="Download conversation markdown"
+              aria-label="Download conversation"
             >
               <DownloadIcon className="size-3.5" />
               <span className="hidden sm:inline ml-1">Save</span>
@@ -966,6 +971,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
               type="button"
               variant="destructive"
               title="End Session"
+              aria-label="End session"
             >
               <OctagonX className="size-3.5" />
               <span className="hidden sm:inline ml-1">End</span>
@@ -985,6 +991,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
               type="button"
               variant="outline"
               title="New conversation (/new)"
+              aria-label="Clear conversation"
             >
               <Plus className="size-3.5" />
               <span className="hidden sm:inline ml-1">Clear</span>
@@ -1048,6 +1055,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                 size="icon"
                 type="button"
                 variant="outline"
+                aria-label="Scroll to bottom"
               >
                 <ArrowDownIcon className="size-4" />
               </Button>
@@ -1100,6 +1108,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                       onClick={() => onRemoveQueuedMessage(qm.id)}
                       className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-all flex-shrink-0 mt-0.5"
                       title="Remove queued message"
+                      aria-label="Remove queued message"
                     >
                       <X className="size-3" />
                     </button>
