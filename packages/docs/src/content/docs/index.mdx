@@ -25,14 +25,6 @@ import { Card, CardGrid, LinkButton, Aside, Steps } from "@astrojs/starlight/com
 
 <svg viewBox="0 0 600 350" xmlns="http://www.w3.org/2000/svg">
   <rect width="600" height="350" fill="#1e1e1e" rx="8"/>
-  
-  <style>
-    .box { fill: #2d2d2d; stroke: #4a9eff; stroke-width: 2; rx: 6; }
-    .text-main { fill: #ffffff; font-family: 'Segoe UI', Roboto, sans-serif; font-size: 14px; font-weight: bold; }
-    .text-sub { fill: #aaaaaa; font-family: 'Segoe UI', Roboto, sans-serif; font-size: 12px; }
-    .arrow { stroke: #4a9eff; stroke-width: 2; fill: none; marker-end: url(#arrowhead); }
-    .label { fill: #4a9eff; font-family: 'Segoe UI', Roboto, sans-serif; font-size: 11px; font-weight: bold; }
-  </style>
 
   <defs>
     <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="0" refY="3.5" orient="auto">
@@ -40,23 +32,23 @@ import { Card, CardGrid, LinkButton, Aside, Steps } from "@astrojs/starlight/com
     </marker>
   </defs>
 
-  <rect x="40" y="50" width="180" height="80" class="box" />
-  <text x="130" y="85" text-anchor="middle" class="text-main">pizzapi CLI</text>
-  <text x="130" y="105" text-anchor="middle" class="text-sub">(your dev machine)</text>
+  <rect x="40" y="50" width="180" height="80" fill="#2d2d2d" stroke="#4a9eff" stroke-width="2" rx="6" />
+  <text x="130" y="85" text-anchor="middle" fill="#ffffff" font-family="'Segoe UI', Roboto, sans-serif" font-size="14" font-weight="bold">pizzapi CLI</text>
+  <text x="130" y="105" text-anchor="middle" fill="#aaaaaa" font-family="'Segoe UI', Roboto, sans-serif" font-size="12">(your dev machine)</text>
 
-  <rect x="360" y="50" width="200" height="80" class="box" />
-  <text x="460" y="85" text-anchor="middle" class="text-main">PizzaPi Relay Server</text>
-  <text x="460" y="105" text-anchor="middle" class="text-sub">(self-hosted / cloud)</text>
+  <rect x="360" y="50" width="200" height="80" fill="#2d2d2d" stroke="#4a9eff" stroke-width="2" rx="6" />
+  <text x="460" y="85" text-anchor="middle" fill="#ffffff" font-family="'Segoe UI', Roboto, sans-serif" font-size="14" font-weight="bold">PizzaPi Relay Server</text>
+  <text x="460" y="105" text-anchor="middle" fill="#aaaaaa" font-family="'Segoe UI', Roboto, sans-serif" font-size="12">(self-hosted / cloud)</text>
 
-  <rect x="360" y="220" width="200" height="80" class="box" />
-  <text x="460" y="255" text-anchor="middle" class="text-main">Browser / Mobile</text>
-  <text x="460" y="275" text-anchor="middle" class="text-sub">Web UI</text>
+  <rect x="360" y="220" width="200" height="80" fill="#2d2d2d" stroke="#4a9eff" stroke-width="2" rx="6" />
+  <text x="460" y="255" text-anchor="middle" fill="#ffffff" font-family="'Segoe UI', Roboto, sans-serif" font-size="14" font-weight="bold">Browser / Mobile</text>
+  <text x="460" y="275" text-anchor="middle" fill="#aaaaaa" font-family="'Segoe UI', Roboto, sans-serif" font-size="12">Web UI</text>
 
-  <line x1="220" y1="90" x2="350" y2="90" class="arrow" />
-  <text x="285" y="80" text-anchor="middle" class="label">WebSocket</text>
+  <line x1="220" y1="90" x2="350" y2="90" stroke="#4a9eff" stroke-width="2" marker-end="url(#arrowhead)" />
+  <text x="285" y="80" text-anchor="middle" fill="#4a9eff" font-family="'Segoe UI', Roboto, sans-serif" font-size="11" font-weight="bold">WebSocket</text>
 
-  <line x1="460" y1="130" x2="460" y2="210" class="arrow" />
-  <text x="470" y="175" text-anchor="start" class="label">HTTP / WS</text>
+  <line x1="460" y1="130" x2="460" y2="210" stroke="#4a9eff" stroke-width="2" marker-end="url(#arrowhead)" />
+  <text x="470" y="175" text-anchor="start" fill="#4a9eff" font-family="'Segoe UI', Roboto, sans-serif" font-size="11" font-weight="bold">HTTP / WS</text>
 </svg>
 
 <CardGrid stagger>
