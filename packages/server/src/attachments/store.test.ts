@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { sanitizeFilename, attachmentMaxFileSizeBytes } from "./store";
 
 describe("sanitizeFilename", () => {
@@ -35,23 +35,47 @@ describe("sanitizeFilename", () => {
 });
 
 describe("attachmentMaxFileSizeBytes", () => {
-    test("returns default when env var is not set", () => {
-        const original = process.env.PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES;
-        delete process.env.PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES;
-        expect(attachmentMaxFileSizeBytes()).toBe(20 * 1024 * 1024); // 20MB
-        if (original !== undefined) {
-            process.env.PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES = original;
-        }
+    let originalEnvVar: string | undefined;
+
+    beforeEach(() => {
+        originalEnvVar = process.env.PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES;
     });
 
-    test("returns default for invalid env var", () => {
-        const original = process.env.PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES;
-        process.env.PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES = "not-a-number";
-        expect(attachmentMaxFileSizeBytes()).toBe(20 * 1024 * 1024);
-        if (original !== undefined) {
-            process.env.PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES = original;
+    afterEach(() => {
+        if (originalEnvVar !== undefined) {
+            process.env.PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES = originalEnvVar;
         } else {
             delete process.env.PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES;
         }
+    });
+
+    test("returns default when env var is not set", () => {
+        delete process.env.PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES;
+        expect(attachmentMaxFileSizeBytes()).toBe(20 * 1024 * 1024); // 20MB
+    });
+
+    test("returns default for invalid env var", () => {
+        process.env.PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES = "not-a-number";
+        expect(attachmentMaxFileSizeBytes()).toBe(20 * 1024 * 1024);
+    });
+
+    test("returns default for empty env var", () => {
+        process.env.PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES = "";
+        expect(attachmentMaxFileSizeBytes()).toBe(20 * 1024 * 1024);
+    });
+
+    test("returns default for negative env var", () => {
+        process.env.PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES = "-100";
+        expect(attachmentMaxFileSizeBytes()).toBe(20 * 1024 * 1024);
+    });
+
+    test("returns default for zero env var", () => {
+        process.env.PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES = "0";
+        expect(attachmentMaxFileSizeBytes()).toBe(20 * 1024 * 1024);
+    });
+
+    test("returns parsed value for valid positive integer env var", () => {
+        process.env.PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES = "1048576"; // 1MB
+        expect(attachmentMaxFileSizeBytes()).toBe(1048576);
     });
 });
