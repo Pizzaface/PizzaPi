@@ -215,6 +215,8 @@ function FileTreeNode({
       <button
         type="button"
         onClick={toggle}
+        aria-expanded={entry.isDirectory ? expanded : undefined}
+        aria-label={entry.isDirectory ? `Folder ${entry.name}` : `File ${entry.name}`}
         className={cn(
           "flex items-center gap-1 w-full text-left px-2 py-1 text-sm hover:bg-zinc-800/60 transition-colors rounded-sm group",
           !entry.isDirectory && "cursor-pointer",
@@ -223,7 +225,7 @@ function FileTreeNode({
       >
         {chevron}
         {icon}
-        <span className="truncate flex-1">
+        <span className="truncate flex-1" title={entry.name}>
           {emoji ? <span className="mr-1 text-xs">{emoji}</span> : null}
           {entry.name}
           {entry.isSymlink && <span className="text-xs text-zinc-500 ml-1">→</span>}
@@ -335,6 +337,7 @@ function ImageViewer({
           type="button"
           onClick={onClose}
           className="text-zinc-400 hover:text-zinc-100 transition-colors"
+          aria-label="Back to file list"
         >
           <ChevronLeft className="size-4" />
         </button>
@@ -362,6 +365,7 @@ function ImageViewer({
             onClick={zoomOut}
             className="p-1 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 rounded transition-colors"
             title="Zoom out"
+            aria-label="Zoom out"
           >
             <ZoomOut className="size-3.5" />
           </button>
@@ -373,6 +377,7 @@ function ImageViewer({
             onClick={zoomIn}
             className="p-1 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 rounded transition-colors"
             title="Zoom in"
+            aria-label="Zoom in"
           >
             <ZoomIn className="size-3.5" />
           </button>
@@ -387,6 +392,7 @@ function ImageViewer({
                 : "text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800",
             )}
             title={fitMode === "contain" ? "Show actual size" : "Fit to view"}
+            aria-label={fitMode === "contain" ? "Show actual size" : "Fit to view"}
           >
             <Maximize2 className="size-3.5" />
           </button>
@@ -395,6 +401,7 @@ function ImageViewer({
             onClick={resetZoom}
             className="p-1 text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 rounded transition-colors"
             title="Reset zoom"
+            aria-label="Reset zoom"
           >
             <RotateCw className="size-3.5" />
           </button>
@@ -516,6 +523,7 @@ function FileViewer({
           type="button"
           onClick={onClose}
           className="text-zinc-400 hover:text-zinc-100 transition-colors"
+          aria-label="Back to file list"
         >
           <ChevronLeft className="size-4" />
         </button>
@@ -650,6 +658,7 @@ function GitChangesView({
             type="button"
             onClick={() => setSelectedDiff(null)}
             className="text-zinc-400 hover:text-zinc-100 transition-colors"
+            aria-label="Back to file list"
           >
             <ChevronLeft className="size-4" />
           </button>
@@ -701,6 +710,7 @@ function GitChangesView({
           onClick={fetchStatus}
           className="text-zinc-500 hover:text-zinc-200 transition-colors"
           title="Refresh git status"
+          aria-label="Refresh git status"
         >
           <RefreshCw className="size-3.5" />
         </button>
@@ -1054,6 +1064,7 @@ export function FileExplorer({ runnerId, cwd, className, onClose, position = "le
             onClick={fetchFiles}
             className="text-zinc-500 hover:text-zinc-200 transition-colors px-2 py-1"
             title="Refresh file list"
+            aria-label="Refresh file list"
           >
             <RefreshCw className="size-3.5" />
           </button>
@@ -1066,6 +1077,7 @@ export function FileExplorer({ runnerId, cwd, className, onClose, position = "le
               className="flex items-center justify-center size-7 rounded cursor-grab active:cursor-grabbing text-zinc-600 hover:text-zinc-400 hover:bg-zinc-800 transition-colors touch-none select-none"
               onPointerDown={onDragStart}
               title="Drag to reposition panel"
+              aria-label="Drag to reposition panel"
             >
               <GripHorizontal size={13} />
             </div>
@@ -1083,6 +1095,7 @@ export function FileExplorer({ runnerId, cwd, className, onClose, position = "le
               onClick={onClose}
               className="flex items-center justify-center size-7 rounded text-zinc-600 hover:text-zinc-200 hover:bg-zinc-800 transition-colors"
               title="Close file explorer"
+              aria-label="Close file explorer"
             >
               <X className="size-3.5" />
             </button>
