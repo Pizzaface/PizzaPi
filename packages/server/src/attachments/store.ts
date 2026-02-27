@@ -11,6 +11,7 @@ export interface StoredAttachment {
     size: number;
     createdAt: string;
     expiresAt: string;
+    expiresAtMs?: number;
     filePath: string;
 }
 
@@ -64,6 +65,7 @@ export async function storeSessionAttachment(input: {
         size: file.size,
         createdAt: new Date(createdAtMs).toISOString(),
         expiresAt: new Date(expiresAtMs).toISOString(),
+        expiresAtMs,
         filePath: targetPath,
     };
 
@@ -75,7 +77,8 @@ export function getStoredAttachment(attachmentId: string): StoredAttachment | nu
     const record = attachments.get(attachmentId);
     if (!record) return null;
 
-    if (Date.parse(record.expiresAt) <= Date.now()) {
+    const expiresAtMs = record.expiresAtMs ?? Date.parse(record.expiresAt);
+    if (expiresAtMs <= Date.now()) {
         void deleteStoredAttachment(attachmentId);
         return null;
     }
@@ -95,7 +98,7 @@ export async function deleteStoredAttachment(attachmentId: string): Promise<void
 export async function sweepExpiredAttachments(nowMs: number = Date.now()): Promise<void> {
     const removals: Promise<void>[] = [];
     for (const [attachmentId, record] of attachments.entries()) {
-        const expiresAtMs = Date.parse(record.expiresAt);
+        const expiresAtMs = record.expiresAtMs ?? Date.parse(record.expiresAt);
         if (!Number.isFinite(expiresAtMs) || expiresAtMs > nowMs) continue;
         removals.push(deleteStoredAttachment(attachmentId));
     }
