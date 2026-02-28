@@ -2262,10 +2262,10 @@ export function App() {
             <span className={relayStatusDot(relayStatus)} />
             <span>{relayStatusLabel(relayStatus)}</span>
           </div>
-          {providerUsage && (
+          {(providerUsage || authSource) && (
             <>
               <Separator orientation="vertical" className="h-5" />
-              <UsageIndicator usage={providerUsage} />
+              <UsageIndicator usage={providerUsage} authSource={authSource} activeProvider={activeModel?.provider} />
             </>
           )}
         </div>
@@ -2451,9 +2451,9 @@ export function App() {
 
         {/* Right: usage + account */}
         <div className="flex items-center gap-1 flex-shrink-0">
-          {providerUsage && (
+          {(providerUsage || authSource) && (
             <div className="hidden xs:flex">
-              <UsageIndicator usage={providerUsage} />
+              <UsageIndicator usage={providerUsage} authSource={authSource} activeProvider={activeModel?.provider} />
             </div>
           )}
           <DropdownMenu>
@@ -2472,9 +2472,9 @@ export function App() {
               {userEmail && (
                 <div className="px-2 pb-1 text-xs text-muted-foreground truncate">{userEmail}</div>
               )}
-              {providerUsage && (
+              {(providerUsage || authSource) && (
                 <div className="px-2 py-1.5 border-t border-border/50">
-                  <UsageIndicator usage={providerUsage} />
+                  <UsageIndicator usage={providerUsage} authSource={authSource} activeProvider={activeModel?.provider} />
                 </div>
               )}
               <DropdownMenuSeparator />
@@ -2780,7 +2780,6 @@ export function App() {
                   onShowModelSelector={() => setModelSelectorOpen(true)}
                   agentActive={agentActive}
                   effortLevel={effortLevel}
-                  authSource={authSource}
                   tokenUsage={tokenUsage}
                   lastHeartbeatAt={lastHeartbeatAt}
                   viewerStatus={viewerStatus}
