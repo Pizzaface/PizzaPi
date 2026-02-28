@@ -73,7 +73,7 @@ export function forwardCliError(message: string, source?: string): void {
  * agent events in real-time so any browser client can pick up the session.
  *
  * Config:
- *   PIZZAPI_RELAY_URL  WebSocket URL of the relay (default: ws://localhost:3000)
+ *   PIZZAPI_RELAY_URL  WebSocket URL of the relay (default: ws://localhost:7492)
  *                      Set to "off" to disable auto-connect.
  *
  * Commands:

@@ -35,11 +35,10 @@ export interface TerminalEntry {
 const runningTerminals = new Map<string, TerminalEntry>();
 
 /** Is this process running inside a compiled Bun single-file binary? */
-// On Unix, compiled Bun binaries use file:///$bunfs/…
-// On Windows, compiled Bun binaries use file:///X:/~BUN/… (drive letter varies)
-const isCompiledBinary =
-    import.meta.url.startsWith("file:///$bunfs/") ||
-    /^file:\/\/\/[A-Za-z]:\/~BUN\//i.test(import.meta.url);
+// Detect compiled Bun single-file binary.
+// - Unix: import.meta.url contains "$bunfs"
+// - Windows: import.meta.url contains "~BUN" (drive letter/format varies)
+const isCompiledBinary = import.meta.url.includes("$bunfs") || import.meta.url.includes("~BUN") || import.meta.url.includes("%7EBUN");
 
 /**
  * Resolve the path to the @zenyr/bun-pty native shared library.

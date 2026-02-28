@@ -13,9 +13,9 @@ services:
       context: ..
       dockerfile: Dockerfile
     ports:
-      - "3000:3000"
+      - "7492:7492"
     environment:
-      - PORT=3000
+      - PORT=7492
       - PIZZAPI_REDIS_URL=redis://redis:6379
     volumes:
       - pizzapi-data:/app/data
@@ -30,7 +30,7 @@ services:
       target: builder
     command: bun run dev
     ports:
-      - "3000:3000"
+      - "7492:7492"
       - "5173:5173"
     environment:
       - PIZZAPI_REDIS_URL=redis://redis:6379

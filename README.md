@@ -66,7 +66,7 @@ On first run, the setup wizard will ask for your relay URL, email, and password:
 Connect this node to a PizzaPi relay server so your sessions
 can be monitored from the web UI.
 
-Relay server URL [http://localhost:3000]: https://your-server.example.com
+Relay server URL [http://localhost:7492]: https://your-server.example.com
 Email: you@example.com
 Password: ••••••••
 
@@ -107,9 +107,9 @@ This starts two services:
 | Service | Port | Description |
 |---------|------|-------------|
 | `redis` | 6379 | Session event buffer |
-| `server` | 3000 | Relay API + Web UI |
+| `server` | 7492 | Relay API + Web UI |
 
-The web UI is now available at **http://localhost:3000**.
+The web UI is now available at **http://localhost:7492**.
 
 #### 3. Install the CLI
 
@@ -121,7 +121,7 @@ npm install -g @pizzapi/pizza
 
 ```bash
 pizzapi setup
-# Relay server URL: http://localhost:3000
+# Relay server URL: http://localhost:7492
 # Email: you@example.com
 # Password: your-password
 ```
@@ -132,7 +132,7 @@ pizzapi setup
 pizzapi
 ```
 
-Open **http://localhost:3000** in your browser to watch the session live.
+Open **http://localhost:7492** in your browser to watch the session live.
 
 ---
 
@@ -140,7 +140,7 @@ Open **http://localhost:3000** in your browser to watch the session live.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `PORT` | `3000` | HTTP/WS listen port |
+| `PORT` | `7492` | HTTP/WS listen port |
 | `PIZZAPI_REDIS_URL` | — | Redis connection URL (e.g. `redis://localhost:6379`) |
 
 ---
@@ -188,7 +188,7 @@ pizzapi --version
 **Requirements:** Docker with Docker Compose
 
 ```bash
-# Start the hub on the default port (3000)
+# Start the hub on the default port (7492)
 pizzapi web
 
 # Start on a custom port
@@ -241,10 +241,10 @@ This writes `your-hostname.tail12345.ts.net.crt` and `.key` to the current direc
 
 #### 2. Start Tailscale Serve
 
-Proxy HTTPS traffic to the local PizzaPi port (default 3001 if using `pizza web`):
+Proxy HTTPS traffic to the local PizzaPi port (default 7492 if using `pizza web`):
 
 ```bash
-tailscale serve --bg http://localhost:3001
+tailscale serve --bg http://localhost:7492
 ```
 
 The web UI is now available at:
@@ -290,11 +290,11 @@ tailscale serve --https=443 off
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| SSL/certificate error in browser | Tailscale Serve not running, or accessing `:3001` directly over HTTPS | Use the default HTTPS URL (port 443) and ensure `tailscale serve` is active |
-| Blank page | Serve configured with `https+insecure://` backend | Use `http://localhost:3001` (plain HTTP) as the backend — the server doesn't speak TLS |
+| SSL/certificate error in browser | Tailscale Serve not running, or accessing `:7492` directly over HTTPS | Use the default HTTPS URL (port 443) and ensure `tailscale serve` is active |
+| Blank page | Serve configured with `https+insecure://` backend | Use `http://localhost:7492` (plain HTTP) as the backend — the server doesn't speak TLS |
 | "Invalid origin" error | `PIZZAPI_EXTRA_ORIGINS` doesn't match the URL, or has a trailing slash | Set it to `https://your-hostname.tail12345.ts.net` (no trailing slash) and restart |
-| 502 Bad Gateway | Tailscale Serve config was lost (e.g. after reboot) | Re-run `tailscale serve --bg http://localhost:3001` |
-| Port already allocated | Another container or process is using the port | Run `docker ps -a --filter "publish=3001"` to find the conflict, stop it, then retry |
+| 502 Bad Gateway | Tailscale Serve config was lost (e.g. after reboot) | Re-run `tailscale serve --bg http://localhost:7492` |
+| Port already allocated | Another container or process is using the port | Run `docker ps -a --filter "publish=7492"` to find the conflict, stop it, then retry |
 
 ---
 

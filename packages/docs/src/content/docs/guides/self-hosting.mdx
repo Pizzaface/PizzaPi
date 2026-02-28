@@ -23,7 +23,7 @@ This automatically:
 1. Clones the PizzaPi repo (if not already present) to `~/.pizzapi/web/repo`
 2. Generates a Docker Compose file in `~/.pizzapi/web/`
 3. Builds and starts Redis + the relay server
-4. Serves the web UI at **http://localhost:3000**
+4. Serves the web UI at **http://localhost:7492**
 
 On subsequent runs, it pulls the latest changes and rebuilds if needed.
 
@@ -69,15 +69,15 @@ Persistent data (SQLite database) is stored in `~/.pizzapi/web/data/`.
    | Service | Port | Description |
    |---------|------|-------------|
    | `redis` | 6379 | Session event buffer (internal) |
-   | `server` | 3000 | Relay API + Web UI |
+   | `server` | 7492 | Relay API + Web UI |
 
 3. **Open the web UI**
 
-   Navigate to **http://localhost:3000** — you'll see the PizzaPi interface.
+   Navigate to **http://localhost:7492** — you'll see the PizzaPi interface.
 
 4. **Create your account**
 
-   The first time you visit, register an account. Then run `pizzapi setup` on your dev machine pointing to `http://localhost:3000`.
+   The first time you visit, register an account. Then run `pizzapi setup` on your dev machine pointing to `http://localhost:7492`.
 </Steps>
 
 <Aside type="tip" title="Expose to the internet">
@@ -92,7 +92,7 @@ Configure the server by setting environment variables in Docker Compose or your 
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PORT` | `3000` | HTTP/WebSocket listen port |
+| `PORT` | `7492` | HTTP/WebSocket listen port |
 | `PIZZAPI_REDIS_URL` | — | Redis connection URL, e.g. `redis://localhost:6379` |
 | `PIZZAPI_BASE_URL` | `http://localhost:5173` | Public URL of the UI, added to CORS trusted origins |
 | `PIZZAPI_EXTRA_ORIGINS` | — | Comma-separated extra trusted origins (e.g. a Tailscale URL). Added to CORS and WebSocket auth without hardcoding hostnames. Example: `https://myhost.ts.net,http://myhost.ts.net:5173` |
@@ -207,7 +207,7 @@ Caddy automatically provisions TLS certificates via Let's Encrypt:
 ```text
 # /etc/caddy/Caddyfile
 relay.example.com {
-    reverse_proxy localhost:3000
+    reverse_proxy localhost:7492
 }
 ```
 

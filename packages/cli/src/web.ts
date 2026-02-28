@@ -2,7 +2,7 @@
  * `pizza web` — Start the PizzaPi web hub (server + UI) using Docker Compose.
  *
  * Usage:
- *   pizza web                  Start the hub on port 3000
+ *   pizza web                  Start the hub on port 7492
  *   pizza web --port 8080      Start on a custom port
  *   pizza web stop             Stop the hub
  *   pizza web logs             Tail logs
@@ -42,7 +42,7 @@ function ensureDocker(): void {
 }
 
 function parseArgs(args: string[]): { port: number; detach: boolean } {
-    let port = 3000;
+    let port = 7492;
     let detach = true;
 
     for (let i = 0; i < args.length; i++) {

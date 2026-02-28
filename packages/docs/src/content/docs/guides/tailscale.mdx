@@ -38,10 +38,10 @@ If you're running PizzaPi on a machine in your [Tailscale](https://tailscale.com
 
 2. **Start Tailscale Serve**
 
-   Proxy HTTPS traffic to the local PizzaPi port (default `3000`):
+   Proxy HTTPS traffic to the local PizzaPi port (default `7492`):
 
    ```bash
-   tailscale serve --bg http://localhost:3000
+   tailscale serve --bg http://localhost:7492
    ```
 
    The web UI is now available at:
@@ -129,7 +129,7 @@ tailscale serve --https=443 off
 If you want to expose PizzaPi to the **public internet** (not just your Tailnet), you can use [Tailscale Funnel](https://tailscale.com/kb/1223/funnel/) instead of Serve:
 
 ```bash
-tailscale funnel --bg http://localhost:3000
+tailscale funnel --bg http://localhost:7492
 ```
 
 This makes your instance available to anyone at `https://your-hostname.tail12345.ts.net/` — no VPN required for visitors.
@@ -179,9 +179,9 @@ For contributors running the dev stack, PizzaPi's Vite config can automatically 
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| SSL/certificate error in browser | Tailscale Serve not running, or accessing `:3000` directly over HTTPS | Use the default HTTPS URL (port 443) and ensure `tailscale serve` is active |
-| Blank page | Serve configured with `https+insecure://` backend | Use `http://localhost:3000` (plain HTTP) as the backend — the server doesn't speak TLS |
+| SSL/certificate error in browser | Tailscale Serve not running, or accessing `:7492` directly over HTTPS | Use the default HTTPS URL (port 443) and ensure `tailscale serve` is active |
+| Blank page | Serve configured with `https+insecure://` backend | Use `http://localhost:7492` (plain HTTP) as the backend — the server doesn't speak TLS |
 | "Invalid origin" error | `PIZZAPI_EXTRA_ORIGINS` doesn't match the URL, or has a trailing slash | Set it to `https://your-hostname.tail12345.ts.net` (no trailing slash) and restart |
-| 502 Bad Gateway | Tailscale Serve config was lost (e.g. after reboot) | Re-run `tailscale serve --bg http://localhost:3000` |
-| Port already allocated | Another container or process is using the port | Run `docker ps -a --filter "publish=3000"` to find the conflict, stop it, then retry |
+| 502 Bad Gateway | Tailscale Serve config was lost (e.g. after reboot) | Re-run `tailscale serve --bg http://localhost:7492` |
+| Port already allocated | Another container or process is using the port | Run `docker ps -a --filter "publish=7492"` to find the conflict, stop it, then retry |
 | Can't reach from other Tailnet devices | Tailscale ACLs blocking access | Check your [ACL policy](https://login.tailscale.com/admin/acls) allows traffic on port 443 |
