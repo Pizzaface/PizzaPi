@@ -4,13 +4,16 @@
  * PizzaPi postinstall script.
  *
  * Runs after `npm install @pizzapi/pizza` to ensure the platform-specific
- * binary package is present. npm doesn't always install optionalDependencies
- * reliably — especially with nvm-windows, global installs, or when the
- * lockfile is stale (npm/cli#4828).
+ * binary package is present **and at the correct version**.
+ *
+ * npm doesn't always install optionalDependencies reliably — especially with
+ * nvm-windows, global installs, or when the lockfile is stale (npm/cli#4828).
+ * Even when the binary exists, a stale platform package from a previous
+ * version can linger after an upgrade, causing hard-to-debug issues.
  *
  * Strategy:
- *   1. Check if the platform binary already exists (optionalDeps worked)
- *   2. If not, invoke the user's package manager to install it
+ *   1. Locate the platform binary package
+ *   2. If missing OR its version doesn't match @pizzapi/pizza, (re)install it
  *
  * This mirrors the approach used by esbuild, rollup, swc, etc.
  */
@@ -39,6 +42,7 @@ if (!pkgName) {
     process.exit(0);
 }
 
+/** Read our own version from @pizzapi/pizza's package.json. */
 function getOwnVersion() {
     try {
         return JSON.parse(readFileSync(join(__dirname, "..", "package.json"), "utf-8")).version;
@@ -47,38 +51,71 @@ function getOwnVersion() {
     }
 }
 
-/** Check if the platform binary is already installed. */
-function binaryExists() {
-    const binName = process.platform === "win32" ? "pizza.exe" : "pizza";
+/**
+ * Find the platform package's directory.
+ * Returns the path to its package.json directory, or null if not found.
+ */
+function findPlatformPkgDir() {
     const parts = pkgName.split("/");
 
-    // Check via require.resolve
+    // Strategy 1: require.resolve
     try {
         const require = createRequire(join(__dirname, "..", "package.json"));
-        const pkgJson = require.resolve(`${pkgName}/package.json`);
-        const binPath = join(dirname(pkgJson), "bin", binName);
-        if (existsSync(binPath)) return true;
+        const pkgJsonPath = require.resolve(`${pkgName}/package.json`);
+        return dirname(pkgJsonPath);
     } catch {}
 
-    // Check sibling scoped package
+    // Strategy 2: sibling scoped package
     {
-        const siblingPath = join(__dirname, "..", "..", parts[1], "bin", binName);
-        if (existsSync(siblingPath)) return true;
+        const siblingDir = join(__dirname, "..", "..", parts[1]);
+        const siblingPkg = join(siblingDir, "package.json");
+        if (existsSync(siblingPkg)) return siblingDir;
     }
 
-    // Walk up looking for node_modules
+    // Strategy 3: walk up looking for node_modules
     {
         let dir = __dirname;
         for (let i = 0; i < 10; i++) {
-            const candidate = join(dir, "node_modules", parts[0], parts[1], "bin", binName);
-            if (existsSync(candidate)) return true;
+            const candidate = join(dir, "node_modules", parts[0], parts[1]);
+            const candidatePkg = join(candidate, "package.json");
+            if (existsSync(candidatePkg)) return candidate;
             const parent = dirname(dir);
             if (parent === dir) break;
             dir = parent;
         }
     }
 
-    return false;
+    return null;
+}
+
+/**
+ * Check that the platform binary exists AND its version matches ours.
+ * Returns: "ok" | "missing" | "stale"
+ */
+function checkPlatformPackage() {
+    const pkgDir = findPlatformPkgDir();
+    if (!pkgDir) return "missing";
+
+    // Verify binary file exists
+    const binName = process.platform === "win32" ? "pizza.exe" : "pizza";
+    const binPath = join(pkgDir, "bin", binName);
+    if (!existsSync(binPath)) return "missing";
+
+    // Verify version matches
+    const ownVersion = getOwnVersion();
+    if (!ownVersion) return "ok"; // can't check — assume fine
+
+    try {
+        const platformPkg = JSON.parse(readFileSync(join(pkgDir, "package.json"), "utf-8"));
+        if (platformPkg.version !== ownVersion) {
+            return "stale";
+        }
+    } catch {
+        // Can't read — assume stale to be safe
+        return "stale";
+    }
+
+    return "ok";
 }
 
 /** Detect the package manager that invoked this install. */
@@ -104,47 +141,76 @@ function isGlobalInstall() {
     return false;
 }
 
+/** Run package manager install command. */
+function installPlatformPackage(versionSpec, pm, isGlobal) {
+    if (pm === "yarn") {
+        const cmd = isGlobal ? `yarn global add ${versionSpec}` : `yarn add ${versionSpec}`;
+        execSync(cmd, { stdio: "inherit", env: process.env });
+    } else if (pm === "pnpm") {
+        const flag = isGlobal ? " -g" : "";
+        execSync(`pnpm add${flag} ${versionSpec}`, { stdio: "inherit", env: process.env });
+    } else if (pm === "bun") {
+        const flag = isGlobal ? " -g" : "";
+        execSync(`bun add${flag} ${versionSpec}`, { stdio: "inherit", env: process.env });
+    } else {
+        // npm
+        const flag = isGlobal ? " -g" : "";
+        execSync(`npm install${flag} ${versionSpec}`, { stdio: "inherit", env: process.env });
+    }
+}
+
 // --- Main ---
 
-if (binaryExists()) {
-    // All good — optionalDependencies did its job
+const status = checkPlatformPackage();
+
+if (status === "ok") {
+    // Binary exists and version matches — nothing to do
     process.exit(0);
 }
 
 const version = getOwnVersion();
 const versionSpec = version ? `${pkgName}@${version}` : pkgName;
 const pm = detectPackageManager();
-const global = isGlobalInstall();
+const isGlobal = isGlobalInstall();
 
-console.log(`[pizzapi] Platform package ${pkgName} was not installed automatically.`);
-console.log(`[pizzapi] Installing with ${pm}...`);
+if (status === "stale") {
+    console.log(`[pizzapi] Platform package ${pkgName} is outdated (expected ${version}).`);
+    console.log(`[pizzapi] Upgrading with ${pm}...`);
+} else {
+    console.log(`[pizzapi] Platform package ${pkgName} was not installed automatically.`);
+    console.log(`[pizzapi] Installing with ${pm}...`);
+}
 
 try {
-    if (pm === "yarn") {
-        const cmd = global ? `yarn global add ${versionSpec}` : `yarn add ${versionSpec}`;
-        execSync(cmd, { stdio: "inherit", env: process.env });
-    } else if (pm === "pnpm") {
-        const flag = global ? " -g" : "";
-        execSync(`pnpm add${flag} ${versionSpec}`, { stdio: "inherit", env: process.env });
-    } else if (pm === "bun") {
-        const flag = global ? " -g" : "";
-        execSync(`bun add${flag} ${versionSpec}`, { stdio: "inherit", env: process.env });
-    } else {
-        // npm
-        const flag = global ? " -g" : "";
-        execSync(`npm install${flag} ${versionSpec}`, { stdio: "inherit", env: process.env });
-    }
+    installPlatformPackage(versionSpec, pm, isGlobal);
 
-    if (binaryExists()) {
-        console.log(`[pizzapi] Successfully installed ${pkgName}.`);
+    const postStatus = checkPlatformPackage();
+    if (postStatus === "ok") {
+        console.log(`[pizzapi] Successfully installed ${pkgName}@${version}.`);
+    } else if (postStatus === "stale") {
+        // Installed but still wrong version — try removing first then reinstalling
+        console.log(`[pizzapi] Version mismatch persists — removing stale package and retrying...`);
+        try {
+            if (pm === "npm") {
+                const flag = isGlobal ? " -g" : "";
+                execSync(`npm rm${flag} ${pkgName}`, { stdio: "inherit", env: process.env });
+            }
+            installPlatformPackage(versionSpec, pm, isGlobal);
+        } catch {}
+
+        if (checkPlatformPackage() === "ok") {
+            console.log(`[pizzapi] Successfully installed ${pkgName}@${version}.`);
+        } else {
+            throw new Error("Version mismatch after reinstall");
+        }
     } else {
         throw new Error("Binary not found after install");
     }
 } catch (err) {
-    console.error(`[pizzapi] Failed to install ${pkgName} automatically.`);
+    console.error(`[pizzapi] Failed to install ${pkgName}@${version} automatically.`);
     console.error(`[pizzapi] Please install it manually:`);
-    if (global) {
-        console.error(`[pizzapi]   npm install -g ${versionSpec}`);
+    if (isGlobal) {
+        console.error(`[pizzapi]   npm rm -g ${pkgName} && npm install -g ${versionSpec}`);
     } else {
         console.error(`[pizzapi]   npm install ${versionSpec}`);
     }
