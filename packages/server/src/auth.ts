@@ -172,9 +172,20 @@ const extraOrigins: string[] = process.env.PIZZAPI_EXTRA_ORIGINS
     ? process.env.PIZZAPI_EXTRA_ORIGINS.split(",").map((o) => o.trim()).filter(Boolean)
     : [];
 
+const isProduction = process.env.NODE_ENV === "production";
+if (isProduction && !process.env.PIZZAPI_BASE_URL) {
+    console.warn("WARNING: PIZZAPI_BASE_URL is not set in production. This may cause CORS or WebSocket connection issues.");
+}
+
+const baseOrigins: string[] = [];
+if (process.env.PIZZAPI_BASE_URL) {
+    baseOrigins.push(process.env.PIZZAPI_BASE_URL);
+} else if (!isProduction) {
+    baseOrigins.push("http://localhost:5173", "http://127.0.0.1:5173");
+}
+
 export const trustedOrigins: string[] = [
-    process.env.PIZZAPI_BASE_URL ?? "http://localhost:5173",
-    "http://127.0.0.1:5173",
+    ...baseOrigins,
     ...extraOrigins,
 ];
 
