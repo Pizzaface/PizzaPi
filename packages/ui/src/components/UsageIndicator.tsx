@@ -230,12 +230,7 @@ export function UsageIndicator({ usage, authSource: rawAuthSource, activeProvide
         rawAuthSource === "oauth" || rawAuthSource === "env" || rawAuthSource === "auth.json" || rawAuthSource === "unknown"
     ) ? rawAuthSource : null;
 
-    // Show auth source badge when the active provider doesn't have usage data
-    // (i.e. they're using an env var or API key, not an OAuth subscription)
-    const activeProviderHasUsage = activeProvider
-        ? entries.some(([id]) => id === activeProvider)
-        : false;
-    const showAuthBadge = !!activeProvider && !!authSource && authSource !== "unknown" && !activeProviderHasUsage;
+    const showAuthBadge = !!activeProvider && !!authSource && authSource !== "unknown";
 
     if (entries.length === 0 && !showAuthBadge) return null;
 
