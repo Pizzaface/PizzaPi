@@ -1,3 +1,6 @@
+diff --git a/node_modules/@mariozechner/pi-coding-agent/.bun-tag-36c1615415ab9e2b b/.bun-tag-36c1615415ab9e2b
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
 diff --git a/dist/core/extensions/loader.js b/dist/core/extensions/loader.js
 index 5125e76b6490f859fa63cea32b0f1df9fb7aed50..cc2a11988ec12fad5afacc81c43aad46dea3b628 100644
 --- a/dist/core/extensions/loader.js
@@ -50,7 +53,7 @@ index da287dd66dc0b4a356d4a615addd1e5cf40073ec..4f50eb5748741e68669a960f1a01c104
      setUIContext(uiContext) {
          this.uiContext = uiContext ?? noOpUIContext;
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index 920f62d9c4370c034ab0a052cd02050e2e6be37e..3eda732f3e555894b0fe9913d54a3d9ece78b8ed 100644
+index 920f62d9c4370c034ab0a052cd02050e2e6be37e..fb97b46838e4f61f516b7cf6b01eb274bb45ef0c 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
 @@ -355,12 +355,6 @@ export class InteractiveMode {
@@ -114,6 +117,16 @@ index 920f62d9c4370c034ab0a052cd02050e2e6be37e..3eda732f3e555894b0fe9913d54a3d9e
      /**
       * Get all queued messages (read-only).
       * Combines session queue and compaction queue.
+@@ -3119,7 +3079,8 @@ export class InteractiveMode {
+             restoreEditor();
+             this.session.modelRegistry.refresh();
+             await this.updateAvailableProviderCount();
+-            this.showStatus(`Logged in to ${providerName}. Credentials saved to ${getAuthPath()}`);
++            const actualAuthPath = this.session.modelRegistry.authStorage.storage?.authPath ?? getAuthPath();
++            this.showStatus(`Logged in to ${providerName}. Credentials saved to ${actualAuthPath}`);
+         }
+         catch (error) {
+             restoreEditor();
 diff --git a/examples/server-web-client/node_modules/.vite/deps/_metadata.json b/Users/jordan/.bun/install/cache/@mariozechner/pi-coding-agent@0.55.1@@@1/examples/server-web-client/node_modules/.vite/deps/_metadata.json
 deleted file mode 100644
 index 8c3d274affafed48bf93b210b1f55815c06c028a..0000000000000000000000000000000000000000
