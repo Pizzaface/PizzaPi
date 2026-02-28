@@ -3,7 +3,7 @@ import { homedir } from "os";
 import { join } from "path";
 import { saveGlobalConfig } from "./config.js";
 
-const RELAY_DEFAULT = "http://localhost:3000";
+const RELAY_DEFAULT = "http://localhost:7492";
 
 function rl() {
     return createInterface({ input: process.stdin, output: process.stdout });

@@ -86,7 +86,7 @@ pizzapi runner stop
 Start the **PizzaPi web hub** (relay server + web UI) using Docker Compose. This is the easiest way to self-host the relay — no need to clone the repo or configure Docker manually.
 
 ```bash
-# Start on the default port (3000)
+# Start on the default port (7492)
 pizzapi web
 
 # Start on a custom port
@@ -118,7 +118,7 @@ pizzapi web status
 
 | Flag | Description |
 |------|-------------|
-| `--port <number>` | HTTP port to expose (default: `3000`) |
+| `--port <number>` | HTTP port to expose (default: `7492`) |
 | `--foreground`, `-f` | Run in the foreground instead of detaching |
 
 The generated Docker Compose file and persistent data (SQLite database) are stored in `~/.pizzapi/web/`.

@@ -179,7 +179,7 @@ export const trustedOrigins: string[] = [
 ];
 
 export const auth = betterAuth({
-    baseURL: process.env.BETTER_AUTH_BASE_URL ?? `http://localhost:${process.env.PORT ?? "3000"}`,
+    baseURL: process.env.BETTER_AUTH_BASE_URL ?? `http://localhost:${process.env.PORT ?? "7492"}`,
     secret: process.env.BETTER_AUTH_SECRET,
     database: { dialect, type: "sqlite", transaction: true },
     trustedOrigins,

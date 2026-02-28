@@ -20,7 +20,7 @@ import { registerNamespaces } from "./ws/namespaces/index.js";
 import { initSioRegistry } from "./ws/sio-registry.js";
 import { initStateRedis } from "./ws/sio-state.js";
 
-const PORT = parseInt(process.env.PORT ?? "3000");
+const PORT = parseInt(process.env.PORT ?? "7492");
 
 await ensureRelaySessionTables();
 await ensurePushSubscriptionTable();

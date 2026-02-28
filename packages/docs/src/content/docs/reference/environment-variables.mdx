@@ -23,7 +23,7 @@ These are read by the PizzaPi CLI runner process (`pizzapi` / daemon).
 |---|---|---|
 | `PIZZAPI_API_KEY` | API key used to authenticate with the relay server. `PIZZAPI_RUNNER_API_KEY` and `PIZZAPI_API_TOKEN` are accepted as aliases. | — |
 | `PIZZAPI_RUNNER_TOKEN` | Runner session token (alternative to API key auth). | — |
-| `PIZZAPI_RELAY_URL` | WebSocket URL of the relay server the runner connects to. | `ws://localhost:3000` |
+| `PIZZAPI_RELAY_URL` | WebSocket URL of the relay server the runner connects to. | `ws://localhost:7492` |
 | `PIZZAPI_RUNNER_NAME` | Human-readable name for this runner (shown in the UI). | System hostname |
 | `PIZZAPI_RUNNER_STATE_PATH` | Path to the runner state JSON file. | `~/.pizzapi/runner.json` |
 | `PIZZAPI_WORKSPACE_ROOTS` | Comma-separated list of workspace root directories. `PIZZAPI_WORKSPACE_ROOT` (single) and `PIZZAPI_RUNNER_ROOTS` (legacy) are also accepted. | — |
@@ -36,7 +36,7 @@ These are read by the PizzaPi CLI runner process (`pizzapi` / daemon).
 
 | Variable | Description | Default |
 |---|---|---|
-| `PORT` | HTTP / WebSocket listen port. | `3000` |
+| `PORT` | HTTP / WebSocket listen port. | `7492` |
 | `PIZZAPI_REDIS_URL` | Redis connection URL. | `redis://127.0.0.1:6379` |
 | `PIZZAPI_BASE_URL` | Public base URL of the PizzaPi server (used for share links, CORS origins, etc.). | `http://localhost:5173` |
 | `PIZZAPI_EXTRA_ORIGINS` | Comma-separated list of additional trusted origins for CORS and WebSocket auth. Use this to allow access from custom hostnames such as a Tailscale URL without hardcoding them. e.g. `https://myhost.ts.net,http://myhost.ts.net:5173`. These are also used to populate Vite's `allowedHosts` in development. | — |

@@ -106,7 +106,7 @@ export function RunnerTokenManager() {
         <div className="rounded-md border bg-muted/20 px-3 py-2 text-xs">
           <div className="font-semibold mb-1">How to use</div>
           <pre className="whitespace-pre-wrap font-mono text-[0.7rem] leading-relaxed text-muted-foreground">
-{`export PIZZAPI_RELAY_URL=ws://localhost:3000
+{`export PIZZAPI_RELAY_URL=ws://localhost:7492
 export PIZZAPI_API_KEY=<runner-token>
 # Optional: constrain what folders the runner is allowed to open
 export PIZZAPI_WORKSPACE_ROOT=/srv
