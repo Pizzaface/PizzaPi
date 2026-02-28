@@ -4,6 +4,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { AuthStorage, buildSessionContext, SessionManager, type ExtensionContext, type ExtensionFactory, type SessionInfo } from "@mariozechner/pi-coding-agent";
+import { getEnvApiKey } from "@mariozechner/pi-ai/dist/env-api-keys.js";
 import { loadConfig, defaultAgentDir } from "../config.js";
 import { getMcpBridge } from "./mcp-bridge.js";
 import { getCurrentTodoList, setTodoUpdateCallback, type TodoItem } from "./update-todo.js";
@@ -122,6 +123,35 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             return (auth as any)?.[providerId]?.access ?? null;
         } catch {
             return null;
+        }
+    }
+
+    // ── Auth source detection ──────────────────────────────────────────────────
+    // Mirrors AuthStorage.getApiKey() priority chain to determine WHERE the
+    // active API key comes from, so we can relay that to the user.
+    type AuthSource = "oauth" | "auth.json" | "env" | "unknown";
+
+    function getAuthSource(ctx: ExtensionContext | null): AuthSource {
+        if (!ctx?.model) return "unknown";
+        const provider = ctx.model.provider;
+
+        // 1. Check auth.json credentials (highest priority after runtime overrides)
+        const cred = ctx.modelRegistry.authStorage.get(provider);
+        if (cred?.type === "oauth") return "oauth";
+        if (cred?.type === "api_key") return "auth.json";
+
+        // 2. Check environment variable
+        if (getEnvApiKey(provider)) return "env";
+
+        return "unknown";
+    }
+
+    function authSourceLabel(source: AuthSource): string {
+        switch (source) {
+            case "oauth": return "OAuth";
+            case "auth.json": return "API key";
+            case "env": return "env var";
+            default: return "";
         }
     }
 
@@ -583,6 +613,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
 
     function buildHeartbeat() {
         const thinkingLevel = getCurrentThinkingLevel(latestCtx);
+        const authSource = getAuthSource(latestCtx);
 
         return {
             type: "heartbeat",
@@ -590,6 +621,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             model: latestCtx?.model
                 ? { provider: latestCtx.model.provider, id: latestCtx.model.id, name: latestCtx.model.name, reasoning: latestCtx.model.reasoning }
                 : null,
+            authSource,
             sessionName: getCurrentSessionName(latestCtx),
             thinkingLevel: thinkingLevel ?? null,
             tokenUsage: buildTokenUsage(),
@@ -1362,6 +1394,13 @@ export const remoteExtension: ExtensionFactory = (pi) => {
 
                     if (footerData.getAvailableProviderCount() > 1 && activeCtx.model) {
                         modelText = `(${activeCtx.model.provider}) ${modelText}`;
+                    }
+
+                    // Append auth source so the user knows where their API key is coming from
+                    const currentAuthSource = getAuthSource(activeCtx);
+                    const currentAuthLabel = authSourceLabel(currentAuthSource);
+                    if (currentAuthLabel) {
+                        modelText += ` • ${currentAuthLabel}`;
                     }
 
                     const extensionStatuses = footerData.getExtensionStatuses();

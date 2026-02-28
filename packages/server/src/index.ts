@@ -10,6 +10,7 @@ import { deleteRelayEventCaches, initializeRelayRedisCache } from "./sessions/re
 import { sweepExpiredSessions } from "./ws/sio-registry.js";
 import { sweepExpiredAttachments } from "./attachments/store.js";
 import { ensurePushSubscriptionTable } from "./push.js";
+import { ensureUserHiddenModelTable } from "./user-hidden-models.js";
 
 // Socket.IO imports
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -24,6 +25,7 @@ const PORT = parseInt(process.env.PORT ?? "7492");
 
 await ensureRelaySessionTables();
 await ensurePushSubscriptionTable();
+await ensureUserHiddenModelTable();
 void initializeRelayRedisCache();
 
 // ── Helpers: convert node:http request/response ↔ fetch API ──────────────

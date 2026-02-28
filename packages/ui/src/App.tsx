@@ -196,6 +196,7 @@ interface SessionUiCacheEntry {
   availableCommands: Array<{ name: string; description?: string }>;
   agentActive: boolean;
   effortLevel: string | null;
+  authSource: string | null;
   tokenUsage: TokenUsageInfo | null;
   lastHeartbeatAt: number | null;
   todoList: TodoItem[];
@@ -609,6 +610,7 @@ export function App() {
   const [lastHeartbeatAt, setLastHeartbeatAt] = React.useState<number | null>(null);
   const [providerUsage, setProviderUsage] = React.useState<ProviderUsageMap | null>(null);
   const [todoList, setTodoList] = React.useState<TodoItem[]>([]);
+  const [authSource, setAuthSource] = React.useState<string | null>(null);
 
   // Keyboard shortcuts
   const isMac = React.useMemo(() => /Mac|iPhone|iPad/i.test(navigator.platform), []);
@@ -819,6 +821,7 @@ export function App() {
       availableCommands: prev?.availableCommands ?? [],
       agentActive: prev?.agentActive ?? false,
       effortLevel: prev?.effortLevel ?? null,
+      authSource: prev?.authSource ?? null,
       tokenUsage: prev?.tokenUsage ?? null,
       lastHeartbeatAt: prev?.lastHeartbeatAt ?? null,
       todoList: prev?.todoList ?? [],
@@ -896,6 +899,7 @@ export function App() {
     setIsChangingModel(false);
     setAgentActive(false);
     setEffortLevel(null);
+    setAuthSource(null);
     setTokenUsage(null);
     setLastHeartbeatAt(null);
   }, []);
@@ -1081,6 +1085,12 @@ export function App() {
 
       if ((hb as any).providerUsage !== undefined) {
         setProviderUsage((hb as any).providerUsage ?? null);
+      }
+
+      if ((hb as any).authSource !== undefined) {
+        const nextAuthSource = typeof (hb as any).authSource === "string" ? (hb as any).authSource : null;
+        setAuthSource(nextAuthSource);
+        cachePatch.authSource = nextAuthSource;
       }
 
       if (Object.prototype.hasOwnProperty.call(hb, "sessionName")) {
@@ -1586,6 +1596,7 @@ export function App() {
     setAvailableCommands(cached?.availableCommands ?? []);
     setAgentActive(cached?.agentActive ?? false);
     setEffortLevel(cached?.effortLevel ?? null);
+    setAuthSource(cached?.authSource ?? null);
     setTokenUsage(cached?.tokenUsage ?? null);
     setLastHeartbeatAt(cached?.lastHeartbeatAt ?? null);
     setTodoList(cached?.todoList ?? []);
@@ -2769,6 +2780,7 @@ export function App() {
                   onShowModelSelector={() => setModelSelectorOpen(true)}
                   agentActive={agentActive}
                   effortLevel={effortLevel}
+                  authSource={authSource}
                   tokenUsage={tokenUsage}
                   lastHeartbeatAt={lastHeartbeatAt}
                   viewerStatus={viewerStatus}

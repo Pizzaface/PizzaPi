@@ -108,6 +108,8 @@ export interface SessionViewerProps {
   agentActive?: boolean;
   /** Current reasoning effort level (e.g. "low", "medium", "high", "off") */
   effortLevel?: string | null;
+  /** Source of the API key used by the current model (e.g. "oauth", "env", "auth.json") */
+  authSource?: string | null;
   /** Cumulative token usage for the session */
   tokenUsage?: TokenUsage | null;
   /** Unix ms timestamp of the most recent heartbeat from the CLI */
@@ -396,7 +398,7 @@ function SessionSkeleton() {
   );
 }
 
-export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], runnerId, sessionCwd }: SessionViewerProps) {
+export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, effortLevel, authSource, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], runnerId, sessionCwd }: SessionViewerProps) {
   const [input, setInput] = React.useState("");
   const [composerError, setComposerError] = React.useState<string | null>(null);
   const [showClearDialog, setShowClearDialog] = React.useState(false);
@@ -873,10 +875,18 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
             {activeModel?.provider && (
               <span
                 className="hidden sm:inline-flex items-center gap-1 rounded-full border border-border bg-muted px-2 py-0.5 text-[0.65rem] text-muted-foreground flex-shrink-0"
-                title={`${activeModel.provider} · ${activeModel.name ?? activeModel.id}`}
+                title={`${activeModel.provider} · ${activeModel.name ?? activeModel.id}${authSource ? ` · via ${authSource}` : ""}`}
               >
                 <ProviderIcon provider={activeModel.provider} className="size-3" />
                 <span className="max-w-24 truncate">{activeModel.provider}</span>
+                {authSource && (
+                  <span className={cn(
+                    "text-[0.55rem] uppercase tracking-wider font-medium",
+                    authSource === "oauth" ? "text-green-600 dark:text-green-400" : "text-muted-foreground/60",
+                  )}>
+                    {authSource === "oauth" ? "OAuth" : authSource === "env" ? "ENV" : authSource === "auth.json" ? "KEY" : ""}
+                  </span>
+                )}
               </span>
             )}
           </div>
