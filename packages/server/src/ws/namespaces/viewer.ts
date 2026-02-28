@@ -34,6 +34,38 @@ type ViewerSocket = Socket<
     ViewerSocketData
 >;
 
+interface AgentEndEvent extends Record<string, unknown> {
+    type: "agent_end";
+    messages: unknown[];
+}
+
+interface SessionActiveEvent extends Record<string, unknown> {
+    type: "session_active";
+    state: unknown;
+}
+
+function isAgentEndEvent(evt: unknown): evt is AgentEndEvent {
+    return (
+        typeof evt === "object" &&
+        evt !== null &&
+        "type" in evt &&
+        evt.type === "agent_end" &&
+        "messages" in evt &&
+        Array.isArray((evt as AgentEndEvent).messages)
+    );
+}
+
+function isSessionActiveEvent(evt: unknown): evt is SessionActiveEvent {
+    return (
+        typeof evt === "object" &&
+        evt !== null &&
+        "type" in evt &&
+        evt.type === "session_active" &&
+        "state" in evt &&
+        (evt as SessionActiveEvent).state !== undefined
+    );
+}
+
 /**
  * Scan cached events from newest to oldest, looking for the latest
  * full-state snapshot (agent_end with messages, or session_active with state).
@@ -41,12 +73,8 @@ type ViewerSocket = Socket<
 function findLatestSnapshotEvent(cachedEvents: unknown[]): Record<string, unknown> | null {
     for (let i = cachedEvents.length - 1; i >= 0; i--) {
         const raw = cachedEvents[i];
-        if (!raw || typeof raw !== "object") continue;
-        const evt = raw as Record<string, unknown>;
-        const type = typeof evt.type === "string" ? evt.type : "";
-
-        if (type === "agent_end" && Array.isArray((evt as Record<string, unknown>).messages)) return evt;
-        if (type === "session_active" && (evt as Record<string, unknown>).state !== undefined) return evt;
+        if (isAgentEndEvent(raw)) return raw;
+        if (isSessionActiveEvent(raw)) return raw;
     }
     return null;
 }
