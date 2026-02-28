@@ -13,3 +13,7 @@
 ## 2025-05-20 - Title Attribute Insufficiency
 **Learning:** Icon-only buttons in `SessionViewer` relied solely on `title` for accessibility. While `title` provides a tooltip, it is not reliably announced by all screen readers and does not replace `aria-label` for providing an accessible name.
 **Action:** Ensure all icon-only buttons have an explicit `aria-label`, even if they already have a `title`.
+
+## 2026-02-28 - ARIA Labels on Non-Interactive Drag Handles
+**Learning:** Adding `aria-label` to purely pointer-driven elements (like `onPointerDown` drag handles) that lack full keyboard support should NOT be accompanied by `role="button"` or `tabIndex={0}`. Doing so creates a keyboard trap/broken focus element that screen readers announce but users cannot activate with Space or Enter.
+**Action:** When adding accessibility labels to visually interactive but non-keyboard-operable elements, use `aria-label` or `aria-roledescription` without making them focusable unless full keyboard interaction (e.g., Space/Enter handlers) is also implemented.
