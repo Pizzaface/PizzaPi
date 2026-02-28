@@ -520,12 +520,15 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
     const statePath = defaultStatePath();
     const identity = acquireStateAndIdentity(statePath);
 
-    // Read CLI version from package.json for reporting to the server.
+    // Read CLI version for reporting to the server.
+    // Use module import instead of filesystem path math so this works in:
+    //   - source/dev runs (bun src/index.ts runner)
+    //   - dist JS runs     (bun dist/index.js runner)
+    //   - compiled binaries (where import.meta.url points into Bun's virtual FS)
     let cliVersion: string | undefined;
     try {
-        const pkgPath = join(dirname(fileURLToPath(import.meta.url)), "../../package.json");
-        const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
-        cliVersion = typeof pkg.version === "string" ? pkg.version : undefined;
+        const { default: pkg } = await import("../../package.json");
+        cliVersion = typeof pkg?.version === "string" ? pkg.version : undefined;
     } catch {
         // Best-effort — version will be omitted if unreadable.
     }
