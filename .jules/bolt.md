@@ -1,0 +1,3 @@
+## 2024-05-18 - Resolving N+1 queries in node-redis
+**Learning:** Sequential calls to `r.exists()` within loops created significant performance bottlenecks when interacting with a remote Redis server, specifically in functions executing N+1 queries like `cleanStaleIndexEntries`.
+**Action:** Always batch repeated, independent read operations using Redis pipelining (`r.multi()`). Use a single pipeline to buffer `exists()` checks, run `multi.exec()`, map the boolean results to the corresponding IDs, and batch deletions into a single `sRem` call, reducing round-trips from `O(N)` to `O(1)`.

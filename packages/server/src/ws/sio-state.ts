@@ -587,19 +587,29 @@ export async function cleanStaleIndexEntries(): Promise<void> {
 
     // Clean stale session IDs from global index
     const sessionIds = await r.sMembers(allSessionsKey());
-    for (const id of sessionIds) {
-        const exists = await r.exists(sessionKey(id));
-        if (!exists) {
-            await r.sRem(allSessionsKey(), id);
+    if (sessionIds.length > 0) {
+        const multi = r.multi();
+        for (const id of sessionIds) {
+            multi.exists(sessionKey(id));
+        }
+        const existsResults = await multi.exec();
+        const staleIds = sessionIds.filter((_, idx) => !existsResults[idx]);
+        if (staleIds.length > 0) {
+            await r.sRem(allSessionsKey(), staleIds);
         }
     }
 
     // Clean stale runner IDs from global index
     const runnerIds = await r.sMembers(allRunnersKey());
-    for (const id of runnerIds) {
-        const exists = await r.exists(runnerKey(id));
-        if (!exists) {
-            await r.sRem(allRunnersKey(), id);
+    if (runnerIds.length > 0) {
+        const multi = r.multi();
+        for (const id of runnerIds) {
+            multi.exists(runnerKey(id));
+        }
+        const existsResults = await multi.exec();
+        const staleIds = runnerIds.filter((_, idx) => !existsResults[idx]);
+        if (staleIds.length > 0) {
+            await r.sRem(allRunnersKey(), staleIds);
         }
     }
 }
