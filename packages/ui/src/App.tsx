@@ -40,7 +40,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Sun, Moon, LogOut, KeyRound, X, User, ChevronsUpDown, PanelLeftOpen, HardDrive, Bell, BellOff, Check, Plus, TerminalIcon, FolderTree, Keyboard } from "lucide-react";
+import { Sun, Moon, LogOut, KeyRound, X, User, ChevronsUpDown, PanelLeftOpen, HardDrive, Bell, BellOff, Check, Plus, TerminalIcon, FolderTree, Keyboard, EyeOff } from "lucide-react";
 import { NotificationToggle, MobileNotificationMenuItem } from "@/components/NotificationToggle";
 import { HapticsToggle, MobileHapticsMenuItem } from "@/components/HapticsToggle";
 import { UsageIndicator, type ProviderUsageMap } from "@/components/UsageIndicator";
@@ -59,6 +59,7 @@ import {
   ModelSelectorName,
   ModelSelectorShortcut,
 } from "@/components/ai-elements/model-selector";
+import { HiddenModelsManager, loadHiddenModels, modelKey } from "@/components/HiddenModelsManager";
 
 function toRelayMessage(raw: unknown, fallbackId: string): RelayMessage | null {
   if (!raw || typeof raw !== "object") return null;
@@ -598,6 +599,8 @@ export function App() {
   const [availableModels, setAvailableModels] = React.useState<ConfiguredModelInfo[]>([]);
   const [modelSelectorOpen, setModelSelectorOpen] = React.useState(false);
   const [isChangingModel, setIsChangingModel] = React.useState(false);
+  const [hiddenModels, setHiddenModels] = React.useState<Set<string>>(() => loadHiddenModels());
+  const [hiddenModelsOpen, setHiddenModelsOpen] = React.useState(false);
 
   // Live session status from heartbeats
   const [agentActive, setAgentActive] = React.useState(false);
@@ -2215,8 +2218,11 @@ export function App() {
   }
 
   const activeModelKey = activeModel ? `${activeModel.provider}/${activeModel.id}` : "";
+  const visibleModels = availableModels.filter(
+    (m) => !hiddenModels.has(modelKey(m.provider, m.id))
+  );
   const modelGroups = new Map<string, ConfiguredModelInfo[]>();
-  for (const model of availableModels) {
+  for (const model of visibleModels) {
     if (!modelGroups.has(model.provider)) modelGroups.set(model.provider, []);
     modelGroups.get(model.provider)!.push(model);
   }
@@ -2303,6 +2309,10 @@ export function App() {
               <DropdownMenuItem onSelect={() => { setShowRunners(true); setShowApiKeys(false); setActiveSessionId(null); }}>
                 <HardDrive className="h-4 w-4" />
                 Runners
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => setHiddenModelsOpen(true)}>
+                <EyeOff className="h-4 w-4" />
+                Model visibility
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem variant="destructive" onSelect={() => signOut()}>
@@ -2459,6 +2469,10 @@ export function App() {
                 <HardDrive className="h-4 w-4" />
                 Runners
               </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => { setHiddenModelsOpen(true); setSidebarOpen(false); }}>
+                <EyeOff className="h-4 w-4" />
+                Model visibility
+              </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem variant="destructive" onSelect={() => signOut()}>
                 <LogOut className="h-4 w-4" />
@@ -2480,15 +2494,19 @@ export function App() {
         >
           <ModelSelectorInput placeholder="Search configured models…" />
           <ModelSelectorList>
-            <ModelSelectorEmpty>No configured models available.</ModelSelectorEmpty>
+            <ModelSelectorEmpty>
+              {availableModels.length > 0 && visibleModels.length === 0
+                ? "All models are hidden. Manage visibility in settings."
+                : "No configured models available."}
+            </ModelSelectorEmpty>
             {Array.from(modelGroups.entries()).map(([provider, models]) => (
               <ModelSelectorGroup key={provider} heading={provider}>
                 {models.map((model) => {
-                  const modelKey = `${model.provider}/${model.id}`;
-                  const isActive = modelKey === activeModelKey;
+                  const mk = `${model.provider}/${model.id}`;
+                  const isActive = mk === activeModelKey;
                   return (
                     <ModelSelectorItem
-                      key={modelKey}
+                      key={mk}
                       value={`${model.provider} ${model.id} ${model.name ?? ""}`.toLowerCase()}
                       onSelect={() => selectModel(model)}
                     >
@@ -2503,9 +2521,33 @@ export function App() {
                 })}
               </ModelSelectorGroup>
             ))}
+            {/* Manage model visibility link */}
+            {availableModels.length > 0 && (
+              <div className="border-t px-2 py-2">
+                <button
+                  type="button"
+                  onClick={() => { setModelSelectorOpen(false); setHiddenModelsOpen(true); }}
+                  className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors"
+                >
+                  <EyeOff className="h-3.5 w-3.5" />
+                  {hiddenModels.size > 0
+                    ? `Manage model visibility (${hiddenModels.size} hidden)`
+                    : "Manage model visibility"}
+                </button>
+              </div>
+            )}
           </ModelSelectorList>
         </ModelSelectorContent>
       </ModelSelector>
+
+      {/* Hidden models manager dialog */}
+      <HiddenModelsManager
+        open={hiddenModelsOpen}
+        onOpenChange={setHiddenModelsOpen}
+        models={availableModels}
+        hiddenModels={hiddenModels}
+        onHiddenModelsChange={setHiddenModels}
+      />
 
       <div className="pp-shell flex flex-1 min-h-0 overflow-hidden relative">
         <div
