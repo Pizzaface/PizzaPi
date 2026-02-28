@@ -73,15 +73,18 @@ export async function runStop(): Promise<number> {
     }
 
     // Still alive — force kill.
-    console.warn("Runner did not exit in time. Sending SIGKILL…");
+    // On Windows, SIGKILL is not supported; use SIGTERM which unconditionally
+    // terminates the process on Windows (equivalent to SIGKILL on Unix).
+    const forceSignal = process.platform === "win32" ? "SIGTERM" : "SIGKILL";
+    console.warn(`Runner did not exit in time. Force-killing…`);
     try {
-        process.kill(targetPid, "SIGKILL");
+        process.kill(targetPid, forceSignal);
     } catch { /* ignore */ }
 
     // Also kill the daemon if we killed the supervisor
     if (targetPid === supervisorPid && daemonPid > 0 && isPidRunning(daemonPid)) {
         try {
-            process.kill(daemonPid, "SIGKILL");
+            process.kill(daemonPid, forceSignal);
         } catch { /* ignore */ }
     }
 

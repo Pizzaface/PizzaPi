@@ -80,7 +80,7 @@ async function main(): Promise<void> {
     }
 
     const config = loadConfig(cwd);
-    const agentDir = config.agentDir?.replace(/^~/, process.env.HOME ?? "") ?? defaultAgentDir();
+    const agentDir = config.agentDir?.replace(/^~/, homedir()) ?? defaultAgentDir();
 
     // Load .agents/*.md files from cwd (same behavior as CLI)
     const dotAgentsDir = join(cwd, ".agents");

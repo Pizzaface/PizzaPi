@@ -22,7 +22,7 @@
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
-import { platform, arch } from "node:os";
+import { platform, arch, homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -132,7 +132,7 @@ export function spawnTerminal(
 
     const cols = opts.cols && opts.cols > 0 ? opts.cols : 80;
     const rows = opts.rows && opts.rows > 0 ? opts.rows : 24;
-    const cwd = opts.cwd || process.env.HOME || "/";
+    const cwd = opts.cwd || homedir();
 
     let workerSpawnArgs: string[];
     try {

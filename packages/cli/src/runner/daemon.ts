@@ -1247,14 +1247,25 @@ export function isPidRunning(pid: number): boolean {
     } catch (err: any) {
         // ESRCH = process does not exist. EPERM = exists but no permission.
         if (err?.code === "ESRCH") return false;
-        // EPERM means the process exists but we can't signal it — treat as alive
-        // but fall through to the command-line check below.
+        // On Windows, process.kill(pid, 0) throws EPERM when the process exists
+        // but we lack permission, and throws with code ESRCH (or sometimes just
+        // a generic error) when it doesn't.  If we get here without ESRCH, assume alive.
     }
 
     // The PID is alive, but it may have been reused by an unrelated process.
     // Verify the command line contains a pizzapi / runner signature.
     try {
-        const cmd = execSync(`ps -p ${pid} -o command=`, { encoding: "utf-8", timeout: 3000 }).trim();
+        let cmd: string;
+        if (process.platform === "win32") {
+            // On Windows, use WMIC to inspect the process command line.
+            // wmic is available on Windows 7+ and returns the full command line.
+            cmd = execSync(
+                `wmic process where "ProcessId=${pid}" get CommandLine /format:list`,
+                { encoding: "utf-8", timeout: 5000 },
+            ).trim();
+        } else {
+            cmd = execSync(`ps -p ${pid} -o command=`, { encoding: "utf-8", timeout: 3000 }).trim();
+        }
         // Match against known runner process patterns:
         //   - "bun ... runner"          (dev: bun packages/cli/src/index.ts runner)
         //   - "bun ... daemon.ts"       (dev: direct daemon run)
@@ -1262,16 +1273,16 @@ export function isPidRunning(pid: number): boolean {
         //   - "pizzapi ... runner"      (production CLI)
         //   - "node ... runner"         (unlikely but possible)
         const isRunner =
-            /\brunner\b/.test(cmd) ||
-            /\bdaemon\b/.test(cmd) ||
-            /\bpizzapi\b/.test(cmd) ||
-            /\b_daemon\b/.test(cmd);
+            /\brunner\b/i.test(cmd) ||
+            /\bdaemon\b/i.test(cmd) ||
+            /\bpizzapi\b/i.test(cmd) ||
+            /\b_daemon\b/i.test(cmd);
         if (!isRunner) {
             // PID exists but belongs to an unrelated process — stale lock.
             return false;
         }
     } catch {
-        // If we can't check the command (e.g. ps not available), fall back to
+        // If we can't check the command (e.g. ps/wmic not available), fall back to
         // assuming the process is the runner (safe default — avoids double-start).
     }
 

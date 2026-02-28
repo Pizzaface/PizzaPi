@@ -1328,7 +1328,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                             : `${(contextUsage?.percent ?? 0).toFixed(1)}%/${formatTokens(contextWindow)} (auto)`;
 
                     let pwd = activeCtx.cwd;
-                    const home = process.env.HOME || process.env.USERPROFILE;
+                    const home = homedir();
                     if (home && pwd.startsWith(home)) {
                         pwd = `~${pwd.slice(home.length)}`;
                     }

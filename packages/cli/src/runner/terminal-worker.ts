@@ -30,10 +30,10 @@
  */
 
 import { spawn as spawnPty } from "@zenyr/bun-pty";
-import { platform } from "node:os";
+import { platform, homedir } from "node:os";
 
 const terminalId = process.env.TERMINAL_WORKER_ID ?? "unknown";
-const cwd = process.env.TERMINAL_WORKER_CWD || process.env.HOME || "/";
+const cwd = process.env.TERMINAL_WORKER_CWD || homedir();
 const shell =
     process.env.TERMINAL_WORKER_SHELL ||
     process.env.SHELL ||

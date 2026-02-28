@@ -104,7 +104,7 @@ async function main() {
 
     if (args[0] === "usage") {
         const config = loadConfig(cwd);
-        const agentDir = config.agentDir ? config.agentDir.replace(/^~/, process.env.HOME ?? "") : defaultAgentDir();
+        const agentDir = config.agentDir ? config.agentDir.replace(/^~/, homedir()) : defaultAgentDir();
         const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
         const showJson = args.includes("--json");
 
@@ -309,7 +309,7 @@ async function main() {
 
     if (args[0] === "models") {
         const config = loadConfig(cwd);
-        const agentDir = config.agentDir ? config.agentDir.replace(/^~/, process.env.HOME ?? "") : defaultAgentDir();
+        const agentDir = config.agentDir ? config.agentDir.replace(/^~/, homedir()) : defaultAgentDir();
 
         const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
         const modelRegistry = new ModelRegistry(authStorage, join(agentDir, "models.json"));
@@ -361,7 +361,7 @@ async function main() {
     }
 
     const config = loadConfig(cwd);
-    const agentDir = config.agentDir ? config.agentDir.replace(/^~/, process.env.HOME ?? "") : defaultAgentDir();
+    const agentDir = config.agentDir ? config.agentDir.replace(/^~/, homedir()) : defaultAgentDir();
 
     // First-run: no API key configured — prompt setup before launching TUI
     const hasApiKey = !!(process.env.PIZZAPI_API_KEY ?? config.apiKey);
