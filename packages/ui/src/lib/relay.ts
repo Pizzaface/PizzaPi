@@ -1,5 +1,5 @@
 export function getRelayWsBase(): string {
-    const configured = ((import.meta as any).env?.VITE_RELAY_URL as string | undefined)?.trim();
+    const configured = import.meta.env?.VITE_RELAY_URL?.trim();
     const fallback = window.location.origin.replace(/^http/, "ws");
     const value = configured && configured.length > 0 ? configured : fallback;
     const normalized = value.replace(/\/$/, "");
@@ -28,7 +28,7 @@ export function getRelayWsBase(): string {
  */
 export function getSocketIOBase(): string {
     // Explicit override
-    const configured = ((import.meta as any).env?.VITE_SOCKETIO_URL as string | undefined)?.trim();
+    const configured = import.meta.env?.VITE_SOCKETIO_URL?.trim();
     if (configured && configured.length > 0) return configured.replace(/\/$/, "");
 
     // Default: same origin (Socket.IO is on the same port as the REST API)
