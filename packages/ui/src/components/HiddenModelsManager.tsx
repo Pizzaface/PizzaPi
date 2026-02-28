@@ -7,7 +7,6 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { ModelSelectorLogo } from "@/components/ai-elements/model-selector";
 import { cn } from "@/lib/utils";
@@ -173,7 +172,7 @@ export function HiddenModelsManager({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg max-h-[85vh] flex flex-col">
+      <DialogContent className="sm:max-w-lg max-h-[85dvh] flex flex-col overflow-hidden">
         <DialogHeader>
           <DialogTitle>Model Visibility</DialogTitle>
           <DialogDescription>
@@ -205,8 +204,8 @@ export function HiddenModelsManager({
           )}
         </div>
 
-        {/* Model list */}
-        <ScrollArea className="flex-1 -mx-6 px-6 min-h-0">
+        {/* Model list — native scroll for reliable mobile behavior */}
+        <div className="flex-1 -mx-6 px-6 min-h-0 overflow-y-auto overscroll-contain">
           {filteredGroups.size === 0 ? (
             <div className="py-8 text-center text-sm text-muted-foreground">
               {models.length === 0
@@ -310,7 +309,7 @@ export function HiddenModelsManager({
               })}
             </div>
           )}
-        </ScrollArea>
+        </div>
       </DialogContent>
     </Dialog>
   );

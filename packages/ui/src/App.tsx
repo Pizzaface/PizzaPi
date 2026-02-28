@@ -2516,7 +2516,7 @@ export function App() {
           defaultValue={activeModel ? `${activeModel.provider} ${activeModel.id} ${activeModel.name ?? ""}`.toLowerCase() : undefined}
         >
           <ModelSelectorInput placeholder="Search configured models…" />
-          <ModelSelectorList>
+          <ModelSelectorList className="max-h-[min(60dvh,400px)]">
             <ModelSelectorEmpty>
               {availableModels.length > 0 && visibleModels.length === 0
                 ? "All models are hidden. Manage visibility in settings."
