@@ -296,6 +296,7 @@ export function CombinedPanel({
               className="flex items-center justify-center size-7 rounded cursor-grab active:cursor-grabbing text-muted-foreground/60 hover:text-muted-foreground hover:bg-accent transition-colors touch-none select-none"
               onPointerDown={onDragStart}
               title="Drag to reposition panel"
+              aria-label="Drag to reposition panel"
             >
               <GripHorizontal size={13} />
             </div>
