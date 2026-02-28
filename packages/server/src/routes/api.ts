@@ -18,6 +18,7 @@ import { apiKeyRateLimitConfig, auth, kysely } from "../auth.js";
 import { requireSession, validateApiKey } from "../middleware.js";
 import { listPersistedRelaySessionsForUser } from "../sessions/store.js";
 import { getRecentFolders, recordRecentFolder } from "../runner-recent-folders.js";
+import { getHiddenModels, setHiddenModels } from "../user-hidden-models.js";
 import {
     attachmentMaxFileSizeBytes,
     getStoredAttachment,
@@ -202,12 +203,19 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
 
         const sessionId = crypto.randomUUID();
 
+        // Fetch user's hidden model preferences (best-effort, don't block on failure)
+        let hiddenModels: string[] = [];
+        try {
+            hiddenModels = await getHiddenModels(identity.userId);
+        } catch {}
+
         try {
             runnerSocket.emit("new_session", {
                 sessionId,
                 cwd: requestedCwd,
                 ...(requestedPrompt ? { prompt: requestedPrompt } : {}),
                 ...(requestedModel ? { model: requestedModel } : {}),
+                ...(hiddenModels.length > 0 ? { hiddenModels } : {}),
             });
         } catch {
             return Response.json({ error: "Failed to send spawn request to runner" }, { status: 502 });
@@ -845,6 +853,31 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
 
         await updateEnabledEvents(identity.userId, body.endpoint, body.enabledEvents);
         return Response.json({ ok: true });
+    }
+
+    // ── Hidden models (user settings) ───────────────────────────────────────
+
+    if (url.pathname === "/api/settings/hidden-models" && req.method === "GET") {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        const models = await getHiddenModels(identity.userId);
+        return Response.json({ hiddenModels: models });
+    }
+
+    if (url.pathname === "/api/settings/hidden-models" && req.method === "PUT") {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        let body: any = {};
+        try { body = await req.json(); } catch { body = {}; }
+
+        const hiddenModels = Array.isArray(body.hiddenModels)
+            ? (body.hiddenModels as unknown[]).filter((x): x is string => typeof x === "string")
+            : [];
+
+        await setHiddenModels(identity.userId, hiddenModels);
+        return Response.json({ ok: true, hiddenModels });
     }
 
     return undefined;

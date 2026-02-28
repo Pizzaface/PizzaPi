@@ -671,7 +671,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
 
         socket.on("new_session", (data) => {
             if (isShuttingDown) return;
-            const { sessionId, cwd: requestedCwd, prompt: requestedPrompt, model: requestedModel } = data;
+            const { sessionId, cwd: requestedCwd, prompt: requestedPrompt, model: requestedModel, hiddenModels: requestedHiddenModels } = data;
 
             if (!sessionId) {
                 socket.emit("session_error", { sessionId: sessionId ?? "", message: "Missing sessionId" });
@@ -691,8 +691,8 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     // On restart (exit code 43), the session already has
                     // the prompt in its history — re-sending would duplicate it.
                     const spawnOpts = isFirstSpawn
-                        ? { prompt: requestedPrompt, model: requestedModel }
-                        : undefined;
+                        ? { prompt: requestedPrompt, model: requestedModel, hiddenModels: requestedHiddenModels }
+                        : { hiddenModels: requestedHiddenModels }; // Always pass hidden models on restart
                     isFirstSpawn = false;
                     spawnSession(sessionId, apiKey!, requestedCwd, runningSessions, doSpawn, spawnOpts);
                     socket.emit("session_ready", { sessionId });
@@ -1329,6 +1329,7 @@ function spawnSession(
     options?: {
         prompt?: string;
         model?: { provider: string; id: string };
+        hiddenModels?: string[];
     },
 ): void {
     console.log(`pizzapi runner: spawning headless worker for session ${sessionId}…`);
@@ -1369,6 +1370,11 @@ function spawnSession(
             PIZZAPI_WORKER_INITIAL_MODEL_PROVIDER: options.model.provider,
             PIZZAPI_WORKER_INITIAL_MODEL_ID: options.model.id,
         } : {}),
+        // Hidden model keys (JSON array of "provider/modelId" strings).
+        // The list_models tool filters these from its output.
+        ...(options?.hiddenModels && options.hiddenModels.length > 0
+            ? { PIZZAPI_HIDDEN_MODELS: JSON.stringify(options.hiddenModels) }
+            : {}),
     };
 
     const child = spawn(process.execPath, workerArgs, {

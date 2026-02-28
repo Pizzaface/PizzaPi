@@ -59,7 +59,7 @@ import {
   ModelSelectorName,
   ModelSelectorShortcut,
 } from "@/components/ai-elements/model-selector";
-import { HiddenModelsManager, loadHiddenModels, modelKey } from "@/components/HiddenModelsManager";
+import { HiddenModelsManager, loadHiddenModels, fetchHiddenModels, modelKey } from "@/components/HiddenModelsManager";
 
 function toRelayMessage(raw: unknown, fallbackId: string): RelayMessage | null {
   if (!raw || typeof raw !== "object") return null;
@@ -845,6 +845,18 @@ export function App() {
     document.documentElement.classList.toggle("dark", isDark);
     localStorage.setItem("theme", isDark ? "dark" : "light");
   }, [isDark]);
+
+  // Fetch hidden models from server once authenticated — server is the
+  // source of truth; localStorage is the fast-load cache.
+  React.useEffect(() => {
+    if (!session) return;
+    let cancelled = false;
+    void fetchHiddenModels().then((serverSet) => {
+      if (cancelled) return;
+      setHiddenModels(serverSet);
+    });
+    return () => { cancelled = true; };
+  }, [session]);
 
   React.useEffect(() => {
     return () => {

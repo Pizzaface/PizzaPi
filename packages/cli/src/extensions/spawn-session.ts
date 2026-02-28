@@ -220,8 +220,23 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
         async execute(_toolCallId, rawParams, _signal, _onUpdate, ctx) {
             const params = (rawParams ?? {}) as { onlyAvailable?: boolean };
 
-            const allModels = ctx.modelRegistry.getAll();
-            const availableModels = ctx.modelRegistry.getAvailable();
+            // Load hidden models from env (set by the runner daemon from user preferences).
+            // Format: JSON array of "provider/modelId" strings.
+            let hiddenModelKeys: Set<string>;
+            try {
+                const raw = process.env.PIZZAPI_HIDDEN_MODELS;
+                hiddenModelKeys = raw
+                    ? new Set(JSON.parse(raw).filter((x: unknown): x is string => typeof x === "string"))
+                    : new Set();
+            } catch {
+                hiddenModelKeys = new Set();
+            }
+
+            const isHidden = (m: { provider: string | symbol; id: string }) =>
+                hiddenModelKeys.has(`${String(m.provider)}/${m.id}`);
+
+            const allModels = ctx.modelRegistry.getAll().filter((m) => !isHidden(m));
+            const availableModels = ctx.modelRegistry.getAvailable().filter((m) => !isHidden(m));
             const availableKeys = new Set(availableModels.map((m) => `${m.provider}:${m.id}`));
 
             const models = params.onlyAvailable ? availableModels : allModels;

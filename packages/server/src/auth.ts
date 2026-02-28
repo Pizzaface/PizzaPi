@@ -112,6 +112,14 @@ export interface RunnerRecentFolderTable {
     lastUsedAt: string;
 }
 
+export interface UserHiddenModelTable {
+    id: string;
+    userId: string;
+    /** Format: "provider/modelId" */
+    modelKey: string;
+    createdAt: string;
+}
+
 export interface DB {
     user: UserTable;
     session: SessionTable;
@@ -122,6 +130,7 @@ export interface DB {
     relay_session_state: RelaySessionStateTable;
     push_subscription: PushSubscriptionTable;
     runner_recent_folder: RunnerRecentFolderTable;
+    user_hidden_model: UserHiddenModelTable;
 }
 
 // ── Instances ─────────────────────────────────────────────────────────────────

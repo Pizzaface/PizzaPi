@@ -116,6 +116,9 @@ export interface RunnerServerToClientEvents {
     prompt?: string;
     model?: { provider: string; id: string };
     skills?: string[];
+    /** Model keys hidden by the user, format: "provider/modelId". The worker should
+     *  filter these from list_models tool results. */
+    hiddenModels?: string[];
   }) => void;
 
   /** Instructs runner to kill a session */
