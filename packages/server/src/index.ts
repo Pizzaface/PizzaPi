@@ -56,7 +56,12 @@ function nodeReqToFetchRequest(req: IncomingMessage): Request {
 }
 
 async function sendFetchResponse(res: ServerResponse, response: Response): Promise<void> {
-    const headers: Record<string, string | string[]> = {};
+    const headers: Record<string, string | string[]> = {
+        "x-content-type-options": "nosniff",
+        "x-frame-options": "DENY",
+        "x-xss-protection": "0",
+        "referrer-policy": "strict-origin-when-cross-origin"
+    };
     response.headers.forEach((value, key) => {
         const existing = headers[key];
         if (existing !== undefined) {
@@ -137,7 +142,13 @@ const httpServer = createServer(async (req, res) => {
     } catch (e) {
         console.error("[http] Unhandled error:", e);
         if (!res.headersSent) {
-            res.writeHead(500, { "content-type": "application/json" });
+            res.writeHead(500, {
+                "content-type": "application/json",
+                "x-content-type-options": "nosniff",
+                "x-frame-options": "DENY",
+                "x-xss-protection": "0",
+                "referrer-policy": "strict-origin-when-cross-origin"
+            });
         }
         res.end(JSON.stringify({ error: "Internal server error" }));
     }
