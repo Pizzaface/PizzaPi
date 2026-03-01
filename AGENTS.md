@@ -74,15 +74,9 @@ bun run clean
 **Use `pizza web` to rebuild and redeploy the production server.** This is the preferred method — it rebuilds the Docker image from the repo source and restarts the production compose project at `~/.pizzapi/web/`. Runners and viewers reconnect automatically.
 
 ```bash
-# Preferred: rebuild + redeploy production server (no-cache, handles everything)
+# Preferred: rebuild + redeploy production server
 pizza web
-
-# Alternative: manual compose commands
-docker compose -f docker/compose.yml up              # Dev stack from repo
-docker compose -f docker/compose.yml --profile dev up # Dev with hot-reload
 ```
-
-**Important:** The production server runs from `~/.pizzapi/web/compose.yml` (port 3001), NOT from `docker/compose.yml` (port 7492). If you manually use `docker compose`, make sure you target the correct compose file. `pizza web` handles this automatically.
 
 ---
 
