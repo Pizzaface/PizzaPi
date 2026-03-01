@@ -43,15 +43,21 @@ fi
 # Prevent catastrophic recursive deletes.
 # Detects all flag forms: combined (-rf), split (-r -f), long (--recursive
 # --force), and mixed (-r --force, --recursive -f), with optional extra flags.
+# Also catches absolute-path rm invocations (/bin/rm, /usr/bin/rm, etc.)
+# and quoted targets ("/" , '~', "$HOME").
 # ---------------------------------------------------------------------------
+
+# Regex that matches both bare `rm` and absolute-path variants like /bin/rm
+_RM_PATTERN='(^|[;&|[:space:]])(\/[^ ]*\/)?rm[[:space:]]'
+
 _rm_parse_flags() {
     # Parse rm's flags from $COMMAND, setting HAS_RECURSIVE / HAS_FORCE.
     HAS_RECURSIVE=false
     HAS_FORCE=false
-    # Extract the portion after the first `rm` token
+    # Extract the portion after the first `rm` token (bare or absolute-path)
     local args
-    args=$(echo "$COMMAND" | sed -n 's/.*[[:space:];&|]rm[[:space:]]\{1,\}\(.*\)/\1/p')
-    [[ -z "$args" ]] && args=$(echo "$COMMAND" | sed -n 's/^rm[[:space:]]\{1,\}\(.*\)/\1/p')
+    args=$(echo "$COMMAND" | sed -n 's/.*[[:space:];&|][^ ]*rm[[:space:]]\{1,\}\(.*\)/\1/p')
+    [[ -z "$args" ]] && args=$(echo "$COMMAND" | sed -n 's/^[^ ]*rm[[:space:]]\{1,\}\(.*\)/\1/p')
     [[ -z "$args" ]] && return
     for token in $args; do
         case "$token" in
@@ -68,21 +74,25 @@ _rm_parse_flags() {
     done
 }
 
-if echo "$COMMAND" | grep -qE '(^|[;&|[:space:]])rm[[:space:]]'; then
+# Strip quotes from the command for target path matching so that
+# `rm -rf "/"` and `rm -rf '~'` are caught.
+UNQUOTED_COMMAND=$(echo "$COMMAND" | sed "s/['\"]//g")
+
+if echo "$COMMAND" | grep -qE "$_RM_PATTERN"; then
     _rm_parse_flags
     if $HAS_RECURSIVE && $HAS_FORCE; then
-        # Check if any target is a dangerous path
-        if echo "$COMMAND" | grep -qE '[[:space:]]/([[:space:]]|$)|[[:space:]]~([[:space:]]|$)|[[:space:]]\$HOME([[:space:]]|$)|[[:space:]]\.\.([[:space:]]|$)'; then
+        # Check if any target is a dangerous path (using quote-stripped version)
+        if echo "$UNQUOTED_COMMAND" | grep -qE '[[:space:]]/([[:space:]]|$)|[[:space:]]~([[:space:]]|$)|[[:space:]]\$HOME([[:space:]]|$)|[[:space:]]\.\.([[:space:]]|$)'; then
             block_with_reason "Recursive delete of /, ~, or .. is forbidden."
         fi
     fi
 fi
 
 # Prevent deleting the entire .git directory
-if echo "$COMMAND" | grep -qE '(^|[;&|[:space:]])rm[[:space:]]'; then
+if echo "$COMMAND" | grep -qE "$_RM_PATTERN"; then
     _rm_parse_flags
     if $HAS_RECURSIVE; then
-        if echo "$COMMAND" | grep -qE '\.git($|[[:space:]]|/)'; then
+        if echo "$UNQUOTED_COMMAND" | grep -qE '\.git($|[[:space:]]|/)'; then
             block_with_reason "Deleting .git is forbidden."
         fi
     fi

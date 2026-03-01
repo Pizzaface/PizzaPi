@@ -475,6 +475,70 @@ describe("real hook scripts", () => {
         expect(result.stderr).toContain("BLOCKED");
     });
 
+    // Absolute-path rm binaries (codex review: catch /bin/rm, /usr/bin/rm)
+
+    test("block-dangerous-commands.sh blocks /bin/rm -rf /", async () => {
+        const result = await runHook(
+            { command: `bash "${projectDir}/.pizzapi/hooks/block-dangerous-commands.sh"` },
+            JSON.stringify({ tool_input: { command: "/bin/rm -rf /" } }),
+            projectDir,
+        );
+        expect(result.exitCode).toBe(2);
+        expect(result.stderr).toContain("BLOCKED");
+    });
+
+    test("block-dangerous-commands.sh blocks /usr/bin/rm -rf /", async () => {
+        const result = await runHook(
+            { command: `bash "${projectDir}/.pizzapi/hooks/block-dangerous-commands.sh"` },
+            JSON.stringify({ tool_input: { command: "/usr/bin/rm -rf /" } }),
+            projectDir,
+        );
+        expect(result.exitCode).toBe(2);
+        expect(result.stderr).toContain("BLOCKED");
+    });
+
+    test("block-dangerous-commands.sh blocks /bin/rm -r .git", async () => {
+        const result = await runHook(
+            { command: `bash "${projectDir}/.pizzapi/hooks/block-dangerous-commands.sh"` },
+            JSON.stringify({ tool_input: { command: "/bin/rm -r .git" } }),
+            projectDir,
+        );
+        expect(result.exitCode).toBe(2);
+        expect(result.stderr).toContain("BLOCKED");
+    });
+
+    // Quoted targets (codex review: rm -rf "/" should still be caught)
+
+    test('block-dangerous-commands.sh blocks rm -rf "/"', async () => {
+        const result = await runHook(
+            { command: `bash "${projectDir}/.pizzapi/hooks/block-dangerous-commands.sh"` },
+            JSON.stringify({ tool_input: { command: 'rm -rf "/"' } }),
+            projectDir,
+        );
+        expect(result.exitCode).toBe(2);
+        expect(result.stderr).toContain("BLOCKED");
+    });
+
+    test("block-dangerous-commands.sh blocks rm -rf '~'", async () => {
+        const result = await runHook(
+            { command: `bash "${projectDir}/.pizzapi/hooks/block-dangerous-commands.sh"` },
+            JSON.stringify({ tool_input: { command: "rm -rf '~'" } }),
+            projectDir,
+        );
+        expect(result.exitCode).toBe(2);
+        expect(result.stderr).toContain("BLOCKED");
+    });
+
+    test('block-dangerous-commands.sh blocks /bin/rm -rf "/"', async () => {
+        const result = await runHook(
+            { command: `bash "${projectDir}/.pizzapi/hooks/block-dangerous-commands.sh"` },
+            JSON.stringify({ tool_input: { command: '/bin/rm -rf "/"' } }),
+            projectDir,
+        );
+        expect(result.exitCode).toBe(2);
+        expect(result.stderr).toContain("BLOCKED");
+    });
+
     // -- lights-on-bun.sh --
 
     test("lights-on-bun.sh warns about npm usage", async () => {

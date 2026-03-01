@@ -1812,9 +1812,6 @@ export function App() {
     if (last && trimmed && last.text === trimmed && now - last.ts < 500) {
       return true; // silently deduplicate
     }
-    if (trimmed) {
-      lastSentRef.current = { text: trimmed, ts: now };
-    }
 
     const rawFiles = (payload.files ?? [])
       .filter((f) => typeof f?.url === "string" && f.url.length > 0)
@@ -1892,6 +1889,11 @@ export function App() {
         client: "web",
         ...(deliverAs ? { deliverAs } : {}),
       });
+
+      // Mark dedupe only after successful send
+      if (trimmed) {
+        lastSentRef.current = { text: trimmed, ts: Date.now() };
+      }
 
       // Track queued messages when the agent is active
       if (deliverAs && trimmed) {
