@@ -22,15 +22,32 @@ block_with_reason() {
     exit 2
 }
 
-# Force pushes to main/master (handles --force, -f, --force-with-lease)
-if echo "$COMMAND" | grep -qE 'git\s+push\s+.*(--force|--force-with-lease|-f)\b'; then
-    # Catch common protected-branch ref forms:
-    #   main / master
-    #   HEAD:main / HEAD:master
-    #   HEAD:refs/heads/main / HEAD:refs/heads/master
-    #   refs/heads/main / refs/heads/master
-    if echo "$COMMAND" | grep -qE 'HEAD:(refs/heads/)?(main|master)\b|(^|[[:space:]])refs/heads/(main|master)\b|(^|[[:space:]:])(main|master)([[:space:]]|$)'; then
-        block_with_reason "Force push to main/master is forbidden. Use a feature branch."
+# Force pushes to main/master (handles --force, -f, --force-with-lease, and
+# refspec-based force updates via leading '+' e.g. `git push origin +main`).
+if echo "$COMMAND" | grep -qE 'git\s+push\b'; then
+    IS_FORCE_PUSH=false
+
+    # Explicit force flags
+    if echo "$COMMAND" | grep -qE 'git\s+push\s+.*(--force|--force-with-lease|-f)\b'; then
+        IS_FORCE_PUSH=true
+    fi
+
+    # Refspec-based force update (`+<src>` or `+<src>:<dst>`)
+    if echo "$COMMAND" | grep -qE 'git\s+push\b.*(^|[[:space:]])\+[^[:space:]]+'; then
+        IS_FORCE_PUSH=true
+    fi
+
+    if [[ "$IS_FORCE_PUSH" == true ]]; then
+        # Catch common protected-branch ref forms (with or without leading '+'):
+        #   main / master
+        #   +main / +master
+        #   HEAD:main / HEAD:master
+        #   HEAD:refs/heads/main / HEAD:refs/heads/master
+        #   refs/heads/main / refs/heads/master
+        #   +refs/heads/main / +refs/heads/master
+        if echo "$COMMAND" | grep -qE 'HEAD:(refs/heads/)?(main|master)\b|(^|[[:space:]])\+?refs/heads/(main|master)\b|(^|[[:space:]:])\+?(main|master)([[:space:]]|$)'; then
+            block_with_reason "Force push to main/master is forbidden. Use a feature branch."
+        fi
     fi
 fi
 
