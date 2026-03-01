@@ -33,6 +33,7 @@ import {
 } from "../push.js";
 import { RateLimiter, isValidEmail, isValidPassword, cwdMatchesRoots } from "../security.js";
 import { isValidSkillName } from "../validation.js";
+import { isSignupAllowed } from "../auth.js";
 
 // 5 requests per 15 minutes
 const registerRateLimiter = new RateLimiter(5, 15 * 60 * 1000);
@@ -40,6 +41,12 @@ const registerRateLimiter = new RateLimiter(5, 15 * 60 * 1000);
 export async function handleApi(req: Request, url: URL): Promise<Response | undefined> {
     if (url.pathname === "/health") {
         return Response.json({ status: "ok" });
+    }
+
+    // ── Public endpoint: signup status ───────────────────────────────────
+    if (url.pathname === "/api/signup-status" && req.method === "GET") {
+        const allowed = await isSignupAllowed();
+        return Response.json({ signupEnabled: allowed });
     }
 
     if (url.pathname === "/api/register" && req.method === "POST") {
@@ -79,6 +86,11 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
             }
             userId = signIn.user.id;
         } else {
+            // Block new account creation when signups are disabled.
+            const allowed = await isSignupAllowed();
+            if (!allowed) {
+                return Response.json({ error: "Signups are disabled. Contact the administrator." }, { status: 403 });
+            }
             if (!name) {
                 return Response.json({ error: "Missing required field: name (required for new accounts)" }, { status: 400 });
             }
