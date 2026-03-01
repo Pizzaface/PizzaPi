@@ -105,8 +105,8 @@ jobs:
           done
           echo "✅ Assets present"
 
-          # Report PTY lib status
-          PTY_LIB=$(ls "$DIR"/*.dylib "$DIR"/*.so "$DIR"/*.dll 2>/dev/null | head -1)
+          # Report PTY lib status (ls may find nothing on cross-compiled targets)
+          PTY_LIB=$(find "$DIR" -maxdepth 1 \( -name '*.dylib' -o -name '*.so' -o -name '*.dll' \) -print -quit)
           if [ -n "$PTY_LIB" ]; then
             echo "✅ PTY lib: $(basename "$PTY_LIB")"
           else
