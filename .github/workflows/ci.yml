@@ -306,7 +306,7 @@ jobs:
               echo "[3/6] Registering user"
               RESP=$(curl -fsS -X POST "http://localhost:7492/api/register" \
                 -H "content-type: application/json" \
-                -d "{\"name\":\"E2E User\",\"email\":\"e2e@example.com\",\"password\":\"e2e-pass-123\"}")
+                -d "{\"name\":\"E2E User\",\"email\":\"e2e@example.com\",\"password\":\"E2ePass123\"}")
               KEY=$(echo "$RESP" | jq -r ".key // empty")
               if [ -z "$KEY" ]; then
                 echo "Registration failed: $RESP" >&2
@@ -324,15 +324,36 @@ jobs:
               echo "[5/6] Starting runner"
               ($CLI_CMD runner >/tmp/pizzapi-runner.log 2>&1 &) 
 
-              echo "[6/6] Verifying runner registration"
+              echo "[6/6] Verifying runner via authenticated spawn"
+              RUNNER_ID=""
               for i in $(seq 1 30); do
-                if curl -fsS "http://localhost:7492/api/runners" | jq -e "length > 0" >/dev/null 2>&1; then
-                  echo "✅ Runner registered"
-                  curl -fsS "http://localhost:7492/api/runners" | jq .
+                RUNNER_ID=$(jq -r ".runnerId // empty" /root/.pizzapi/runner.json 2>/dev/null || true)
+                if [ -n "$RUNNER_ID" ]; then
                   break
                 fi
+                sleep 1
+              done
+              if [ -z "$RUNNER_ID" ]; then
+                echo "Runner ID not found in /root/.pizzapi/runner.json" >&2
+                tail -n 150 /tmp/pizzapi-runner.log >&2 || true
+                exit 1
+              fi
+
+              for i in $(seq 1 30); do
+                HTTP_CODE=$(curl -sS -o /tmp/spawn.json -w "%{http_code}" -X POST "http://localhost:7492/api/runners/spawn" \
+                  -H "content-type: application/json" \
+                  -H "x-api-key: $KEY" \
+                  -d "{\"runnerId\":\"$RUNNER_ID\",\"cwd\":\"/work\",\"prompt\":\"E2E connectivity check\"}" || true)
+
+                if [ "$HTTP_CODE" = "200" ] && jq -e --arg rid "$RUNNER_ID" ".ok == true and (.runnerId == \$rid) and (.sessionId | type == \"string\")" /tmp/spawn.json >/dev/null 2>&1; then
+                  echo "✅ Runner accepted spawn request"
+                  cat /tmp/spawn.json
+                  break
+                fi
+
                 if [ "$i" -eq 30 ]; then
-                  echo "Runner did not register in time" >&2
+                  echo "Runner did not accept spawn request in time (HTTP $HTTP_CODE)" >&2
+                  cat /tmp/spawn.json >&2 || true
                   tail -n 150 /tmp/pizzapi-runner.log >&2 || true
                   docker compose -p pizzapi-web logs >&2 || true
                   exit 1
