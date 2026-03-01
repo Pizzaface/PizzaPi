@@ -346,6 +346,7 @@ describe("extToMime", () => {
 
 describe("resolveCommandPopoverState", () => {
     const known = new Set(["compact", "new", "resume", "skill:beads-ccpm", "skill:double-check"]);
+    const keepOpen = new Set(["resume"]);
 
     test("keeps popover open while still typing a command name", () => {
         expect(resolveCommandPopoverState("sk", known)).toEqual({ open: true, query: "sk" });
@@ -385,5 +386,18 @@ describe("resolveCommandPopoverState", () => {
     test("handles tab/newline as whitespace separator", () => {
         expect(resolveCommandPopoverState("compact\targ", known)).toEqual({ open: false, query: "" });
         expect(resolveCommandPopoverState("compact\narg", known)).toEqual({ open: false, query: "" });
+    });
+
+    test("keeps popover open for keepOpen commands with arguments (e.g. /resume)", () => {
+        expect(resolveCommandPopoverState("resume my-session", known, keepOpen)).toEqual({ open: true, query: "resume my-session" });
+        expect(resolveCommandPopoverState("resume ", known, keepOpen)).toEqual({ open: true, query: "resume " });
+    });
+
+    test("resume still closes without keepOpen set", () => {
+        expect(resolveCommandPopoverState("resume query", known)).toEqual({ open: false, query: "" });
+    });
+
+    test("keepOpen is case-insensitive", () => {
+        expect(resolveCommandPopoverState("Resume my-session", known, keepOpen)).toEqual({ open: true, query: "Resume my-session" });
     });
 });

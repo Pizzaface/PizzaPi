@@ -631,6 +631,10 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     return names;
   }, [supportedWebCommands, skillCommands]);
 
+  // Commands that use the popover for argument-mode UI (e.g. resume shows a
+  // session picker that the user searches/filters by typing after /resume).
+  const keepPopoverOpenNames = React.useMemo(() => new Set(["resume"]), []);
+
   // Reset highlighted index when the query or mode changes
   React.useEffect(() => {
     setCommandHighlightedIndex(0);
@@ -1400,7 +1404,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                   // Slash command detection
                   const trimmed = next.trimStart();
                   if (trimmed.startsWith("/")) {
-                    const { open, query } = resolveCommandPopoverState(trimmed.slice(1), knownCommandNames);
+                    const { open, query } = resolveCommandPopoverState(trimmed.slice(1), knownCommandNames, keepPopoverOpenNames);
                     setCommandOpen(open);
                     setCommandQuery(query);
                     // Close @-mention popover when slash command opens (mutual exclusivity)
