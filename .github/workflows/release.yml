@@ -1,0 +1,418 @@
+name: New Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Release action"
+        required: true
+        type: choice
+        options:
+          - latest
+          - beta
+          - dev
+          - pull
+      version:
+        description: "Version (e.g. 0.2.3). For dev/beta a suffix is appended automatically. For pull, the exact version to yank."
+        required: true
+        type: string
+      dry-run:
+        description: "Dry run (publish with --dry-run, don't actually push to npm)"
+        required: false
+        type: boolean
+        default: false
+
+# ─── Trusted publishing requires id-token: write ───────────────
+# OIDC is only supported for `npm publish`. The `pull` job still
+# needs a classic NPM_TOKEN secret for `npm unpublish`.
+permissions:
+  id-token: write
+  contents: write
+
+jobs:
+  # ─── Gate: only Pizzaface can trigger this ────────────────────
+  authorize:
+    name: Authorize
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check actor
+        if: github.actor != 'Pizzaface'
+        run: |
+          echo "::error::Only @Pizzaface can trigger releases. Actor: ${{ github.actor }}"
+          exit 1
+
+  # ─── Compute the release version before building binaries ─────
+  # The CLI reads its version from package.json at runtime (--version,
+  # runner reporting).  `bun build --compile` bakes package.json into
+  # the binary, so we must stamp the correct version BEFORE compiling.
+  compute-version:
+    name: Compute version
+    needs: authorize
+    if: inputs.action != 'pull'
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Compute release version
+        id: version
+        run: |
+          BASE="${{ inputs.version }}"
+          ACTION="${{ inputs.action }}"
+
+          case "$ACTION" in
+            dev)
+              # dev.YYYYMMDDHHMMSS
+              SUFFIX="dev.$(date -u +%Y%m%d%H%M%S)"
+              FULL="${BASE}-${SUFFIX}"
+              TAG="dev"
+              ;;
+            beta)
+              # beta.N — find the next beta number from npm.
+              NPM_VERSIONS=$(npm view @pizzapi/pizza versions --json 2>/dev/null || echo '[]')
+              EXISTING=$(echo "$NPM_VERSIONS" | \
+                { grep -o "\"${BASE}-beta\.[0-9]*\"" || true; } | \
+                sed 's/"//g' | \
+                sed "s/${BASE}-beta\.//" | \
+                sort -n | tail -1)
+              NEXT=$(( ${EXISTING:-0} + 1 ))
+              FULL="${BASE}-beta.${NEXT}"
+              TAG="beta"
+              ;;
+            latest)
+              FULL="${BASE}"
+              TAG="latest"
+              ;;
+          esac
+
+          echo "version=${FULL}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "📦 Version: ${FULL} (tag: ${TAG})"
+
+  # ─── Build binaries on platform-matching runners ──────────────
+  # PTY native libraries (.dylib/.so/.dll) are only available when
+  # building on the matching host OS. Cross-compiled targets won't
+  # have the PTY lib, but the binary itself will still work (just
+  # without native terminal support on that platform).
+  build-binary:
+    name: Build — ${{ matrix.target }}
+    needs: compute-version
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - target: linux-x64
+            runner: ubuntu-latest
+          - target: linux-arm64
+            runner: ubuntu-latest          # cross-compile
+          - target: macos-arm64
+            runner: macos-latest           # Apple Silicon — PTY lib available
+          - target: macos-x64
+            runner: macos-15-intel         # Intel macOS — PTY lib available
+          - target: windows-x64
+            runner: ubuntu-latest          # cross-compile
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.10"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Stamp release version into package.json
+        run: |
+          VERSION="${{ needs.compute-version.outputs.version }}"
+          cd packages/cli
+          bun -e "
+            const pkg = JSON.parse(require('fs').readFileSync('package.json','utf8'));
+            pkg.version = '${VERSION}';
+            require('fs').writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+          echo "✅ packages/cli/package.json → ${VERSION}"
+
+      - name: Build packages
+        run: bun run build
+
+      - name: Compile binary (${{ matrix.target }})
+        working-directory: packages/cli
+        run: bun build-binaries.ts --target ${{ matrix.target }}
+
+      - name: Verify binary + assets
+        run: |
+          DIR="packages/cli/dist/binaries/${{ matrix.target }}"
+          ls -la "$DIR/"
+          echo ""
+
+          # Check binary exists
+          BINARY=$(ls "$DIR"/pizza-* 2>/dev/null | head -1)
+          if [ -z "$BINARY" ]; then
+            echo "::error::No binary found in $DIR"
+            exit 1
+          fi
+          echo "✅ Binary: $(basename "$BINARY") ($(du -h "$BINARY" | cut -f1))"
+
+          # Check required assets
+          for asset in package.json theme/dark.json; do
+            if [ ! -f "$DIR/$asset" ]; then
+              echo "::error::Missing asset: $asset"
+              exit 1
+            fi
+          done
+          echo "✅ Assets present"
+
+          # Report PTY lib status (ls may find nothing on cross-compiled targets)
+          PTY_LIB=$(find "$DIR" -maxdepth 1 \( -name '*.dylib' -o -name '*.so' -o -name '*.dll' \) -print -quit)
+          if [ -n "$PTY_LIB" ]; then
+            echo "✅ PTY lib: $(basename "$PTY_LIB")"
+          else
+            echo "⚠ No PTY native lib (expected for cross-compiled targets)"
+          fi
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.target }}
+          path: packages/cli/dist/binaries/${{ matrix.target }}/
+          retention-days: 1
+
+  # ─── Package + publish to npm ─────────────────────────────────
+  publish:
+    name: Publish — ${{ inputs.action }}
+    needs: [compute-version, build-binary]
+    if: inputs.action != 'pull'
+    runs-on: ubuntu-latest
+    environment: npm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.10"
+
+      - name: Verify npm version
+        run: |
+          NPM_VERSION=$(npm --version)
+          echo "npm version: ${NPM_VERSION}"
+          # Trusted publishing requires npm >= 11.5.1
+          MAJOR=$(echo "$NPM_VERSION" | cut -d. -f1)
+          MINOR=$(echo "$NPM_VERSION" | cut -d. -f2)
+          PATCH=$(echo "$NPM_VERSION" | cut -d. -f3)
+          if [ "$MAJOR" -lt 11 ] || { [ "$MAJOR" -eq 11 ] && [ "$MINOR" -lt 5 ]; } || { [ "$MAJOR" -eq 11 ] && [ "$MINOR" -eq 5 ] && [ "$PATCH" -lt 1 ]; }; then
+            echo "::warning::npm ${NPM_VERSION} < 11.5.1 — upgrading for trusted publishing support"
+            npm install -g npm@latest
+            echo "npm version: $(npm --version)"
+          fi
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Download all binary artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: binary-*
+          path: packages/cli/dist/binaries/
+          merge-multiple: false
+
+      - name: Arrange binary directories
+        run: |
+          # download-artifact creates binary-<target>/ dirs; build-npm.ts
+          # expects <target>/ (e.g. linux-x64/, macos-arm64/).
+          cd packages/cli/dist/binaries
+          for dir in binary-*; do
+            TARGET="${dir#binary-}"
+            mv "$dir" "$TARGET"
+            echo "  $dir → $TARGET"
+          done
+          echo ""
+          echo "Binary layout:"
+          ls -la */pizza-* 2>/dev/null || true
+
+      - name: Update package versions
+        run: |
+          VERSION="${{ needs.compute-version.outputs.version }}"
+
+          # Update the CLI package.json version (build-npm.ts reads it)
+          cd packages/cli
+          bun -e "
+            const pkg = JSON.parse(require('fs').readFileSync('package.json','utf8'));
+            pkg.version = '${VERSION}';
+            require('fs').writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+          echo "✅ packages/cli/package.json → ${VERSION}"
+
+          cd ../npm
+          bun -e "
+            const pkg = JSON.parse(require('fs').readFileSync('package.json','utf8'));
+            pkg.version = '${VERSION}';
+            require('fs').writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+          echo "✅ packages/npm/package.json → ${VERSION}"
+
+      - name: Build all packages
+        run: bun run build
+
+      - name: Build npm distribution (skip compile — using pre-built binaries)
+        run: bun run build:npm -- --version ${{ needs.compute-version.outputs.version }} --skip-compile
+
+      - name: Publish to npm (OIDC trusted publishing)
+        run: |
+          ARGS="--provenance --access public"
+          if [ "${{ inputs.dry-run }}" = "true" ]; then
+            ARGS="${ARGS} --dry-run"
+          fi
+
+          bun packages/npm/publish-npm.ts \
+            --tag ${{ needs.compute-version.outputs.tag }} \
+            $ARGS
+
+      - name: Create git tag
+        if: inputs.dry-run != true
+        run: |
+          VERSION="${{ needs.compute-version.outputs.version }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "v${VERSION}" -m "Release v${VERSION}"
+          git push origin "v${VERSION}"
+
+      - name: Summary
+        run: |
+          VERSION="${{ needs.compute-version.outputs.version }}"
+          TAG="${{ needs.compute-version.outputs.tag }}"
+          DRY="${{ inputs.dry-run }}"
+
+          echo "## 📦 Release Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Version** | \`${VERSION}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Tag** | \`${TAG}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Auth** | OIDC Trusted Publishing |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Provenance** | ✅ |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Dry Run** | ${DRY} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$DRY" = "true" ]; then
+            echo "> ⚠️ This was a **dry run** — nothing was published." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Install:" >> "$GITHUB_STEP_SUMMARY"
+            echo "\`\`\`bash" >> "$GITHUB_STEP_SUMMARY"
+            echo "npx @pizzapi/pizza@${TAG}" >> "$GITHUB_STEP_SUMMARY"
+            echo "# or pin:" >> "$GITHUB_STEP_SUMMARY"
+            echo "npx @pizzapi/pizza@${VERSION}" >> "$GITHUB_STEP_SUMMARY"
+            echo "\`\`\`" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  # ─── Pull (unpublish) a release ──────────────────────────────
+  # NOTE: npm OIDC trusted publishing only supports `npm publish`.
+  # Unpublish still requires a classic NPM_TOKEN secret.
+  pull:
+    name: Pull — unpublish ${{ inputs.version }}
+    needs: authorize
+    if: inputs.action == 'pull'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure npm auth
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "::error::NPM_TOKEN secret is required for unpublishing. OIDC only supports publish."
+            exit 1
+          fi
+          echo "//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}" > ~/.npmrc
+
+      - name: Unpublish packages
+        run: |
+          set -euo pipefail
+          VERSION="${{ inputs.version }}"
+          DRY="${{ inputs.dry-run }}"
+          FAILED=0
+
+          PACKAGES=(
+            "@pizzapi/cli-linux-x64"
+            "@pizzapi/cli-linux-arm64"
+            "@pizzapi/cli-darwin-x64"
+            "@pizzapi/cli-darwin-arm64"
+            "@pizzapi/cli-win32-x64"
+            "@pizzapi/pizza"
+          )
+
+          for PKG in "${PACKAGES[@]}"; do
+            echo "▶ Unpublishing ${PKG}@${VERSION}..."
+            if [ "$DRY" = "true" ]; then
+              echo "  (dry run) npm unpublish ${PKG}@${VERSION}"
+            else
+              OUTPUT=$(npm unpublish "${PKG}@${VERSION}" 2>&1) && {
+                echo "  ✓ Unpublished"
+              } || {
+                EXIT_CODE=$?
+                # Tolerate "not found" (already unpublished) — fail on everything else
+                if echo "$OUTPUT" | grep -qiE '(not found|404|is not in the npm registry)'; then
+                  echo "  ⚠ ${PKG}@${VERSION} not found — already unpublished"
+                else
+                  echo "  ✗ Failed to unpublish ${PKG}@${VERSION} (exit ${EXIT_CODE})"
+                  echo "$OUTPUT"
+                  FAILED=1
+                fi
+              }
+            fi
+          done
+
+          if [ "$FAILED" -ne 0 ]; then
+            echo "::error::One or more packages failed to unpublish"
+            exit 1
+          fi
+
+      - name: Delete git tag
+        if: inputs.dry-run != true
+        run: |
+          set -euo pipefail
+          VERSION="${{ inputs.version }}"
+          OUTPUT=$(git push origin --delete "v${VERSION}" 2>&1) && {
+            echo "✅ Deleted tag v${VERSION}"
+          } || {
+            # Tolerate only "remote ref does not exist" (tag was never pushed).
+            # Do NOT match broad patterns like "not found" — that would swallow
+            # auth failures ("repository not found") and other real errors.
+            if echo "$OUTPUT" | grep -qF 'remote ref does not exist'; then
+              echo "⚠ Tag v${VERSION} not found on remote — skipping"
+            else
+              echo "::error::Failed to delete tag v${VERSION}"
+              echo "$OUTPUT"
+              exit 1
+            fi
+          }
+
+      - name: Summary
+        run: |
+          VERSION="${{ inputs.version }}"
+          DRY="${{ inputs.dry-run }}"
+
+          echo "## 🗑️ Pull Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|-------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Version** | \`${VERSION}\` |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Dry Run** | ${DRY} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$DRY" = "true" ]; then
+            echo "> ⚠️ This was a **dry run** — nothing was unpublished." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "> ✅ All packages for \`${VERSION}\` have been unpublished and the git tag deleted." >> "$GITHUB_STEP_SUMMARY"
+          fi
