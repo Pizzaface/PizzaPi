@@ -395,6 +395,66 @@ describe("real hook scripts", () => {
         expect(result.stderr).toContain("BLOCKED");
     });
 
+    test("block-dangerous-commands.sh blocks quoted git executable force push", async () => {
+        const result = await runHook(
+            { command: `bash "${projectDir}/.pizzapi/hooks/block-dangerous-commands.sh"` },
+            JSON.stringify({ tool_input: { command: '"/usr/bin/git" push --force origin main' } }),
+            projectDir,
+        );
+        expect(result.exitCode).toBe(2);
+        expect(result.stderr).toContain("BLOCKED");
+    });
+
+    test("block-dangerous-commands.sh blocks single-quoted git executable force push", async () => {
+        const result = await runHook(
+            { command: `bash "${projectDir}/.pizzapi/hooks/block-dangerous-commands.sh"` },
+            JSON.stringify({ tool_input: { command: "'/usr/bin/git' push --force origin main" } }),
+            projectDir,
+        );
+        expect(result.exitCode).toBe(2);
+        expect(result.stderr).toContain("BLOCKED");
+    });
+
+    test("block-dangerous-commands.sh blocks git -C force push", async () => {
+        const result = await runHook(
+            { command: `bash "${projectDir}/.pizzapi/hooks/block-dangerous-commands.sh"` },
+            JSON.stringify({ tool_input: { command: "git -C ./repo push --force origin main" } }),
+            projectDir,
+        );
+        expect(result.exitCode).toBe(2);
+        expect(result.stderr).toContain("BLOCKED");
+    });
+
+    test("block-dangerous-commands.sh blocks sudo git force push", async () => {
+        const result = await runHook(
+            { command: `bash "${projectDir}/.pizzapi/hooks/block-dangerous-commands.sh"` },
+            JSON.stringify({ tool_input: { command: "sudo git push --force origin main" } }),
+            projectDir,
+        );
+        expect(result.exitCode).toBe(2);
+        expect(result.stderr).toContain("BLOCKED");
+    });
+
+    test("block-dangerous-commands.sh blocks command git force push", async () => {
+        const result = await runHook(
+            { command: `bash "${projectDir}/.pizzapi/hooks/block-dangerous-commands.sh"` },
+            JSON.stringify({ tool_input: { command: "command git push --force origin main" } }),
+            projectDir,
+        );
+        expect(result.exitCode).toBe(2);
+        expect(result.stderr).toContain("BLOCKED");
+    });
+
+    test("block-dangerous-commands.sh blocks force push when branch is quoted", async () => {
+        const result = await runHook(
+            { command: `bash "${projectDir}/.pizzapi/hooks/block-dangerous-commands.sh"` },
+            JSON.stringify({ tool_input: { command: 'git push --force origin "main"' } }),
+            projectDir,
+        );
+        expect(result.exitCode).toBe(2);
+        expect(result.stderr).toContain("BLOCKED");
+    });
+
     test("block-dangerous-commands.sh allows +main:feature refspec force push", async () => {
         const result = await runHook(
             { command: `bash "${projectDir}/.pizzapi/hooks/block-dangerous-commands.sh"` },
@@ -413,6 +473,36 @@ describe("real hook scripts", () => {
         expect(result.exitCode).toBe(0);
     });
 
+    test("block-dangerous-commands.sh blocks deleting main with --delete", async () => {
+        const result = await runHook(
+            { command: `bash "${projectDir}/.pizzapi/hooks/block-dangerous-commands.sh"` },
+            JSON.stringify({ tool_input: { command: "git push origin --delete main" } }),
+            projectDir,
+        );
+        expect(result.exitCode).toBe(2);
+        expect(result.stderr).toContain("BLOCKED");
+    });
+
+    test("block-dangerous-commands.sh blocks deleting main with :main refspec", async () => {
+        const result = await runHook(
+            { command: `bash "${projectDir}/.pizzapi/hooks/block-dangerous-commands.sh"` },
+            JSON.stringify({ tool_input: { command: "git push origin :main" } }),
+            projectDir,
+        );
+        expect(result.exitCode).toBe(2);
+        expect(result.stderr).toContain("BLOCKED");
+    });
+
+    test("block-dangerous-commands.sh blocks deleting refs/heads/main with :refspec", async () => {
+        const result = await runHook(
+            { command: `bash "${projectDir}/.pizzapi/hooks/block-dangerous-commands.sh"` },
+            JSON.stringify({ tool_input: { command: "git push origin :refs/heads/main" } }),
+            projectDir,
+        );
+        expect(result.exitCode).toBe(2);
+        expect(result.stderr).toContain("BLOCKED");
+    });
+
     test("block-dangerous-commands.sh blocks --no-verify on commit", async () => {
         const result = await runHook(
             { command: `bash "${projectDir}/.pizzapi/hooks/block-dangerous-commands.sh"` },
@@ -427,6 +517,26 @@ describe("real hook scripts", () => {
         const result = await runHook(
             { command: `bash "${projectDir}/.pizzapi/hooks/block-dangerous-commands.sh"` },
             JSON.stringify({ tool_input: { command: "git push --no-verify origin main" } }),
+            projectDir,
+        );
+        expect(result.exitCode).toBe(2);
+        expect(result.stderr).toContain("BLOCKED");
+    });
+
+    test("block-dangerous-commands.sh blocks git -C push --no-verify", async () => {
+        const result = await runHook(
+            { command: `bash "${projectDir}/.pizzapi/hooks/block-dangerous-commands.sh"` },
+            JSON.stringify({ tool_input: { command: "git -C ./repo push --no-verify origin feature" } }),
+            projectDir,
+        );
+        expect(result.exitCode).toBe(2);
+        expect(result.stderr).toContain("BLOCKED");
+    });
+
+    test("block-dangerous-commands.sh blocks command git commit --no-verify", async () => {
+        const result = await runHook(
+            { command: `bash "${projectDir}/.pizzapi/hooks/block-dangerous-commands.sh"` },
+            JSON.stringify({ tool_input: { command: "command git commit --no-verify -m test" } }),
             projectDir,
         );
         expect(result.exitCode).toBe(2);
@@ -576,10 +686,60 @@ describe("real hook scripts", () => {
         expect(result.stderr).toContain("BLOCKED");
     });
 
+    test("block-dangerous-commands.sh blocks sudo /bin/rm -rf /", async () => {
+        const result = await runHook(
+            { command: `bash "${projectDir}/.pizzapi/hooks/block-dangerous-commands.sh"` },
+            JSON.stringify({ tool_input: { command: "sudo /bin/rm -rf /" } }),
+            projectDir,
+        );
+        expect(result.exitCode).toBe(2);
+        expect(result.stderr).toContain("BLOCKED");
+    });
+
     test("block-dangerous-commands.sh blocks /bin/rm -r .git", async () => {
         const result = await runHook(
             { command: `bash "${projectDir}/.pizzapi/hooks/block-dangerous-commands.sh"` },
             JSON.stringify({ tool_input: { command: "/bin/rm -r .git" } }),
+            projectDir,
+        );
+        expect(result.exitCode).toBe(2);
+        expect(result.stderr).toContain("BLOCKED");
+    });
+
+    test("block-dangerous-commands.sh blocks quoted /bin/rm executable", async () => {
+        const result = await runHook(
+            { command: `bash "${projectDir}/.pizzapi/hooks/block-dangerous-commands.sh"` },
+            JSON.stringify({ tool_input: { command: '"/bin/rm" -rf /' } }),
+            projectDir,
+        );
+        expect(result.exitCode).toBe(2);
+        expect(result.stderr).toContain("BLOCKED");
+    });
+
+    test("block-dangerous-commands.sh blocks single-quoted /bin/rm executable", async () => {
+        const result = await runHook(
+            { command: `bash "${projectDir}/.pizzapi/hooks/block-dangerous-commands.sh"` },
+            JSON.stringify({ tool_input: { command: "'/bin/rm' -rf /" } }),
+            projectDir,
+        );
+        expect(result.exitCode).toBe(2);
+        expect(result.stderr).toContain("BLOCKED");
+    });
+
+    test("block-dangerous-commands.sh blocks rm -rf /*", async () => {
+        const result = await runHook(
+            { command: `bash "${projectDir}/.pizzapi/hooks/block-dangerous-commands.sh"` },
+            JSON.stringify({ tool_input: { command: "rm -rf /*" } }),
+            projectDir,
+        );
+        expect(result.exitCode).toBe(2);
+        expect(result.stderr).toContain("BLOCKED");
+    });
+
+    test("block-dangerous-commands.sh blocks rm -rf $HOME/*", async () => {
+        const result = await runHook(
+            { command: `bash "${projectDir}/.pizzapi/hooks/block-dangerous-commands.sh"` },
+            JSON.stringify({ tool_input: { command: "rm -rf $HOME/*" } }),
             projectDir,
         );
         expect(result.exitCode).toBe(2);
