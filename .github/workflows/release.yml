@@ -191,10 +191,13 @@ jobs:
               TAG="dev"
               ;;
             beta)
-              # beta.N — find the next beta number from npm
-              # grep returns exit 1 when no betas exist yet; || true keeps the
-              # pipeline alive so EXISTING falls through empty → defaults to 0.
-              EXISTING=$(npm view @pizzapi/pizza versions --json 2>/dev/null | \
+              # beta.N — find the next beta number from npm.
+              # Isolate `npm view` so an E404 (package never published) doesn't
+              # kill the step under bash -e -o pipefail.  When npm view fails
+              # we fall back to an empty JSON array so grep finds nothing,
+              # EXISTING stays empty, and ${EXISTING:-0} correctly yields 0.
+              NPM_VERSIONS=$(npm view @pizzapi/pizza versions --json 2>/dev/null || echo '[]')
+              EXISTING=$(echo "$NPM_VERSIONS" | \
                 { grep -o "\"${BASE}-beta\.[0-9]*\"" || true; } | \
                 sed 's/"//g' | \
                 sed "s/${BASE}-beta\.//" | \
@@ -359,8 +362,10 @@ jobs:
           OUTPUT=$(git push origin --delete "v${VERSION}" 2>&1) && {
             echo "✅ Deleted tag v${VERSION}"
           } || {
-            # Tolerate "not found" (tag never existed) — fail on everything else
-            if echo "$OUTPUT" | grep -qiE '(remote ref does not exist|not found|unable to delete)'; then
+            # Tolerate only "remote ref does not exist" (tag was never pushed).
+            # Do NOT match broad patterns like "not found" — that would swallow
+            # auth failures ("repository not found") and other real errors.
+            if echo "$OUTPUT" | grep -qF 'remote ref does not exist'; then
               echo "⚠ Tag v${VERSION} not found on remote — skipping"
             else
               echo "::error::Failed to delete tag v${VERSION}"
