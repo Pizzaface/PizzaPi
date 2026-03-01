@@ -1181,8 +1181,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
         {sessionId && commandOpen && (
           <div className="mb-2 rounded-md border border-border bg-popover text-popover-foreground shadow-sm">
             <Command
-              value={isResumeMode ? resumeQuery : commandQuery}
-              onValueChange={(v) => setCommandQuery(v)}
+              shouldFilter={false}
               className="w-full"
             >
               {/* Close button header */}
