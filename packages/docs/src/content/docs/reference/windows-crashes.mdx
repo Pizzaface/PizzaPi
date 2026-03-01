@@ -1,0 +1,156 @@
+---
+title: Windows Crash (Bun Segfault)
+description: Known Bun runtime crash on Windows and how to work around it.
+sidebar:
+  order: 4
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+<Aside type="danger">
+  PizzaPi's compiled Windows binary can crash with a **segmentation fault** shortly after starting. This is a **known upstream bug in the Bun runtime**, not a PizzaPi bug. It affects all applications that ship compiled Bun binaries on Windows.
+</Aside>
+
+## Symptoms
+
+The runner starts, connects to the relay, registers successfully, then crashes:
+
+```
+pizzapi runner: connecting to relay at https://example.com/runner…
+pizzapi runner: connected. Registering as 9c0174ad-…
+pizzapi runner: registered as 9c0174ad-…
+
+panic(thread 41472): Segmentation fault at address 0x3C
+oh no: Bun has crashed. This indicates a bug in Bun, not your code.
+```
+
+The crash address varies — common values include `0x3C`, `0x18`, `0x0`, `0x30`, and `0xFFFFFFFFFFFFFFFF`. The crash may happen on a worker thread (not the main thread). It is **non-deterministic** — sometimes the runner works fine for hours, other times it crashes within seconds.
+
+---
+
+## Root Cause
+
+The crash is caused by a **JavaScriptCore (JSC) garbage collector use-after-free bug** in Bun's Windows builds. Specifically:
+
+- Object finalizers fail to clear `WriteBarrier` fields before destroying objects
+- The GC then accesses freed memory during sweep/marking phases
+- This causes a segmentation fault at a small offset from a null/freed pointer
+
+Three distinct crash families have been identified:
+
+| Family | Thread | Addresses | Trigger |
+|--------|--------|-----------|---------|
+| Worker Thread Cleanup | Non-main | `0x3C`, `0x18`, `0x108` | Worker/thread shutdown races |
+| GC Sweep Finalizer | Main or worker | `0x0`, `0x4`, `0x30` | ShellInterpreter finalizer bug |
+| Heap Corruption | Main | `0xFFFFFFFFFFFFFFFF` | Double-free during Worker/VM destruction |
+
+### Why PizzaPi Is Especially Affected
+
+The runner daemon hits multiple known triggers:
+
+- **Long-lived process** — runs continuously
+- **`child_process.spawn()`** — spawns worker subprocesses for each session
+- **WebSocket threads** — Socket.IO background I/O
+- **`fetch()` calls** — usage cache refresh on background threads
+- **Compiled standalone binary** — `bun build --compile` binaries are more affected than `bun run`
+
+---
+
+## Affected Versions
+
+Every tested Bun version on Windows crashes: **v1.2.18, v1.2.21, v1.3.0, v1.3.5, v1.3.6, v1.3.8, v1.3.9-canary, and v1.3.10**.
+
+Bun v1.3.10 (the latest release as of February 2026) shipped several GC safety fixes that reduced crash frequency, but **did not fully resolve the issue** — crashes are still reported on v1.3.10.
+
+---
+
+## Workarounds
+
+### 1. Use WSL2 (Recommended)
+
+The bug is Windows-specific. Running the runner inside WSL2 avoids it entirely:
+
+```powershell
+wsl
+```
+
+```bash
+# Inside WSL2:
+pizza runner
+```
+
+<Aside type="tip">
+  WSL2 is the most reliable workaround. The Linux Bun binary does not have this crash.
+</Aside>
+
+### 2. Run from Source with Bun Runtime
+
+Compiled standalone executables crash more frequently than `bun run`. If you have Bun installed on Windows, you can run from source:
+
+```powershell
+# Install Bun for Windows
+powershell -c "irm bun.sh/install.ps1 | iex"
+
+# Clone and run from source
+git clone https://github.com/badlogic/PizzaPi.git
+cd PizzaPi
+bun install
+bun run build
+bun packages/cli/src/index.ts runner
+```
+
+### 3. Retry
+
+The crash is a race condition — non-deterministic. Simply restarting often works:
+
+```powershell
+pizza runner
+```
+
+The supervisor process automatically restarts the daemon on crash, so the runner may recover on its own.
+
+### 4. Remove `.env` Files
+
+One confirmed trigger is standalone executables crashing when a `.env` file exists in the working directory. The dotenv loader mutates environment state across threads. Try removing or renaming any `.env` file in the directory where you run the runner.
+
+### 5. Use a Linux or macOS Machine
+
+If you have access to a Linux or macOS machine (including a cloud VM), run the runner there instead. The crash is Windows-specific.
+
+---
+
+## Upstream Tracking
+
+This is tracked across multiple GitHub issues:
+
+### Bun Runtime Issues ([oven-sh/bun](https://github.com/oven-sh/bun))
+
+| Issue | Description |
+|-------|-------------|
+| [#18198](https://github.com/oven-sh/bun/issues/18198) | Original worker thread segfault after exit |
+| [#23177](https://github.com/oven-sh/bun/issues/23177) | ShellInterpreter finalizer GC use-after-free (root cause identified) |
+| [#23470](https://github.com/oven-sh/bun/issues/23470) | Crash during `bun build --compile` |
+| [#23904](https://github.com/oven-sh/bun/issues/23904) | Compiled exe crash at `0xFFFFFFFFFFFFFFFF` |
+| [#26026](https://github.com/oven-sh/bun/issues/26026) | Bun v1.3.5 segfault on Windows 10 x64 |
+| [#26625](https://github.com/oven-sh/bun/issues/26625) | GC finalizer crash persists in v1.3.8 |
+| [#26853](https://github.com/oven-sh/bun/issues/26853) | Segfault `0xFFFFFFFFFFFFFFFF` on Windows x64 canary |
+| [#27414](https://github.com/oven-sh/bun/issues/27414) | Bun v1.3.10 still crashing on Windows (Feb 2026) |
+
+### Embedder Reports (Other Projects Experiencing Same Bug)
+
+| Issue | Description |
+|-------|-------------|
+| [claude-code#21875](https://github.com/anthropics/claude-code/issues/21875) | 78 crashes documented, 3 crash families catalogued |
+| [claude-code#27003](https://github.com/anthropics/claude-code/issues/27003) | Confirms v1.3.10 fix is incomplete |
+
+### Bun Release Notes
+
+- [Bun v1.3.10 blog post](https://bun.com/blog/bun-v1.3.10) — Lists GC safety fixes and Windows-specific crash fixes (partial)
+
+---
+
+## When Will This Be Fixed?
+
+The Bun team is aware of the issue and has been shipping incremental fixes. The v1.3.10 release addressed several crash variants but the underlying JSC GC use-after-free on Windows is not fully resolved. We will update the bundled Bun version when a complete fix ships.
+
+In the meantime, **WSL2 is the recommended way to run PizzaPi on a Windows machine**.
