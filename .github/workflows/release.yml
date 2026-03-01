@@ -67,9 +67,15 @@ jobs:
 
           case "$ACTION" in
             dev)
-              # dev.YYYYMMDDHHMMSS
-              SUFFIX="dev.$(date -u +%Y%m%d%H%M%S)"
-              FULL="${BASE}-${SUFFIX}"
+              # dev.N — find the next dev number from npm (like beta).
+              NPM_VERSIONS=$(npm view @pizzapi/pizza versions --json 2>/dev/null || echo '[]')
+              EXISTING=$(echo "$NPM_VERSIONS" | \
+                { grep -o "\"${BASE}-dev\.[0-9]*\"" || true; } | \
+                sed 's/"//g' | \
+                sed "s/${BASE}-dev\.//" | \
+                sort -n | tail -1)
+              NEXT=$(( ${EXISTING:-0} + 1 ))
+              FULL="${BASE}-dev.${NEXT}"
               TAG="dev"
               ;;
             beta)

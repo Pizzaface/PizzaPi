@@ -45,6 +45,9 @@ if (entries.length === 0) {
 
 console.log(`Publishing ${entries.length} packages${dryRun ? " (dry run)" : ""}...\n`);
 
+const MAX_RETRIES = 3;
+const RETRY_DELAY_MS = 5_000;
+
 let failed = false;
 
 for (const entry of entries) {
@@ -61,13 +64,26 @@ for (const entry of entries) {
     if (provenance) npmArgs.push("--provenance");
     if (access) npmArgs.push("--access", access);
 
-    const proc = Bun.spawnSync(["npm", ...npmArgs], {
-        cwd: pkgDir,
-        stdio: ["inherit", "inherit", "inherit"],
-    });
+    let published = false;
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+        const proc = Bun.spawnSync(["npm", ...npmArgs], {
+            cwd: pkgDir,
+            stdio: ["inherit", "inherit", "inherit"],
+        });
 
-    if (proc.exitCode !== 0) {
-        console.error(`  ✗ Failed to publish ${pkgJson.name}`);
+        if (proc.exitCode === 0) {
+            published = true;
+            break;
+        }
+
+        if (attempt < MAX_RETRIES) {
+            console.error(`  ⚠ Attempt ${attempt}/${MAX_RETRIES} failed, retrying in ${RETRY_DELAY_MS / 1000}s...`);
+            Bun.sleepSync(RETRY_DELAY_MS);
+        }
+    }
+
+    if (!published) {
+        console.error(`  ✗ Failed to publish ${pkgJson.name} after ${MAX_RETRIES} attempts`);
         failed = true;
     } else {
         console.log(`  ✓ Published`);
