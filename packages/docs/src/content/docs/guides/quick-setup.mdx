@@ -1,0 +1,200 @@
+---
+title: Quick Setup
+description: Go from zero to your first live AI coding session in under five minutes.
+sidebar:
+  order: 0
+---
+
+import { Steps, Tabs, TabItem, Aside } from "@astrojs/starlight/components";
+
+This guide walks you through the complete setup — starting the server, creating an account, connecting the CLI, and running your first session. It takes about five minutes.
+
+## Prerequisites
+
+| Requirement | Why |
+|-------------|-----|
+| **Docker + Docker Compose** | Runs the relay server and web UI |
+| **Node 18+** or **Bun** | Runs the CLI on your dev machine |
+
+<Aside type="tip">
+  Don't have Docker? [Get Docker Desktop](https://docs.docker.com/get-docker/) — it includes Docker Compose.
+</Aside>
+
+---
+
+## The Full Walkthrough
+
+<Steps>
+
+1. ### Start the relay server
+
+   Open a terminal and run:
+
+   ```bash
+   npx @pizzapi/pizza web
+   ```
+
+   This pulls the PizzaPi repo, builds the Docker image, and starts two containers (Redis + the server). When it finishes you'll see:
+
+   ```
+   ✅ PizzaPi web is running at http://localhost:7492
+   ```
+
+   <Aside type="note">
+     The first build takes a few minutes while Docker downloads base images. Subsequent starts are much faster.
+   </Aside>
+
+2. ### Create your account
+
+   Open **http://localhost:7492** in your browser. You'll see the PizzaPi sign-in page.
+
+   1. Click the **Sign up** tab
+   2. Enter your **name**, **email**, and **password**
+   3. Click **Create account**
+
+   You're now logged into the web UI. Keep this tab open — you'll see your sessions appear here shortly.
+
+   <Aside type="caution">
+     Remember these credentials — you'll use the same email and password to connect the CLI in the next step.
+   </Aside>
+
+3. ### Connect the CLI to your server
+
+   In a new terminal window, run the setup wizard:
+
+   ```bash
+   npx @pizzapi/pizza setup
+   ```
+
+   Fill in the prompts using the **same credentials** you just created:
+
+   ```
+   ┌─────────────────────────────────────────┐
+   │        PizzaPi — first-run setup        │
+   └─────────────────────────────────────────┘
+
+   Skip setup and continue without relay? [y/N] n
+   Relay server URL [http://localhost:7492]: ↵
+   Your name (leave blank if account already exists): ↵
+   Email: you@example.com
+   Password: ••••••••
+
+   Connecting to relay server… ✓
+   ✓ API key saved to ~/.pizzapi/config.json
+   ✓ Relay: ws://localhost:7492
+   ```
+
+   <Aside type="tip">
+     Press Enter to accept the default relay URL (`http://localhost:7492`). Leave "Your name" blank since the account already exists.
+   </Aside>
+
+4. ### Configure an AI provider
+
+   Start a `pizzapi` session:
+
+   ```bash
+   npx @pizzapi/pizza
+   ```
+
+   You'll see a warning: *"No models available."* That's expected — you haven't logged into an AI provider yet.
+
+   Type `/login` and press Enter. This opens your browser to authenticate with an AI provider:
+
+   ```
+   /login
+   ```
+
+   Select a provider and follow the OAuth flow:
+
+   | Provider | What you need |
+   |----------|--------------|
+   | **Anthropic** | A [Claude Pro or Max](https://claude.ai) subscription, or an [API key](https://console.anthropic.com/) |
+   | **Google Gemini** | A Google account (free tier available via [AI Studio](https://aistudio.google.com/)) |
+   | **OpenAI** | An [API key](https://platform.openai.com/) |
+
+   Once authentication completes, you'll see a confirmation in the terminal.
+
+   <Aside type="note">
+     You can log into **multiple providers**. Run `/login` again to add another one. Use `/login` followed by the provider name (e.g. `/login anthropic`) to target a specific provider.
+   </Aside>
+
+5. ### Select a model
+
+   After logging in, select a model:
+
+   ```
+   /model
+   ```
+
+   Use the arrow keys to pick from the available models, then press Enter. For example:
+
+   - `claude-sonnet-4-20250514` — fast and capable (Anthropic)
+   - `gemini-2.5-pro` — large context window (Google)
+
+   You can also switch models at any time with `Ctrl+L` or by typing `/model` again.
+
+6. ### Start coding!
+
+   You're all set. Type a prompt and press Enter:
+
+   ```
+   Help me set up a new TypeScript project with tests
+   ```
+
+   Now switch to your browser tab at **http://localhost:7492** — you'll see the session streaming live with:
+
+   - Token-by-token response streaming
+   - Tool calls (file reads, edits, bash commands) with full input/output
+   - Syntax-highlighted file diffs
+   - A live todo list if the agent creates a task plan
+
+   You can also type messages in the web UI's chat input to interact with the agent remotely.
+</Steps>
+
+---
+
+## Quick Reference
+
+Once you're set up, here are the commands you'll use most:
+
+| Command | What it does |
+|---------|-------------|
+| `pizzapi` | Start an interactive coding session |
+| `pizzapi setup` | Re-run the relay connection wizard |
+| `pizzapi web` | Start/rebuild the relay server |
+| `pizzapi web stop` | Stop the relay server |
+| `pizzapi web logs` | Tail the server logs |
+| `pizzapi models` | List available AI models |
+| `pizzapi usage` | Check your API usage/quota |
+
+### Inside a session
+
+| Command | What it does |
+|---------|-------------|
+| `/login` | Authenticate with an AI provider |
+| `/model` | Switch the active model |
+| `/help` | Show all available slash commands |
+| `Ctrl+L` | Quick model switcher |
+| `Ctrl+C` | Interrupt the current response |
+| `Ctrl+C` twice | Exit the session |
+
+---
+
+## Troubleshooting
+
+| Problem | Solution |
+|---------|----------|
+| `pizza web` fails with Docker error | Make sure Docker Desktop is running. Try `docker --version` to verify. |
+| "Could not register with the relay server" | Check the server is running (`pizza web status`) and the URL is correct. |
+| "No models available" after `/login` | Run `/model` to refresh the list. If still empty, try `/login` again — the OAuth flow may have timed out. |
+| Session doesn't appear in web UI | Verify the CLI is connected: check for `✓ Relay: ws://localhost:7492` in the setup output. Run `pizzapi setup` if needed. |
+| Port 7492 already in use | Use a custom port: `pizzapi web --port 8080`, then use `http://localhost:8080` as the relay URL in setup. |
+
+---
+
+## What's Next?
+
+- **[Runner Daemon](/PizzaPi/guides/runner-daemon/)** — Spawn headless sessions from the web UI without a terminal
+- **[Self-Hosting](/PizzaPi/guides/self-hosting/)** — Production deployment with HTTPS, custom domains, and Tailscale
+- **[Configuration](/PizzaPi/guides/configuration/)** — Customize system prompts, skills, and relay settings
+- **[Skills](/PizzaPi/guides/skills/)** — Add reusable task-specific instructions your agent can follow
