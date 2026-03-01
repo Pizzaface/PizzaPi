@@ -36,6 +36,8 @@ import { isValidSkillName } from "../validation.js";
 
 // 5 requests per 15 minutes
 const registerRateLimiter = new RateLimiter(5, 15 * 60 * 1000);
+// 20 requests per 15 minutes for chat
+const chatRateLimiter = new RateLimiter(20, 15 * 60 * 1000);
 
 export async function handleApi(req: Request, url: URL): Promise<Response | undefined> {
     if (url.pathname === "/health") {
@@ -721,6 +723,11 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
     }
 
     if (url.pathname === "/api/chat" && req.method === "POST") {
+        const clientIp = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+        if (!chatRateLimiter.check(clientIp)) {
+            return Response.json({ error: "Too many requests. Please try again later." }, { status: 429 });
+        }
+
         const identity = await requireSession(req);
         if (identity instanceof Response) return identity;
         const body = await req.json();
