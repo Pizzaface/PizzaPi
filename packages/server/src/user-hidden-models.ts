@@ -1,7 +1,7 @@
-import { kysely } from "./auth.js";
+import { getKysely } from "./auth.js";
 
 export async function ensureUserHiddenModelTable(): Promise<void> {
-    await kysely.schema
+    await getKysely().schema
         .createTable("user_hidden_model")
         .ifNotExists()
         .addColumn("id", "text", (col) => col.primaryKey())
@@ -10,7 +10,7 @@ export async function ensureUserHiddenModelTable(): Promise<void> {
         .addColumn("createdAt", "text", (col) => col.notNull())
         .execute();
 
-    await kysely.schema
+    await getKysely().schema
         .createIndex("user_hidden_model_user_idx")
         .ifNotExists()
         .on("user_hidden_model")
@@ -18,7 +18,7 @@ export async function ensureUserHiddenModelTable(): Promise<void> {
         .execute();
 
     // Unique constraint: one entry per (userId, modelKey)
-    await kysely.schema
+    await getKysely().schema
         .createIndex("user_hidden_model_unique_idx")
         .ifNotExists()
         .unique()
@@ -29,7 +29,7 @@ export async function ensureUserHiddenModelTable(): Promise<void> {
 
 /** Get all hidden model keys for a user. Returns keys like "provider/modelId". */
 export async function getHiddenModels(userId: string): Promise<string[]> {
-    const rows = await kysely
+    const rows = await getKysely()
         .selectFrom("user_hidden_model")
         .select("modelKey")
         .where("userId", "=", userId)
@@ -50,14 +50,14 @@ export async function setHiddenModels(userId: string, modelKeys: string[]): Prom
     const uniqueKeys = [...new Set(modelKeys.map((k) => k.trim()).filter(Boolean))];
 
     // Delete all existing hidden models for the user
-    await kysely
+    await getKysely()
         .deleteFrom("user_hidden_model")
         .where("userId", "=", userId)
         .execute();
 
     // Insert new entries
     if (uniqueKeys.length > 0) {
-        await kysely
+        await getKysely()
             .insertInto("user_hidden_model")
             .values(
                 uniqueKeys.map((modelKey) => ({

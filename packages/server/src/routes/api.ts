@@ -14,7 +14,7 @@ import {
 } from "../ws/sio-registry.js";
 import { sendSkillCommand, sendRunnerCommand } from "../ws/namespaces/runner.js";
 import { waitForSpawnAck } from "../ws/runner-control.js";
-import { apiKeyRateLimitConfig, auth, kysely } from "../auth.js";
+import { getApiKeyRateLimitConfig, getAuth, getKysely } from "../auth.js";
 import { requireSession, validateApiKey } from "../middleware.js";
 import { listPersistedRelaySessionsForUser } from "../sessions/store.js";
 import { getRecentFolders, recordRecentFolder } from "../runner-recent-folders.js";
@@ -69,7 +69,7 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
             return Response.json({ error: "Password must be at least 8 characters long and contain at least one uppercase letter, one lowercase letter, and one number" }, { status: 400 });
         }
 
-        const existing = await kysely
+        const existing = await getKysely()
             .selectFrom("user")
             .select("id")
             .where("email", "=", email)
@@ -78,7 +78,7 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
         let userId: string;
         if (existing) {
             // Verify password by attempting sign-in
-            const signIn = await auth.api.signInEmail({
+            const signIn = await getAuth().api.signInEmail({
                 body: { email, password },
             }).catch(() => null);
             if (!signIn?.user?.id) {
@@ -94,7 +94,7 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
             if (!name) {
                 return Response.json({ error: "Missing required field: name (required for new accounts)" }, { status: 400 });
             }
-            const created = await auth.api.signUpEmail({
+            const created = await getAuth().api.signUpEmail({
                 body: { name, email, password },
             });
             if (!created?.user?.id) {
@@ -114,14 +114,14 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
             .replace(/\//g, "_")
             .replace(/=/g, "");
 
-        await kysely
+        await getKysely()
             .deleteFrom("apikey")
             .where("userId", "=", userId)
             .where("name", "=", "cli")
             .execute();
 
         const now = new Date().toISOString();
-        await kysely
+        await getKysely()
             .insertInto("apikey")
             .values({
                 id: crypto.randomUUID(),
@@ -134,9 +134,9 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
                 refillAmount: null,
                 lastRefillAt: null,
                 enabled: 1,
-                rateLimitEnabled: apiKeyRateLimitConfig.enabled ? 1 : 0,
-                rateLimitTimeWindow: apiKeyRateLimitConfig.enabled ? apiKeyRateLimitConfig.timeWindow : null,
-                rateLimitMax: apiKeyRateLimitConfig.enabled ? apiKeyRateLimitConfig.maxRequests : null,
+                rateLimitEnabled: getApiKeyRateLimitConfig().enabled ? 1 : 0,
+                rateLimitTimeWindow: getApiKeyRateLimitConfig().enabled ? getApiKeyRateLimitConfig().timeWindow : null,
+                rateLimitMax: getApiKeyRateLimitConfig().enabled ? getApiKeyRateLimitConfig().maxRequests : null,
                 requestCount: 0,
                 remaining: null,
                 lastRequest: null,
@@ -956,7 +956,7 @@ async function mintEphemeralApiKey(userId: string, name: string, ttlSeconds: num
     const nowIso = now.toISOString();
     const expiresAt = new Date(now.getTime() + ttlSeconds * 1000).toISOString();
 
-    await kysely
+    await getKysely()
         .insertInto("apikey")
         .values({
             id: crypto.randomUUID(),
@@ -969,9 +969,9 @@ async function mintEphemeralApiKey(userId: string, name: string, ttlSeconds: num
             refillAmount: null,
             lastRefillAt: null,
             enabled: 1,
-            rateLimitEnabled: apiKeyRateLimitConfig.enabled ? 1 : 0,
-            rateLimitTimeWindow: apiKeyRateLimitConfig.enabled ? apiKeyRateLimitConfig.timeWindow : null,
-            rateLimitMax: apiKeyRateLimitConfig.enabled ? apiKeyRateLimitConfig.maxRequests : null,
+            rateLimitEnabled: getApiKeyRateLimitConfig().enabled ? 1 : 0,
+            rateLimitTimeWindow: getApiKeyRateLimitConfig().enabled ? getApiKeyRateLimitConfig().timeWindow : null,
+            rateLimitMax: getApiKeyRateLimitConfig().enabled ? getApiKeyRateLimitConfig().maxRequests : null,
             requestCount: 0,
             remaining: null,
             lastRequest: null,

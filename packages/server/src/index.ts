@@ -1,16 +1,13 @@
-import { auth, trustedOrigins, isSignupAllowed } from "./auth.js";
-import { handleApi } from "./routes/api.js";
-import { serveStaticFile } from "./static.js";
+import { getTrustedOrigins } from "./auth.js";
+import { handleFetch } from "./handler.js";
 import {
-    ensureRelaySessionTables,
     getEphemeralSweepIntervalMs,
     pruneExpiredRelaySessions,
 } from "./sessions/store.js";
 import { deleteRelayEventCaches, initializeRelayRedisCache } from "./sessions/redis.js";
 import { sweepExpiredSessions } from "./ws/sio-registry.js";
 import { sweepExpiredAttachments } from "./attachments/store.js";
-import { ensurePushSubscriptionTable } from "./push.js";
-import { ensureUserHiddenModelTable } from "./user-hidden-models.js";
+import { runAllMigrations } from "./migrations.js";
 
 // Socket.IO imports
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -23,9 +20,7 @@ import { initStateRedis } from "./ws/sio-state.js";
 
 const PORT = parseInt(process.env.PORT ?? "7492");
 
-await ensureRelaySessionTables();
-await ensurePushSubscriptionTable();
-await ensureUserHiddenModelTable();
+await runAllMigrations();
 void initializeRelayRedisCache();
 
 // ── Helpers: convert node:http request/response ↔ fetch API ──────────────
@@ -96,47 +91,6 @@ async function sendFetchResponse(res: ServerResponse, response: Response): Promi
     }
 }
 
-// ── Fetch-style request handler (reuses existing REST + auth logic) ──────
-
-async function handleFetch(req: Request): Promise<Response> {
-    const url = new URL(req.url);
-
-    // ── better-auth handler ────────────────────────────────────────────────
-    if (url.pathname.startsWith("/api/auth")) {
-        // Block signup when signups are disabled (after first user).
-        if (url.pathname === "/api/auth/sign-up/email" && req.method === "POST") {
-            const allowed = await isSignupAllowed();
-            if (!allowed) {
-                return Response.json(
-                    { error: "Signups are disabled. Contact the administrator." },
-                    { status: 403 },
-                );
-            }
-        }
-        try {
-            return await auth.handler(req);
-        } catch (e) {
-            console.error("[auth] handler threw:", e);
-            return Response.json({ error: "Auth error" }, { status: 500 });
-        }
-    }
-
-    // ── REST endpoints ─────────────────────────────────────────────────────
-    try {
-        const res = await handleApi(req, url);
-        if (res !== undefined) return res;
-    } catch (e) {
-        console.error("[api] handleApi threw:", e);
-        return Response.json({ error: "Internal server error" }, { status: 500 });
-    }
-
-    // ── Static UI files (SPA fallback) ───────────────────────────────────
-    const staticRes = await serveStaticFile(url.pathname);
-    if (staticRes) return staticRes;
-
-    return Response.json({ error: "Not found" }, { status: 404 });
-}
-
 // ── Single HTTP server (REST + Socket.IO on one port) ─────────────────────
 
 const REDIS_URL = process.env.PIZZAPI_REDIS_URL ?? "redis://localhost:6379";
@@ -175,7 +129,7 @@ try {
 
     io = new SocketIOServer(httpServer, {
         cors: {
-            origin: trustedOrigins,
+            origin: getTrustedOrigins(),
             credentials: true,
         },
         // Generous ping settings to prevent disconnects during heavy agent

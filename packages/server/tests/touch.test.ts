@@ -1,6 +1,6 @@
 import { expect, test, beforeAll } from "bun:test";
 import { randomUUID } from "crypto";
-import { kysely } from "../src/auth.js";
+import { getKysely } from "../src/auth.js";
 import { ensureRelaySessionTables, touchRelaySession, recordRelaySessionStart, getPersistedRelaySessionSnapshot } from "../src/sessions/store.js";
 
 beforeAll(async () => {
@@ -58,7 +58,7 @@ test("touchRelaySession updates non-ephemeral session correctly", async () => {
     expect(session!.expiresAt).toBeNull();
 
     // specific check for lastActiveAt
-    const initialRow = await kysely
+    const initialRow = await getKysely()
         .selectFrom("relay_session")
         .select("lastActiveAt")
         .where("id", "=", sessionId)
@@ -74,7 +74,7 @@ test("touchRelaySession updates non-ephemeral session correctly", async () => {
     session = await getPersistedRelaySessionSnapshot(sessionId);
     expect(session!.expiresAt).toBeNull();
 
-    const updatedRow = await kysely
+    const updatedRow = await getKysely()
         .selectFrom("relay_session")
         .select("lastActiveAt")
         .where("id", "=", sessionId)

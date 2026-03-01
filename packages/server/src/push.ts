@@ -1,5 +1,5 @@
 import webpush from "web-push";
-import { kysely } from "./auth.js";
+import { getKysely } from "./auth.js";
 
 // ── VAPID configuration ─────────────────────────────────────────────────────
 //
@@ -43,7 +43,7 @@ export interface PushSubscriptionTable {
 }
 
 export async function ensurePushSubscriptionTable(): Promise<void> {
-    await kysely.schema
+    await getKysely().schema
         .createTable("push_subscription")
         .ifNotExists()
         .addColumn("id", "text", (col) => col.primaryKey())
@@ -54,14 +54,14 @@ export async function ensurePushSubscriptionTable(): Promise<void> {
         .addColumn("enabledEvents", "text", (col) => col.notNull().defaultTo("*"))
         .execute();
 
-    await kysely.schema
+    await getKysely().schema
         .createIndex("push_subscription_user_idx")
         .ifNotExists()
         .on("push_subscription")
         .column("userId")
         .execute();
 
-    await kysely.schema
+    await getKysely().schema
         .createIndex("push_subscription_endpoint_idx")
         .ifNotExists()
         .on("push_subscription")
@@ -83,13 +83,13 @@ export async function subscribePush(input: PushSubscribeInput): Promise<string> 
     const now = new Date().toISOString();
 
     // Upsert — if the same endpoint exists for this user, replace it.
-    await kysely
+    await getKysely()
         .deleteFrom("push_subscription" as any)
         .where("userId", "=", input.userId)
         .where("endpoint", "=", input.endpoint)
         .execute();
 
-    await kysely
+    await getKysely()
         .insertInto("push_subscription" as any)
         .values({
             id,
@@ -105,7 +105,7 @@ export async function subscribePush(input: PushSubscribeInput): Promise<string> 
 }
 
 export async function unsubscribePush(userId: string, endpoint: string): Promise<boolean> {
-    const result = await kysely
+    const result = await getKysely()
         .deleteFrom("push_subscription" as any)
         .where("userId", "=", userId)
         .where("endpoint", "=", endpoint)
@@ -115,7 +115,7 @@ export async function unsubscribePush(userId: string, endpoint: string): Promise
 }
 
 export async function unsubscribePushById(userId: string, subscriptionId: string): Promise<void> {
-    await kysely
+    await getKysely()
         .deleteFrom("push_subscription" as any)
         .where("userId", "=", userId)
         .where("id", "=", subscriptionId)
@@ -123,7 +123,7 @@ export async function unsubscribePushById(userId: string, subscriptionId: string
 }
 
 export async function getSubscriptionsForUser(userId: string): Promise<PushSubscriptionTable[]> {
-    const rows = await kysely
+    const rows = await getKysely()
         .selectFrom("push_subscription" as any)
         .selectAll()
         .where("userId", "=", userId)
@@ -137,7 +137,7 @@ export async function updateEnabledEvents(
     endpoint: string,
     enabledEvents: string,
 ): Promise<void> {
-    await kysely
+    await getKysely()
         .updateTable("push_subscription" as any)
         .set({ enabledEvents })
         .where("userId", "=", userId)
@@ -213,7 +213,7 @@ export async function sendPushToUser(userId: string, payload: PushPayload): Prom
 
     // Remove stale subscriptions
     if (staleIds.length > 0) {
-        await kysely
+        await getKysely()
             .deleteFrom("push_subscription" as any)
             .where("id", "in", staleIds)
             .execute();
