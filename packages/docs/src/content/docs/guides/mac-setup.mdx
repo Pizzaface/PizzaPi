@@ -1,0 +1,243 @@
+---
+title: macOS Setup
+description: Run the PizzaPi runner as a persistent background service on macOS using launchd.
+sidebar:
+  order: 4.5
+---
+
+import { Steps, Tabs, TabItem, Aside } from "@astrojs/starlight/components";
+
+This guide covers running PizzaPi as a **persistent background service** on macOS so the runner starts automatically on login, survives reboots, and has access to the macOS keychain for `gh`, SSH keys, and other credentials.
+
+---
+
+## Why a LaunchAgent?
+
+macOS has two ways to run background services via `launchd`:
+
+| Type | Location | Runs as | Keychain access | GUI access |
+|------|----------|---------|-----------------|------------|
+| **LaunchAgent** | `~/Library/LaunchAgents/` | Current user, inside login session | ✅ Yes | ✅ Yes |
+| **LaunchDaemon** | `/Library/LaunchDaemons/` | System-level (can specify user) | ❌ No | ❌ No |
+
+**Always use a LaunchAgent for PizzaPi.** The runner needs keychain access for:
+
+- **`gh` CLI** — GitHub authentication tokens are stored in the login keychain
+- **SSH keys** — if your keys use a passphrase managed by the macOS keychain agent
+- **API credentials** — any tool that stores secrets via `security add-generic-password`
+
+A LaunchDaemon runs outside your login session, so the keychain is locked and inaccessible — any tool that needs it (like `gh auth`) will fail with `errSecInteractionNotAllowed`.
+
+---
+
+## Setting Up the LaunchAgent
+
+<Steps>
+
+1. ### Install PizzaPi and connect to a relay
+
+   If you haven't already, install the CLI and run setup:
+
+   ```bash
+   npm install -g @pizzapi/pizza
+   pizzapi setup
+   ```
+
+   See the [Quick Setup](/PizzaPi/guides/quick-setup/) guide if this is your first time.
+
+2. ### Find your binary paths
+
+   ```bash
+   which bun
+   # /Users/yourname/.bun/bin/bun
+
+   which pizza
+   # /Users/yourname/.bun/bin/pizza
+   ```
+
+   Note these paths — you'll need them for the plist file.
+
+3. ### Create the LaunchAgent plist
+
+   ```bash
+   mkdir -p ~/Library/LaunchAgents
+   ```
+
+   Create `~/Library/LaunchAgents/com.pizzapi.runner.plist` with the following content. Replace the paths and environment variables with your own:
+
+   ```xml
+   <?xml version="1.0" encoding="UTF-8"?>
+   <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+     "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+   <plist version="1.0">
+   <dict>
+       <key>Label</key>
+       <string>com.pizzapi.runner</string>
+
+       <key>ProgramArguments</key>
+       <array>
+           <string>/Users/yourname/.bun/bin/bun</string>
+           <string>/Users/yourname/.bun/bin/pizza</string>
+           <string>runner</string>
+       </array>
+
+       <key>EnvironmentVariables</key>
+       <dict>
+           <key>PIZZAPI_API_KEY</key>
+           <string>your-api-key-here</string>
+           <key>PIZZAPI_RELAY_URL</key>
+           <string>https://your-relay-server.example.com/</string>
+           <key>PATH</key>
+           <string>/Users/yourname/.bun/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+       </dict>
+
+       <key>WorkingDirectory</key>
+       <string>/Users/yourname</string>
+
+       <key>RunAtLoad</key>
+       <true/>
+
+       <key>KeepAlive</key>
+       <true/>
+
+       <key>StandardOutPath</key>
+       <string>/Users/yourname/.pizzapi/logs/runner.log</string>
+
+       <key>StandardErrorPath</key>
+       <string>/Users/yourname/.pizzapi/logs/runner-error.log</string>
+   </dict>
+   </plist>
+   ```
+
+   <Aside type="tip">
+     Your API key is in `~/.pizzapi/config.json` (the `apiKey` field). Your relay URL is in the same file.
+   </Aside>
+
+4. ### Create the log directory
+
+   ```bash
+   mkdir -p ~/.pizzapi/logs
+   ```
+
+5. ### Load the agent
+
+   ```bash
+   launchctl load ~/Library/LaunchAgents/com.pizzapi.runner.plist
+   ```
+
+6. ### Verify it's running
+
+   ```bash
+   launchctl list | grep pizzapi
+   # 12345  0  com.pizzapi.runner
+
+   # Check the logs
+   tail -20 ~/.pizzapi/logs/runner.log
+   ```
+
+   A `0` in the second column means the service started successfully. The runner should now appear in your relay's web UI.
+
+</Steps>
+
+---
+
+## Managing the Service
+
+### Stop the runner
+
+```bash
+launchctl unload ~/Library/LaunchAgents/com.pizzapi.runner.plist
+```
+
+### Restart the runner
+
+```bash
+launchctl unload ~/Library/LaunchAgents/com.pizzapi.runner.plist
+launchctl load ~/Library/LaunchAgents/com.pizzapi.runner.plist
+```
+
+### View logs
+
+```bash
+# Stdout
+tail -f ~/.pizzapi/logs/runner.log
+
+# Stderr
+tail -f ~/.pizzapi/logs/runner-error.log
+```
+
+### Check status
+
+```bash
+launchctl list | grep pizzapi
+```
+
+The output columns are: **PID**, **exit code**, **label**. A `-` for PID means the service isn't currently running.
+
+---
+
+## Plist Reference
+
+| Key | Required | Description |
+|-----|----------|-------------|
+| `Label` | ✅ | Unique identifier for the service |
+| `ProgramArguments` | ✅ | Command to run — must be full paths (no `~` expansion) |
+| `EnvironmentVariables` | ✅ | Must include `PIZZAPI_API_KEY`, `PIZZAPI_RELAY_URL`, and `PATH` |
+| `WorkingDirectory` | — | Default working directory for spawned sessions |
+| `RunAtLoad` | — | Start automatically when the agent is loaded (including on login) |
+| `KeepAlive` | — | Restart automatically if the process exits |
+| `StandardOutPath` | — | File path for stdout logging |
+| `StandardErrorPath` | — | File path for stderr logging |
+
+<Aside type="caution" title="Use full paths everywhere">
+  `launchd` does not expand `~` or shell variables in plist files. Always use absolute paths like `/Users/yourname/...`.
+</Aside>
+
+---
+
+## Migrating from a LaunchDaemon
+
+If you previously set up PizzaPi as a LaunchDaemon (in `/Library/LaunchDaemons/`), migrate to a LaunchAgent:
+
+<Steps>
+
+1. **Stop and unload the daemon**
+
+   ```bash
+   sudo launchctl unload /Library/LaunchDaemons/com.pizzapi.runner.plist
+   ```
+
+2. **Remove the daemon plist**
+
+   ```bash
+   sudo rm /Library/LaunchDaemons/com.pizzapi.runner.plist
+   ```
+
+3. **Create the LaunchAgent** following the steps above.
+
+</Steps>
+
+---
+
+## Troubleshooting
+
+| Problem | Cause | Fix |
+|---------|-------|-----|
+| `gh auth` fails with "token is invalid" | Runner is a LaunchDaemon — no keychain access | Migrate to a LaunchAgent (see above) |
+| `errSecInteractionNotAllowed` | Keychain is locked — process has no login session | Ensure you're using a LaunchAgent, not a LaunchDaemon |
+| Runner exits immediately (exit code 1) | Missing env vars or wrong paths | Check `~/.pizzapi/logs/runner-error.log` and verify all paths in the plist |
+| `bun: command not found` | `PATH` in plist doesn't include Bun | Add `/Users/yourname/.bun/bin` to the `PATH` in `EnvironmentVariables` |
+| Runner doesn't start on reboot | Plist not loaded | Run `launchctl load ~/Library/LaunchAgents/com.pizzapi.runner.plist` |
+| Runner starts but doesn't connect | Wrong `PIZZAPI_RELAY_URL` or `PIZZAPI_API_KEY` | Check the values in the plist match `~/.pizzapi/config.json` |
+| Sessions spawn but tools can't access GitHub | `gh` token in keychain but login keychain locked | This shouldn't happen with a LaunchAgent — check `security list-keychains` includes login keychain |
+
+### Verifying keychain access
+
+You can test whether the runner process has keychain access:
+
+```bash
+# Should return the token (not an error)
+security find-generic-password -s "gh:github.com" -w
+```
+
+If this returns `errSecInteractionNotAllowed`, the keychain is locked — you're likely running as a LaunchDaemon.
