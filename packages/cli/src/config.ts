@@ -22,12 +22,80 @@ export interface HookMatcher {
     hooks: HookEntry[];
 }
 
-/** Hook configuration — shell scripts that run at tool lifecycle points. */
+/** Hook configuration — shell scripts that run at agent lifecycle points. */
 export interface HooksConfig {
+    // -- Tool lifecycle hooks (use matchers to target specific tools) --
+
     /** Hooks that fire BEFORE a tool executes. Can block or inject context. */
     PreToolUse?: HookMatcher[];
     /** Hooks that fire AFTER a tool executes. Can inject context. */
     PostToolUse?: HookMatcher[];
+
+    // -- Input hooks --
+
+    /**
+     * Fires when user input is received, before skill/template expansion.
+     * Can transform text, block input, or mark it as handled.
+     * Exit 0 + JSON `{ text: "..." }` → rewrite input.
+     * Exit 0 + JSON `{ action: "handled" }` → consume without processing.
+     * Exit 2 → block input (stderr shown as reason).
+     */
+    Input?: HookEntry[];
+
+    /**
+     * Fires after user prompt but before the agent loop starts.
+     * Can inject context or tweak the system prompt for this turn.
+     * Exit 0 + JSON `{ additionalContext: "...", systemPrompt: "..." }`.
+     */
+    BeforeAgentStart?: HookEntry[];
+
+    /**
+     * Fires when user executes a shell command via ! or !! prefix.
+     * Important for safety parity with PreToolUse:Bash.
+     * Exit 2 → block the command (stderr shown as reason).
+     * Exit 0 → allow.
+     */
+    UserBash?: HookEntry[];
+
+    // -- Session lifecycle hooks --
+
+    /**
+     * Fires before switching to another session. Can cancel.
+     * Exit 2 → cancel the switch (stderr shown as reason).
+     */
+    SessionBeforeSwitch?: HookEntry[];
+
+    /**
+     * Fires before forking a session. Can cancel.
+     * Exit 2 → cancel the fork (stderr shown as reason).
+     */
+    SessionBeforeFork?: HookEntry[];
+
+    /**
+     * Fires on process exit. Best-effort cleanup/checkpoint.
+     * Exit code is ignored (the process is shutting down).
+     */
+    SessionShutdown?: HookEntry[];
+
+    // -- Second wave hooks --
+
+    /**
+     * Fires before context compaction. Can cancel.
+     * Exit 2 → cancel compaction (stderr shown as reason).
+     */
+    SessionBeforeCompact?: HookEntry[];
+
+    /**
+     * Fires before navigating in the session tree. Can cancel.
+     * Exit 2 → cancel navigation (stderr shown as reason).
+     */
+    SessionBeforeTree?: HookEntry[];
+
+    /**
+     * Fires when a model is selected (observability).
+     * Exit code is ignored.
+     */
+    ModelSelect?: HookEntry[];
 }
 
 export interface PizzaPiConfig {
@@ -73,14 +141,39 @@ function readJsonSafe(path: string): Partial<PizzaPiConfig> {
     }
 }
 
-/** Deep-merge hooks: concatenate matcher arrays from both sources. */
+/** Deep-merge hooks: concatenate arrays from both sources for every hook type. */
 export function mergeHooks(a?: HooksConfig, b?: HooksConfig): HooksConfig | undefined {
     if (!a && !b) return undefined;
     const merged: HooksConfig = {};
+
+    // Matcher-based hooks (PreToolUse / PostToolUse)
     const pre = [...(a?.PreToolUse ?? []), ...(b?.PreToolUse ?? [])];
     const post = [...(a?.PostToolUse ?? []), ...(b?.PostToolUse ?? [])];
     if (pre.length > 0) merged.PreToolUse = pre;
     if (post.length > 0) merged.PostToolUse = post;
+
+    // Entry-based hooks — concatenate arrays from both sources
+    const entryKeys: (keyof HooksConfig)[] = [
+        "Input",
+        "BeforeAgentStart",
+        "UserBash",
+        "SessionBeforeSwitch",
+        "SessionBeforeFork",
+        "SessionShutdown",
+        "SessionBeforeCompact",
+        "SessionBeforeTree",
+        "ModelSelect",
+    ];
+    for (const key of entryKeys) {
+        const combined = [
+            ...((a?.[key] as HookEntry[] | undefined) ?? []),
+            ...((b?.[key] as HookEntry[] | undefined) ?? []),
+        ];
+        if (combined.length > 0) {
+            (merged as any)[key] = combined;
+        }
+    }
+
     return Object.keys(merged).length > 0 ? merged : undefined;
 }
 

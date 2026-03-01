@@ -1,7 +1,7 @@
 import { describe, test, expect } from "bun:test";
-import { matchesTool, runHook, parseHookOutput, normalizeToolInput } from "./hooks.js";
+import { matchesTool, runHook, parseHookOutput, normalizeToolInput, runEventHooks, runFireAndForgetHooks } from "./hooks.js";
 import { mergeHooks, isProjectHooksTrusted } from "../config.js";
-import type { HooksConfig } from "../config.js";
+import type { HooksConfig, HookEntry } from "../config.js";
 import { join } from "path";
 
 // ---------------------------------------------------------------------------
@@ -928,5 +928,543 @@ describe("real hook scripts", () => {
         expect(result.exitCode).toBe(0);
         const output = parseHookOutput(result.stdout);
         expect(output?.additionalContext).toContain("build order");
+    });
+});
+
+// ---------------------------------------------------------------------------
+// parseHookOutput — new fields (Input, BeforeAgentStart)
+// ---------------------------------------------------------------------------
+
+describe("parseHookOutput — new fields", () => {
+    test("parses Input hook text transform", () => {
+        const result = parseHookOutput(JSON.stringify({
+            text: "bun install express",
+        }));
+        expect(result?.text).toBe("bun install express");
+    });
+
+    test("parses Input hook action: handled", () => {
+        const result = parseHookOutput(JSON.stringify({
+            action: "handled",
+        }));
+        expect(result?.action).toBe("handled");
+    });
+
+    test("parses Input hook action: transform with text", () => {
+        const result = parseHookOutput(JSON.stringify({
+            action: "transform",
+            text: "rewritten text",
+        }));
+        expect(result?.action).toBe("transform");
+        expect(result?.text).toBe("rewritten text");
+    });
+
+    test("parses BeforeAgentStart systemPrompt", () => {
+        const result = parseHookOutput(JSON.stringify({
+            systemPrompt: "You are a helpful assistant focused on testing.",
+        }));
+        expect(result?.systemPrompt).toBe("You are a helpful assistant focused on testing.");
+    });
+
+    test("parses combined BeforeAgentStart context and systemPrompt", () => {
+        const result = parseHookOutput(JSON.stringify({
+            additionalContext: "Remember to use bun",
+            systemPrompt: "Custom system prompt",
+        }));
+        expect(result?.additionalContext).toBe("Remember to use bun");
+        expect(result?.systemPrompt).toBe("Custom system prompt");
+    });
+
+    test("parses nested hookSpecificOutput with new fields", () => {
+        const result = parseHookOutput(JSON.stringify({
+            hookSpecificOutput: {
+                text: "transformed text",
+                action: "transform",
+            },
+        }));
+        expect(result?.text).toBe("transformed text");
+        expect(result?.action).toBe("transform");
+    });
+});
+
+// ---------------------------------------------------------------------------
+// runEventHooks
+// ---------------------------------------------------------------------------
+
+describe("runEventHooks", () => {
+    test("returns blocked=false when hook exits 0 with no output", async () => {
+        const hooks: HookEntry[] = [{ command: "true" }];
+        const result = await runEventHooks(hooks, "{}", process.cwd(), "Test");
+        expect(result.blocked).toBe(false);
+        expect(result.outputs).toHaveLength(0);
+    });
+
+    test("returns blocked=true when hook exits 2", async () => {
+        const hooks: HookEntry[] = [{ command: 'echo "BLOCKED: test reason" >&2; exit 2' }];
+        const result = await runEventHooks(hooks, "{}", process.cwd(), "Test");
+        expect(result.blocked).toBe(true);
+        expect(result.reason).toContain("BLOCKED: test reason");
+    });
+
+    test("returns blocked=true when hook exits non-zero (not 2)", async () => {
+        const hooks: HookEntry[] = [{ command: "exit 1" }];
+        const result = await runEventHooks(hooks, "{}", process.cwd(), "Test");
+        expect(result.blocked).toBe(true);
+        expect(result.reason).toContain("exited with code 1");
+    });
+
+    test("returns blocked=true when hook times out", async () => {
+        const hooks: HookEntry[] = [{ command: "sleep 10", timeout: 200 }];
+        const result = await runEventHooks(hooks, "{}", process.cwd(), "Test");
+        expect(result.blocked).toBe(true);
+        expect(result.reason).toContain("timed out");
+    });
+
+    test("collects JSON outputs from successful hooks", async () => {
+        const hooks: HookEntry[] = [
+            { command: 'echo \'{"additionalContext":"ctx1"}\'' },
+            { command: 'echo \'{"additionalContext":"ctx2"}\'' },
+        ];
+        const result = await runEventHooks(hooks, "{}", process.cwd(), "Test");
+        expect(result.blocked).toBe(false);
+        expect(result.outputs).toHaveLength(2);
+        expect(result.outputs[0].additionalContext).toBe("ctx1");
+        expect(result.outputs[1].additionalContext).toBe("ctx2");
+    });
+
+    test("stops at first blocking hook, preserving earlier outputs", async () => {
+        const hooks: HookEntry[] = [
+            { command: 'echo \'{"additionalContext":"before block"}\'' },
+            { command: "exit 2" },
+            { command: 'echo \'{"additionalContext":"should not run"}\'' },
+        ];
+        const result = await runEventHooks(hooks, "{}", process.cwd(), "Test");
+        expect(result.blocked).toBe(true);
+        expect(result.outputs).toHaveLength(1);
+        expect(result.outputs[0].additionalContext).toBe("before block");
+    });
+
+    test("passes payload to hooks on stdin", async () => {
+        const hooks: HookEntry[] = [
+            { command: "cat | jq -r '.event'" },
+        ];
+        const payload = JSON.stringify({ event: "Test", data: "hello" });
+        const result = await runEventHooks(hooks, payload, process.cwd(), "Test");
+        expect(result.blocked).toBe(false);
+        // The hook ran jq on the input and printed "Test" to stdout
+        // which is not valid JSON, so outputs will be empty
+        expect(result.outputs).toHaveLength(0);
+    });
+
+    test("collects text transform output from Input hook", async () => {
+        const hooks: HookEntry[] = [
+            { command: 'echo \'{"text":"bun install express","action":"transform"}\'' },
+        ];
+        const result = await runEventHooks(hooks, "{}", process.cwd(), "Input");
+        expect(result.blocked).toBe(false);
+        expect(result.outputs).toHaveLength(1);
+        expect(result.outputs[0].text).toBe("bun install express");
+        expect(result.outputs[0].action).toBe("transform");
+    });
+
+    test("collects systemPrompt from BeforeAgentStart hook", async () => {
+        const hooks: HookEntry[] = [
+            { command: 'echo \'{"systemPrompt":"Custom prompt","additionalContext":"Remember X"}\'' },
+        ];
+        const result = await runEventHooks(hooks, "{}", process.cwd(), "BeforeAgentStart");
+        expect(result.blocked).toBe(false);
+        expect(result.outputs[0].systemPrompt).toBe("Custom prompt");
+        expect(result.outputs[0].additionalContext).toBe("Remember X");
+    });
+});
+
+// ---------------------------------------------------------------------------
+// runFireAndForgetHooks
+// ---------------------------------------------------------------------------
+
+describe("runFireAndForgetHooks", () => {
+    test("runs hooks without blocking on errors", async () => {
+        const hooks: HookEntry[] = [
+            { command: "exit 1" },
+            { command: "true" },
+        ];
+        // Should not throw
+        await runFireAndForgetHooks(hooks, "{}", process.cwd(), "Test");
+    });
+
+    test("runs hooks without blocking on timeouts", async () => {
+        const hooks: HookEntry[] = [
+            { command: "sleep 10", timeout: 200 },
+        ];
+        const start = Date.now();
+        await runFireAndForgetHooks(hooks, "{}", process.cwd(), "Test");
+        const elapsed = Date.now() - start;
+        // Should finish relatively quickly (timeout + some overhead)
+        expect(elapsed).toBeLessThan(2000);
+    });
+
+    test("runs all hooks even if some fail", async () => {
+        // We can't easily observe that hooks ran, but we can verify no exceptions
+        const hooks: HookEntry[] = [
+            { command: "exit 1" },
+            { command: "exit 2" },
+            { command: "true" },
+        ];
+        await runFireAndForgetHooks(hooks, "{}", process.cwd(), "Test");
+    });
+});
+
+// ---------------------------------------------------------------------------
+// mergeHooks — new event hook types
+// ---------------------------------------------------------------------------
+
+describe("mergeHooks — event hooks", () => {
+    test("merges Input hooks from both sources", () => {
+        const a: HooksConfig = {
+            Input: [{ command: "a.sh" }],
+        };
+        const b: HooksConfig = {
+            Input: [{ command: "b.sh" }],
+        };
+        const result = mergeHooks(a, b);
+        expect(result?.Input).toHaveLength(2);
+        expect(result?.Input?.[0].command).toBe("a.sh");
+        expect(result?.Input?.[1].command).toBe("b.sh");
+    });
+
+    test("merges BeforeAgentStart hooks", () => {
+        const a: HooksConfig = {
+            BeforeAgentStart: [{ command: "a.sh" }],
+        };
+        const b: HooksConfig = {};
+        const result = mergeHooks(a, b);
+        expect(result?.BeforeAgentStart).toHaveLength(1);
+    });
+
+    test("merges UserBash hooks", () => {
+        const a: HooksConfig = {};
+        const b: HooksConfig = {
+            UserBash: [{ command: "guard.sh" }],
+        };
+        const result = mergeHooks(a, b);
+        expect(result?.UserBash).toHaveLength(1);
+    });
+
+    test("merges SessionBeforeSwitch hooks", () => {
+        const a: HooksConfig = { SessionBeforeSwitch: [{ command: "a.sh" }] };
+        const b: HooksConfig = { SessionBeforeSwitch: [{ command: "b.sh" }] };
+        const result = mergeHooks(a, b);
+        expect(result?.SessionBeforeSwitch).toHaveLength(2);
+    });
+
+    test("merges SessionBeforeFork hooks", () => {
+        const a: HooksConfig = { SessionBeforeFork: [{ command: "check.sh" }] };
+        const result = mergeHooks(a, undefined);
+        expect(result?.SessionBeforeFork).toHaveLength(1);
+    });
+
+    test("merges SessionShutdown hooks", () => {
+        const a: HooksConfig = { SessionShutdown: [{ command: "cleanup.sh" }] };
+        const b: HooksConfig = { SessionShutdown: [{ command: "save.sh" }] };
+        const result = mergeHooks(a, b);
+        expect(result?.SessionShutdown).toHaveLength(2);
+    });
+
+    test("merges ModelSelect hooks", () => {
+        const result = mergeHooks(
+            { ModelSelect: [{ command: "log.sh" }] },
+            { ModelSelect: [{ command: "notify.sh" }] },
+        );
+        expect(result?.ModelSelect).toHaveLength(2);
+    });
+
+    test("merges SessionBeforeCompact hooks", () => {
+        const result = mergeHooks(
+            { SessionBeforeCompact: [{ command: "check.sh" }] },
+            undefined,
+        );
+        expect(result?.SessionBeforeCompact).toHaveLength(1);
+    });
+
+    test("merges SessionBeforeTree hooks", () => {
+        const result = mergeHooks(
+            undefined,
+            { SessionBeforeTree: [{ command: "guard.sh" }] },
+        );
+        expect(result?.SessionBeforeTree).toHaveLength(1);
+    });
+
+    test("merges mixed PreToolUse and event hooks", () => {
+        const a: HooksConfig = {
+            PreToolUse: [{ matcher: "Bash", hooks: [{ command: "pre.sh" }] }],
+            Input: [{ command: "input.sh" }],
+            SessionShutdown: [{ command: "shutdown.sh" }],
+        };
+        const b: HooksConfig = {
+            PostToolUse: [{ matcher: ".*", hooks: [{ command: "post.sh" }] }],
+            UserBash: [{ command: "bash-guard.sh" }],
+        };
+        const result = mergeHooks(a, b);
+        expect(result?.PreToolUse).toHaveLength(1);
+        expect(result?.PostToolUse).toHaveLength(1);
+        expect(result?.Input).toHaveLength(1);
+        expect(result?.SessionShutdown).toHaveLength(1);
+        expect(result?.UserBash).toHaveLength(1);
+    });
+
+    test("skips empty arrays in result", () => {
+        const a: HooksConfig = { Input: [] };
+        const b: HooksConfig = { Input: [] };
+        const result = mergeHooks(a, b);
+        // Empty arrays should not be included
+        expect(result).toBeUndefined();
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Integration: Input hook scripts
+// ---------------------------------------------------------------------------
+
+describe("event hook integration — Input", () => {
+    test("Input hook can rewrite text", async () => {
+        const hooks: HookEntry[] = [
+            // Read the input text and rewrite npm → bun
+            { command: `bash -c 'INPUT=$(cat | jq -r ".text"); echo "{\\\"text\\\": \\\"$(echo $INPUT | sed s/npm/bun/g)\\\"}"'` },
+        ];
+        const payload = JSON.stringify({ event: "Input", text: "npm install express", source: "interactive" });
+        const result = await runEventHooks(hooks, payload, process.cwd(), "Input");
+        expect(result.blocked).toBe(false);
+        expect(result.outputs).toHaveLength(1);
+        expect(result.outputs[0].text).toBe("bun install express");
+    });
+
+    test("Input hook can block with exit 2", async () => {
+        const hooks: HookEntry[] = [
+            { command: 'echo "Policy violation: forbidden input" >&2; exit 2' },
+        ];
+        const payload = JSON.stringify({ event: "Input", text: "do something bad", source: "interactive" });
+        const result = await runEventHooks(hooks, payload, process.cwd(), "Input");
+        expect(result.blocked).toBe(true);
+        expect(result.reason).toContain("Policy violation");
+    });
+
+    test("Input hook can mark as handled", async () => {
+        const hooks: HookEntry[] = [
+            { command: 'echo \'{"action":"handled"}\'' },
+        ];
+        const result = await runEventHooks(hooks, "{}", process.cwd(), "Input");
+        expect(result.blocked).toBe(false);
+        expect(result.outputs[0].action).toBe("handled");
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Integration: UserBash hook scripts
+// ---------------------------------------------------------------------------
+
+describe("event hook integration — UserBash", () => {
+    test("UserBash hook can read command from payload", async () => {
+        const hooks: HookEntry[] = [
+            // Check if command contains "rm -rf" and block
+            { command: `bash -c 'CMD=$(cat | jq -r ".command"); if echo "$CMD" | grep -q "rm -rf"; then echo "Dangerous!" >&2; exit 2; fi'` },
+        ];
+        const payload = JSON.stringify({
+            event: "UserBash",
+            command: "rm -rf /",
+            exclude_from_context: false,
+            cwd: "/tmp",
+            tool_input: { command: "rm -rf /" },
+        });
+        const result = await runEventHooks(hooks, payload, process.cwd(), "UserBash");
+        expect(result.blocked).toBe(true);
+        expect(result.reason).toContain("Dangerous");
+    });
+
+    test("UserBash hook allows safe commands", async () => {
+        const hooks: HookEntry[] = [
+            { command: `bash -c 'CMD=$(cat | jq -r ".command"); if echo "$CMD" | grep -q "rm -rf"; then echo "Dangerous!" >&2; exit 2; fi'` },
+        ];
+        const payload = JSON.stringify({
+            event: "UserBash",
+            command: "ls -la",
+            exclude_from_context: false,
+            cwd: "/tmp",
+        });
+        const result = await runEventHooks(hooks, payload, process.cwd(), "UserBash");
+        expect(result.blocked).toBe(false);
+    });
+
+    test("UserBash hook receives tool_input for PreToolUse script compat", async () => {
+        const hooks: HookEntry[] = [
+            // Use tool_input.command (same key as PreToolUse:Bash hooks)
+            { command: `bash -c 'cat | jq -r ".tool_input.command"'` },
+        ];
+        const payload = JSON.stringify({
+            event: "UserBash",
+            command: "echo hello",
+            tool_input: { command: "echo hello" },
+        });
+        const result = await runEventHooks(hooks, payload, process.cwd(), "UserBash");
+        expect(result.blocked).toBe(false);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Integration: SessionBeforeSwitch / SessionBeforeFork
+// ---------------------------------------------------------------------------
+
+describe("event hook integration — SessionBeforeSwitch", () => {
+    test("can block a session switch", async () => {
+        const hooks: HookEntry[] = [
+            { command: 'echo "Uncommitted changes — commit first" >&2; exit 2' },
+        ];
+        const payload = JSON.stringify({
+            event: "SessionBeforeSwitch",
+            reason: "resume",
+            target_session_file: "/path/to/session.json",
+        });
+        const result = await runEventHooks(hooks, payload, process.cwd(), "SessionBeforeSwitch");
+        expect(result.blocked).toBe(true);
+        expect(result.reason).toContain("Uncommitted changes");
+    });
+
+    test("allows session switch when hook exits 0", async () => {
+        const hooks: HookEntry[] = [{ command: "true" }];
+        const payload = JSON.stringify({
+            event: "SessionBeforeSwitch",
+            reason: "new",
+        });
+        const result = await runEventHooks(hooks, payload, process.cwd(), "SessionBeforeSwitch");
+        expect(result.blocked).toBe(false);
+    });
+});
+
+describe("event hook integration — SessionBeforeFork", () => {
+    test("can block a session fork", async () => {
+        const hooks: HookEntry[] = [
+            { command: 'echo "Dirty working tree" >&2; exit 2' },
+        ];
+        const payload = JSON.stringify({
+            event: "SessionBeforeFork",
+            entry_id: "abc-123",
+        });
+        const result = await runEventHooks(hooks, payload, process.cwd(), "SessionBeforeFork");
+        expect(result.blocked).toBe(true);
+        expect(result.reason).toContain("Dirty working tree");
+    });
+
+    test("allows fork when hook exits 0", async () => {
+        const hooks: HookEntry[] = [{ command: "true" }];
+        const result = await runEventHooks(hooks, "{}", process.cwd(), "SessionBeforeFork");
+        expect(result.blocked).toBe(false);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Integration: SessionShutdown
+// ---------------------------------------------------------------------------
+
+describe("event hook integration — SessionShutdown", () => {
+    test("runs shutdown hooks without throwing", async () => {
+        const hooks: HookEntry[] = [
+            { command: "echo cleanup" },
+            { command: "exit 1" }, // errors are swallowed
+        ];
+        const payload = JSON.stringify({ event: "SessionShutdown" });
+        // Should not throw
+        await runFireAndForgetHooks(hooks, payload, process.cwd(), "SessionShutdown");
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Integration: BeforeAgentStart
+// ---------------------------------------------------------------------------
+
+describe("event hook integration — BeforeAgentStart", () => {
+    test("can inject additionalContext", async () => {
+        const hooks: HookEntry[] = [
+            { command: 'echo \'{"additionalContext":"Remember: always use bun, never npm"}\'' },
+        ];
+        const payload = JSON.stringify({
+            event: "BeforeAgentStart",
+            prompt: "install express",
+            system_prompt: "You are a helpful assistant.",
+        });
+        const result = await runEventHooks(hooks, payload, process.cwd(), "BeforeAgentStart");
+        expect(result.blocked).toBe(false);
+        expect(result.outputs[0].additionalContext).toBe("Remember: always use bun, never npm");
+    });
+
+    test("can override systemPrompt", async () => {
+        const hooks: HookEntry[] = [
+            { command: 'echo \'{"systemPrompt":"You are a strict code reviewer."}\'' },
+        ];
+        const payload = JSON.stringify({
+            event: "BeforeAgentStart",
+            prompt: "review my code",
+            system_prompt: "You are a helpful assistant.",
+        });
+        const result = await runEventHooks(hooks, payload, process.cwd(), "BeforeAgentStart");
+        expect(result.blocked).toBe(false);
+        expect(result.outputs[0].systemPrompt).toBe("You are a strict code reviewer.");
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Integration: SessionBeforeCompact / SessionBeforeTree / ModelSelect
+// ---------------------------------------------------------------------------
+
+describe("event hook integration — second wave", () => {
+    test("SessionBeforeCompact can cancel compaction", async () => {
+        const hooks: HookEntry[] = [
+            { command: 'echo "Important context — do not compact" >&2; exit 2' },
+        ];
+        const payload = JSON.stringify({
+            event: "SessionBeforeCompact",
+            custom_instructions: "summarize",
+        });
+        const result = await runEventHooks(hooks, payload, process.cwd(), "SessionBeforeCompact");
+        expect(result.blocked).toBe(true);
+        expect(result.reason).toContain("Important context");
+    });
+
+    test("SessionBeforeCompact allows when hook exits 0", async () => {
+        const hooks: HookEntry[] = [{ command: "true" }];
+        const result = await runEventHooks(hooks, "{}", process.cwd(), "SessionBeforeCompact");
+        expect(result.blocked).toBe(false);
+    });
+
+    test("SessionBeforeTree can cancel navigation", async () => {
+        const hooks: HookEntry[] = [
+            { command: 'echo "Unsaved work on current branch" >&2; exit 2' },
+        ];
+        const payload = JSON.stringify({
+            event: "SessionBeforeTree",
+            target_id: "node-123",
+            old_leaf_id: "node-456",
+        });
+        const result = await runEventHooks(hooks, payload, process.cwd(), "SessionBeforeTree");
+        expect(result.blocked).toBe(true);
+        expect(result.reason).toContain("Unsaved work");
+    });
+
+    test("SessionBeforeTree allows when hook exits 0", async () => {
+        const hooks: HookEntry[] = [{ command: "true" }];
+        const result = await runEventHooks(hooks, "{}", process.cwd(), "SessionBeforeTree");
+        expect(result.blocked).toBe(false);
+    });
+
+    test("ModelSelect runs as fire-and-forget", async () => {
+        const hooks: HookEntry[] = [
+            // Even with exit 1, should not throw
+            { command: "exit 1" },
+        ];
+        const payload = JSON.stringify({
+            event: "ModelSelect",
+            model: { provider: "anthropic", id: "claude-sonnet-4-20250514", name: "Claude 4 Sonnet" },
+            previous_model: null,
+            source: "set",
+        });
+        await runFireAndForgetHooks(hooks, payload, process.cwd(), "ModelSelect");
     });
 });
