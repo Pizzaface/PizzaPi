@@ -12,14 +12,7 @@ import { join } from "path";
 import { homedir } from "os";
 import { defaultAgentDir, loadConfig } from "./config.js";
 import { buildInteractiveSkillPaths } from "./skills.js";
-import { remoteExtension } from "./extensions/remote.js";
-import { mcpExtension } from "./extensions/mcp-extension.js";
-import { restartExtension } from "./extensions/restart.js";
-import { setSessionNameExtension } from "./extensions/set-session-name.js";
-import { updateTodoExtension } from "./extensions/update-todo.js";
-import { spawnSessionExtension } from "./extensions/spawn-session.js";
-import { sessionMessagingExtension } from "./extensions/session-messaging.js";
-import { createHooksExtension } from "./extensions/hooks.js";
+import { buildPizzaPiExtensionFactories } from "./extensions/factories.js";
 import { runSetup } from "./setup.js";
 
 async function main() {
@@ -373,10 +366,11 @@ async function main() {
         agentFiles.push(...loadedAgents);
     }
 
-    // Build extension list — hooks extension is conditional on config
-    const extensionFactories = [remoteExtension, mcpExtension, restartExtension, setSessionNameExtension, updateTodoExtension, spawnSessionExtension, sessionMessagingExtension];
-    const hooksExtension = createHooksExtension(config.hooks, cwd);
-    if (hooksExtension) extensionFactories.push(hooksExtension);
+    // Build extension list — includes configured hooks when present.
+    const extensionFactories = buildPizzaPiExtensionFactories({
+        cwd,
+        hooks: config.hooks,
+    });
 
     const loader = new DefaultResourceLoader({
         cwd,
