@@ -5,7 +5,7 @@
  * Publishes platform-specific packages first, then the main pizzapi package.
  *
  * Usage:
- *   bun packages/npm/publish-npm.ts [--dry-run] [--tag <tag>]
+ *   bun packages/npm/publish-npm.ts [--dry-run] [--tag <tag>] [--provenance] [--access <public|restricted>]
  */
 
 import { join } from "path";
@@ -16,6 +16,10 @@ const args = process.argv.slice(2);
 const dryRun = args.includes("--dry-run");
 const tagIdx = args.indexOf("--tag");
 const tag = tagIdx !== -1 ? args[tagIdx + 1] : undefined;
+const provenance = args.includes("--provenance");
+const access = args.includes("--access")
+    ? args[args.indexOf("--access") + 1]
+    : undefined;
 
 if (!existsSync(DIST)) {
     console.error("No dist/ directory found. Run `bun packages/npm/build-npm.ts` first.");
@@ -54,7 +58,8 @@ for (const entry of entries) {
     const npmArgs = ["publish"];
     if (dryRun) npmArgs.push("--dry-run");
     if (tag) npmArgs.push("--tag", tag);
-    // access is set in publishConfig in each package.json
+    if (provenance) npmArgs.push("--provenance");
+    if (access) npmArgs.push("--access", access);
 
     const proc = Bun.spawnSync(["npm", ...npmArgs], {
         cwd: pkgDir,
