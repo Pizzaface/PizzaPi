@@ -9,7 +9,7 @@ import {
 import { Spinner } from "@/components/ui/spinner";
 import { useAtMentionFiles, type Entry } from "@/hooks/useAtMentionFiles";
 import { useAtMentionSearch } from "@/hooks/useAtMentionSearch";
-import { ChevronLeft, File, Folder, Search } from "lucide-react";
+import { ChevronLeft, File, Folder, Search, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 // ── Icons ─────────────────────────────────────────────────────────────────────
@@ -249,7 +249,7 @@ export function AtMentionPopover({
             <>
               <Search className="size-3 text-muted-foreground" />
               <span className="font-mono text-muted-foreground truncate flex-1">
-                search: "{query}"
+                search: &ldquo;{query}&rdquo;
               </span>
             </>
           ) : (
@@ -261,11 +261,19 @@ export function AtMentionPopover({
               </span>
               {query && (
                 <span className="text-muted-foreground/60">
-                  filter: "{query}"
+                  filter: &ldquo;{query}&rdquo;
                 </span>
               )}
             </>
           )}
+          <button
+            type="button"
+            onClick={onClose}
+            className="inline-flex items-center justify-center rounded-sm p-0.5 text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors flex-shrink-0"
+            aria-label="Close file picker"
+          >
+            <X className="size-3.5" />
+          </button>
         </div>
 
         <CommandList className="max-h-[50vh] overflow-y-auto">

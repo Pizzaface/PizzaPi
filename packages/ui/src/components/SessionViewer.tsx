@@ -54,7 +54,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { formatPathTail } from "@/lib/path";
 import { ProviderIcon } from "@/components/ProviderIcon";
-import { AlertTriangleIcon, ArrowDownIcon, CheckCircle2, ChevronsUpDown, Circle, CircleDashed, MessageSquare, OctagonX, PaperclipIcon, Plus, Zap, Clock, X, Trash2, TerminalIcon, DownloadIcon, XCircle, FolderTree } from "lucide-react";
+import { AlertTriangleIcon, ArrowDownIcon, BookOpen, CheckCircle2, ChevronsUpDown, Circle, CircleDashed, MessageSquare, OctagonX, PaperclipIcon, Plus, Zap, Clock, X, Trash2, TerminalIcon, DownloadIcon, XCircle, FolderTree } from "lucide-react";
 import { AtMentionPopover } from "@/components/AtMentionPopover";
 import type { Entry as AtMentionEntry } from "@/hooks/useAtMentionFiles";
 
@@ -582,8 +582,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
   );
 
   const supportedWebCommands = React.useMemo(() => {
-    // Only include commands that we actually intercept/execute via exec.
-    // (availableCommands contains prompt templates, skills, etc. which we don't exec.)
+    // Commands that we intercept/execute via exec.
     return [
       { name: "new", description: "Start a new conversation" },
       { name: "resume", description: "Resume the previous session" },
@@ -601,12 +600,28 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     ];
   }, []);
 
+  // Extract skills from availableCommands (CLI sends them as "skill:name")
+  const skillCommands = React.useMemo(() => {
+    if (!availableCommands) return [];
+    return availableCommands
+      .filter((c) => c.name.startsWith("skill:"))
+      .map((c) => ({ name: c.name, description: c.description }));
+  }, [availableCommands]);
+
   const commandSuggestions = React.useMemo(() => {
     const query = commandQuery.trim().toLowerCase();
     const list = supportedWebCommands;
     if (!query) return list;
     return list.filter((c) => c.name.toLowerCase().includes(query));
   }, [commandQuery, supportedWebCommands]);
+
+  const skillSuggestions = React.useMemo(() => {
+    const query = commandQuery.trim().toLowerCase();
+    if (!query) return skillCommands;
+    return skillCommands.filter(
+      (c) => c.name.toLowerCase().includes(query) || (c.description?.toLowerCase().includes(query) ?? false),
+    );
+  }, [commandQuery, skillCommands]);
 
   // @-mention file selection: replace trigger to cursor with @{relativePath} 
   const handleAtMentionSelectFile = React.useCallback((relativePath: string) => {
@@ -1170,6 +1185,20 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
               onValueChange={(v) => setCommandQuery(v)}
               className="w-full"
             >
+              {/* Close button header */}
+              <div className="flex items-center justify-between px-3 py-1.5 border-b border-border/50">
+                <span className="text-xs text-muted-foreground font-medium">
+                  {isResumeMode ? "Resume session" : "Commands"}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => { setCommandOpen(false); setCommandQuery(""); }}
+                  className="inline-flex items-center justify-center rounded-sm p-0.5 text-muted-foreground hover:text-foreground hover:bg-muted/60 transition-colors"
+                  aria-label="Close command menu"
+                >
+                  <X className="size-3.5" />
+                </button>
+              </div>
               <CommandList className="max-h-56">
                 {isResumeMode ? (
                   <>
@@ -1211,29 +1240,61 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                   </>
                 ) : (
                   <>
-                    <CommandEmpty>No commands</CommandEmpty>
-                    <CommandGroup heading="Commands">
-                      {commandSuggestions.map((cmd) => (
-                        <CommandItem
-                          key={cmd.name}
-                          value={cmd.name}
-                          onSelect={() => {
-                            if (cmd.name === "new") {
-                              executeSlashCommand("/new");
-                              return;
-                            }
-                            setInput(`/${cmd.name} `);
-                            setCommandQuery("");
-                            setCommandOpen(cmd.name === "resume");
-                          }}
-                        >
-                          <div className="flex w-full items-center justify-between gap-2">
-                            <span className="font-mono text-sm">/{cmd.name}</span>
-                            {cmd.description && <span className="text-xs text-muted-foreground">{cmd.description}</span>}
-                          </div>
-                        </CommandItem>
-                      ))}
-                    </CommandGroup>
+                    <CommandEmpty>No commands or skills found</CommandEmpty>
+                    {commandSuggestions.length > 0 && (
+                      <CommandGroup heading="Commands">
+                        {commandSuggestions.map((cmd) => (
+                          <CommandItem
+                            key={cmd.name}
+                            value={cmd.name}
+                            onSelect={() => {
+                              if (cmd.name === "new") {
+                                executeSlashCommand("/new");
+                                return;
+                              }
+                              setInput(`/${cmd.name} `);
+                              setCommandQuery("");
+                              setCommandOpen(cmd.name === "resume");
+                            }}
+                          >
+                            <div className="flex w-full items-center justify-between gap-2">
+                              <span className="font-mono text-sm">/{cmd.name}</span>
+                              {cmd.description && <span className="text-xs text-muted-foreground">{cmd.description}</span>}
+                            </div>
+                          </CommandItem>
+                        ))}
+                      </CommandGroup>
+                    )}
+                    {skillSuggestions.length > 0 && (
+                      <CommandGroup heading="Skills">
+                        {skillSuggestions.map((skill) => (
+                          <CommandItem
+                            key={skill.name}
+                            value={skill.name}
+                            onSelect={() => {
+                              // Set input to /skill:name and let user add arguments
+                              setInput(`/${skill.name} `);
+                              setCommandQuery("");
+                              setCommandOpen(false);
+                              // Focus the textarea so user can type args or press Enter
+                              requestAnimationFrame(() => {
+                                document.querySelector<HTMLTextAreaElement>("[data-pp-prompt]")?.focus();
+                              });
+                            }}
+                          >
+                            <div className="flex w-full items-center justify-between gap-2">
+                              <div className="flex items-center gap-1.5 min-w-0">
+                                <BookOpen className="size-3.5 shrink-0 text-primary/60" />
+                                <span className="font-mono text-sm truncate">/{skill.name}</span>
+                              </div>
+                              {skill.description && (
+                                <span className="text-xs text-muted-foreground truncate max-w-[50%]">{skill.description}</span>
+                              )}
+                            </div>
+                          </CommandItem>
+                        ))}
+                      </CommandGroup>
+                    )}
                   </>
                 )}
               </CommandList>
@@ -1413,17 +1474,21 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                   if (commandOpen) {
                     if (event.key === "Escape") {
                       event.preventDefault();
+                      event.stopPropagation();
                       setCommandOpen(false);
+                      setCommandQuery("");
                       return;
                     }
 
-                    // Tab: autocomplete the first matching command and close the popover
-                    if (event.key === "Tab" && commandSuggestions.length > 0) {
+                    // Tab: autocomplete the first matching command (or skill) and close the popover
+                    if (event.key === "Tab" && (commandSuggestions.length > 0 || skillSuggestions.length > 0)) {
                       event.preventDefault();
-                      const first = commandSuggestions[0]!;
-                      setInput(`/${first.name} `);
-                      setCommandQuery("");
-                      setCommandOpen(first.name === "resume");
+                      const first = commandSuggestions[0] ?? skillSuggestions[0];
+                      if (first) {
+                        setInput(`/${first.name} `);
+                        setCommandQuery("");
+                        setCommandOpen(first.name === "resume");
+                      }
                       return;
                     }
 
