@@ -11,6 +11,8 @@ import { sweepExpiredSessions } from "./ws/sio-registry.js";
 import { sweepExpiredAttachments } from "./attachments/store.js";
 import { ensurePushSubscriptionTable } from "./push.js";
 import { ensureUserHiddenModelTable } from "./user-hidden-models.js";
+import { ensureRunnerRecentFoldersTable } from "./runner-recent-folders.js";
+import { getMigrations } from "better-auth/db";
 
 // Socket.IO imports
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -23,9 +25,13 @@ import { initStateRedis } from "./ws/sio-state.js";
 
 const PORT = parseInt(process.env.PORT ?? "7492");
 
+// Run all migrations on startup (safe to re-run — idempotent)
+const { runMigrations } = await getMigrations(auth.options);
+await runMigrations();
 await ensureRelaySessionTables();
 await ensurePushSubscriptionTable();
 await ensureUserHiddenModelTable();
+await ensureRunnerRecentFoldersTable();
 void initializeRelayRedisCache();
 
 // ── Helpers: convert node:http request/response ↔ fetch API ──────────────
