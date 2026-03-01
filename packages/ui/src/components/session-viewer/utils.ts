@@ -154,3 +154,37 @@ export function extToMime(path: string): string {
   };
   return map[ext] ?? "text/plain";
 }
+
+/**
+ * Determine whether the slash-command popover should stay open for the current
+ * input value. Returns `{ open, query }`.
+ *
+ * When the first token after `/` is a recognized command/skill name AND there
+ * is at least one argument following it, the popover closes so the user can
+ * type arguments without a stale "no results" overlay.
+ *
+ * Examples (assuming "skill:beads-ccpm" and "compact" are known):
+ *   "/sk"                              → open, query="sk"
+ *   "/skill:beads-ccpm"                → open, query="skill:beads-ccpm"
+ *   "/skill:beads-ccpm "               → closed (matched + has trailing space)
+ *   "/skill:beads-ccpm epic-sync gm7"  → closed
+ *   "/compact "                        → closed
+ *   "/unknown-thing args"              → open, query="unknown-thing args"
+ */
+export function resolveCommandPopoverState(
+  afterSlash: string,
+  knownNames: Set<string>,
+): { open: boolean; query: string } {
+  const spaceIdx = afterSlash.search(/\s/);
+  if (spaceIdx === -1) {
+    // Still typing the command name — keep popover open for filtering.
+    return { open: true, query: afterSlash };
+  }
+  const cmdName = afterSlash.slice(0, spaceIdx).toLowerCase();
+  if (knownNames.has(cmdName)) {
+    // Recognised command with arguments — close the popover.
+    return { open: false, query: "" };
+  }
+  // Unrecognised — keep open so the user sees suggestions / "not found".
+  return { open: true, query: afterSlash };
+}

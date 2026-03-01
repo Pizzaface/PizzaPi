@@ -2,32 +2,8 @@ import { createAgentSession, DefaultResourceLoader } from "@mariozechner/pi-codi
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { defaultAgentDir, expandHome, loadConfig } from "../config.js";
-
-/**
- * Build additional skill paths for the headless worker.
- *
- * ~/.pizzapi/skills/ is already discovered via agentDir, so we only need
- * the project-local .pizzapi/skills/ plus Claude-style agents/ directories
- * (both global and project-local) which map to pi skills.
- */
-function buildSkillPaths(cwd: string, configSkills?: string[]): string[] {
-    const paths: string[] = [
-        join(cwd, ".pizzapi", "skills"),
-        join(homedir(), ".pizzapi", "agents"),
-        join(cwd, ".pizzapi", "agents"),
-        join(cwd, ".agents", "skills"),
-        join(cwd, ".agents", "agents"),
-    ];
-    if (Array.isArray(configSkills)) {
-        for (const p of configSkills) {
-            if (typeof p === "string" && p.trim()) {
-                paths.push(expandHome(p.trim()));
-            }
-        }
-    }
-    return paths;
-}
+import { defaultAgentDir, loadConfig } from "../config.js";
+import { buildWorkerSkillPaths } from "../skills.js";
 
 /**
  * Build additional prompt template paths for the headless worker.
@@ -98,7 +74,7 @@ async function main(): Promise<void> {
         cwd,
         agentDir,
         extensionFactories: [remoteExtension, mcpExtension, restartExtension, setSessionNameExtension, updateTodoExtension, spawnSessionExtension, sessionMessagingExtension, initialPromptExtension],
-        additionalSkillPaths: buildSkillPaths(cwd, config.skills),
+        additionalSkillPaths: buildWorkerSkillPaths(cwd, config.skills),
         additionalPromptTemplatePaths: buildPromptPaths(cwd),
         ...(config.systemPrompt !== undefined && {
             systemPromptOverride: () => config.systemPrompt,

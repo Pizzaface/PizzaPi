@@ -8,6 +8,7 @@ import type { RelayMessage } from "@/components/session-viewer/types";
 import { groupToolExecutionMessages, groupSubAgentConversations } from "@/components/session-viewer/grouping";
 import {
   hasVisibleContent,
+  resolveCommandPopoverState,
 } from "@/components/session-viewer/utils";
 import {
   renderContent,
@@ -620,6 +621,15 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
       .filter((c) => c.name.startsWith("skill:"))
       .map((c) => ({ name: c.name, description: c.description }));
   }, [availableCommands]);
+
+  // Set of all known command/skill names for quick lookup (used to auto-close popover
+  // once the user has typed a recognized command and started entering arguments).
+  const knownCommandNames = React.useMemo(() => {
+    const names = new Set<string>();
+    for (const c of supportedWebCommands) names.add(c.name.toLowerCase());
+    for (const s of skillCommands) names.add(s.name.toLowerCase());
+    return names;
+  }, [supportedWebCommands, skillCommands]);
 
   // Reset highlighted index when the query or mode changes
   React.useEffect(() => {
@@ -1390,8 +1400,9 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                   // Slash command detection
                   const trimmed = next.trimStart();
                   if (trimmed.startsWith("/")) {
-                    setCommandOpen(true);
-                    setCommandQuery(trimmed.slice(1));
+                    const { open, query } = resolveCommandPopoverState(trimmed.slice(1), knownCommandNames);
+                    setCommandOpen(open);
+                    setCommandQuery(query);
                     // Close @-mention popover when slash command opens (mutual exclusivity)
                     if (atMentionOpen) {
                       setAtMentionOpen(false);
