@@ -17,8 +17,8 @@ TOOL_INPUT=$(cat 2>/dev/null) || true
 FILE_PATH=$(echo "$TOOL_INPUT" | jq -r '.tool_input.file_path // .tool_input.path // empty' 2>/dev/null) || true
 [[ -z "$FILE_PATH" ]] && exit 0
 
-# Block any edit to files inside node_modules
-if echo "$FILE_PATH" | grep -qE '(^|/)node_modules/'; then
+# Block any edit to files inside node_modules (handle both / and \ separators)
+if echo "$FILE_PATH" | grep -qE '(^|[/\\])node_modules[/\\]'; then
     echo "BLOCKED: Do not edit files inside node_modules/ directly. Changes to upstream packages go in patches/ and are applied via \`bun install\`. See AGENTS.md." >&2
     exit 2
 fi

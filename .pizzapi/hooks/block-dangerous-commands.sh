@@ -26,6 +26,11 @@ block_with_reason() {
     exit 2
 }
 
+# Shell separators that terminate a token/command. Used throughout to prevent
+# bypasses like `git push --force origin main; echo ok`.
+_SEP='[[:space:];&|]'
+_END="(${_SEP}|$)"
+
 # Match git invocations (bare or absolute path). We allow any leading wrapper
 # token (e.g. sudo/env/command) by matching on token boundaries.
 _GIT_CMD_PREFIX='(^|[;&|[:space:]])(\/[^[:space:]]*\/)?git'
@@ -39,7 +44,7 @@ if echo "$UNQUOTED_COMMAND" | grep -qE "$_GIT_PUSH_PATTERN"; then
     IS_DELETE_PUSH=false
 
     # Explicit force flags
-    if echo "$UNQUOTED_COMMAND" | grep -qE '(^|[[:space:]])(--force|--force-with-lease|-f)([[:space:]]|$)'; then
+    if echo "$UNQUOTED_COMMAND" | grep -qE "(^|[[:space:]])(--force|--force-with-lease|-f)${_END}"; then
         IS_FORCE_PUSH=true
     fi
 
@@ -52,11 +57,11 @@ if echo "$UNQUOTED_COMMAND" | grep -qE "$_GIT_PUSH_PATTERN"; then
     #   git push origin --delete main
     #   git push origin :main
     #   git push origin :refs/heads/main
-    if echo "$UNQUOTED_COMMAND" | grep -qE '(^|[[:space:]])--delete([[:space:]]|$)' &&
-       echo "$UNQUOTED_COMMAND" | grep -qE '(^|[[:space:]])(refs/heads/)?(main|master)([[:space:]]|$)'; then
+    if echo "$UNQUOTED_COMMAND" | grep -qE "(^|[[:space:]])--delete${_END}" &&
+       echo "$UNQUOTED_COMMAND" | grep -qE "(^|[[:space:]])(refs/heads/)?(main|master)${_END}"; then
         IS_DELETE_PUSH=true
     fi
-    if echo "$UNQUOTED_COMMAND" | grep -qE '(^|[[:space:]])\+?:(refs/heads/)?(main|master)([[:space:]]|$)'; then
+    if echo "$UNQUOTED_COMMAND" | grep -qE "(^|[[:space:]])\+?:(refs/heads/)?(main|master)${_END}"; then
         IS_DELETE_PUSH=true
     fi
 
@@ -72,7 +77,7 @@ if echo "$UNQUOTED_COMMAND" | grep -qE "$_GIT_PUSH_PATTERN"; then
         #   HEAD:refs/heads/main / HEAD:refs/heads/master
         #   refs/heads/main / refs/heads/master
         #   +refs/heads/main / +refs/heads/master
-        if echo "$UNQUOTED_COMMAND" | grep -qE 'HEAD:(refs/heads/)?(main|master)\b|(^|[[:space:]])\+?refs/heads/(main|master)\b|(^|[[:space:]:])\+?(main|master)([[:space:]]|$)'; then
+        if echo "$UNQUOTED_COMMAND" | grep -qE "HEAD:(refs/heads/)?(main|master)\b|(^|[[:space:]])\+?refs/heads/(main|master)\b|(^|[[:space:]:])\+?(main|master)${_END}"; then
             block_with_reason "Force push to main/master is forbidden. Use a feature branch."
         fi
 
@@ -85,8 +90,12 @@ if echo "$UNQUOTED_COMMAND" | grep -qE "$_GIT_PUSH_PATTERN"; then
         # the command, leaving only positional args (<remote> [<refspec>...]).
         # If there are 0 or 1 positional args (i.e. no explicit refspec) and
         # the current branch is a protected branch, block the push.
+        # Strip the git...push prefix, then remove option flags AND their
+        # arguments for options that take a value (e.g. --push-option <val>,
+        # -o <val>, --repo <val>, --receive-pack <val>).
         PUSH_TAIL=$(echo "$UNQUOTED_COMMAND" \
             | sed -E 's/.*[[:space:]]push[[:space:]]+//' \
+            | sed -E 's/(^|[[:space:]])(--push-option|--receive-pack|--repo|-o)[[:space:]]+[^[:space:]-][^[:space:]]*//g' \
             | sed -E 's/(^|[[:space:]])-[^[:space:]]*//g' \
             | xargs)
         # Count remaining positional tokens (at most: remote + refspecs)
@@ -103,7 +112,7 @@ fi
 
 # Prevent skipping git hooks with --no-verify
 if echo "$UNQUOTED_COMMAND" | grep -qE "$_GIT_COMMIT_OR_PUSH_PATTERN" &&
-   echo "$UNQUOTED_COMMAND" | grep -qE '(^|[[:space:]])--no-verify([[:space:]]|$)'; then
+   echo "$UNQUOTED_COMMAND" | grep -qE "(^|[[:space:]])--no-verify${_END}"; then
     block_with_reason "Skipping git hooks (--no-verify) is not allowed. Fix the issue instead."
 fi
 
@@ -162,7 +171,7 @@ if echo "$UNQUOTED_COMMAND" | grep -qE "$_RM_PATTERN"; then
         #   ~, ~/*
         #   $HOME, $HOME/*
         #   parent-directory targets (.., ../, ../../, foo/..)
-        if echo "$UNQUOTED_COMMAND" | grep -qE '[[:space:]]/([[:space:]]|$|\*|\.\*)|[[:space:]]~([[:space:]]|$|/\*)|[[:space:]]\$HOME([[:space:]]|$|/\*)|(^|[[:space:]])([^[:space:]]*/)?\.\.(/[^[:space:]]*)?([[:space:]]|$)'; then
+        if echo "$UNQUOTED_COMMAND" | grep -qE "${_SEP}/(${_END}|\*|\.\*)|${_SEP}~(${_END}|/\*)|${_SEP}\\\$HOME(${_END}|/\*)|(^|${_SEP})([^[:space:]]*/)?\.\.(/[^[:space:]]*)?${_END}"; then
             block_with_reason "Recursive delete of /, ~, or parent-directory paths (.., ../, ../../) is forbidden."
         fi
     fi
@@ -172,7 +181,7 @@ fi
 if echo "$UNQUOTED_COMMAND" | grep -qE "$_RM_PATTERN"; then
     _rm_parse_flags
     if $HAS_RECURSIVE; then
-        if echo "$UNQUOTED_COMMAND" | grep -qE '(^|[[:space:]])([^[:space:]]*/)?\.git([[:space:]]|$|/)'; then
+        if echo "$UNQUOTED_COMMAND" | grep -qE "(^|[[:space:]])([^[:space:]]*/)?\.git(${_END}|/)"; then
             block_with_reason "Deleting .git is forbidden."
         fi
     fi
