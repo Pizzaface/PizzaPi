@@ -56,11 +56,39 @@ function toolDisplayName(toolName: string): string {
     }
 }
 
+/**
+ * Split a matcher string on top-level `|` only — `|` inside parentheses is
+ * left intact so regex groups like `mcp__(github|filesystem)__.*` survive.
+ */
+function splitTopLevelAlternation(matcher: string): string[] {
+    const parts: string[] = [];
+    let depth = 0;
+    let current = "";
+    for (const ch of matcher) {
+        if (ch === "(") {
+            depth++;
+            current += ch;
+        } else if (ch === ")") {
+            depth = Math.max(0, depth - 1);
+            current += ch;
+        } else if (ch === "|" && depth === 0) {
+            parts.push(current);
+            current = "";
+        } else {
+            current += ch;
+        }
+    }
+    parts.push(current);
+    return parts.map((p) => p.trim());
+}
+
 /** Check if a tool name matches a hook matcher pattern (supports `|` alternation). */
 export function matchesTool(matcher: string, toolName: string): boolean {
     const displayName = toolDisplayName(toolName);
-    // Support | alternation: "Edit|Write" matches either
-    const patterns = matcher.split("|").map((p) => p.trim());
+    // Support | alternation: "Edit|Write" matches either.
+    // Uses paren-aware splitting so grouped alternation like
+    // `mcp__(github|filesystem)__.*` is preserved as a single regex.
+    const patterns = splitTopLevelAlternation(matcher);
     for (const pattern of patterns) {
         if (pattern === ".*") return true;
         // Case-insensitive match against both raw name and display name

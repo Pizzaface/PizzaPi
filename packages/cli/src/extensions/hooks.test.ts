@@ -44,6 +44,28 @@ describe("matchesTool", () => {
         expect(matchesTool("mcp__.*", "mcp__github__search")).toBe(true);
         expect(matchesTool("mcp__.*", "bash")).toBe(false);
     });
+
+    test("preserves regex alternation inside parentheses", () => {
+        // Grouped alternation should not be split — the entire pattern is one regex
+        expect(matchesTool("mcp__(github|filesystem)__.*", "mcp__github__search")).toBe(true);
+        expect(matchesTool("mcp__(github|filesystem)__.*", "mcp__filesystem__read")).toBe(true);
+        expect(matchesTool("mcp__(github|filesystem)__.*", "mcp__slack__post")).toBe(false);
+    });
+
+    test("handles nested parentheses in regex", () => {
+        expect(matchesTool("mcp__((gh|git)hub|filesystem)__.*", "mcp__github__search")).toBe(true);
+        expect(matchesTool("mcp__((gh|git)hub|filesystem)__.*", "mcp__github__search")).toBe(true);
+        expect(matchesTool("mcp__((gh|git)hub|filesystem)__.*", "mcp__filesystem__read")).toBe(true);
+        expect(matchesTool("mcp__((gh|git)hub|filesystem)__.*", "mcp__slack__post")).toBe(false);
+    });
+
+    test("top-level | still works alongside grouped alternation", () => {
+        // "bash|mcp__(github|filesystem)__.*" has a top-level | between "bash" and the regex
+        expect(matchesTool("bash|mcp__(github|filesystem)__.*", "bash")).toBe(true);
+        expect(matchesTool("bash|mcp__(github|filesystem)__.*", "mcp__github__search")).toBe(true);
+        expect(matchesTool("bash|mcp__(github|filesystem)__.*", "mcp__filesystem__read")).toBe(true);
+        expect(matchesTool("bash|mcp__(github|filesystem)__.*", "edit")).toBe(false);
+    });
 });
 
 // ---------------------------------------------------------------------------
@@ -356,6 +378,97 @@ describe("real hook scripts", () => {
         const result = await runHook(
             { command: `bash "${projectDir}/.pizzapi/hooks/block-dangerous-commands.sh"` },
             JSON.stringify({ tool_input: { command: "git push --no-verify origin main" } }),
+            projectDir,
+        );
+        expect(result.exitCode).toBe(2);
+        expect(result.stderr).toContain("BLOCKED");
+    });
+
+    test("block-dangerous-commands.sh blocks rm -r -f / (split flags)", async () => {
+        const result = await runHook(
+            { command: `bash "${projectDir}/.pizzapi/hooks/block-dangerous-commands.sh"` },
+            JSON.stringify({ tool_input: { command: "rm -r -f /" } }),
+            projectDir,
+        );
+        expect(result.exitCode).toBe(2);
+        expect(result.stderr).toContain("BLOCKED");
+        expect(result.stderr).toContain("Recursive delete");
+    });
+
+    test("block-dangerous-commands.sh blocks rm -f -r / (split flags, reversed)", async () => {
+        const result = await runHook(
+            { command: `bash "${projectDir}/.pizzapi/hooks/block-dangerous-commands.sh"` },
+            JSON.stringify({ tool_input: { command: "rm -f -r /" } }),
+            projectDir,
+        );
+        expect(result.exitCode).toBe(2);
+        expect(result.stderr).toContain("BLOCKED");
+    });
+
+    test("block-dangerous-commands.sh blocks rm --recursive --force /", async () => {
+        const result = await runHook(
+            { command: `bash "${projectDir}/.pizzapi/hooks/block-dangerous-commands.sh"` },
+            JSON.stringify({ tool_input: { command: "rm --recursive --force /" } }),
+            projectDir,
+        );
+        expect(result.exitCode).toBe(2);
+        expect(result.stderr).toContain("BLOCKED");
+    });
+
+    test("block-dangerous-commands.sh blocks rm --recursive -f /", async () => {
+        const result = await runHook(
+            { command: `bash "${projectDir}/.pizzapi/hooks/block-dangerous-commands.sh"` },
+            JSON.stringify({ tool_input: { command: "rm --recursive -f /" } }),
+            projectDir,
+        );
+        expect(result.exitCode).toBe(2);
+        expect(result.stderr).toContain("BLOCKED");
+    });
+
+    test("block-dangerous-commands.sh blocks rm -r --force ~", async () => {
+        const result = await runHook(
+            { command: `bash "${projectDir}/.pizzapi/hooks/block-dangerous-commands.sh"` },
+            JSON.stringify({ tool_input: { command: "rm -r --force ~" } }),
+            projectDir,
+        );
+        expect(result.exitCode).toBe(2);
+        expect(result.stderr).toContain("BLOCKED");
+    });
+
+    test("block-dangerous-commands.sh blocks rm -rf ..", async () => {
+        const result = await runHook(
+            { command: `bash "${projectDir}/.pizzapi/hooks/block-dangerous-commands.sh"` },
+            JSON.stringify({ tool_input: { command: "rm -rf .." } }),
+            projectDir,
+        );
+        expect(result.exitCode).toBe(2);
+        expect(result.stderr).toContain("BLOCKED");
+    });
+
+    test("block-dangerous-commands.sh allows rm -rf on safe paths", async () => {
+        const result = await runHook(
+            { command: `bash "${projectDir}/.pizzapi/hooks/block-dangerous-commands.sh"` },
+            JSON.stringify({ tool_input: { command: "rm -rf ./dist" } }),
+            projectDir,
+        );
+        expect(result.exitCode).toBe(0);
+    });
+
+    test("block-dangerous-commands.sh blocks rm -r .git", async () => {
+        const result = await runHook(
+            { command: `bash "${projectDir}/.pizzapi/hooks/block-dangerous-commands.sh"` },
+            JSON.stringify({ tool_input: { command: "rm -r .git" } }),
+            projectDir,
+        );
+        expect(result.exitCode).toBe(2);
+        expect(result.stderr).toContain("BLOCKED");
+        expect(result.stderr).toContain(".git");
+    });
+
+    test("block-dangerous-commands.sh blocks rm --recursive .git/", async () => {
+        const result = await runHook(
+            { command: `bash "${projectDir}/.pizzapi/hooks/block-dangerous-commands.sh"` },
+            JSON.stringify({ tool_input: { command: "rm --recursive .git/" } }),
             projectDir,
         );
         expect(result.exitCode).toBe(2);

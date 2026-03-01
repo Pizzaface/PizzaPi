@@ -39,14 +39,53 @@ if echo "$COMMAND" | grep -qE 'LEFTHOOK=0|HUSKY=0'; then
     block_with_reason "Bypassing git hooks via environment variables is not allowed."
 fi
 
-# Prevent catastrophic recursive deletes (rm -rf, rm -fr, rm -r -f, etc.)
-if echo "$COMMAND" | grep -qE 'rm\s+(-[a-zA-Z]*r[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*r)\s+(/($|\s)|~|\$HOME|\.\.)'; then
-    block_with_reason "Recursive delete of /, ~, or .. is forbidden."
+# ---------------------------------------------------------------------------
+# Prevent catastrophic recursive deletes.
+# Detects all flag forms: combined (-rf), split (-r -f), long (--recursive
+# --force), and mixed (-r --force, --recursive -f), with optional extra flags.
+# ---------------------------------------------------------------------------
+_rm_parse_flags() {
+    # Parse rm's flags from $COMMAND, setting HAS_RECURSIVE / HAS_FORCE.
+    HAS_RECURSIVE=false
+    HAS_FORCE=false
+    # Extract the portion after the first `rm` token
+    local args
+    args=$(echo "$COMMAND" | sed -n 's/.*[[:space:];&|]rm[[:space:]]\{1,\}\(.*\)/\1/p')
+    [[ -z "$args" ]] && args=$(echo "$COMMAND" | sed -n 's/^rm[[:space:]]\{1,\}\(.*\)/\1/p')
+    [[ -z "$args" ]] && return
+    for token in $args; do
+        case "$token" in
+            --recursive) HAS_RECURSIVE=true ;;
+            --force)     HAS_FORCE=true ;;
+            --*)         ;;  # other long options — skip
+            -*)
+                # Short option cluster: check for r and f individually
+                [[ "$token" == *r* ]] && HAS_RECURSIVE=true
+                [[ "$token" == *f* ]] && HAS_FORCE=true
+                ;;
+            *)  break ;;  # first non-flag token → stop scanning flags
+        esac
+    done
+}
+
+if echo "$COMMAND" | grep -qE '(^|[;&|[:space:]])rm[[:space:]]'; then
+    _rm_parse_flags
+    if $HAS_RECURSIVE && $HAS_FORCE; then
+        # Check if any target is a dangerous path
+        if echo "$COMMAND" | grep -qE '[[:space:]]/([[:space:]]|$)|[[:space:]]~([[:space:]]|$)|[[:space:]]\$HOME([[:space:]]|$)|[[:space:]]\.\.([[:space:]]|$)'; then
+            block_with_reason "Recursive delete of /, ~, or .. is forbidden."
+        fi
+    fi
 fi
 
 # Prevent deleting the entire .git directory
-if echo "$COMMAND" | grep -qE 'rm\s+(-[a-zA-Z]*r[a-zA-Z]*)\s+.*\.git($|\s|/)'; then
-    block_with_reason "Deleting .git is forbidden."
+if echo "$COMMAND" | grep -qE '(^|[;&|[:space:]])rm[[:space:]]'; then
+    _rm_parse_flags
+    if $HAS_RECURSIVE; then
+        if echo "$COMMAND" | grep -qE '\.git($|[[:space:]]|/)'; then
+            block_with_reason "Deleting .git is forbidden."
+        fi
+    fi
 fi
 
 exit 0
