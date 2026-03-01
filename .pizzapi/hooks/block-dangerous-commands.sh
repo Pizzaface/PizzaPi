@@ -75,6 +75,29 @@ if echo "$UNQUOTED_COMMAND" | grep -qE "$_GIT_PUSH_PATTERN"; then
         if echo "$UNQUOTED_COMMAND" | grep -qE 'HEAD:(refs/heads/)?(main|master)\b|(^|[[:space:]])\+?refs/heads/(main|master)\b|(^|[[:space:]:])\+?(main|master)([[:space:]]|$)'; then
             block_with_reason "Force push to main/master is forbidden. Use a feature branch."
         fi
+
+        # Handle implicit refspec: `git push --force [origin]` without an
+        # explicit branch/refspec pushes the current branch to its upstream.
+        # When the current branch IS main/master this silently bypasses the
+        # explicit-branch check above.
+        #
+        # Strategy: strip the `git ...push` prefix plus all option flags from
+        # the command, leaving only positional args (<remote> [<refspec>...]).
+        # If there are 0 or 1 positional args (i.e. no explicit refspec) and
+        # the current branch is a protected branch, block the push.
+        PUSH_TAIL=$(echo "$UNQUOTED_COMMAND" \
+            | sed -E 's/.*[[:space:]]push[[:space:]]+//' \
+            | sed -E 's/(^|[[:space:]])-[^[:space:]]*//g' \
+            | xargs)
+        # Count remaining positional tokens (at most: remote + refspecs)
+        POSITIONAL_COUNT=$(echo "$PUSH_TAIL" | wc -w | tr -d ' ')
+        if [[ "$POSITIONAL_COUNT" -le 1 ]]; then
+            # No explicit refspec — check the current branch
+            CURRENT_BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null || true)
+            if [[ "$CURRENT_BRANCH" == "main" || "$CURRENT_BRANCH" == "master" ]]; then
+                block_with_reason "Force push to main/master is forbidden (current branch is $CURRENT_BRANCH). Use a feature branch."
+            fi
+        fi
     fi
 fi
 

@@ -1,4 +1,6 @@
-import { spawn } from "child_process";
+import { spawn, execSync } from "child_process";
+import { existsSync } from "fs";
+import { join } from "path";
 import type { ExtensionFactory } from "@mariozechner/pi-coding-agent";
 import type { HooksConfig, HookMatcher, HookEntry } from "../config.js";
 
@@ -143,6 +145,81 @@ export function normalizeToolInput(toolName: string, input: Record<string, unkno
 // Hook runner
 // ---------------------------------------------------------------------------
 
+/**
+ * Find Git for Windows' bundled bash.exe by checking well-known install
+ * paths and falling back to `git --exec-path` to derive the Git root.
+ * Returns the absolute path to bash.exe, or null if not found.
+ */
+function findGitBashOnWindows(): string | null {
+    const programFiles = process.env.ProgramFiles || "C:\\Program Files";
+    const programFilesX86 = process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)";
+    const localAppData = process.env.LOCALAPPDATA || "";
+
+    const candidates = [
+        join(programFiles, "Git", "bin", "bash.exe"),
+        join(programFilesX86, "Git", "bin", "bash.exe"),
+        ...(localAppData ? [join(localAppData, "Programs", "Git", "bin", "bash.exe")] : []),
+    ];
+
+    for (const candidate of candidates) {
+        if (existsSync(candidate)) return candidate;
+    }
+
+    // Try to derive from `git --exec-path` (e.g. C:\Program Files\Git\mingw64\libexec\git-core)
+    try {
+        const execPath = execSync("git --exec-path", {
+            encoding: "utf-8",
+            stdio: ["ignore", "pipe", "ignore"],
+        }).trim();
+        // Walk up to the Git root: <root>/mingw64/libexec/git-core → <root>
+        const gitRoot = join(execPath, "..", "..", "..");
+        const bashFromGit = join(gitRoot, "bin", "bash.exe");
+        if (existsSync(bashFromGit)) return bashFromGit;
+    } catch {
+        // git not in PATH or other error — fall through
+    }
+
+    return null;
+}
+
+/** Cached result so we only probe the filesystem once per process. */
+let _cachedShell: { shell: string; flag: string } | undefined;
+
+/**
+ * Resolve the platform shell and flag for running hook commands.
+ *
+ * - **Unix / macOS**: `/bin/sh -c` (POSIX-guaranteed to exist). Hook
+ *   scripts that need bash features should have a `#!/bin/bash` shebang
+ *   or be invoked explicitly via `bash my-script.sh` in the command string.
+ * - **Windows**: Git for Windows' bundled `bash.exe` (searched at common
+ *   install locations, then derived from `git --exec-path`). Falls back to
+ *   bare `bash` in PATH so the error message is clear ("bash not found")
+ *   rather than an opaque cmd.exe syntax failure.
+ *
+ * The result is cached for the lifetime of the process.
+ */
+export function resolveShell(): { shell: string; flag: string } {
+    if (_cachedShell) return _cachedShell;
+
+    if (process.platform !== "win32") {
+        _cachedShell = { shell: "/bin/sh", flag: "-c" };
+        return _cachedShell;
+    }
+
+    // Windows: prefer Git for Windows bash, fall back to bare `bash`
+    const gitBash = findGitBashOnWindows();
+    _cachedShell = { shell: gitBash ?? "bash", flag: "-c" };
+    return _cachedShell;
+}
+
+/**
+ * Reset the cached shell — only needed for testing.
+ * @internal
+ */
+export function _resetShellCache(): void {
+    _cachedShell = undefined;
+}
+
 /** Run a single hook script, piping JSON payload on stdin. */
 export function runHook(entry: HookEntry, payload: string, cwd: string): Promise<HookResult> {
     const timeout = entry.timeout ?? 10_000;
@@ -150,7 +227,8 @@ export function runHook(entry: HookEntry, payload: string, cwd: string): Promise
         let timedOut = false;
         let settled = false;
 
-        const proc = spawn("bash", ["-c", entry.command], {
+        const { shell, flag } = resolveShell();
+        const proc = spawn(shell, [flag, entry.command], {
             cwd,
             stdio: ["pipe", "pipe", "pipe"],
             env: {

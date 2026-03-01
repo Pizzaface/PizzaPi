@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { matchesTool, runHook, parseHookOutput, normalizeToolInput, runEventHooks, runFireAndForgetHooks } from "./hooks.js";
+import { matchesTool, runHook, parseHookOutput, normalizeToolInput, runEventHooks, runFireAndForgetHooks, resolveShell, _resetShellCache } from "./hooks.js";
 import { mergeHooks, isProjectHooksTrusted } from "../config.js";
 import type { HooksConfig, HookEntry } from "../config.js";
 import { join } from "path";
@@ -65,6 +65,43 @@ describe("matchesTool", () => {
         expect(matchesTool("bash|mcp__(github|filesystem)__.*", "mcp__github__search")).toBe(true);
         expect(matchesTool("bash|mcp__(github|filesystem)__.*", "mcp__filesystem__read")).toBe(true);
         expect(matchesTool("bash|mcp__(github|filesystem)__.*", "edit")).toBe(false);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// resolveShell
+// ---------------------------------------------------------------------------
+
+describe("resolveShell", () => {
+    test("returns /bin/sh -c on non-Windows", () => {
+        if (process.platform !== "win32") {
+            _resetShellCache();
+            const { shell, flag } = resolveShell();
+            expect(shell).toBe("/bin/sh");
+            expect(flag).toBe("-c");
+        }
+    });
+
+    test("shell and flag are non-empty strings", () => {
+        _resetShellCache();
+        const { shell, flag } = resolveShell();
+        expect(typeof shell).toBe("string");
+        expect(shell.length).toBeGreaterThan(0);
+        expect(typeof flag).toBe("string");
+        expect(flag.length).toBeGreaterThan(0);
+    });
+
+    test("result is cached across calls", () => {
+        _resetShellCache();
+        const first = resolveShell();
+        const second = resolveShell();
+        expect(first).toBe(second); // same object reference
+    });
+
+    test("flag is always -c (bash-compatible)", () => {
+        _resetShellCache();
+        const { flag } = resolveShell();
+        expect(flag).toBe("-c");
     });
 });
 
@@ -453,6 +490,92 @@ describe("real hook scripts", () => {
         );
         expect(result.exitCode).toBe(2);
         expect(result.stderr).toContain("BLOCKED");
+    });
+
+    // -- Implicit refspec force push (no branch on CLI → uses current branch) --
+
+    test("block-dangerous-commands.sh blocks force push with no refspec when on main", async () => {
+        // `git push --force origin` with no branch — pushes current branch.
+        // When current branch is main/master, this must be blocked.
+        // This test only works in a git repo where HEAD points to main/master
+        // or we need to simulate. We test the script directly by checking
+        // the current branch first.
+        const branchResult = await runHook(
+            { command: "git symbolic-ref --short HEAD 2>/dev/null || echo unknown" },
+            "{}",
+            projectDir,
+        );
+        const currentBranch = branchResult.stdout.trim();
+
+        const result = await runHook(
+            { command: `bash "${projectDir}/.pizzapi/hooks/block-dangerous-commands.sh"` },
+            JSON.stringify({ tool_input: { command: "git push --force origin" } }),
+            projectDir,
+        );
+
+        if (currentBranch === "main" || currentBranch === "master") {
+            expect(result.exitCode).toBe(2);
+            expect(result.stderr).toContain("BLOCKED");
+            expect(result.stderr).toContain("Force push");
+        } else {
+            // On a feature branch, implicit refspec is allowed
+            expect(result.exitCode).toBe(0);
+        }
+    });
+
+    test("block-dangerous-commands.sh blocks force push with no args when on main", async () => {
+        // `git push --force` — no remote, no refspec
+        const branchResult = await runHook(
+            { command: "git symbolic-ref --short HEAD 2>/dev/null || echo unknown" },
+            "{}",
+            projectDir,
+        );
+        const currentBranch = branchResult.stdout.trim();
+
+        const result = await runHook(
+            { command: `bash "${projectDir}/.pizzapi/hooks/block-dangerous-commands.sh"` },
+            JSON.stringify({ tool_input: { command: "git push --force" } }),
+            projectDir,
+        );
+
+        if (currentBranch === "main" || currentBranch === "master") {
+            expect(result.exitCode).toBe(2);
+            expect(result.stderr).toContain("BLOCKED");
+        } else {
+            expect(result.exitCode).toBe(0);
+        }
+    });
+
+    test("block-dangerous-commands.sh blocks -f push with no refspec when on main", async () => {
+        const branchResult = await runHook(
+            { command: "git symbolic-ref --short HEAD 2>/dev/null || echo unknown" },
+            "{}",
+            projectDir,
+        );
+        const currentBranch = branchResult.stdout.trim();
+
+        const result = await runHook(
+            { command: `bash "${projectDir}/.pizzapi/hooks/block-dangerous-commands.sh"` },
+            JSON.stringify({ tool_input: { command: "git push -f origin" } }),
+            projectDir,
+        );
+
+        if (currentBranch === "main" || currentBranch === "master") {
+            expect(result.exitCode).toBe(2);
+            expect(result.stderr).toContain("BLOCKED");
+        } else {
+            expect(result.exitCode).toBe(0);
+        }
+    });
+
+    test("block-dangerous-commands.sh allows force push to explicit feature branch", async () => {
+        // `git push --force origin feature-branch` — explicit non-protected refspec
+        const result = await runHook(
+            { command: `bash "${projectDir}/.pizzapi/hooks/block-dangerous-commands.sh"` },
+            JSON.stringify({ tool_input: { command: "git push --force origin feature-branch" } }),
+            projectDir,
+        );
+        expect(result.exitCode).toBe(0);
     });
 
     test("block-dangerous-commands.sh allows +main:feature refspec force push", async () => {
