@@ -1,7 +1,6 @@
 import { expect, test, beforeAll } from "bun:test";
 import { randomUUID } from "crypto";
 import { getKysely } from "../src/auth.js";
-const kysely = getKysely();
 import { ensureRelaySessionTables, recordRelaySessionStart, pruneExpiredRelaySessions, recordRelaySessionState } from "../src/sessions/store.js";
 
 beforeAll(async () => {
@@ -28,7 +27,7 @@ test("pruneExpiredRelaySessions removes expired sessions and returns their IDs",
     await recordRelaySessionState(expiredSessionId, { foo: "bar" });
 
     // Update expiry to be in the past
-    await kysely.updateTable("relay_session")
+    await getKysely().updateTable("relay_session")
         .set({ expiresAt: past })
         .where("id", "=", expiredSessionId)
         .execute();
@@ -52,12 +51,12 @@ test("pruneExpiredRelaySessions removes expired sessions and returns their IDs",
     expect(prunedIds).toContain(expiredSessionId);
     expect(prunedIds).not.toContain(activeSessionId);
 
-    const expiredRow = await kysely.selectFrom("relay_session").selectAll().where("id", "=", expiredSessionId).executeTakeFirst();
+    const expiredRow = await getKysely().selectFrom("relay_session").selectAll().where("id", "=", expiredSessionId).executeTakeFirst();
     expect(expiredRow).toBeUndefined();
 
-    const activeRow = await kysely.selectFrom("relay_session").selectAll().where("id", "=", activeSessionId).executeTakeFirst();
+    const activeRow = await getKysely().selectFrom("relay_session").selectAll().where("id", "=", activeSessionId).executeTakeFirst();
     expect(activeRow).toBeDefined();
 
-    const stateRow = await kysely.selectFrom("relay_session_state").selectAll().where("sessionId", "=", expiredSessionId).executeTakeFirst();
+    const stateRow = await getKysely().selectFrom("relay_session_state").selectAll().where("sessionId", "=", expiredSessionId).executeTakeFirst();
     expect(stateRow).toBeUndefined();
 });

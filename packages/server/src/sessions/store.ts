@@ -1,5 +1,4 @@
 import { getKysely } from "../auth.js";
-const kysely = getKysely();
 
 const DEFAULT_EPHEMERAL_TTL_MS = 10 * 60 * 1000;
 const DEFAULT_SWEEP_INTERVAL_MS = 60 * 1000;
@@ -57,7 +56,7 @@ export interface PersistedRelaySessionSummary {
 }
 
 export async function ensureRelaySessionTables(): Promise<void> {
-    await kysely.schema
+    await getKysely().schema
         .createTable("relay_session")
         .ifNotExists()
         .addColumn("id", "text", (col) => col.primaryKey())
@@ -72,7 +71,7 @@ export async function ensureRelaySessionTables(): Promise<void> {
         .addColumn("expiresAt", "text")
         .execute();
 
-    await kysely.schema
+    await getKysely().schema
         .createTable("relay_session_state")
         .ifNotExists()
         .addColumn("sessionId", "text", (col) => col.primaryKey().references("relay_session.id").onDelete("cascade"))
@@ -80,14 +79,14 @@ export async function ensureRelaySessionTables(): Promise<void> {
         .addColumn("updatedAt", "text", (col) => col.notNull())
         .execute();
 
-    await kysely.schema
+    await getKysely().schema
         .createIndex("relay_session_user_last_active_idx")
         .ifNotExists()
         .on("relay_session")
         .columns(["userId", "lastActiveAt"])
         .execute();
 
-    await kysely.schema
+    await getKysely().schema
         .createIndex("relay_session_expires_idx")
         .ifNotExists()
         .on("relay_session")
@@ -97,7 +96,7 @@ export async function ensureRelaySessionTables(): Promise<void> {
 
 export async function recordRelaySessionStart(input: RelaySessionStartInput): Promise<void> {
     const now = input.startedAt;
-    await kysely
+    await getKysely()
         .insertInto("relay_session")
         .values({
             id: input.sessionId,
@@ -118,7 +117,7 @@ export async function recordRelaySessionStart(input: RelaySessionStartInput): Pr
 export async function touchRelaySession(sessionId: string): Promise<void> {
     const nowIso = new Date().toISOString();
     const newExpiry = ephemeralExpiryIso();
-    await kysely
+    await getKysely()
         .updateTable("relay_session")
         .set((eb) => ({
             lastActiveAt: nowIso,
@@ -137,7 +136,7 @@ export async function recordRelaySessionState(sessionId: string, state: unknown)
     const nowIso = new Date().toISOString();
     const serialized = JSON.stringify(state ?? null);
 
-    await kysely
+    await getKysely()
         .insertInto("relay_session_state")
         .values({ sessionId, state: serialized, updatedAt: nowIso })
         .onConflict((oc) => oc.column("sessionId").doUpdateSet({ state: serialized, updatedAt: nowIso }))
@@ -149,7 +148,7 @@ export async function recordRelaySessionState(sessionId: string, state: unknown)
 export async function recordRelaySessionEnd(sessionId: string): Promise<void> {
     const nowIso = new Date().toISOString();
     const newExpiry = ephemeralExpiryIso();
-    await kysely
+    await getKysely()
         .updateTable("relay_session")
         .set((eb) => ({
             endedAt: nowIso,
@@ -169,7 +168,7 @@ export async function getPersistedRelaySessionSnapshot(
     sessionId: string,
 ): Promise<PersistedRelaySessionSnapshot | null> {
     const nowIso = new Date().toISOString();
-    const row = await kysely
+    const row = await getKysely()
         .selectFrom("relay_session as s")
         .leftJoin("relay_session_state as st", "st.sessionId", "s.id")
         .select([
@@ -218,7 +217,7 @@ export async function listPersistedRelaySessionsForUser(
     limit: number = 50,
 ): Promise<PersistedRelaySessionSummary[]> {
     const nowIso = new Date().toISOString();
-    const rows = await kysely
+    const rows = await getKysely()
         .selectFrom("relay_session")
         .select([
             "id as sessionId",
@@ -255,7 +254,7 @@ export async function pruneExpiredRelaySessions(): Promise<string[]> {
     // This reduces database roundtrips from 3 to 2 and avoids loading all expired IDs into application memory
     // before deletion, which improves performance and memory usage for large cleanups.
     // Estimated impact: ~30% reduction in latency for cleanup operations.
-    return await kysely.transaction().execute(async (trx) => {
+    return await getKysely().transaction().execute(async (trx) => {
         await trx
             .deleteFrom("relay_session_state")
             .where("sessionId", "in", (qb) =>

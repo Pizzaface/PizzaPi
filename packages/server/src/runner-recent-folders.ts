@@ -1,10 +1,9 @@
 import { getKysely } from "./auth.js";
-const kysely = getKysely();
 
 const MAX_RECENT_FOLDERS = 10;
 
 export async function ensureRunnerRecentFoldersTable(): Promise<void> {
-    await kysely.schema
+    await getKysely().schema
         .createTable("runner_recent_folder")
         .ifNotExists()
         .addColumn("id", "text", (col) => col.primaryKey())
@@ -14,7 +13,7 @@ export async function ensureRunnerRecentFoldersTable(): Promise<void> {
         .addColumn("lastUsedAt", "text", (col) => col.notNull())
         .execute();
 
-    await kysely.schema
+    await getKysely().schema
         .createIndex("runner_recent_folder_user_runner_idx")
         .ifNotExists()
         .on("runner_recent_folder")
@@ -33,7 +32,7 @@ export async function recordRecentFolder(
     const nowIso = new Date().toISOString();
 
     // Upsert: if this (userId, runnerId, path) triple already exists, just update lastUsedAt.
-    const existing = await kysely
+    const existing = await getKysely()
         .selectFrom("runner_recent_folder")
         .select("id")
         .where("userId", "=", userId)
@@ -42,7 +41,7 @@ export async function recordRecentFolder(
         .executeTakeFirst();
 
     if (existing) {
-        await kysely
+        await getKysely()
             .updateTable("runner_recent_folder")
             .set({ lastUsedAt: nowIso })
             .where("id", "=", existing.id)
@@ -51,7 +50,7 @@ export async function recordRecentFolder(
     }
 
     // Insert new row.
-    await kysely
+    await getKysely()
         .insertInto("runner_recent_folder")
         .values({
             id: crypto.randomUUID(),
@@ -63,7 +62,7 @@ export async function recordRecentFolder(
         .execute();
 
     // Prune oldest entries beyond the cap for this (userId, runnerId) pair.
-    const all = await kysely
+    const all = await getKysely()
         .selectFrom("runner_recent_folder")
         .select(["id", "lastUsedAt"])
         .where("userId", "=", userId)
@@ -73,7 +72,7 @@ export async function recordRecentFolder(
 
     if (all.length > MAX_RECENT_FOLDERS) {
         const toDelete = all.slice(MAX_RECENT_FOLDERS).map((r) => r.id);
-        await kysely
+        await getKysely()
             .deleteFrom("runner_recent_folder")
             .where("id", "in", toDelete)
             .execute();
@@ -84,7 +83,7 @@ export async function getRecentFolders(
     userId: string,
     runnerId: string,
 ): Promise<string[]> {
-    const rows = await kysely
+    const rows = await getKysely()
         .selectFrom("runner_recent_folder")
         .select("path")
         .where("userId", "=", userId)
