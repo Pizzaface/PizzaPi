@@ -170,3 +170,137 @@ jobs:
           name: pizza-${{ matrix.target }}
           path: packages/cli/dist/binaries/${{ matrix.target }}/
           retention-days: 7
+
+  # ───────────────────────────────────────────────────────────────
+  # E2E: `pizza web` builds Docker image & serves the web UI
+  # ───────────────────────────────────────────────────────────────
+  e2e-pizza-web:
+    name: E2E — pizza web
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.10"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build packages
+        run: bun run build
+
+      - name: Compile linux-x64 binary
+        working-directory: packages/cli
+        run: bun build-binaries.ts --target linux-x64
+
+      - name: Prepare binary
+        run: |
+          BIN_DIR="packages/cli/dist/binaries/linux-x64"
+          chmod +x "$BIN_DIR/pizza-linux-x64"
+
+          # Symlink the repo checkout so the binary finds it
+          # (compiled binary can't use findRepoRoot — import.meta.dirname is /$bunfs/root/)
+          mkdir -p ~/.pizzapi/web
+          ln -s "$GITHUB_WORKSPACE" ~/.pizzapi/web/repo
+
+          echo "✅ Binary ready, repo symlinked to ~/.pizzapi/web/repo"
+
+      - name: Run pizza web
+        run: |
+          BIN="packages/cli/dist/binaries/linux-x64/pizza-linux-x64"
+
+          # `pizza web` runs `docker compose up -d --build` which blocks during
+          # the Docker build, then returns once containers are detached.
+          "$BIN" web --port 7492 2>&1 | tee /tmp/pizza-web.log
+
+          # Give containers a moment to become healthy
+          echo "Waiting for server on port 7492..."
+          for i in $(seq 1 30); do
+            if curl -sf -o /dev/null http://localhost:7492 2>/dev/null; then
+              echo "✅ Server responded after ~${i}s"
+              break
+            fi
+            if [ $i -eq 30 ]; then
+              echo "::error::Server did not respond within 30s after compose up"
+              docker compose -p pizzapi-web logs 2>/dev/null || true
+              exit 1
+            fi
+            sleep 1
+          done
+
+      - name: Verify server health
+        run: |
+          # Check that the server returns HTML (the web UI)
+          HTTP_CODE=$(curl -sf -o /tmp/response.html -w "%{http_code}" http://localhost:7492)
+          echo "HTTP status: $HTTP_CODE"
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "::error::Expected HTTP 200, got $HTTP_CODE"
+            cat /tmp/response.html
+            exit 1
+          fi
+
+          # Verify it's the PizzaPi UI (check for expected content)
+          if grep -qi "pizzapi\|PizzaPi" /tmp/response.html; then
+            echo "✅ Response contains PizzaPi content"
+          else
+            echo "::warning::Response doesn't mention PizzaPi — may be a generic page"
+            head -20 /tmp/response.html
+          fi
+
+          # Check that the API is reachable
+          API_CODE=$(curl -sf -o /dev/null -w "%{http_code}" http://localhost:7492/api/health 2>/dev/null || echo "000")
+          echo "API /api/health status: $API_CODE"
+
+          echo "✅ Server is healthy"
+
+      - name: Verify compose.yml was generated from inlined template
+        run: |
+          COMPOSE="$HOME/.pizzapi/web/compose.yml"
+          if [ ! -f "$COMPOSE" ]; then
+            echo "::error::compose.yml was not generated at $COMPOSE"
+            exit 1
+          fi
+
+          # Verify template substitution happened (no leftover placeholders)
+          if grep -q '{{' "$COMPOSE"; then
+            echo "::error::compose.yml contains unsubstituted placeholders"
+            cat "$COMPOSE"
+            exit 1
+          fi
+
+          # Verify key fields are present
+          if grep -q "PIZZAPI_REDIS_URL" "$COMPOSE" && grep -q "VAPID_PUBLIC_KEY" "$COMPOSE"; then
+            echo "✅ compose.yml generated correctly from inlined template"
+          else
+            echo "::error::compose.yml is missing expected fields"
+            cat "$COMPOSE"
+            exit 1
+          fi
+
+          cat "$COMPOSE"
+
+      - name: Stop pizza web
+        if: always()
+        run: |
+          BIN="packages/cli/dist/binaries/linux-x64/pizza-linux-x64"
+
+          # Graceful stop via the binary
+          "$BIN" web stop 2>&1 || true
+
+          # Fallback: force remove containers
+          docker compose -p pizzapi-web down --volumes --remove-orphans 2>/dev/null || true
+
+          echo "✅ Cleaned up"
+
+      - name: Show logs on failure
+        if: failure()
+        run: |
+          echo "=== pizza web output ==="
+          cat /tmp/pizza-web.log 2>/dev/null || echo "(no log)"
+          echo ""
+          echo "=== docker compose logs ==="
+          docker compose -p pizzapi-web logs 2>/dev/null || echo "(no compose logs)"
