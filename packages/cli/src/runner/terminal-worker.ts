@@ -30,14 +30,12 @@
  */
 
 import { spawn as spawnPty } from "@zenyr/bun-pty";
-import { platform, homedir } from "node:os";
+import { homedir } from "node:os";
+import { getShellArgs, resolveDefaultShell } from "./terminal-utils.js";
 
 const terminalId = process.env.TERMINAL_WORKER_ID ?? "unknown";
 const cwd = process.env.TERMINAL_WORKER_CWD || homedir();
-const shell =
-    process.env.TERMINAL_WORKER_SHELL ||
-    process.env.SHELL ||
-    (platform() === "win32" ? "powershell.exe" : "/bin/bash");
+const shell = resolveDefaultShell(process.env.TERMINAL_WORKER_SHELL);
 const cols = Math.max(1, parseInt(process.env.TERMINAL_WORKER_COLS ?? "80", 10) || 80);
 const rows = Math.max(1, parseInt(process.env.TERMINAL_WORKER_ROWS ?? "24", 10) || 24);
 
@@ -48,25 +46,6 @@ function send(msg: Record<string, unknown>): void {
 }
 
 // ── Spawn PTY ──────────────────────────────────────────────────────────────────
-
-/**
- * Determine shell arguments based on the shell executable.
- * `-il` (interactive login) is only valid for POSIX shells (bash, zsh, etc.).
- * PowerShell and cmd.exe don't understand these flags and will exit immediately.
- */
-function getShellArgs(shellPath: string): string[] {
-    const base = shellPath.replace(/\\/g, "/").split("/").pop()?.toLowerCase() ?? "";
-    // PowerShell (powershell.exe, pwsh.exe, pwsh) — use -NoExit for interactive
-    if (base.startsWith("powershell") || base.startsWith("pwsh")) {
-        return ["-NoExit", "-NoLogo"];
-    }
-    // cmd.exe — no special args needed for interactive mode
-    if (base === "cmd.exe" || base === "cmd") {
-        return [];
-    }
-    // POSIX shells (bash, zsh, fish, sh, etc.)
-    return ["-il"];
-}
 
 let ptyProcess: ReturnType<typeof spawnPty>;
 try {
