@@ -71,7 +71,7 @@ jobs:
             binary: pizza-macos-arm64
           # macos-x64 and windows-x64 are cross-compiled from their respective hosts
           - target: macos-x64
-            runner: macos-13               # Intel macOS runner
+            runner: macos-15-intel         # Intel macOS runner (macos-13 deprecated)
             binary: pizza-macos-x64
           - target: windows-x64
             runner: ubuntu-latest          # cross-compile
@@ -120,7 +120,7 @@ jobs:
         if: >-
           (matrix.target == 'linux-x64' && matrix.runner == 'ubuntu-latest') ||
           (matrix.target == 'macos-arm64' && matrix.runner == 'macos-latest') ||
-          (matrix.target == 'macos-x64' && matrix.runner == 'macos-13')
+          (matrix.target == 'macos-x64' && matrix.runner == 'macos-15-intel')
         run: |
           BINARY="packages/cli/dist/binaries/${{ matrix.target }}/${{ matrix.binary }}"
           chmod +x "$BINARY"
@@ -149,7 +149,7 @@ jobs:
         if: >-
           (matrix.target == 'linux-x64' && matrix.runner == 'ubuntu-latest') ||
           (matrix.target == 'macos-arm64' && matrix.runner == 'macos-latest') ||
-          (matrix.target == 'macos-x64' && matrix.runner == 'macos-13')
+          (matrix.target == 'macos-x64' && matrix.runner == 'macos-15-intel')
         run: |
           BINARY="packages/cli/dist/binaries/${{ matrix.target }}/${{ matrix.binary }}"
           chmod +x "$BINARY"
