@@ -219,3 +219,30 @@ export const auth = betterAuth({
 });
 
 export type Auth = typeof auth;
+
+// ── Signup gating ──────────────────────────────────────────────────────────────
+// When PIZZAPI_DISABLE_SIGNUP_AFTER_FIRST_USER is true (default), new account
+// creation is blocked once at least one user exists in the database.
+
+export const disableSignupAfterFirstUser = parseBooleanEnv(
+    process.env.PIZZAPI_DISABLE_SIGNUP_AFTER_FIRST_USER,
+    true,
+);
+
+/**
+ * Returns `true` when new user signups are currently allowed.
+ *
+ * Signups are allowed when:
+ * - `PIZZAPI_DISABLE_SIGNUP_AFTER_FIRST_USER` is false, OR
+ * - no users have been created yet (first registration).
+ */
+export async function isSignupAllowed(): Promise<boolean> {
+    if (!disableSignupAfterFirstUser) return true;
+
+    const row = await kysely
+        .selectFrom("user")
+        .select(kysely.fn.countAll<number>().as("cnt"))
+        .executeTakeFirst();
+
+    return (row?.cnt ?? 0) === 0;
+}

@@ -20,9 +20,28 @@ export function AuthPage({ onAuthenticated }: AuthPageProps) {
     const [password, setPassword] = React.useState("");
     const [error, setError] = React.useState<string | null>(null);
     const [loading, setLoading] = React.useState(false);
+    const [signupEnabled, setSignupEnabled] = React.useState<boolean | null>(null);
 
     const signinRef = React.useRef<HTMLButtonElement>(null);
     const signupRef = React.useRef<HTMLButtonElement>(null);
+
+    // Fetch signup status on mount
+    React.useEffect(() => {
+        let cancelled = false;
+        void fetch("/api/signup-status")
+            .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
+            .then((data) => {
+                if (cancelled) return;
+                setSignupEnabled((data as any)?.signupEnabled === true);
+            })
+            .catch(() => {
+                if (cancelled) return;
+                // Default to showing signup tab on network errors so the first
+                // user can still register.
+                setSignupEnabled(true);
+            });
+        return () => { cancelled = true; };
+    }, []);
 
     async function handleSubmit(e: React.FormEvent) {
         e.preventDefault();
@@ -51,12 +70,13 @@ export function AuthPage({ onAuthenticated }: AuthPageProps) {
     }
 
     function switchTab(next: Tab) {
+        if (next === "signup" && signupEnabled === false) return;
         setTab(next);
         setError(null);
     }
 
     function handleKeyDown(e: React.KeyboardEvent) {
-        if (e.key === "ArrowRight") {
+        if (e.key === "ArrowRight" && signupEnabled !== false) {
             e.preventDefault();
             switchTab("signup");
             signupRef.current?.focus();
@@ -68,12 +88,21 @@ export function AuthPage({ onAuthenticated }: AuthPageProps) {
             e.preventDefault();
             switchTab("signin");
             signinRef.current?.focus();
-        } else if (e.key === "End") {
+        } else if (e.key === "End" && signupEnabled !== false) {
             e.preventDefault();
             switchTab("signup");
             signupRef.current?.focus();
         }
     }
+
+    // If signup is disabled and user somehow switched to signup tab, force back
+    React.useEffect(() => {
+        if (signupEnabled === false && tab === "signup") {
+            setTab("signin");
+        }
+    }, [signupEnabled, tab]);
+
+    const showSignupTab = signupEnabled !== false;
 
     return (
         <div className="flex min-h-[100dvh] w-full items-start justify-center bg-background p-4 overflow-y-auto pp-safe-top pp-safe-bottom sm:items-center">
@@ -106,19 +135,21 @@ export function AuthPage({ onAuthenticated }: AuthPageProps) {
                         >
                             Sign in
                         </button>
-                        <button
-                            ref={signupRef}
-                            id="tab-signup"
-                            role="tab"
-                            aria-selected={tab === "signup"}
-                            aria-controls="auth-panel"
-                            tabIndex={tab === "signup" ? 0 : -1}
-                            type="button"
-                            className={`px-3 py-1.5 text-sm font-medium transition-colors border-b-2 -mb-px ${tab === "signup" ? "border-foreground text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"}`}
-                            onClick={() => switchTab("signup")}
-                        >
-                            Sign up
-                        </button>
+                        {showSignupTab && (
+                            <button
+                                ref={signupRef}
+                                id="tab-signup"
+                                role="tab"
+                                aria-selected={tab === "signup"}
+                                aria-controls="auth-panel"
+                                tabIndex={tab === "signup" ? 0 : -1}
+                                type="button"
+                                className={`px-3 py-1.5 text-sm font-medium transition-colors border-b-2 -mb-px ${tab === "signup" ? "border-foreground text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"}`}
+                                onClick={() => switchTab("signup")}
+                            >
+                                Sign up
+                            </button>
+                        )}
                     </div>
                 </CardHeader>
                 <div

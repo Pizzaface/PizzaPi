@@ -1,4 +1,4 @@
-import { auth, trustedOrigins } from "./auth.js";
+import { auth, trustedOrigins, isSignupAllowed } from "./auth.js";
 import { handleApi } from "./routes/api.js";
 import { serveStaticFile } from "./static.js";
 import {
@@ -103,6 +103,16 @@ async function handleFetch(req: Request): Promise<Response> {
 
     // ── better-auth handler ────────────────────────────────────────────────
     if (url.pathname.startsWith("/api/auth")) {
+        // Block signup when signups are disabled (after first user).
+        if (url.pathname === "/api/auth/sign-up/email" && req.method === "POST") {
+            const allowed = await isSignupAllowed();
+            if (!allowed) {
+                return Response.json(
+                    { error: "Signups are disabled. Contact the administrator." },
+                    { status: 403 },
+                );
+            }
+        }
         try {
             return await auth.handler(req);
         } catch (e) {

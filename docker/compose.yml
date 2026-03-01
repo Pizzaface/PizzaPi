@@ -17,6 +17,9 @@ services:
     environment:
       - PORT=7492
       - PIZZAPI_REDIS_URL=redis://redis:6379
+      # Disable new signups after the first user has registered (default: true)
+      # Set to false to allow unlimited registrations.
+      # - PIZZAPI_DISABLE_SIGNUP_AFTER_FIRST_USER=true
     volumes:
       - pizzapi-data:/app/data
     depends_on:
