@@ -202,6 +202,16 @@ describe("runHook", () => {
         expect(result.exitCode).not.toBe(0);
     });
 
+    test("detects kill even when child traps SIGTERM and exits 0", async () => {
+        // Child traps SIGTERM and exits 0 — proc.killed should still catch it
+        const result = await runHook(
+            { command: 'trap "exit 0" TERM; sleep 10', timeout: 500 },
+            "{}",
+            process.cwd(),
+        );
+        expect(result.killed).toBe(true);
+    });
+
     test("handles missing command gracefully", async () => {
         const result = await runHook(
             { command: "nonexistent_command_12345" },

@@ -107,7 +107,8 @@ export function normalizeToolInput(toolName: string, input: Record<string, unkno
 export function runHook(entry: HookEntry, payload: string, cwd: string): Promise<HookResult> {
     const timeout = entry.timeout ?? 10_000;
     return new Promise((resolve) => {
-        let killed = false;
+        let timedOut = false;
+        let settled = false;
 
         const proc = spawn("bash", ["-c", entry.command], {
             cwd,
@@ -116,7 +117,6 @@ export function runHook(entry: HookEntry, payload: string, cwd: string): Promise
                 ...process.env,
                 PIZZAPI_PROJECT_DIR: cwd,
             },
-            timeout,
         });
 
         let stdout = "";
@@ -129,19 +129,34 @@ export function runHook(entry: HookEntry, payload: string, cwd: string): Promise
             stderr += chunk.toString();
         });
 
+        // Manual timeout with SIGKILL — can't be trapped by the child.
+        const timer = setTimeout(() => {
+            timedOut = true;
+            proc.kill("SIGKILL");
+        }, timeout);
+
         // Send the JSON payload on stdin
         proc.stdin.write(payload);
         proc.stdin.end();
 
-        proc.on("close", (code, signal) => {
-            // If the process was killed by a signal (timeout, etc.), treat as
-            // non-zero exit. This prevents fail-open on hung hooks.
-            if (signal) killed = true;
-            const exitCode = code ?? (signal ? 124 : 0);
+        const finish = (code: number | null, signal: string | null) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            const killed = timedOut || !!signal || proc.killed;
+            const exitCode = killed ? (code ?? 124) : (code ?? 0);
             resolve({ exitCode, stdout: stdout.trim(), stderr: stderr.trim(), killed });
-        });
+        };
+
+        // Listen to both `exit` and `close` — in Bun, `close` may not fire
+        // after SIGKILL, but `exit` does. First one wins via `settled` guard.
+        proc.on("exit", (code, signal) => finish(code, signal));
+        proc.on("close", (code, signal) => finish(code, signal));
 
         proc.on("error", (err) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
             resolve({ exitCode: 1, stdout: "", stderr: err.message, killed: false });
         });
     });
@@ -208,6 +223,11 @@ export function createHooksExtension(hooksConfig: HooksConfig | undefined, cwd: 
     const hasPostHooks = (hooksConfig.PostToolUse?.length ?? 0) > 0;
     if (!hasPreHooks && !hasPostHooks) return null;
 
+    // Advisory context from PreToolUse hooks is stashed here per tool-call-id
+    // and injected into the tool_result so the agent sees it in the same turn
+    // without blocking the tool from executing.
+    const preToolContext = new Map<string, string[]>();
+
     const factory: ExtensionFactory = (pi) => {
         // PreToolUse: fire before tool executes, can block or inject context
         if (hasPreHooks) {
@@ -222,12 +242,12 @@ export function createHooksExtension(hooksConfig: HooksConfig | undefined, cwd: 
                         tool_input: normalizedInput,
                     });
 
-                    const contextParts: string[] = [];
+                    const advisoryParts: string[] = [];
 
                     for (const hook of hooks) {
                         const result = await runHook(hook, payload, cwd);
 
-                        // Signal kill (timeout) → fail-closed for safety
+                        // Killed (timeout / signal) → fail-closed for safety
                         if (result.killed) {
                             return { block: true, reason: "Hook timed out — blocking for safety. Check .pizzapi/hooks/ configuration." };
                         }
@@ -245,7 +265,7 @@ export function createHooksExtension(hooksConfig: HooksConfig | undefined, cwd: 
                                 return { block: true, reason: output.additionalContext || "Denied by hook" };
                             }
                             if (output?.additionalContext) {
-                                contextParts.push(output.additionalContext);
+                                advisoryParts.push(output.additionalContext);
                             }
                         }
 
@@ -255,11 +275,11 @@ export function createHooksExtension(hooksConfig: HooksConfig | undefined, cwd: 
                         }
                     }
 
-                    // Inject PreToolUse context by blocking with reason — this gives
-                    // the agent the context immediately and forces a re-plan, rather
-                    // than delaying to the next turn where it's too late.
-                    if (contextParts.length > 0) {
-                        return { block: true, reason: `[Hook advisory] ${contextParts.join(" | ")}` };
+                    // Stash advisory context — it will be appended to the
+                    // tool_result so the agent sees it in the same turn without
+                    // blocking the tool from executing.
+                    if (advisoryParts.length > 0) {
+                        preToolContext.set(event.toolCallId, advisoryParts);
                     }
                 } catch (err) {
                     // Defensive: never let hook errors crash the tool pipeline
@@ -269,44 +289,54 @@ export function createHooksExtension(hooksConfig: HooksConfig | undefined, cwd: 
             });
         }
 
-        // PostToolUse: fire after tool executes, can inject context into result
-        if (hasPostHooks) {
+        // PostToolUse + PreToolUse advisory: fire after tool executes, inject context.
+        // This handler always runs (not gated on hasPostHooks) because it also
+        // drains advisory context stashed by PreToolUse hooks.
+        {
             pi.on("tool_result", async (event) => {
                 try {
-                    const hooks = getMatchingHooks(hooksConfig.PostToolUse, event.toolName);
-                    if (hooks.length === 0) return;
-
-                    const normalizedInput = normalizeToolInput(event.toolName, event.input as Record<string, unknown>);
-
-                    // Build the tool response text from content array
-                    const responseText = event.content
-                        ?.map((c: any) => (c.type === "text" ? c.text : ""))
-                        .filter(Boolean)
-                        .join("\n");
-
-                    const payload = JSON.stringify({
-                        tool_name: event.toolName,
-                        tool_input: normalizedInput,
-                        tool_response: responseText ?? "",
-                    });
-
                     const contextParts: string[] = [];
 
-                    for (const hook of hooks) {
-                        const result = await runHook(hook, payload, cwd);
+                    // Drain any advisory context stashed by PreToolUse hooks
+                    const preAdvice = preToolContext.get(event.toolCallId);
+                    if (preAdvice) {
+                        contextParts.push(...preAdvice);
+                        preToolContext.delete(event.toolCallId);
+                    }
 
-                        // Only process successful hooks — killed/errored PostToolUse
-                        // hooks are silently ignored (tool already ran, can't undo)
-                        if (result.exitCode === 0 && result.stdout) {
-                            const output = parseHookOutput(result.stdout);
-                            if (output?.additionalContext) {
-                                contextParts.push(output.additionalContext);
+                    // Run PostToolUse hooks
+                    const hooks = getMatchingHooks(hooksConfig.PostToolUse, event.toolName);
+                    if (hooks.length > 0) {
+                        const normalizedInput = normalizeToolInput(event.toolName, event.input as Record<string, unknown>);
+
+                        // Build the tool response text from content array
+                        const responseText = event.content
+                            ?.map((c: any) => (c.type === "text" ? c.text : ""))
+                            .filter(Boolean)
+                            .join("\n");
+
+                        const payload = JSON.stringify({
+                            tool_name: event.toolName,
+                            tool_input: normalizedInput,
+                            tool_response: responseText ?? "",
+                        });
+
+                        for (const hook of hooks) {
+                            const result = await runHook(hook, payload, cwd);
+
+                            // Only process successful hooks — killed/errored PostToolUse
+                            // hooks are silently ignored (tool already ran, can't undo)
+                            if (result.exitCode === 0 && result.stdout) {
+                                const output = parseHookOutput(result.stdout);
+                                if (output?.additionalContext) {
+                                    contextParts.push(output.additionalContext);
+                                }
                             }
                         }
                     }
 
-                    // Append all hook context to the tool result so the agent sees
-                    // it immediately in the same turn.
+                    // Append all hook context (PreToolUse advisory + PostToolUse)
+                    // to the tool result so the agent sees it in the same turn.
                     if (contextParts.length > 0) {
                         const hookNotice = contextParts.join("\n\n");
                         const existingContent = event.content ?? [];
