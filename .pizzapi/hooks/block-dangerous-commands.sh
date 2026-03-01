@@ -24,7 +24,12 @@ block_with_reason() {
 
 # Force pushes to main/master (handles --force, -f, --force-with-lease)
 if echo "$COMMAND" | grep -qE 'git\s+push\s+.*(--force|--force-with-lease|-f)\b'; then
-    if echo "$COMMAND" | grep -qE '\s(main|master)\b|HEAD:main|HEAD:master'; then
+    # Catch common protected-branch ref forms:
+    #   main / master
+    #   HEAD:main / HEAD:master
+    #   HEAD:refs/heads/main / HEAD:refs/heads/master
+    #   refs/heads/main / refs/heads/master
+    if echo "$COMMAND" | grep -qE 'HEAD:(refs/heads/)?(main|master)\b|(^|[[:space:]])refs/heads/(main|master)\b|(^|[[:space:]:])(main|master)([[:space:]]|$)'; then
         block_with_reason "Force push to main/master is forbidden. Use a feature branch."
     fi
 fi
@@ -82,8 +87,8 @@ if echo "$COMMAND" | grep -qE "$_RM_PATTERN"; then
     _rm_parse_flags
     if $HAS_RECURSIVE && $HAS_FORCE; then
         # Check if any target is a dangerous path (using quote-stripped version)
-        if echo "$UNQUOTED_COMMAND" | grep -qE '[[:space:]]/([[:space:]]|$)|[[:space:]]~([[:space:]]|$)|[[:space:]]\$HOME([[:space:]]|$)|[[:space:]]\.\.([[:space:]]|$)'; then
-            block_with_reason "Recursive delete of /, ~, or .. is forbidden."
+        if echo "$UNQUOTED_COMMAND" | grep -qE '[[:space:]]/([[:space:]]|$)|[[:space:]]~([[:space:]]|$)|[[:space:]]\$HOME([[:space:]]|$)|(^|[[:space:]])([^[:space:]]*/)?\.\.(/[^[:space:]]*)?([[:space:]]|$)'; then
+            block_with_reason "Recursive delete of /, ~, or parent-directory paths (.., ../, ../../) is forbidden."
         fi
     fi
 fi

@@ -15,7 +15,7 @@
 
 import { $ } from "bun";
 import { join, dirname } from "path";
-import { existsSync, mkdirSync, cpSync, readdirSync } from "fs";
+import { existsSync, mkdirSync, cpSync, readdirSync, readFileSync, rmSync } from "fs";
 import { platform as osPlatform, arch as osArch } from "os";
 
 // ---------------------------------------------------------------------------
@@ -85,24 +85,123 @@ function copyAssets(piPkgDir: string, outDir: string): void {
 // ---------------------------------------------------------------------------
 
 /**
+ * Resolve the version of @zenyr/bun-pty platform packages by reading the
+ * installed parent package metadata.
+ */
+function resolvePtyVersion(): string | null {
+    // Try import.meta.resolve on the parent @zenyr/bun-pty package
+    try {
+        const entryUrl = import.meta.resolve("@zenyr/bun-pty");
+        let dir = dirname(new URL(entryUrl).pathname);
+        while (dir !== dirname(dir)) {
+            const pkgPath = join(dir, "package.json");
+            if (existsSync(pkgPath)) {
+                const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
+                if (pkg.name === "@zenyr/bun-pty") {
+                    return pkg.version;
+                }
+            }
+            dir = dirname(dir);
+        }
+    } catch {}
+
+    // Fallback: scan Bun store for @zenyr+bun-pty@<version>
+    for (const base of [join(import.meta.dirname, "node_modules"), join(import.meta.dirname, "..", "..", "node_modules")]) {
+        const bunDir = join(base, ".bun");
+        if (!existsSync(bunDir)) continue;
+        try {
+            for (const entry of readdirSync(bunDir)) {
+                const m = entry.match(/^@zenyr\+bun-pty@(\d+\.\d+\.\d+)/);
+                if (m) return m[1];
+            }
+        } catch {}
+    }
+
+    return null;
+}
+
+/**
+ * Download the PTY native library for a target platform from the npm registry.
+ * Used when the platform package isn't locally installed (cross-platform builds).
+ */
+async function downloadPtyLib(target: Target, outDir: string): Promise<boolean> {
+    const pkgName = `bun-pty-${target.ptyOs}-${target.ptyCpu}`;
+    const scopedName = `@zenyr/${pkgName}`;
+
+    const version = resolvePtyVersion();
+    if (!version) {
+        console.log(`    ✗ Could not determine @zenyr/bun-pty version`);
+        return false;
+    }
+
+    console.log(`    Downloading ${scopedName}@${version} from npm registry...`);
+
+    const tmpDir = join(outDir, ".pty-download");
+    mkdirSync(tmpDir, { recursive: true });
+
+    try {
+        // Fetch package metadata to get the tarball URL
+        const metaResp = await fetch(`https://registry.npmjs.org/${scopedName}/${version}`);
+        if (!metaResp.ok) {
+            console.log(`    ✗ Failed to fetch package metadata (HTTP ${metaResp.status})`);
+            return false;
+        }
+        const meta = (await metaResp.json()) as { dist?: { tarball?: string } };
+        const tarballUrl = meta.dist?.tarball;
+        if (!tarballUrl) {
+            console.log(`    ✗ No tarball URL in package metadata`);
+            return false;
+        }
+
+        // Download the tarball
+        const tarResp = await fetch(tarballUrl);
+        if (!tarResp.ok) {
+            console.log(`    ✗ Failed to download tarball (HTTP ${tarResp.status})`);
+            return false;
+        }
+
+        const tgzPath = join(tmpDir, `${pkgName}.tgz`);
+        await Bun.write(tgzPath, tarResp);
+
+        // Extract the tarball
+        const result = await $`tar xzf ${tgzPath} -C ${tmpDir}`.nothrow().quiet();
+        if (result.exitCode !== 0) {
+            console.log(`    ✗ Failed to extract tarball`);
+            return false;
+        }
+
+        // Copy the native library from the extracted package/ directory
+        const libSrc = join(tmpDir, "package", target.ptyLibName);
+        if (existsSync(libSrc)) {
+            cpSync(libSrc, join(outDir, target.ptyLibName));
+            return true;
+        }
+
+        console.log(`    ✗ ${target.ptyLibName} not found in downloaded package`);
+        return false;
+    } catch (err) {
+        console.log(`    ✗ Download failed: ${err}`);
+        return false;
+    } finally {
+        rmSync(tmpDir, { recursive: true, force: true });
+    }
+}
+
+/**
  * Copy the @zenyr/bun-pty native shared library for the target platform
  * alongside the compiled binary.  At runtime the terminal worker sets
  * BUN_PTY_LIB pointing to this file so the FFI layer can find it.
  *
- * We can only copy the library for the current host platform (the .dylib/.so
- * for other platforms isn't installed via optionalDependencies).
+ * Tries three strategies in order:
+ *   1. Resolve from locally installed platform package (host-matching targets)
+ *   2. Search Bun's deduplicated node_modules store
+ *   3. Download from the npm registry (cross-platform builds)
  */
-function copyPtyLib(target: Target, outDir: string): boolean {
-    // Only copy when we're building for the current host platform
-    const hostOs = osPlatform();   // "darwin", "linux", "win32"
-    const hostCpu = osArch();      // "arm64", "x64"
-    if (target.ptyOs !== hostOs || target.ptyCpu !== hostCpu) {
-        return false;
-    }
-
+async function copyPtyLib(target: Target, outDir: string): Promise<boolean> {
     const ptyPlatformPkg = `@zenyr/bun-pty-${target.ptyOs}-${target.ptyCpu}`;
 
-    // Strategy 1: Try import.meta.resolve (works when hoisted)
+    // Strategy 1: Try import.meta.resolve (works when the platform package is
+    // installed for this host — i.e. target matches the build machine)
     try {
         const entryUrl = import.meta.resolve(ptyPlatformPkg);
         const pkgDir = dirname(new URL(entryUrl).pathname);
@@ -133,7 +232,9 @@ function copyPtyLib(target: Target, outDir: string): boolean {
         } catch {}
     }
 
-    return false;
+    // Strategy 3: Download from npm registry (for cross-platform builds where
+    // the host OS doesn't match the target and the platform package isn't installed)
+    return await downloadPtyLib(target, outDir);
 }
 
 // ---------------------------------------------------------------------------
