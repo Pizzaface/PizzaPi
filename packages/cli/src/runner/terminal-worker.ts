@@ -49,9 +49,28 @@ function send(msg: Record<string, unknown>): void {
 
 // ── Spawn PTY ──────────────────────────────────────────────────────────────────
 
+/**
+ * Determine shell arguments based on the shell executable.
+ * `-il` (interactive login) is only valid for POSIX shells (bash, zsh, etc.).
+ * PowerShell and cmd.exe don't understand these flags and will exit immediately.
+ */
+function getShellArgs(shellPath: string): string[] {
+    const base = shellPath.replace(/\\/g, "/").split("/").pop()?.toLowerCase() ?? "";
+    // PowerShell (powershell.exe, pwsh.exe, pwsh) — use -NoExit for interactive
+    if (base.startsWith("powershell") || base.startsWith("pwsh")) {
+        return ["-NoExit", "-NoLogo"];
+    }
+    // cmd.exe — no special args needed for interactive mode
+    if (base === "cmd.exe" || base === "cmd") {
+        return [];
+    }
+    // POSIX shells (bash, zsh, fish, sh, etc.)
+    return ["-il"];
+}
+
 let ptyProcess: ReturnType<typeof spawnPty>;
 try {
-    ptyProcess = spawnPty(shell, ["-il"], {
+    ptyProcess = spawnPty(shell, getShellArgs(shell), {
         name: "xterm-256color",
         cols,
         rows,
