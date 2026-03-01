@@ -1,6 +1,6 @@
 # PizzaPi — Agent Guide
 
-PizzaPi is a self-hosted web interface and relay server for the [`pi` coding agent](https://github.com/mariozechner/pi). It streams live agent sessions to any browser and allows remote interaction from mobile or desktop without needing terminal access.
+PizzaPi is a self-hosted web interface and relay server for the [`pi` coding agent](https://github.com/badlogic/pi-mono). It streams live agent sessions to any browser and allows remote interaction from mobile or desktop without needing terminal access.
 
 ---
 

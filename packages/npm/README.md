@@ -1,6 +1,6 @@
 # PizzaPi
 
-A self-hosted web interface and relay server for the [pi coding agent](https://github.com/mariozechner/pi). Stream live AI coding sessions to any browser and interact remotely from mobile or desktop.
+A self-hosted web interface and relay server for the [pi coding agent](https://github.com/badlogic/pi-mono). Stream live AI coding sessions to any browser and interact remotely from mobile or desktop.
 
 ## Quick Start
 
