@@ -41,6 +41,59 @@ jobs:
           echo "::error::Only @Pizzaface can trigger releases. Actor: ${{ github.actor }}"
           exit 1
 
+  # ─── Compute the release version before building binaries ─────
+  # The CLI reads its version from package.json at runtime (--version,
+  # runner reporting).  `bun build --compile` bakes package.json into
+  # the binary, so we must stamp the correct version BEFORE compiling.
+  compute-version:
+    name: Compute version
+    needs: authorize
+    if: inputs.action != 'pull'
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Compute release version
+        id: version
+        run: |
+          BASE="${{ inputs.version }}"
+          ACTION="${{ inputs.action }}"
+
+          case "$ACTION" in
+            dev)
+              # dev.YYYYMMDDHHMMSS
+              SUFFIX="dev.$(date -u +%Y%m%d%H%M%S)"
+              FULL="${BASE}-${SUFFIX}"
+              TAG="dev"
+              ;;
+            beta)
+              # beta.N — find the next beta number from npm.
+              NPM_VERSIONS=$(npm view @pizzapi/pizza versions --json 2>/dev/null || echo '[]')
+              EXISTING=$(echo "$NPM_VERSIONS" | \
+                { grep -o "\"${BASE}-beta\.[0-9]*\"" || true; } | \
+                sed 's/"//g' | \
+                sed "s/${BASE}-beta\.//" | \
+                sort -n | tail -1)
+              NEXT=$(( ${EXISTING:-0} + 1 ))
+              FULL="${BASE}-beta.${NEXT}"
+              TAG="beta"
+              ;;
+            latest)
+              FULL="${BASE}"
+              TAG="latest"
+              ;;
+          esac
+
+          echo "version=${FULL}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "📦 Version: ${FULL} (tag: ${TAG})"
+
   # ─── Build binaries on platform-matching runners ──────────────
   # PTY native libraries (.dylib/.so/.dll) are only available when
   # building on the matching host OS. Cross-compiled targets won't
@@ -48,8 +101,7 @@ jobs:
   # without native terminal support on that platform).
   build-binary:
     name: Build — ${{ matrix.target }}
-    needs: authorize
-    if: inputs.action != 'pull'
+    needs: compute-version
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: true
@@ -74,6 +126,17 @@ jobs:
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
+
+      - name: Stamp release version into package.json
+        run: |
+          VERSION="${{ needs.compute-version.outputs.version }}"
+          cd packages/cli
+          bun -e "
+            const pkg = JSON.parse(require('fs').readFileSync('package.json','utf8'));
+            pkg.version = '${VERSION}';
+            require('fs').writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+          echo "✅ packages/cli/package.json → ${VERSION}"
 
       - name: Build packages
         run: bun run build
@@ -123,7 +186,7 @@ jobs:
   # ─── Package + publish to npm ─────────────────────────────────
   publish:
     name: Publish — ${{ inputs.action }}
-    needs: build-binary
+    needs: [compute-version, build-binary]
     if: inputs.action != 'pull'
     runs-on: ubuntu-latest
     environment: npm
@@ -177,48 +240,9 @@ jobs:
           echo "Binary layout:"
           ls -la */pizza-* 2>/dev/null || true
 
-      - name: Compute release version
-        id: version
-        run: |
-          BASE="${{ inputs.version }}"
-          ACTION="${{ inputs.action }}"
-
-          case "$ACTION" in
-            dev)
-              # dev.YYYYMMDDHHMMSS
-              SUFFIX="dev.$(date -u +%Y%m%d%H%M%S)"
-              FULL="${BASE}-${SUFFIX}"
-              TAG="dev"
-              ;;
-            beta)
-              # beta.N — find the next beta number from npm.
-              # Isolate `npm view` so an E404 (package never published) doesn't
-              # kill the step under bash -e -o pipefail.  When npm view fails
-              # we fall back to an empty JSON array so grep finds nothing,
-              # EXISTING stays empty, and ${EXISTING:-0} correctly yields 0.
-              NPM_VERSIONS=$(npm view @pizzapi/pizza versions --json 2>/dev/null || echo '[]')
-              EXISTING=$(echo "$NPM_VERSIONS" | \
-                { grep -o "\"${BASE}-beta\.[0-9]*\"" || true; } | \
-                sed 's/"//g' | \
-                sed "s/${BASE}-beta\.//" | \
-                sort -n | tail -1)
-              NEXT=$(( ${EXISTING:-0} + 1 ))
-              FULL="${BASE}-beta.${NEXT}"
-              TAG="beta"
-              ;;
-            latest)
-              FULL="${BASE}"
-              TAG="latest"
-              ;;
-          esac
-
-          echo "version=${FULL}" >> "$GITHUB_OUTPUT"
-          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-          echo "📦 Version: ${FULL} (tag: ${TAG})"
-
       - name: Update package versions
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
+          VERSION="${{ needs.compute-version.outputs.version }}"
 
           # Update the CLI package.json version (build-npm.ts reads it)
           cd packages/cli
@@ -241,7 +265,7 @@ jobs:
         run: bun run build
 
       - name: Build npm distribution (skip compile — using pre-built binaries)
-        run: bun run build:npm -- --version ${{ steps.version.outputs.version }} --skip-compile
+        run: bun run build:npm -- --version ${{ needs.compute-version.outputs.version }} --skip-compile
 
       - name: Publish to npm (OIDC trusted publishing)
         run: |
@@ -251,13 +275,13 @@ jobs:
           fi
 
           bun packages/npm/publish-npm.ts \
-            --tag ${{ steps.version.outputs.tag }} \
+            --tag ${{ needs.compute-version.outputs.tag }} \
             $ARGS
 
       - name: Create git tag
         if: inputs.dry-run != true
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
+          VERSION="${{ needs.compute-version.outputs.version }}"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git tag -a "v${VERSION}" -m "Release v${VERSION}"
@@ -265,8 +289,8 @@ jobs:
 
       - name: Summary
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          TAG="${{ steps.version.outputs.tag }}"
+          VERSION="${{ needs.compute-version.outputs.version }}"
+          TAG="${{ needs.compute-version.outputs.tag }}"
           DRY="${{ inputs.dry-run }}"
 
           echo "## 📦 Release Summary" >> "$GITHUB_STEP_SUMMARY"
