@@ -1,24 +1,71 @@
-#!/usr/bin/env sh
-# bd-shim v1
-# bd-hooks-version: 0.48.0
-#
-# bd (beads) prepare-commit-msg hook - thin shim
-#
-# This shim delegates to 'bd hooks run prepare-commit-msg' which contains
-# the actual hook logic. This pattern ensures hook behavior is always
-# in sync with the installed bd version - no manual updates needed.
-#
-# Arguments:
-#   $1 = path to the commit message file
-#   $2 = source of commit message (message, template, merge, squash, commit)
-#   $3 = commit SHA-1 (if -c, -C, or --amend)
+#!/bin/sh
 
-# Check if bd is available
-if ! command -v bd >/dev/null 2>&1; then
-    echo "Warning: bd command not found in PATH, skipping prepare-commit-msg hook" >&2
-    echo "  Install bd: brew install beads" >&2
-    echo "  Or add bd to your PATH" >&2
-    exit 0
+if [ "$LEFTHOOK_VERBOSE" = "1" -o "$LEFTHOOK_VERBOSE" = "true" ]; then
+  set -x
 fi
 
-exec bd hooks run prepare-commit-msg "$@"
+if [ "$LEFTHOOK" = "0" ]; then
+  exit 0
+fi
+
+call_lefthook()
+{
+  if test -n "$LEFTHOOK_BIN"
+  then
+    "$LEFTHOOK_BIN" "$@"
+  elif lefthook -h >/dev/null 2>&1
+  then
+    lefthook "$@"
+  elif /Users/jordan/Documents/Projects/PizzaPi/node_modules/.bun/lefthook-darwin-arm64@2.1.1/node_modules/lefthook-darwin-arm64/bin/lefthook -h >/dev/null 2>&1
+  then
+    /Users/jordan/Documents/Projects/PizzaPi/node_modules/.bun/lefthook-darwin-arm64@2.1.1/node_modules/lefthook-darwin-arm64/bin/lefthook "$@"
+  else
+    dir="$(git rev-parse --show-toplevel)"
+    osArch=$(uname | tr '[:upper:]' '[:lower:]')
+    cpuArch=$(uname -m | sed 's/aarch64/arm64/;s/x86_64/x64/')
+    if test -f "$dir/node_modules/lefthook-${osArch}-${cpuArch}/bin/lefthook"
+    then
+      "$dir/node_modules/lefthook-${osArch}-${cpuArch}/bin/lefthook" "$@"
+    elif test -f "$dir/node_modules/@evilmartians/lefthook/bin/lefthook-${osArch}-${cpuArch}/lefthook"
+    then
+      "$dir/node_modules/@evilmartians/lefthook/bin/lefthook-${osArch}-${cpuArch}/lefthook" "$@"
+    elif test -f "$dir/node_modules/@evilmartians/lefthook-installer/bin/lefthook"
+    then
+      "$dir/node_modules/@evilmartians/lefthook-installer/bin/lefthook" "$@"
+    elif test -f "$dir/node_modules/lefthook/bin/index.js"
+    then
+      "$dir/node_modules/lefthook/bin/index.js" "$@"
+    elif go tool lefthook -h >/dev/null 2>&1
+    then
+      go tool lefthook "$@"
+    elif bundle exec lefthook -h >/dev/null 2>&1
+    then
+      bundle exec lefthook "$@"
+    elif yarn lefthook -h >/dev/null 2>&1
+    then
+      yarn lefthook "$@"
+    elif pnpm lefthook -h >/dev/null 2>&1
+    then
+      pnpm lefthook "$@"
+    elif swift package lefthook >/dev/null 2>&1
+    then
+      swift package --build-path .build/lefthook --disable-sandbox lefthook "$@"
+    elif command -v mint >/dev/null 2>&1
+    then
+      mint run csjones/lefthook-plugin "$@"
+    elif uv run lefthook -h >/dev/null 2>&1
+    then
+      uv run lefthook "$@"
+    elif mise exec -- lefthook -h >/dev/null 2>&1
+    then
+      mise exec -- lefthook "$@"
+    elif devbox run lefthook -h >/dev/null 2>&1
+    then
+      devbox run lefthook "$@"
+    else
+      echo "Can't find lefthook in PATH"
+    fi
+  fi
+}
+
+call_lefthook run "prepare-commit-msg" "$@"

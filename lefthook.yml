@@ -1,0 +1,12 @@
+pre-commit:
+  commands:
+    no-root-images:
+      run: |
+        staged=$(git diff --cached --name-only --diff-filter=ACR)
+        bad=$(echo "$staged" | grep -E '^[^/]+\.(png|jpg|jpeg|gif|webp)$' || true)
+        if [ -n "$bad" ]; then
+          echo "❌ Image files are not allowed at the repository root:"
+          echo "$bad"
+          echo "Move them into the appropriate package (e.g. packages/ui/public/)."
+          exit 1
+        fi
