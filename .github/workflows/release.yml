@@ -209,8 +209,10 @@ jobs:
 
       - name: Unpublish packages
         run: |
+          set -euo pipefail
           VERSION="${{ inputs.version }}"
           DRY="${{ inputs.dry-run }}"
+          FAILED=0
 
           PACKAGES=(
             "@pizzapi/cli-linux-x64"
@@ -226,15 +228,44 @@ jobs:
             if [ "$DRY" = "true" ]; then
               echo "  (dry run) npm unpublish ${PKG}@${VERSION}"
             else
-              npm unpublish "${PKG}@${VERSION}" 2>&1 || echo "  ⚠ ${PKG}@${VERSION} not found or already unpublished"
+              OUTPUT=$(npm unpublish "${PKG}@${VERSION}" 2>&1) && {
+                echo "  ✓ Unpublished"
+              } || {
+                EXIT_CODE=$?
+                # Tolerate "not found" (already unpublished) — fail on everything else
+                if echo "$OUTPUT" | grep -qiE '(not found|404|is not in the npm registry)'; then
+                  echo "  ⚠ ${PKG}@${VERSION} not found — already unpublished"
+                else
+                  echo "  ✗ Failed to unpublish ${PKG}@${VERSION} (exit ${EXIT_CODE})"
+                  echo "$OUTPUT"
+                  FAILED=1
+                fi
+              }
             fi
           done
+
+          if [ "$FAILED" -ne 0 ]; then
+            echo "::error::One or more packages failed to unpublish"
+            exit 1
+          fi
 
       - name: Delete git tag
         if: inputs.dry-run != true
         run: |
+          set -euo pipefail
           VERSION="${{ inputs.version }}"
-          git push origin --delete "v${VERSION}" 2>/dev/null || echo "⚠ Tag v${VERSION} not found on remote"
+          OUTPUT=$(git push origin --delete "v${VERSION}" 2>&1) && {
+            echo "✅ Deleted tag v${VERSION}"
+          } || {
+            # Tolerate "not found" (tag never existed) — fail on everything else
+            if echo "$OUTPUT" | grep -qiE '(remote ref does not exist|not found|unable to delete)'; then
+              echo "⚠ Tag v${VERSION} not found on remote — skipping"
+            else
+              echo "::error::Failed to delete tag v${VERSION}"
+              echo "$OUTPUT"
+              exit 1
+            fi
+          }
 
       - name: Summary
         run: |
