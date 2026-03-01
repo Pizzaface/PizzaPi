@@ -81,6 +81,70 @@ docker compose -f docker/compose.yml --profile dev up
 
 ---
 
+## Testing
+
+**Test runner**: `bun test` (built-in Bun test runner). No additional frameworks needed.
+
+```bash
+# Run all tests
+bun run test
+
+# Run tests for a specific package
+bun test packages/server
+bun test packages/tools
+bun test packages/ui
+cd packages/cli && bun test src/patches.test.ts
+```
+
+### Test file conventions
+
+- Co-locate test files next to the source: `foo.ts` → `foo.test.ts`
+- Integration / multi-module tests go in `packages/<pkg>/tests/`
+- Use `describe` / `test` / `expect` from `bun:test` — no extra imports needed
+
+### Current coverage by package
+
+| Package | Test files | What's covered |
+|---------|-----------|----------------|
+| **server** | 10 | Validation, security, sessions store, attachments store, API routes, pruning, pi-compat |
+| **ui** | 3 | Message grouping, session viewer utils, path utilities |
+| **tools** | 2 | Toolkit helpers, pi-compat |
+| **cli** | 1 | Patch application and runtime behavior |
+| **protocol** | 0 | ⚠️ Needs tests |
+| **npm** | 0 | Build/publish scripts — no runtime code |
+
+### Testing standards
+
+- **All new code must include tests.** If you add or modify a module, add or update its `.test.ts` file.
+- **Run `bun run test` before committing.** Tests are part of the quality gates in session completion.
+- **Test pure logic first.** Validation, parsing, transforms, and utility functions should have thorough unit tests.
+- **Keep tests fast.** Avoid real network/Redis/DB calls in unit tests — mock or use in-memory alternatives.
+
+---
+
+## Spawning Sub-Agents
+
+When spawning agents, **always expect a response** and **ensure your sub-agents know how to respond.**
+
+- Always include your session ID in the sub-agent's prompt so it can `send_message` back to you.
+- Use `wait_for_message` (or `check_messages` for polling) to receive the sub-agent's result.
+- The sub-agent's prompt must be **self-contained** — it has no context from the parent session.
+- Explicitly instruct sub-agents to report their results back via `send_message` when done.
+
+**Example pattern:**
+```
+1. Get your own session ID with `get_session_id`
+2. Include it in the spawn prompt: "When done, send results to session <ID> using send_message."
+3. After spawning, call `wait_for_message` to block until the sub-agent replies.
+```
+
+**Rules:**
+- Never fire-and-forget a sub-agent — always await a response.
+- If a sub-agent may take a long time, use `check_messages` to poll between other work.
+- Sub-agents must follow the same coding standards (testing, typecheck, etc.) as the parent.
+
+---
+
 ## Session Completion
 
 **When ending a work session**, complete ALL steps. Work is NOT done until `git push` succeeds.
