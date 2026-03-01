@@ -60,6 +60,13 @@ import {
   ModelSelectorShortcut,
 } from "@/components/ai-elements/model-selector";
 import { HiddenModelsManager, loadHiddenModels, fetchHiddenModels, modelKey } from "@/components/HiddenModelsManager";
+import {
+  beginInputAttempt,
+  completeInputAttempt,
+  failInputAttempt,
+  shouldDeduplicateInput,
+  type InputDedupeState,
+} from "@/lib/input-dedupe";
 
 function toRelayMessage(raw: unknown, fallbackId: string): RelayMessage | null {
   if (!raw || typeof raw !== "object") return null;
@@ -1793,7 +1800,8 @@ export function App() {
 
 
   // Dedup guard: prevent sending the exact same message text within a short window.
-  const lastSentRef = React.useRef<{ text: string; ts: number } | null>(null);
+  const inputDedupeRef = React.useRef<InputDedupeState | null>(null);
+  const inputAttemptIdRef = React.useRef(0);
 
   const sendSessionInput = React.useCallback(async (message: { text: string; files?: Array<{ mediaType?: string; filename?: string; url?: string }>; deliverAs?: "steer" | "followUp" } | string) => {
     const socket = viewerWsRef.current;
@@ -1806,12 +1814,22 @@ export function App() {
     const payload = typeof message === "string" ? { text: message, files: [] } : message;
     const trimmed = payload.text.trim();
 
-    // Dedup guard: skip if the same text was sent in the last 500ms.
+    // Dedup guard: skip if the same text was sent/started in the last 500ms.
     const now = Date.now();
-    const last = lastSentRef.current;
-    if (last && trimmed && last.text === trimmed && now - last.ts < 500) {
+    if (shouldDeduplicateInput(inputDedupeRef.current, trimmed, now, 500)) {
       return true; // silently deduplicate
     }
+
+    let attemptId: number | null = null;
+    if (trimmed) {
+      attemptId = ++inputAttemptIdRef.current;
+      inputDedupeRef.current = beginInputAttempt(trimmed, now, attemptId);
+    }
+
+    const failCurrentAttempt = () => {
+      if (attemptId === null) return;
+      inputDedupeRef.current = failInputAttempt(inputDedupeRef.current, attemptId);
+    };
 
     const rawFiles = (payload.files ?? [])
       .filter((f) => typeof f?.url === "string" && f.url.length > 0)
@@ -1839,6 +1857,7 @@ export function App() {
           formData.append("files", uploadFile);
         } catch {
           setViewerStatus(`Failed to prepare attachment: ${displayName}`);
+          failCurrentAttempt();
           return false;
         }
 
@@ -1853,6 +1872,7 @@ export function App() {
             const body = await uploadRes.json().catch(() => null);
             const message = body && typeof body.error === "string" ? body.error : `Upload failed for ${displayName}`;
             setViewerStatus(message);
+            failCurrentAttempt();
             return false;
           }
 
@@ -1860,6 +1880,7 @@ export function App() {
           const first = Array.isArray(body?.attachments) ? body.attachments[0] : null;
           if (!first || typeof first.attachmentId !== "string") {
             setViewerStatus(`Upload failed for ${displayName}`);
+            failCurrentAttempt();
             return false;
           }
 
@@ -1872,6 +1893,7 @@ export function App() {
           });
         } catch {
           setViewerStatus(`Upload failed for ${displayName}`);
+          failCurrentAttempt();
           return false;
         }
       }
@@ -1890,9 +1912,9 @@ export function App() {
         ...(deliverAs ? { deliverAs } : {}),
       });
 
-      // Mark dedupe only after successful send
-      if (trimmed) {
-        lastSentRef.current = { text: trimmed, ts: Date.now() };
+      // Mark dedupe as sent only after successful emit.
+      if (attemptId !== null) {
+        inputDedupeRef.current = completeInputAttempt(inputDedupeRef.current, attemptId, Date.now());
       }
 
       // Track queued messages when the agent is active
@@ -1928,6 +1950,7 @@ export function App() {
       return true;
     } catch {
       setViewerStatus("Failed to send message");
+      failCurrentAttempt();
       return false;
     }
   }, []);
