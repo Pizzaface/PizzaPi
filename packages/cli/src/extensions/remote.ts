@@ -148,7 +148,6 @@ export const remoteExtension: ExtensionFactory = (pi) => {
 
     function authSourceLabel(source: AuthSource): string {
         switch (source) {
-            case "oauth": return "OAuth";
             case "auth.json": return "API key";
             case "env": return "env var";
             default: return "";
