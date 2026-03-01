@@ -10,29 +10,8 @@ import { existsSync } from "fs";
 import { readFile, readdir } from "fs/promises";
 import { join } from "path";
 import { homedir } from "os";
-import { defaultAgentDir, expandHome, loadConfig } from "./config.js";
-
-/**
- * Build the list of additional skill paths for DefaultResourceLoader.
- * Always includes:
- *   - ~/.pizzapi/skills/  (global PizzaPi skills)
- *   - <cwd>/.pizzapi/skills/  (project-local PizzaPi skills)
- * Plus any paths declared in config.skills.
- */
-function buildSkillPaths(cwd: string, _agentDir: string, configSkills?: string[]): string[] {
-    const paths: string[] = [
-        join(homedir(), ".pizzapi", "skills"),
-        join(cwd, ".pizzapi", "skills"),
-    ];
-    if (Array.isArray(configSkills)) {
-        for (const p of configSkills) {
-            if (typeof p === "string" && p.trim()) {
-                paths.push(expandHome(p.trim()));
-            }
-        }
-    }
-    return paths;
-}
+import { defaultAgentDir, loadConfig } from "./config.js";
+import { buildInteractiveSkillPaths } from "./skills.js";
 import { remoteExtension } from "./extensions/remote.js";
 import { mcpExtension } from "./extensions/mcp-extension.js";
 import { restartExtension } from "./extensions/restart.js";
@@ -397,7 +376,7 @@ async function main() {
         cwd,
         agentDir,
         extensionFactories: [remoteExtension, mcpExtension, restartExtension, setSessionNameExtension, updateTodoExtension, spawnSessionExtension, sessionMessagingExtension],
-        additionalSkillPaths: buildSkillPaths(cwd, agentDir, config.skills),
+        additionalSkillPaths: buildInteractiveSkillPaths(cwd, config.skills),
         ...(config.systemPrompt !== undefined && {
             systemPromptOverride: () => config.systemPrompt,
         }),

@@ -149,149 +149,15 @@ function releaseStateLock(statePath: string) {
     }
 }
 
-// ── Skill helpers ─────────────────────────────────────────────────────────────
+// ── Skill helpers (re-exported from shared module) ────────────────────────────
 
-/** Default global skills directory for PizzaPi. */
-function globalSkillsDir(): string {
-    return join(homedir(), ".pizzapi", "skills");
-}
-
-interface SkillMeta {
-    name: string;
-    description: string;
-    filePath: string;
-}
-
-/**
- * Scan the global PizzaPi skills directory and return basic metadata.
- * Mirrors the discovery rules from the Agent Skills standard:
- *   - Direct .md files in the root → name = basename without extension
- *   - SKILL.md files under subdirectories → name = directory name
- */
-function scanGlobalSkills(): SkillMeta[] {
-    const dir = globalSkillsDir();
-    if (!existsSync(dir)) return [];
-
-    const skills: SkillMeta[] = [];
-
-    let entries: string[];
-    try {
-        entries = readdirSync(dir);
-    } catch {
-        return [];
-    }
-
-    for (const entry of entries) {
-        const fullPath = join(dir, entry);
-        let st: ReturnType<typeof statSync>;
-        try {
-            st = statSync(fullPath);
-        } catch {
-            continue;
-        }
-
-        if (st.isFile() && entry.toLowerCase().endsWith(".md")) {
-            // Direct .md file in root
-            const name = entry.slice(0, -3);
-            const { description } = parseSkillFrontmatter(fullPath);
-            skills.push({ name, description, filePath: fullPath });
-        } else if (st.isDirectory()) {
-            // Look for SKILL.md inside
-            const skillMd = join(fullPath, "SKILL.md");
-            if (existsSync(skillMd)) {
-                const { description } = parseSkillFrontmatter(skillMd);
-                skills.push({ name: entry, description, filePath: skillMd });
-            }
-        }
-    }
-
-    return skills;
-}
-
-/**
- * Parse the `description` field out of a SKILL.md frontmatter block.
- * Returns empty string if not found or file is unreadable.
- */
-function parseSkillFrontmatter(filePath: string): { description: string } {
-    let content: string;
-    try {
-        content = readFileSync(filePath, "utf-8");
-    } catch {
-        return { description: "" };
-    }
-
-    // Frontmatter is between the first and second `---` lines.
-    if (!content.startsWith("---")) return { description: "" };
-    const end = content.indexOf("\n---", 3);
-    if (end === -1) return { description: "" };
-
-    const block = content.slice(3, end);
-    const match = block.match(/^description:\s*(.+)$/m);
-    return { description: match ? match[1].trim().replace(/^["']|["']$/g, "") : "" };
-}
-
-/**
- * Read the full content of a skill file.
- * For subdirectory skills (SKILL.md), returns the file content.
- * Returns null if not found.
- */
-function readSkillContent(name: string): string | null {
-    const dir = globalSkillsDir();
-
-    // Try subdirectory first: <dir>/<name>/SKILL.md
-    const subPath = join(dir, name, "SKILL.md");
-    if (existsSync(subPath)) {
-        try { return readFileSync(subPath, "utf-8"); } catch { return null; }
-    }
-
-    // Try direct file: <dir>/<name>.md
-    const filePath = join(dir, `${name}.md`);
-    if (existsSync(filePath)) {
-        try { return readFileSync(filePath, "utf-8"); } catch { return null; }
-    }
-
-    return null;
-}
-
-/**
- * Write (create or update) a skill.
- * Uses the subdirectory layout: ~/.pizzapi/skills/<name>/SKILL.md
- */
-async function writeSkill(name: string, content: string): Promise<void> {
-    const dir = join(globalSkillsDir(), name);
-    await mkdir(dir, { recursive: true });
-    writeFileSync(join(dir, "SKILL.md"), content, "utf-8");
-}
-
-/**
- * Delete a skill by name.
- * Handles both subdirectory (SKILL.md) and direct (.md) layouts.
- */
-function deleteSkill(name: string): boolean {
-    const dir = globalSkillsDir();
-
-    const subPath = join(dir, name);
-    if (existsSync(join(subPath, "SKILL.md"))) {
-        try {
-            rmSync(subPath, { recursive: true, force: true });
-            return true;
-        } catch {
-            return false;
-        }
-    }
-
-    const filePath = join(dir, `${name}.md`);
-    if (existsSync(filePath)) {
-        try {
-            rmSync(filePath);
-            return true;
-        } catch {
-            return false;
-        }
-    }
-
-    return false;
-}
+import {
+    type SkillMeta,
+    scanGlobalSkills,
+    readSkillContent,
+    writeSkill,
+    deleteSkill,
+} from "../skills.js";
 
 // ── Runner-wide usage cache (shared with worker processes via file) ───────────
 //

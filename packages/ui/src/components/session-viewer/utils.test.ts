@@ -10,6 +10,7 @@ import {
     formatDateValue,
     parseToolInputArgs,
     extToMime,
+    resolveCommandPopoverState,
 } from "./utils";
 
 // ── hasVisibleContent ───────────────────────────────────────────────────────
@@ -338,5 +339,65 @@ describe("extToMime", () => {
         expect(extToMime("config.yml")).toBe("text/yaml");
         expect(extToMime("config.toml")).toBe("application/toml");
         expect(extToMime("query.sql")).toBe("text/x-sql");
+    });
+});
+
+// ── resolveCommandPopoverState ──────────────────────────────────────────────
+
+describe("resolveCommandPopoverState", () => {
+    const known = new Set(["compact", "new", "resume", "skill:beads-ccpm", "skill:double-check"]);
+    const keepOpen = new Set(["resume"]);
+
+    test("keeps popover open while still typing a command name", () => {
+        expect(resolveCommandPopoverState("sk", known)).toEqual({ open: true, query: "sk" });
+        expect(resolveCommandPopoverState("skill:", known)).toEqual({ open: true, query: "skill:" });
+        expect(resolveCommandPopoverState("skill:beads", known)).toEqual({ open: true, query: "skill:beads" });
+    });
+
+    test("keeps popover open for exact command name without trailing space", () => {
+        expect(resolveCommandPopoverState("compact", known)).toEqual({ open: true, query: "compact" });
+        expect(resolveCommandPopoverState("skill:beads-ccpm", known)).toEqual({ open: true, query: "skill:beads-ccpm" });
+    });
+
+    test("closes popover when recognized command has trailing space (args start)", () => {
+        expect(resolveCommandPopoverState("compact ", known)).toEqual({ open: false, query: "" });
+        expect(resolveCommandPopoverState("skill:beads-ccpm ", known)).toEqual({ open: false, query: "" });
+    });
+
+    test("closes popover when recognized skill has arguments", () => {
+        expect(resolveCommandPopoverState("skill:beads-ccpm epic-sync saymore-gm7", known)).toEqual({ open: false, query: "" });
+        expect(resolveCommandPopoverState("skill:double-check ", known)).toEqual({ open: false, query: "" });
+    });
+
+    test("keeps popover open for unrecognized command with arguments", () => {
+        const result = resolveCommandPopoverState("unknown-thing some args", known);
+        expect(result).toEqual({ open: true, query: "unknown-thing some args" });
+    });
+
+    test("is case-insensitive for command matching", () => {
+        expect(resolveCommandPopoverState("Compact ", known)).toEqual({ open: false, query: "" });
+        expect(resolveCommandPopoverState("SKILL:BEADS-CCPM args", known)).toEqual({ open: false, query: "" });
+    });
+
+    test("handles empty input", () => {
+        expect(resolveCommandPopoverState("", known)).toEqual({ open: true, query: "" });
+    });
+
+    test("handles tab/newline as whitespace separator", () => {
+        expect(resolveCommandPopoverState("compact\targ", known)).toEqual({ open: false, query: "" });
+        expect(resolveCommandPopoverState("compact\narg", known)).toEqual({ open: false, query: "" });
+    });
+
+    test("keeps popover open for keepOpen commands with arguments (e.g. /resume)", () => {
+        expect(resolveCommandPopoverState("resume my-session", known, keepOpen)).toEqual({ open: true, query: "resume my-session" });
+        expect(resolveCommandPopoverState("resume ", known, keepOpen)).toEqual({ open: true, query: "resume " });
+    });
+
+    test("resume still closes without keepOpen set", () => {
+        expect(resolveCommandPopoverState("resume query", known)).toEqual({ open: false, query: "" });
+    });
+
+    test("keepOpen is case-insensitive", () => {
+        expect(resolveCommandPopoverState("Resume my-session", known, keepOpen)).toEqual({ open: true, query: "Resume my-session" });
     });
 });

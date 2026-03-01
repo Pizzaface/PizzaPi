@@ -154,3 +154,47 @@ export function extToMime(path: string): string {
   };
   return map[ext] ?? "text/plain";
 }
+
+/**
+ * Determine whether the slash-command popover should stay open for the current
+ * input value. Returns `{ open, query }`.
+ *
+ * When the first token after `/` is a recognized command/skill name AND there
+ * is at least one argument following it, the popover closes so the user can
+ * type arguments without a stale "no results" overlay.
+ *
+ * Commands in `keepOpenNames` (e.g. "resume") keep the popover open even with
+ * arguments, because they use the popover to render argument-mode UI (session
+ * picker, search results, etc.).
+ *
+ * Examples (assuming "skill:beads-ccpm" and "compact" are known, "resume" is keepOpen):
+ *   "/sk"                              → open, query="sk"
+ *   "/skill:beads-ccpm"                → open, query="skill:beads-ccpm"
+ *   "/skill:beads-ccpm "               → closed (matched + has trailing space)
+ *   "/skill:beads-ccpm epic-sync gm7"  → closed
+ *   "/compact "                        → closed
+ *   "/resume my-session"               → open, query="resume my-session"
+ *   "/unknown-thing args"              → open, query="unknown-thing args"
+ */
+export function resolveCommandPopoverState(
+  afterSlash: string,
+  knownNames: Set<string>,
+  keepOpenNames?: Set<string>,
+): { open: boolean; query: string } {
+  const spaceIdx = afterSlash.search(/\s/);
+  if (spaceIdx === -1) {
+    // Still typing the command name — keep popover open for filtering.
+    return { open: true, query: afterSlash };
+  }
+  const cmdName = afterSlash.slice(0, spaceIdx).toLowerCase();
+  // Some commands use the popover for argument UI (e.g. resume session picker).
+  if (keepOpenNames?.has(cmdName)) {
+    return { open: true, query: afterSlash };
+  }
+  if (knownNames.has(cmdName)) {
+    // Recognised command with arguments — close the popover.
+    return { open: false, query: "" };
+  }
+  // Unrecognised — keep open so the user sees suggestions / "not found".
+  return { open: true, query: afterSlash };
+}
