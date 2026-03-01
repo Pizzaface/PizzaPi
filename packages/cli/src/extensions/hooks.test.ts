@@ -1,8 +1,12 @@
 import { describe, test, expect } from "bun:test";
-import { matchesTool, runHook, parseHookOutput } from "./hooks.js";
+import { matchesTool, runHook, parseHookOutput, normalizeToolInput } from "./hooks.js";
+import { mergeHooks, isProjectHooksTrusted } from "../config.js";
+import type { HooksConfig } from "../config.js";
 import { join } from "path";
 
-const FIXTURES_DIR = join(import.meta.dir, "__fixtures__", "hooks");
+// ---------------------------------------------------------------------------
+// matchesTool
+// ---------------------------------------------------------------------------
 
 describe("matchesTool", () => {
     test("matches exact tool name (case-insensitive)", () => {
@@ -41,6 +45,41 @@ describe("matchesTool", () => {
         expect(matchesTool("mcp__.*", "bash")).toBe(false);
     });
 });
+
+// ---------------------------------------------------------------------------
+// normalizeToolInput
+// ---------------------------------------------------------------------------
+
+describe("normalizeToolInput", () => {
+    test("adds file_path alias when path is present", () => {
+        const result = normalizeToolInput("write", { path: "/foo/bar.ts", content: "hi" });
+        expect(result.path).toBe("/foo/bar.ts");
+        expect(result.file_path).toBe("/foo/bar.ts");
+        expect(result.content).toBe("hi");
+    });
+
+    test("adds path alias when file_path is present", () => {
+        const result = normalizeToolInput("write", { file_path: "/foo/bar.ts" });
+        expect(result.path).toBe("/foo/bar.ts");
+        expect(result.file_path).toBe("/foo/bar.ts");
+    });
+
+    test("does not overwrite if both keys exist", () => {
+        const result = normalizeToolInput("write", { path: "/a.ts", file_path: "/b.ts" });
+        expect(result.path).toBe("/a.ts");
+        expect(result.file_path).toBe("/b.ts");
+    });
+
+    test("passes through non-file tools unchanged", () => {
+        const input = { command: "ls -la" };
+        const result = normalizeToolInput("bash", input);
+        expect(result).toEqual(input);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// parseHookOutput
+// ---------------------------------------------------------------------------
 
 describe("parseHookOutput", () => {
     test("returns null for empty string", () => {
@@ -102,6 +141,10 @@ describe("parseHookOutput", () => {
     });
 });
 
+// ---------------------------------------------------------------------------
+// runHook
+// ---------------------------------------------------------------------------
+
 describe("runHook", () => {
     test("runs a simple echo hook and captures stdout", async () => {
         const result = await runHook(
@@ -111,6 +154,7 @@ describe("runHook", () => {
         );
         expect(result.exitCode).toBe(0);
         expect(result.stdout).toContain("additionalContext");
+        expect(result.killed).toBe(false);
     });
 
     test("captures exit code 2 for blocking hooks", async () => {
@@ -121,6 +165,7 @@ describe("runHook", () => {
         );
         expect(result.exitCode).toBe(2);
         expect(result.stderr).toContain("BLOCKED: test");
+        expect(result.killed).toBe(false);
     });
 
     test("passes stdin payload to the hook", async () => {
@@ -143,7 +188,7 @@ describe("runHook", () => {
         expect(result.stdout).toBe("/tmp");
     });
 
-    test("handles hook timeout gracefully", async () => {
+    test("marks killed processes with killed=true and non-zero exit", async () => {
         const start = Date.now();
         const result = await runHook(
             { command: "sleep 10", timeout: 500 },
@@ -153,8 +198,8 @@ describe("runHook", () => {
         const elapsed = Date.now() - start;
         // Should finish well before 10s — timeout killed the process
         expect(elapsed).toBeLessThan(5000);
-        // stdout should be empty (no output from sleep)
-        expect(result.stdout).toBe("");
+        expect(result.killed).toBe(true);
+        expect(result.exitCode).not.toBe(0);
     });
 
     test("handles missing command gracefully", async () => {
@@ -167,8 +212,85 @@ describe("runHook", () => {
     });
 });
 
+// ---------------------------------------------------------------------------
+// mergeHooks
+// ---------------------------------------------------------------------------
+
+describe("mergeHooks", () => {
+    test("returns undefined when both are undefined", () => {
+        expect(mergeHooks(undefined, undefined)).toBeUndefined();
+    });
+
+    test("returns first when second is undefined", () => {
+        const a: HooksConfig = { PreToolUse: [{ matcher: "Bash", hooks: [{ command: "a.sh" }] }] };
+        expect(mergeHooks(a, undefined)).toEqual(a);
+    });
+
+    test("returns second when first is undefined", () => {
+        const b: HooksConfig = { PostToolUse: [{ matcher: "Edit", hooks: [{ command: "b.sh" }] }] };
+        expect(mergeHooks(undefined, b)).toEqual(b);
+    });
+
+    test("concatenates PreToolUse and PostToolUse arrays", () => {
+        const a: HooksConfig = {
+            PreToolUse: [{ matcher: "Bash", hooks: [{ command: "a.sh" }] }],
+            PostToolUse: [{ matcher: "Bash", hooks: [{ command: "c.sh" }] }],
+        };
+        const b: HooksConfig = {
+            PreToolUse: [{ matcher: "Edit", hooks: [{ command: "b.sh" }] }],
+            PostToolUse: [{ matcher: "Edit", hooks: [{ command: "d.sh" }] }],
+        };
+        const result = mergeHooks(a, b);
+        expect(result?.PreToolUse).toHaveLength(2);
+        expect(result?.PostToolUse).toHaveLength(2);
+        expect(result?.PreToolUse?.[0].matcher).toBe("Bash");
+        expect(result?.PreToolUse?.[1].matcher).toBe("Edit");
+    });
+});
+
+// ---------------------------------------------------------------------------
+// isProjectHooksTrusted
+// ---------------------------------------------------------------------------
+
+describe("isProjectHooksTrusted", () => {
+    const origEnv = process.env.PIZZAPI_ALLOW_PROJECT_HOOKS;
+
+    test("returns false when global config has no allowProjectHooks", () => {
+        delete process.env.PIZZAPI_ALLOW_PROJECT_HOOKS;
+        expect(isProjectHooksTrusted({})).toBe(false);
+    });
+
+    test("returns true when global config has allowProjectHooks: true", () => {
+        delete process.env.PIZZAPI_ALLOW_PROJECT_HOOKS;
+        expect(isProjectHooksTrusted({ allowProjectHooks: true })).toBe(true);
+    });
+
+    test("returns false when global config has allowProjectHooks: false", () => {
+        delete process.env.PIZZAPI_ALLOW_PROJECT_HOOKS;
+        expect(isProjectHooksTrusted({ allowProjectHooks: false })).toBe(false);
+    });
+
+    test("returns true when PIZZAPI_ALLOW_PROJECT_HOOKS=1 env is set", () => {
+        process.env.PIZZAPI_ALLOW_PROJECT_HOOKS = "1";
+        expect(isProjectHooksTrusted({})).toBe(true);
+    });
+
+    // Restore env
+    test("cleanup", () => {
+        if (origEnv !== undefined) process.env.PIZZAPI_ALLOW_PROJECT_HOOKS = origEnv;
+        else delete process.env.PIZZAPI_ALLOW_PROJECT_HOOKS;
+        expect(true).toBe(true);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Real hook scripts — integration tests
+// ---------------------------------------------------------------------------
+
 describe("real hook scripts", () => {
     const projectDir = join(import.meta.dir, "../../../..");
+
+    // -- block-dangerous-commands.sh --
 
     test("block-dangerous-commands.sh blocks force push to main", async () => {
         const result = await runHook(
@@ -181,6 +303,26 @@ describe("real hook scripts", () => {
         expect(result.stderr).toContain("Force push");
     });
 
+    test("block-dangerous-commands.sh blocks -f push to main", async () => {
+        const result = await runHook(
+            { command: `bash "${projectDir}/.pizzapi/hooks/block-dangerous-commands.sh"` },
+            JSON.stringify({ tool_input: { command: "git push -f origin main" } }),
+            projectDir,
+        );
+        expect(result.exitCode).toBe(2);
+        expect(result.stderr).toContain("BLOCKED");
+    });
+
+    test("block-dangerous-commands.sh blocks --force-with-lease to main", async () => {
+        const result = await runHook(
+            { command: `bash "${projectDir}/.pizzapi/hooks/block-dangerous-commands.sh"` },
+            JSON.stringify({ tool_input: { command: "git push --force-with-lease origin main" } }),
+            projectDir,
+        );
+        expect(result.exitCode).toBe(2);
+        expect(result.stderr).toContain("BLOCKED");
+    });
+
     test("block-dangerous-commands.sh allows normal git push", async () => {
         const result = await runHook(
             { command: `bash "${projectDir}/.pizzapi/hooks/block-dangerous-commands.sh"` },
@@ -190,7 +332,7 @@ describe("real hook scripts", () => {
         expect(result.exitCode).toBe(0);
     });
 
-    test("block-dangerous-commands.sh blocks --no-verify", async () => {
+    test("block-dangerous-commands.sh blocks --no-verify on commit", async () => {
         const result = await runHook(
             { command: `bash "${projectDir}/.pizzapi/hooks/block-dangerous-commands.sh"` },
             JSON.stringify({ tool_input: { command: "git commit --no-verify -m 'test'" } }),
@@ -199,6 +341,18 @@ describe("real hook scripts", () => {
         expect(result.exitCode).toBe(2);
         expect(result.stderr).toContain("BLOCKED");
     });
+
+    test("block-dangerous-commands.sh blocks --no-verify on push", async () => {
+        const result = await runHook(
+            { command: `bash "${projectDir}/.pizzapi/hooks/block-dangerous-commands.sh"` },
+            JSON.stringify({ tool_input: { command: "git push --no-verify origin main" } }),
+            projectDir,
+        );
+        expect(result.exitCode).toBe(2);
+        expect(result.stderr).toContain("BLOCKED");
+    });
+
+    // -- lights-on-bun.sh --
 
     test("lights-on-bun.sh warns about npm usage", async () => {
         const result = await runHook(
@@ -231,7 +385,9 @@ describe("real hook scripts", () => {
         expect(result.stdout).toBe("");
     });
 
-    test("lights-on-no-node-modules.sh blocks edits to node_modules", async () => {
+    // -- lights-on-no-node-modules.sh (with both path keys) --
+
+    test("lights-on-no-node-modules.sh blocks edits using file_path key", async () => {
         const result = await runHook(
             { command: `bash "${projectDir}/.pizzapi/hooks/lights-on-no-node-modules.sh"` },
             JSON.stringify({ tool_input: { file_path: "node_modules/foo/index.js" } }),
@@ -242,16 +398,39 @@ describe("real hook scripts", () => {
         expect(result.stderr).toContain("patches/");
     });
 
+    test("lights-on-no-node-modules.sh blocks edits using path key (pi format)", async () => {
+        const result = await runHook(
+            { command: `bash "${projectDir}/.pizzapi/hooks/lights-on-no-node-modules.sh"` },
+            JSON.stringify({ tool_input: { path: "node_modules/foo/index.js" } }),
+            projectDir,
+        );
+        expect(result.exitCode).toBe(2);
+        expect(result.stderr).toContain("BLOCKED");
+    });
+
     test("lights-on-no-node-modules.sh allows edits to src files", async () => {
         const result = await runHook(
             { command: `bash "${projectDir}/.pizzapi/hooks/lights-on-no-node-modules.sh"` },
-            JSON.stringify({ tool_input: { file_path: "packages/server/src/index.ts" } }),
+            JSON.stringify({ tool_input: { path: "packages/server/src/index.ts" } }),
             projectDir,
         );
         expect(result.exitCode).toBe(0);
     });
 
-    test("lights-on-tests-post.sh asks about tests for source files", async () => {
+    // -- lights-on-tests-post.sh (with both path keys) --
+
+    test("lights-on-tests-post.sh asks about tests for source files (path key)", async () => {
+        const result = await runHook(
+            { command: `bash "${projectDir}/.pizzapi/hooks/lights-on-tests-post.sh"` },
+            JSON.stringify({ tool_input: { path: "packages/server/src/auth.ts" } }),
+            projectDir,
+        );
+        expect(result.exitCode).toBe(0);
+        const output = parseHookOutput(result.stdout);
+        expect(output?.additionalContext).toContain("test");
+    });
+
+    test("lights-on-tests-post.sh asks about tests for source files (file_path key)", async () => {
         const result = await runHook(
             { command: `bash "${projectDir}/.pizzapi/hooks/lights-on-tests-post.sh"` },
             JSON.stringify({ tool_input: { file_path: "packages/server/src/auth.ts" } }),
@@ -265,7 +444,7 @@ describe("real hook scripts", () => {
     test("lights-on-tests-post.sh skips test files", async () => {
         const result = await runHook(
             { command: `bash "${projectDir}/.pizzapi/hooks/lights-on-tests-post.sh"` },
-            JSON.stringify({ tool_input: { file_path: "packages/server/src/auth.test.ts" } }),
+            JSON.stringify({ tool_input: { path: "packages/server/src/auth.test.ts" } }),
             projectDir,
         );
         expect(result.exitCode).toBe(0);
@@ -275,12 +454,14 @@ describe("real hook scripts", () => {
     test("lights-on-tests-post.sh skips non-code files", async () => {
         const result = await runHook(
             { command: `bash "${projectDir}/.pizzapi/hooks/lights-on-tests-post.sh"` },
-            JSON.stringify({ tool_input: { file_path: "README.md" } }),
+            JSON.stringify({ tool_input: { path: "README.md" } }),
             projectDir,
         );
         expect(result.exitCode).toBe(0);
         expect(result.stdout).toBe("");
     });
+
+    // -- lights-on-bash-post.sh --
 
     test("lights-on-bash-post.sh warns on command failure", async () => {
         const result = await runHook(

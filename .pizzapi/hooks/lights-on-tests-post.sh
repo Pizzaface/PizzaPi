@@ -8,7 +8,13 @@ set -euo pipefail
 TOOL_INPUT=$(cat 2>/dev/null) || true
 [[ -z "$TOOL_INPUT" ]] && exit 0
 
-FILE_PATH=$(echo "$TOOL_INPUT" | jq -r '.tool_input.file_path // empty' 2>/dev/null) || true
+# jq is needed for output — if missing, skip silently (advisory hook)
+if ! command -v jq &>/dev/null; then
+    exit 0
+fi
+
+# Support both pi's "path" and Claude Code's "file_path" keys
+FILE_PATH=$(echo "$TOOL_INPUT" | jq -r '.tool_input.file_path // .tool_input.path // empty' 2>/dev/null) || true
 [[ -z "$FILE_PATH" ]] && exit 0
 
 FILENAME=$(basename "$FILE_PATH")

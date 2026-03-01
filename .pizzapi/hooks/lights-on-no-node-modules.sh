@@ -4,10 +4,17 @@
 # Exit 2 = hard block. Exit 0 = allow.
 set -euo pipefail
 
+# Safety: require jq — this is a blocking hook, fail-closed without it
+if ! command -v jq &>/dev/null; then
+    echo "BLOCKED: jq is required for safety hooks but not found in PATH." >&2
+    exit 2
+fi
+
 TOOL_INPUT=$(cat 2>/dev/null) || true
 [[ -z "$TOOL_INPUT" ]] && exit 0
 
-FILE_PATH=$(echo "$TOOL_INPUT" | jq -r '.tool_input.file_path // empty' 2>/dev/null) || true
+# Support both pi's "path" and Claude Code's "file_path" keys
+FILE_PATH=$(echo "$TOOL_INPUT" | jq -r '.tool_input.file_path // .tool_input.path // empty' 2>/dev/null) || true
 [[ -z "$FILE_PATH" ]] && exit 0
 
 # Block any edit to files inside node_modules

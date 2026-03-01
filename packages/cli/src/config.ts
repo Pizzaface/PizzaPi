@@ -53,6 +53,15 @@ export interface PizzaPiConfig {
      * exit 0 to allow (with optional additionalContext), exit 2 to block.
      */
     hooks?: HooksConfig;
+    /**
+     * Trust gate: allow project-local hooks (.pizzapi/config.json) to run.
+     * Must be set in the GLOBAL ~/.pizzapi/config.json (or via
+     * PIZZAPI_ALLOW_PROJECT_HOOKS=1 env var). Project configs cannot
+     * self-authorize.
+     *
+     * When false/unset, only hooks from ~/.pizzapi/config.json (global) run.
+     */
+    allowProjectHooks?: boolean;
 }
 
 function readJsonSafe(path: string): Partial<PizzaPiConfig> {
@@ -65,7 +74,7 @@ function readJsonSafe(path: string): Partial<PizzaPiConfig> {
 }
 
 /** Deep-merge hooks: concatenate matcher arrays from both sources. */
-function mergeHooks(a?: HooksConfig, b?: HooksConfig): HooksConfig | undefined {
+export function mergeHooks(a?: HooksConfig, b?: HooksConfig): HooksConfig | undefined {
     if (!a && !b) return undefined;
     const merged: HooksConfig = {};
     const pre = [...(a?.PreToolUse ?? []), ...(b?.PreToolUse ?? [])];
@@ -76,20 +85,45 @@ function mergeHooks(a?: HooksConfig, b?: HooksConfig): HooksConfig | undefined {
 }
 
 /**
+ * Check whether project-local hooks are trusted.
+ * Trust must come from the global config or the environment — never from
+ * the project config itself (that would be a self-authorization bypass).
+ */
+export function isProjectHooksTrusted(globalConfig: Partial<PizzaPiConfig>): boolean {
+    if (process.env.PIZZAPI_ALLOW_PROJECT_HOOKS === "1") return true;
+    return globalConfig.allowProjectHooks === true;
+}
+
+/**
  * Load PizzaPi config from:
  *   1. ~/.pizzapi/config.json  (global)
  *   2. <cwd>/.pizzapi/config.json  (project-local, wins on conflict)
  *
- * Hooks are deep-merged (concatenated) so global and project hooks both run.
+ * Hooks: global hooks always run. Project hooks only run when explicitly
+ * trusted via `allowProjectHooks: true` in the global config or the
+ * PIZZAPI_ALLOW_PROJECT_HOOKS=1 env var.
  */
 export function loadConfig(cwd: string = process.cwd()): PizzaPiConfig {
     const globalPath = join(homedir(), ".pizzapi", "config.json");
     const projectPath = join(cwd, ".pizzapi", "config.json");
     const global = readJsonSafe(globalPath);
     const project = readJsonSafe(projectPath);
-    const hooks = mergeHooks(global.hooks, project.hooks);
+
+    // Trust gate: project hooks require explicit authorization from global config
+    const projectHooksTrusted = isProjectHooksTrusted(global);
+    const projectHooks = projectHooksTrusted ? project.hooks : undefined;
+    if (project.hooks && !projectHooksTrusted) {
+        console.warn(
+            "[hooks] Project hooks found in .pizzapi/config.json but not trusted. " +
+                'Set "allowProjectHooks": true in ~/.pizzapi/config.json or ' +
+                "PIZZAPI_ALLOW_PROJECT_HOOKS=1 to enable.",
+        );
+    }
+
+    const hooks = mergeHooks(global.hooks, projectHooks);
     const config = { ...global, ...project };
     if (hooks) config.hooks = hooks;
+    else delete config.hooks;
     return config;
 }
 
