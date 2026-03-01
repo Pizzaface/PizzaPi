@@ -950,6 +950,35 @@ export function App() {
         updated[idx] = next;
         return updated;
       }
+
+      // When a user message arrives from the server, check for a locally-inserted
+      // steer message with the same content and replace it instead of appending a
+      // duplicate. Steer messages are added optimistically with key "user:steer:*"
+      // but the server echoes them back with a different key (e.g. "user:ts:*").
+      if (next.role === "user") {
+        const nextText = typeof next.content === "string"
+          ? next.content.trim()
+          : Array.isArray(next.content)
+            ? (next.content as Array<Record<string, unknown>>)
+                .filter((b) => b && typeof b === "object" && b.type === "text" && typeof b.text === "string")
+                .map((b) => b.text as string)
+                .join("")
+                .trim()
+            : "";
+        if (nextText) {
+          const steerIdx = base.findIndex((m) =>
+            m.key.startsWith("user:steer:") &&
+            m.role === "user" &&
+            (typeof m.content === "string" ? m.content.trim() : "") === nextText,
+          );
+          if (steerIdx >= 0) {
+            const updated = base === prev ? base.slice() : base;
+            updated[steerIdx] = next;
+            return updated;
+          }
+        }
+      }
+
       return [...base, next];
     });
   }, []);
@@ -1763,6 +1792,8 @@ export function App() {
   }, [liveSessions, openSession]);
 
 
+  // Dedup guard: prevent sending the exact same message text within a short window.
+  const lastSentRef = React.useRef<{ text: string; ts: number } | null>(null);
 
   const sendSessionInput = React.useCallback(async (message: { text: string; files?: Array<{ mediaType?: string; filename?: string; url?: string }>; deliverAs?: "steer" | "followUp" } | string) => {
     const socket = viewerWsRef.current;
@@ -1774,6 +1805,16 @@ export function App() {
 
     const payload = typeof message === "string" ? { text: message, files: [] } : message;
     const trimmed = payload.text.trim();
+
+    // Dedup guard: skip if the same text was sent in the last 500ms.
+    const now = Date.now();
+    const last = lastSentRef.current;
+    if (last && trimmed && last.text === trimmed && now - last.ts < 500) {
+      return true; // silently deduplicate
+    }
+    if (trimmed) {
+      lastSentRef.current = { text: trimmed, ts: now };
+    }
 
     const rawFiles = (payload.files ?? [])
       .filter((f) => typeof f?.url === "string" && f.url.length > 0)
