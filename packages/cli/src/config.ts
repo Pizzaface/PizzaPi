@@ -2,6 +2,34 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 
+/** A single hook entry — a shell command to run at a lifecycle point. */
+export interface HookEntry {
+    /** Shell command to execute. Receives JSON on stdin. */
+    command: string;
+    /** Timeout in milliseconds. Default: 10000 (10s). */
+    timeout?: number;
+}
+
+/** A matcher group — binds a tool name pattern to one or more hooks. */
+export interface HookMatcher {
+    /**
+     * Tool name pattern to match. Supports `|` for alternation.
+     * Examples: "Bash", "Edit|Write", "Read".
+     * Use ".*" to match all tools.
+     */
+    matcher: string;
+    /** Hooks to run when the matcher matches. */
+    hooks: HookEntry[];
+}
+
+/** Hook configuration — shell scripts that run at tool lifecycle points. */
+export interface HooksConfig {
+    /** Hooks that fire BEFORE a tool executes. Can block or inject context. */
+    PreToolUse?: HookMatcher[];
+    /** Hooks that fire AFTER a tool executes. Can inject context. */
+    PostToolUse?: HookMatcher[];
+}
+
 export interface PizzaPiConfig {
     /** Override the default system prompt */
     systemPrompt?: string;
@@ -19,6 +47,12 @@ export interface PizzaPiConfig {
      * Supports ~ expansion and absolute paths.
      */
     skills?: string[];
+    /**
+     * Shell-script hooks that fire at tool lifecycle points.
+     * Inspired by Claude Code hooks: scripts receive JSON on stdin,
+     * exit 0 to allow (with optional additionalContext), exit 2 to block.
+     */
+    hooks?: HooksConfig;
 }
 
 function readJsonSafe(path: string): Partial<PizzaPiConfig> {
@@ -30,17 +64,33 @@ function readJsonSafe(path: string): Partial<PizzaPiConfig> {
     }
 }
 
+/** Deep-merge hooks: concatenate matcher arrays from both sources. */
+function mergeHooks(a?: HooksConfig, b?: HooksConfig): HooksConfig | undefined {
+    if (!a && !b) return undefined;
+    const merged: HooksConfig = {};
+    const pre = [...(a?.PreToolUse ?? []), ...(b?.PreToolUse ?? [])];
+    const post = [...(a?.PostToolUse ?? []), ...(b?.PostToolUse ?? [])];
+    if (pre.length > 0) merged.PreToolUse = pre;
+    if (post.length > 0) merged.PostToolUse = post;
+    return Object.keys(merged).length > 0 ? merged : undefined;
+}
+
 /**
  * Load PizzaPi config from:
  *   1. ~/.pizzapi/config.json  (global)
  *   2. <cwd>/.pizzapi/config.json  (project-local, wins on conflict)
+ *
+ * Hooks are deep-merged (concatenated) so global and project hooks both run.
  */
 export function loadConfig(cwd: string = process.cwd()): PizzaPiConfig {
     const globalPath = join(homedir(), ".pizzapi", "config.json");
     const projectPath = join(cwd, ".pizzapi", "config.json");
     const global = readJsonSafe(globalPath);
     const project = readJsonSafe(projectPath);
-    return { ...global, ...project };
+    const hooks = mergeHooks(global.hooks, project.hooks);
+    const config = { ...global, ...project };
+    if (hooks) config.hooks = hooks;
+    return config;
 }
 
 export function expandHome(path: string): string {

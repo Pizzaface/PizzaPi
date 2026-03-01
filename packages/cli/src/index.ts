@@ -19,6 +19,7 @@ import { setSessionNameExtension } from "./extensions/set-session-name.js";
 import { updateTodoExtension } from "./extensions/update-todo.js";
 import { spawnSessionExtension } from "./extensions/spawn-session.js";
 import { sessionMessagingExtension } from "./extensions/session-messaging.js";
+import { createHooksExtension } from "./extensions/hooks.js";
 import { runSetup } from "./setup.js";
 
 async function main() {
@@ -372,10 +373,15 @@ async function main() {
         agentFiles.push(...loadedAgents);
     }
 
+    // Build extension list — hooks extension is conditional on config
+    const extensionFactories = [remoteExtension, mcpExtension, restartExtension, setSessionNameExtension, updateTodoExtension, spawnSessionExtension, sessionMessagingExtension];
+    const hooksExtension = createHooksExtension(config.hooks, cwd);
+    if (hooksExtension) extensionFactories.push(hooksExtension);
+
     const loader = new DefaultResourceLoader({
         cwd,
         agentDir,
-        extensionFactories: [remoteExtension, mcpExtension, restartExtension, setSessionNameExtension, updateTodoExtension, spawnSessionExtension, sessionMessagingExtension],
+        extensionFactories,
         additionalSkillPaths: buildInteractiveSkillPaths(cwd, config.skills),
         ...(config.systemPrompt !== undefined && {
             systemPromptOverride: () => config.systemPrompt,
