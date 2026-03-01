@@ -30,14 +30,12 @@
  */
 
 import { spawn as spawnPty } from "@zenyr/bun-pty";
-import { platform, homedir } from "node:os";
+import { homedir } from "node:os";
+import { getShellArgs, resolveDefaultShell } from "./terminal-utils.js";
 
 const terminalId = process.env.TERMINAL_WORKER_ID ?? "unknown";
 const cwd = process.env.TERMINAL_WORKER_CWD || homedir();
-const shell =
-    process.env.TERMINAL_WORKER_SHELL ||
-    process.env.SHELL ||
-    (platform() === "win32" ? "powershell.exe" : "/bin/bash");
+const shell = resolveDefaultShell(process.env.TERMINAL_WORKER_SHELL);
 const cols = Math.max(1, parseInt(process.env.TERMINAL_WORKER_COLS ?? "80", 10) || 80);
 const rows = Math.max(1, parseInt(process.env.TERMINAL_WORKER_ROWS ?? "24", 10) || 24);
 
@@ -51,7 +49,7 @@ function send(msg: Record<string, unknown>): void {
 
 let ptyProcess: ReturnType<typeof spawnPty>;
 try {
-    ptyProcess = spawnPty(shell, ["-il"], {
+    ptyProcess = spawnPty(shell, getShellArgs(shell), {
         name: "xterm-256color",
         cols,
         rows,

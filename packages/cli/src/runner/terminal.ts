@@ -25,6 +25,7 @@ import { existsSync } from "node:fs";
 import { platform, arch, homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveDefaultShell } from "./terminal-utils.js";
 
 export interface TerminalEntry {
     terminalId: string;
@@ -125,10 +126,7 @@ export function spawnTerminal(
         return;
     }
 
-    const shell =
-        opts.shell ||
-        process.env.SHELL ||
-        (platform() === "win32" ? "powershell.exe" : "/bin/bash");
+    const shell = resolveDefaultShell(opts.shell);
 
     const cols = opts.cols && opts.cols > 0 ? opts.cols : 80;
     const rows = opts.rows && opts.rows > 0 ? opts.rows : 24;
