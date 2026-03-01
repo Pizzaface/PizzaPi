@@ -262,26 +262,32 @@ function ComposerSubmitButton({
   input,
   agentActive,
   onExec,
+  isTouchDevice,
 }: {
   sessionId: string | null;
   input: string;
   agentActive?: boolean;
   onExec?: (payload: unknown) => boolean | void;
+  isTouchDevice?: boolean;
 }) {
   const attachments = usePromptInputAttachments();
   const hasAttachments = attachments.files.length > 0;
 
+  // On mobile (touch), show a send/queue button instead of stop —
+  // Enter inserts newlines on mobile, so the button is the primary submit action.
+  const showStopMode = agentActive && onExec && !isTouchDevice;
+
   return (
     <PromptInputSubmit
-      status={agentActive && onExec ? "streaming" : "ready"}
+      status={showStopMode ? "streaming" : "ready"}
       onStop={
-        onExec
+        showStopMode && onExec
           ? () => {
               onExec({ type: "exec", id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, command: "abort" });
             }
           : undefined
       }
-      disabled={!sessionId || (!(agentActive && onExec) && !input.trim() && !hasAttachments)}
+      disabled={!sessionId || (!showStopMode && !input.trim() && !hasAttachments)}
     />
   );
 }
@@ -407,6 +413,13 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
 
   const [commandOpen, setCommandOpen] = React.useState(false);
   const [commandQuery, setCommandQuery] = React.useState("");
+  const [commandHighlightedIndex, setCommandHighlightedIndex] = React.useState(0);
+
+  // Detect touch devices for mobile-specific behavior
+  const isTouchDevice = React.useMemo(
+    () => typeof window !== "undefined" && window.matchMedia("(pointer: coarse)").matches,
+    [],
+  );
 
   // @-mention popover state
   const [atMentionOpen, setAtMentionOpen] = React.useState(false);
@@ -608,6 +621,11 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
       .map((c) => ({ name: c.name, description: c.description }));
   }, [availableCommands]);
 
+  // Reset highlighted index when the query or mode changes
+  React.useEffect(() => {
+    setCommandHighlightedIndex(0);
+  }, [commandQuery]);
+
   const commandSuggestions = React.useMemo(() => {
     const query = commandQuery.trim().toLowerCase();
     const list = supportedWebCommands;
@@ -711,6 +729,16 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
       );
     });
   }, [resumeSessions, resumeQuery]);
+
+  // Controlled value for cmdk Command (drives data-selected highlighting)
+  const commandHighlightedValue = React.useMemo(() => {
+    if (!commandOpen) return "";
+    if (isResumeMode) {
+      return resumeCandidates[commandHighlightedIndex]?.path ?? "";
+    }
+    const combined = [...commandSuggestions, ...skillSuggestions];
+    return combined[commandHighlightedIndex]?.name ?? "";
+  }, [commandOpen, isResumeMode, resumeCandidates, commandSuggestions, skillSuggestions, commandHighlightedIndex]);
 
   const resumeRequestedRef = React.useRef<string | null>(null);
 
@@ -1183,6 +1211,18 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
             <Command
               shouldFilter={false}
               className="w-full"
+              value={commandHighlightedValue}
+              onValueChange={(v) => {
+                // Sync highlighted index when cmdk changes value (e.g. mouse hover)
+                if (isResumeMode) {
+                  const idx = resumeCandidates.findIndex(s => s.path.toLowerCase() === v.toLowerCase());
+                  if (idx !== -1) setCommandHighlightedIndex(idx);
+                } else {
+                  const combined = [...commandSuggestions, ...skillSuggestions];
+                  const idx = combined.findIndex(c => c.name.toLowerCase() === v.toLowerCase());
+                  if (idx !== -1) setCommandHighlightedIndex(idx);
+                }
+              }}
             >
               {/* Close button header */}
               <div className="flex items-center justify-between px-3 py-1.5 border-b border-border/50">
@@ -1206,7 +1246,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                       {resumeCandidates.map((session) => (
                         <CommandItem
                           key={session.path}
-                          value={`${session.name ?? ""} ${session.id} ${session.path} ${session.firstMessage ?? ""}`}
+                          value={session.path}
                           onSelect={() => {
                             if (onExec) {
                               onExec({
@@ -1476,24 +1516,80 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                       event.stopPropagation();
                       setCommandOpen(false);
                       setCommandQuery("");
+                      setCommandHighlightedIndex(0);
                       return;
                     }
 
-                    // Tab: autocomplete the first matching command (or skill) and close the popover
+                    // Desktop: arrow key navigation through command items
+                    if (!isTouchDevice && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+                      event.preventDefault();
+                      const totalItems = isResumeMode
+                        ? resumeCandidates.length
+                        : commandSuggestions.length + skillSuggestions.length;
+                      if (totalItems === 0) return;
+                      setCommandHighlightedIndex(prev => {
+                        if (event.key === "ArrowDown") {
+                          return prev < totalItems - 1 ? prev + 1 : 0;
+                        }
+                        return prev > 0 ? prev - 1 : totalItems - 1;
+                      });
+                      return;
+                    }
+
+                    // Desktop: Enter fills textbox with highlighted command (doesn't execute)
+                    if (!isTouchDevice && event.key === "Enter" && !event.shiftKey) {
+                      if (isResumeMode) {
+                        const highlighted = resumeCandidates[commandHighlightedIndex];
+                        if (highlighted && onExec) {
+                          event.preventDefault();
+                          onExec({ type: "exec", id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, command: "resume_session", sessionPath: highlighted.path });
+                          setInput("");
+                          setCommandQuery("");
+                          setCommandOpen(false);
+                          setCommandHighlightedIndex(0);
+                          return;
+                        }
+                      } else {
+                        const combined = [...commandSuggestions, ...skillSuggestions];
+                        const highlighted = combined[commandHighlightedIndex];
+                        if (highlighted) {
+                          event.preventDefault();
+                          setInput(`/${highlighted.name} `);
+                          setCommandQuery("");
+                          setCommandOpen(highlighted.name === "resume");
+                          setCommandHighlightedIndex(0);
+                          // Position cursor at end of filled text
+                          requestAnimationFrame(() => {
+                            const textarea = document.querySelector<HTMLTextAreaElement>("[data-pp-prompt]");
+                            if (textarea) {
+                              const len = textarea.value.length;
+                              textarea.setSelectionRange(len, len);
+                            }
+                          });
+                          return;
+                        }
+                      }
+                      // No highlighted match — fall through to execute the typed command
+                    }
+
+                    // Tab: autocomplete the highlighted command (or first match) and close the popover
                     if (event.key === "Tab" && (commandSuggestions.length > 0 || skillSuggestions.length > 0)) {
                       event.preventDefault();
-                      const first = commandSuggestions[0] ?? skillSuggestions[0];
-                      if (first) {
-                        setInput(`/${first.name} `);
+                      const combined = [...commandSuggestions, ...skillSuggestions];
+                      const highlighted = combined[commandHighlightedIndex] ?? combined[0];
+                      if (highlighted) {
+                        setInput(`/${highlighted.name} `);
                         setCommandQuery("");
-                        setCommandOpen(first.name === "resume");
+                        setCommandOpen(highlighted.name === "resume");
+                        setCommandHighlightedIndex(0);
                       }
                       return;
                     }
-
-                    // If the user presses Enter, we either execute the selected command
-                    // (cmdk handles selection) or fall back to the manual parser below.
                   }
+
+                  // On mobile (touch), don't execute slash commands on Enter —
+                  // the user taps the send button instead, which routes through handleSubmit.
+                  if (isTouchDevice) return;
 
                   // Minimal slash-command exec for supported commands.
                   if (event.key !== "Enter" || event.shiftKey) return;
@@ -1507,6 +1603,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                   }
                 }}
                 disabled={!sessionId}
+                submitOnEnter={!isTouchDevice}
                 placeholder={
                   sessionId
                     ? pendingQuestion
@@ -1515,7 +1612,9 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                         ? deliveryMode === "steer"
                           ? "Type to steer the agent…"
                           : "Type a follow-up message…"
-                        : "Send a message to this session…"
+                        : isTouchDevice
+                          ? "Send a message…"
+                          : "Send a message to this session…"
                     : "Pick a session to chat"
                 }
                 className="min-h-12 max-h-36"
@@ -1583,6 +1682,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                 input={input}
                 agentActive={agentActive}
                 onExec={onExec}
+                isTouchDevice={isTouchDevice}
               />
             </div>
           </PromptInputFooter>

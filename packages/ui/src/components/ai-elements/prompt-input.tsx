@@ -837,13 +837,17 @@ export const PromptInputBody = ({
 
 export type PromptInputTextareaProps = ComponentProps<
   typeof InputGroupTextarea
->;
+> & {
+  /** When false, Enter inserts a newline instead of submitting. Defaults to true. */
+  submitOnEnter?: boolean;
+};
 
 export const PromptInputTextarea = ({
   onChange,
   onKeyDown,
   className,
   placeholder = "What would you like to know?",
+  submitOnEnter = true,
   ...props
 }: PromptInputTextareaProps) => {
   const controller = useOptionalPromptInputController();
@@ -865,6 +869,11 @@ export const PromptInputTextarea = ({
           return;
         }
         if (e.shiftKey) {
+          return;
+        }
+        // When submitOnEnter is false (e.g. mobile), let the browser
+        // insert a newline instead of submitting the form.
+        if (!submitOnEnter) {
           return;
         }
         e.preventDefault();
@@ -894,7 +903,7 @@ export const PromptInputTextarea = ({
         }
       }
     },
-    [onKeyDown, isComposing, attachments]
+    [onKeyDown, isComposing, attachments, submitOnEnter]
   );
 
   const handlePaste: ClipboardEventHandler<HTMLTextAreaElement> = useCallback(
