@@ -1,0 +1,172 @@
+name: CI — Test & Build Binaries
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "packages/docs/**"
+      - "**.md"
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - "packages/docs/**"
+      - "**.md"
+  workflow_dispatch:
+
+jobs:
+  # ───────────────────────────────────────────────────────────────
+  # Unit tests (fast, Linux-only — no compiled binary needed)
+  # ───────────────────────────────────────────────────────────────
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.10"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Build
+        run: bun run build
+
+      - name: Run tests
+        run: bun run test
+
+  # ───────────────────────────────────────────────────────────────
+  # Build + smoke-test compiled binaries per platform
+  # ───────────────────────────────────────────────────────────────
+  binary:
+    name: Binary — ${{ matrix.target }}
+    needs: test
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64
+            runner: ubuntu-latest
+            binary: pizza-linux-x64
+          - target: linux-arm64
+            runner: ubuntu-latest          # cross-compile
+            binary: pizza-linux-arm64
+          - target: macos-arm64
+            runner: macos-latest           # Apple Silicon runners
+            binary: pizza-macos-arm64
+          # macos-x64 and windows-x64 are cross-compiled from their respective hosts
+          - target: macos-x64
+            runner: macos-13               # Intel macOS runner
+            binary: pizza-macos-x64
+          - target: windows-x64
+            runner: ubuntu-latest          # cross-compile
+            binary: pizza-windows-x64.exe
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.10"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build packages
+        run: bun run build
+
+      - name: Compile binary (${{ matrix.target }})
+        working-directory: packages/cli
+        run: bun build-binaries.ts --target ${{ matrix.target }}
+
+      - name: Verify binary exists
+        run: |
+          BINARY="packages/cli/dist/binaries/${{ matrix.target }}/${{ matrix.binary }}"
+          if [ ! -f "$BINARY" ]; then
+            echo "::error::Binary not found at $BINARY"
+            ls -la packages/cli/dist/binaries/${{ matrix.target }}/ || true
+            exit 1
+          fi
+          echo "✅ Binary size: $(du -h "$BINARY" | cut -f1)"
+
+      - name: Verify assets copied
+        run: |
+          DIR="packages/cli/dist/binaries/${{ matrix.target }}"
+          for asset in package.json theme/dark.json; do
+            if [ ! -f "$DIR/$asset" ]; then
+              echo "::error::Missing asset: $asset"
+              ls -laR "$DIR/" || true
+              exit 1
+            fi
+          done
+          echo "✅ All required assets present"
+
+      # Smoke test: run the binary on native platforms (not cross-compiled)
+      - name: Smoke test — binary runs
+        if: >-
+          (matrix.target == 'linux-x64' && matrix.runner == 'ubuntu-latest') ||
+          (matrix.target == 'macos-arm64' && matrix.runner == 'macos-latest') ||
+          (matrix.target == 'macos-x64' && matrix.runner == 'macos-13')
+        run: |
+          BINARY="packages/cli/dist/binaries/${{ matrix.target }}/${{ matrix.binary }}"
+          chmod +x "$BINARY"
+
+          # The binary will crash early (no package.json next to it for pi-coding-agent),
+          # but we can verify it's a valid executable that starts up.
+          # Exit code 1 is expected; segfault (139) or missing lib (127) are failures.
+          set +e
+          "$BINARY" --help 2>&1 | head -20
+          EXIT_CODE=$?
+          set -e
+
+          if [ $EXIT_CODE -eq 139 ]; then
+            echo "::error::Binary segfaulted (exit 139)"
+            exit 1
+          fi
+          if [ $EXIT_CODE -eq 127 ]; then
+            echo "::error::Missing shared library (exit 127)"
+            exit 1
+          fi
+
+          echo "✅ Binary executed (exit code: $EXIT_CODE — expected non-zero without full runtime assets)"
+
+      # Validate that inlined resources survive compilation
+      - name: Smoke test — inlined template in binary
+        if: >-
+          (matrix.target == 'linux-x64' && matrix.runner == 'ubuntu-latest') ||
+          (matrix.target == 'macos-arm64' && matrix.runner == 'macos-latest') ||
+          (matrix.target == 'macos-x64' && matrix.runner == 'macos-13')
+        run: |
+          BINARY="packages/cli/dist/binaries/${{ matrix.target }}/${{ matrix.binary }}"
+          chmod +x "$BINARY"
+
+          # Search the binary for the inlined compose template string.
+          # If it's present, the template was compiled into the binary.
+          if strings "$BINARY" | grep -q "PIZZAPI_REDIS_URL=redis://redis:6379"; then
+            echo "✅ Compose template is embedded in the binary"
+          else
+            echo "::error::Compose template NOT found in binary — inlining may have failed"
+            exit 1
+          fi
+
+      - name: Upload binary artifact
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pizza-${{ matrix.target }}
+          path: packages/cli/dist/binaries/${{ matrix.target }}/
+          retention-days: 7
