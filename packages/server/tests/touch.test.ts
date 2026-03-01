@@ -1,6 +1,7 @@
 import { expect, test, beforeAll } from "bun:test";
 import { randomUUID } from "crypto";
-import { kysely } from "../src/auth.js";
+import { getKysely } from "../src/auth.js";
+const kysely = getKysely();
 import { ensureRelaySessionTables, touchRelaySession, recordRelaySessionStart, getPersistedRelaySessionSnapshot } from "../src/sessions/store.js";
 
 beforeAll(async () => {

@@ -1,4 +1,5 @@
-import { kysely } from "./auth.js";
+import { getKysely } from "./auth.js";
+const kysely = getKysely();
 
 export async function ensureUserHiddenModelTable(): Promise<void> {
     await kysely.schema

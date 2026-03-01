@@ -1,4 +1,5 @@
-import { kysely } from "./auth.js";
+import { getKysely } from "./auth.js";
+const kysely = getKysely();
 
 const MAX_RECENT_FOLDERS = 10;
 

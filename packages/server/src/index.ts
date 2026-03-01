@@ -1,4 +1,4 @@
-import { trustedOrigins } from "./auth.js";
+import { getTrustedOrigins } from "./auth.js";
 import { handleFetch } from "./handler.js";
 import {
     getEphemeralSweepIntervalMs,
@@ -129,7 +129,7 @@ try {
 
     io = new SocketIOServer(httpServer, {
         cors: {
-            origin: trustedOrigins,
+            origin: getTrustedOrigins(),
             credentials: true,
         },
         // Generous ping settings to prevent disconnects during heavy agent

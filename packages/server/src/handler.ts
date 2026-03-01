@@ -1,4 +1,4 @@
-import { auth, isSignupAllowed } from "./auth.js";
+import { getAuth, isSignupAllowed } from "./auth.js";
 import { handleApi } from "./routes/api.js";
 import { serveStaticFile } from "./static.js";
 
@@ -22,7 +22,7 @@ export async function handleFetch(req: Request): Promise<Response> {
             }
         }
         try {
-            return await auth.handler(req);
+            return await getAuth().handler(req);
         } catch (e) {
             console.error("[auth] handler threw:", e);
             return Response.json({ error: "Auth error" }, { status: 500 });

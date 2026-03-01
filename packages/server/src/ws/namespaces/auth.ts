@@ -10,7 +10,7 @@
 // ============================================================================
 
 import type { Socket } from "socket.io";
-import { auth, kysely, trustedOrigins } from "../../auth.js";
+import { getAuth, getKysely, getTrustedOrigins } from "../../auth.js";
 
 /**
  * Middleware for /relay and /runner namespaces.
@@ -29,13 +29,13 @@ export function apiKeyAuthMiddleware() {
                 return next(new Error("unauthorized"));
             }
 
-            const result = await auth.api.verifyApiKey({ body: { key: apiKey } });
+            const result = await getAuth().api.verifyApiKey({ body: { key: apiKey } });
             if (!result.valid || !result.key?.userId) {
                 return next(new Error("unauthorized"));
             }
 
             const userId = result.key.userId;
-            const row = await kysely
+            const row = await getKysely()
                 .selectFrom("user")
                 .select("name")
                 .where("id", "=", userId)
@@ -66,7 +66,7 @@ export function sessionCookieAuthMiddleware() {
             // Browser WebSocket connections always include an Origin header; if the origin
             // is not in our trusted list, reject the connection before processing cookies.
             const origin = socket.handshake.headers.origin;
-            if (origin && !trustedOrigins.includes(origin)) {
+            if (origin && !getTrustedOrigins().includes(origin)) {
                 return next(new Error("forbidden: untrusted origin"));
             }
 
@@ -78,7 +78,7 @@ export function sessionCookieAuthMiddleware() {
             const headers = new Headers();
             headers.set("cookie", cookieHeader);
 
-            const session = await auth.api.getSession({ headers });
+            const session = await getAuth().api.getSession({ headers });
             if (!session?.user?.id) {
                 return next(new Error("unauthorized"));
             }

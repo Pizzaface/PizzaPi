@@ -1,168 +1,273 @@
 /**
- * E2E test: signup → API key → authenticated requests
+ * E2E test: signup → API key → authenticated requests → signup gating
  *
- * This test needs process isolation because it sets env vars before importing
- * server modules. When run as part of `bun test packages/server`, it spawns
- * itself in a subprocess to ensure clean module loading.
- *
- * Run directly: bun test tests/e2e/signup.test.ts
+ * Uses the factory `initAuth()` to configure a temp SQLite DB, so no
+ * subprocess isolation is needed.
  */
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { initAuth, getAuth, getKysely, type AuthConfig } from "../../src/auth.js";
+import { runAllMigrations } from "../../src/migrations.js";
+import { handleFetch } from "../../src/handler.js";
 
-// Detect if we're running as a subprocess (with env already set) or need to spawn one
-const isSubprocess = process.env.__PIZZAPI_E2E_SUBPROCESS === "1";
+// ── Test setup ────────────────────────────────────────────────────────────────
 
-if (!isSubprocess) {
-    // When run in batch mode, just spawn ourselves as a subprocess
-    describe("E2E: signup (subprocess)", () => {
-        test("runs signup E2E tests in isolated subprocess", async () => {
-            const result = Bun.spawnSync({
-                cmd: ["bun", "test", import.meta.path],
-                env: { ...process.env, __PIZZAPI_E2E_SUBPROCESS: "1" },
-                cwd: import.meta.dir + "/../..",
-                stdout: "pipe",
-                stderr: "pipe",
-            });
-            const output = result.stdout.toString() + result.stderr.toString();
-            if (result.exitCode !== 0) {
-                console.error(output);
-            }
-            expect(result.exitCode).toBe(0);
-        }, 30_000);
+const tmpDir = mkdtempSync(join(tmpdir(), "pizzapi-e2e-"));
+const dbPath = join(tmpDir, "test.db");
+const BASE = "http://localhost:7777";
+
+/** Helper to make requests through the handler */
+async function req(method: string, path: string, body?: any, headers?: Record<string, string>): Promise<Response> {
+    const init: RequestInit = {
+        method,
+        headers: { "content-type": "application/json", ...headers },
+    };
+    if (body) init.body = JSON.stringify(body);
+    return handleFetch(new Request(`${BASE}${path}`, init));
+}
+
+beforeAll(async () => {
+    initAuth({
+        dbPath,
+        baseURL: BASE,
+        secret: "test-secret-for-e2e-at-least-32-chars-long!!",
+        disableSignupAfterFirstUser: false,
     });
-} else {
-    // ── Actual E2E tests (running in isolated subprocess) ─────────────────
+    await runAllMigrations();
+});
 
-    const { mkdtempSync, rmSync } = await import("node:fs");
-    const { join } = await import("node:path");
-    const { tmpdir } = await import("node:os");
+afterAll(() => {
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+});
 
-    // Set up temp DB BEFORE importing any server modules
-    const tmpDir = mkdtempSync(join(tmpdir(), "pizzapi-e2e-"));
-    const dbPath = join(tmpDir, "test.db");
-    process.env.AUTH_DB_PATH = dbPath;
-    process.env.BETTER_AUTH_SECRET = "test-secret-for-e2e-at-least-32-chars-long!!";
-    process.env.BETTER_AUTH_BASE_URL = "http://localhost:7777";
-    process.env.PIZZAPI_DISABLE_SIGNUP_AFTER_FIRST_USER = "false";
+// ── Core signup + API key flow ────────────────────────────────────────────────
 
-    const { runAllMigrations } = await import("../../src/migrations.js");
-    const { handleFetch } = await import("../../src/handler.js");
-    const { kysely } = await import("../../src/auth.js");
+describe("E2E: signup → API key → authenticated requests", () => {
+    const testUser = {
+        name: "Test User",
+        email: "testuser@example.com",
+        password: "SecurePass123",
+    };
+    let apiKey: string;
 
-    const BASE = "http://localhost:7777";
+    test("GET /api/signup-status returns signupEnabled: true on fresh DB", async () => {
+        const res = await req("GET", "/api/signup-status");
+        expect(res.status).toBe(200);
+        const data = await res.json();
+        expect(data.signupEnabled).toBe(true);
+    });
 
-    async function req(method: string, path: string, body?: any, headers?: Record<string, string>): Promise<Response> {
-        const init: RequestInit = {
-            method,
-            headers: { "content-type": "application/json", ...headers },
-        };
-        if (body) init.body = JSON.stringify(body);
-        return handleFetch(new Request(`${BASE}${path}`, init));
-    }
+    test("POST /api/register creates user and returns API key", async () => {
+        const res = await req("POST", "/api/register", testUser);
+        expect(res.status).toBe(200);
+        const data = await res.json();
+        expect(data.ok).toBe(true);
+        expect(typeof data.key).toBe("string");
+        expect(data.key.length).toBe(64); // 32 random bytes → 64 hex chars
+        apiKey = data.key;
+    });
+
+    test("POST /api/register with same creds returns new key (re-login)", async () => {
+        const res = await req("POST", "/api/register", testUser);
+        expect(res.status).toBe(200);
+        const data = await res.json();
+        expect(data.ok).toBe(true);
+        expect(typeof data.key).toBe("string");
+        apiKey = data.key;
+    });
+
+    test("POST /api/register with wrong password returns 401", async () => {
+        const res = await req("POST", "/api/register", {
+            ...testUser,
+            password: "WrongPassword123",
+        });
+        expect(res.status).toBe(401);
+    });
+
+    test("POST /api/register with missing fields returns 400", async () => {
+        const res = await req("POST", "/api/register", { email: "a@b.com" });
+        expect(res.status).toBe(400);
+    });
+
+    test("POST /api/register with weak password returns 400", async () => {
+        const res = await req("POST", "/api/register", {
+            name: "Weak",
+            email: "weak@example.com",
+            password: "short",
+        });
+        expect(res.status).toBe(400);
+    });
+
+    test("POST /api/register with invalid email returns 400", async () => {
+        const res = await req("POST", "/api/register", {
+            name: "Bad Email",
+            email: "not-an-email",
+            password: "SecurePass123",
+        }, { "x-forwarded-for": "10.0.0.99" });
+        expect(res.status).toBe(400);
+    });
+
+    test("API key validates via better-auth verifyApiKey", async () => {
+        const auth = getAuth();
+        const result = await auth.api.verifyApiKey({ body: { key: apiKey } });
+        expect(result.valid).toBe(true);
+        expect(result.key?.userId).toBeTruthy();
+    });
+
+    test("invalid API key fails verification", async () => {
+        const auth = getAuth();
+        const result = await auth.api.verifyApiKey({ body: { key: "bad-key" } }).catch(() => ({ valid: false }));
+        expect(result.valid).toBe(false);
+    });
+
+    test("API key is stored in DB with correct metadata", async () => {
+        const kysely = getKysely();
+        const rows = await kysely
+            .selectFrom("apikey")
+            .selectAll()
+            .where("name", "=", "cli")
+            .execute();
+
+        expect(rows.length).toBe(1);
+        expect(rows[0].enabled).toBe(1);
+        expect(rows[0].start).toBe(apiKey.slice(0, 8));
+    });
+
+    test("GET /health works without auth", async () => {
+        const res = await req("GET", "/health");
+        expect(res.status).toBe(200);
+        const data = await res.json();
+        expect(data.status).toBe("ok");
+    });
+});
+
+// ── Key rotation: old key invalidated on re-register ──────────────────────────
+
+describe("E2E: key rotation", () => {
+    const rotUser = {
+        name: "Rotation User",
+        email: "rotate@example.com",
+        password: "RotatePass123",
+    };
+
+    test("old API key is invalidated after re-register", async () => {
+        // Register and get first key
+        const res1 = await req("POST", "/api/register", rotUser, { "x-forwarded-for": "10.0.1.1" });
+        expect(res1.status).toBe(200);
+        const { key: firstKey } = await res1.json();
+
+        // Verify first key works
+        const auth = getAuth();
+        const check1 = await auth.api.verifyApiKey({ body: { key: firstKey } });
+        expect(check1.valid).toBe(true);
+
+        // Re-register (re-login) to get a new key
+        const res2 = await req("POST", "/api/register", rotUser, { "x-forwarded-for": "10.0.1.2" });
+        expect(res2.status).toBe(200);
+        const { key: secondKey } = await res2.json();
+        expect(secondKey).not.toBe(firstKey);
+
+        // Second key works
+        const check2 = await auth.api.verifyApiKey({ body: { key: secondKey } });
+        expect(check2.valid).toBe(true);
+
+        // First key is now invalid (deleted on re-register)
+        const check3 = await auth.api.verifyApiKey({ body: { key: firstKey } }).catch(() => ({ valid: false }));
+        expect(check3.valid).toBe(false);
+    });
+});
+
+// ── API key auth on real HTTP endpoint ────────────────────────────────────────
+
+describe("E2E: API key authenticates HTTP requests", () => {
+    let apiKey: string;
 
     beforeAll(async () => {
-        await runAllMigrations();
+        const res = await req("POST", "/api/register", {
+            name: "HTTP Auth User",
+            email: "httpauth@example.com",
+            password: "HttpAuth123",
+        }, { "x-forwarded-for": "10.0.2.1" });
+        const data = await res.json();
+        apiKey = data.key;
     });
 
-    afterAll(() => {
-        try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+    test("x-api-key header authenticates on /api/runners/spawn", async () => {
+        // /api/runners/spawn requires auth + runnerId. Without Redis, the runner
+        // lookup will fail with 404 (not 401), proving auth succeeded.
+        const res = await req("POST", "/api/runners/spawn", { runnerId: "nonexistent" }, {
+            "x-api-key": apiKey,
+        });
+        // 500 = Redis not connected (auth passed, reached runner lookup)
+        // OR 404 = runner not found. Either way, NOT 401.
+        expect(res.status).not.toBe(401);
     });
 
-    describe("E2E: signup → API key → authenticated requests", () => {
-        const testUser = {
-            name: "Test User",
-            email: "testuser@example.com",
-            password: "SecurePass123",
-        };
-        let apiKey: string;
+    test("missing API key returns 401 on protected endpoint", async () => {
+        const res = await req("POST", "/api/runners/spawn", { runnerId: "fake" });
+        expect(res.status).toBe(401);
+    });
 
-        test("GET /api/signup-status returns signupEnabled: true on fresh DB", async () => {
-            const res = await req("GET", "/api/signup-status");
-            expect(res.status).toBe(200);
-            const data = await res.json();
-            expect(data.signupEnabled).toBe(true);
+    test("bad API key returns 401 on protected endpoint", async () => {
+        const res = await req("POST", "/api/runners/spawn", { runnerId: "fake" }, {
+            "x-api-key": "totally-invalid-key",
         });
+        expect(res.status).toBe(401);
+    });
+});
 
-        test("POST /api/register creates user and returns API key", async () => {
-            const res = await req("POST", "/api/register", testUser);
-            expect(res.status).toBe(200);
-            const data = await res.json();
-            expect(data.ok).toBe(true);
-            expect(typeof data.key).toBe("string");
-            expect(data.key.length).toBe(64);
-            apiKey = data.key;
-        });
+// ── Signup gating ─────────────────────────────────────────────────────────────
 
-        test("POST /api/register with same creds returns new key (re-login)", async () => {
-            const res = await req("POST", "/api/register", testUser);
-            expect(res.status).toBe(200);
-            const data = await res.json();
-            expect(data.ok).toBe(true);
-            expect(typeof data.key).toBe("string");
-            apiKey = data.key;
-        });
+describe("E2E: signup gating (disable after first user)", () => {
+    test("when gating is enabled, second user registration is blocked", async () => {
+        // Set up a fresh DB with gating enabled
+        const gatedDir = mkdtempSync(join(tmpdir(), "pizzapi-e2e-gated-"));
+        const gatedDbPath = join(gatedDir, "gated.db");
 
-        test("POST /api/register with wrong password returns 401", async () => {
-            const res = await req("POST", "/api/register", {
-                ...testUser,
-                password: "WrongPassword123",
+        try {
+            initAuth({
+                dbPath: gatedDbPath,
+                baseURL: BASE,
+                secret: "test-secret-for-e2e-at-least-32-chars-long!!",
+                disableSignupAfterFirstUser: true, // ← gating enabled
             });
-            expect(res.status).toBe(401);
-        });
+            await runAllMigrations();
 
-        test("POST /api/register with missing fields returns 400", async () => {
-            const res = await req("POST", "/api/register", { email: "a@b.com" });
-            expect(res.status).toBe(400);
-        });
+            // First user signup should succeed
+            const res1 = await req("POST", "/api/register", {
+                name: "First User",
+                email: "first@example.com",
+                password: "FirstPass123",
+            }, { "x-forwarded-for": "10.0.3.1" });
+            expect(res1.status).toBe(200);
+            const data1 = await res1.json();
+            expect(data1.ok).toBe(true);
 
-        test("POST /api/register with weak password returns 400", async () => {
-            const res = await req("POST", "/api/register", {
-                name: "Weak",
-                email: "weak@example.com",
-                password: "short",
+            // Second user signup should be blocked (403)
+            const res2 = await req("POST", "/api/register", {
+                name: "Second User",
+                email: "second@example.com",
+                password: "SecondPass123",
+            }, { "x-forwarded-for": "10.0.3.2" });
+            expect(res2.status).toBe(403);
+            const data2 = await res2.json();
+            expect(data2.error).toContain("disabled");
+
+            // Signup status should reflect disabled state
+            const statusRes = await req("GET", "/api/signup-status");
+            const statusData = await statusRes.json();
+            expect(statusData.signupEnabled).toBe(false);
+        } finally {
+            // Restore original DB for any subsequent tests
+            initAuth({
+                dbPath,
+                baseURL: BASE,
+                secret: "test-secret-for-e2e-at-least-32-chars-long!!",
+                disableSignupAfterFirstUser: false,
             });
-            expect(res.status).toBe(400);
-        });
-
-        test("POST /api/register with invalid email returns 400", async () => {
-            const res = await req("POST", "/api/register", {
-                name: "Bad Email",
-                email: "not-an-email",
-                password: "SecurePass123",
-            }, { "x-forwarded-for": "10.0.0.99" });
-            expect(res.status).toBe(400);
-        });
-
-        test("API key validates via better-auth verifyApiKey", async () => {
-            const { auth } = await import("../../src/auth.js");
-            const result = await auth.api.verifyApiKey({ body: { key: apiKey } });
-            expect(result.valid).toBe(true);
-            expect(result.key?.userId).toBeTruthy();
-        });
-
-        test("invalid API key fails verification", async () => {
-            const { auth } = await import("../../src/auth.js");
-            const result = await auth.api.verifyApiKey({ body: { key: "bad-key" } }).catch(() => ({ valid: false }));
-            expect(result.valid).toBe(false);
-        });
-
-        test("API key is stored in DB with correct metadata", async () => {
-            const rows = await kysely
-                .selectFrom("apikey")
-                .selectAll()
-                .where("name", "=", "cli")
-                .execute();
-
-            expect(rows.length).toBe(1);
-            expect(rows[0].enabled).toBe(1);
-            expect(rows[0].start).toBe(apiKey.slice(0, 8));
-        });
-
-        test("GET /health works without auth", async () => {
-            const res = await req("GET", "/health");
-            expect(res.status).toBe(200);
-            const data = await res.json();
-            expect(data.status).toBe("ok");
-        });
+            try { rmSync(gatedDir, { recursive: true, force: true }); } catch {}
+        }
     });
-}
+});

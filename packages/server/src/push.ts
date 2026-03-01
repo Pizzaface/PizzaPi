@@ -1,5 +1,6 @@
 import webpush from "web-push";
-import { kysely } from "./auth.js";
+import { getKysely } from "./auth.js";
+const kysely = getKysely();
 
 // ── VAPID configuration ─────────────────────────────────────────────────────
 //

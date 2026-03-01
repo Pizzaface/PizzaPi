@@ -1,4 +1,5 @@
-import { kysely } from "../auth.js";
+import { getKysely } from "../auth.js";
+const kysely = getKysely();
 
 const DEFAULT_EPHEMERAL_TTL_MS = 10 * 60 * 1000;
 const DEFAULT_SWEEP_INTERVAL_MS = 60 * 1000;
