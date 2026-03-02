@@ -1,6 +1,36 @@
+diff --git a/node_modules/@mariozechner/pi-coding-agent/.bun-tag-1671b16ec8293c33 b/.bun-tag-1671b16ec8293c33
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
 diff --git a/node_modules/@mariozechner/pi-coding-agent/.bun-tag-36c1615415ab9e2b b/.bun-tag-36c1615415ab9e2b
 new file mode 100644
 index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+diff --git a/dist/core/auth-storage.js b/dist/core/auth-storage.js
+index 07f39c4179353bef1e4c536bf9bfe511ed429575..a6f8e6d2a5d13608becf40fc322a414b6c3b930d 100644
+--- a/dist/core/auth-storage.js
++++ b/dist/core/auth-storage.js
+@@ -183,6 +183,22 @@ export class AuthStorage {
+             this.loadError = null;
+         }
+         catch (error) {
++            // PATCH(pizzapi): Fall back to unlocked read on ELOCKED.
++            // When multiple workers start concurrently they contend for
++            // proper-lockfile's sync lock which has no retries.  reload()
++            // is read-only so an unlocked read is safe — the worst case is
++            // a partial JSON (rejected by parse, keeps previous data).
++            if (error?.code === "ELOCKED" && this.storage.authPath) {
++                try {
++                    if (existsSync(this.storage.authPath)) {
++                        content = readFileSync(this.storage.authPath, "utf-8");
++                        this.data = this.parseStorageData(content);
++                        this.loadError = null;
++                        return; // successfully loaded without lock
++                    }
++                }
++                catch { /* unlocked fallback also failed — fall through */ }
++            }
+             this.loadError = error;
+             this.recordError(error);
+         }
 diff --git a/dist/core/extensions/loader.js b/dist/core/extensions/loader.js
 index 5125e76b6490f859fa63cea32b0f1df9fb7aed50..cc2a11988ec12fad5afacc81c43aad46dea3b628 100644
 --- a/dist/core/extensions/loader.js

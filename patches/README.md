@@ -6,7 +6,7 @@ every `bun install` — no postinstall script is needed.
 
 ## @mariozechner/pi-coding-agent@0.55.1
 
-**Purpose:** Two changes:
+**Purpose:** Three changes:
 
 1. **Session control on extension API:** Expose `newSession()` and
    `switchSession()` on the extension runtime so the PizzaPi remote extension
@@ -15,6 +15,13 @@ every `bun install` — no postinstall script is needed.
 2. **Remove version check:** Disable the npm registry version check and
    "Update Available" notification on startup (not relevant for PizzaPi's
    headless runner mode).
+
+3. **Auth storage ELOCKED fallback:** When `AuthStorage.reload()` can't
+   acquire the sync lock on `auth.json` (ELOCKED from `proper-lockfile`),
+   fall back to an unlocked read.  `reload()` is read-only so this is safe.
+   Fixes "No API key found" errors when the runner spawns multiple workers
+   concurrently — `lockSync` has zero retries and any lock contention caused
+   the credential store to load empty.
 
 **Why this is needed:** Upstream `ExtensionAPI` only exposes session control
 methods on `ExtensionCommandContext`, which is only available inside registered
@@ -30,6 +37,7 @@ work from anywhere in the extension.
 | `dist/core/extensions/loader.js` — `createExtensionRuntime()` | Adds `newSession` and `switchSession` stubs (reject before init) |
 | `dist/core/extensions/loader.js` — `createExtensionAPI()` | Adds `newSession(options)` and `switchSession(sessionPath)` wrappers delegating to the runtime |
 | `dist/core/extensions/runner.js` — `bindCommandContext()` | Copies real `newSessionHandler` / `switchSessionHandler` onto the runtime object |
+| `dist/core/auth-storage.js` — `reload()` | Catches `ELOCKED`, falls back to plain `readFileSync` |
 | `dist/modes/interactive/interactive-mode.js` — `run()` | Removes `checkForNewVersion()` call |
 | `dist/modes/interactive/interactive-mode.js` | Removes `checkForNewVersion()` and `showNewVersionNotification()` methods |
 

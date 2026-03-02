@@ -82,10 +82,59 @@ describe("pi-coding-agent patch application", () => {
         expect(source).not.toContain("async checkForNewVersion()");
         expect(source).not.toContain("showNewVersionNotification");
     });
+
+    test("auth-storage.js: reload() has ELOCKED fallback", async () => {
+        const source = await Bun.file(
+            piCodingAgentPath("dist/core/auth-storage.js"),
+        ).text();
+
+        expect(source).toContain("PATCH(pizzapi)");
+        expect(source).toContain("ELOCKED");
+        // The fallback does an unlocked readFileSync
+        expect(source).toContain("readFileSync(this.storage.authPath");
+    });
 });
 
 // ---------------------------------------------------------------------------
-// 2. Functional — verify patched runtime/API objects behave correctly
+// 2a. Functional — verify auth-storage ELOCKED fallback works
+// ---------------------------------------------------------------------------
+
+describe("pi-coding-agent auth-storage ELOCKED fallback", () => {
+    test("reload() succeeds when lock is held by another process", async () => {
+        const { AuthStorage, FileAuthStorageBackend } = await import(
+            piCodingAgentPath("dist/core/auth-storage.js")
+        );
+        const { mkdtempSync, writeFileSync, mkdirSync } = await import("node:fs");
+        const { join } = await import("node:path");
+        const { tmpdir } = await import("node:os");
+
+        // Create a temp auth.json with test credentials
+        const tmpDir = mkdtempSync(join(tmpdir(), "pizzapi-test-"));
+        const authPath = join(tmpDir, "auth.json");
+        const testData = { "test-provider": { type: "api_key", key: "sk-test-123" } };
+        writeFileSync(authPath, JSON.stringify(testData), "utf-8");
+
+        // Simulate a held lock by creating the .lock directory
+        mkdirSync(authPath + ".lock");
+
+        // Create an AuthStorage backed by the locked file.
+        // Without the patch this would leave data empty;
+        // with the patch the ELOCKED fallback reads without locking.
+        const storage = AuthStorage.create(authPath);
+        const cred = storage.get("test-provider");
+
+        expect(cred).toBeDefined();
+        expect(cred?.type).toBe("api_key");
+        expect(cred?.key).toBe("sk-test-123");
+
+        // Clean up
+        const { rmSync } = await import("node:fs");
+        rmSync(tmpDir, { recursive: true, force: true });
+    });
+});
+
+// ---------------------------------------------------------------------------
+// 2b. Functional — verify patched runtime/API objects behave correctly
 // ---------------------------------------------------------------------------
 
 describe("pi-coding-agent patched runtime behavior", () => {
