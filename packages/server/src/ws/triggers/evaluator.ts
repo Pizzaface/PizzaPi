@@ -110,6 +110,8 @@ export class TriggerEvaluator {
             for (const trigger of costTriggers) {
                 const config = trigger.config as CostTriggerConfig;
                 if (!sessionIdMatches(config, sessionId)) continue;
+                // Guard against malformed config missing a numeric threshold
+                if (typeof config.threshold !== "number" || !isFinite(config.threshold)) continue;
                 if (heartbeatData.cost < config.threshold) continue;
 
                 await this.fireAndDeliver(trigger, {

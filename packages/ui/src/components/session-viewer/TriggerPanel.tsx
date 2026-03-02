@@ -47,7 +47,8 @@ function getConfigSummary(type: TriggerType, config: TriggerRecord["config"]): s
     }
     case "cost_exceeded": {
       const c = config as CostTriggerConfig;
-      return `Threshold: $${c.threshold.toFixed(2)}`;
+      const threshold = typeof c.threshold === "number" && isFinite(c.threshold) ? c.threshold.toFixed(2) : "?";
+      return `Threshold: $${threshold}`;
     }
     case "custom_event": {
       const c = config as CustomEventTriggerConfig;

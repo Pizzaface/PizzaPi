@@ -278,63 +278,107 @@ export class TriggerRegistry {
     // -------------------------------------------------------------------------
 
     /** Fire a trigger: increments firingCount, sets lastFiredAt, and auto-cancels when maxFirings is reached.
+     *  Uses WATCH-based optimistic locking to prevent concurrent firings from
+     *  bypassing maxFirings limits or producing duplicate notifications.
      *  Returns the updated record, or null if the trigger is expired/removed. */
     async fireTrigger(triggerId: string): Promise<TriggerRecord | null> {
         const redis = this.getClient();
         if (!redis) return null;
 
+        const watchableRedis = redis as unknown as {
+            watch?: (...keys: string[]) => Promise<void>;
+            unwatch?: () => Promise<void>;
+        };
+        const canWatch = typeof watchableRedis.watch === "function";
+
         try {
-            // Resolve runnerId
+            // Resolve runnerId (immutable, no watch needed)
             const runnerId = await redis.get(this.metaKey(triggerId));
             if (!runnerId) return null;
 
-            const raw = await redis.get(this.recordKey(runnerId, triggerId));
-            if (!raw) return null;
+            const recordKey = this.recordKey(runnerId, triggerId);
 
-            let record: TriggerRecord;
-            try {
-                record = JSON.parse(raw) as TriggerRecord;
-            } catch {
-                return null;
-            }
+            for (let attempt = 0; attempt < 5; attempt++) {
+                if (canWatch) {
+                    await watchableRedis.watch!(recordKey);
+                }
 
-            // Check expiry
-            if (record.expiresAt && new Date(record.expiresAt) < new Date()) {
-                // Expired — clean up and return null
+                const raw = await redis.get(recordKey);
+                if (!raw) {
+                    if (canWatch && typeof watchableRedis.unwatch === "function") {
+                        await watchableRedis.unwatch();
+                    }
+                    return null;
+                }
+
+                let record: TriggerRecord;
+                try {
+                    record = JSON.parse(raw) as TriggerRecord;
+                } catch {
+                    if (canWatch && typeof watchableRedis.unwatch === "function") {
+                        await watchableRedis.unwatch();
+                    }
+                    return null;
+                }
+
+                // Check expiry
+                if (record.expiresAt && new Date(record.expiresAt) < new Date()) {
+                    // Expired — clean up and return null (unwatch first since we won't use MULTI on the watched key)
+                    if (canWatch && typeof watchableRedis.unwatch === "function") {
+                        await watchableRedis.unwatch();
+                    }
+                    const multi = redis.multi();
+                    multi.del(recordKey);
+                    multi.del(this.metaKey(triggerId));
+                    multi.sRem(this.byRunnerKey(runnerId), triggerId);
+                    multi.sRem(this.bySessionKey(record.ownerSessionId), triggerId);
+                    multi.sRem(this.byTypeKey(runnerId, record.type), triggerId);
+                    await multi.exec();
+                    return null;
+                }
+
+                // Check if already exhausted before firing (concurrent fire already consumed it)
+                if (record.maxFirings !== undefined && record.firingCount >= record.maxFirings) {
+                    if (canWatch && typeof watchableRedis.unwatch === "function") {
+                        await watchableRedis.unwatch();
+                    }
+                    return null;
+                }
+
+                // Update firing metadata
+                record.firingCount += 1;
+                record.lastFiredAt = new Date().toISOString();
+
+                const timerConfig = record.type === "timer" ? (record.config as { recurring?: unknown }) : null;
+                const oneShotTimer = record.type === "timer" && timerConfig?.recurring !== true;
+                const exhausted =
+                    (record.maxFirings !== undefined && record.firingCount >= record.maxFirings) || oneShotTimer;
+
                 const multi = redis.multi();
-                multi.del(this.recordKey(runnerId, triggerId));
-                multi.del(this.metaKey(triggerId));
-                multi.sRem(this.byRunnerKey(runnerId), triggerId);
-                multi.sRem(this.bySessionKey(record.ownerSessionId), triggerId);
-                multi.sRem(this.byTypeKey(runnerId, record.type), triggerId);
-                await multi.exec();
-                return null;
+                if (exhausted) {
+                    // Auto-cancel: remove all keys
+                    multi.del(recordKey);
+                    multi.del(this.metaKey(triggerId));
+                    multi.sRem(this.byRunnerKey(runnerId), triggerId);
+                    multi.sRem(this.bySessionKey(record.ownerSessionId), triggerId);
+                    multi.sRem(this.byTypeKey(runnerId, record.type), triggerId);
+                } else {
+                    // Persist updated record
+                    multi.set(recordKey, JSON.stringify(record));
+                }
+
+                const execResult = await multi.exec();
+
+                // If WATCH was active and MULTI returned null, another client modified the key — retry
+                if (canWatch && execResult === null) {
+                    continue;
+                }
+
+                return record;
             }
 
-            // Update firing metadata
-            record.firingCount += 1;
-            record.lastFiredAt = new Date().toISOString();
-
-            const timerConfig = record.type === "timer" ? (record.config as { recurring?: unknown }) : null;
-            const oneShotTimer = record.type === "timer" && timerConfig?.recurring !== true;
-            const exhausted =
-                (record.maxFirings !== undefined && record.firingCount >= record.maxFirings) || oneShotTimer;
-
-            if (exhausted) {
-                // Auto-cancel: remove all keys and return the final updated record
-                const multi = redis.multi();
-                multi.del(this.recordKey(runnerId, triggerId));
-                multi.del(this.metaKey(triggerId));
-                multi.sRem(this.byRunnerKey(runnerId), triggerId);
-                multi.sRem(this.bySessionKey(record.ownerSessionId), triggerId);
-                multi.sRem(this.byTypeKey(runnerId, record.type), triggerId);
-                await multi.exec();
-            } else {
-                // Persist updated record
-                await redis.set(this.recordKey(runnerId, triggerId), JSON.stringify(record));
-            }
-
-            return record;
+            // All retries exhausted (concurrent conflict)
+            return null;
         } catch {
             return null;
         }

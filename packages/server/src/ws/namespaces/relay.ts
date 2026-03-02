@@ -490,7 +490,11 @@ export function registerRelayNamespace(io: SocketIOServer): void {
         // ── disconnect ───────────────────────────────────────────────────────
         socket.on("disconnect", async (reason) => {
             console.log(`[sio/relay] disconnected: ${socket.id} (${reason})`);
+            // session_end clears socket.data.sessionId synchronously, so if
+            // it already ran we'll see undefined here and skip — preventing
+            // duplicate session_ended trigger evaluation.
             const sessionId = socket.data.sessionId;
+            socket.data.sessionId = undefined;
             if (sessionId) {
                 // Evaluate session_ended triggers before cleanup
                 const dcSession = await getSharedSession(sessionId);
