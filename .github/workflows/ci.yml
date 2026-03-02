@@ -316,9 +316,7 @@ jobs:
 
               echo "[4/6] Configuring CLI"
               mkdir -p /root/.pizzapi
-              cat >/root/.pizzapi/config.json <<EOF
-              {"apiKey":"$KEY"}
-              EOF
+              printf "{\"apiKey\":\"%s\"}\n" "$KEY" > /root/.pizzapi/config.json
               export PIZZAPI_API_KEY="$KEY"
               export PIZZAPI_RELAY_URL="ws://localhost:7492"
 
