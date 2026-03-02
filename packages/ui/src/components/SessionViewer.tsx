@@ -533,6 +533,9 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     }
 
     if (rawCommand === "compact") {
+      if (viewerStatus === "Compacting…") {
+        return true; // Already compacting — ignore duplicate
+      }
       onExec({ type: "exec", id, command: "compact", customInstructions: args || undefined });
       setInput("");
       setCommandOpen(false);

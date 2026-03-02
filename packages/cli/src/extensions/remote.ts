@@ -403,6 +403,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
 
     // ── Heartbeat state ───────────────────────────────────────────────────────
     let isAgentActive = false;
+    let isCompacting = false;
     let sessionStartedAt: number | null = null;
     let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -928,22 +929,31 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                     replyErr("No active session");
                     return;
                 }
-                // ctx.compact() is fire-and-forget; wrap in a promise for request/response semantics.
-                const result = await new Promise<unknown>((resolve, reject) => {
-                    latestCtx!.compact({
-                        customInstructions: req.customInstructions,
-                        onComplete: (r) => resolve(r),
-                        onError: (err) => reject(err),
+                if (isCompacting) {
+                    replyErr("Compaction already in progress");
+                    return;
+                }
+                isCompacting = true;
+                try {
+                    // ctx.compact() is fire-and-forget; wrap in a promise for request/response semantics.
+                    const result = await new Promise<unknown>((resolve, reject) => {
+                        latestCtx!.compact({
+                            customInstructions: req.customInstructions,
+                            onComplete: (r) => resolve(r),
+                            onError: (err) => reject(err),
+                        });
                     });
-                });
-                // Compaction aborts the agent internally, so sync our tracking state.
-                // The agent_end event may be lost because compact disconnects before aborting.
-                isAgentActive = false;
-                lastRetryableError = null;
-                replyOk(result ?? null);
-                forwardEvent({ type: "session_active", state: buildSessionState() });
-                // Push an immediate heartbeat so the web UI shows the correct idle state.
-                forwardEvent(buildHeartbeat());
+                    // Compaction aborts the agent internally, so sync our tracking state.
+                    // The agent_end event may be lost because compact disconnects before aborting.
+                    isAgentActive = false;
+                    lastRetryableError = null;
+                    replyOk(result ?? null);
+                    forwardEvent({ type: "session_active", state: buildSessionState() });
+                    // Push an immediate heartbeat so the web UI shows the correct idle state.
+                    forwardEvent(buildHeartbeat());
+                } finally {
+                    isCompacting = false;
+                }
                 return;
             }
 
