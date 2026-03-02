@@ -56,7 +56,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { formatPathTail } from "@/lib/path";
 import { ProviderIcon } from "@/components/ProviderIcon";
-import { AlertTriangleIcon, ArrowDownIcon, BookOpen, CheckCircle2, ChevronsUpDown, Circle, CircleDashed, MessageSquare, MessageCircleQuestion, OctagonX, PaperclipIcon, PenLine, Plus, Zap, Clock, X, Trash2, TerminalIcon, DownloadIcon, XCircle, FolderTree } from "lucide-react";
+import { AlertTriangleIcon, ArrowDownIcon, BookOpen, CheckCircle2, ChevronsUpDown, Circle, CircleDashed, Loader2, MessageSquare, MessageCircleQuestion, OctagonX, PaperclipIcon, PenLine, Plus, Zap, Clock, X, Trash2, TerminalIcon, DownloadIcon, XCircle, FolderTree } from "lucide-react";
 import { AtMentionPopover } from "@/components/AtMentionPopover";
 import type { Entry as AtMentionEntry } from "@/hooks/useAtMentionFiles";
 
@@ -590,6 +590,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
 
   const handleSubmit = React.useCallback(
     (message: PromptInputMessage) => {
+      if (isCompacting) return; // Block input while compacting
       const text = message.text.trim();
       const hasAttachments = Array.isArray(message.files) && message.files.length > 0;
       if ((!text && !hasAttachments) || !sessionId) return;
@@ -618,7 +619,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
           setComposerError("Failed to send message.");
         });
     },
-    [executeSlashCommand, onSendInput, sessionId, agentActive, deliveryMode],
+    [executeSlashCommand, onSendInput, sessionId, agentActive, isCompacting, deliveryMode],
   );
 
   const supportedWebCommands = React.useMemo(() => {
@@ -1443,6 +1444,13 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
           </div>
         )}
 
+        {isCompacting && (
+          <div className="mb-2 flex items-center gap-2 rounded-md border border-amber-400/30 bg-amber-500/10 px-2.5 py-2 text-xs text-amber-200">
+            <Loader2 className="size-3.5 shrink-0 animate-spin" />
+            <span>Compacting conversation history — input is disabled until complete</span>
+          </div>
+        )}
+
         {composerError && (
           <div className="mb-2 rounded-md border border-destructive/40 bg-destructive/10 px-2.5 py-2 text-xs text-destructive">
             {composerError}
@@ -1453,7 +1461,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
           onSubmit={handleSubmit}
           maxFiles={8}
           maxFileSize={20 * 1024 * 1024}
-          disabled={!sessionId}
+          disabled={!sessionId || isCompacting}
           onError={(err) => {
             setComposerError(err.message);
           }}
@@ -1685,16 +1693,18 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                     return;
                   }
                 }}
-                disabled={!sessionId}
+                disabled={!sessionId || isCompacting}
                 submitOnEnter={!isTouchDevice}
                 placeholder={
                   sessionId
-                    ? pendingQuestion
-                      ? `Answer: ${pendingQuestion.question}`
-                      : agentActive
-                        ? deliveryMode === "steer"
-                          ? "Type to steer the agent…"
-                          : "Type a follow-up message…"
+                    ? isCompacting
+                      ? "Compacting…"
+                      : pendingQuestion
+                        ? `Answer: ${pendingQuestion.question}`
+                        : agentActive
+                          ? deliveryMode === "steer"
+                            ? "Type to steer the agent…"
+                            : "Type a follow-up message…"
                         : isTouchDevice
                           ? "Send a message…"
                           : "Send a message to this session…"
