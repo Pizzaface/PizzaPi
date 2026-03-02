@@ -11,7 +11,7 @@ import { getCurrentTodoList, setTodoUpdateCallback, type TodoItem } from "./upda
 import type { RemoteExecRequest, RemoteExecResponse } from "./remote-commands.js";
 import { messageBus } from "./session-message-bus.js";
 import { triggerBus } from "./trigger-bus.js";
-import { triggerInjectQueue } from "./trigger-inject-queue.js";
+
 import { io, type Socket } from "socket.io-client";
 import type { RelayClientToServerEvents, RelayServerToClientEvents } from "@pizzapi/protocol";
 
@@ -1611,14 +1611,13 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         sock.on("trigger_error" as any, (data: any) => { triggerBus.onError(data); });
 
         sock.on("trigger_fired" as any, (data: any) => {
+            const formatted = `[Trigger: ${data.triggerType}] ${data.message}`;
             if (data.delivery?.mode === "inject") {
-                triggerInjectQueue.enqueue(data);
+                // Inject = steer: interrupt the current turn (or wake if idle)
+                pi.sendUserMessage(formatted, { deliverAs: "steer" });
             } else {
-                messageBus.receive({
-                    fromSessionId: data.sourceSessionId ?? "trigger",
-                    message: `[Trigger: ${data.triggerType}] ${data.message}`,
-                    ts: data.firedAt ?? new Date().toISOString(),
-                });
+                // Queue = followUp: wait for the current turn to finish (or wake if idle)
+                pi.sendUserMessage(formatted, { deliverAs: "followUp" });
             }
         });
 
