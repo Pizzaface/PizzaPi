@@ -1,7 +1,7 @@
 import { describe, test, expect } from "bun:test";
 import { readFileSync } from "fs";
 import { join } from "path";
-import { extractVapidFromCompose, extractSettingsFromCompose, type WebConfig } from "./web";
+import { extractVapidFromCompose, extractSettingsFromCompose, resolveBetterAuthSecret } from "./web";
 
 /**
  * Validates that the inlined COMPOSE_TEMPLATE in web.ts matches
@@ -180,5 +180,43 @@ describe("extractVapidFromCompose (backward compat)", () => {
 
     test("returns null when keys are missing", () => {
         expect(extractVapidFromCompose("services:\n  redis:\n    image: redis")).toBeNull();
+    });
+});
+
+describe("resolveBetterAuthSecret", () => {
+    test("keeps existing secret", () => {
+        const resolved = resolveBetterAuthSecret({
+            currentSecret: "ExistingSecret",
+            composeContents: ["- BETTER_AUTH_SECRET=FromCompose"],
+            generate: () => "Generated",
+        });
+        expect(resolved).toEqual({ secret: "ExistingSecret", source: "existing" });
+    });
+
+    test("uses secret from compose content when missing", () => {
+        const resolved = resolveBetterAuthSecret({
+            currentSecret: "",
+            composeContents: ["services:\n  server:\n    environment:\n      - BETTER_AUTH_SECRET=FromCompose"],
+            generate: () => "Generated",
+        });
+        expect(resolved).toEqual({ secret: "FromCompose", source: "compose" });
+    });
+
+    test("prefers override compose content (first) when missing", () => {
+        const resolved = resolveBetterAuthSecret({
+            currentSecret: "",
+            composeContents: ["- BETTER_AUTH_SECRET=FromOverride", "- BETTER_AUTH_SECRET=FromCompose"],
+            generate: () => "Generated",
+        });
+        expect(resolved).toEqual({ secret: "FromOverride", source: "compose" });
+    });
+
+    test("ignores commented-out secret lines", () => {
+        const resolved = resolveBetterAuthSecret({
+            currentSecret: "",
+            composeContents: ["# - BETTER_AUTH_SECRET=Nope"],
+            generate: () => "Generated",
+        });
+        expect(resolved).toEqual({ secret: "Generated", source: "generated" });
     });
 });

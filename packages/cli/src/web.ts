@@ -106,7 +106,7 @@ export function extractSettingsFromCompose(content: string): ExtractedComposeSet
     }
 
     // better-auth secret
-    const secretMatch = content.match(/BETTER_AUTH_SECRET=(.+)/);
+    const secretMatch = content.match(/^\s*(?:-\s+)?BETTER_AUTH_SECRET=(.+)$/m);
     if (secretMatch?.[1]) {
         const val = secretMatch[1].trim();
         if (!val.startsWith("{{")) {
@@ -133,6 +133,27 @@ export function extractSettingsFromCompose(content: string): ExtractedComposeSet
     }
 
     return result;
+}
+
+export function resolveBetterAuthSecret(opts: {
+    currentSecret: string | undefined;
+    composeContents: Array<string | null | undefined>;
+    generate?: () => string;
+}): { secret: string; source: "existing" | "compose" | "generated" } {
+    if (opts.currentSecret) {
+        return { secret: opts.currentSecret, source: "existing" };
+    }
+
+    for (const content of opts.composeContents) {
+        if (!content) continue;
+        const extracted = extractSettingsFromCompose(content);
+        if (extracted.betterAuthSecret) {
+            return { secret: extracted.betterAuthSecret, source: "compose" };
+        }
+    }
+
+    const gen = opts.generate ?? generateBetterAuthSecret;
+    return { secret: gen(), source: "generated" };
 }
 
 /** @deprecated Use extractSettingsFromCompose instead */
@@ -209,7 +230,18 @@ export function loadWebConfig(): WebConfig {
             // Ensure required secrets exist (migrate older configs)
             let changed = false;
             if (!config.betterAuthSecret) {
-                config.betterAuthSecret = generateBetterAuthSecret();
+                const composePath = join(WEB_DIR, "compose.yml");
+                const overridePath = join(WEB_DIR, "compose.override.yml");
+
+                const overrideContent = existsSync(overridePath) ? readFileSync(overridePath, "utf-8") : null;
+                const composeContent = existsSync(composePath) ? readFileSync(composePath, "utf-8") : null;
+
+                const resolved = resolveBetterAuthSecret({
+                    currentSecret: config.betterAuthSecret,
+                    composeContents: [overrideContent, composeContent],
+                });
+
+                config.betterAuthSecret = resolved.secret;
                 changed = true;
             }
             if (changed) {
