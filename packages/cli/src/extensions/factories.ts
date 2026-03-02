@@ -1,5 +1,6 @@
 import type { ExtensionFactory } from "@mariozechner/pi-coding-agent";
 import type { HooksConfig } from "../config.js";
+import { conversationTriggersExtension } from "./conversation-triggers.js";
 import { createHooksExtension } from "./hooks.js";
 import { initialPromptExtension } from "./initial-prompt.js";
 import { mcpExtension } from "./mcp-extension.js";
@@ -30,6 +31,7 @@ export function buildPizzaPiExtensionFactories(options: BuildExtensionFactoriesO
         updateTodoExtension,
         spawnSessionExtension,
         sessionMessagingExtension,
+        conversationTriggersExtension,
     ];
 
     if (options.includeInitialPrompt) {
