@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "bun src/index.ts",
     "dev:runner": "bun src/index.ts runner",
-    "build": "tsc",
+    "build": "tsc && cp -r src/templates dist/templates",
     "start": "bun dist/index.js",
     "build:binary": "bun build-binaries.ts --target",
     "build:binary:linux-x64": "bun build-binaries.ts --target linux-x64",
