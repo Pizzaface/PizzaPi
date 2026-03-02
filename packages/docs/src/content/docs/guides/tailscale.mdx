@@ -58,11 +58,10 @@ If you're running PizzaPi on a machine in your [Tailscale](https://tailscale.com
 
    <Tabs>
      <TabItem label="pizza web (Docker)">
-       Edit `~/.pizzapi/web/compose.yml`:
+       Use `config set` to persist the extra origin:
 
-       ```yaml
-       environment:
-         - PIZZAPI_EXTRA_ORIGINS=https://your-hostname.tail12345.ts.net
+       ```bash
+       pizzapi web config set extraOrigins "https://your-hostname.tail12345.ts.net"
        ```
 
        Then restart:
