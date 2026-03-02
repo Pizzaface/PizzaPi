@@ -12,6 +12,7 @@ packages/
   server/   Bun HTTP + WebSocket relay server (auth, session relay, attachments)
   ui/       React 19 PWA web interface (Vite, TailwindCSS v4, Radix UI / shadcn)
   tools/    Shared agent tools (bash, read-file, write-file, search, toolkit)
+  docs/     Starlight (Astro) documentation site — https://pizzaface.github.io/PizzaPi/
   npm/      npm distribution — builds & publishes `npx pizzapi` packages
 
 docker/     Docker Compose (redis + server services)
@@ -19,6 +20,33 @@ patches/    Bun patches for upstream pi packages (auto-applied on bun install)
 ```
 
 Build order: `tools` → `server` → `ui` → `cli`.
+
+---
+
+## Documentation Site
+
+User-facing documentation lives in `packages/docs/` — a [Starlight](https://starlight.astro.build/) (Astro) site deployed to GitHub Pages.
+
+- **Source**: `packages/docs/src/content/docs/` (`.mdx` files)
+- **Config**: `packages/docs/astro.config.mjs`
+- **Build**: `cd packages/docs && bun run build`
+- **Dev**: `cd packages/docs && bun run dev`
+- **Live site**: https://pizzaface.github.io/PizzaPi/
+
+**When changing CLI commands, flags, config options, or self-hosting behavior, always update the corresponding docs pages:**
+
+| Topic | Doc page |
+|-------|----------|
+| CLI commands & flags | `guides/cli-reference.mdx` |
+| `~/.pizzapi/config.json`, env vars | `guides/configuration.mdx` |
+| `pizza web`, Docker, self-hosting | `guides/self-hosting.mdx` |
+| Tailscale HTTPS setup | `guides/tailscale.mdx` |
+| Runner daemon | `guides/runner-daemon.mdx` |
+| Installation | `guides/installation.mdx` |
+| Server env vars | `reference/environment-variables.mdx` |
+| Architecture | `reference/architecture.mdx` |
+
+The README is intentionally slim — it has a quick start and links to the docs site. **Do not duplicate detailed docs in the README.**
 
 ---
 
