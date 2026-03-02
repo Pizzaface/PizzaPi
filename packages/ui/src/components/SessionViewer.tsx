@@ -55,9 +55,11 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { formatPathTail } from "@/lib/path";
 import { ProviderIcon } from "@/components/ProviderIcon";
-import { AlertTriangleIcon, ArrowDownIcon, BookOpen, CheckCircle2, ChevronsUpDown, Circle, CircleDashed, MessageSquare, MessageCircleQuestion, OctagonX, PaperclipIcon, PenLine, Plus, Zap, Clock, X, Trash2, TerminalIcon, DownloadIcon, XCircle, FolderTree } from "lucide-react";
+import { AlertTriangleIcon, ArrowDownIcon, BookOpen, CheckCircle2, ChevronsUpDown, Circle, CircleDashed, MessageSquare, MessageCircleQuestion, OctagonX, PaperclipIcon, PenLine, Plus, Zap, Clock, X, Trash2, TerminalIcon, DownloadIcon, XCircle, FolderTree, BellRing } from "lucide-react";
 import { AtMentionPopover } from "@/components/AtMentionPopover";
 import type { Entry as AtMentionEntry } from "@/hooks/useAtMentionFiles";
+import { TriggerPanel } from "@/components/session-viewer/TriggerPanel";
+import type { TriggerRecord } from "@pizzapi/protocol";
 
 export type { RelayMessage } from "@/components/session-viewer/types";
 
@@ -415,6 +417,10 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
   const [commandOpen, setCommandOpen] = React.useState(false);
   const [commandQuery, setCommandQuery] = React.useState("");
   const [commandHighlightedIndex, setCommandHighlightedIndex] = React.useState(0);
+
+  // Triggers panel state
+  const [showTriggers, setShowTriggers] = React.useState(false);
+  const [triggers, setTriggers] = React.useState<TriggerRecord[]>([]);
 
   // Detect touch devices for mobile-specific behavior
   const isTouchDevice = React.useMemo(
@@ -968,6 +974,26 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                 </span>
               </span>
             )}
+            {sessionId && (
+              <Button
+                className="h-7 w-7 sm:h-7 sm:w-auto sm:px-2.5 sm:text-[0.7rem]"
+                onClick={() => setShowTriggers((v) => !v)}
+                size="icon"
+                type="button"
+                variant={showTriggers ? "secondary" : "outline"}
+                title="Toggle triggers panel"
+                aria-label="Toggle triggers panel"
+                aria-pressed={showTriggers}
+              >
+                <BellRing className="size-3.5" />
+                <span className="hidden sm:inline ml-1">Triggers</span>
+                {triggers.length > 0 && (
+                  <span className="ml-1 hidden sm:inline text-[0.6rem] font-bold text-primary">
+                    ({triggers.length})
+                  </span>
+                )}
+              </Button>
+            )}
             {showTerminalButton && onToggleTerminal && (
               <Button
                 className="h-7 w-7 sm:h-7 sm:w-auto sm:px-2.5 sm:text-[0.7rem]"
@@ -1055,6 +1081,24 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
               <span className="hidden sm:inline ml-1">Clear</span>
             </Button>
           </div>
+        </div>
+      )}
+
+      {/* Triggers panel — shown when the Triggers button is toggled */}
+      {sessionId && showTriggers && (
+        <div className="border-b border-border">
+          <div className="px-3 py-2 flex items-center justify-between">
+            <span className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
+              <BellRing className="size-3.5" />
+              Active Triggers
+              {triggers.length > 0 && (
+                <span className="text-[0.65rem] text-muted-foreground/70">
+                  ({triggers.length})
+                </span>
+              )}
+            </span>
+          </div>
+          <TriggerPanel triggers={triggers} />
         </div>
       )}
 
