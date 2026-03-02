@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { ExtensionFactory } from "@mariozechner/pi-coding-agent";
 import type { HooksConfig } from "../config.js";
+import { conversationTriggersExtension } from "./conversation-triggers.js";
 import { buildPizzaPiExtensionFactories } from "./factories.js";
 import { mcpExtension } from "./mcp-extension.js";
 import { remoteExtension } from "./remote.js";
@@ -19,6 +20,7 @@ const CORE_EXTENSIONS: ExtensionFactory[] = [
     updateTodoExtension,
     spawnSessionExtension,
     sessionMessagingExtension,
+    conversationTriggersExtension,
 ];
 
 describe("buildPizzaPiExtensionFactories", () => {

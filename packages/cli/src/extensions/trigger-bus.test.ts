@@ -33,13 +33,15 @@ describe("TriggerBus", () => {
         });
 
         test("passes eventName and payload to emitFn", () => {
-            let captured: { eventName: string; payload?: unknown } | null = null;
+            const captured: { eventName?: string; payload?: unknown } = {};
             triggerBus.setEmitFn((eventName, payload) => {
-                captured = { eventName, payload };
+                captured.eventName = eventName;
+                captured.payload = payload;
                 return true;
             });
             triggerBus.emit("test-event", { x: 1 });
-            expect(captured!).toEqual({ eventName: "test-event", payload: { x: 1 } });
+            expect(captured.eventName).toBe("test-event");
+            expect(captured.payload).toEqual({ x: 1 });
         });
     });
 
@@ -80,8 +82,8 @@ describe("TriggerBus", () => {
         });
 
         test("passes all params to registerFn", async () => {
-            let captured: RegisterTriggerParams | null = null;
-            triggerBus.setRegisterFn((p) => { captured = p; return true; });
+            const calls: RegisterTriggerParams[] = [];
+            triggerBus.setRegisterFn((p) => { calls.push(p); return true; });
 
             const params: RegisterTriggerParams = {
                 type: "cost_exceeded",
@@ -96,7 +98,8 @@ describe("TriggerBus", () => {
             triggerBus.onRegistered({ triggerId: "trg-xyz", type: "cost_exceeded" });
             await promise;
 
-            expect(captured!).toEqual(params);
+            expect(calls).toHaveLength(1);
+            expect(calls[0]).toEqual(params);
         });
     });
 
