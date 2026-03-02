@@ -14,7 +14,7 @@ import { io } from "socket.io-client";
 import type { HubServerToClientEvents, HubClientToServerEvents } from "@pizzapi/protocol";
 import { formatPathTail } from "@/lib/path";
 import { ProviderIcon } from "@/components/ProviderIcon";
-import { PanelLeftClose, PanelLeftOpen, Plus, User, X, HardDrive, FolderOpen, CheckSquare, Square, CheckCheck, Trash2 } from "lucide-react";
+import { PanelLeftClose, PanelLeftOpen, Plus, User, X, HardDrive, FolderOpen, CheckSquare, Square, CheckCheck, Trash2, Pin, PinOff } from "lucide-react";
 
 interface HubSession {
     sessionId: string;
@@ -32,6 +32,19 @@ interface HubSession {
     model?: { provider: string; id: string; name?: string } | null;
     runnerId?: string | null;
     runnerName?: string | null;
+    isPinned?: boolean;
+}
+
+interface PinnedSession {
+    sessionId: string;
+    cwd: string;
+    shareUrl: string;
+    startedAt: string;
+    lastActiveAt: string;
+    endedAt: string | null;
+    isEphemeral: boolean;
+    expiresAt: string | null;
+    isPinned: boolean;
 }
 
 export type { HubSession };
@@ -160,7 +173,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     const [confirmEndSessionId, setConfirmEndSessionId] = React.useState<string | null>(null);
     const [revealedSessionId, setRevealedSessionId] = React.useState<string | null>(null);
     const [swipeOffsets, setSwipeOffsets] = React.useState<Map<string, number>>(new Map());
-    const REVEAL_WIDTH = 72; // px width of the revealed "End" button
+    const REVEAL_WIDTH = 132; // px width of the revealed "Pin" + "End" buttons
 
     const swipeRef = React.useRef<{
         sessionId: string;
@@ -356,6 +369,70 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     const [liveSessions, setLiveSessions] = React.useState<HubSession[]>([]);
     const [dotState, setDotState] = React.useState<DotState>("connecting");
     const [hasLoaded, setHasLoaded] = React.useState(false);
+
+    // ── Pinned sessions ──────────────────────────────────────────────────
+    const [pinnedSessions, setPinnedSessions] = React.useState<PinnedSession[]>([]);
+    const [pinnedSessionIds, setPinnedSessionIds] = React.useState<Set<string>>(new Set());
+
+    // Fetch pinned sessions from the API
+    const fetchPinnedSessions = React.useCallback(async () => {
+        try {
+            const res = await fetch("/api/sessions", { credentials: "include" });
+            if (!res.ok) return;
+            const body = await res.json();
+            const persisted: PinnedSession[] = Array.isArray(body?.persistedSessions)
+                ? body.persistedSessions.filter((s: any) => s.isPinned)
+                : [];
+            setPinnedSessions(persisted);
+            setPinnedSessionIds(new Set(persisted.map((s) => s.sessionId)));
+        } catch {
+            // best-effort
+        }
+    }, []);
+
+    React.useEffect(() => {
+        fetchPinnedSessions();
+    }, [fetchPinnedSessions]);
+
+    const togglePinSession = React.useCallback(async (sessionId: string) => {
+        const wasPinned = pinnedSessionIds.has(sessionId);
+        const method = wasPinned ? "DELETE" : "PUT";
+
+        // Optimistic update
+        setPinnedSessionIds((prev) => {
+            const next = new Set(prev);
+            if (wasPinned) next.delete(sessionId);
+            else next.add(sessionId);
+            return next;
+        });
+
+        try {
+            const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/pin`, {
+                method,
+                credentials: "include",
+            });
+            if (!res.ok) {
+                // Revert optimistic update
+                setPinnedSessionIds((prev) => {
+                    const next = new Set(prev);
+                    if (wasPinned) next.add(sessionId);
+                    else next.delete(sessionId);
+                    return next;
+                });
+            } else {
+                // Refresh the full list to get accurate persisted data
+                fetchPinnedSessions();
+            }
+        } catch {
+            // Revert optimistic update
+            setPinnedSessionIds((prev) => {
+                const next = new Set(prev);
+                if (wasPinned) next.add(sessionId);
+                else next.delete(sessionId);
+                return next;
+            });
+        }
+    }, [pinnedSessionIds, fetchPinnedSessions]);
 
     const selectAllSessions = React.useCallback(() => {
         setSelectedSessionIds(new Set(liveSessions.map((s) => s.sessionId)));
@@ -782,6 +859,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                             const timeLabel = isToday(s.startedAt)
                                                 ? formatTime(s.lastHeartbeatAt ?? s.startedAt)
                                                 : formatRelativeDate(s.startedAt);
+                                            const isPinned = pinnedSessionIds.has(s.sessionId);
                                             const swipeOffset = swipeOffsets.get(s.sessionId) ?? 0;
                                             const isRevealed = revealedSessionId === s.sessionId;
                                             const hasOffset = swipeOffset !== 0;
@@ -791,13 +869,30 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                     key={s.sessionId}
                                                     className="relative overflow-hidden rounded-lg"
                                                 >
-                                                    {/* "End" action behind the card — only rendered during swipe/reveal (not in select mode) */}
+                                                    {/* "Pin" + "End" actions behind the card — only rendered during swipe/reveal (not in select mode) */}
                                                     {!selectMode && (hasOffset || isRevealed) && <div
-                                                        className="absolute inset-y-0 right-0 flex items-center justify-center bg-red-600 text-white"
+                                                        className="absolute inset-y-0 right-0 flex items-stretch"
                                                         style={{ width: REVEAL_WIDTH }}
                                                     >
                                                         <button
-                                                            className="flex flex-col items-center justify-center w-full h-full text-xs font-semibold gap-0.5 active:bg-red-700 transition-colors"
+                                                            className="flex flex-col items-center justify-center flex-1 text-xs font-semibold gap-0.5 bg-blue-500 text-white active:bg-blue-600 transition-colors"
+                                                            onClick={(e) => {
+                                                                e.stopPropagation();
+                                                                togglePinSession(s.sessionId);
+                                                                // Close the revealed state
+                                                                setSwipeOffsets((prev) => {
+                                                                    const next = new Map(prev);
+                                                                    next.delete(s.sessionId);
+                                                                    return next;
+                                                                });
+                                                                setRevealedSessionId(null);
+                                                            }}
+                                                        >
+                                                            {isPinned ? <PinOff className="h-4 w-4" /> : <Pin className="h-4 w-4" />}
+                                                            <span>{isPinned ? "Unpin" : "Pin"}</span>
+                                                        </button>
+                                                        <button
+                                                            className="flex flex-col items-center justify-center flex-1 text-xs font-semibold gap-0.5 bg-red-600 text-white active:bg-red-700 transition-colors"
                                                             onClick={(e) => {
                                                                 e.stopPropagation();
                                                                 setConfirmEndSessionId(s.sessionId);
@@ -892,7 +987,8 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                         {/* Text info */}
                                                         <div className="flex-1 min-w-0">
                                                             <div className="flex items-baseline justify-between gap-1 min-w-0">
-                                                                <span className="truncate text-[0.8rem] font-medium leading-tight">
+                                                                <span className="truncate text-[0.8rem] font-medium leading-tight flex items-center gap-1">
+                                                                    {isPinned && <Pin className="h-3 w-3 text-blue-400 flex-shrink-0 inline-block" />}
                                                                     {s.sessionName?.trim() || `Session ${s.sessionId.slice(0, 8)}…`}
                                                                 </span>
                                                                 <span className="text-[0.65rem] text-sidebar-foreground/45 flex-shrink-0">
@@ -926,6 +1022,74 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                             </div>
                         ))
                     )}
+
+                    {/* ── Pinned (ended) sessions ──────────────────────────────── */}
+                    {(() => {
+                        const liveIds = new Set(liveSessions.map((s) => s.sessionId));
+                        const endedPinned = pinnedSessions.filter(
+                            (p) => p.isPinned && !liveIds.has(p.sessionId),
+                        );
+                        if (endedPinned.length === 0) return null;
+                        return (
+                            <div className="mt-3 border-t border-sidebar-border pt-2">
+                                <div className="flex items-center gap-1.5 px-1.5 py-1 min-w-0">
+                                    <Pin className="h-3 w-3 text-blue-400/60 flex-shrink-0" />
+                                    <span className="text-[0.65rem] font-medium text-sidebar-foreground/45 truncate flex-1">
+                                        Pinned
+                                    </span>
+                                </div>
+                                {endedPinned.map((p) => {
+                                    const isActiveSession = !showRunners && activeSessionId === p.sessionId;
+                                    const timeLabel = isToday(p.startedAt)
+                                        ? formatTime(p.lastActiveAt)
+                                        : formatRelativeDate(p.startedAt);
+                                    return (
+                                        <button
+                                            key={p.sessionId}
+                                            onClick={() => onOpenSession(p.sessionId)}
+                                            title={`View pinned session ${p.sessionId}`}
+                                            className={cn(
+                                                "flex items-center gap-2.5 w-full min-w-0 px-2.5 py-3 md:py-2.5 text-left rounded-lg transition-colors",
+                                                isActiveSession
+                                                    ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                                                    : "text-sidebar-foreground/60 hover:bg-sidebar-accent/50",
+                                            )}
+                                        >
+                                            <div className="relative flex-shrink-0 flex items-center justify-center w-7 h-7 rounded-md bg-sidebar-accent/30">
+                                                <Pin className="size-4 text-blue-400/70" />
+                                            </div>
+                                            <div className="flex-1 min-w-0">
+                                                <div className="flex items-baseline justify-between gap-1 min-w-0">
+                                                    <span className="truncate text-[0.8rem] font-medium leading-tight opacity-70">
+                                                        {`Session ${p.sessionId.slice(0, 8)}…`}
+                                                    </span>
+                                                    <span className="text-[0.65rem] text-sidebar-foreground/35 flex-shrink-0">
+                                                        {timeLabel}
+                                                    </span>
+                                                </div>
+                                                <div className="flex items-center gap-1 mt-0.5 min-w-0">
+                                                    <span className="text-[0.65rem] text-sidebar-foreground/30 truncate" title={p.cwd}>
+                                                        {formatPathTail(p.cwd, 2)}
+                                                    </span>
+                                                    <span className="text-[0.6rem] text-sidebar-foreground/25">· ended</span>
+                                                </div>
+                                            </div>
+                                            <button
+                                                className="flex-shrink-0 p-1 rounded hover:bg-sidebar-accent/80 text-sidebar-foreground/40 hover:text-sidebar-foreground/70 transition-colors"
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    togglePinSession(p.sessionId);
+                                                }}
+                                                title="Unpin session"
+                                            >
+                                                <PinOff className="h-3.5 w-3.5" />
+                                            </button>
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                        );
+                    })()}
                 </div>
             </div>
         </aside>

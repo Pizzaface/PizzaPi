@@ -53,6 +53,7 @@ export interface PersistedRelaySessionSummary {
     endedAt: string | null;
     isEphemeral: boolean;
     expiresAt: string | null;
+    isPinned: boolean;
 }
 
 export async function ensureRelaySessionTables(): Promise<void> {
@@ -69,7 +70,18 @@ export async function ensureRelaySessionTables(): Promise<void> {
         .addColumn("endedAt", "text")
         .addColumn("isEphemeral", "integer", (col) => col.notNull().defaultTo(1))
         .addColumn("expiresAt", "text")
+        .addColumn("isPinned", "integer", (col) => col.notNull().defaultTo(0))
         .execute();
+
+    // Migration: add isPinned column to existing tables
+    try {
+        await getKysely().schema
+            .alterTable("relay_session")
+            .addColumn("isPinned", "integer", (col) => col.notNull().defaultTo(0))
+            .execute();
+    } catch {
+        // Column already exists — ignore
+    }
 
     await getKysely().schema
         .createTable("relay_session_state")
@@ -109,6 +121,7 @@ export async function recordRelaySessionStart(input: RelaySessionStartInput): Pr
             endedAt: null,
             isEphemeral: input.isEphemeral ? 1 : 0,
             expiresAt: input.isEphemeral ? ephemeralExpiryIso(new Date(now).getTime()) : null,
+            isPinned: 0,
         })
         .onConflict((oc) => oc.column("id").doNothing())
         .execute();
@@ -181,13 +194,15 @@ export async function getPersistedRelaySessionSnapshot(
             "s.endedAt",
             "s.isEphemeral",
             "s.expiresAt",
+            "s.isPinned",
             "st.state as state",
         ])
         .where("s.id", "=", sessionId)
         .executeTakeFirst();
 
     if (!row) return null;
-    if (row.expiresAt !== null && row.expiresAt <= nowIso) return null;
+    // Pinned sessions are always accessible, even if expired
+    if (row.isPinned !== 1 && row.expiresAt !== null && row.expiresAt <= nowIso) return null;
 
     let parsed: unknown = null;
     if (row.state) {
@@ -228,9 +243,19 @@ export async function listPersistedRelaySessionsForUser(
             "endedAt",
             "isEphemeral",
             "expiresAt",
+            "isPinned",
         ])
         .where("userId", "=", userId)
-        .where((eb) => eb.or([eb("expiresAt", "is", null), eb("expiresAt", ">", nowIso)]))
+        .where((eb) =>
+            eb.or([
+                // Include non-expired sessions
+                eb("expiresAt", "is", null),
+                eb("expiresAt", ">", nowIso),
+                // Always include pinned sessions regardless of expiry
+                eb("isPinned", "=", 1),
+            ]),
+        )
+        .orderBy("isPinned", "desc")
         .orderBy("lastActiveAt", "desc")
         .limit(limit)
         .execute();
@@ -244,7 +269,30 @@ export async function listPersistedRelaySessionsForUser(
         endedAt: row.endedAt,
         isEphemeral: row.isEphemeral === 1,
         expiresAt: row.expiresAt,
+        isPinned: row.isPinned === 1,
     }));
+}
+
+export async function pinRelaySession(sessionId: string, userId: string): Promise<boolean> {
+    const result = await getKysely()
+        .updateTable("relay_session")
+        .set({ isPinned: 1 })
+        .where("id", "=", sessionId)
+        .where("userId", "=", userId)
+        .execute();
+
+    return (result[0]?.numUpdatedRows ?? 0n) > 0n;
+}
+
+export async function unpinRelaySession(sessionId: string, userId: string): Promise<boolean> {
+    const result = await getKysely()
+        .updateTable("relay_session")
+        .set({ isPinned: 0 })
+        .where("id", "=", sessionId)
+        .where("userId", "=", userId)
+        .execute();
+
+    return (result[0]?.numUpdatedRows ?? 0n) > 0n;
 }
 
 export async function pruneExpiredRelaySessions(): Promise<string[]> {
@@ -254,6 +302,7 @@ export async function pruneExpiredRelaySessions(): Promise<string[]> {
     // This reduces database roundtrips from 3 to 2 and avoids loading all expired IDs into application memory
     // before deletion, which improves performance and memory usage for large cleanups.
     // Estimated impact: ~30% reduction in latency for cleanup operations.
+    // Note: Pinned sessions are never pruned, even if expired.
     return await getKysely().transaction().execute(async (trx) => {
         await trx
             .deleteFrom("relay_session_state")
@@ -262,7 +311,8 @@ export async function pruneExpiredRelaySessions(): Promise<string[]> {
                     .selectFrom("relay_session")
                     .select("id")
                     .where("expiresAt", "is not", null)
-                    .where("expiresAt", "<=", nowIso),
+                    .where("expiresAt", "<=", nowIso)
+                    .where("isPinned", "=", 0),
             )
             .execute();
 
@@ -270,6 +320,7 @@ export async function pruneExpiredRelaySessions(): Promise<string[]> {
             .deleteFrom("relay_session")
             .where("expiresAt", "is not", null)
             .where("expiresAt", "<=", nowIso)
+            .where("isPinned", "=", 0)
             .returning("id")
             .execute();
 

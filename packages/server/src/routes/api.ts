@@ -16,7 +16,7 @@ import { sendSkillCommand, sendRunnerCommand } from "../ws/namespaces/runner.js"
 import { waitForSpawnAck } from "../ws/runner-control.js";
 import { getApiKeyRateLimitConfig, getAuth, getKysely } from "../auth.js";
 import { requireSession, validateApiKey } from "../middleware.js";
-import { listPersistedRelaySessionsForUser } from "../sessions/store.js";
+import { listPersistedRelaySessionsForUser, pinRelaySession, unpinRelaySession } from "../sessions/store.js";
 import { getRecentFolders, recordRecentFolder } from "../runner-recent-folders.js";
 import { getHiddenModels, setHiddenModels } from "../user-hidden-models.js";
 import {
@@ -641,6 +641,34 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
         const sessions = await getSessions(identity.userId);
         const persistedSessions = await listPersistedRelaySessionsForUser(identity.userId);
         return Response.json({ sessions, persistedSessions });
+    }
+
+    // ── Pin / unpin a session ──────────────────────────────────────────────
+    const pinMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/pin$/);
+    if (pinMatch) {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        const sessionId = decodeURIComponent(pinMatch[1]);
+        if (!sessionId) {
+            return Response.json({ error: "Missing session ID" }, { status: 400 });
+        }
+
+        if (req.method === "PUT") {
+            const ok = await pinRelaySession(sessionId, identity.userId);
+            if (!ok) {
+                return Response.json({ error: "Session not found or not owned by you" }, { status: 404 });
+            }
+            return Response.json({ ok: true, isPinned: true });
+        }
+
+        if (req.method === "DELETE") {
+            const ok = await unpinRelaySession(sessionId, identity.userId);
+            if (!ok) {
+                return Response.json({ error: "Session not found or not owned by you" }, { status: 404 });
+            }
+            return Response.json({ ok: true, isPinned: false });
+        }
     }
 
     if (url.pathname.startsWith("/api/sessions/") && url.pathname.endsWith("/attachments") && req.method === "POST") {
