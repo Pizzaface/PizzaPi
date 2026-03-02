@@ -160,6 +160,12 @@ async function checkPushNotifications(
 
 const triggerRegistry = new TriggerRegistry(() => getActiveRedisClient());
 
+/** Broadcast the current trigger list to all viewers of a session. */
+async function broadcastTriggersToViewers(sessionId: string): Promise<void> {
+    const triggers = await triggerRegistry.listTriggers(sessionId);
+    broadcastToViewers(sessionId, "trigger_list", { triggers });
+}
+
 /** Deliver a trigger notification to the owning session's TUI socket. */
 function deliverTriggerNotification(
     ownerSessionId: string,
@@ -179,6 +185,9 @@ function deliverTriggerNotification(
             ts: notification.firedAt,
         });
     }
+
+    // Broadcast updated trigger state (with new firingCount/lastFiredAt) to viewers
+    void broadcastTriggersToViewers(ownerSessionId);
 }
 
 const triggerEvaluator = new TriggerEvaluator(triggerRegistry, deliverTriggerNotification);
@@ -437,6 +446,9 @@ export function registerRelayNamespace(io: SocketIOServer): void {
             }
 
             socket.emit("trigger_registered" as any, { triggerId: result.triggerId, type: data.type });
+
+            // Broadcast updated trigger list to viewers
+            void broadcastTriggersToViewers(sessionId);
         });
 
         // ── cancel_trigger ───────────────────────────────────────────────────
@@ -455,6 +467,9 @@ export function registerRelayNamespace(io: SocketIOServer): void {
 
             timerScheduler.cancelTimer(data.triggerId);
             socket.emit("trigger_cancelled" as any, { triggerId: data.triggerId });
+
+            // Broadcast updated trigger list to viewers
+            void broadcastTriggersToViewers(sessionId);
         });
 
         // ── list_triggers ────────────────────────────────────────────────────

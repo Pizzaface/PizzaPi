@@ -22,8 +22,14 @@ import {
     sendSnapshotToViewer,
     getLocalTuiSocket,
 } from "../sio-registry.js";
+import { TriggerRegistry } from "../triggers/index.js";
+import { getActiveRedisClient } from "../../sessions/redis.js";
 import { getPersistedRelaySessionSnapshot } from "../../sessions/store.js";
 import { getCachedRelayEvents } from "../../sessions/redis.js";
+
+// ── Trigger registry (read-only access to the same Redis state as relay.ts) ──
+
+const viewerTriggerRegistry = new TriggerRegistry(() => getActiveRedisClient());
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -222,6 +228,16 @@ export function registerViewerNamespace(io: SocketIOServer): void {
             // the session may have just cycled and will come back shortly.
             socket.disconnect();
             return;
+        }
+
+        // Send initial trigger list to the newly-connected viewer
+        try {
+            const triggers = await viewerTriggerRegistry.listTriggers(sessionId);
+            if (triggers.length > 0) {
+                socket.emit("trigger_list", { triggers });
+            }
+        } catch (err) {
+            console.error("[sio/viewer] Failed to send initial trigger list:", err);
         }
 
         // ── connected — viewer greeting, notify TUI ─────────────────────────

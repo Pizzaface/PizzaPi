@@ -136,6 +136,8 @@ export interface SessionViewerProps {
   showFileExplorerButton?: boolean;
   /** Current agent todo list */
   todoList?: TodoItem[];
+  /** Active conversation triggers for this session */
+  triggers?: TriggerRecord[];
   /** Runner ID for the current session (used for runner files API) */
   runnerId?: string;
   /** Absolute working directory of the current session (used as base for @-mention file paths) */
@@ -406,7 +408,7 @@ function SessionSkeleton() {
   );
 }
 
-export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], runnerId, sessionCwd }: SessionViewerProps) {
+export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], triggers: triggersProp = [], runnerId, sessionCwd }: SessionViewerProps) {
   const [input, setInput] = React.useState("");
   const [composerError, setComposerError] = React.useState<string | null>(null);
   const [showClearDialog, setShowClearDialog] = React.useState(false);
@@ -420,7 +422,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
 
   // Triggers panel state
   const [showTriggers, setShowTriggers] = React.useState(false);
-  const [triggers, setTriggers] = React.useState<TriggerRecord[]>([]);
+  const triggers = triggersProp;
 
   // Detect touch devices for mobile-specific behavior
   const isTouchDevice = React.useMemo(

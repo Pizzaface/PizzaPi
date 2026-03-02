@@ -9,7 +9,7 @@ import { RunnerManager } from "@/components/RunnerManager";
 import { PizzaLogo } from "@/components/PizzaLogo";
 import { authClient, useSession, signOut } from "@/lib/auth-client";
 import { io, type Socket } from "socket.io-client";
-import type { ViewerServerToClientEvents, ViewerClientToServerEvents } from "@pizzapi/protocol";
+import type { ViewerServerToClientEvents, ViewerClientToServerEvents, TriggerRecord } from "@pizzapi/protocol";
 import { cn } from "@/lib/utils";
 import { pulseStreamingHaptic, cancelHaptic, startToolHaptic, stopToolHaptic } from "@/lib/haptics";
 import { Button } from "@/components/ui/button";
@@ -617,6 +617,7 @@ export function App() {
   const [lastHeartbeatAt, setLastHeartbeatAt] = React.useState<number | null>(null);
   const [providerUsage, setProviderUsage] = React.useState<ProviderUsageMap | null>(null);
   const [todoList, setTodoList] = React.useState<TodoItem[]>([]);
+  const [triggers, setTriggers] = React.useState<TriggerRecord[]>([]);
   const [authSource, setAuthSource] = React.useState<string | null>(null);
 
   // Keyboard shortcuts
@@ -909,6 +910,7 @@ export function App() {
     setAuthSource(null);
     setTokenUsage(null);
     setLastHeartbeatAt(null);
+    setTriggers([]);
   }, []);
 
   // Full reset: cancel the RAF and wipe all pending streaming state. Use before
@@ -1766,6 +1768,31 @@ export function App() {
           }, 2000);
         }
       }
+    });
+
+    // ── Trigger events ────────────────────────────────────────────────────
+    socket.on("trigger_list", (data) => {
+      if (activeSessionRef.current !== relaySessionId) return;
+      lastViewerEventAtRef.current = Date.now();
+      setTriggers(data.triggers);
+    });
+
+    socket.on("trigger_registered", (data) => {
+      if (activeSessionRef.current !== relaySessionId) return;
+      lastViewerEventAtRef.current = Date.now();
+      setTriggers(data.triggers);
+    });
+
+    socket.on("trigger_cancelled", (data) => {
+      if (activeSessionRef.current !== relaySessionId) return;
+      lastViewerEventAtRef.current = Date.now();
+      setTriggers(data.triggers);
+    });
+
+    socket.on("trigger_fired", (data) => {
+      if (activeSessionRef.current !== relaySessionId) return;
+      lastViewerEventAtRef.current = Date.now();
+      setTriggers(data.triggers);
     });
   }, [handleRelayEvent, patchSessionCache]);
 
@@ -2858,6 +2885,7 @@ export function App() {
                   onToggleFileExplorer={() => setShowFileExplorer((v) => !v)}
                   showFileExplorerButton={!!activeSessionInfo?.runnerId && !!activeSessionInfo?.cwd}
                   todoList={todoList}
+                  triggers={triggers}
                   runnerId={activeSessionInfo?.runnerId ?? undefined}
                   sessionCwd={activeSessionInfo?.cwd || undefined}
                 />

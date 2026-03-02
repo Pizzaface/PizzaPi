@@ -3,6 +3,7 @@
 // ============================================================================
 
 import type { Attachment } from "./shared.js";
+import type { TriggerRecord, TriggerNotification, TriggerDelivery } from "./triggers.js";
 
 // ---------------------------------------------------------------------------
 // Server → Client (Server sends to browser viewer)
@@ -43,6 +44,28 @@ export interface ViewerServerToClientEvents {
   /** Generic error */
   error: (data: {
     message: string;
+  }) => void;
+
+  /** Trigger registered (or updated) for this session */
+  trigger_registered: (data: {
+    triggers: TriggerRecord[];
+  }) => void;
+
+  /** Trigger cancelled for this session */
+  trigger_cancelled: (data: {
+    triggerId: string;
+    triggers: TriggerRecord[];
+  }) => void;
+
+  /** Full trigger list for this session */
+  trigger_list: (data: {
+    triggers: TriggerRecord[];
+  }) => void;
+
+  /** A trigger fired for this session */
+  trigger_fired: (data: TriggerNotification & {
+    delivery: TriggerDelivery;
+    triggers: TriggerRecord[];
   }) => void;
 }
 
