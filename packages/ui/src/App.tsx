@@ -1313,7 +1313,10 @@ export function App() {
           setResumeSessionsLoading(false);
         }
         if (command === "compact") {
-          setIsCompacting(false);
+          // Don't force isCompacting=false here — let the heartbeat remain
+          // the source of truth. The error may be "already in progress"
+          // (compaction is still running), and unconditionally clearing the
+          // flag would re-enable input prematurely until the next heartbeat.
         }
         setViewerStatus(`/${command}: ${error}`);
         return;
