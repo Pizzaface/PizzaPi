@@ -145,6 +145,30 @@ services:
     restart: unless-stopped
 `;
 
+/** Migrate VAPID keys from an existing compose.yml into vapid.json */
+function migrateVapidFromCompose(): { publicKey: string; privateKey: string } | null {
+    const composePath = join(WEB_DIR, "compose.yml");
+    if (!existsSync(composePath)) return null;
+
+    try {
+        const content = readFileSync(composePath, "utf-8");
+        const pubMatch = content.match(/VAPID_PUBLIC_KEY=(.+)/);
+        const privMatch = content.match(/VAPID_PRIVATE_KEY=(.+)/);
+        if (pubMatch?.[1] && privMatch?.[1]) {
+            const keys = {
+                publicKey: pubMatch[1].trim(),
+                privateKey: privMatch[1].trim(),
+            };
+            // Skip template placeholders
+            if (keys.publicKey.startsWith("{{")) return null;
+            return keys;
+        }
+    } catch {
+        // Can't read compose — skip migration
+    }
+    return null;
+}
+
 /** Load or create VAPID keys, persisted independently of compose.yml */
 function ensureVapidKeys(): { publicKey: string; privateKey: string } {
     const vapidPath = join(WEB_DIR, "vapid.json");
@@ -159,6 +183,14 @@ function ensureVapidKeys(): { publicKey: string; privateKey: string } {
         } catch {
             // Corrupted file — regenerate
         }
+    }
+
+    // Migrate from existing compose.yml if present
+    const migrated = migrateVapidFromCompose();
+    if (migrated) {
+        writeFileSync(vapidPath, JSON.stringify(migrated, null, 2) + "\n");
+        console.log("Migrated existing VAPID keys → vapid.json");
+        return migrated;
     }
 
     const vapid = generateVapidKeys();
