@@ -34,6 +34,7 @@ import {
 import { RateLimiter, isValidEmail, isValidPassword, cwdMatchesRoots } from "../security.js";
 import { isValidSkillName } from "../validation.js";
 import { isSignupAllowed } from "../auth.js";
+import { SERVER_VERSION } from "../version.js";
 
 // 5 requests per 15 minutes
 const registerRateLimiter = new RateLimiter(5, 15 * 60 * 1000);
@@ -41,6 +42,11 @@ const registerRateLimiter = new RateLimiter(5, 15 * 60 * 1000);
 export async function handleApi(req: Request, url: URL): Promise<Response | undefined> {
     if (url.pathname === "/health") {
         return Response.json({ status: "ok" });
+    }
+
+    // ── Public endpoint: server version ─────────────────────────────────
+    if (url.pathname === "/api/version" && req.method === "GET") {
+        return Response.json({ version: SERVER_VERSION });
     }
 
     // ── Public endpoint: signup status ───────────────────────────────────

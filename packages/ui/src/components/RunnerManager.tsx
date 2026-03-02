@@ -1,6 +1,6 @@
 import * as React from "react";
 import { Button } from "@/components/ui/button";
-import { RefreshCw, HardDrive, Hash, Loader2, Server, ChevronDown, Plus, FolderOpen, Terminal, Clock, Power } from "lucide-react";
+import { RefreshCw, HardDrive, Hash, Loader2, Server, ChevronDown, Plus, FolderOpen, Terminal, Clock, Power, AlertTriangle } from "lucide-react";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 import { formatPathTail } from "@/lib/path";
@@ -47,6 +47,7 @@ export function RunnerManager({ onOpenSession }: RunnerManagerProps) {
     const [runners, setRunners] = React.useState<RunnerInfo[]>([]);
     const [sessions, setSessions] = React.useState<LiveSession[]>([]);
     const [loading, setLoading] = React.useState(true);
+    const [serverVersion, setServerVersion] = React.useState<string | null>(null);
     const [restarting, setRestarting] = React.useState<Set<string>>(new Set());
     const [stopping, setStopping] = React.useState<Set<string>>(new Set());
 
@@ -92,6 +93,14 @@ export function RunnerManager({ onOpenSession }: RunnerManagerProps) {
         const interval = setInterval(fetchData, 10000);
         return () => clearInterval(interval);
     }, [fetchData]);
+
+    // Fetch server version once
+    React.useEffect(() => {
+        fetch("/api/version")
+            .then((res) => res.ok ? res.json() : null)
+            .then((data) => { if (data?.version) setServerVersion(data.version); })
+            .catch(() => {});
+    }, []);
 
     // Fetch recent folders when a runner is selected in the spawn dialog
     React.useEffect(() => {
@@ -313,6 +322,7 @@ export function RunnerManager({ onOpenSession }: RunnerManagerProps) {
                                     key={runner.runnerId}
                                     runner={runner}
                                     sessions={runnerSessions}
+                                    serverVersion={serverVersion}
                                     isRestarting={restarting.has(runner.runnerId)}
                                     isStopping={stopping.has(runner.runnerId)}
                                     onRestart={() => handleRestart(runner.runnerId)}
@@ -421,6 +431,7 @@ export function RunnerManager({ onOpenSession }: RunnerManagerProps) {
 interface RunnerCardProps {
     runner: RunnerInfo;
     sessions: LiveSession[];
+    serverVersion: string | null;
     isRestarting: boolean;
     isStopping: boolean;
     onRestart: () => void;
@@ -434,13 +445,17 @@ function formatTime(iso: string): string {
     return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-function RunnerCard({ runner, sessions, isRestarting, isStopping, onRestart, onStop, onNewSession, onOpenSession, onSkillsChange }: RunnerCardProps) {
+function RunnerCard({ runner, sessions, serverVersion, isRestarting, isStopping, onRestart, onStop, onNewSession, onOpenSession, onSkillsChange }: RunnerCardProps) {
     const [sessionsOpen, setSessionsOpen] = React.useState(true);
+    const isOutdated = !!(runner.version && serverVersion && runner.version !== serverVersion);
 
     return (
         <div className="group relative rounded-xl border border-border/60 bg-card hover:border-border transition-all duration-200 overflow-hidden">
             {/* Subtle top accent line */}
-            <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-green-500/40 to-transparent" />
+            <div className={cn(
+                "absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent to-transparent",
+                isOutdated ? "via-amber-500/40" : "via-green-500/40"
+            )} />
 
             <div className="p-3 sm:p-4">
                 {/* Top row: name + status + actions */}
@@ -457,8 +472,19 @@ function RunnerCard({ runner, sessions, isRestarting, isStopping, onRestart, onS
                                     {runner.name || "Unnamed Runner"}
                                 </p>
                                 {runner.version && (
-                                    <span className="inline-flex items-center text-[10px] font-mono px-1.5 py-0.5 rounded-full bg-muted/60 border border-border/40 text-muted-foreground leading-none">
+                                    <span className={cn(
+                                        "inline-flex items-center text-[10px] font-mono px-1.5 py-0.5 rounded-full border leading-none gap-1",
+                                        isOutdated
+                                            ? "bg-amber-500/10 border-amber-500/40 text-amber-600 dark:text-amber-400"
+                                            : "bg-muted/60 border-border/40 text-muted-foreground"
+                                    )}>
+                                        {isOutdated && <AlertTriangle className="h-2.5 w-2.5" />}
                                         v{runner.version}
+                                    </span>
+                                )}
+                                {isOutdated && (
+                                    <span className="text-[10px] text-amber-600 dark:text-amber-400">
+                                        Update available (server v{serverVersion})
                                     </span>
                                 )}
                             </div>
