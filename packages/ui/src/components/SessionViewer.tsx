@@ -545,8 +545,12 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
       if (isCompacting || compactingRef.current) {
         return true; // Already compacting — ignore duplicate
       }
-      compactingRef.current = true;
-      onExec({ type: "exec", id, command: "compact", customInstructions: args || undefined });
+      const dispatched = onExec({ type: "exec", id, command: "compact", customInstructions: args || undefined });
+      // Only mark as compacting if dispatch succeeded; otherwise the ref
+      // would stay true and silently block all future /compact commands.
+      if (dispatched !== false) {
+        compactingRef.current = true;
+      }
       setInput("");
       setCommandOpen(false);
       setCommandQuery("");
