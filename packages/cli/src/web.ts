@@ -469,9 +469,8 @@ Settable keys:
     // pizza web config set <key> <value>
     if (args[0] === "set") {
         const key = args[1] as SettableKey;
-        const value = args.slice(2).join(" ");
 
-        if (!key || value === undefined) {
+        if (!key || args.length < 3) {
             console.error("Usage: pizza web config set <key> <value>");
             console.error(`Settable keys: ${SETTABLE_KEYS.join(", ")}`);
             process.exit(1);
@@ -483,6 +482,8 @@ Settable keys:
             process.exit(1);
         }
 
+        const value = args.slice(2).join(" ");
+
         if (key === "port") {
             const p = parseInt(value, 10);
             if (isNaN(p) || p < 1 || p > 65535) {
@@ -490,7 +491,14 @@ Settable keys:
                 process.exit(1);
             }
             config.port = p;
+        } else if (key === "vapidSubject") {
+            if (!value) {
+                console.error("vapidSubject cannot be empty (required for push notifications)");
+                process.exit(1);
+            }
+            config.vapidSubject = value;
         } else {
+            // extraOrigins: empty string is valid (clears the setting)
             config[key] = value;
         }
 
