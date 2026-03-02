@@ -3,6 +3,7 @@
 // ============================================================================
 
 import type { Attachment } from "./shared.js";
+import type { TriggerType, TriggerConfig, TriggerDelivery, TriggerRecord, TriggerNotification } from "./triggers.js";
 
 // ---------------------------------------------------------------------------
 // Client → Server (TUI sends to server)
@@ -46,6 +47,35 @@ export interface RelayClientToServerEvents {
     token: string;
     targetSessionId: string;
     message: string;
+  }) => void;
+
+  /** Register a new trigger */
+  register_trigger: (data: {
+    token: string;
+    type: TriggerType;
+    config: TriggerConfig;
+    delivery?: TriggerDelivery;
+    message?: string;
+    maxFirings?: number;
+    expiresAt?: string;
+  }) => void;
+
+  /** Cancel an existing trigger */
+  cancel_trigger: (data: {
+    token: string;
+    triggerId: string;
+  }) => void;
+
+  /** List all triggers owned by this session */
+  list_triggers: (data: {
+    token: string;
+  }) => void;
+
+  /** Emit a custom event for pub/sub triggers */
+  emit_custom_event: (data: {
+    token: string;
+    eventName: string;
+    payload?: unknown;
   }) => void;
 }
 
@@ -114,6 +144,33 @@ export interface RelayServerToClientEvents {
   /** Generic error */
   error: (data: {
     message: string;
+  }) => void;
+
+  /** Confirms trigger was registered */
+  trigger_registered: (data: {
+    triggerId: string;
+    type: TriggerType;
+  }) => void;
+
+  /** Confirms trigger was cancelled */
+  trigger_cancelled: (data: {
+    triggerId: string;
+  }) => void;
+
+  /** Returns list of triggers */
+  trigger_list: (data: {
+    triggers: TriggerRecord[];
+  }) => void;
+
+  /** Fires when a trigger condition is met */
+  trigger_fired: (data: TriggerNotification & {
+    delivery: TriggerDelivery;
+  }) => void;
+
+  /** Trigger-related error */
+  trigger_error: (data: {
+    message: string;
+    triggerId?: string;
   }) => void;
 }
 

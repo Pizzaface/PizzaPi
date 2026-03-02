@@ -52,3 +52,16 @@ export type {
   HubInterServerEvents,
   HubSocketData,
 } from "./hub.js";
+
+// Trigger types (conversation triggers system)
+export type {
+  TriggerType,
+  TriggerConfig,
+  SessionTriggerConfig,
+  CostTriggerConfig,
+  CustomEventTriggerConfig,
+  TimerTriggerConfig,
+  TriggerDelivery,
+  TriggerRecord,
+  TriggerNotification,
+} from "./triggers.js";
