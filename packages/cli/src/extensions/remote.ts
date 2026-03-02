@@ -950,12 +950,19 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                     // The agent_end event may be lost because compact disconnects before aborting.
                     isAgentActive = false;
                     lastRetryableError = null;
+                    // Clear compacting flag *before* the heartbeat so the UI
+                    // receives isCompacting=false immediately on completion.
+                    isCompacting = false;
                     replyOk(result ?? null);
                     forwardEvent({ type: "session_active", state: buildSessionState() });
                     // Push an immediate heartbeat so the web UI shows the correct idle state.
                     forwardEvent(buildHeartbeat());
-                } finally {
+                } catch (err) {
+                    // Ensure the flag is cleared even on failure so the UI
+                    // doesn't stay stuck in "Compacting…" state.
                     isCompacting = false;
+                    forwardEvent(buildHeartbeat());
+                    throw err;
                 }
                 return;
             }
