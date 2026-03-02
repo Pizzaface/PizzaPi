@@ -1,10 +1,10 @@
-import type { RelayMessage, SubAgentTurn } from "@/components/session-viewer/types";
+import type { RelayMessage, SubAgentTurn } from "./types";
 
 import {
   hasVisibleContent,
   normalizeToolName,
   extractTextFromToolContent,
-} from "@/components/session-viewer/utils";
+} from "./utils";
 
 interface PendingToolCall {
   toolCallId: string;
