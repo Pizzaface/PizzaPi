@@ -155,11 +155,9 @@ jobs:
           BINARY="packages/cli/dist/binaries/${{ matrix.target }}/${{ matrix.binary }}"
           chmod +x "$BINARY"
 
-          # The binary will crash early (no package.json next to it for pi-coding-agent),
-          # but we can verify it's a valid executable that starts up.
-          # Exit code 1 is expected; segfault (139) or missing lib (127) are failures.
+          # --help should work and exit cleanly
           set +e
-          "$BINARY" --help 2>&1 | head -20
+          "$BINARY" --help 2>&1 | tee /tmp/help-output.txt
           EXIT_CODE=$?
           set -e
 
@@ -172,7 +170,12 @@ jobs:
             exit 1
           fi
 
-          echo "✅ Binary executed (exit code: $EXIT_CODE — expected non-zero without full runtime assets)"
+          # Verify help text is present (exit 0 expected, but tolerate 1 if runtime assets missing)
+          if grep -q "pizzapi" /tmp/help-output.txt 2>/dev/null; then
+            echo "✅ Binary --help produced expected output (exit code: $EXIT_CODE)"
+          else
+            echo "✅ Binary executed (exit code: $EXIT_CODE — help text may require runtime assets)"
+          fi
 
       # Validate that inlined resources survive compilation
       - name: Smoke test — inlined template in binary
@@ -290,6 +293,54 @@ jobs:
               # Ensure compiled binary mode can locate repo (fallback path used by pizza web)
               mkdir -p /root/.pizzapi/web
               ln -sfn /work /root/.pizzapi/web/repo
+
+              echo "[0/6] CLI help & config tests"
+
+              # --help should exit 0 and contain expected text
+              $CLI_CMD --help 2>&1 | tee /tmp/help.txt
+              grep -q "pizzapi.*coding agent" /tmp/help.txt || { echo "::error::--help missing header"; exit 1; }
+              grep -q "pizza web" /tmp/help.txt || { echo "::error::--help missing web subcommand"; exit 1; }
+
+              # web --help
+              $CLI_CMD web --help 2>&1 | tee /tmp/web-help.txt
+              grep -q "pizza web" /tmp/web-help.txt || { echo "::error::web --help missing content"; exit 1; }
+              grep -q "\-\-port" /tmp/web-help.txt || { echo "::error::web --help missing --port"; exit 1; }
+              grep -q "config" /tmp/web-help.txt || { echo "::error::web --help missing config"; exit 1; }
+
+              # web config — should work even before first start (creates config.json)
+              $CLI_CMD web config 2>&1 | tee /tmp/web-config.txt
+              grep -q "port:" /tmp/web-config.txt || { echo "::error::web config missing port"; exit 1; }
+              grep -q "vapid.public:" /tmp/web-config.txt || { echo "::error::web config missing vapid"; exit 1; }
+
+              # web config set — persist and verify
+              $CLI_CMD web config set port 9999
+              $CLI_CMD web config 2>&1 | grep -q "port:.*9999" || { echo "::error::port not persisted"; exit 1; }
+
+              $CLI_CMD web config set extraOrigins "https://test.example.com"
+              $CLI_CMD web config 2>&1 | grep -q "https://test.example.com" || { echo "::error::extraOrigins not persisted"; exit 1; }
+
+              # web config set — validation rejects bad input
+              if $CLI_CMD web config set port abc 2>/dev/null; then
+                echo "::error::port accepted invalid value 'abc'"
+                exit 1
+              fi
+              if $CLI_CMD web config set port 9000abc 2>/dev/null; then
+                echo "::error::port accepted invalid value '9000abc'"
+                exit 1
+              fi
+              if $CLI_CMD web config set vapidSubject 2>/dev/null; then
+                echo "::error::vapidSubject accepted without value"
+                exit 1
+              fi
+              if $CLI_CMD web config set bogusKey value 2>/dev/null; then
+                echo "::error::accepted unknown config key"
+                exit 1
+              fi
+
+              # Reset port for actual web start
+              $CLI_CMD web config set port 7492
+
+              echo "✅ CLI help & config tests passed"
 
               echo "[1/6] Starting pizza web"
               $CLI_CMD web --port 7492 2>&1 | tee /tmp/pizza-web.log

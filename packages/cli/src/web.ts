@@ -372,7 +372,7 @@ interface ParsedArgs {
     help: boolean;
 }
 
-function parseArgs(args: string[]): ParsedArgs {
+export function parseArgs(args: string[]): ParsedArgs {
     const result: ParsedArgs = { detach: true, help: false };
 
     for (let i = 0; i < args.length; i++) {
