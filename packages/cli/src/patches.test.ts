@@ -83,15 +83,19 @@ describe("pi-coding-agent patch application", () => {
         expect(source).not.toContain("showNewVersionNotification");
     });
 
-    test("auth-storage.js: reload() has ELOCKED fallback", async () => {
+    test("auth-storage.js: reload() uses lock-free read", async () => {
         const source = await Bun.file(
             piCodingAgentPath("dist/core/auth-storage.js"),
         ).text();
 
         expect(source).toContain("PATCH(pizzapi)");
-        expect(source).toContain("ELOCKED");
-        // The fallback does an unlocked readFileSync
+        // Should read directly, not through withLock
         expect(source).toContain("readFileSync(this.storage.authPath");
+        // The reload method should NOT go through withLock
+        const reloadStart = source.indexOf("reload() {");
+        const reloadEnd = source.indexOf("persistProviderChange");
+        const reloadBody = source.slice(reloadStart, reloadEnd);
+        expect(reloadBody).not.toContain("withLock");
     });
 });
 
