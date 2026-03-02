@@ -21,6 +21,12 @@ function ephemeralExpiryIso(fromMs: number = Date.now()): string {
     return new Date(fromMs + getEphemeralTtlMs()).toISOString();
 }
 
+function isDuplicateColumnError(error: unknown, columnName: string): boolean {
+    if (!(error instanceof Error)) return false;
+    const message = error.message.toLowerCase();
+    return message.includes("duplicate column") && message.includes(columnName.toLowerCase());
+}
+
 export interface RelaySessionStartInput {
     sessionId: string;
     userId?: string;
@@ -79,8 +85,11 @@ export async function ensureRelaySessionTables(): Promise<void> {
             .alterTable("relay_session")
             .addColumn("isPinned", "integer", (col) => col.notNull().defaultTo(0))
             .execute();
-    } catch {
-        // Column already exists — ignore
+    } catch (error) {
+        if (!isDuplicateColumnError(error, "isPinned")) {
+            console.error("[sessions/store] Failed to migrate relay_session.isPinned:", error);
+            throw error;
+        }
     }
 
     await getKysely().schema
@@ -179,6 +188,7 @@ export async function recordRelaySessionEnd(sessionId: string): Promise<void> {
 
 export async function getPersistedRelaySessionSnapshot(
     sessionId: string,
+    userId: string,
 ): Promise<PersistedRelaySessionSnapshot | null> {
     const nowIso = new Date().toISOString();
     const row = await getKysely()
@@ -198,6 +208,7 @@ export async function getPersistedRelaySessionSnapshot(
             "st.state as state",
         ])
         .where("s.id", "=", sessionId)
+        .where("s.userId", "=", userId)
         .executeTakeFirst();
 
     if (!row) return null;
@@ -271,6 +282,14 @@ export async function listPersistedRelaySessionsForUser(
         expiresAt: row.expiresAt,
         isPinned: row.isPinned === 1,
     }));
+}
+
+export async function listPinnedRelaySessionsForUser(
+    userId: string,
+    limit: number = 50,
+): Promise<PersistedRelaySessionSummary[]> {
+    const sessions = await listPersistedRelaySessionsForUser(userId, limit);
+    return sessions.filter((session) => session.isPinned);
 }
 
 export async function pinRelaySession(sessionId: string, userId: string): Promise<boolean> {

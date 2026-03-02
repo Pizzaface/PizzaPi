@@ -104,21 +104,23 @@ async function sendLatestSnapshotFromCache(
 async function replayPersistedSnapshot(
     socket: ViewerSocket,
     sessionId: string,
+    userId: string,
 ): Promise<void> {
     try {
+        const snapshot = await getPersistedRelaySessionSnapshot(sessionId, userId);
+        if (!snapshot || snapshot.state === null || snapshot.state === undefined) {
+            socket.emit("error", { message: "Session not found" });
+            socket.disconnect();
+            return;
+        }
+
         socket.emit("connected", { sessionId, replayOnly: true });
 
         // Fast path: send only the latest snapshot from Redis cache
+        // (ownership already validated by persisted snapshot lookup above)
         const sentFromCache = await sendLatestSnapshotFromCache(socket, sessionId);
 
         if (!sentFromCache) {
-            const snapshot = await getPersistedRelaySessionSnapshot(sessionId);
-            if (!snapshot || snapshot.state === null || snapshot.state === undefined) {
-                socket.emit("error", { message: "Session not found" });
-                socket.disconnect();
-                return;
-            }
-
             socket.emit("event", {
                 event: { type: "session_active", state: snapshot.state },
             });
@@ -167,15 +169,28 @@ export function registerViewerNamespace(io: SocketIOServer): void {
             return;
         }
 
+        const viewerUserId = socket.data.userId;
+        if (!viewerUserId) {
+            socket.emit("error", { message: "Unauthorized" });
+            socket.disconnect(true);
+            return;
+        }
+
         socket.data.sessionId = sessionId;
 
-        console.log(`[sio/viewer] connected: ${socket.id} sessionId=${sessionId}`);
+        console.log(`[sio/viewer] connected: ${socket.id} sessionId=${sessionId} userId=${viewerUserId}`);
 
         // Look up the live session
         const session = await getSharedSession(sessionId);
         if (!session) {
             // Session not live — try to replay a persisted snapshot
-            await replayPersistedSnapshot(socket, sessionId);
+            await replayPersistedSnapshot(socket, sessionId, viewerUserId);
+            return;
+        }
+
+        if (!session.userId || session.userId !== viewerUserId) {
+            socket.emit("error", { message: "Session not found" });
+            socket.disconnect(true);
             return;
         }
 

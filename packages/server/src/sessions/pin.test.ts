@@ -8,6 +8,7 @@ import {
     pinRelaySession,
     unpinRelaySession,
     listPersistedRelaySessionsForUser,
+    listPinnedRelaySessionsForUser,
     pruneExpiredRelaySessions,
     getPersistedRelaySessionSnapshot,
 } from "./store.js";
@@ -155,12 +156,25 @@ describe("listPersistedRelaySessionsForUser", () => {
     });
 });
 
+describe("listPinnedRelaySessionsForUser", () => {
+    it("returns only pinned sessions", async () => {
+        await insertSession({ sessionId: "s-only-pinned", isPinned: 1, isEphemeral: false });
+        await insertSession({ sessionId: "s-only-unpinned", isPinned: 0, isEphemeral: false });
+
+        const sessions = await listPinnedRelaySessionsForUser(TEST_USER_ID);
+        const ids = sessions.map((s) => s.sessionId);
+
+        expect(ids).toContain("s-only-pinned");
+        expect(ids).not.toContain("s-only-unpinned");
+    });
+});
+
 describe("getPersistedRelaySessionSnapshot", () => {
     it("returns pinned session even if expired", async () => {
         const pastDate = new Date(Date.now() - 60 * 60 * 1000).toISOString();
         await insertSession({ sessionId: "s-snap-pinned", isPinned: 1, expiresAt: pastDate });
 
-        const snap = await getPersistedRelaySessionSnapshot("s-snap-pinned");
+        const snap = await getPersistedRelaySessionSnapshot("s-snap-pinned", TEST_USER_ID);
         expect(snap).not.toBeNull();
         expect(snap?.sessionId).toBe("s-snap-pinned");
     });
@@ -169,7 +183,14 @@ describe("getPersistedRelaySessionSnapshot", () => {
         const pastDate = new Date(Date.now() - 60 * 60 * 1000).toISOString();
         await insertSession({ sessionId: "s-snap-unpinned", isPinned: 0, expiresAt: pastDate });
 
-        const snap = await getPersistedRelaySessionSnapshot("s-snap-unpinned");
+        const snap = await getPersistedRelaySessionSnapshot("s-snap-unpinned", TEST_USER_ID);
+        expect(snap).toBeNull();
+    });
+
+    it("returns null when requesting another user's session", async () => {
+        await insertSession({ sessionId: "s-snap-foreign", userId: "other-user", isPinned: 1, isEphemeral: false });
+
+        const snap = await getPersistedRelaySessionSnapshot("s-snap-foreign", TEST_USER_ID);
         expect(snap).toBeNull();
     });
 });
