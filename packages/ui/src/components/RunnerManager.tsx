@@ -428,15 +428,27 @@ export function RunnerManager({ onOpenSession }: RunnerManagerProps) {
     );
 }
 
-/** Returns true if version a < b using numeric semver comparison. */
+/**
+ * Returns true if version a < b using semver ordering.
+ * Handles prerelease tags: splits on "-" first, compares core numerically,
+ * then treats any prerelease as less than the same core release
+ * (e.g. 1.2.3-rc.1 < 1.2.3, but 1.2.3-rc.1 > 1.2.2).
+ */
 function semverLt(a: string, b: string): boolean {
-    const parse = (v: string) => v.replace(/^v/, "").split(".").map(Number);
+    const parse = (v: string) => {
+        const clean = v.replace(/^v/, "");
+        const [core, pre] = clean.split("-", 2);
+        return { parts: core.split(".").map(Number), pre: pre ?? null };
+    };
     const pa = parse(a), pb = parse(b);
-    for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-        const na = pa[i] ?? 0, nb = pb[i] ?? 0;
+    for (let i = 0; i < Math.max(pa.parts.length, pb.parts.length); i++) {
+        const na = pa.parts[i] ?? 0, nb = pb.parts[i] ?? 0;
+        if (isNaN(na) || isNaN(nb)) return false; // unparseable → don't flag
         if (na < nb) return true;
         if (na > nb) return false;
     }
+    // Same core: prerelease < release (e.g. 1.0.0-beta < 1.0.0)
+    if (pa.pre !== null && pb.pre === null) return true;
     return false;
 }
 
