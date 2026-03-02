@@ -13,6 +13,13 @@ on:
       - "**.md"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # ───────────────────────────────────────────────────────────────
   # Unit tests (fast, Linux-only — no compiled binary needed)
@@ -36,6 +43,16 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.10"
+
+      - name: Cache Bun artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.bun/install/cache
+            node_modules
+          key: ${{ runner.os }}-${{ runner.arch }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-bun-
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -83,8 +100,21 @@ jobs:
         with:
           bun-version: "1.3.10"
 
+      - name: Cache Bun artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.bun/install/cache
+            node_modules
+          key: ${{ runner.os }}-${{ runner.arch }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-bun-
+
       - name: Install dependencies
         run: bun install --frozen-lockfile
+
+      - name: Ensure native binaries match lockfile
+        run: bun install --frozen-lockfile --force
 
       - name: Build packages
         run: bun run build
@@ -172,13 +202,21 @@ jobs:
           retention-days: 7
 
   # ───────────────────────────────────────────────────────────────
-  # E2E: `pizza web` builds Docker image & serves the web UI
+  # E2E: install flow (`pizzapi web` + register + runner) per distribution
   # ───────────────────────────────────────────────────────────────
-  e2e-pizza-web:
-    name: E2E — pizza web
+  e2e-install-flow:
+    name: E2E install flow — ${{ matrix.distribution }}
     needs: test
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - distribution: npm-local
+            cli_cmd: pizzapi
+          - distribution: binary-linux-x64
+            cli_cmd: /work/packages/cli/dist/binaries/linux-x64/pizza-linux-x64
     steps:
       - uses: actions/checkout@v4
 
@@ -186,121 +224,151 @@ jobs:
         with:
           bun-version: "1.3.10"
 
+      - name: Cache Bun artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.bun/install/cache
+            node_modules
+          key: ${{ runner.os }}-${{ runner.arch }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-bun-
+
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Build packages
-        run: bun run build
-
-      - name: Compile linux-x64 binary
+      - name: Build binary (linux-x64)
         working-directory: packages/cli
         run: bun build-binaries.ts --target linux-x64
 
-      - name: Prepare binary
+      - name: Build npm distribution (local)
+        run: bun run build:npm:skip-compile
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build cached E2E tools image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/e2e-tools.Dockerfile
+          load: true
+          tags: pizzapi/e2e-tools:ci
+          cache-from: type=gha,scope=e2e-tools
+          cache-to: type=gha,mode=max,scope=e2e-tools
+
+      - name: Run full install-flow E2E inside Ubuntu container
+        env:
+          DIST: ${{ matrix.distribution }}
+          CLI_CMD: ${{ matrix.cli_cmd }}
         run: |
-          BIN_DIR="packages/cli/dist/binaries/linux-x64"
-          chmod +x "$BIN_DIR/pizza-linux-x64"
+          set -euo pipefail
 
-          # Symlink the repo checkout so the binary finds it
-          # (compiled binary can't use findRepoRoot — import.meta.dirname is /$bunfs/root/)
-          mkdir -p ~/.pizzapi/web
-          ln -s "$GITHUB_WORKSPACE" ~/.pizzapi/web/repo
+          docker run --rm \
+            --network host \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$GITHUB_WORKSPACE:/work" \
+            -e DIST="$DIST" \
+            -e CLI_CMD="$CLI_CMD" \
+            pizzapi/e2e-tools:ci bash -lc '
+              set -euo pipefail
 
-          echo "✅ Binary ready, repo symlinked to ~/.pizzapi/web/repo"
+              docker --version
+              docker compose version
 
-      - name: Run pizza web
-        run: |
-          BIN="packages/cli/dist/binaries/linux-x64/pizza-linux-x64"
+              if [ "$DIST" = "npm-local" ]; then
+                # Install local npm distributions built from this commit.
+                npm install -g /work/packages/npm/dist/cli-linux-x64
+                npm install -g /work/packages/npm/dist/pizzapi
+              else
+                chmod +x /work/packages/cli/dist/binaries/linux-x64/pizza-linux-x64
+              fi
 
-          # `pizza web` runs `docker compose up -d --build` which blocks during
-          # the Docker build, then returns once containers are detached.
-          "$BIN" web --port 7492 2>&1 | tee /tmp/pizza-web.log
+              # Ensure repo is trusted when mounted from host/runner workspace
+              git config --global --add safe.directory /work || true
 
-          # Give containers a moment to become healthy
-          echo "Waiting for server on port 7492..."
-          for i in $(seq 1 30); do
-            if curl -sf -o /dev/null http://localhost:7492 2>/dev/null; then
-              echo "✅ Server responded after ~${i}s"
-              break
-            fi
-            if [ $i -eq 30 ]; then
-              echo "::error::Server did not respond within 30s after compose up"
-              docker compose -p pizzapi-web logs 2>/dev/null || true
-              exit 1
-            fi
-            sleep 1
-          done
+              # Ensure compiled binary mode can locate repo (fallback path used by pizza web)
+              mkdir -p /root/.pizzapi/web
+              ln -sfn /work /root/.pizzapi/web/repo
 
-      - name: Verify server health
-        run: |
-          # Check that the server returns HTML (the web UI)
-          HTTP_CODE=$(curl -sf -o /tmp/response.html -w "%{http_code}" http://localhost:7492)
-          echo "HTTP status: $HTTP_CODE"
+              echo "[1/6] Starting pizza web"
+              $CLI_CMD web --port 7492 2>&1 | tee /tmp/pizza-web.log
 
-          if [ "$HTTP_CODE" != "200" ]; then
-            echo "::error::Expected HTTP 200, got $HTTP_CODE"
-            cat /tmp/response.html
-            exit 1
-          fi
+              echo "[2/6] Waiting for web"
+              for i in $(seq 1 60); do
+                if curl -fsS "http://localhost:7492/" >/dev/null; then
+                  break
+                fi
+                if [ "$i" -eq 60 ]; then
+                  echo "Server did not become ready" >&2
+                  docker compose -p pizzapi-web logs || true
+                  exit 1
+                fi
+                sleep 2
+              done
 
-          # Verify it's the PizzaPi UI (check for expected content)
-          if grep -qi "pizzapi\|PizzaPi" /tmp/response.html; then
-            echo "✅ Response contains PizzaPi content"
-          else
-            echo "::warning::Response doesn't mention PizzaPi — may be a generic page"
-            head -20 /tmp/response.html
-          fi
+              echo "[3/6] Registering user"
+              RESP=$(curl -fsS -X POST "http://localhost:7492/api/register" \
+                -H "content-type: application/json" \
+                -d "{\"name\":\"E2E User\",\"email\":\"e2e@example.com\",\"password\":\"E2ePass123\"}")
+              KEY=$(echo "$RESP" | jq -r ".key // empty")
+              if [ -z "$KEY" ]; then
+                echo "Registration failed: $RESP" >&2
+                exit 1
+              fi
 
-          # Check that the API is reachable
-          API_CODE=$(curl -sf -o /dev/null -w "%{http_code}" http://localhost:7492/api/health 2>/dev/null || echo "000")
-          echo "API /api/health status: $API_CODE"
+              echo "[4/6] Configuring CLI"
+              mkdir -p /root/.pizzapi
+              printf "{\"apiKey\":\"%s\"}\n" "$KEY" > /root/.pizzapi/config.json
+              export PIZZAPI_API_KEY="$KEY"
+              export PIZZAPI_RELAY_URL="ws://localhost:7492"
 
-          echo "✅ Server is healthy"
+              echo "[5/6] Starting runner"
+              ($CLI_CMD runner >/tmp/pizzapi-runner.log 2>&1 &) 
 
-      - name: Verify compose.yml was generated from inlined template
-        run: |
-          COMPOSE="$HOME/.pizzapi/web/compose.yml"
-          if [ ! -f "$COMPOSE" ]; then
-            echo "::error::compose.yml was not generated at $COMPOSE"
-            exit 1
-          fi
+              echo "[6/6] Verifying runner via authenticated spawn"
+              RUNNER_ID=""
+              for i in $(seq 1 30); do
+                RUNNER_ID=$(jq -r ".runnerId // empty" /root/.pizzapi/runner.json 2>/dev/null || true)
+                if [ -n "$RUNNER_ID" ]; then
+                  break
+                fi
+                sleep 1
+              done
+              if [ -z "$RUNNER_ID" ]; then
+                echo "Runner ID not found in /root/.pizzapi/runner.json" >&2
+                tail -n 150 /tmp/pizzapi-runner.log >&2 || true
+                exit 1
+              fi
 
-          # Verify template substitution happened (no leftover placeholders)
-          if grep -q '{{' "$COMPOSE"; then
-            echo "::error::compose.yml contains unsubstituted placeholders"
-            cat "$COMPOSE"
-            exit 1
-          fi
+              for i in $(seq 1 30); do
+                HTTP_CODE=$(curl -sS -o /tmp/spawn.json -w "%{http_code}" -X POST "http://localhost:7492/api/runners/spawn" \
+                  -H "content-type: application/json" \
+                  -H "x-api-key: $KEY" \
+                  -d "{\"runnerId\":\"$RUNNER_ID\",\"cwd\":\"/work\",\"prompt\":\"E2E connectivity check\"}" || true)
 
-          # Verify key fields are present
-          if grep -q "PIZZAPI_REDIS_URL" "$COMPOSE" && grep -q "VAPID_PUBLIC_KEY" "$COMPOSE"; then
-            echo "✅ compose.yml generated correctly from inlined template"
-          else
-            echo "::error::compose.yml is missing expected fields"
-            cat "$COMPOSE"
-            exit 1
-          fi
+                if [ "$HTTP_CODE" = "200" ] && jq -e --arg rid "$RUNNER_ID" ".ok == true and (.runnerId == \$rid) and (.sessionId | type == \"string\")" /tmp/spawn.json >/dev/null 2>&1; then
+                  echo "✅ Runner accepted spawn request"
+                  cat /tmp/spawn.json
+                  break
+                fi
 
-          cat "$COMPOSE"
+                if [ "$i" -eq 30 ]; then
+                  echo "Runner did not accept spawn request in time (HTTP $HTTP_CODE)" >&2
+                  cat /tmp/spawn.json >&2 || true
+                  tail -n 150 /tmp/pizzapi-runner.log >&2 || true
+                  docker compose -p pizzapi-web logs >&2 || true
+                  exit 1
+                fi
+                sleep 2
+              done
 
-      - name: Stop pizza web
-        if: always()
-        run: |
-          BIN="packages/cli/dist/binaries/linux-x64/pizza-linux-x64"
+              # Cleanup within container before exit
+              $CLI_CMD web stop || true
+              docker compose -p pizzapi-web down --volumes --remove-orphans || true
+            '
 
-          # Graceful stop via the binary
-          "$BIN" web stop 2>&1 || true
-
-          # Fallback: force remove containers
-          docker compose -p pizzapi-web down --volumes --remove-orphans 2>/dev/null || true
-
-          echo "✅ Cleaned up"
-
-      - name: Show logs on failure
+      - name: Show debug logs on failure
         if: failure()
         run: |
-          echo "=== pizza web output ==="
-          cat /tmp/pizza-web.log 2>/dev/null || echo "(no log)"
-          echo ""
-          echo "=== docker compose logs ==="
-          docker compose -p pizzapi-web logs 2>/dev/null || echo "(no compose logs)"
+          docker compose -p pizzapi-web logs 2>/dev/null || true
