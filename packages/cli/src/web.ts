@@ -378,8 +378,12 @@ function parseArgs(args: string[]): ParsedArgs {
     for (let i = 0; i < args.length; i++) {
         const arg = args[i];
         if (arg === "--port" && args[i + 1]) {
+            if (!/^\d+$/.test(args[i + 1])) {
+                console.error("Invalid port number");
+                process.exit(1);
+            }
             const p = parseInt(args[i + 1], 10);
-            if (isNaN(p) || p < 1 || p > 65535) {
+            if (p < 1 || p > 65535) {
                 console.error("Invalid port number");
                 process.exit(1);
             }
@@ -485,8 +489,12 @@ Settable keys:
         const value = args.slice(2).join(" ");
 
         if (key === "port") {
+            if (!/^\d+$/.test(value)) {
+                console.error("Invalid port number");
+                process.exit(1);
+            }
             const p = parseInt(value, 10);
-            if (isNaN(p) || p < 1 || p > 65535) {
+            if (p < 1 || p > 65535) {
                 console.error("Invalid port number");
                 process.exit(1);
             }
