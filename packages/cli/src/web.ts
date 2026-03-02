@@ -441,12 +441,9 @@ const SETTABLE_KEYS = ["port", "vapidSubject", "extraOrigins"] as const;
 type SettableKey = typeof SETTABLE_KEYS[number];
 
 function runConfigSubcommand(args: string[]): void {
-    const config = loadWebConfig();
-
-    // pizza web config
-    if (args.length === 0 || (args.length === 1 && (args[0] === "--help" || args[0] === "-h"))) {
-        if (args[0] === "--help" || args[0] === "-h") {
-            console.log(`
+    // Handle help before loading config (no side effects)
+    if (args.length === 1 && (args[0] === "--help" || args[0] === "-h")) {
+        console.log(`
 pizza web config — View or update web hub configuration
 
 Usage:
@@ -458,9 +455,13 @@ Settable keys:
   vapidSubject    VAPID subject for push notifications
   extraOrigins    Extra CORS origins, comma-separated
 `.trim());
-            return;
-        }
+        return;
+    }
 
+    const config = loadWebConfig();
+
+    // pizza web config (show)
+    if (args.length === 0) {
         console.log(`PizzaPi Web Config (${CONFIG_PATH}):\n`);
         console.log(`  port:          ${config.port}`);
         console.log(`  vapidSubject:  ${config.vapidSubject}`);
