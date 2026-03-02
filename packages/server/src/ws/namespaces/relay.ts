@@ -11,6 +11,8 @@ import type {
     RelayServerToClientEvents,
     RelayInterServerEvents,
     RelaySocketData,
+    TriggerNotification,
+    TriggerDelivery,
 } from "@pizzapi/protocol";
 import { apiKeyAuthMiddleware } from "./auth.js";
 import {
@@ -30,6 +32,8 @@ import {
     notifyAgentNeedsInput,
     notifyAgentError,
 } from "../../push.js";
+import { TriggerRegistry, TriggerEvaluator, TimerScheduler } from "../triggers/index.js";
+import { getActiveRedisClient } from "../../sessions/redis.js";
 
 // ── Thinking-block duration tracking ─────────────────────────────────────────
 // Keyed by sessionId → contentIndex → value.
@@ -152,6 +156,37 @@ async function checkPushNotifications(
 
 // ── Namespace registration ───────────────────────────────────────────────────
 
+// ── Trigger system singletons ────────────────────────────────────────────────
+
+const triggerRegistry = new TriggerRegistry(() => getActiveRedisClient());
+
+/** Deliver a trigger notification to the owning session's TUI socket. */
+function deliverTriggerNotification(
+    ownerSessionId: string,
+    notification: TriggerNotification,
+    delivery: TriggerDelivery,
+): void {
+    const targetSocket = getLocalTuiSocket(ownerSessionId);
+    if (!targetSocket) return;
+
+    if (delivery.mode === "inject") {
+        targetSocket.emit("trigger_fired" as any, { ...notification, delivery });
+    } else {
+        // queue mode — deliver as a session_message so it appears in check_messages/wait_for_message
+        targetSocket.emit("session_message" as string, {
+            fromSessionId: notification.sourceSessionId ?? "trigger",
+            message: `[Trigger: ${notification.triggerType}] ${notification.message}`,
+            ts: notification.firedAt,
+        });
+    }
+}
+
+const triggerEvaluator = new TriggerEvaluator(triggerRegistry, deliverTriggerNotification);
+const timerScheduler = new TimerScheduler(
+    triggerRegistry,
+    (triggerId) => triggerEvaluator.fireTimerTrigger(triggerId),
+);
+
 export function registerRelayNamespace(io: SocketIOServer): void {
     const relay: Namespace<
         RelayClientToServerEvents,
@@ -216,6 +251,14 @@ export function registerRelayNamespace(io: SocketIOServer): void {
                 await updateSessionState(sessionId, event.state);
             } else if (event.type === "heartbeat") {
                 await updateSessionHeartbeat(sessionId, event);
+                // Evaluate heartbeat-based triggers (cost_exceeded, session_idle)
+                const hbSession = await getSharedSession(sessionId);
+                if (hbSession?.runnerId) {
+                    void triggerEvaluator.evaluateHeartbeat(hbSession.runnerId, sessionId, {
+                        cost: typeof event.cost === "number" ? event.cost : undefined,
+                        isActive: typeof event.isActive === "boolean" ? event.isActive : undefined,
+                    });
+                }
             } else {
                 await touchSessionActivity(sessionId);
             }
@@ -238,6 +281,14 @@ export function registerRelayNamespace(io: SocketIOServer): void {
 
             // Push notifications (only when no browser viewers are watching)
             void checkPushNotifications(sessionId, event);
+
+            // Evaluate cli_error for session_error triggers
+            if (event.type === "cli_error" && typeof event.message === "string") {
+                const errSession = await getSharedSession(sessionId);
+                if (errSession?.runnerId) {
+                    void triggerEvaluator.evaluateSessionError(errSession.runnerId, sessionId, event.message);
+                }
+            }
         });
 
         // ── session_end ──────────────────────────────────────────────────────
@@ -248,8 +299,20 @@ export function registerRelayNamespace(io: SocketIOServer): void {
                 return;
             }
 
+            // Evaluate session_ended triggers before cleaning up
+            const endSession = await getSharedSession(sessionId);
+            if (endSession?.runnerId) {
+                await triggerEvaluator.evaluateSessionEnded(endSession.runnerId, sessionId);
+            }
+
             clearThinkingMaps(sessionId);
             await endSharedSession(sessionId);
+
+            // Cleanup triggers owned by this session
+            const ownedTriggers = await triggerRegistry.listTriggers(sessionId);
+            timerScheduler.cleanupSessionTimers(sessionId, ownedTriggers);
+            await triggerRegistry.cleanupSessionTriggers(sessionId);
+
             socket.data.sessionId = undefined;
             socketAckedSeqs.delete(socket.id);
         });
@@ -308,13 +371,140 @@ export function registerRelayNamespace(io: SocketIOServer): void {
             }
         });
 
+        // ── register_trigger ──────────────────────────────────────────────────
+        socket.on("register_trigger" as any, async (data: any) => {
+            const sessionId = socket.data.sessionId;
+            if (!sessionId || data.token !== socket.data.token) {
+                socket.emit("trigger_error" as any, { message: "Invalid token" });
+                return;
+            }
+
+            const session = await getSharedSession(sessionId);
+            const runnerId = session?.runnerId;
+            if (!runnerId) {
+                socket.emit("trigger_error" as any, { message: "Session not associated with a runner" });
+                return;
+            }
+
+            // Runner-lock: validate target sessionIds are on same runner
+            const config = data.config;
+            if (config?.sessionIds && config.sessionIds !== "*" && Array.isArray(config.sessionIds)) {
+                for (const targetId of config.sessionIds) {
+                    const targetSession = await getSharedSession(targetId);
+                    if (targetSession && targetSession.runnerId !== runnerId) {
+                        socket.emit("trigger_error" as any, {
+                            message: `Runner-lock violation: session ${targetId} is on a different runner`,
+                        });
+                        return;
+                    }
+                }
+            }
+            if (config?.fromSessionIds && config.fromSessionIds !== "*" && Array.isArray(config.fromSessionIds)) {
+                for (const targetId of config.fromSessionIds) {
+                    const targetSession = await getSharedSession(targetId);
+                    if (targetSession && targetSession.runnerId !== runnerId) {
+                        socket.emit("trigger_error" as any, {
+                            message: `Runner-lock violation: session ${targetId} is on a different runner`,
+                        });
+                        return;
+                    }
+                }
+            }
+
+            const result = await triggerRegistry.registerTrigger({
+                type: data.type,
+                ownerSessionId: sessionId,
+                runnerId,
+                config: data.config,
+                delivery: data.delivery ?? { mode: "inject" },
+                message: data.message ?? "",
+                maxFirings: data.maxFirings,
+                expiresAt: data.expiresAt,
+            });
+
+            if (!result.ok) {
+                socket.emit("trigger_error" as any, { message: result.error });
+                return;
+            }
+
+            // Schedule timer if this is a timer trigger
+            if (data.type === "timer") {
+                const trigger = (await triggerRegistry.listTriggers(sessionId))
+                    .find((t) => t.id === result.triggerId);
+                if (trigger) {
+                    timerScheduler.scheduleTimer(trigger);
+                }
+            }
+
+            socket.emit("trigger_registered" as any, { triggerId: result.triggerId, type: data.type });
+        });
+
+        // ── cancel_trigger ───────────────────────────────────────────────────
+        socket.on("cancel_trigger" as any, async (data: any) => {
+            const sessionId = socket.data.sessionId;
+            if (!sessionId || data.token !== socket.data.token) {
+                socket.emit("trigger_error" as any, { message: "Invalid token" });
+                return;
+            }
+
+            const result = await triggerRegistry.cancelTrigger(data.triggerId, sessionId);
+            if (!result.ok) {
+                socket.emit("trigger_error" as any, { message: result.error, triggerId: data.triggerId });
+                return;
+            }
+
+            timerScheduler.cancelTimer(data.triggerId);
+            socket.emit("trigger_cancelled" as any, { triggerId: data.triggerId });
+        });
+
+        // ── list_triggers ────────────────────────────────────────────────────
+        socket.on("list_triggers" as any, async (data: any) => {
+            const sessionId = socket.data.sessionId;
+            if (!sessionId || data.token !== socket.data.token) {
+                socket.emit("trigger_error" as any, { message: "Invalid token" });
+                return;
+            }
+
+            const triggers = await triggerRegistry.listTriggers(sessionId);
+            socket.emit("trigger_list" as any, { triggers });
+        });
+
+        // ── emit_custom_event ────────────────────────────────────────────────
+        socket.on("emit_custom_event" as any, async (data: any) => {
+            const sessionId = socket.data.sessionId;
+            if (!sessionId || data.token !== socket.data.token) {
+                socket.emit("trigger_error" as any, { message: "Invalid token" });
+                return;
+            }
+
+            const session = await getSharedSession(sessionId);
+            const runnerId = session?.runnerId;
+            if (!runnerId) {
+                socket.emit("trigger_error" as any, { message: "Session not associated with a runner" });
+                return;
+            }
+
+            await triggerEvaluator.evaluateCustomEvent(runnerId, sessionId, data.eventName, data.payload);
+        });
+
         // ── disconnect ───────────────────────────────────────────────────────
         socket.on("disconnect", async (reason) => {
             console.log(`[sio/relay] disconnected: ${socket.id} (${reason})`);
             const sessionId = socket.data.sessionId;
             if (sessionId) {
+                // Evaluate session_ended triggers before cleanup
+                const dcSession = await getSharedSession(sessionId);
+                if (dcSession?.runnerId) {
+                    await triggerEvaluator.evaluateSessionEnded(dcSession.runnerId, sessionId);
+                }
+
                 clearThinkingMaps(sessionId);
                 await endSharedSession(sessionId);
+
+                // Cleanup triggers owned by this session
+                const ownedTriggers = await triggerRegistry.listTriggers(sessionId);
+                timerScheduler.cleanupSessionTimers(sessionId, ownedTriggers);
+                await triggerRegistry.cleanupSessionTriggers(sessionId);
             }
             socketAckedSeqs.delete(socket.id);
         });
