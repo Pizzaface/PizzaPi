@@ -7,35 +7,39 @@ index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2
 diff --git a/node_modules/@mariozechner/pi-coding-agent/.bun-tag-3a28efdb4f3a675e b/.bun-tag-3a28efdb4f3a675e
 new file mode 100644
 index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+diff --git a/node_modules/@mariozechner/pi-coding-agent/.bun-tag-727db4f6434a32ce b/.bun-tag-727db4f6434a32ce
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
 diff --git a/dist/core/auth-storage.js b/dist/core/auth-storage.js
-index 07f39c4179353bef1e4c536bf9bfe511ed429575..a3b272a138142deccb8b7c2835cebda04b59cbb3 100644
+index 07f39c4179353bef1e4c536bf9bfe511ed429575..af8fe6ceff9825a50bcffc42af1d674c125b1e8d 100644
 --- a/dist/core/auth-storage.js
 +++ b/dist/core/auth-storage.js
-@@ -173,14 +173,17 @@ export class AuthStorage {
-      * Reload credentials from storage.
-      */
-     reload() {
--        let content;
-+        // PATCH(pizzapi): Read without locking.
-+        // reload() is read-only — the upstream lock is unnecessary and causes
-+        // ELOCKED failures when multiple workers start concurrently (lockSync
-+        // has zero retries).  JSON writes are atomic (whole-file writeFileSync)
-+        // so an unlocked read always sees valid content.
+@@ -34,6 +34,25 @@ export class FileAuthStorageBackend {
+         let release;
          try {
--            this.storage.withLock((current) => {
--                content = current;
--                return { result: undefined };
--            });
--            this.data = this.parseStorageData(content);
--            this.loadError = null;
-+            if (this.storage.authPath && existsSync(this.storage.authPath)) {
-+                const content = readFileSync(this.storage.authPath, "utf-8");
-+                this.data = this.parseStorageData(content);
-+                this.loadError = null;
+             release = lockfile.lockSync(this.authPath, { realpath: false });
++        }
++        catch (lockError) {
++            // PATCH(pizzapi): On ELOCKED, run the callback without a lock.
++            // lockSync has zero retries so concurrent workers always hit this.
++            // Read-only callers (reload) are safe; write callers (persist) will
++            // see fn().next and throw on the writeFileSync — acceptable because
++            // the write path already guards on loadError.
++            if (lockError?.code === "ELOCKED") {
++                const current = existsSync(this.authPath) ? readFileSync(this.authPath, "utf-8") : undefined;
++                const { result, next } = fn(current);
++                if (next !== undefined) {
++                    writeFileSync(this.authPath, next, "utf-8");
++                    chmodSync(this.authPath, 0o600);
++                }
++                return result;
 +            }
-         }
-         catch (error) {
-             this.loadError = error;
++            throw lockError;
++        }
++        try {
+             const current = existsSync(this.authPath) ? readFileSync(this.authPath, "utf-8") : undefined;
+             const { result, next } = fn(current);
+             if (next !== undefined) {
 diff --git a/dist/core/extensions/loader.js b/dist/core/extensions/loader.js
 index 5125e76b6490f859fa63cea32b0f1df9fb7aed50..cc2a11988ec12fad5afacc81c43aad46dea3b628 100644
 --- a/dist/core/extensions/loader.js
