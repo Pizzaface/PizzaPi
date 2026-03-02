@@ -28,11 +28,19 @@ This automatically:
 On subsequent runs, it pulls the latest changes and rebuilds if needed.
 
 ```bash
-# Custom port
+# Custom port (persisted for future runs)
 pizzapi web --port 8080
+
+# Set extra CORS origins (persisted)
+pizzapi web --origins "https://example.com"
 
 # Run in the foreground
 pizzapi web --foreground
+
+# View / change config without starting
+pizzapi web config
+pizzapi web config set port 9000
+pizzapi web config set extraOrigins "https://example.com"
 
 # Management
 pizzapi web logs      # Tail container logs
@@ -40,10 +48,12 @@ pizzapi web status    # Show running containers
 pizzapi web stop      # Stop the hub
 ```
 
+All settings are persisted in `~/.pizzapi/web/config.json` and applied on every start. CLI flags like `--port` and `--origins` update the config automatically — you only need to pass them once.
+
 Persistent data (SQLite database) is stored in `~/.pizzapi/web/data/`.
 
 <Aside type="tip">
-  `pizza web` is ideal for personal use or quick evaluation. For production deployments with custom domains and TLS, see the manual Docker Compose setup below.
+  `pizza web` is ideal for personal use or quick evaluation. For production deployments with custom domains and TLS, see the manual Docker Compose setup below. See the [CLI Reference](/PizzaPi/guides/cli-reference/#pizzapi-web) for the full list of commands and config keys.
 </Aside>
 
 ---

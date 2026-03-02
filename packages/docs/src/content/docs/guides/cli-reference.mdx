@@ -15,6 +15,28 @@ pizzapi [command] [options]
 
 When called without a command, `pizzapi` starts an **interactive coding session** and streams it to the configured relay server.
 
+Run `pizzapi --help` for a quick summary of all commands:
+
+```
+pizzapi v0.2.2 — PizzaPi coding agent
+
+Usage:
+  pizza                       Start an interactive agent session
+  pizza web [flags]           Manage the PizzaPi web hub (Docker)
+  pizza runner [args]         Manage the background runner daemon
+  pizza runner stop           Stop the runner daemon
+  pizza setup                 Run first-time setup
+  pizza usage [provider]      Show API usage stats
+  pizza models                List available models
+
+Flags:
+  --cwd <path>    Set working directory
+  -v, --version   Show version
+  -h, --help      Show this help
+
+Run `pizza <command> --help` for command-specific help.
+```
+
 ---
 
 ## Commands
@@ -85,23 +107,47 @@ pizzapi runner stop
 
 Start the **PizzaPi web hub** (relay server + web UI) using Docker Compose. This is the easiest way to self-host the relay — no need to clone the repo or configure Docker manually.
 
+Run `pizzapi web --help` for the full usage:
+
+```
+pizza web — Manage the PizzaPi web hub (server + UI via Docker Compose)
+
+Usage:
+  pizza web [flags]               Start the web hub
+  pizza web stop                  Stop the web hub
+  pizza web logs                  Tail container logs
+  pizza web status                Show container status
+  pizza web config                Show current configuration
+  pizza web config set <k> <v>    Update a config value
+
+Flags:
+  --port <port>       Set the host port (persisted to config.json)
+  --origins <list>    Set extra allowed CORS origins (comma-separated, persisted)
+  -f, --foreground    Run in the foreground (don't detach)
+  -h, --help          Show this help
+
+Configuration (~/.pizzapi/web/config.json):
+  port            Host port (default: 7492)
+  vapidSubject    VAPID subject for push notifications
+  extraOrigins    Extra CORS origins, comma-separated
+```
+
 ```bash
 # Start on the default port (7492)
 pizzapi web
 
-# Start on a custom port
+# Start on a custom port (persisted for future runs)
 pizzapi web --port 8080
+
+# Set extra CORS origins (persisted)
+pizzapi web --origins "https://example.com,https://other.com"
 
 # Run in the foreground (don't detach)
 pizzapi web --foreground
 
-# Stop the hub
+# Management
 pizzapi web stop
-
-# View logs
 pizzapi web logs
-
-# Check running status
 pizzapi web status
 ```
 
@@ -115,13 +161,57 @@ pizzapi web status
 | `stop` | Stop the running web hub |
 | `logs` | Tail the container logs |
 | `status` | Show running container status |
+| `config` | Show current configuration from `config.json` |
+| `config set <key> <value>` | Update a config value (see below) |
 
 | Flag | Description |
 |------|-------------|
-| `--port <number>` | HTTP port to expose (default: `7492`) |
+| `--port <number>` | HTTP port to expose (default: `7492`). Persisted to `config.json`. |
+| `--origins <list>` | Extra CORS origins, comma-separated. Persisted to `config.json`. |
 | `--foreground`, `-f` | Run in the foreground instead of detaching |
+| `--help`, `-h` | Show help |
 
-The generated Docker Compose file and persistent data (SQLite database) are stored in `~/.pizzapi/web/`.
+#### `pizzapi web config`
+
+View the current web hub configuration:
+
+```bash
+pizzapi web config
+```
+
+#### `pizzapi web config set`
+
+Update a configuration value. Changes are saved to `~/.pizzapi/web/config.json` and take effect on the next `pizza web` start.
+
+```bash
+pizzapi web config set port 9000
+pizzapi web config set extraOrigins "https://example.com"
+pizzapi web config set vapidSubject "mailto:ops@example.com"
+```
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `port` | `7492` | Host port to expose the web UI on |
+| `vapidSubject` | `mailto:admin@pizzapi.local` | VAPID subject for web push notifications |
+| `extraOrigins` | *(none)* | Extra allowed CORS origins, comma-separated |
+
+<Aside type="tip">
+  CLI flags like `--port` and `--origins` automatically persist to `config.json`, so you only need to pass them once. Use `config set` to change values without starting the server.
+</Aside>
+
+All settings and persistent data are stored in `~/.pizzapi/web/`:
+
+| File | Purpose |
+|------|---------|
+| `config.json` | All web hub settings (port, VAPID keys, origins, etc.) |
+| `compose.yml` | Auto-generated Docker Compose config (regenerated each run) |
+| `data/` | Persistent auth database |
+
+VAPID keys for push notifications are generated on first run and stored in `config.json`. They persist across restarts and config changes — push notification subscriptions won't break.
+
+<Aside type="note">
+  **Custom Docker overrides:** The `compose.yml` is regenerated on each run from the template + config. For additional Docker customizations (extra volumes, networks, etc.), create a `compose.override.yml` in the same directory — Docker Compose picks it up automatically.
+</Aside>
 
 ---
 
@@ -217,6 +307,7 @@ pizzapi --version
 
 | Flag | Description |
 |------|-------------|
+| `--help`, `-h` | Show help and exit |
 | `--version`, `-v` | Print version and exit |
 | `--cwd <path>` | Override working directory (applies to the default session command) |
 
