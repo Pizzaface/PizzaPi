@@ -333,6 +333,30 @@ async function main() {
         return;
     }
 
+    if (args[0] === "--help" || args[0] === "-h" || args[0] === "help") {
+        const { default: pkg } = await import("../package.json");
+        console.log(`
+pizzapi v${pkg.version} — PizzaPi coding agent
+
+Usage:
+  pizza                       Start an interactive agent session
+  pizza web [flags]           Manage the PizzaPi web hub (Docker)
+  pizza runner [args]         Manage the background runner daemon
+  pizza runner stop           Stop the runner daemon
+  pizza setup                 Run first-time setup
+  pizza usage [provider]      Show API usage stats
+  pizza models                List available models
+
+Flags:
+  --cwd <path>    Set working directory
+  -v, --version   Show version
+  -h, --help      Show this help
+
+Run \`pizza <command> --help\` for command-specific help.
+`.trim());
+        return;
+    }
+
     const config = loadConfig(cwd);
     const agentDir = config.agentDir ? config.agentDir.replace(/^~/, homedir()) : defaultAgentDir();
 

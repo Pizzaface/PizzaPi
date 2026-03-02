@@ -1,7 +1,7 @@
-import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync } from "fs";
+import { describe, test, expect } from "bun:test";
+import { readFileSync } from "fs";
 import { join } from "path";
-import { tmpdir } from "os";
+import { extractVapidFromCompose, loadWebConfig, saveWebConfig, type WebConfig } from "./web";
 
 /**
  * Validates that the inlined COMPOSE_TEMPLATE in web.ts matches
@@ -29,9 +29,8 @@ services:
       - PIZZAPI_REDIS_URL=redis://redis:6379
       - VAPID_PUBLIC_KEY={{VAPID_PUBLIC_KEY}}
       - VAPID_PRIVATE_KEY={{VAPID_PRIVATE_KEY}}
-      - VAPID_SUBJECT=mailto:admin@pizzapi.local
-      # - PIZZAPI_EXTRA_ORIGINS=
-    volumes:
+      - VAPID_SUBJECT={{VAPID_SUBJECT}}
+{{EXTRA_ORIGINS_LINE}}    volumes:
       - {{DATA_DIR}}:/app/data
     depends_on:
       - redis
@@ -51,6 +50,8 @@ describe("web.ts compose template", () => {
         expect(COMPOSE_TEMPLATE).toContain("{{DATA_DIR}}");
         expect(COMPOSE_TEMPLATE).toContain("{{VAPID_PUBLIC_KEY}}");
         expect(COMPOSE_TEMPLATE).toContain("{{VAPID_PRIVATE_KEY}}");
+        expect(COMPOSE_TEMPLATE).toContain("{{VAPID_SUBJECT}}");
+        expect(COMPOSE_TEMPLATE).toContain("{{EXTRA_ORIGINS_LINE}}");
     });
 
     test("template substitution produces valid compose structure", () => {
@@ -59,7 +60,9 @@ describe("web.ts compose template", () => {
             .replace(/\{\{PORT}}/g, "7492")
             .replace(/\{\{DATA_DIR}}/g, "/home/user/.pizzapi/web/data")
             .replace(/\{\{VAPID_PUBLIC_KEY}}/g, "BTestPublicKey123")
-            .replace(/\{\{VAPID_PRIVATE_KEY}}/g, "TestPrivateKey456");
+            .replace(/\{\{VAPID_PRIVATE_KEY}}/g, "TestPrivateKey456")
+            .replace(/\{\{VAPID_SUBJECT}}/g, "mailto:admin@pizzapi.local")
+            .replace(/\{\{EXTRA_ORIGINS_LINE}}/g, "      - PIZZAPI_EXTRA_ORIGINS=https://example.com\n");
 
         // No unsubstituted placeholders remain
         expect(composed).not.toContain("{{");
@@ -73,12 +76,27 @@ describe("web.ts compose template", () => {
         expect(composed).toContain('"7492:7492"');
         expect(composed).toContain("VAPID_PUBLIC_KEY=BTestPublicKey123");
         expect(composed).toContain("VAPID_PRIVATE_KEY=TestPrivateKey456");
+        expect(composed).toContain("VAPID_SUBJECT=mailto:admin@pizzapi.local");
+        expect(composed).toContain("PIZZAPI_EXTRA_ORIGINS=https://example.com");
         expect(composed).toContain("/home/user/.pizzapi/web/data:/app/data");
+    });
+
+    test("template with no extra origins produces commented-out line", () => {
+        const composed = COMPOSE_TEMPLATE
+            .replace(/\{\{REPO_PATH}}/g, "/repo")
+            .replace(/\{\{PORT}}/g, "7492")
+            .replace(/\{\{DATA_DIR}}/g, "/data")
+            .replace(/\{\{VAPID_PUBLIC_KEY}}/g, "key")
+            .replace(/\{\{VAPID_PRIVATE_KEY}}/g, "key")
+            .replace(/\{\{VAPID_SUBJECT}}/g, "mailto:test@test.com")
+            .replace(/\{\{EXTRA_ORIGINS_LINE}}/g, "      # - PIZZAPI_EXTRA_ORIGINS=\n");
+
+        expect(composed).toContain("# - PIZZAPI_EXTRA_ORIGINS=");
+        expect(composed).not.toContain("{{");
     });
 });
 
 // --- Migration tests ---
-import { extractVapidFromCompose } from "./web";
 
 describe("extractVapidFromCompose", () => {
     const SAMPLE_COMPOSE = `services:
