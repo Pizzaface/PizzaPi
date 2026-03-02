@@ -148,6 +148,9 @@ Open **http://localhost:7492** in your browser to watch the session live.
 ## CLI Reference
 
 ```bash
+# Show help
+pizzapi --help
+
 # Start an interactive coding session
 pizzapi
 
@@ -173,9 +176,12 @@ pizzapi models --json
 # Start the web hub (relay server + UI) via Docker
 pizzapi web
 pizzapi web --port 8080
+pizzapi web --origins "https://example.com"
 pizzapi web stop
 pizzapi web logs
 pizzapi web status
+pizzapi web config
+pizzapi web config set port 9000
 
 # Show version
 pizzapi --version
@@ -188,11 +194,17 @@ pizzapi --version
 **Requirements:** Docker with Docker Compose
 
 ```bash
+# Show help
+pizzapi web --help
+
 # Start the hub on the default port (7492)
 pizzapi web
 
-# Start on a custom port
+# Start on a custom port (persisted for future runs)
 pizzapi web --port 8080
+
+# Set extra CORS origins (persisted)
+pizzapi web --origins "https://example.com,https://other.com"
 
 # Run in the foreground (useful for debugging)
 pizzapi web --foreground
@@ -200,7 +212,37 @@ pizzapi web --foreground
 
 On first run, if you're not inside the PizzaPi repo, the command will automatically clone it to `~/.pizzapi/web/repo`. On subsequent runs it pulls the latest changes.
 
-The generated Docker Compose config and persistent data (auth database) are stored in `~/.pizzapi/web/`.
+All settings and persistent data are stored in `~/.pizzapi/web/`:
+
+| File | Purpose |
+|------|---------|
+| `config.json` | All web hub settings (port, VAPID keys, origins, etc.) |
+| `compose.yml` | Auto-generated Docker Compose config (regenerated each run) |
+| `data/` | Persistent auth database |
+
+#### Configuration
+
+Settings are persisted in `~/.pizzapi/web/config.json` and applied on every `pizza web` start. CLI flags like `--port` and `--origins` update the config automatically.
+
+```bash
+# View current configuration
+pizzapi web config
+
+# Set a config value
+pizzapi web config set port 9000
+pizzapi web config set extraOrigins "https://example.com"
+pizzapi web config set vapidSubject "mailto:ops@example.com"
+```
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `port` | `7492` | Host port to expose the web UI on |
+| `vapidSubject` | `mailto:admin@pizzapi.local` | VAPID subject for push notifications |
+| `extraOrigins` | (none) | Extra allowed CORS origins, comma-separated |
+
+VAPID keys for push notifications are generated on first run and stored in `config.json`. They persist across restarts and config changes — push notification subscriptions won't break.
+
+> **Custom Docker overrides:** The `compose.yml` is regenerated on each run from the template + config. For additional Docker customizations (extra volumes, networks, etc.), create a `compose.override.yml` in the same directory — Docker Compose picks it up automatically.
 
 #### Management Commands
 
@@ -219,9 +261,10 @@ pizzapi web stop
 
 1. Checks for Docker and Docker Compose
 2. Locates (or clones) the PizzaPi repository
-3. Generates a `compose.yml` in `~/.pizzapi/web/` with your chosen port
-4. Runs `docker compose up` to build and start Redis + the server
-5. The web UI is available at `http://localhost:<port>`
+3. Loads settings from `~/.pizzapi/web/config.json` (creating with defaults on first run)
+4. Generates a `compose.yml` from the config (idempotent — only writes if changed)
+5. Runs `docker compose up` to build and start Redis + the server
+6. The web UI is available at `http://localhost:<port>`
 
 ---
 
@@ -257,11 +300,10 @@ Tailscale handles TLS termination and certificate renewal automatically.
 
 #### 3. Update allowed origins
 
-The server validates request origins for security. Add your Tailscale HTTPS URL to `PIZZAPI_EXTRA_ORIGINS` in `~/.pizzapi/web/compose.yml`:
+The server validates request origins for security. Add your Tailscale HTTPS URL:
 
-```yaml
-environment:
-  - PIZZAPI_EXTRA_ORIGINS=https://your-hostname.tail12345.ts.net
+```bash
+pizzapi web config set extraOrigins "https://your-hostname.tail12345.ts.net"
 ```
 
 > **Important:** Do not include a trailing slash — browser origins never have one.
@@ -292,7 +334,7 @@ tailscale serve --https=443 off
 |---------|-------|-----|
 | SSL/certificate error in browser | Tailscale Serve not running, or accessing `:7492` directly over HTTPS | Use the default HTTPS URL (port 443) and ensure `tailscale serve` is active |
 | Blank page | Serve configured with `https+insecure://` backend | Use `http://localhost:7492` (plain HTTP) as the backend — the server doesn't speak TLS |
-| "Invalid origin" error | `PIZZAPI_EXTRA_ORIGINS` doesn't match the URL, or has a trailing slash | Set it to `https://your-hostname.tail12345.ts.net` (no trailing slash) and restart |
+| "Invalid origin" error | `extraOrigins` doesn't match the URL, or has a trailing slash | Run `pizzapi web config set extraOrigins "https://your-hostname.tail12345.ts.net"` (no trailing slash) and restart |
 | 502 Bad Gateway | Tailscale Serve config was lost (e.g. after reboot) | Re-run `tailscale serve --bg http://localhost:7492` |
 | Port already allocated | Another container or process is using the port | Run `docker ps -a --filter "publish=7492"` to find the conflict, stop it, then retry |
 

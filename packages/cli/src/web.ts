@@ -2,11 +2,14 @@
  * `pizza web` — Start the PizzaPi web hub (server + UI) using Docker Compose.
  *
  * Usage:
- *   pizza web                  Start the hub on port 7492
- *   pizza web --port 8080      Start on a custom port
+ *   pizza web                  Start the hub (default port 7492)
+ *   pizza web --port 8080      Start on a custom port (persisted)
  *   pizza web stop             Stop the hub
  *   pizza web logs             Tail logs
  *   pizza web status           Show running status
+ *   pizza web config           Show current configuration
+ *   pizza web config set <key> <value>   Set a config value
+ *   pizza web --help           Show help
  */
 
 import { execSync, spawn } from "child_process";
@@ -14,6 +17,27 @@ import { createECDH } from "crypto";
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+export interface WebConfig {
+    /** Host port to expose the web UI on */
+    port: number;
+    /** VAPID key pair for web push notifications */
+    vapid: { publicKey: string; privateKey: string };
+    /** VAPID subject (mailto: or https:) */
+    vapidSubject: string;
+    /** Comma-separated extra allowed origins for CORS */
+    extraOrigins: string;
+}
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+const WEB_DIR = join(homedir(), ".pizzapi", "web");
+const CONFIG_PATH = join(WEB_DIR, "config.json");
+const REPO_URL = "https://github.com/Pizzaface/PizzaPi.git";
+
+// ─── VAPID key generation ─────────────────────────────────────────────────────
 
 function generateVapidKeys(): { publicKey: string; privateKey: string } {
     const curve = createECDH("prime256v1");
@@ -26,7 +50,165 @@ function generateVapidKeys(): { publicKey: string; privateKey: string } {
     };
 }
 
-const WEB_DIR = join(homedir(), ".pizzapi", "web");
+// ─── Config management ────────────────────────────────────────────────────────
+
+const DEFAULT_CONFIG: WebConfig = {
+    port: 7492,
+    vapid: { publicKey: "", privateKey: "" },
+    vapidSubject: "mailto:admin@pizzapi.local",
+    extraOrigins: "",
+};
+
+/** Settings that can be extracted from an existing compose.yml */
+export interface ExtractedComposeSettings {
+    vapid?: { publicKey: string; privateKey: string };
+    vapidSubject?: string;
+    extraOrigins?: string;
+    port?: number;
+}
+
+/** Extract all user settings from compose.yml content (pure function, exported for testing) */
+export function extractSettingsFromCompose(content: string): ExtractedComposeSettings {
+    const result: ExtractedComposeSettings = {};
+
+    // VAPID keys
+    const pubMatch = content.match(/VAPID_PUBLIC_KEY=(.+)/);
+    const privMatch = content.match(/VAPID_PRIVATE_KEY=(.+)/);
+    if (pubMatch?.[1] && privMatch?.[1]) {
+        const pub = pubMatch[1].trim();
+        const priv = privMatch[1].trim();
+        // Skip template placeholders
+        if (!pub.startsWith("{{")) {
+            result.vapid = { publicKey: pub, privateKey: priv };
+        }
+    }
+
+    // VAPID subject
+    const subjectMatch = content.match(/VAPID_SUBJECT=(.+)/);
+    if (subjectMatch?.[1]) {
+        const val = subjectMatch[1].trim();
+        if (!val.startsWith("{{")) {
+            result.vapidSubject = val;
+        }
+    }
+
+    // Extra origins (skip commented-out lines)
+    const originsMatch = content.match(/^\s*-\s+PIZZAPI_EXTRA_ORIGINS=(.+)/m);
+    if (originsMatch?.[1]) {
+        const val = originsMatch[1].trim();
+        if (!val.startsWith("{{") && val.length > 0) {
+            result.extraOrigins = val;
+        }
+    }
+
+    // Port from the host:container mapping (e.g. "8080:7492")
+    const portMatch = content.match(/"(\d+):7492"/);
+    if (portMatch?.[1]) {
+        const p = parseInt(portMatch[1], 10);
+        if (!isNaN(p) && p > 0 && p <= 65535) {
+            result.port = p;
+        }
+    }
+
+    return result;
+}
+
+/** @deprecated Use extractSettingsFromCompose instead */
+export function extractVapidFromCompose(content: string): { publicKey: string; privateKey: string } | null {
+    return extractSettingsFromCompose(content).vapid ?? null;
+}
+
+/** Migrate all settings from legacy vapid.json and/or existing compose.yml */
+function migrateLegacySettings(): Partial<WebConfig> {
+    const migrated: Partial<WebConfig> = {};
+    const sources: string[] = [];
+
+    // 1. Check for vapid.json (from previous version of this code)
+    const vapidJsonPath = join(WEB_DIR, "vapid.json");
+    if (existsSync(vapidJsonPath)) {
+        try {
+            const stored = JSON.parse(readFileSync(vapidJsonPath, "utf-8"));
+            if (stored.publicKey && stored.privateKey) {
+                migrated.vapid = stored;
+                sources.push("vapid.json");
+            }
+        } catch { /* corrupted */ }
+    }
+
+    // 2. Extract all settings from existing compose.yml
+    const composePath = join(WEB_DIR, "compose.yml");
+    if (existsSync(composePath)) {
+        try {
+            const extracted = extractSettingsFromCompose(readFileSync(composePath, "utf-8"));
+
+            // VAPID keys (vapid.json takes priority if present)
+            if (!migrated.vapid && extracted.vapid) {
+                migrated.vapid = extracted.vapid;
+                sources.push("compose.yml (vapid)");
+            }
+
+            // Other settings from compose.yml
+            if (extracted.vapidSubject) {
+                migrated.vapidSubject = extracted.vapidSubject;
+                sources.push("compose.yml (vapidSubject)");
+            }
+            if (extracted.extraOrigins) {
+                migrated.extraOrigins = extracted.extraOrigins;
+                sources.push("compose.yml (extraOrigins)");
+            }
+            if (extracted.port) {
+                migrated.port = extracted.port;
+                sources.push("compose.yml (port)");
+            }
+        } catch { /* can't read */ }
+    }
+
+    if (sources.length > 0) {
+        console.log(`Migrated settings from ${sources.join(", ")} → config.json`);
+    }
+
+    return migrated;
+}
+
+/** Load config from disk, migrating from legacy formats if needed */
+export function loadWebConfig(): WebConfig {
+    mkdirSync(WEB_DIR, { recursive: true });
+
+    if (existsSync(CONFIG_PATH)) {
+        try {
+            const stored = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
+            // Merge with defaults so new fields get default values
+            return { ...DEFAULT_CONFIG, ...stored };
+        } catch {
+            console.warn("Warning: config.json is corrupted, using defaults.");
+        }
+    }
+
+    // First run or corrupted — build config from legacy sources
+    const config: WebConfig = { ...DEFAULT_CONFIG };
+
+    const legacy = migrateLegacySettings();
+    if (legacy.vapid) {
+        config.vapid = legacy.vapid;
+    } else {
+        config.vapid = generateVapidKeys();
+        console.log("Generated new VAPID keys for push notifications.");
+    }
+    if (legacy.vapidSubject) config.vapidSubject = legacy.vapidSubject;
+    if (legacy.extraOrigins) config.extraOrigins = legacy.extraOrigins;
+    if (legacy.port) config.port = legacy.port;
+
+    saveWebConfig(config);
+    return config;
+}
+
+/** Save config to disk */
+export function saveWebConfig(config: WebConfig): void {
+    mkdirSync(WEB_DIR, { recursive: true });
+    writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2) + "\n");
+}
+
+// ─── Docker helpers ───────────────────────────────────────────────────────────
 
 function ensureDocker(): void {
     try {
@@ -41,29 +223,9 @@ function ensureDocker(): void {
     }
 }
 
-function parseArgs(args: string[]): { port: number; detach: boolean } {
-    let port = 7492;
-    let detach = true;
-
-    for (let i = 0; i < args.length; i++) {
-        if (args[i] === "--port" && args[i + 1]) {
-            port = parseInt(args[i + 1], 10);
-            if (isNaN(port)) {
-                console.error("Invalid port number");
-                process.exit(1);
-            }
-            i++;
-        }
-        if (args[i] === "--foreground" || args[i] === "-f") {
-            detach = false;
-        }
-    }
-
-    return { port, detach };
-}
+// ─── Repo discovery ───────────────────────────────────────────────────────────
 
 function findRepoRoot(): string | null {
-    // If we're running from inside the PizzaPi repo, use it
     let dir = import.meta.dirname ?? __dirname;
     for (let i = 0; i < 10; i++) {
         if (
@@ -79,16 +241,12 @@ function findRepoRoot(): string | null {
     return null;
 }
 
-const REPO_URL = "https://github.com/Pizzaface/PizzaPi.git";
-
 function getRepoPath(): string {
     const repoRoot = findRepoRoot();
     if (repoRoot) return repoRoot;
 
-    // Check if we have a cloned repo in ~/.pizzapi/web/repo
     const clonedRepo = join(WEB_DIR, "repo");
     if (existsSync(join(clonedRepo, "Dockerfile"))) {
-        // Pull latest changes
         console.log("Updating PizzaPi repository...");
         try {
             execSync("git pull --rebase", { cwd: clonedRepo, stdio: "inherit" });
@@ -98,7 +256,6 @@ function getRepoPath(): string {
         return clonedRepo;
     }
 
-    // Auto-clone the repo
     console.log("Cloning PizzaPi repository...");
     mkdirSync(WEB_DIR, { recursive: true });
     try {
@@ -116,9 +273,12 @@ function getRepoPath(): string {
     return clonedRepo;
 }
 
+// ─── Compose template ─────────────────────────────────────────────────────────
+
 // Inline the compose template so it works inside compiled Bun binaries
 // where /$bunfs/root/ has no access to external files.
-const COMPOSE_TEMPLATE = `# Generated by \`pizza web\` — edit freely, this file won't be overwritten.
+const COMPOSE_TEMPLATE = `# Auto-generated by \`pizza web\` — regenerated on each run.
+# For custom overrides, create a compose.override.yml next to this file.
 services:
   redis:
     image: redis:7-alpine
@@ -136,71 +296,55 @@ services:
       - PIZZAPI_REDIS_URL=redis://redis:6379
       - VAPID_PUBLIC_KEY={{VAPID_PUBLIC_KEY}}
       - VAPID_PRIVATE_KEY={{VAPID_PRIVATE_KEY}}
-      - VAPID_SUBJECT=mailto:admin@pizzapi.local
-      # - PIZZAPI_EXTRA_ORIGINS=
-    volumes:
+      - VAPID_SUBJECT={{VAPID_SUBJECT}}
+{{EXTRA_ORIGINS_LINE}}    volumes:
       - {{DATA_DIR}}:/app/data
     depends_on:
       - redis
     restart: unless-stopped
 `;
 
-function generateComposeFile(repoPath: string, port: number): string {
+function generateComposeFile(repoPath: string, config: WebConfig): string {
     const composePath = join(WEB_DIR, "compose.yml");
     mkdirSync(WEB_DIR, { recursive: true });
 
-    // Ensure data dir for persistent auth.db
     const dataDir = join(WEB_DIR, "data");
     mkdirSync(dataDir, { recursive: true });
 
-    if (!existsSync(composePath)) {
-        // Try reading from the external template file first (works in dev),
-        // fall back to the inlined template (works in compiled binaries).
-        let template: string;
-        const templatePath = join(import.meta.dirname ?? __dirname, "templates", "compose.yml.template");
-        try {
-            template = readFileSync(templatePath, "utf-8");
-        } catch {
-            template = COMPOSE_TEMPLATE;
-        }
-        const vapid = generateVapidKeys();
-        console.log("Generated persistent VAPID keys for push notifications.");
+    let template: string;
+    const templatePath = join(import.meta.dirname ?? __dirname, "templates", "compose.yml.template");
+    try {
+        template = readFileSync(templatePath, "utf-8");
+    } catch {
+        template = COMPOSE_TEMPLATE;
+    }
 
-        const compose = template
-            .replace(/\{\{REPO_PATH}}/g, repoPath)
-            .replace(/\{\{PORT}}/g, String(port))
-            .replace(/\{\{DATA_DIR}}/g, dataDir)
-            .replace(/\{\{VAPID_PUBLIC_KEY}}/g, vapid.publicKey)
-            .replace(/\{\{VAPID_PRIVATE_KEY}}/g, vapid.privateKey);
+    const extraOriginsLine = config.extraOrigins
+        ? `      - PIZZAPI_EXTRA_ORIGINS=${config.extraOrigins}\n`
+        : `      # - PIZZAPI_EXTRA_ORIGINS=\n`;
 
-        writeFileSync(composePath, compose);
-        console.log(`Created ${composePath}`);
+    const compose = template
+        .replace(/\{\{REPO_PATH}}/g, repoPath)
+        .replace(/\{\{PORT}}/g, String(config.port))
+        .replace(/\{\{DATA_DIR}}/g, dataDir)
+        .replace(/\{\{VAPID_PUBLIC_KEY}}/g, config.vapid.publicKey)
+        .replace(/\{\{VAPID_PRIVATE_KEY}}/g, config.vapid.privateKey)
+        .replace(/\{\{VAPID_SUBJECT}}/g, config.vapidSubject)
+        .replace(/\{\{EXTRA_ORIGINS_LINE}}/g, extraOriginsLine);
+
+    // Only write if changed
+    const existing = existsSync(composePath) ? readFileSync(composePath, "utf-8") : null;
+    if (existing === compose) {
+        console.log(`Config unchanged: ${composePath}`);
     } else {
-        console.log(`Using existing ${composePath}`);
+        writeFileSync(composePath, compose);
+        console.log(existing ? `Updated ${composePath}` : `Created ${composePath}`);
     }
 
     return composePath;
 }
 
-function composeExec(composePath: string, args: string[], opts?: { detach?: boolean }): number {
-    const child = spawn(
-        "docker",
-        ["compose", "-f", composePath, "-p", "pizzapi-web", ...args],
-        { stdio: "inherit" }
-    );
-
-    // For foreground mode, handle signals
-    const signals: NodeJS.Signals[] = ["SIGINT", "SIGTERM"];
-    const handler = (sig: NodeJS.Signals) => child.kill(sig);
-    signals.forEach((sig) => process.on(sig, handler));
-
-    return new Promise<number>((resolve) => {
-        child.on("close", (code) => {
-            signals.forEach((sig) => process.removeListener(sig, handler));
-            resolve(code ?? 1);
-        });
-    }) as unknown as number;
-}
+// ─── Compose execution ────────────────────────────────────────────────────────
 
 async function composeExecAsync(composePath: string, args: string[]): Promise<number> {
     return new Promise<number>((resolve) => {
@@ -219,8 +363,180 @@ async function composeExecAsync(composePath: string, args: string[]): Promise<nu
     });
 }
 
+// ─── Arg parsing ──────────────────────────────────────────────────────────────
+
+interface ParsedArgs {
+    port?: number;
+    origins?: string;
+    detach: boolean;
+    help: boolean;
+}
+
+export function parseArgs(args: string[]): ParsedArgs {
+    const result: ParsedArgs = { detach: true, help: false };
+
+    for (let i = 0; i < args.length; i++) {
+        const arg = args[i];
+        if (arg === "--port" && args[i + 1]) {
+            if (!/^\d+$/.test(args[i + 1])) {
+                console.error("Invalid port number");
+                process.exit(1);
+            }
+            const p = parseInt(args[i + 1], 10);
+            if (p < 1 || p > 65535) {
+                console.error("Invalid port number");
+                process.exit(1);
+            }
+            result.port = p;
+            i++;
+        } else if (arg === "--origins") {
+            const next = args[i + 1];
+            if (!next || next.startsWith("-")) {
+                console.error("--origins requires a value (comma-separated origin URLs)");
+                process.exit(1);
+            }
+            result.origins = next;
+            i++;
+        } else if (arg === "--foreground" || arg === "-f") {
+            result.detach = false;
+        } else if (arg === "--help" || arg === "-h") {
+            result.help = true;
+        }
+    }
+
+    return result;
+}
+
+// ─── Help text ────────────────────────────────────────────────────────────────
+
+function printWebHelp(): void {
+    console.log(`
+pizza web — Manage the PizzaPi web hub (server + UI via Docker Compose)
+
+Usage:
+  pizza web [flags]               Start the web hub
+  pizza web stop                  Stop the web hub
+  pizza web logs                  Tail container logs
+  pizza web status                Show container status
+  pizza web config                Show current configuration
+  pizza web config set <k> <v>    Update a config value
+
+Flags:
+  --port <port>       Set the host port (persisted to config.json)
+  --origins <list>    Set extra allowed CORS origins (comma-separated, persisted)
+  -f, --foreground    Run in the foreground (don't detach)
+  -h, --help          Show this help
+
+Configuration (${CONFIG_PATH}):
+  port            Host port (default: 7492)
+  vapidSubject    VAPID subject for push notifications (default: mailto:admin@pizzapi.local)
+  extraOrigins    Extra CORS origins, comma-separated
+
+Examples:
+  pizza web                           Start on default port 7492
+  pizza web --port 8080               Start on port 8080 (remembered for next time)
+  pizza web config set port 9000      Change port without starting
+  pizza web config set extraOrigins "https://example.com"
+`.trim());
+}
+
+// ─── Config subcommand ────────────────────────────────────────────────────────
+
+const SETTABLE_KEYS = ["port", "vapidSubject", "extraOrigins"] as const;
+type SettableKey = typeof SETTABLE_KEYS[number];
+
+function runConfigSubcommand(args: string[]): void {
+    // Handle help before loading config (no side effects)
+    if (args.length === 1 && (args[0] === "--help" || args[0] === "-h")) {
+        console.log(`
+pizza web config — View or update web hub configuration
+
+Usage:
+  pizza web config                    Show current config
+  pizza web config set <key> <value>  Update a config value
+
+Settable keys:
+  port            Host port (number)
+  vapidSubject    VAPID subject for push notifications
+  extraOrigins    Extra CORS origins, comma-separated
+`.trim());
+        return;
+    }
+
+    const config = loadWebConfig();
+
+    // pizza web config (show)
+    if (args.length === 0) {
+        console.log(`PizzaPi Web Config (${CONFIG_PATH}):\n`);
+        console.log(`  port:          ${config.port}`);
+        console.log(`  vapidSubject:  ${config.vapidSubject}`);
+        console.log(`  extraOrigins:  ${config.extraOrigins || "(none)"}`);
+        console.log(`  vapid.public:  ${config.vapid.publicKey.slice(0, 20)}...`);
+        console.log(`  vapid.private: ${"*".repeat(20)}...`);
+        return;
+    }
+
+    // pizza web config set <key> <value>
+    if (args[0] === "set") {
+        const key = args[1] as SettableKey;
+
+        if (!key || args.length < 3) {
+            console.error("Usage: pizza web config set <key> <value>");
+            console.error(`Settable keys: ${SETTABLE_KEYS.join(", ")}`);
+            process.exit(1);
+        }
+
+        if (!SETTABLE_KEYS.includes(key)) {
+            console.error(`Unknown config key: ${key}`);
+            console.error(`Settable keys: ${SETTABLE_KEYS.join(", ")}`);
+            process.exit(1);
+        }
+
+        const value = args.slice(2).join(" ");
+
+        if (key === "port") {
+            if (!/^\d+$/.test(value)) {
+                console.error("Invalid port number");
+                process.exit(1);
+            }
+            const p = parseInt(value, 10);
+            if (p < 1 || p > 65535) {
+                console.error("Invalid port number");
+                process.exit(1);
+            }
+            config.port = p;
+        } else if (key === "vapidSubject") {
+            if (!value) {
+                console.error("vapidSubject cannot be empty (required for push notifications)");
+                process.exit(1);
+            }
+            config.vapidSubject = value;
+        } else {
+            // extraOrigins: empty string is valid (clears the setting)
+            config[key] = value;
+        }
+
+        saveWebConfig(config);
+        console.log(`Set ${key} = ${value}`);
+        console.log("Run `pizza web` to apply changes.");
+        return;
+    }
+
+    console.error(`Unknown config subcommand: ${args[0]}`);
+    console.error("Run `pizza web config --help` for usage.");
+    process.exit(1);
+}
+
+// ─── Main entry ───────────────────────────────────────────────────────────────
+
 export async function runWeb(args: string[]): Promise<void> {
     const subcommand = args[0];
+
+    // pizza web --help / pizza web -h
+    if (subcommand === "--help" || subcommand === "-h") {
+        printWebHelp();
+        return;
+    }
 
     // pizza web stop
     if (subcommand === "stop") {
@@ -259,30 +575,55 @@ export async function runWeb(args: string[]): Promise<void> {
         return;
     }
 
+    // pizza web config [...]
+    if (subcommand === "config") {
+        runConfigSubcommand(args.slice(1));
+        return;
+    }
+
     // pizza web (start)
+    const parsed = parseArgs(args);
+
+    if (parsed.help) {
+        printWebHelp();
+        return;
+    }
+
     ensureDocker();
 
-    const { port, detach } = parseArgs(
-        subcommand && !subcommand.startsWith("-") ? args.slice(1) : args
-    );
+    // Load config and apply any CLI overrides (persisted)
+    const config = loadWebConfig();
+    let configChanged = false;
+
+    if (parsed.port !== undefined && parsed.port !== config.port) {
+        config.port = parsed.port;
+        configChanged = true;
+    }
+    if (parsed.origins !== undefined && parsed.origins !== config.extraOrigins) {
+        config.extraOrigins = parsed.origins;
+        configChanged = true;
+    }
+    if (configChanged) {
+        saveWebConfig(config);
+    }
 
     const repoPath = getRepoPath();
-    const composePath = generateComposeFile(repoPath, port);
+    const composePath = generateComposeFile(repoPath, config);
 
-    console.log(`Starting PizzaPi web on port ${port}...`);
+    console.log(`Starting PizzaPi web on port ${config.port}...`);
     console.log(`  Repo:    ${repoPath}`);
-    console.log(`  Config:  ${composePath}`);
+    console.log(`  Config:  ${CONFIG_PATH}`);
     console.log();
 
-    // Build and start
-    if (detach) {
+    if (parsed.detach) {
         await composeExecAsync(composePath, ["up", "-d", "--build"]);
         console.log();
-        console.log(`✅ PizzaPi web is running at http://localhost:${port}`);
+        console.log(`✅ PizzaPi web is running at http://localhost:${config.port}`);
         console.log();
         console.log("  pizza web logs      View logs");
         console.log("  pizza web status    Check status");
         console.log("  pizza web stop      Stop the hub");
+        console.log("  pizza web config    View configuration");
     } else {
         await composeExecAsync(composePath, ["up", "--build"]);
     }
