@@ -108,6 +108,8 @@ export interface SessionViewerProps {
   onShowModelSelector?: () => void;
   /** Whether the agent is currently processing a turn */
   agentActive?: boolean;
+  /** Whether the session is currently being compacted */
+  isCompacting?: boolean;
   /** Current reasoning effort level (e.g. "low", "medium", "high", "off") */
   effortLevel?: string | null;
 
@@ -417,7 +419,7 @@ function SessionSkeleton() {
   );
 }
 
-export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], runnerId, sessionCwd }: SessionViewerProps) {
+export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, isCompacting, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], runnerId, sessionCwd }: SessionViewerProps) {
   const [input, setInput] = React.useState("");
   const [composerError, setComposerError] = React.useState<string | null>(null);
   const [showClearDialog, setShowClearDialog] = React.useState(false);
@@ -450,12 +452,12 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     setComposerError(null);
   }, [sessionId]);
 
-  // Reset the compacting guard when the status changes away from "Compacting…"
+  // Reset the compacting guard when the heartbeat confirms compact is done
   React.useEffect(() => {
-    if (viewerStatus !== "Compacting…") {
+    if (!isCompacting) {
       compactingRef.current = false;
     }
-  }, [viewerStatus]);
+  }, [isCompacting]);
 
   // Esc key stops an active agent turn (same as clicking the stop button).
   // We skip this when a dialog or the command picker or @-mention popover is open —
@@ -540,7 +542,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     }
 
     if (rawCommand === "compact") {
-      if (compactingRef.current) {
+      if (isCompacting || compactingRef.current) {
         return true; // Already compacting — ignore duplicate
       }
       compactingRef.current = true;
@@ -941,7 +943,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
           <span
             className={cn(
               "inline-block h-2 w-2 rounded-full flex-shrink-0 transition-colors",
-              viewerStatus === "Compacting…"
+              isCompacting
                 ? "bg-amber-400 shadow-[0_0_6px_#fbbf2480] animate-pulse"
                 : agentActive
                   ? "bg-green-400 shadow-[0_0_6px_#4ade8080] animate-pulse"
@@ -950,7 +952,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                     : "bg-slate-600",
             )}
             title={
-              viewerStatus === "Compacting…" ? "Compacting context…"
+              isCompacting ? "Compacting context…"
               : agentActive ? "Agent active"
               : lastHeartbeatAt ? "Agent idle"
               : "No heartbeat yet"

@@ -618,6 +618,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         return {
             type: "heartbeat",
             active: isAgentActive,
+            isCompacting,
             model: latestCtx?.model
                 ? { provider: latestCtx.model.provider, id: latestCtx.model.id, name: latestCtx.model.name, reasoning: latestCtx.model.reasoning }
                 : null,
@@ -934,6 +935,8 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                     return;
                 }
                 isCompacting = true;
+                // Push a heartbeat immediately so any connected viewer sees the compacting state.
+                forwardEvent(buildHeartbeat());
                 try {
                     // ctx.compact() is fire-and-forget; wrap in a promise for request/response semantics.
                     const result = await new Promise<unknown>((resolve, reject) => {

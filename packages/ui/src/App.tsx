@@ -208,6 +208,7 @@ interface SessionUiCacheEntry {
   availableModels: ConfiguredModelInfo[];
   availableCommands: Array<{ name: string; description?: string }>;
   agentActive: boolean;
+  isCompacting: boolean;
   effortLevel: string | null;
   authSource: string | null;
   tokenUsage: TokenUsageInfo | null;
@@ -618,6 +619,7 @@ export function App() {
 
   // Live session status from heartbeats
   const [agentActive, setAgentActive] = React.useState(false);
+  const [isCompacting, setIsCompacting] = React.useState(false);
   const [effortLevel, setEffortLevel] = React.useState<string | null>(null);
   const [tokenUsage, setTokenUsage] = React.useState<TokenUsageInfo | null>(null);
   const [lastHeartbeatAt, setLastHeartbeatAt] = React.useState<number | null>(null);
@@ -833,6 +835,7 @@ export function App() {
       availableModels: prev?.availableModels ?? [],
       availableCommands: prev?.availableCommands ?? [],
       agentActive: prev?.agentActive ?? false,
+      isCompacting: prev?.isCompacting ?? false,
       effortLevel: prev?.effortLevel ?? null,
       authSource: prev?.authSource ?? null,
       tokenUsage: prev?.tokenUsage ?? null,
@@ -1094,6 +1097,7 @@ export function App() {
     if (type === "heartbeat") {
       const hb = evt as {
         active?: boolean;
+        isCompacting?: boolean;
         model?: { provider: string; id: string; name?: string } | null;
         sessionName?: string | null;
         thinkingLevel?: string | null;
@@ -1102,11 +1106,24 @@ export function App() {
       };
 
       const nextAgentActive = hb.active === true;
+      const nextIsCompacting = hb.isCompacting === true;
       const cachePatch: Partial<SessionUiCacheEntry> = {
         agentActive: nextAgentActive,
+        isCompacting: nextIsCompacting,
       };
 
       setAgentActive(nextAgentActive);
+      setIsCompacting(nextIsCompacting);
+
+      // Drive viewerStatus from the authoritative heartbeat compacting flag
+      if (nextIsCompacting) {
+        setViewerStatus("Compacting…");
+      } else {
+        // If we were showing "Compacting…" and the heartbeat says no longer compacting,
+        // the exec_result handler will set the final "Compacted" status. But if we
+        // missed the exec_result (e.g. reconnected after compact), clear the stale status.
+        setViewerStatus((prev) => (prev === "Compacting…" ? "Connected" : prev));
+      }
 
       if (hb.thinkingLevel !== undefined) {
         const next = hb.thinkingLevel ?? null;
@@ -1295,6 +1312,9 @@ export function App() {
         if (command === "list_resume_sessions") {
           setResumeSessionsLoading(false);
         }
+        if (command === "compact") {
+          setIsCompacting(false);
+        }
         setViewerStatus(`/${command}: ${error}`);
         return;
       }
@@ -1378,6 +1398,7 @@ export function App() {
       }
 
       if (command === "compact") {
+        setIsCompacting(false);
         const tokensBefore = typeof result?.tokensBefore === "number" ? result.tokensBefore : 0;
         const summary = typeof result?.summary === "string"
           ? `Compacted (${tokensBefore > 0 ? `${Math.round(tokensBefore / 1000)}k tokens summarized` : "done"})`
@@ -1646,6 +1667,7 @@ export function App() {
     setAvailableModels(cached?.availableModels ?? []);
     setAvailableCommands(cached?.availableCommands ?? []);
     setAgentActive(cached?.agentActive ?? false);
+    setIsCompacting(cached?.isCompacting ?? false);
     setEffortLevel(cached?.effortLevel ?? null);
     setAuthSource(cached?.authSource ?? null);
     setTokenUsage(cached?.tokenUsage ?? null);
@@ -2862,6 +2884,7 @@ export function App() {
                   onExec={sendRemoteExec}
                   onShowModelSelector={() => setModelSelectorOpen(true)}
                   agentActive={agentActive}
+                  isCompacting={isCompacting}
                   effortLevel={effortLevel}
                   tokenUsage={tokenUsage}
                   lastHeartbeatAt={lastHeartbeatAt}
