@@ -14,6 +14,7 @@ import {
   renderContent,
   roleLabel,
   toMessageRole,
+  CompactionSummaryCard,
 } from "@/components/session-viewer/rendering";
 import {
   Message,
@@ -55,7 +56,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { formatPathTail } from "@/lib/path";
 import { ProviderIcon } from "@/components/ProviderIcon";
-import { AlertTriangleIcon, ArrowDownIcon, BookOpen, CheckCircle2, ChevronsUpDown, Circle, CircleDashed, MessageSquare, MessageCircleQuestion, OctagonX, PaperclipIcon, PenLine, Plus, Zap, Clock, X, Trash2, TerminalIcon, DownloadIcon, XCircle, FolderTree } from "lucide-react";
+import { AlertTriangleIcon, ArrowDownIcon, BookOpen, CheckCircle2, ChevronsUpDown, Circle, CircleDashed, Loader2, MessageSquare, MessageCircleQuestion, OctagonX, PaperclipIcon, PenLine, Plus, Zap, Clock, X, Trash2, TerminalIcon, DownloadIcon, XCircle, FolderTree } from "lucide-react";
 import { AtMentionPopover } from "@/components/AtMentionPopover";
 import type { Entry as AtMentionEntry } from "@/hooks/useAtMentionFiles";
 
@@ -107,6 +108,8 @@ export interface SessionViewerProps {
   onShowModelSelector?: () => void;
   /** Whether the agent is currently processing a turn */
   agentActive?: boolean;
+  /** Whether the session is currently being compacted */
+  isCompacting?: boolean;
   /** Current reasoning effort level (e.g. "low", "medium", "high", "off") */
   effortLevel?: string | null;
 
@@ -299,6 +302,18 @@ const SessionMessageItem = React.memo(({ message, activeToolCalls, agentActive, 
   agentActive?: boolean;
   isLast: boolean;
 }) => {
+  // Compaction summary cards render as standalone elements without the message wrapper
+  if ((message.role === "compactionSummary" || message.role === "branchSummary") && message.summary) {
+    return (
+      <div className="w-full px-4 py-1.5 max-w-3xl mx-auto">
+        <CompactionSummaryCard
+          summary={message.summary}
+          tokensBefore={message.tokensBefore}
+        />
+      </div>
+    );
+  }
+
   // Sub-agent conversation cards render without the outer message wrapper
   // (they have their own full-width card styling)
   if (message.role === "subAgentConversation") {
@@ -404,7 +419,7 @@ function SessionSkeleton() {
   );
 }
 
-export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], runnerId, sessionCwd }: SessionViewerProps) {
+export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, isCompacting, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], runnerId, sessionCwd }: SessionViewerProps) {
   const [input, setInput] = React.useState("");
   const [composerError, setComposerError] = React.useState<string | null>(null);
   const [showClearDialog, setShowClearDialog] = React.useState(false);
@@ -436,6 +451,13 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     }
     setComposerError(null);
   }, [sessionId]);
+
+  // Reset the compacting guard when the heartbeat confirms compact is done
+  React.useEffect(() => {
+    if (!isCompacting) {
+      compactingRef.current = false;
+    }
+  }, [isCompacting]);
 
   // Esc key stops an active agent turn (same as clicking the stop button).
   // We skip this when a dialog or the command picker or @-mention popover is open —
@@ -520,7 +542,15 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     }
 
     if (rawCommand === "compact") {
-      onExec({ type: "exec", id, command: "compact", customInstructions: args || undefined });
+      if (isCompacting || compactingRef.current) {
+        return true; // Already compacting — ignore duplicate
+      }
+      const dispatched = onExec({ type: "exec", id, command: "compact", customInstructions: args || undefined });
+      // Only mark as compacting if dispatch succeeded; otherwise the ref
+      // would stay true and silently block all future /compact commands.
+      if (dispatched !== false) {
+        compactingRef.current = true;
+      }
       setInput("");
       setCommandOpen(false);
       setCommandQuery("");
@@ -564,6 +594,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
 
   const handleSubmit = React.useCallback(
     (message: PromptInputMessage) => {
+      if (isCompacting) return; // Block input while compacting
       const text = message.text.trim();
       const hasAttachments = Array.isArray(message.files) && message.files.length > 0;
       if ((!text && !hasAttachments) || !sessionId) return;
@@ -592,7 +623,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
           setComposerError("Failed to send message.");
         });
     },
-    [executeSlashCommand, onSendInput, sessionId, agentActive, deliveryMode],
+    [executeSlashCommand, onSendInput, sessionId, agentActive, isCompacting, deliveryMode],
   );
 
   const supportedWebCommands = React.useMemo(() => {
@@ -755,6 +786,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
   }, [commandOpen, isResumeMode, resumeCandidates, commandSuggestions, skillSuggestions, commandHighlightedIndex]);
 
   const resumeRequestedRef = React.useRef<string | null>(null);
+  const compactingRef = React.useRef(false);
 
   React.useEffect(() => {
     if (!sessionId || !commandOpen || !isResumeMode || !onRequestResumeSessions) return;
@@ -802,6 +834,8 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
   const visibleMessages = React.useMemo(
     () => sortedMessages.filter((message) => {
       if (message.role === "subAgentConversation") return (message.subAgentTurns?.length ?? 0) > 0;
+      // Compaction/branch summary messages are always visible when they have a summary
+      if ((message.role === "compactionSummary" || message.role === "branchSummary") && message.summary) return true;
       if (hasVisibleContent(message.content)) return true;
       if (message.stopReason === "error" && message.errorMessage) return true;
       return (message.role === "toolResult" || message.role === "tool") && message.toolInput !== undefined;
@@ -914,14 +948,27 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
           <span
             className={cn(
               "inline-block h-2 w-2 rounded-full flex-shrink-0 transition-colors",
-              agentActive
-                ? "bg-green-400 shadow-[0_0_6px_#4ade8080] animate-pulse"
-                : lastHeartbeatAt
-                  ? "bg-slate-400"
-                  : "bg-slate-600",
+              isCompacting
+                ? "bg-amber-400 shadow-[0_0_6px_#fbbf2480] animate-pulse"
+                : agentActive
+                  ? "bg-green-400 shadow-[0_0_6px_#4ade8080] animate-pulse"
+                  : lastHeartbeatAt
+                    ? "bg-slate-400"
+                    : "bg-slate-600",
             )}
-            title={agentActive ? "Agent active" : lastHeartbeatAt ? "Agent idle" : "No heartbeat yet"}
+            title={
+              isCompacting ? "Compacting context…"
+              : agentActive ? "Agent active"
+              : lastHeartbeatAt ? "Agent idle"
+              : "No heartbeat yet"
+            }
           />
+          {/* Transient status (compacting, etc.) */}
+          {viewerStatus && viewerStatus !== "Connected" && viewerStatus !== "Idle" && viewerStatus !== "Connecting…" && (
+            <span className="text-[0.65rem] text-muted-foreground font-medium truncate max-w-32 animate-in fade-in duration-300">
+              {viewerStatus}
+            </span>
+          )}
 
           {/* Session name + model */}
           <div className="flex-1 min-w-0 flex items-center gap-2">
@@ -1401,6 +1448,13 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
           </div>
         )}
 
+        {isCompacting && (
+          <div className="mb-2 flex items-center gap-2 rounded-md border border-amber-400/30 bg-amber-500/10 px-2.5 py-2 text-xs text-amber-200">
+            <Loader2 className="size-3.5 shrink-0 animate-spin" />
+            <span>Compacting conversation history — input is disabled until complete</span>
+          </div>
+        )}
+
         {composerError && (
           <div className="mb-2 rounded-md border border-destructive/40 bg-destructive/10 px-2.5 py-2 text-xs text-destructive">
             {composerError}
@@ -1411,7 +1465,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
           onSubmit={handleSubmit}
           maxFiles={8}
           maxFileSize={20 * 1024 * 1024}
-          disabled={!sessionId}
+          disabled={!sessionId || isCompacting}
           onError={(err) => {
             setComposerError(err.message);
           }}
@@ -1643,16 +1697,18 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                     return;
                   }
                 }}
-                disabled={!sessionId}
+                disabled={!sessionId || isCompacting}
                 submitOnEnter={!isTouchDevice}
                 placeholder={
                   sessionId
-                    ? pendingQuestion
-                      ? `Answer: ${pendingQuestion.question}`
-                      : agentActive
-                        ? deliveryMode === "steer"
-                          ? "Type to steer the agent…"
-                          : "Type a follow-up message…"
+                    ? isCompacting
+                      ? "Compacting…"
+                      : pendingQuestion
+                        ? `Answer: ${pendingQuestion.question}`
+                        : agentActive
+                          ? deliveryMode === "steer"
+                            ? "Type to steer the agent…"
+                            : "Type a follow-up message…"
                         : isTouchDevice
                           ? "Send a message…"
                           : "Send a message to this session…"

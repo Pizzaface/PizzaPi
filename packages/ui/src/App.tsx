@@ -88,6 +88,10 @@ function toRelayMessage(raw: unknown, fallbackId: string): RelayMessage | null {
   const stopReason = typeof msg.stopReason === "string" ? msg.stopReason : undefined;
   const errorMessage = typeof msg.errorMessage === "string" ? msg.errorMessage : undefined;
 
+  // Extract summary/tokensBefore for compactionSummary / branchSummary messages
+  const summary = typeof msg.summary === "string" ? msg.summary : undefined;
+  const tokensBefore = typeof msg.tokensBefore === "number" ? msg.tokensBefore : undefined;
+
   return {
     key,
     role,
@@ -98,6 +102,8 @@ function toRelayMessage(raw: unknown, fallbackId: string): RelayMessage | null {
     isError: msg.isError === true || stopReason === "error",
     stopReason,
     errorMessage,
+    summary,
+    tokensBefore,
   };
 }
 
@@ -202,6 +208,7 @@ interface SessionUiCacheEntry {
   availableModels: ConfiguredModelInfo[];
   availableCommands: Array<{ name: string; description?: string }>;
   agentActive: boolean;
+  isCompacting: boolean;
   effortLevel: string | null;
   authSource: string | null;
   tokenUsage: TokenUsageInfo | null;
@@ -612,6 +619,7 @@ export function App() {
 
   // Live session status from heartbeats
   const [agentActive, setAgentActive] = React.useState(false);
+  const [isCompacting, setIsCompacting] = React.useState(false);
   const [effortLevel, setEffortLevel] = React.useState<string | null>(null);
   const [tokenUsage, setTokenUsage] = React.useState<TokenUsageInfo | null>(null);
   const [lastHeartbeatAt, setLastHeartbeatAt] = React.useState<number | null>(null);
@@ -827,6 +835,7 @@ export function App() {
       availableModels: prev?.availableModels ?? [],
       availableCommands: prev?.availableCommands ?? [],
       agentActive: prev?.agentActive ?? false,
+      isCompacting: prev?.isCompacting ?? false,
       effortLevel: prev?.effortLevel ?? null,
       authSource: prev?.authSource ?? null,
       tokenUsage: prev?.tokenUsage ?? null,
@@ -1088,6 +1097,7 @@ export function App() {
     if (type === "heartbeat") {
       const hb = evt as {
         active?: boolean;
+        isCompacting?: boolean;
         model?: { provider: string; id: string; name?: string } | null;
         sessionName?: string | null;
         thinkingLevel?: string | null;
@@ -1096,11 +1106,24 @@ export function App() {
       };
 
       const nextAgentActive = hb.active === true;
+      const nextIsCompacting = hb.isCompacting === true;
       const cachePatch: Partial<SessionUiCacheEntry> = {
         agentActive: nextAgentActive,
+        isCompacting: nextIsCompacting,
       };
 
       setAgentActive(nextAgentActive);
+      setIsCompacting(nextIsCompacting);
+
+      // Drive viewerStatus from the authoritative heartbeat compacting flag
+      if (nextIsCompacting) {
+        setViewerStatus("Compacting…");
+      } else {
+        // If we were showing "Compacting…" and the heartbeat says no longer compacting,
+        // the exec_result handler will set the final "Compacted" status. But if we
+        // missed the exec_result (e.g. reconnected after compact), clear the stale status.
+        setViewerStatus((prev) => (prev === "Compacting…" ? "Connected" : prev));
+      }
 
       if (hb.thinkingLevel !== undefined) {
         const next = hb.thinkingLevel ?? null;
@@ -1221,9 +1244,12 @@ export function App() {
       }
       setAvailableModels(stateModels);
 
-      // Don't clobber a transient status like "Model set" with a generic
-      // "Connected" when the CLI sends a session_active snapshot right after.
-      setViewerStatus((prev) => (prev === "Model set" ? prev : "Connected"));
+      // Don't clobber transient statuses with a generic "Connected" when the
+      // CLI sends a session_active snapshot right after a command.
+      setViewerStatus((prev) => {
+        if (prev === "Model set" || prev === "Compacting…" || prev.startsWith("Compacted")) return prev;
+        return "Connected";
+      });
 
       setPendingQuestion(null);
       setIsChangingModel(false);
@@ -1285,6 +1311,12 @@ export function App() {
         const error = typeof (evt as any).error === "string" ? (evt as any).error : "Command failed";
         if (command === "list_resume_sessions") {
           setResumeSessionsLoading(false);
+        }
+        if (command === "compact") {
+          // Don't force isCompacting=false here — let the heartbeat remain
+          // the source of truth. The error may be "already in progress"
+          // (compaction is still running), and unconditionally clearing the
+          // flag would re-enable input prematurely until the next heartbeat.
         }
         setViewerStatus(`/${command}: ${error}`);
         return;
@@ -1369,7 +1401,14 @@ export function App() {
       }
 
       if (command === "compact") {
-        setViewerStatus("Compacted");
+        setIsCompacting(false);
+        const tokensBefore = typeof result?.tokensBefore === "number" ? result.tokensBefore : 0;
+        const summary = typeof result?.summary === "string"
+          ? `Compacted (${tokensBefore > 0 ? `${Math.round(tokensBefore / 1000)}k tokens summarized` : "done"})`
+          : "Compacted";
+        setViewerStatus(summary);
+        // Clear the compact status after a few seconds so it doesn't stick forever
+        setTimeout(() => setViewerStatus((prev) => (prev === summary || prev.startsWith("Compacted") ? "Connected" : prev)), 5000);
         return;
       }
 
@@ -1631,6 +1670,7 @@ export function App() {
     setAvailableModels(cached?.availableModels ?? []);
     setAvailableCommands(cached?.availableCommands ?? []);
     setAgentActive(cached?.agentActive ?? false);
+    setIsCompacting(cached?.isCompacting ?? false);
     setEffortLevel(cached?.effortLevel ?? null);
     setAuthSource(cached?.authSource ?? null);
     setTokenUsage(cached?.tokenUsage ?? null);
@@ -1964,6 +2004,8 @@ export function App() {
     const command = payload && typeof payload === "object" && typeof payload.command === "string" ? payload.command : null;
     if (command === "end_session") {
       setViewerStatus("Ending session…");
+    } else if (command === "compact") {
+      setViewerStatus("Compacting…");
     }
     try {
       const { type: _type, ...rest } = payload;
@@ -2845,6 +2887,7 @@ export function App() {
                   onExec={sendRemoteExec}
                   onShowModelSelector={() => setModelSelectorOpen(true)}
                   agentActive={agentActive}
+                  isCompacting={isCompacting}
                   effortLevel={effortLevel}
                   tokenUsage={tokenUsage}
                   lastHeartbeatAt={lastHeartbeatAt}
