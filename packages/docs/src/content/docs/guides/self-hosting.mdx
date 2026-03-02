@@ -21,7 +21,7 @@ pizzapi web
 
 This automatically:
 1. Clones the PizzaPi repo (if not already present) to `~/.pizzapi/web/repo`
-2. Generates a Docker Compose file in `~/.pizzapi/web/`
+2. Generates required secrets (including `BETTER_AUTH_SECRET` and VAPID keys) and a Docker Compose file in `~/.pizzapi/web/`
 3. Builds and starts Redis + the relay server
 4. Serves the web UI at **http://localhost:7492**
 

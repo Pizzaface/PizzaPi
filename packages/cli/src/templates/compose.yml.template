@@ -15,6 +15,7 @@ services:
     environment:
       - PORT=7492
       - PIZZAPI_REDIS_URL=redis://redis:6379
+      - BETTER_AUTH_SECRET={{BETTER_AUTH_SECRET}}
       - VAPID_PUBLIC_KEY={{VAPID_PUBLIC_KEY}}
       - VAPID_PRIVATE_KEY={{VAPID_PRIVATE_KEY}}
       - VAPID_SUBJECT={{VAPID_SUBJECT}}
