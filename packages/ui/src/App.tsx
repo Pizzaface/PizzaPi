@@ -1383,6 +1383,8 @@ export function App() {
           ? `Compacted (${tokensBefore > 0 ? `${Math.round(tokensBefore / 1000)}k tokens summarized` : "done"})`
           : "Compacted";
         setViewerStatus(summary);
+        // Clear the compact status after a few seconds so it doesn't stick forever
+        setTimeout(() => setViewerStatus((prev) => (prev === summary || prev.startsWith("Compacted") ? "Connected" : prev)), 5000);
         return;
       }
 

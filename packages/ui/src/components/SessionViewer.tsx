@@ -450,6 +450,13 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     setComposerError(null);
   }, [sessionId]);
 
+  // Reset the compacting guard when the status changes away from "Compacting…"
+  React.useEffect(() => {
+    if (viewerStatus !== "Compacting…") {
+      compactingRef.current = false;
+    }
+  }, [viewerStatus]);
+
   // Esc key stops an active agent turn (same as clicking the stop button).
   // We skip this when a dialog or the command picker or @-mention popover is open —
   // those components handle Escape themselves via Radix's event propagation.
@@ -533,9 +540,10 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     }
 
     if (rawCommand === "compact") {
-      if (viewerStatus === "Compacting…") {
+      if (compactingRef.current) {
         return true; // Already compacting — ignore duplicate
       }
+      compactingRef.current = true;
       onExec({ type: "exec", id, command: "compact", customInstructions: args || undefined });
       setInput("");
       setCommandOpen(false);
@@ -771,6 +779,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
   }, [commandOpen, isResumeMode, resumeCandidates, commandSuggestions, skillSuggestions, commandHighlightedIndex]);
 
   const resumeRequestedRef = React.useRef<string | null>(null);
+  const compactingRef = React.useRef(false);
 
   React.useEffect(() => {
     if (!sessionId || !commandOpen || !isResumeMode || !onRequestResumeSessions) return;
@@ -932,14 +941,27 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
           <span
             className={cn(
               "inline-block h-2 w-2 rounded-full flex-shrink-0 transition-colors",
-              agentActive
-                ? "bg-green-400 shadow-[0_0_6px_#4ade8080] animate-pulse"
-                : lastHeartbeatAt
-                  ? "bg-slate-400"
-                  : "bg-slate-600",
+              viewerStatus === "Compacting…"
+                ? "bg-amber-400 shadow-[0_0_6px_#fbbf2480] animate-pulse"
+                : agentActive
+                  ? "bg-green-400 shadow-[0_0_6px_#4ade8080] animate-pulse"
+                  : lastHeartbeatAt
+                    ? "bg-slate-400"
+                    : "bg-slate-600",
             )}
-            title={agentActive ? "Agent active" : lastHeartbeatAt ? "Agent idle" : "No heartbeat yet"}
+            title={
+              viewerStatus === "Compacting…" ? "Compacting context…"
+              : agentActive ? "Agent active"
+              : lastHeartbeatAt ? "Agent idle"
+              : "No heartbeat yet"
+            }
           />
+          {/* Transient status (compacting, etc.) */}
+          {viewerStatus && viewerStatus !== "Connected" && viewerStatus !== "Idle" && viewerStatus !== "Connecting…" && (
+            <span className="text-[0.65rem] text-muted-foreground font-medium truncate max-w-32 animate-in fade-in duration-300">
+              {viewerStatus}
+            </span>
+          )}
 
           {/* Session name + model */}
           <div className="flex-1 min-w-0 flex items-center gap-2">
