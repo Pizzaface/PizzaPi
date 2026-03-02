@@ -142,7 +142,7 @@ for (const platform of PLATFORMS) {
 
     // Copy assets (package.json from pi, theme/, export-html/, PTY native lib)
     const assetDir = join(BINARIES_DIR, platform.binaryDir);
-    for (const asset of ["package.json", "theme", "export-html"]) {
+    for (const asset of ["package.json", "theme", "export-html", "templates"]) {
         const src = join(assetDir, asset);
         if (existsSync(src)) {
             cpSync(src, join(binDir, asset), { recursive: true });
