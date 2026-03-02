@@ -391,7 +391,7 @@ export function RunnerManager({ onOpenSession }: RunnerManagerProps) {
                                                 )}
                                             >
                                                 <FolderOpen className="h-3.5 w-3.5 flex-shrink-0 opacity-60" />
-                                                <span className="truncate">{folder}</span>
+                                                <span className="truncate [direction:rtl] text-left" dir="rtl">{folder}</span>
                                             </button>
                                         ))}
                                     </div>
