@@ -10,6 +10,8 @@ import { getMcpBridge } from "./mcp-bridge.js";
 import { getCurrentTodoList, setTodoUpdateCallback, type TodoItem } from "./update-todo.js";
 import type { RemoteExecRequest, RemoteExecResponse } from "./remote-commands.js";
 import { messageBus } from "./session-message-bus.js";
+import { triggerBus } from "./trigger-bus.js";
+import { triggerInjectQueue } from "./trigger-inject-queue.js";
 import { io, type Socket } from "socket.io-client";
 import type { RelayClientToServerEvents, RelayServerToClientEvents } from "@pizzapi/protocol";
 
@@ -1524,6 +1526,28 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 return true;
             });
 
+            // Wire up the trigger bus now that we have a relay connection.
+            triggerBus.setRegisterFn((params) => {
+                if (!relay || !sioSocket?.connected) return false;
+                sioSocket.emit("register_trigger", { token: relay.token, ...params });
+                return true;
+            });
+            triggerBus.setCancelFn((triggerId) => {
+                if (!relay || !sioSocket?.connected) return false;
+                sioSocket.emit("cancel_trigger", { token: relay.token, triggerId });
+                return true;
+            });
+            triggerBus.setListFn(() => {
+                if (!relay || !sioSocket?.connected) return false;
+                sioSocket.emit("list_triggers", { token: relay.token });
+                return true;
+            });
+            triggerBus.setEmitFn((eventName, payload) => {
+                if (!relay || !sioSocket?.connected) return false;
+                sioSocket.emit("emit_custom_event", { token: relay.token, eventName, payload });
+                return true;
+            });
+
             forwardEvent({ type: "session_active", state: buildSessionState() });
             void refreshAllUsage();
             startHeartbeat();
@@ -1579,6 +1603,25 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             });
         });
 
+        // ── Trigger event listeners ───────────────────────────────────────
+
+        sock.on("trigger_registered" as any, (data: any) => { triggerBus.onRegistered(data); });
+        sock.on("trigger_cancelled" as any, (data: any) => { triggerBus.onCancelled(data); });
+        sock.on("trigger_list" as any, (data: any) => { triggerBus.onList(data); });
+        sock.on("trigger_error" as any, (data: any) => { triggerBus.onError(data); });
+
+        sock.on("trigger_fired" as any, (data: any) => {
+            if (data.delivery?.mode === "inject") {
+                triggerInjectQueue.enqueue(data);
+            } else {
+                messageBus.receive({
+                    fromSessionId: data.sourceSessionId ?? "trigger",
+                    message: `[Trigger: ${data.triggerType}] ${data.message}`,
+                    ts: data.firedAt ?? new Date().toISOString(),
+                });
+            }
+        });
+
         sock.on("session_expired", (data) => {
             // Session was expired by the server — stop retrying.
             shuttingDown = true;
@@ -1607,6 +1650,10 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         stopHeartbeat();
         cancelPendingAskUserQuestion();
         messageBus.setSendFn(null);
+        triggerBus.setRegisterFn(null);
+        triggerBus.setCancelFn(null);
+        triggerBus.setListFn(null);
+        triggerBus.setEmitFn(null);
         if (sioSocket) {
             if (relay && sioSocket.connected) {
                 sioSocket.emit("session_end", { sessionId: relay.sessionId, token: relay.token });

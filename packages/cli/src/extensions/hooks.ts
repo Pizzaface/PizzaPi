@@ -3,6 +3,7 @@ import { existsSync } from "fs";
 import { join } from "path";
 import type { ExtensionFactory } from "@mariozechner/pi-coding-agent";
 import type { HooksConfig, HookMatcher, HookEntry } from "../config.js";
+import { triggerInjectQueue, formatTriggerNotifications } from "./trigger-inject-queue.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -629,11 +630,22 @@ export function createHooksExtension(hooksConfig: HooksConfig | undefined, cwd: 
 
         // ---------------------------------------------------------------
         // BeforeAgentStart hook — inject context or tweak system prompt
+        // Always registered so trigger inject queue can drain even without user hooks.
         // ---------------------------------------------------------------
 
-        if (hasBeforeAgentStartHooks) {
-            pi.on("before_agent_start", async (event) => {
-                try {
+        pi.on("before_agent_start", async (event) => {
+            try {
+                const contextParts: string[] = [];
+                let systemPrompt: string | undefined;
+
+                // Drain trigger inject queue (inject-mode notifications)
+                const triggerNotifications = triggerInjectQueue.drain();
+                if (triggerNotifications.length > 0) {
+                    contextParts.push(formatTriggerNotifications(triggerNotifications));
+                }
+
+                // Run user-defined BeforeAgentStart hooks if configured
+                if (hasBeforeAgentStartHooks) {
                     const payload = JSON.stringify({
                         event: "BeforeAgentStart",
                         prompt: event.prompt,
@@ -652,10 +664,6 @@ export function createHooksExtension(hooksConfig: HooksConfig | undefined, cwd: 
                         console.error("[hooks] BeforeAgentStart hook failed (non-fatal)");
                     }
 
-                    // Collect context and system prompt overrides
-                    const contextParts: string[] = [];
-                    let systemPrompt: string | undefined;
-
                     for (const output of outputs) {
                         if (output.additionalContext) {
                             contextParts.push(output.additionalContext);
@@ -664,28 +672,28 @@ export function createHooksExtension(hooksConfig: HooksConfig | undefined, cwd: 
                             systemPrompt = output.systemPrompt;
                         }
                     }
-
-                    const result: any = {};
-
-                    if (contextParts.length > 0) {
-                        result.message = {
-                            customType: "hook_context",
-                            content: contextParts.join("\n\n"),
-                            display: "collapsed",
-                        };
-                    }
-
-                    if (systemPrompt) {
-                        result.systemPrompt = systemPrompt;
-                    }
-
-                    if (Object.keys(result).length > 0) return result;
-                } catch (err) {
-                    const msg = err instanceof Error ? err.message : String(err);
-                    console.error(`[hooks] BeforeAgentStart handler error: ${msg}`);
                 }
-            });
-        }
+
+                const result: any = {};
+
+                if (contextParts.length > 0) {
+                    result.message = {
+                        customType: "hook_context",
+                        content: contextParts.join("\n\n"),
+                        display: "collapsed",
+                    };
+                }
+
+                if (systemPrompt) {
+                    result.systemPrompt = systemPrompt;
+                }
+
+                if (Object.keys(result).length > 0) return result;
+            } catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                console.error(`[hooks] BeforeAgentStart handler error: ${msg}`);
+            }
+        });
 
         // ---------------------------------------------------------------
         // UserBash hook — safety parity with PreToolUse:Bash for ! / !!
