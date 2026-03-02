@@ -63,6 +63,11 @@ function activeClient(): RelayRedisClient | null {
     return client;
 }
 
+/** Returns the active Redis client, or null if Redis is unavailable. */
+export function getActiveRedisClient(): RelayRedisClient | null {
+    return activeClient();
+}
+
 export async function initializeRelayRedisCache(): Promise<void> {
     if (isRedisDisabled()) {
         console.log("Relay Redis cache disabled (PIZZAPI_REDIS_URL=off).");
