@@ -16,8 +16,8 @@ export async function getLatestNpmVersion(): Promise<string | null> {
     if (cachedVersion && now - cachedAt < CACHE_TTL_MS) {
         return cachedVersion;
     }
-    if (!cachedVersion && lastFailureAt && now - lastFailureAt < FAILURE_TTL_MS) {
-        return null;
+    if (lastFailureAt && now - lastFailureAt < FAILURE_TTL_MS) {
+        return cachedVersion;
     }
 
     try {
