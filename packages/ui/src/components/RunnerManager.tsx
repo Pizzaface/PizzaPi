@@ -47,7 +47,7 @@ export function RunnerManager({ onOpenSession }: RunnerManagerProps) {
     const [runners, setRunners] = React.useState<RunnerInfo[]>([]);
     const [sessions, setSessions] = React.useState<LiveSession[]>([]);
     const [loading, setLoading] = React.useState(true);
-    const [serverVersion, setServerVersion] = React.useState<string | null>(null);
+    const [latestVersion, setServerVersion] = React.useState<string | null>(null);
     const [restarting, setRestarting] = React.useState<Set<string>>(new Set());
     const [stopping, setStopping] = React.useState<Set<string>>(new Set());
 
@@ -322,7 +322,7 @@ export function RunnerManager({ onOpenSession }: RunnerManagerProps) {
                                     key={runner.runnerId}
                                     runner={runner}
                                     sessions={runnerSessions}
-                                    serverVersion={serverVersion}
+                                    latestVersion={latestVersion}
                                     isRestarting={restarting.has(runner.runnerId)}
                                     isStopping={stopping.has(runner.runnerId)}
                                     onRestart={() => handleRestart(runner.runnerId)}
@@ -431,7 +431,7 @@ export function RunnerManager({ onOpenSession }: RunnerManagerProps) {
 interface RunnerCardProps {
     runner: RunnerInfo;
     sessions: LiveSession[];
-    serverVersion: string | null;
+    latestVersion: string | null;
     isRestarting: boolean;
     isStopping: boolean;
     onRestart: () => void;
@@ -445,9 +445,9 @@ function formatTime(iso: string): string {
     return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-function RunnerCard({ runner, sessions, serverVersion, isRestarting, isStopping, onRestart, onStop, onNewSession, onOpenSession, onSkillsChange }: RunnerCardProps) {
+function RunnerCard({ runner, sessions, latestVersion, isRestarting, isStopping, onRestart, onStop, onNewSession, onOpenSession, onSkillsChange }: RunnerCardProps) {
     const [sessionsOpen, setSessionsOpen] = React.useState(true);
-    const isOutdated = !!(runner.version && serverVersion && runner.version !== serverVersion);
+    const isOutdated = !!(runner.version && latestVersion && runner.version !== latestVersion);
 
     return (
         <div className="group relative rounded-xl border border-border/60 bg-card hover:border-border transition-all duration-200 overflow-hidden">
@@ -484,7 +484,7 @@ function RunnerCard({ runner, sessions, serverVersion, isRestarting, isStopping,
                                 )}
                                 {isOutdated && (
                                     <span className="text-[10px] text-amber-600 dark:text-amber-400">
-                                        Update available (server v{serverVersion})
+                                        Update available (v{latestVersion})
                                     </span>
                                 )}
                             </div>

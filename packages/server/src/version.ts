@@ -1,17 +1,32 @@
-import { readFileSync } from "node:fs";
-import { resolve, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+const NPM_PACKAGE = "@pizzapi/pizza";
+const CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
+let cachedVersion: string | null = null;
+let cachedAt = 0;
 
-function loadVersion(): string {
+/**
+ * Fetch the latest published version of @pizzapi/pizza from npm.
+ * Caches the result for 15 minutes to avoid hammering the registry.
+ */
+export async function getLatestNpmVersion(): Promise<string | null> {
+    const now = Date.now();
+    if (cachedVersion && now - cachedAt < CACHE_TTL_MS) {
+        return cachedVersion;
+    }
+
     try {
-        const pkgPath = resolve(__dirname, "..", "package.json");
-        const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
-        return pkg.version ?? "unknown";
+        const res = await fetch(`https://registry.npmjs.org/${NPM_PACKAGE}/latest`, {
+            headers: { Accept: "application/json" },
+            signal: AbortSignal.timeout(5000),
+        });
+        if (!res.ok) return cachedVersion;
+        const data = (await res.json()) as { version?: string };
+        if (data.version) {
+            cachedVersion = data.version;
+            cachedAt = now;
+        }
+        return cachedVersion;
     } catch {
-        return "unknown";
+        return cachedVersion;
     }
 }
-
-export const SERVER_VERSION = loadVersion();

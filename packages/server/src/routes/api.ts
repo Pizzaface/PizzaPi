@@ -34,7 +34,7 @@ import {
 import { RateLimiter, isValidEmail, isValidPassword, cwdMatchesRoots } from "../security.js";
 import { isValidSkillName } from "../validation.js";
 import { isSignupAllowed } from "../auth.js";
-import { SERVER_VERSION } from "../version.js";
+import { getLatestNpmVersion } from "../version.js";
 
 // 5 requests per 15 minutes
 const registerRateLimiter = new RateLimiter(5, 15 * 60 * 1000);
@@ -44,9 +44,10 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
         return Response.json({ status: "ok" });
     }
 
-    // ── Public endpoint: server version ─────────────────────────────────
+    // ── Public endpoint: latest published version ──────────────────────
     if (url.pathname === "/api/version" && req.method === "GET") {
-        return Response.json({ version: SERVER_VERSION });
+        const version = await getLatestNpmVersion();
+        return Response.json({ version });
     }
 
     // ── Public endpoint: signup status ───────────────────────────────────
