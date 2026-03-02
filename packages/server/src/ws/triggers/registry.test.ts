@@ -336,6 +336,22 @@ describe("TriggerRegistry", () => {
     });
 
     // -------------------------------------------------------------------------
+    // hasTrigger
+    // -------------------------------------------------------------------------
+
+    describe("hasTrigger", () => {
+        test("returns true when a trigger exists", async () => {
+            const reg = await registry.registerTrigger(BASE_PARAMS);
+            if (!reg.ok) return;
+            expect(await registry.hasTrigger(reg.triggerId)).toBe(true);
+        });
+
+        test("returns false when a trigger is missing", async () => {
+            expect(await registry.hasTrigger("no-such-trigger")).toBe(false);
+        });
+    });
+
+    // -------------------------------------------------------------------------
     // fireTrigger
     // -------------------------------------------------------------------------
 
@@ -379,6 +395,22 @@ describe("TriggerRegistry", () => {
             expect(fired2!.firingCount).toBe(2);
 
             // Record should be gone
+            expect(store.strings.has(`triggers:runner-1:${reg.triggerId}`)).toBe(false);
+            expect(store.strings.has(`triggers:meta:${reg.triggerId}`)).toBe(false);
+        });
+
+        test("auto-cancels one-shot timer trigger after first fire", async () => {
+            const reg = await registry.registerTrigger({
+                ...BASE_PARAMS,
+                type: "timer",
+                config: { delaySec: 30, recurring: false },
+            });
+            if (!reg.ok) return;
+
+            const fired = await registry.fireTrigger(reg.triggerId);
+            expect(fired).not.toBeNull();
+            expect(fired!.firingCount).toBe(1);
+
             expect(store.strings.has(`triggers:runner-1:${reg.triggerId}`)).toBe(false);
             expect(store.strings.has(`triggers:meta:${reg.triggerId}`)).toBe(false);
         });

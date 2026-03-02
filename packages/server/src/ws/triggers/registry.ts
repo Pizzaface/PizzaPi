@@ -72,50 +72,73 @@ export class TriggerRegistry {
         const redis = this.getClient();
         if (!redis) return { ok: false, error: "Redis unavailable" };
 
+        const sessionKey = this.bySessionKey(params.ownerSessionId);
+        const runnerKey = this.byRunnerKey(params.runnerId);
+        const watchableRedis = redis as unknown as {
+            watch?: (...keys: string[]) => Promise<void>;
+            unwatch?: () => Promise<void>;
+        };
+        const canWatch = typeof watchableRedis.watch === "function";
+
         try {
-            // Enforce per-session limit
-            const sessionCount = await redis.sCard(this.bySessionKey(params.ownerSessionId));
-            if (sessionCount >= MAX_TRIGGERS_PER_SESSION) {
-                return {
-                    ok: false,
-                    error: `Session trigger limit (${MAX_TRIGGERS_PER_SESSION}) reached`,
+            for (let attempt = 0; attempt < 5; attempt++) {
+                if (canWatch) {
+                    await watchableRedis.watch!(sessionKey, runnerKey);
+                }
+
+                const sessionCount = await redis.sCard(sessionKey);
+                if (sessionCount >= MAX_TRIGGERS_PER_SESSION) {
+                    if (canWatch && typeof watchableRedis.unwatch === "function") {
+                        await watchableRedis.unwatch();
+                    }
+                    return {
+                        ok: false,
+                        error: `Session trigger limit (${MAX_TRIGGERS_PER_SESSION}) reached`,
+                    };
+                }
+
+                const runnerCount = await redis.sCard(runnerKey);
+                if (runnerCount >= MAX_TRIGGERS_PER_RUNNER) {
+                    if (canWatch && typeof watchableRedis.unwatch === "function") {
+                        await watchableRedis.unwatch();
+                    }
+                    return {
+                        ok: false,
+                        error: `Runner trigger limit (${MAX_TRIGGERS_PER_RUNNER}) reached`,
+                    };
+                }
+
+                const triggerId = crypto.randomUUID();
+                const record: TriggerRecord = {
+                    id: triggerId,
+                    type: params.type,
+                    ownerSessionId: params.ownerSessionId,
+                    runnerId: params.runnerId,
+                    config: params.config,
+                    delivery: params.delivery,
+                    message: params.message,
+                    ...(params.maxFirings !== undefined ? { maxFirings: params.maxFirings } : {}),
+                    firingCount: 0,
+                    ...(params.expiresAt !== undefined ? { expiresAt: params.expiresAt } : {}),
+                    createdAt: new Date().toISOString(),
                 };
+
+                const multi = redis.multi();
+                multi.set(this.recordKey(params.runnerId, triggerId), JSON.stringify(record));
+                multi.set(this.metaKey(triggerId), params.runnerId);
+                multi.sAdd(runnerKey, triggerId);
+                multi.sAdd(sessionKey, triggerId);
+                multi.sAdd(this.byTypeKey(params.runnerId, params.type), triggerId);
+                const execResult = await multi.exec();
+
+                if (canWatch && execResult === null) {
+                    continue;
+                }
+
+                return { ok: true, triggerId };
             }
 
-            // Enforce per-runner limit
-            const runnerCount = await redis.sCard(this.byRunnerKey(params.runnerId));
-            if (runnerCount >= MAX_TRIGGERS_PER_RUNNER) {
-                return {
-                    ok: false,
-                    error: `Runner trigger limit (${MAX_TRIGGERS_PER_RUNNER}) reached`,
-                };
-            }
-
-            const triggerId = crypto.randomUUID();
-            const record: TriggerRecord = {
-                id: triggerId,
-                type: params.type,
-                ownerSessionId: params.ownerSessionId,
-                runnerId: params.runnerId,
-                config: params.config,
-                delivery: params.delivery,
-                message: params.message,
-                ...(params.maxFirings !== undefined ? { maxFirings: params.maxFirings } : {}),
-                firingCount: 0,
-                ...(params.expiresAt !== undefined ? { expiresAt: params.expiresAt } : {}),
-                createdAt: new Date().toISOString(),
-            };
-
-            // Atomically write record + all indices
-            const multi = redis.multi();
-            multi.set(this.recordKey(params.runnerId, triggerId), JSON.stringify(record));
-            multi.set(this.metaKey(triggerId), params.runnerId);
-            multi.sAdd(this.byRunnerKey(params.runnerId), triggerId);
-            multi.sAdd(this.bySessionKey(params.ownerSessionId), triggerId);
-            multi.sAdd(this.byTypeKey(params.runnerId, params.type), triggerId);
-            await multi.exec();
-
-            return { ok: true, triggerId };
+            return { ok: false, error: "Failed to register trigger due to concurrent updates" };
         } catch (error) {
             return { ok: false, error: String(error) };
         }
@@ -235,6 +258,21 @@ export class TriggerRegistry {
         }
     }
 
+    /** Returns true when a trigger record still exists. */
+    async hasTrigger(triggerId: string): Promise<boolean> {
+        const redis = this.getClient();
+        if (!redis) return false;
+
+        try {
+            const runnerId = await redis.get(this.metaKey(triggerId));
+            if (!runnerId) return false;
+            const raw = await redis.get(this.recordKey(runnerId, triggerId));
+            return raw !== null;
+        } catch {
+            return false;
+        }
+    }
+
     // -------------------------------------------------------------------------
     // fireTrigger
     // -------------------------------------------------------------------------
@@ -277,8 +315,10 @@ export class TriggerRegistry {
             record.firingCount += 1;
             record.lastFiredAt = new Date().toISOString();
 
+            const timerConfig = record.type === "timer" ? (record.config as { recurring?: unknown }) : null;
+            const oneShotTimer = record.type === "timer" && timerConfig?.recurring !== true;
             const exhausted =
-                record.maxFirings !== undefined && record.firingCount >= record.maxFirings;
+                (record.maxFirings !== undefined && record.firingCount >= record.maxFirings) || oneShotTimer;
 
             if (exhausted) {
                 // Auto-cancel: remove all keys and return the final updated record

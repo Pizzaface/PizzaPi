@@ -344,6 +344,17 @@ describe("TriggerEvaluator", () => {
             await evaluator.evaluateCustomEvent("runner-1", "b", "evt");
             expect(delivered).toHaveLength(1);
         });
+
+        test("ignores malformed fromSessionIds config", async () => {
+            registry.addTrigger(makeTrigger({
+                id: "t1",
+                type: "custom_event",
+                config: { eventName: "evt" } as any,
+            }));
+
+            await evaluator.evaluateCustomEvent("runner-1", "b", "evt");
+            expect(delivered).toHaveLength(0);
+        });
     });
 
     // ── fireTimerTrigger ──────────────────────────────────────────────

@@ -144,7 +144,12 @@ export class TriggerEvaluator {
         for (const trigger of triggers) {
             const config = trigger.config as CustomEventTriggerConfig;
             if (config.eventName !== eventName) continue;
-            if (config.fromSessionIds !== "*" && !config.fromSessionIds.includes(sourceSessionId)) continue;
+            if (
+                config.fromSessionIds !== "*" &&
+                (!Array.isArray(config.fromSessionIds) || !config.fromSessionIds.includes(sourceSessionId))
+            ) {
+                continue;
+            }
 
             await this.fireAndDeliver(trigger, {
                 sessionId: sourceSessionId,

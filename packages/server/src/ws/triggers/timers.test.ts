@@ -29,6 +29,7 @@ function makeMockRegistry(triggers: TriggerRecord[] = []): TriggerRegistry {
         cancelTrigger: async () => ({ ok: true as const }),
         listTriggers: async () => [],
         fireTrigger: async () => null,
+        hasTrigger: async () => true,
         cleanupSessionTriggers: async () => 0,
         rehydrateTriggers: async () => [],
     } as unknown as TriggerRegistry;
@@ -117,6 +118,30 @@ describe("TimerScheduler", () => {
             scheduler.cancelTimer("t1");
         });
 
+        test("recurring: auto-cancels when trigger is removed", async () => {
+            let exists = true;
+            const registry = {
+                ...makeMockRegistry(),
+                hasTrigger: async () => exists,
+            } as unknown as TriggerRegistry;
+            scheduler = new TimerScheduler(registry, async (id) => {
+                firedIds.push(id);
+                exists = false;
+            });
+
+            scheduler.scheduleTimer(makeTimerTrigger({ id: "t1", config: { delaySec: 0.02, recurring: true } }));
+            await wait(90);
+
+            expect(scheduler.isActive("t1")).toBe(false);
+        });
+
+        test("ignores timers with invalid delay", async () => {
+            scheduler.scheduleTimer(makeTimerTrigger({ id: "t1", config: { delaySec: 0, recurring: true } }));
+            await wait(40);
+            expect(scheduler.isActive("t1")).toBe(false);
+            expect(firedIds).toEqual([]);
+        });
+
         test("adds to activeTimers on schedule", () => {
             expect(scheduler.activeCount).toBe(0);
             const trigger = makeTimerTrigger({ id: "t1" });
@@ -130,6 +155,16 @@ describe("TimerScheduler", () => {
             scheduler.scheduleTimer(makeTimerTrigger({ id: "t2" }));
             scheduler.scheduleTimer(makeTimerTrigger({ id: "t3" }));
             expect(scheduler.activeCount).toBe(3);
+        });
+
+        test("rescheduling same trigger replaces prior timer", async () => {
+            scheduler.scheduleTimer(makeTimerTrigger({ id: "t1", config: { delaySec: 0.1 } }));
+            scheduler.scheduleTimer(makeTimerTrigger({ id: "t1", config: { delaySec: 0.02 } }));
+
+            await wait(160);
+
+            const fireCount = firedIds.filter((id) => id === "t1").length;
+            expect(fireCount).toBe(1);
         });
     });
 
@@ -293,6 +328,18 @@ describe("TimerScheduler", () => {
             expect(scheduler.isActive("t1")).toBe(true);
             // Clean up the long-lived timer
             scheduler.cancelTimer("t1");
+        });
+
+        test("skips rehydration for invalid delay timers", async () => {
+            const trigger = makeTimerTrigger({
+                id: "t1",
+                config: { delaySec: -1, recurring: true },
+            });
+            scheduler = new TimerScheduler(makeMockRegistry([trigger]), onFire);
+            await scheduler.rehydrateTimers("runner-1");
+
+            expect(scheduler.activeCount).toBe(0);
+            expect(firedIds).toEqual([]);
         });
 
         test("handles empty trigger list gracefully", async () => {

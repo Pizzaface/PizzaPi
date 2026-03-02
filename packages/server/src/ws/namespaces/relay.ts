@@ -79,6 +79,7 @@ function augmentMessageThinkingDurations(
 // Stored outside socket.data because RelaySocketData doesn't include it.
 
 const socketAckedSeqs = new Map<string, number>();
+const rehydratedTimerRunners = new Set<string>();
 
 type RelaySocket = Socket<
     RelayClientToServerEvents,
@@ -201,6 +202,20 @@ export function registerRelayNamespace(io: SocketIOServer): void {
                 isEphemeral,
                 collabMode,
             });
+
+            // Rehydrate persisted timer triggers once per runner after relay reconnect.
+            const registeredSession = await getSharedSession(sessionId);
+            const runnerId = registeredSession?.runnerId;
+            if (runnerId && !rehydratedTimerRunners.has(runnerId)) {
+                rehydratedTimerRunners.add(runnerId);
+                try {
+                    await triggerRegistry.rehydrateTriggers(runnerId);
+                    await timerScheduler.rehydrateTimers(runnerId);
+                } catch (error) {
+                    rehydratedTimerRunners.delete(runnerId);
+                    console.error(`[sio/relay] Failed to rehydrate timers for runner ${runnerId}:`, error);
+                }
+            }
         });
 
         // ── event — main event pipeline ──────────────────────────────────────

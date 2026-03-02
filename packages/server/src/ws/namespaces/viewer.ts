@@ -232,9 +232,7 @@ export function registerViewerNamespace(io: SocketIOServer): void {
         // Send initial trigger list to the newly-connected viewer
         try {
             const triggers = await triggerRegistry.listTriggers(sessionId);
-            if (triggers.length > 0) {
-                socket.emit("trigger_list", { triggers });
-            }
+            socket.emit("trigger_list", { triggers });
         } catch (err) {
             console.error("[sio/viewer] Failed to send initial trigger list:", err);
         }
@@ -332,11 +330,37 @@ export function registerViewerNamespace(io: SocketIOServer): void {
                 return;
             }
 
+            const config = data.config;
+            const sessionIds = (config as { sessionIds?: string[] | "*" }).sessionIds;
+            if (sessionIds && sessionIds !== "*" && Array.isArray(sessionIds)) {
+                for (const targetId of sessionIds) {
+                    const targetSession = await getSharedSession(targetId);
+                    if (targetSession && targetSession.runnerId !== runnerId) {
+                        socket.emit("error", {
+                            message: `Runner-lock violation: session ${targetId} is on a different runner`,
+                        });
+                        return;
+                    }
+                }
+            }
+            const fromSessionIds = (config as { fromSessionIds?: string[] | "*" }).fromSessionIds;
+            if (fromSessionIds && fromSessionIds !== "*" && Array.isArray(fromSessionIds)) {
+                for (const targetId of fromSessionIds) {
+                    const targetSession = await getSharedSession(targetId);
+                    if (targetSession && targetSession.runnerId !== runnerId) {
+                        socket.emit("error", {
+                            message: `Runner-lock violation: session ${targetId} is on a different runner`,
+                        });
+                        return;
+                    }
+                }
+            }
+
             const result = await triggerRegistry.registerTrigger({
                 type: data.type,
                 ownerSessionId: sessionId,
                 runnerId,
-                config: data.config,
+                config,
                 delivery: data.delivery ?? { mode: "inject" },
                 message: data.message ?? "",
                 maxFirings: data.maxFirings,
