@@ -354,7 +354,7 @@ export function RunnerManager({ onOpenSession }: RunnerManagerProps) {
                         </DialogDescription>
                     </DialogHeader>
 
-                    <div className="flex flex-col gap-4 py-2">
+                    <div className="flex flex-col gap-4 py-2 min-w-0 overflow-hidden">
                         <div className="flex flex-col gap-1.5">
                             <Label htmlFor="spawn-cwd" className="text-sm">Working directory <span className="text-muted-foreground font-normal">(optional)</span></Label>
                             <Input
@@ -369,7 +369,7 @@ export function RunnerManager({ onOpenSession }: RunnerManagerProps) {
 
                         {/* Recent folders */}
                         {(recentFoldersLoading || recentFolders.length > 0) && (
-                            <div className="flex flex-col gap-1.5">
+                            <div className="flex flex-col gap-1.5 min-w-0">
                                 <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Recent folders</p>
                                 {recentFoldersLoading ? (
                                     <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -377,14 +377,14 @@ export function RunnerManager({ onOpenSession }: RunnerManagerProps) {
                                         Loading…
                                     </div>
                                 ) : (
-                                    <div className="flex flex-col gap-1">
+                                    <div className="flex flex-col gap-1 min-w-0">
                                         {recentFolders.map((folder) => (
                                             <button
                                                 key={folder}
                                                 type="button"
                                                 onClick={() => setSpawnCwd(folder)}
                                                 className={cn(
-                                                    "flex items-center gap-2 text-left px-2.5 py-1.5 rounded-md text-xs font-mono transition-colors",
+                                                    "flex items-center gap-2 text-left px-2.5 py-1.5 rounded-md text-xs font-mono transition-colors min-w-0",
                                                     spawnCwd === folder
                                                         ? "bg-accent text-accent-foreground"
                                                         : "text-muted-foreground hover:bg-muted hover:text-foreground"
