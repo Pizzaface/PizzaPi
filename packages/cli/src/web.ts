@@ -389,8 +389,13 @@ export function parseArgs(args: string[]): ParsedArgs {
             }
             result.port = p;
             i++;
-        } else if (arg === "--origins" && args[i + 1]) {
-            result.origins = args[i + 1];
+        } else if (arg === "--origins") {
+            const next = args[i + 1];
+            if (!next || next.startsWith("-")) {
+                console.error("--origins requires a value (comma-separated origin URLs)");
+                process.exit(1);
+            }
+            result.origins = next;
             i++;
         } else if (arg === "--foreground" || arg === "-f") {
             result.detach = false;
