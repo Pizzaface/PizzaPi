@@ -1,0 +1,261 @@
+---
+title: Conversation Triggers
+description: Event-driven triggers for agent session automation — react to lifecycle events, coordinate sessions, and monitor costs without polling.
+sidebar:
+  order: 8
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+**Conversation triggers** are a declarative, event-driven system that lets agent sessions react to lifecycle events without polling. Triggers are registered via agent tools, evaluated server-side, and delivered to the owning session as either context injections or queued messages.
+
+Common use cases:
+
+- **Fan-out / fan-in**: spawn N parallel sub-agents and get notified as each one finishes
+- **Cost monitoring**: alert when a session's API spend crosses a threshold
+- **Pub/sub coordination**: emit named events that other sessions subscribe to
+- **Timeouts & delays**: fire a one-shot or recurring timer inside a session
+
+---
+
+## Trigger Types
+
+| Type | Config fields | Description |
+|------|--------------|-------------|
+| `session_ended` | `sessionIds: string[] \| "*"` | Fires when a target session ends |
+| `session_idle` | `sessionIds: string[] \| "*"` | Fires on an active → idle transition |
+| `session_error` | `sessionIds: string[] \| "*"` | Fires when a session encounters an error |
+| `cost_exceeded` | `sessionIds: string[] \| "*"`, `threshold: number` | Fires when a session's cost exceeds the threshold (USD) |
+| `custom_event` | `eventName: string`, `fromSessionIds: string[] \| "*"` | Fires when another session emits a matching named event |
+| `timer` | `delaySec: number`, `recurring?: boolean` | Fires after a delay; set `recurring: true` for repeating |
+
+Pass `"*"` for `sessionIds` / `fromSessionIds` to watch **all sessions** on the runner.
+
+---
+
+## Delivery Modes
+
+When a trigger fires, the notification is delivered to the **owning session** (the session that registered it) using one of two modes:
+
+### `inject` (default)
+
+The notification message is injected directly into the agent's conversation context at the start of its next turn. This is the best choice when you want the agent to **react immediately** — for example, to collect a sub-agent's result and continue working.
+
+### `queue`
+
+The notification is enqueued as a message that the agent retrieves explicitly via `check_messages` or `wait_for_message`. This is better for **polling patterns** where the agent is doing other work between checks.
+
+<Aside type="tip">
+  When in doubt, use `inject` (the default). Switch to `queue` only if you need fine-grained control over when the agent processes the notification.
+</Aside>
+
+---
+
+## Agent Tools Reference
+
+The following tools are available inside every PizzaPi agent session:
+
+### `register_trigger`
+
+Register a new trigger. Returns a `triggerId` you can pass to `cancel_trigger`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `type` | string | ✅ | One of: `session_ended`, `session_idle`, `session_error`, `cost_exceeded`, `custom_event`, `timer` |
+| `config` | object | ✅ | Type-specific config (see [Trigger Types](#trigger-types)) |
+| `delivery` | object | — | `{ mode: "inject" \| "queue" }` — defaults to `inject` |
+| `message` | string | — | Template for the notification message. Supports [placeholders](#message-placeholders). |
+| `maxFirings` | number | — | Auto-cancel after this many firings. Omit for unlimited. |
+| `expiresAt` | string | — | ISO 8601 timestamp after which the trigger is removed automatically |
+
+### `cancel_trigger`
+
+Cancel a previously registered trigger by its ID.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `triggerId` | string | ✅ | ID returned by `register_trigger` |
+
+### `list_triggers`
+
+List all active triggers registered by the current session. No parameters.
+
+### `emit_event`
+
+Broadcast a named custom event to all sessions that have a matching `custom_event` trigger.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `eventName` | string | ✅ | Name of the event to emit |
+| `payload` | object | — | Optional JSON payload included with the event |
+
+### Message Placeholders
+
+The `message` template string supports these placeholders:
+
+| Placeholder | Available for |
+|-------------|---------------|
+| `{sessionId}` | All types |
+| `{eventName}` | `custom_event` |
+| `{cost}` | `cost_exceeded` |
+| `{threshold}` | `cost_exceeded` |
+| `{error}` | `session_error` |
+| `{payload}` | `custom_event` |
+
+---
+
+## Workflow Examples
+
+### Fan-Out / Fan-In
+
+Spawn multiple child sessions and automatically collect their results as they finish:
+
+<Steps>
+
+1. **Parent spawns child sessions**
+
+   ```
+   child1 = spawn_session(prompt="Task A")
+   child2 = spawn_session(prompt="Task B")
+   child3 = spawn_session(prompt="Task C")
+   ```
+
+2. **Parent registers a session_ended trigger**
+
+   ```
+   register_trigger(
+     type="session_ended",
+     config={ sessionIds: [child1, child2, child3] },
+     maxFirings=3,
+     message="Child {sessionId} completed"
+   )
+   ```
+
+3. **As each child finishes**, the parent receives an injected notification. After 3 firings the trigger auto-cancels.
+
+</Steps>
+
+<Aside type="note">
+  Set `maxFirings` equal to the number of children so the trigger cleans itself up automatically.
+</Aside>
+
+---
+
+### Cost Monitoring
+
+Alert when any session's API spend crosses a threshold:
+
+```
+register_trigger(
+  type="cost_exceeded",
+  config={ sessionIds: "*", threshold: 10.0 },
+  message="Session {sessionId} cost ${cost} — exceeded ${threshold} limit"
+)
+```
+
+When any session on the runner crosses $10, the owning session receives the notification and can decide to intervene (cancel a spawn, alert the user, etc.).
+
+---
+
+### Pub/Sub Coordination
+
+Two sessions coordinating via a named event:
+
+**Session A** (subscriber):
+
+```
+register_trigger(
+  type="custom_event",
+  config={ eventName: "build_complete", fromSessionIds: "*" },
+  message="Build finished: {payload}"
+)
+```
+
+**Session B** (publisher), after its build succeeds:
+
+```
+emit_event(
+  eventName="build_complete",
+  payload={ status: "success", artifacts: ["dist/app.js"] }
+)
+```
+
+Session A automatically receives the notification and can proceed with deployment or testing.
+
+---
+
+### One-Shot Timer
+
+Implement a timeout for a long-running task:
+
+```
+# Register a 5-minute timeout
+register_trigger(
+  type="timer",
+  config={ delaySec: 300 },
+  message="Timeout reached — stopping long-running task"
+)
+```
+
+Use `recurring: true` for a heartbeat or periodic check-in:
+
+```
+register_trigger(
+  type="timer",
+  config={ delaySec: 60, recurring: true },
+  message="Heartbeat — still running"
+)
+```
+
+---
+
+### Waiting for a Message
+
+For cases where the agent should **block** until a specific trigger fires, register with `queue` delivery and then call `wait_for_message`:
+
+```
+register_trigger(
+  type="session_ended",
+  config={ sessionIds: [workerSessionId] },
+  delivery={ mode: "queue" },
+  message="Worker done: {sessionId}"
+)
+
+# ... do other prep work ...
+
+# Now block until the worker finishes
+result = wait_for_message(fromSessionId=workerSessionId, timeout=300)
+```
+
+---
+
+## Web UI — Triggers Panel
+
+The session viewer includes a **Triggers** panel that shows all active triggers for the selected session:
+
+- **Type** and config summary
+- **Firing count** vs. `maxFirings` limit
+- **Delivery mode** (`inject` or `queue`)
+- **Expiry** (if `expiresAt` was set)
+- A **cancel** button for each trigger
+
+Toggle the panel with the **Triggers** button in the session toolbar.
+
+<Aside type="tip">
+  The Triggers panel is especially useful for debugging fan-out patterns — you can watch the firing count increment as child sessions complete.
+</Aside>
+
+---
+
+## Limits & Security
+
+| Limit | Value |
+|-------|-------|
+| Max triggers per session | 100 |
+| Max triggers per runner | 1,000 |
+
+**Runner-lock**: triggers can only target sessions on the **same runner**. Cross-runner triggers are not supported.
+
+**Cleanup**: all triggers owned by a session are automatically removed when that session disconnects. You don't need to cancel them manually.
+
+**Isolation**: a session can only register triggers for sessions it created (or `"*"` for runner-wide events). It cannot listen on sessions belonging to other users.

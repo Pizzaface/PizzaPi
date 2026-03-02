@@ -130,6 +130,37 @@ See the [Runner Daemon guide](/PizzaPi/guides/runner-daemon/) for the full proce
 
 ---
 
+## Trigger System
+
+[Conversation triggers](/PizzaPi/guides/conversation-triggers/) are an event-driven notification mechanism built into the relay server. Agent sessions register triggers via tools (`register_trigger`, `cancel_trigger`, `list_triggers`, `emit_event`); the server evaluates conditions and delivers notifications without requiring the agent to poll.
+
+```
+Agent calls register_trigger(type="session_ended", config={sessionIds: [child1]})
+    │
+    ▼
+Relay Server stores trigger (in-memory, scoped to runner)
+    │
+    ▼
+child1 session ends
+    │
+    ▼
+Server evaluates all triggers → match found
+    │
+    ├── delivery=inject  → notification injected into owning session's next turn
+    └── delivery=queue   → notification enqueued for check_messages / wait_for_message
+```
+
+**Key properties:**
+
+- Triggers are evaluated and delivered server-side — no client polling required
+- All triggers are scoped to a single runner; cross-runner triggers are not supported
+- Triggers are cleaned up automatically when the owning session disconnects
+- Custom events (`emit_event` / `custom_event`) implement a lightweight pub/sub channel between sessions on the same runner
+
+See the [Conversation Triggers guide](/PizzaPi/guides/conversation-triggers/) for full documentation.
+
+---
+
 ## Development
 
 ### With Docker

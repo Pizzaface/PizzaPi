@@ -313,6 +313,35 @@ pizzapi --version
 
 ---
 
+## Agent Tools
+
+The following tools are injected into every PizzaPi agent session. They are not CLI commands but are listed here for reference alongside the agent-facing API surface.
+
+### Session Management
+
+| Tool | Description |
+|------|-------------|
+| `spawn_session` | Spawn a new agent session on the connected runner |
+| `send_message` | Send a message to another session |
+| `wait_for_message` | Block until a message arrives from another session |
+| `check_messages` | Non-blocking poll for pending messages |
+| `get_session_id` | Return the current session's ID |
+
+### Conversation Triggers
+
+These tools let agents register and manage [conversation triggers](/PizzaPi/guides/conversation-triggers/) — event-driven notifications that fire when lifecycle events occur.
+
+| Tool | Description |
+|------|-------------|
+| `register_trigger` | Register a trigger that fires on a lifecycle event (session_ended, session_idle, session_error, cost_exceeded, custom_event, timer) |
+| `cancel_trigger` | Cancel a previously registered trigger by ID |
+| `list_triggers` | List all active triggers for the current session |
+| `emit_event` | Broadcast a named custom event to all sessions with a matching trigger |
+
+See the [Conversation Triggers guide](/PizzaPi/guides/conversation-triggers/) for full documentation on trigger types, delivery modes, and workflow examples.
+
+---
+
 ## Internal Commands
 
 These commands are used internally by the daemon and should not be called directly:
