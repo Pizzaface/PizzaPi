@@ -1,6 +1,10 @@
 import { getAuth, isSignupAllowed } from "./auth.js";
 import { handleApi } from "./routes/api.js";
 import { serveStaticFile } from "./static.js";
+import { RateLimiter } from "./security.js";
+
+// 5 requests per 15 minutes
+const loginRateLimiter = new RateLimiter(5, 15 * 60 * 1000);
 
 /**
  * Fetch-style request handler (REST + auth + static).
@@ -11,6 +15,16 @@ export async function handleFetch(req: Request): Promise<Response> {
 
     // ── better-auth handler ────────────────────────────────────────────────
     if (url.pathname.startsWith("/api/auth")) {
+        if (url.pathname === "/api/auth/sign-in/email" && req.method === "POST") {
+            const clientIp = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+            if (!loginRateLimiter.check(clientIp)) {
+                return Response.json(
+                    { error: "Too many login attempts. Please try again later." },
+                    { status: 429 },
+                );
+            }
+        }
+
         // Block signup when signups are disabled (after first user).
         if (url.pathname === "/api/auth/sign-up/email" && req.method === "POST") {
             const allowed = await isSignupAllowed();
