@@ -428,6 +428,18 @@ export function RunnerManager({ onOpenSession }: RunnerManagerProps) {
     );
 }
 
+/** Returns true if version a < b using numeric semver comparison. */
+function semverLt(a: string, b: string): boolean {
+    const parse = (v: string) => v.replace(/^v/, "").split(".").map(Number);
+    const pa = parse(a), pb = parse(b);
+    for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+        const na = pa[i] ?? 0, nb = pb[i] ?? 0;
+        if (na < nb) return true;
+        if (na > nb) return false;
+    }
+    return false;
+}
+
 interface RunnerCardProps {
     runner: RunnerInfo;
     sessions: LiveSession[];
@@ -447,7 +459,7 @@ function formatTime(iso: string): string {
 
 function RunnerCard({ runner, sessions, latestVersion, isRestarting, isStopping, onRestart, onStop, onNewSession, onOpenSession, onSkillsChange }: RunnerCardProps) {
     const [sessionsOpen, setSessionsOpen] = React.useState(true);
-    const isOutdated = !!(runner.version && latestVersion && runner.version !== latestVersion);
+    const isOutdated = !!(runner.version && latestVersion && semverLt(runner.version, latestVersion));
 
     return (
         <div className="group relative rounded-xl border border-border/60 bg-card hover:border-border transition-all duration-200 overflow-hidden">
@@ -471,17 +483,17 @@ function RunnerCard({ runner, sessions, latestVersion, isRestarting, isStopping,
                                 <p className="font-semibold text-sm leading-none truncate">
                                     {runner.name || "Unnamed Runner"}
                                 </p>
-                                {runner.version && (
-                                    <span className={cn(
-                                        "inline-flex items-center text-[10px] font-mono px-1.5 py-0.5 rounded-full border leading-none gap-1",
-                                        isOutdated
-                                            ? "bg-amber-500/10 border-amber-500/40 text-amber-600 dark:text-amber-400"
+                                <span className={cn(
+                                    "inline-flex items-center text-[10px] font-mono px-1.5 py-0.5 rounded-full border leading-none gap-1",
+                                    isOutdated
+                                        ? "bg-amber-500/10 border-amber-500/40 text-amber-600 dark:text-amber-400"
+                                        : !runner.version
+                                            ? "bg-muted/60 border-border/40 text-muted-foreground/50 italic"
                                             : "bg-muted/60 border-border/40 text-muted-foreground"
-                                    )}>
-                                        {isOutdated && <AlertTriangle className="h-2.5 w-2.5" />}
-                                        v{runner.version}
-                                    </span>
-                                )}
+                                )}>
+                                    {isOutdated && <AlertTriangle className="h-2.5 w-2.5" />}
+                                    {runner.version ? `v${runner.version}` : "unknown"}
+                                </span>
                                 {isOutdated && (
                                     <span className="text-[10px] text-amber-600 dark:text-amber-400">
                                         Update available (v{latestVersion})
