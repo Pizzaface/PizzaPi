@@ -8,6 +8,14 @@ const resetBus = () => {
     triggerBus.setCancelFn(null);
     triggerBus.setListFn(null);
     triggerBus.setEmitFn(null);
+    // Drain any leftover pending entries from previous tests by resolving stale
+    // promises (they'll be GC'd). Use onRegistered/onCancelled/onList with dummy
+    // data — the resolved values are not consumed anywhere.
+    for (let i = 0; i < 20; i++) {
+        triggerBus.onRegistered({ triggerId: "__drain__", type: "timer", requestId: `__drain_${i}__` });
+        triggerBus.onCancelled({ triggerId: "__drain__" });
+        triggerBus.onList({ triggers: [] });
+    }
 };
 
 describe("TriggerBus", () => {
@@ -65,8 +73,9 @@ describe("TriggerBus", () => {
             await expect(triggerBus.register(params)).rejects.toThrow("Failed to send register_trigger");
         });
 
-        test("resolves when onRegistered is called with ack", async () => {
-            triggerBus.setRegisterFn(() => true);
+        test("resolves when onRegistered is called with matching requestId", async () => {
+            let capturedRequestId: string | undefined;
+            triggerBus.setRegisterFn((p) => { capturedRequestId = p.requestId; return true; });
             const params: RegisterTriggerParams = {
                 type: "session_ended",
                 config: { sessionIds: ["sess-1"] },
@@ -74,14 +83,15 @@ describe("TriggerBus", () => {
 
             const promise = triggerBus.register(params);
 
-            // Simulate server ack
-            triggerBus.onRegistered({ triggerId: "trg-abc", type: "session_ended" });
+            // Simulate server ack with the requestId that was sent
+            triggerBus.onRegistered({ triggerId: "trg-abc", type: "session_ended", requestId: capturedRequestId });
 
             const result = await promise;
-            expect(result).toEqual({ triggerId: "trg-abc", type: "session_ended" });
+            expect(result.triggerId).toBe("trg-abc");
+            expect(result.type).toBe("session_ended");
         });
 
-        test("passes all params to registerFn", async () => {
+        test("generates a requestId and passes it to registerFn", async () => {
             const calls: RegisterTriggerParams[] = [];
             triggerBus.setRegisterFn((p) => { calls.push(p); return true; });
 
@@ -95,11 +105,55 @@ describe("TriggerBus", () => {
             };
 
             const promise = triggerBus.register(params);
-            triggerBus.onRegistered({ triggerId: "trg-xyz", type: "cost_exceeded" });
+            const sentRequestId = calls[0]?.requestId;
+            expect(sentRequestId).toBeString();
+            expect(sentRequestId!.length).toBeGreaterThan(0);
+
+            triggerBus.onRegistered({ triggerId: "trg-xyz", type: "cost_exceeded", requestId: sentRequestId });
             await promise;
 
             expect(calls).toHaveLength(1);
-            expect(calls[0]).toEqual(params);
+        });
+
+        test("concurrent registrations resolve to the correct ack via requestId", async () => {
+            const sentParams: RegisterTriggerParams[] = [];
+            triggerBus.setRegisterFn((p) => { sentParams.push({ ...p }); return true; });
+
+            const p1 = triggerBus.register({ type: "session_ended", config: { sessionIds: "*" } });
+            const p2 = triggerBus.register({ type: "timer", config: { delaySec: 60 } });
+            const p3 = triggerBus.register({ type: "cost_exceeded", config: { sessionIds: "*", threshold: 10 } });
+
+            expect(sentParams).toHaveLength(3);
+            const reqId1 = sentParams[0].requestId!;
+            const reqId2 = sentParams[1].requestId!;
+            const reqId3 = sentParams[2].requestId!;
+
+            // Respond out of order: p3, p1, p2
+            triggerBus.onRegistered({ triggerId: "trg-3", type: "cost_exceeded", requestId: reqId3 });
+            triggerBus.onRegistered({ triggerId: "trg-1", type: "session_ended", requestId: reqId1 });
+            triggerBus.onRegistered({ triggerId: "trg-2", type: "timer", requestId: reqId2 });
+
+            const r1 = await p1;
+            const r2 = await p2;
+            const r3 = await p3;
+
+            expect(r1.triggerId).toBe("trg-1");
+            expect(r1.type).toBe("session_ended");
+            expect(r2.triggerId).toBe("trg-2");
+            expect(r2.type).toBe("timer");
+            expect(r3.triggerId).toBe("trg-3");
+            expect(r3.type).toBe("cost_exceeded");
+        });
+
+        test("falls back to FIFO when onRegistered has no requestId (compat)", async () => {
+            triggerBus.setRegisterFn(() => true);
+            const promise = triggerBus.register({ type: "session_ended", config: { sessionIds: "*" } });
+
+            // Server response without requestId (old server)
+            triggerBus.onRegistered({ triggerId: "trg-old", type: "session_ended" });
+
+            const result = await promise;
+            expect(result.triggerId).toBe("trg-old");
         });
     });
 
@@ -191,6 +245,27 @@ describe("TriggerBus", () => {
             triggerBus.onError({ message: "trigger not found", triggerId: "trg-bad" });
 
             await expect(promise).rejects.toThrow("trigger not found");
+        });
+
+        test("rejects correct pending register when requestId is provided", async () => {
+            const sentParams: RegisterTriggerParams[] = [];
+            triggerBus.setRegisterFn((p) => { sentParams.push({ ...p }); return true; });
+
+            const p1 = triggerBus.register({ type: "session_ended", config: { sessionIds: "*" } });
+            const p2 = triggerBus.register({ type: "timer", config: { delaySec: 30 } });
+
+            const reqId1 = sentParams[0].requestId!;
+            const reqId2 = sentParams[1].requestId!;
+
+            // Error targets p2 specifically
+            triggerBus.onError({ message: "bad timer config", requestId: reqId2 });
+
+            await expect(p2).rejects.toThrow("bad timer config");
+
+            // p1 should still resolve normally
+            triggerBus.onRegistered({ triggerId: "trg-ok", type: "session_ended", requestId: reqId1 });
+            const r1 = await p1;
+            expect(r1.triggerId).toBe("trg-ok");
         });
     });
 });

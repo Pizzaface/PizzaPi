@@ -287,6 +287,12 @@ export function registerRelayNamespace(io: SocketIOServer): void {
                 return;
             }
 
+            // Clear sessionId synchronously so the disconnect handler (which may
+            // fire immediately after this event) won't duplicate trigger evaluation
+            // and cleanup.
+            socket.data.sessionId = undefined;
+            socketAckedSeqs.delete(socket.id);
+
             // Evaluate session_ended triggers before cleaning up
             const endSession = await getSharedSession(sessionId);
             if (endSession?.runnerId) {
@@ -300,9 +306,6 @@ export function registerRelayNamespace(io: SocketIOServer): void {
             const ownedTriggers = await triggerRegistry.listTriggers(sessionId);
             timerScheduler.cleanupSessionTimers(sessionId, ownedTriggers);
             await triggerRegistry.cleanupSessionTriggers(sessionId);
-
-            socket.data.sessionId = undefined;
-            socketAckedSeqs.delete(socket.id);
         });
 
         // ── exec_result — forward to viewers ─────────────────────────────────
@@ -362,15 +365,16 @@ export function registerRelayNamespace(io: SocketIOServer): void {
         // ── register_trigger ──────────────────────────────────────────────────
         socket.on("register_trigger" as any, async (data: any) => {
             const sessionId = socket.data.sessionId;
+            const requestId = data.requestId as string | undefined;
             if (!sessionId || data.token !== socket.data.token) {
-                socket.emit("trigger_error" as any, { message: "Invalid token" });
+                socket.emit("trigger_error" as any, { message: "Invalid token", requestId });
                 return;
             }
 
             const session = await getSharedSession(sessionId);
             const runnerId = session?.runnerId;
             if (!runnerId) {
-                socket.emit("trigger_error" as any, { message: "Session not associated with a runner" });
+                socket.emit("trigger_error" as any, { message: "Session not associated with a runner", requestId });
                 return;
             }
 
@@ -382,6 +386,7 @@ export function registerRelayNamespace(io: SocketIOServer): void {
                     if (targetSession && targetSession.runnerId !== runnerId) {
                         socket.emit("trigger_error" as any, {
                             message: `Runner-lock violation: session ${targetId} is on a different runner`,
+                            requestId,
                         });
                         return;
                     }
@@ -393,6 +398,7 @@ export function registerRelayNamespace(io: SocketIOServer): void {
                     if (targetSession && targetSession.runnerId !== runnerId) {
                         socket.emit("trigger_error" as any, {
                             message: `Runner-lock violation: session ${targetId} is on a different runner`,
+                            requestId,
                         });
                         return;
                     }
@@ -411,7 +417,7 @@ export function registerRelayNamespace(io: SocketIOServer): void {
             });
 
             if (!result.ok) {
-                socket.emit("trigger_error" as any, { message: result.error });
+                socket.emit("trigger_error" as any, { message: result.error, requestId });
                 return;
             }
 
@@ -424,7 +430,7 @@ export function registerRelayNamespace(io: SocketIOServer): void {
                 }
             }
 
-            socket.emit("trigger_registered" as any, { triggerId: result.triggerId, type: data.type });
+            socket.emit("trigger_registered" as any, { triggerId: result.triggerId, type: data.type, requestId: data.requestId });
 
             // Broadcast updated trigger list to viewers
             void broadcastTriggersToViewers(sessionId);

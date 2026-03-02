@@ -52,6 +52,7 @@ export interface RelayClientToServerEvents {
   /** Register a new trigger */
   register_trigger: (data: {
     token: string;
+    requestId?: string;
     type: TriggerType;
     config: TriggerConfig;
     delivery?: TriggerDelivery;
@@ -150,6 +151,7 @@ export interface RelayServerToClientEvents {
   trigger_registered: (data: {
     triggerId: string;
     type: TriggerType;
+    requestId?: string;
   }) => void;
 
   /** Confirms trigger was cancelled */
@@ -171,6 +173,7 @@ export interface RelayServerToClientEvents {
   trigger_error: (data: {
     message: string;
     triggerId?: string;
+    requestId?: string;
   }) => void;
 }
 

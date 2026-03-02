@@ -7,6 +7,7 @@
  * call the bus methods which resolve when server acks arrive.
  */
 
+import { randomUUID } from "node:crypto";
 import type { TriggerType, TriggerConfig, TriggerDelivery, TriggerRecord } from "@pizzapi/protocol";
 
 export interface RegisterTriggerParams {
@@ -16,6 +17,7 @@ export interface RegisterTriggerParams {
     message?: string;
     maxFirings?: number;
     expiresAt?: string;
+    requestId?: string;
 }
 
 /** Callback types used by the bus to send requests over the relay WebSocket. */
@@ -33,8 +35,9 @@ class TriggerBus {
     private listFn: ListFn | null = null;
     private emitFn: EmitFn | null = null;
 
-    /** Pending register_trigger promises. */
+    /** Pending register_trigger promises, keyed by requestId for matching. */
     private pendingRegister: Array<{
+        requestId: string;
         resolve: (data: { triggerId: string; type: TriggerType }) => void;
         reject: (err: Error) => void;
     }> = [];
@@ -78,13 +81,14 @@ class TriggerBus {
             return Promise.reject(new Error("Not connected to relay. Cannot register triggers without a relay connection."));
         }
 
-        const sent = this.registerFn(params);
+        const requestId = params.requestId ?? randomUUID();
+        const sent = this.registerFn({ ...params, requestId });
         if (!sent) {
             return Promise.reject(new Error("Failed to send register_trigger to relay."));
         }
 
         return new Promise<{ triggerId: string; type: TriggerType }>((resolve, reject) => {
-            const entry = { resolve, reject };
+            const entry = { requestId, resolve, reject };
             this.pendingRegister.push(entry);
 
             const timer = setTimeout(() => {
@@ -175,7 +179,17 @@ class TriggerBus {
     // ── Server ack handlers (called by remote.ts) ──────────────────────────
 
     /** Called when the server confirms a trigger was registered. */
-    onRegistered(data: { triggerId: string; type: TriggerType }): void {
+    onRegistered(data: { triggerId: string; type: TriggerType; requestId?: string }): void {
+        // Match by requestId when available; fall back to FIFO for compat with
+        // older servers that don't echo the requestId.
+        if (data.requestId) {
+            const idx = this.pendingRegister.findIndex((e) => e.requestId === data.requestId);
+            if (idx !== -1) {
+                const [entry] = this.pendingRegister.splice(idx, 1);
+                entry.resolve(data);
+                return;
+            }
+        }
         const entry = this.pendingRegister.shift();
         if (entry) {
             entry.resolve(data);
@@ -204,10 +218,20 @@ class TriggerBus {
     }
 
     /** Called when the server returns a trigger-related error. */
-    onError(data: { message: string; triggerId?: string }): void {
+    onError(data: { message: string; triggerId?: string; requestId?: string }): void {
         const err = new Error(data.message);
 
-        // If a triggerId is provided, try to match a pending cancel first.
+        // If a requestId is provided, try to match a pending register.
+        if (data.requestId) {
+            const idx = this.pendingRegister.findIndex((e) => e.requestId === data.requestId);
+            if (idx !== -1) {
+                const [entry] = this.pendingRegister.splice(idx, 1);
+                entry.reject(err);
+                return;
+            }
+        }
+
+        // If a triggerId is provided, try to match a pending cancel.
         if (data.triggerId) {
             const idx = this.pendingCancel.findIndex((e) => e.triggerId === data.triggerId);
             if (idx !== -1) {
