@@ -50,9 +50,9 @@ jobs:
           path: |
             ~/.bun/install/cache
             node_modules
-          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-bun-${{ hashFiles('bun.lock') }}
           restore-keys: |
-            ${{ runner.os }}-bun-
+            ${{ runner.os }}-${{ runner.arch }}-bun-
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -106,12 +106,15 @@ jobs:
           path: |
             ~/.bun/install/cache
             node_modules
-          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-bun-${{ hashFiles('bun.lock') }}
           restore-keys: |
-            ${{ runner.os }}-bun-
+            ${{ runner.os }}-${{ runner.arch }}-bun-
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
+
+      - name: Ensure native binaries match lockfile
+        run: bun install --frozen-lockfile --force
 
       - name: Build packages
         run: bun run build
@@ -227,9 +230,9 @@ jobs:
           path: |
             ~/.bun/install/cache
             node_modules
-          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-bun-${{ hashFiles('bun.lock') }}
           restore-keys: |
-            ${{ runner.os }}-bun-
+            ${{ runner.os }}-${{ runner.arch }}-bun-
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
