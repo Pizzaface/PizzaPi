@@ -88,6 +88,10 @@ function toRelayMessage(raw: unknown, fallbackId: string): RelayMessage | null {
   const stopReason = typeof msg.stopReason === "string" ? msg.stopReason : undefined;
   const errorMessage = typeof msg.errorMessage === "string" ? msg.errorMessage : undefined;
 
+  // Extract summary/tokensBefore for compactionSummary / branchSummary messages
+  const summary = typeof msg.summary === "string" ? msg.summary : undefined;
+  const tokensBefore = typeof msg.tokensBefore === "number" ? msg.tokensBefore : undefined;
+
   return {
     key,
     role,
@@ -98,6 +102,8 @@ function toRelayMessage(raw: unknown, fallbackId: string): RelayMessage | null {
     isError: msg.isError === true || stopReason === "error",
     stopReason,
     errorMessage,
+    summary,
+    tokensBefore,
   };
 }
 
@@ -1221,9 +1227,12 @@ export function App() {
       }
       setAvailableModels(stateModels);
 
-      // Don't clobber a transient status like "Model set" with a generic
-      // "Connected" when the CLI sends a session_active snapshot right after.
-      setViewerStatus((prev) => (prev === "Model set" ? prev : "Connected"));
+      // Don't clobber transient statuses with a generic "Connected" when the
+      // CLI sends a session_active snapshot right after a command.
+      setViewerStatus((prev) => {
+        if (prev === "Model set" || prev === "Compacting…" || prev.startsWith("Compacted")) return prev;
+        return "Connected";
+      });
 
       setPendingQuestion(null);
       setIsChangingModel(false);
@@ -1369,7 +1378,11 @@ export function App() {
       }
 
       if (command === "compact") {
-        setViewerStatus("Compacted");
+        const tokensBefore = typeof result?.tokensBefore === "number" ? result.tokensBefore : 0;
+        const summary = typeof result?.summary === "string"
+          ? `Compacted (${tokensBefore > 0 ? `${Math.round(tokensBefore / 1000)}k tokens summarized` : "done"})`
+          : "Compacted";
+        setViewerStatus(summary);
         return;
       }
 
@@ -1964,6 +1977,8 @@ export function App() {
     const command = payload && typeof payload === "object" && typeof payload.command === "string" ? payload.command : null;
     if (command === "end_session") {
       setViewerStatus("Ending session…");
+    } else if (command === "compact") {
+      setViewerStatus("Compacting…");
     }
     try {
       const { type: _type, ...rest } = payload;

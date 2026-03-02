@@ -14,6 +14,7 @@ import {
   renderContent,
   roleLabel,
   toMessageRole,
+  CompactionSummaryCard,
 } from "@/components/session-viewer/rendering";
 import {
   Message,
@@ -299,6 +300,18 @@ const SessionMessageItem = React.memo(({ message, activeToolCalls, agentActive, 
   agentActive?: boolean;
   isLast: boolean;
 }) => {
+  // Compaction summary cards render as standalone elements without the message wrapper
+  if ((message.role === "compactionSummary" || message.role === "branchSummary") && message.summary) {
+    return (
+      <div className="w-full px-4 py-1.5 max-w-3xl mx-auto">
+        <CompactionSummaryCard
+          summary={message.summary}
+          tokensBefore={message.tokensBefore}
+        />
+      </div>
+    );
+  }
+
   // Sub-agent conversation cards render without the outer message wrapper
   // (they have their own full-width card styling)
   if (message.role === "subAgentConversation") {
@@ -802,6 +815,8 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
   const visibleMessages = React.useMemo(
     () => sortedMessages.filter((message) => {
       if (message.role === "subAgentConversation") return (message.subAgentTurns?.length ?? 0) > 0;
+      // Compaction/branch summary messages are always visible when they have a summary
+      if ((message.role === "compactionSummary" || message.role === "branchSummary") && message.summary) return true;
       if (hasVisibleContent(message.content)) return true;
       if (message.stopReason === "error" && message.errorMessage) return true;
       return (message.role === "toolResult" || message.role === "tool") && message.toolInput !== undefined;

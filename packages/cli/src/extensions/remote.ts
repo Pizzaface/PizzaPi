@@ -936,8 +936,14 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                         onError: (err) => reject(err),
                     });
                 });
+                // Compaction aborts the agent internally, so sync our tracking state.
+                // The agent_end event may be lost because compact disconnects before aborting.
+                isAgentActive = false;
+                lastRetryableError = null;
                 replyOk(result ?? null);
                 forwardEvent({ type: "session_active", state: buildSessionState() });
+                // Push an immediate heartbeat so the web UI shows the correct idle state.
+                forwardEvent(buildHeartbeat());
                 return;
             }
 

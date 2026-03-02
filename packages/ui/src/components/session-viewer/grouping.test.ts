@@ -161,6 +161,39 @@ describe("groupToolExecutionMessages", () => {
         expect(groupToolExecutionMessages([])).toEqual([]);
     });
 
+    test("passes through compactionSummary messages unchanged", () => {
+        const messages: RelayMessage[] = [
+            msg({
+                key: "c1",
+                role: "compactionSummary",
+                summary: "## Goal\nBuild a widget",
+                tokensBefore: 50000,
+            }),
+            msg({ key: "u1", role: "user", content: [{ type: "text", text: "continue" }] }),
+        ];
+        const result = groupToolExecutionMessages(messages);
+        expect(result).toHaveLength(2);
+        expect(result[0].role).toBe("compactionSummary");
+        expect(result[0].summary).toBe("## Goal\nBuild a widget");
+        expect(result[0].tokensBefore).toBe(50000);
+        expect(result[1].role).toBe("user");
+    });
+
+    test("passes through branchSummary messages unchanged", () => {
+        const messages: RelayMessage[] = [
+            msg({
+                key: "b1",
+                role: "branchSummary",
+                summary: "Branch explored a dead end",
+            }),
+            msg({ key: "u1", role: "user", content: [{ type: "text", text: "try again" }] }),
+        ];
+        const result = groupToolExecutionMessages(messages);
+        expect(result).toHaveLength(2);
+        expect(result[0].role).toBe("branchSummary");
+        expect(result[0].summary).toBe("Branch explored a dead end");
+    });
+
     test("preserves message order for interleaved user/assistant", () => {
         const messages: RelayMessage[] = [
             msg({ key: "u1", role: "user", content: [{ type: "text", text: "q1" }] }),
