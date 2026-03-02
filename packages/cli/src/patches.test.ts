@@ -83,6 +83,19 @@ describe("pi-coding-agent patch application", () => {
         expect(source).not.toContain("showNewVersionNotification");
     });
 
+    test("agent-session.js: abort() calls clearQueue()", async () => {
+        const source = await Bun.file(
+            piCodingAgentPath("dist/core/agent-session.js"),
+        ).text();
+
+        expect(source).toContain("PATCH(pizzapi)");
+        // The abort method should call clearQueue to prevent message duplication
+        const abortStart = source.indexOf("async abort()");
+        expect(abortStart).not.toBe(-1);
+        const abortBody = source.slice(abortStart, abortStart + 500);
+        expect(abortBody).toContain("this.clearQueue()");
+    });
+
     test("auth-storage.js: withLock() has ELOCKED fallback", async () => {
         const source = await Bun.file(
             piCodingAgentPath("dist/core/auth-storage.js"),

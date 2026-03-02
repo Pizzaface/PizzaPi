@@ -91,6 +91,21 @@ index da287dd66dc0b4a356d4a615addd1e5cf40073ec..4f50eb5748741e68669a960f1a01c104
      }
      setUIContext(uiContext) {
          this.uiContext = uiContext ?? noOpUIContext;
+diff --git a/dist/core/agent-session.js b/dist/core/agent-session.js
+index e2a102d55acd9bcb51a44be89d98175f4963ac6a..0000000000000000000000000000000000000000 100644
+--- a/dist/core/agent-session.js
++++ b/dist/core/agent-session.js
+@@ -855,5 +855,10 @@ export class AgentSession {
+     async abort() {
+         this.abortRetry();
+         this.agent.abort();
+         await this.agent.waitForIdle();
++        // PATCH(pizzapi): Clear queued steer/followUp messages on abort to
++        // prevent duplication when the next turn starts. The TUI clears queues
++        // manually via restoreQueuedMessagesToEditor before aborting, but the
++        // web UI calls abort() directly via ExtensionContext.
++        this.clearQueue();
+     }
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
 index 920f62d9c4370c034ab0a052cd02050e2e6be37e..fb97b46838e4f61f516b7cf6b01eb274bb45ef0c 100644
 --- a/dist/modes/interactive/interactive-mode.js

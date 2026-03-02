@@ -6,7 +6,7 @@ every `bun install` — no postinstall script is needed.
 
 ## @mariozechner/pi-coding-agent@0.55.1
 
-**Purpose:** Three changes:
+**Purpose:** Four changes:
 
 1. **Session control on extension API:** Expose `newSession()` and
    `switchSession()` on the extension runtime so the PizzaPi remote extension
@@ -16,7 +16,14 @@ every `bun install` — no postinstall script is needed.
    "Update Available" notification on startup (not relevant for PizzaPi's
    headless runner mode).
 
-3. **Auth storage ELOCKED fallback:** `FileAuthStorageBackend.withLock()`
+3. **Abort clears message queues:** `AgentSession.abort()` now calls
+   `this.clearQueue()` after the agent becomes idle. Without this, queued
+   steer/follow-up messages survive an abort and get replayed on the next
+   turn — causing message duplication in the web UI. The TUI already
+   handles this manually via `restoreQueuedMessagesToEditor`, but the web
+   UI's `ExtensionContext.abort()` path did not.
+
+4. **Auth storage ELOCKED fallback:** `FileAuthStorageBackend.withLock()`
    falls back to running without a lock when `lockSync` throws `ELOCKED`.
    Fixes "No API key found" errors when the runner spawns multiple workers
    concurrently — `lockSync` has zero retries so any lock contention caused
@@ -33,6 +40,7 @@ work from anywhere in the extension.
 
 | File | Change |
 |------|--------|
+| `dist/core/agent-session.js` — `abort()` | Adds `this.clearQueue()` call after agent becomes idle |
 | `dist/core/extensions/loader.js` — `createExtensionRuntime()` | Adds `newSession` and `switchSession` stubs (reject before init) |
 | `dist/core/extensions/loader.js` — `createExtensionAPI()` | Adds `newSession(options)` and `switchSession(sessionPath)` wrappers delegating to the runtime |
 | `dist/core/extensions/runner.js` — `bindCommandContext()` | Copies real `newSessionHandler` / `switchSessionHandler` onto the runtime object |
