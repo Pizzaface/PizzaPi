@@ -11,8 +11,6 @@ import type {
     RelayServerToClientEvents,
     RelayInterServerEvents,
     RelaySocketData,
-    TriggerNotification,
-    TriggerDelivery,
 } from "@pizzapi/protocol";
 import { apiKeyAuthMiddleware } from "./auth.js";
 import {
@@ -32,8 +30,12 @@ import {
     notifyAgentNeedsInput,
     notifyAgentError,
 } from "../../push.js";
-import { TriggerRegistry, TriggerEvaluator, TimerScheduler } from "../triggers/index.js";
-import { getActiveRedisClient } from "../../sessions/redis.js";
+import {
+    triggerRegistry,
+    triggerEvaluator,
+    timerScheduler,
+    broadcastTriggersToViewers,
+} from "../triggers/singletons.js";
 
 // ── Thinking-block duration tracking ─────────────────────────────────────────
 // Keyed by sessionId → contentIndex → value.
@@ -156,45 +158,7 @@ async function checkPushNotifications(
 
 // ── Namespace registration ───────────────────────────────────────────────────
 
-// ── Trigger system singletons ────────────────────────────────────────────────
-
-const triggerRegistry = new TriggerRegistry(() => getActiveRedisClient());
-
-/** Broadcast the current trigger list to all viewers of a session. */
-async function broadcastTriggersToViewers(sessionId: string): Promise<void> {
-    const triggers = await triggerRegistry.listTriggers(sessionId);
-    broadcastToViewers(sessionId, "trigger_list", { triggers });
-}
-
-/** Deliver a trigger notification to the owning session's TUI socket. */
-function deliverTriggerNotification(
-    ownerSessionId: string,
-    notification: TriggerNotification,
-    delivery: TriggerDelivery,
-): void {
-    const targetSocket = getLocalTuiSocket(ownerSessionId);
-    if (!targetSocket) return;
-
-    if (delivery.mode === "inject") {
-        targetSocket.emit("trigger_fired" as any, { ...notification, delivery });
-    } else {
-        // queue mode — deliver as a session_message so it appears in check_messages/wait_for_message
-        targetSocket.emit("session_message" as string, {
-            fromSessionId: notification.sourceSessionId ?? "trigger",
-            message: `[Trigger: ${notification.triggerType}] ${notification.message}`,
-            ts: notification.firedAt,
-        });
-    }
-
-    // Broadcast updated trigger state (with new firingCount/lastFiredAt) to viewers
-    void broadcastTriggersToViewers(ownerSessionId);
-}
-
-const triggerEvaluator = new TriggerEvaluator(triggerRegistry, deliverTriggerNotification);
-const timerScheduler = new TimerScheduler(
-    triggerRegistry,
-    (triggerId) => triggerEvaluator.fireTimerTrigger(triggerId),
-);
+// Trigger system singletons imported from ../triggers/singletons.js
 
 export function registerRelayNamespace(io: SocketIOServer): void {
     const relay: Namespace<

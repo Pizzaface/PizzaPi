@@ -2002,6 +2002,32 @@ export function App() {
     }
   }, []);
 
+  // ── Trigger management callbacks ──────────────────────────────────────
+
+  const registerTrigger = React.useCallback((data: {
+    type: import("@pizzapi/protocol").TriggerType;
+    config: import("@pizzapi/protocol").TriggerConfig;
+    delivery?: import("@pizzapi/protocol").TriggerDelivery;
+    message?: string;
+    maxFirings?: number;
+  }) => {
+    const socket = viewerWsRef.current;
+    if (!socket || !socket.connected || !activeSessionRef.current) return;
+    socket.emit("register_trigger", {
+      type: data.type,
+      config: data.config,
+      delivery: data.delivery,
+      message: data.message,
+      maxFirings: data.maxFirings,
+    });
+  }, []);
+
+  const cancelTrigger = React.useCallback((triggerId: string) => {
+    const socket = viewerWsRef.current;
+    if (!socket || !socket.connected || !activeSessionRef.current) return;
+    socket.emit("cancel_trigger", { triggerId });
+  }, []);
+
   /**
    * End a session by session ID. If it's the currently active session the
    * existing viewer socket is used; otherwise a temporary socket is opened
@@ -2886,6 +2912,9 @@ export function App() {
                   showFileExplorerButton={!!activeSessionInfo?.runnerId && !!activeSessionInfo?.cwd}
                   todoList={todoList}
                   triggers={triggers}
+                  onCancelTrigger={cancelTrigger}
+                  onRegisterTrigger={registerTrigger}
+                  canManageTriggers={!!activeSessionId}
                   runnerId={activeSessionInfo?.runnerId ?? undefined}
                   sessionCwd={activeSessionInfo?.cwd || undefined}
                 />

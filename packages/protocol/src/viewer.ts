@@ -3,7 +3,7 @@
 // ============================================================================
 
 import type { Attachment } from "./shared.js";
-import type { TriggerRecord, TriggerNotification, TriggerDelivery } from "./triggers.js";
+import type { TriggerType, TriggerConfig, TriggerDelivery, TriggerRecord, TriggerNotification } from "./triggers.js";
 
 // ---------------------------------------------------------------------------
 // Server → Client (Server sends to browser viewer)
@@ -99,6 +99,21 @@ export interface ViewerClientToServerEvents {
     id: string;
     command: string;
     [key: string]: unknown;
+  }) => void;
+
+  /** Register a new trigger for the viewed session */
+  register_trigger: (data: {
+    type: TriggerType;
+    config: TriggerConfig;
+    delivery?: TriggerDelivery;
+    message?: string;
+    maxFirings?: number;
+    expiresAt?: string;
+  }) => void;
+
+  /** Cancel/delete a trigger for the viewed session */
+  cancel_trigger: (data: {
+    triggerId: string;
   }) => void;
 }
 

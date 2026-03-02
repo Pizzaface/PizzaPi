@@ -14,6 +14,8 @@ import {
 } from "@/components/ui/collapsible";
 import { Badge } from "@/components/ui/badge";
 import { ChevronDown, ChevronRight } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Trash2, Plus } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 // ── Type-display metadata ────────────────────────────────────────────────────
@@ -75,7 +77,7 @@ function formatTimestamp(iso: string): string {
 
 // ── Individual trigger row ────────────────────────────────────────────────────
 
-function TriggerRow({ trigger }: { trigger: TriggerRecord }) {
+function TriggerRow({ trigger, onCancel }: { trigger: TriggerRecord; onCancel?: (triggerId: string) => void }) {
   const [open, setOpen] = React.useState(false);
   const meta = TRIGGER_META[trigger.type];
   const summary = getConfigSummary(trigger.type, trigger.config);
@@ -230,6 +232,24 @@ function TriggerRow({ trigger }: { trigger: TriggerRecord }) {
               {JSON.stringify(trigger.config, null, 2)}
             </pre>
           </div>
+
+          {/* Delete button */}
+          {onCancel && (
+            <div className="pt-1">
+              <Button
+                variant="destructive"
+                size="sm"
+                className="h-7 text-xs gap-1.5"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onCancel(trigger.id);
+                }}
+              >
+                <Trash2 className="size-3" />
+                Delete Trigger
+              </Button>
+            </div>
+          )}
         </div>
       </CollapsibleContent>
     </Collapsible>
@@ -240,9 +260,12 @@ function TriggerRow({ trigger }: { trigger: TriggerRecord }) {
 
 export interface TriggerPanelProps {
   triggers: TriggerRecord[];
+  onCancel?: (triggerId: string) => void;
+  onCreateOpen?: () => void;
+  canManage?: boolean;
 }
 
-export function TriggerPanel({ triggers }: TriggerPanelProps) {
+export function TriggerPanel({ triggers, onCancel, onCreateOpen, canManage }: TriggerPanelProps) {
   if (triggers.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center gap-1.5 py-6 text-center">
@@ -250,15 +273,41 @@ export function TriggerPanel({ triggers }: TriggerPanelProps) {
           ⏱️
         </span>
         <p className="text-xs text-muted-foreground">No active triggers</p>
+        {canManage && onCreateOpen && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 text-xs gap-1.5 mt-2"
+            onClick={onCreateOpen}
+          >
+            <Plus className="size-3" />
+            Create Trigger
+          </Button>
+        )}
       </div>
     );
   }
 
   return (
-    <div className="divide-y divide-border">
-      {triggers.map((trigger) => (
-        <TriggerRow key={trigger.id} trigger={trigger} />
-      ))}
+    <div>
+      <div className="divide-y divide-border">
+        {triggers.map((trigger) => (
+          <TriggerRow key={trigger.id} trigger={trigger} onCancel={canManage ? onCancel : undefined} />
+        ))}
+      </div>
+      {canManage && onCreateOpen && (
+        <div className="px-3 py-2 border-t border-border/50">
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 text-xs gap-1.5 w-full"
+            onClick={onCreateOpen}
+          >
+            <Plus className="size-3" />
+            Create Trigger
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

@@ -59,6 +59,7 @@ import { AlertTriangleIcon, ArrowDownIcon, BookOpen, CheckCircle2, ChevronsUpDow
 import { AtMentionPopover } from "@/components/AtMentionPopover";
 import type { Entry as AtMentionEntry } from "@/hooks/useAtMentionFiles";
 import { TriggerPanel } from "@/components/session-viewer/TriggerPanel";
+import { CreateTriggerDialog } from "@/components/session-viewer/CreateTriggerDialog";
 import type { TriggerRecord } from "@pizzapi/protocol";
 
 export type { RelayMessage } from "@/components/session-viewer/types";
@@ -138,6 +139,18 @@ export interface SessionViewerProps {
   todoList?: TodoItem[];
   /** Active conversation triggers for this session */
   triggers?: TriggerRecord[];
+  /** Callback to cancel/delete a trigger */
+  onCancelTrigger?: (triggerId: string) => void;
+  /** Callback to register a new trigger */
+  onRegisterTrigger?: (data: {
+    type: import("@pizzapi/protocol").TriggerType;
+    config: import("@pizzapi/protocol").TriggerConfig;
+    delivery?: import("@pizzapi/protocol").TriggerDelivery;
+    message?: string;
+    maxFirings?: number;
+  }) => void;
+  /** Whether the user can manage (create/delete) triggers (collab mode) */
+  canManageTriggers?: boolean;
   /** Runner ID for the current session (used for runner files API) */
   runnerId?: string;
   /** Absolute working directory of the current session (used as base for @-mention file paths) */
@@ -408,7 +421,7 @@ function SessionSkeleton() {
   );
 }
 
-export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], triggers: triggersProp = [], runnerId, sessionCwd }: SessionViewerProps) {
+export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], triggers: triggersProp = [], onCancelTrigger, onRegisterTrigger, canManageTriggers, runnerId, sessionCwd }: SessionViewerProps) {
   const [input, setInput] = React.useState("");
   const [composerError, setComposerError] = React.useState<string | null>(null);
   const [showClearDialog, setShowClearDialog] = React.useState(false);
@@ -422,6 +435,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
 
   // Triggers panel state
   const [showTriggers, setShowTriggers] = React.useState(false);
+  const [showCreateTrigger, setShowCreateTrigger] = React.useState(false);
   const triggers = triggersProp;
 
   // Detect touch devices for mobile-specific behavior
@@ -1100,7 +1114,12 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
               )}
             </span>
           </div>
-          <TriggerPanel triggers={triggers} />
+          <TriggerPanel
+            triggers={triggers}
+            onCancel={onCancelTrigger}
+            onCreateOpen={() => setShowCreateTrigger(true)}
+            canManage={canManageTriggers}
+          />
         </div>
       )}
 
@@ -1829,6 +1848,15 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Create Trigger dialog */}
+      {onRegisterTrigger && (
+        <CreateTriggerDialog
+          open={showCreateTrigger}
+          onOpenChange={setShowCreateTrigger}
+          onSubmit={onRegisterTrigger}
+        />
+      )}
     </div>
   );
 }

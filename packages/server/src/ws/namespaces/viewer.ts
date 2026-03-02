@@ -22,14 +22,13 @@ import {
     sendSnapshotToViewer,
     getLocalTuiSocket,
 } from "../sio-registry.js";
-import { TriggerRegistry } from "../triggers/index.js";
-import { getActiveRedisClient } from "../../sessions/redis.js";
+import {
+    triggerRegistry,
+    timerScheduler,
+    broadcastTriggersToViewers,
+} from "../triggers/singletons.js";
 import { getPersistedRelaySessionSnapshot } from "../../sessions/store.js";
 import { getCachedRelayEvents } from "../../sessions/redis.js";
-
-// ── Trigger registry (read-only access to the same Redis state as relay.ts) ──
-
-const viewerTriggerRegistry = new TriggerRegistry(() => getActiveRedisClient());
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -232,7 +231,7 @@ export function registerViewerNamespace(io: SocketIOServer): void {
 
         // Send initial trigger list to the newly-connected viewer
         try {
-            const triggers = await viewerTriggerRegistry.listTriggers(sessionId);
+            const triggers = await triggerRegistry.listTriggers(sessionId);
             if (triggers.length > 0) {
                 socket.emit("trigger_list", { triggers });
             }
@@ -317,6 +316,69 @@ export function registerViewerNamespace(io: SocketIOServer): void {
             if (!tuiSocket) return;
 
             tuiSocket.emit("exec" as string, data);
+        });
+
+        // ── register_trigger — create a new trigger for this session ────────
+        socket.on("register_trigger", async (data) => {
+            const currentSession = await getSharedSession(sessionId);
+            if (!currentSession?.collabMode) {
+                socket.emit("error", { message: "Trigger creation requires collab mode" });
+                return;
+            }
+
+            const runnerId = currentSession.runnerId;
+            if (!runnerId) {
+                socket.emit("error", { message: "Session not associated with a runner" });
+                return;
+            }
+
+            const result = await triggerRegistry.registerTrigger({
+                type: data.type,
+                ownerSessionId: sessionId,
+                runnerId,
+                config: data.config,
+                delivery: data.delivery ?? { mode: "inject" },
+                message: data.message ?? "",
+                maxFirings: data.maxFirings,
+                expiresAt: data.expiresAt,
+            });
+
+            if (!result.ok) {
+                socket.emit("error", { message: result.error });
+                return;
+            }
+
+            // Schedule timer if this is a timer trigger
+            if (data.type === "timer") {
+                const trigger = (await triggerRegistry.listTriggers(sessionId))
+                    .find((t) => t.id === result.triggerId);
+                if (trigger) {
+                    timerScheduler.scheduleTimer(trigger);
+                }
+            }
+
+            // Broadcast updated trigger list to all viewers
+            void broadcastTriggersToViewers(sessionId);
+        });
+
+        // ── cancel_trigger — delete a trigger for this session ───────────────
+        socket.on("cancel_trigger", async (data) => {
+            const currentSession = await getSharedSession(sessionId);
+            if (!currentSession?.collabMode) {
+                socket.emit("error", { message: "Trigger cancellation requires collab mode" });
+                return;
+            }
+
+            const result = await triggerRegistry.cancelTrigger(data.triggerId, sessionId);
+            if (!result.ok) {
+                socket.emit("error", { message: result.error });
+                return;
+            }
+
+            timerScheduler.cancelTimer(data.triggerId);
+
+            // Broadcast updated trigger list to all viewers
+            void broadcastTriggersToViewers(sessionId);
         });
 
         // ── disconnect ───────────────────────────────────────────────────────
