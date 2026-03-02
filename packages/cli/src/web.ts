@@ -59,49 +59,115 @@ const DEFAULT_CONFIG: WebConfig = {
     extraOrigins: "",
 };
 
-/** Extract VAPID keys from compose.yml content (pure function, exported for testing) */
-export function extractVapidFromCompose(content: string): { publicKey: string; privateKey: string } | null {
+/** Settings that can be extracted from an existing compose.yml */
+export interface ExtractedComposeSettings {
+    vapid?: { publicKey: string; privateKey: string };
+    vapidSubject?: string;
+    extraOrigins?: string;
+    port?: number;
+}
+
+/** Extract all user settings from compose.yml content (pure function, exported for testing) */
+export function extractSettingsFromCompose(content: string): ExtractedComposeSettings {
+    const result: ExtractedComposeSettings = {};
+
+    // VAPID keys
     const pubMatch = content.match(/VAPID_PUBLIC_KEY=(.+)/);
     const privMatch = content.match(/VAPID_PRIVATE_KEY=(.+)/);
     if (pubMatch?.[1] && privMatch?.[1]) {
-        const keys = {
-            publicKey: pubMatch[1].trim(),
-            privateKey: privMatch[1].trim(),
-        };
+        const pub = pubMatch[1].trim();
+        const priv = privMatch[1].trim();
         // Skip template placeholders
-        if (keys.publicKey.startsWith("{{")) return null;
-        return keys;
+        if (!pub.startsWith("{{")) {
+            result.vapid = { publicKey: pub, privateKey: priv };
+        }
     }
-    return null;
+
+    // VAPID subject
+    const subjectMatch = content.match(/VAPID_SUBJECT=(.+)/);
+    if (subjectMatch?.[1]) {
+        const val = subjectMatch[1].trim();
+        if (!val.startsWith("{{")) {
+            result.vapidSubject = val;
+        }
+    }
+
+    // Extra origins (skip commented-out lines)
+    const originsMatch = content.match(/^\s*-\s+PIZZAPI_EXTRA_ORIGINS=(.+)/m);
+    if (originsMatch?.[1]) {
+        const val = originsMatch[1].trim();
+        if (!val.startsWith("{{") && val.length > 0) {
+            result.extraOrigins = val;
+        }
+    }
+
+    // Port from the host:container mapping (e.g. "8080:7492")
+    const portMatch = content.match(/"(\d+):7492"/);
+    if (portMatch?.[1]) {
+        const p = parseInt(portMatch[1], 10);
+        if (!isNaN(p) && p > 0 && p <= 65535) {
+            result.port = p;
+        }
+    }
+
+    return result;
 }
 
-/** Migrate VAPID keys from legacy vapid.json or existing compose.yml */
-function migrateLegacyVapid(): { publicKey: string; privateKey: string } | null {
+/** @deprecated Use extractSettingsFromCompose instead */
+export function extractVapidFromCompose(content: string): { publicKey: string; privateKey: string } | null {
+    return extractSettingsFromCompose(content).vapid ?? null;
+}
+
+/** Migrate all settings from legacy vapid.json and/or existing compose.yml */
+function migrateLegacySettings(): Partial<WebConfig> {
+    const migrated: Partial<WebConfig> = {};
+    const sources: string[] = [];
+
     // 1. Check for vapid.json (from previous version of this code)
     const vapidJsonPath = join(WEB_DIR, "vapid.json");
     if (existsSync(vapidJsonPath)) {
         try {
             const stored = JSON.parse(readFileSync(vapidJsonPath, "utf-8"));
             if (stored.publicKey && stored.privateKey) {
-                console.log("Migrated VAPID keys from vapid.json → config.json");
-                return stored;
+                migrated.vapid = stored;
+                sources.push("vapid.json");
             }
         } catch { /* corrupted */ }
     }
 
-    // 2. Extract from existing compose.yml
+    // 2. Extract all settings from existing compose.yml
     const composePath = join(WEB_DIR, "compose.yml");
     if (existsSync(composePath)) {
         try {
-            const keys = extractVapidFromCompose(readFileSync(composePath, "utf-8"));
-            if (keys) {
-                console.log("Migrated VAPID keys from compose.yml → config.json");
-                return keys;
+            const extracted = extractSettingsFromCompose(readFileSync(composePath, "utf-8"));
+
+            // VAPID keys (vapid.json takes priority if present)
+            if (!migrated.vapid && extracted.vapid) {
+                migrated.vapid = extracted.vapid;
+                sources.push("compose.yml (vapid)");
+            }
+
+            // Other settings from compose.yml
+            if (extracted.vapidSubject) {
+                migrated.vapidSubject = extracted.vapidSubject;
+                sources.push("compose.yml (vapidSubject)");
+            }
+            if (extracted.extraOrigins) {
+                migrated.extraOrigins = extracted.extraOrigins;
+                sources.push("compose.yml (extraOrigins)");
+            }
+            if (extracted.port) {
+                migrated.port = extracted.port;
+                sources.push("compose.yml (port)");
             }
         } catch { /* can't read */ }
     }
 
-    return null;
+    if (sources.length > 0) {
+        console.log(`Migrated settings from ${sources.join(", ")} → config.json`);
+    }
+
+    return migrated;
 }
 
 /** Load config from disk, migrating from legacy formats if needed */
@@ -121,13 +187,16 @@ export function loadWebConfig(): WebConfig {
     // First run or corrupted — build config from legacy sources
     const config: WebConfig = { ...DEFAULT_CONFIG };
 
-    const legacyVapid = migrateLegacyVapid();
-    if (legacyVapid) {
-        config.vapid = legacyVapid;
+    const legacy = migrateLegacySettings();
+    if (legacy.vapid) {
+        config.vapid = legacy.vapid;
     } else {
         config.vapid = generateVapidKeys();
         console.log("Generated new VAPID keys for push notifications.");
     }
+    if (legacy.vapidSubject) config.vapidSubject = legacy.vapidSubject;
+    if (legacy.extraOrigins) config.extraOrigins = legacy.extraOrigins;
+    if (legacy.port) config.port = legacy.port;
 
     saveWebConfig(config);
     return config;

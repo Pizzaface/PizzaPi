@@ -1,7 +1,7 @@
 import { describe, test, expect } from "bun:test";
 import { readFileSync } from "fs";
 import { join } from "path";
-import { extractVapidFromCompose, loadWebConfig, saveWebConfig, type WebConfig } from "./web";
+import { extractVapidFromCompose, extractSettingsFromCompose, type WebConfig } from "./web";
 
 /**
  * Validates that the inlined COMPOSE_TEMPLATE in web.ts matches
@@ -98,36 +98,78 @@ describe("web.ts compose template", () => {
 
 // --- Migration tests ---
 
-describe("extractVapidFromCompose", () => {
-    const SAMPLE_COMPOSE = `services:
+const FULL_COMPOSE = `services:
+  redis:
+    image: redis:7-alpine
   server:
+    ports:
+      - "8080:7492"
     environment:
       - VAPID_PUBLIC_KEY=BRealPublicKeyABC123
       - VAPID_PRIVATE_KEY=RealPrivateKeyXYZ789
-      - VAPID_SUBJECT=mailto:admin@pizzapi.local`;
+      - VAPID_SUBJECT=mailto:ops@example.com
+      - PIZZAPI_EXTRA_ORIGINS=https://my-tailscale.ts.net`;
 
-    test("extracts VAPID keys from a compose file", () => {
-        const result = extractVapidFromCompose(SAMPLE_COMPOSE);
+describe("extractSettingsFromCompose", () => {
+    test("extracts all settings from a fully configured compose file", () => {
+        const result = extractSettingsFromCompose(FULL_COMPOSE);
+        expect(result).toEqual({
+            vapid: { publicKey: "BRealPublicKeyABC123", privateKey: "RealPrivateKeyXYZ789" },
+            vapidSubject: "mailto:ops@example.com",
+            extraOrigins: "https://my-tailscale.ts.net",
+            port: 8080,
+        });
+    });
+
+    test("returns empty object for template placeholders", () => {
+        const template = FULL_COMPOSE
+            .replace("BRealPublicKeyABC123", "{{VAPID_PUBLIC_KEY}}")
+            .replace("RealPrivateKeyXYZ789", "{{VAPID_PRIVATE_KEY}}")
+            .replace("mailto:ops@example.com", "{{VAPID_SUBJECT}}")
+            .replace("https://my-tailscale.ts.net", "{{EXTRA_ORIGINS}}");
+        const result = extractSettingsFromCompose(template);
+        expect(result.vapid).toBeUndefined();
+        expect(result.vapidSubject).toBeUndefined();
+        expect(result.extraOrigins).toBeUndefined();
+    });
+
+    test("returns empty object when nothing is present", () => {
+        const result = extractSettingsFromCompose("services:\n  redis:\n    image: redis");
+        expect(result).toEqual({});
+    });
+
+    test("handles trailing whitespace in values", () => {
+        const content = "VAPID_PUBLIC_KEY=KeyA  \nVAPID_PRIVATE_KEY=KeyB  \n";
+        const result = extractSettingsFromCompose(content);
+        expect(result.vapid).toEqual({ publicKey: "KeyA", privateKey: "KeyB" });
+    });
+
+    test("skips commented-out PIZZAPI_EXTRA_ORIGINS", () => {
+        const content = `    environment:
+      - VAPID_PUBLIC_KEY=Key1
+      - VAPID_PRIVATE_KEY=Key2
+      # - PIZZAPI_EXTRA_ORIGINS=`;
+        const result = extractSettingsFromCompose(content);
+        expect(result.extraOrigins).toBeUndefined();
+    });
+
+    test("extracts port from host:container mapping", () => {
+        const content = `    ports:\n      - "9000:7492"`;
+        const result = extractSettingsFromCompose(content);
+        expect(result.port).toBe(9000);
+    });
+});
+
+describe("extractVapidFromCompose (backward compat)", () => {
+    test("extracts VAPID keys", () => {
+        const result = extractVapidFromCompose(FULL_COMPOSE);
         expect(result).toEqual({
             publicKey: "BRealPublicKeyABC123",
             privateKey: "RealPrivateKeyXYZ789",
         });
     });
 
-    test("returns null for template placeholders", () => {
-        const template = SAMPLE_COMPOSE
-            .replace("BRealPublicKeyABC123", "{{VAPID_PUBLIC_KEY}}")
-            .replace("RealPrivateKeyXYZ789", "{{VAPID_PRIVATE_KEY}}");
-        expect(extractVapidFromCompose(template)).toBeNull();
-    });
-
     test("returns null when keys are missing", () => {
         expect(extractVapidFromCompose("services:\n  redis:\n    image: redis")).toBeNull();
-    });
-
-    test("handles trailing whitespace in values", () => {
-        const content = "VAPID_PUBLIC_KEY=KeyA  \nVAPID_PRIVATE_KEY=KeyB  \n";
-        const result = extractVapidFromCompose(content);
-        expect(result).toEqual({ publicKey: "KeyA", privateKey: "KeyB" });
     });
 });
