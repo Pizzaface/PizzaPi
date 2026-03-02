@@ -55,7 +55,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { formatPathTail } from "@/lib/path";
 import { ProviderIcon } from "@/components/ProviderIcon";
-import { AlertTriangleIcon, ArrowDownIcon, BookOpen, CheckCircle2, ChevronsUpDown, Circle, CircleDashed, MessageSquare, OctagonX, PaperclipIcon, Plus, Zap, Clock, X, Trash2, TerminalIcon, DownloadIcon, XCircle, FolderTree } from "lucide-react";
+import { AlertTriangleIcon, ArrowDownIcon, BookOpen, CheckCircle2, ChevronsUpDown, Circle, CircleDashed, MessageSquare, MessageCircleQuestion, OctagonX, PaperclipIcon, PenLine, Plus, Zap, Clock, X, Trash2, TerminalIcon, DownloadIcon, XCircle, FolderTree } from "lucide-react";
 import { AtMentionPopover } from "@/components/AtMentionPopover";
 import type { Entry as AtMentionEntry } from "@/hooks/useAtMentionFiles";
 
@@ -1188,33 +1188,59 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
         )}
 
         {pendingQuestion && sessionId && (
-          <div className="mb-2 rounded-md border border-amber-400/50 bg-amber-500/10 px-2.5 py-2 text-xs text-amber-200">
-            <span className="font-semibold">AskUserQuestion:</span> {pendingQuestion.question}
+          <div className="mb-2 overflow-hidden rounded-lg border border-violet-500/30 bg-gradient-to-b from-violet-500/[0.08] to-violet-500/[0.03] shadow-sm shadow-violet-500/5">
+            {/* Header */}
+            <div className="flex items-center gap-2 border-b border-violet-500/15 px-3 py-2">
+              <div className="flex size-6 items-center justify-center rounded-full bg-violet-500/15">
+                <MessageCircleQuestion className="size-3.5 text-violet-400" />
+              </div>
+              <span className="text-xs font-medium text-violet-300">Waiting for your answer</span>
+            </div>
+            {/* Question body */}
+            <div className="px-3 py-2.5">
+              <p className="text-sm leading-relaxed text-foreground/90 whitespace-pre-wrap">{pendingQuestion.question}</p>
+            </div>
+            {/* Options */}
             {pendingQuestion.options && pendingQuestion.options.length > 0 && (
-              <div className="mt-2 flex flex-wrap gap-2">
-                {pendingQuestion.options.map((option) => {
-                  const isTypeYourOwn = option.toLowerCase().replace(/[^a-z]/g, "") === "typeyourown";
-                  return (
-                    <Button
-                      key={option}
-                      variant="outline"
-                      size="sm"
-                      className={`h-7 border-amber-400/30 bg-background/20 text-amber-100 hover:bg-amber-400/20 hover:text-white ${isTypeYourOwn ? "border-dashed" : ""}`}
-                      onClick={() => {
-                        if (isTypeYourOwn) {
-                          // Focus the composer input instead of sending
-                          const el = document.querySelector<HTMLTextAreaElement>("[data-pp-prompt]");
-                          el?.focus();
-                        } else if (onSendInput) {
-                          onSendInput(option);
-                          setInput("");
-                        }
-                      }}
-                    >
-                      {isTypeYourOwn ? "✏️ Type your own" : option}
-                    </Button>
-                  );
-                })}
+              <div className="border-t border-violet-500/10 px-3 py-2.5">
+                <div className="flex flex-wrap gap-1.5">
+                  {pendingQuestion.options.map((option, idx) => {
+                    const isTypeYourOwn = option.toLowerCase().replace(/[^a-z]/g, "") === "typeyourown";
+                    return (
+                      <button
+                        key={option}
+                        type="button"
+                        className={cn(
+                          "inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs transition-all",
+                          isTypeYourOwn
+                            ? "border border-dashed border-violet-500/25 text-violet-300/80 hover:border-violet-400/40 hover:bg-violet-500/10 hover:text-violet-200"
+                            : "border border-violet-500/20 bg-violet-500/[0.07] text-violet-200/90 hover:border-violet-400/40 hover:bg-violet-500/15 hover:text-violet-100",
+                        )}
+                        onClick={() => {
+                          if (isTypeYourOwn) {
+                            const el = document.querySelector<HTMLTextAreaElement>("[data-pp-prompt]");
+                            el?.focus();
+                          } else if (onSendInput) {
+                            onSendInput(option);
+                            setInput("");
+                          }
+                        }}
+                      >
+                        {isTypeYourOwn ? (
+                          <>
+                            <PenLine className="size-3 shrink-0 opacity-70" />
+                            <span>Type your own</span>
+                          </>
+                        ) : (
+                          <>
+                            <span className="flex size-4 items-center justify-center rounded bg-violet-500/20 text-[10px] font-medium text-violet-300 shrink-0">{String.fromCharCode(65 + idx)}</span>
+                            <span className="text-left leading-snug">{option}</span>
+                          </>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
             )}
           </div>
