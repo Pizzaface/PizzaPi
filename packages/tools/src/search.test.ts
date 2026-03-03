@@ -181,15 +181,19 @@ describe("searchTool", () => {
     });
 
     test("does not allow option injection via path starting with -", async () => {
-        const dir = makeTempDir();
+        // A path like "--help" would trigger GNU find's help output if passed raw.
+        // The safePath normalization should turn it into "./--help", which is
+        // treated as a literal (non-existent) directory on both BSD and GNU find.
         const result = await searchTool.execute("test-opt-inject-2", {
-            pattern: "hello",
+            pattern: "*.txt",
             path: "--help",
             type: "files",
         });
         const text = result.content[0].text;
-        // find --help output contains "usage" — should NOT appear
-        expect(text.toLowerCase()).not.toContain("usage:");
+        // Must NOT contain help/usage output from find
+        expect(text.toLowerCase()).not.toContain("usage");
+        // Should be either "No matches found" or "Search failed: ..." (path doesn't exist)
+        expect(text === "No matches found" || text.startsWith("Search failed:")).toBe(true);
     });
 
     test("surfaces errors for missing commands or bad paths", async () => {
