@@ -301,4 +301,49 @@ describe("searchTool", () => {
         });
         expect(result.content[0].text).toContain("last-line-no-newline");
     });
+
+    test("preserves Unicode filenames in file search results", async () => {
+        const dir = mkdtempSync(join(tmpdir(), "search-unicode-"));
+        // Create files with multi-byte UTF-8 names: accented, CJK, emoji
+        const names = ["café.txt", "日本語.txt", "🎉party.txt"];
+        for (const name of names) {
+            writeFileSync(join(dir, name), "data\n");
+        }
+
+        const result = await searchTool.execute("test-unicode-files", {
+            pattern: "*.txt",
+            path: dir,
+            type: "files",
+        });
+        const text = result.content[0].text;
+        for (const name of names) {
+            expect(text).toContain(name);
+        }
+        // Must not contain replacement character (U+FFFD) from broken decoding
+        expect(text).not.toContain("\uFFFD");
+    });
+
+    test("preserves Unicode content in content search results", async () => {
+        try {
+            const r = spawnSync("rg", ["--version"]);
+            if (r.status !== 0) throw new Error();
+        } catch {
+            console.log("rg not available, skipping unicode content test");
+            return;
+        }
+        const dir = mkdtempSync(join(tmpdir(), "search-unicode-content-"));
+        const content = "résultat: données CJK 漢字 emoji 🚀✨\n";
+        writeFileSync(join(dir, "unicode.txt"), content);
+
+        const result = await searchTool.execute("test-unicode-content", {
+            pattern: "résultat",
+            path: dir,
+            type: "content",
+        });
+        const text = result.content[0].text;
+        expect(text).toContain("résultat");
+        expect(text).toContain("漢字");
+        expect(text).toContain("🚀");
+        expect(text).not.toContain("\uFFFD");
+    });
 });

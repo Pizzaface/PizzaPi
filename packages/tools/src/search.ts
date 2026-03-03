@@ -1,6 +1,7 @@
 import { Type } from "@mariozechner/pi-ai";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { spawn } from "child_process";
+import { StringDecoder } from "string_decoder";
 
 /** Maximum chars of stderr to retain in memory. */
 const MAX_STDERR_CHARS = 512;
@@ -44,9 +45,15 @@ function spawnHeadLines(
         let done = false;
         let stderr = "";
 
+        // StringDecoder buffers incomplete multi-byte UTF-8 sequences across
+        // chunk boundaries, preventing corruption of non-ASCII characters
+        // (accented, CJK, emoji, etc.) that may span two data events.
+        const stdoutDecoder = new StringDecoder("utf8");
+        const stderrDecoder = new StringDecoder("utf8");
+
         child.stderr!.on("data", (chunk: Buffer) => {
             if (stderr.length < MAX_STDERR_CHARS) {
-                stderr += chunk.toString();
+                stderr += stderrDecoder.write(chunk);
                 if (stderr.length > MAX_STDERR_CHARS) {
                     stderr = stderr.slice(0, MAX_STDERR_CHARS);
                 }
@@ -56,7 +63,7 @@ function spawnHeadLines(
         child.stdout.on("data", (chunk: Buffer) => {
             if (done) return;
 
-            partial += chunk.toString();
+            partial += stdoutDecoder.write(chunk);
 
             // Guard against unbounded memory from very long lines (e.g.
             // minified JS, binary output). Flush partial as a line if it
@@ -86,6 +93,15 @@ function spawnHeadLines(
         });
 
         child.on("close", (code, signal) => {
+            // Flush any trailing bytes held by the decoder (incomplete
+            // multi-byte sequence at the very end of the stream).
+            const trailing = stdoutDecoder.end();
+            if (trailing) partial += trailing;
+            const trailingErr = stderrDecoder.end();
+            if (trailingErr && stderr.length < MAX_STDERR_CHARS) {
+                stderr += trailingErr;
+            }
+
             // Flush any remaining partial line if we haven't hit the cap
             if (!done && partial && collected.length < maxLines) {
                 collected.push(partial);
