@@ -604,9 +604,12 @@ export const SessionSidebar = React.memo(function SessionSidebar({
             runnerMap.get(key)!.sessions.push(s);
         }
 
-        // Step 2: sort sessions within each runner by most recently active/started.
+        // Step 2: sort sessions within each runner — pinned first, then by most recently active/started.
         for (const entry of runnerMap.values()) {
             entry.sessions.sort((a, b) => {
+                const aPinned = pinnedSessionIds.has(a.sessionId) ? 1 : 0;
+                const bPinned = pinnedSessionIds.has(b.sessionId) ? 1 : 0;
+                if (bPinned !== aPinned) return bPinned - aPinned;
                 const aT = Date.parse(a.lastHeartbeatAt ?? a.startedAt);
                 const bT = Date.parse(b.lastHeartbeatAt ?? b.startedAt);
                 return (Number.isFinite(bT) ? bT : 0) - (Number.isFinite(aT) ? aT : 0);
@@ -630,8 +633,13 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                 sessions: cwdSessions,
             }));
 
-            // Sort projects by most recently active session.
+            // Sort projects — groups containing a pinned session float first,
+            // then by most recently active session within the group.
             projects.sort((a, b) => {
+                const hasPinned = (grp: ProjectGroup) =>
+                    grp.sessions.some((s) => pinnedSessionIds.has(s.sessionId)) ? 1 : 0;
+                const pinDiff = hasPinned(b) - hasPinned(a);
+                if (pinDiff !== 0) return pinDiff;
                 const latestTs = (grp: ProjectGroup) =>
                     Math.max(0, ...grp.sessions
                         .map((s) => Date.parse(s.lastHeartbeatAt ?? s.startedAt))
@@ -650,7 +658,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
         });
 
         return result;
-    }, [liveSessions]);
+    }, [liveSessions, pinnedSessionIds]);
 
     // Find session name for the confirm dialog
     const confirmSession = confirmEndSessionId
