@@ -16,7 +16,12 @@ import { sendSkillCommand, sendRunnerCommand } from "../ws/namespaces/runner.js"
 import { waitForSpawnAck } from "../ws/runner-control.js";
 import { getApiKeyRateLimitConfig, getAuth, getKysely } from "../auth.js";
 import { requireSession, validateApiKey } from "../middleware.js";
-import { listPersistedRelaySessionsForUser } from "../sessions/store.js";
+import {
+    listPersistedRelaySessionsForUser,
+    listPinnedRelaySessionsForUser,
+    pinRelaySession,
+    unpinRelaySession,
+} from "../sessions/store.js";
 import { getRecentFolders, recordRecentFolder } from "../runner-recent-folders.js";
 import { getHiddenModels, setHiddenModels } from "../user-hidden-models.js";
 import {
@@ -32,6 +37,7 @@ import {
     updateEnabledEvents,
 } from "../push.js";
 import { RateLimiter, isValidEmail, isValidPassword, cwdMatchesRoots } from "../security.js";
+import { PASSWORD_REQUIREMENTS_SUMMARY } from "@pizzapi/protocol";
 import { isValidSkillName } from "../validation.js";
 import { isSignupAllowed } from "../auth.js";
 import { getLatestNpmVersion } from "../version.js";
@@ -73,7 +79,7 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
         }
 
         if (!isValidPassword(password)) {
-            return Response.json({ error: "Password must be at least 8 characters long and contain at least one uppercase letter, one lowercase letter, and one number" }, { status: 400 });
+            return Response.json({ error: PASSWORD_REQUIREMENTS_SUMMARY }, { status: 400 });
         }
 
         const existing = await getKysely()
@@ -641,6 +647,47 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
         const sessions = await getSessions(identity.userId);
         const persistedSessions = await listPersistedRelaySessionsForUser(identity.userId);
         return Response.json({ sessions, persistedSessions });
+    }
+
+    if (url.pathname === "/api/sessions/pinned" && req.method === "GET") {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        const pinnedSessions = await listPinnedRelaySessionsForUser(identity.userId);
+        return Response.json({ pinnedSessions });
+    }
+
+    // ── Pin / unpin a session ──────────────────────────────────────────────
+    const pinMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/pin$/);
+    if (pinMatch) {
+        if (req.method !== "PUT" && req.method !== "DELETE") {
+            return new Response("Method not allowed", {
+                status: 405,
+                headers: { Allow: "PUT, DELETE" },
+            });
+        }
+
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        const sessionId = decodeURIComponent(pinMatch[1]);
+        if (!sessionId) {
+            return Response.json({ error: "Missing session ID" }, { status: 400 });
+        }
+
+        if (req.method === "PUT") {
+            const ok = await pinRelaySession(sessionId, identity.userId);
+            if (!ok) {
+                return Response.json({ error: "Session not found or not owned by you" }, { status: 404 });
+            }
+            return Response.json({ ok: true, isPinned: true });
+        }
+
+        const ok = await unpinRelaySession(sessionId, identity.userId);
+        if (!ok) {
+            return Response.json({ error: "Session not found or not owned by you" }, { status: 404 });
+        }
+        return Response.json({ ok: true, isPinned: false });
     }
 
     if (url.pathname.startsWith("/api/sessions/") && url.pathname.endsWith("/attachments") && req.method === "POST") {

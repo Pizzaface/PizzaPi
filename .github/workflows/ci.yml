@@ -240,6 +240,9 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Build packages
+        run: bun run build
+
       - name: Build binary (linux-x64)
         working-directory: packages/cli
         run: bun build-binaries.ts --target linux-x64

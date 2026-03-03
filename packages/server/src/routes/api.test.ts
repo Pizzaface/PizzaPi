@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parseJsonArray } from "./api";
+import { handleApi, parseJsonArray } from "./api";
 import { normalizePath, cwdMatchesRoots } from "../security";
 
 // ── normalizePath ───────────────────────────────────────────────────────────
@@ -58,6 +58,20 @@ describe("parseJsonArray", () => {
     test("returns empty array for invalid JSON", () => {
         expect(parseJsonArray("not json")).toEqual([]);
         expect(parseJsonArray("{broken")).toEqual([]);
+    });
+});
+
+// ── pin endpoint routing ───────────────────────────────────────────────────
+
+describe("/api/sessions/:id/pin", () => {
+    test("returns 405 for unsupported methods", async () => {
+        const url = new URL("http://localhost/api/sessions/s-123/pin");
+        const req = new Request(url, { method: "POST" });
+
+        const res = await handleApi(req, url);
+        expect(res).toBeTruthy();
+        expect(res!.status).toBe(405);
+        expect(res!.headers.get("Allow")).toBe("PUT, DELETE");
     });
 });
 

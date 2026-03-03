@@ -13,6 +13,15 @@ export type {
   Attachment,
 } from "./shared.js";
 
+// Password validation (shared across server, UI, CLI)
+export {
+  PASSWORD_REQUIREMENTS,
+  PASSWORD_REQUIREMENTS_SUMMARY,
+  validatePassword,
+  isValidPassword,
+} from "./password.js";
+export type { PasswordCheck, PasswordCheckItem } from "./password.js";
+
 // /relay namespace (TUI ↔ Server)
 export type {
   RelayClientToServerEvents,

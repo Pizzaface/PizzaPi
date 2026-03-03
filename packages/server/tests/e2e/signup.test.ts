@@ -271,3 +271,66 @@ describe("E2E: signup gating (disable after first user)", () => {
         }
     });
 });
+
+// ── Change password validation ────────────────────────────────────────────────
+
+describe("E2E: change-password enforces password policy", () => {
+    const cpUser = {
+        name: "ChangePass User",
+        email: "changepass@example.com",
+        password: "OldPass123",
+    };
+    let sessionHeaders: Record<string, string>;
+
+    beforeAll(async () => {
+        // Register user
+        const regRes = await req("POST", "/api/register", cpUser, { "x-forwarded-for": "10.0.4.1" });
+        expect(regRes.status).toBe(200);
+
+        // Sign in to get a session cookie
+        const signInRes = await req("POST", "/api/auth/sign-in/email", {
+            email: cpUser.email,
+            password: cpUser.password,
+        });
+        expect(signInRes.status).toBe(200);
+
+        // Extract set-cookie header for subsequent requests
+        const cookies = signInRes.headers.getSetCookie();
+        sessionHeaders = { cookie: cookies.join("; ") };
+    });
+
+    test("rejects weak new password", async () => {
+        const res = await req("POST", "/api/auth/change-password", {
+            currentPassword: cpUser.password,
+            newPassword: "weak",
+        }, sessionHeaders);
+        expect(res.status).toBe(400);
+        const data = await res.json();
+        expect(data.error).toContain("Password must be");
+    });
+
+    test("rejects password without uppercase", async () => {
+        const res = await req("POST", "/api/auth/change-password", {
+            currentPassword: cpUser.password,
+            newPassword: "alllowercase1",
+        }, sessionHeaders);
+        expect(res.status).toBe(400);
+    });
+
+    test("rejects password without number", async () => {
+        const res = await req("POST", "/api/auth/change-password", {
+            currentPassword: cpUser.password,
+            newPassword: "NoNumberHere",
+        }, sessionHeaders);
+        expect(res.status).toBe(400);
+    });
+
+    test("accepts valid new password", async () => {
+        const res = await req("POST", "/api/auth/change-password", {
+            currentPassword: cpUser.password,
+            newPassword: "NewSecure1",
+        }, sessionHeaders);
+        // Should be 200 (success) — better-auth returns the updated status
+        expect(res.status).toBe(200);
+    });
+});

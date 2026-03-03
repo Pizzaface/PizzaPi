@@ -102,7 +102,7 @@ The sub-session streams to the same relay and appears as a child in the web UI s
 ## Process Hierarchy
 
 ```
-pizzapi runner          ← supervisor (PID saved to ~/.pizzapi/runner.pid)
+pizzapi runner          ← supervisor (PID tracked in ~/.pizzapi/runner.json)
   └── pizzapi _daemon  ← daemon (restarted on crash by supervisor)
         ├── pizzapi _worker   ← session A
         ├── pizzapi _worker   ← session B

@@ -53,7 +53,7 @@ interface RelayModelInfo {
     contextWindow: number;
 }
 
-const RELAY_DEFAULT = "ws://localhost:3001";
+const RELAY_DEFAULT = "ws://localhost:7492";
 const RELAY_STATUS_KEY = "relay";
 const ASK_USER_TOOL_NAME = "AskUserQuestion";
 
@@ -417,6 +417,12 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         detectedAt: number;
     }
     let lastRetryableError: RetryState | null = null;
+
+    // ── Relay connection failure tracking ─────────────────────────────────────
+    // Show a one-time notification on the first connection failure so the user
+    // knows relay isn't working.  Reset on successful registration so a later
+    // drop can re-notify.
+    let connectFailureNotified = false;
 
     // ── Session name sync state ───────────────────────────────────────────────
     // Keeps web viewers in sync when /name is run directly in the TUI.
@@ -1184,7 +1190,8 @@ export const remoteExtension: ExtensionFactory = (pi) => {
 
     function disconnectedStatusText(): string | undefined {
         if (isDisabled()) return undefined;
-        return apiKey() ? "Disconnected from Relay" : undefined;
+        if (!apiKey()) return "Relay not configured — run pizza setup";
+        return "Disconnected from Relay";
     }
 
     function consumePendingAskUserQuestionFromWeb(text: string): boolean {
@@ -1438,7 +1445,12 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                     // concatenated string ends up shorter than `width`.
                     const locationLine = layoutLeftRight(pwd, modelBadge, width, truncateMiddle);
                     const statsLine = layoutLeftRight(statsText, relayStatus, width, truncateEnd);
-                    const relayStatusColor = relayStatus.toLowerCase().includes("disconnected") ? "error" : "success";
+                    const statusLower = relayStatus.toLowerCase();
+                    const relayStatusColor =
+                        statusLower.includes("disconnected") || statusLower.includes("not configured") ||
+                        statusLower.includes("failed") || statusLower.includes("error")
+                            ? "error"
+                            : "success";
 
                     const line1Raw = locationLine.left + locationLine.pad + locationLine.right;
                     const line2Raw = statsLine.left + statsLine.pad + statsLine.right;
@@ -1536,6 +1548,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 seq: 0,
                 ackedSeq: 0,
             };
+            connectFailureNotified = false;
             setRelayStatus("Connected to Relay");
 
             // Wire up the inter-session message bus now that we have a relay connection.
@@ -1612,6 +1625,20 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             setRelayStatus("Session expired");
         });
 
+        sock.on("connect_error", (err) => {
+            const url = socketIoUrl();
+            setRelayStatus(`Relay connection failed (${url})`);
+
+            if (!connectFailureNotified && latestCtx) {
+                connectFailureNotified = true;
+                latestCtx.ui.notify(
+                    `⚠ Could not connect to relay at ${url}\n` +
+                    "Sessions won't appear in the web UI until the connection is established.\n" +
+                    "Check PIZZAPI_RELAY_URL or run `pizza setup` to reconfigure.",
+                );
+            }
+        });
+
         sock.on("error", (data) => {
             // Server-side error — log but don't tear down (socket.io will reconnect).
             setRelayStatus(`Relay error: ${data.message}`);
@@ -1658,6 +1685,14 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             return;
         }
         connect();
+
+        // One-time warning when relay can't connect due to missing config
+        if (!apiKey()) {
+            ctx.ui.notify(
+                "⚠ Relay not configured — sessions won't appear in the web UI.\n" +
+                "Run `pizza setup` or set PIZZAPI_API_KEY to connect.",
+            );
+        }
     });
 
     pi.on("session_switch", (_event, ctx) => {
