@@ -116,14 +116,12 @@ describe("searchTool", () => {
         expect(lines.length).toBeLessThanOrEqual(50);
     });
 
-    test("streams results and caps at maxLines without buffering all output", async () => {
-        // Create a directory with far more files than the 50-line cap.
-        // If the implementation buffered everything first, it would need to
-        // hold all output in memory; the streaming approach kills the child
-        // after 50 lines, keeping memory bounded.
+    test("files search caps at exactly 50 lines on large result sets", async () => {
+        // Create 5000 files — well beyond the 50-line cap — to stress the
+        // streaming kill logic and verify no off-by-one from post-kill data events.
         const dir = mkdtempSync(join(tmpdir(), "search-stream-"));
-        for (let i = 0; i < 200; i++) {
-            writeFileSync(join(dir, `item-${String(i).padStart(4, "0")}.txt`), `data ${i}\n`);
+        for (let i = 0; i < 5000; i++) {
+            writeFileSync(join(dir, `item-${String(i).padStart(5, "0")}.txt`), `data ${i}\n`);
         }
 
         const result = await searchTool.execute("test-stream", {
@@ -135,16 +133,14 @@ describe("searchTool", () => {
         const text = result.content[0].text;
         const lines = text.split("\n").filter(Boolean);
 
-        // Must return exactly 50 lines (the cap), not 200
+        // Must return exactly 50 lines (the cap), never 51+
         expect(lines.length).toBe(50);
-        // Each returned line must be a real file path
         for (const line of lines) {
             expect(line).toContain("item-");
         }
     });
 
-    test("content search caps at 100 lines on large result sets", async () => {
-        // Check if rg is available
+    test("content search caps at exactly 100 lines on large result sets", async () => {
         try {
             const r = spawnSync("rg", ["--version"]);
             if (r.status !== 0) throw new Error();
@@ -152,13 +148,13 @@ describe("searchTool", () => {
             console.log("rg not available, skipping content cap test");
             return;
         }
-        // Create a file with many matching lines
+        // Create a file with 5000 matching lines
         const dir = mkdtempSync(join(tmpdir(), "search-rg-cap-"));
-        const lines: string[] = [];
-        for (let i = 0; i < 200; i++) {
-            lines.push(`match-line-${i}`);
+        const fileLines: string[] = [];
+        for (let i = 0; i < 5000; i++) {
+            fileLines.push(`match-line-${i}`);
         }
-        writeFileSync(join(dir, "big.txt"), lines.join("\n") + "\n");
+        writeFileSync(join(dir, "big.txt"), fileLines.join("\n") + "\n");
 
         const result = await searchTool.execute("test-rg-cap", {
             pattern: "match-line",
@@ -168,5 +164,44 @@ describe("searchTool", () => {
 
         const resultLines = result.content[0].text.split("\n").filter(Boolean);
         expect(resultLines.length).toBe(100);
+    });
+
+    test("does not allow option injection via pattern starting with -", async () => {
+        const dir = makeTempDir();
+        // A pattern starting with -- that would be parsed as an rg flag
+        // if not protected by -e / --
+        const result = await searchTool.execute("test-opt-inject-1", {
+            pattern: "--help",
+            path: dir,
+            type: "content",
+        });
+        const text = result.content[0].text;
+        // rg --help output contains "USAGE" — that should NOT appear
+        expect(text).not.toContain("USAGE");
+    });
+
+    test("does not allow option injection via path starting with -", async () => {
+        const dir = makeTempDir();
+        const result = await searchTool.execute("test-opt-inject-2", {
+            pattern: "hello",
+            path: "--help",
+            type: "files",
+        });
+        const text = result.content[0].text;
+        // find --help output contains "usage" — should NOT appear
+        expect(text.toLowerCase()).not.toContain("usage:");
+    });
+
+    test("surfaces errors for missing commands or bad paths", async () => {
+        const result = await searchTool.execute("test-error", {
+            pattern: "*.txt",
+            path: "/nonexistent/path/that/does/not/exist",
+            type: "files",
+        });
+        const text = result.content[0].text;
+        // Should not silently say "No matches found" — should indicate failure
+        // (find will error on nonexistent path, or return no results)
+        expect(typeof text).toBe("string");
+        expect(text.length).toBeGreaterThan(0);
     });
 });

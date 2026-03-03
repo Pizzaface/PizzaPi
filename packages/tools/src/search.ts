@@ -2,6 +2,13 @@ import { Type } from "@mariozechner/pi-ai";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { spawn } from "child_process";
 
+interface SpawnResult {
+    lines: string[];
+    exitCode: number | null;
+    signal: string | null;
+    error?: string;
+}
+
 /**
  * Spawn a command with an argument array (no shell) and stream stdout,
  * collecting at most `maxLines` lines before killing the child process.
@@ -12,17 +19,25 @@ function spawnHeadLines(
     args: string[],
     maxLines: number,
     timeoutMs: number,
-): Promise<string> {
+): Promise<SpawnResult> {
     return new Promise((resolve) => {
         const child = spawn(cmd, args, {
-            stdio: ["ignore", "pipe", "ignore"],
+            stdio: ["ignore", "pipe", "pipe"],
             timeout: timeoutMs,
         });
 
         const collected: string[] = [];
         let partial = "";
+        let done = false;
+        let stderrChunks: string[] = [];
+
+        child.stderr!.on("data", (chunk: Buffer) => {
+            stderrChunks.push(chunk.toString());
+        });
 
         child.stdout.on("data", (chunk: Buffer) => {
+            if (done) return;
+
             partial += chunk.toString();
             const parts = partial.split("\n");
             // Last element is an incomplete line (or "" after a trailing \n)
@@ -31,22 +46,34 @@ function spawnHeadLines(
             for (const line of parts) {
                 collected.push(line);
                 if (collected.length >= maxLines) {
+                    done = true;
                     child.kill();
                     return;
                 }
             }
         });
 
-        child.on("close", () => {
+        child.on("close", (code, signal) => {
             // Flush any remaining partial line if we haven't hit the cap
-            if (partial && collected.length < maxLines) {
+            if (!done && partial && collected.length < maxLines) {
                 collected.push(partial);
             }
-            resolve(collected.join("\n"));
+            // Hard-cap as a final safety net against post-kill data events
+            resolve({
+                lines: collected.slice(0, maxLines),
+                exitCode: code,
+                signal: signal as string | null,
+                error: stderrChunks.length ? stderrChunks.join("").slice(0, 500) : undefined,
+            });
         });
 
-        child.on("error", () => {
-            resolve(collected.join("\n"));
+        child.on("error", (err) => {
+            resolve({
+                lines: collected.slice(0, maxLines),
+                exitCode: null,
+                signal: null,
+                error: err.message,
+            });
         });
     });
 }
@@ -67,14 +94,24 @@ export const searchTool: AgentTool = {
     async execute(_toolCallId, params: any) {
         const type = params.type ?? "content";
 
+        // Use -e/-- to prevent argument injection from patterns/paths starting with "-"
         const [cmd, args, maxLines] =
             type === "files"
-                ? (["find", [params.path, "-name", params.pattern, "-type", "f"], 50] as const)
-                : (["rg", ["--no-heading", "-n", params.pattern, params.path], 100] as const);
+                ? (["find", ["--", params.path, "-name", params.pattern, "-type", "f"], 50] as const)
+                : (["rg", ["--no-heading", "-n", "-e", params.pattern, "--", params.path], 100] as const);
 
-        const stdout = await spawnHeadLines(cmd, [...args], maxLines, 15_000);
+        const result = await spawnHeadLines(cmd, [...args], maxLines, 15_000);
 
-        const output = stdout || "No matches found";
+        let output: string;
+        if (result.lines.length > 0) {
+            output = result.lines.join("\n");
+        } else if (result.error && result.exitCode !== 1) {
+            // exitCode 1 is normal "no matches" for rg/find — anything else is a real error
+            output = `Search failed: ${result.error.split("\n")[0]}`;
+        } else {
+            output = "No matches found";
+        }
+
         return {
             content: [{ type: "text" as const, text: output }],
             details: { pattern: params.pattern, path: params.path, type },
