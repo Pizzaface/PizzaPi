@@ -2,6 +2,7 @@ import { createInterface } from "readline";
 import { homedir } from "os";
 import { join } from "path";
 import { saveGlobalConfig } from "./config.js";
+import { validatePassword, PASSWORD_REQUIREMENTS } from "@pizzapi/protocol";
 
 const RELAY_DEFAULT = "http://localhost:7492";
 
@@ -117,6 +118,19 @@ export async function runSetup(opts: { force?: boolean } = {}): Promise<boolean>
         if (!password) {
             console.log("\n✗ Password is required. Aborting setup.\n");
             return false;
+        }
+
+        // Validate password requirements for new accounts.
+        if (name) {
+            const check = validatePassword(password);
+            if (!check.valid) {
+                console.log("\n✗ Password does not meet the requirements:");
+                for (const c of check.checks) {
+                    console.log(`  ${c.met ? "✓" : "✗"} ${c.label}`);
+                }
+                console.log();
+                return false;
+            }
         }
 
         process.stdout.write("\nConnecting to relay server… ");

@@ -37,6 +37,7 @@ import {
     updateEnabledEvents,
 } from "../push.js";
 import { RateLimiter, isValidEmail, isValidPassword, cwdMatchesRoots } from "../security.js";
+import { PASSWORD_REQUIREMENTS_SUMMARY } from "@pizzapi/protocol";
 import { isValidSkillName } from "../validation.js";
 import { isSignupAllowed } from "../auth.js";
 import { getLatestNpmVersion } from "../version.js";
@@ -78,7 +79,7 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
         }
 
         if (!isValidPassword(password)) {
-            return Response.json({ error: "Password must be at least 8 characters long and contain at least one uppercase letter, one lowercase letter, and one number" }, { status: 400 });
+            return Response.json({ error: PASSWORD_REQUIREMENTS_SUMMARY }, { status: 400 });
         }
 
         const existing = await getKysely()
