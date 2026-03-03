@@ -418,6 +418,12 @@ export const remoteExtension: ExtensionFactory = (pi) => {
     }
     let lastRetryableError: RetryState | null = null;
 
+    // ── Relay connection failure tracking ─────────────────────────────────────
+    // Show a one-time notification on the first connection failure so the user
+    // knows relay isn't working.  Reset on successful registration so a later
+    // drop can re-notify.
+    let connectFailureNotified = false;
+
     // ── Session name sync state ───────────────────────────────────────────────
     // Keeps web viewers in sync when /name is run directly in the TUI.
     let sessionNameSyncTimer: ReturnType<typeof setInterval> | null = null;
@@ -1439,8 +1445,10 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                     // concatenated string ends up shorter than `width`.
                     const locationLine = layoutLeftRight(pwd, modelBadge, width, truncateMiddle);
                     const statsLine = layoutLeftRight(statsText, relayStatus, width, truncateEnd);
+                    const statusLower = relayStatus.toLowerCase();
                     const relayStatusColor =
-                        relayStatus.toLowerCase().includes("disconnected") || relayStatus.toLowerCase().includes("not configured")
+                        statusLower.includes("disconnected") || statusLower.includes("not configured") ||
+                        statusLower.includes("failed") || statusLower.includes("error")
                             ? "error"
                             : "success";
 
@@ -1540,6 +1548,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 seq: 0,
                 ackedSeq: 0,
             };
+            connectFailureNotified = false;
             setRelayStatus("Connected to Relay");
 
             // Wire up the inter-session message bus now that we have a relay connection.
@@ -1614,6 +1623,20 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             shuttingDown = true;
             relay = null;
             setRelayStatus("Session expired");
+        });
+
+        sock.on("connect_error", (err) => {
+            const url = socketIoUrl();
+            setRelayStatus(`Relay connection failed (${url})`);
+
+            if (!connectFailureNotified && latestCtx) {
+                connectFailureNotified = true;
+                latestCtx.ui.notify(
+                    `⚠ Could not connect to relay at ${url}\n` +
+                    "Sessions won't appear in the web UI until the connection is established.\n" +
+                    "Check PIZZAPI_RELAY_URL or run `pizza setup` to reconfigure.",
+                );
+            }
         });
 
         sock.on("error", (data) => {
