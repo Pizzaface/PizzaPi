@@ -166,10 +166,11 @@ export const searchTool: AgentTool = {
         let output: string;
         if (result.lines.length > 0) {
             output = result.lines.join("\n");
-            // Surface partial errors (e.g. permission denied on some subdirs)
-            // so the caller knows results may be incomplete.
-            if (isFailure(result, normalizedType) && result.error) {
-                const reason = result.error.split("\n")[0];
+            // Surface partial errors (e.g. permission denied on some subdirs,
+            // timeout with partial output) so the caller knows results may be incomplete.
+            if (isFailure(result, normalizedType)) {
+                const reason = result.error?.split("\n")[0]
+                    || (result.exitCode === null ? "process terminated unexpectedly" : `exit code ${result.exitCode}`);
                 output += `\n\n[warning: some results may be missing — ${reason}]`;
             }
         } else if (isFailure(result, normalizedType)) {
@@ -185,7 +186,7 @@ export const searchTool: AgentTool = {
 
         return {
             content: [{ type: "text" as const, text: output }],
-            details: { pattern: params.pattern, path: params.path, type },
+            details: { pattern: params.pattern, path: params.path, type: normalizedType },
         };
     },
 };
