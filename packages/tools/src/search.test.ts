@@ -5,6 +5,7 @@ import { promisify } from "util";
 import { mkdtempSync, writeFileSync, mkdirSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
+import { spawnSync } from "child_process";
 
 const execFileAsync = promisify(execFile);
 
@@ -113,5 +114,59 @@ describe("searchTool", () => {
         });
         const lines = result.content[0].text.split("\n").filter(Boolean);
         expect(lines.length).toBeLessThanOrEqual(50);
+    });
+
+    test("streams results and caps at maxLines without buffering all output", async () => {
+        // Create a directory with far more files than the 50-line cap.
+        // If the implementation buffered everything first, it would need to
+        // hold all output in memory; the streaming approach kills the child
+        // after 50 lines, keeping memory bounded.
+        const dir = mkdtempSync(join(tmpdir(), "search-stream-"));
+        for (let i = 0; i < 200; i++) {
+            writeFileSync(join(dir, `item-${String(i).padStart(4, "0")}.txt`), `data ${i}\n`);
+        }
+
+        const result = await searchTool.execute("test-stream", {
+            pattern: "*.txt",
+            path: dir,
+            type: "files",
+        });
+
+        const text = result.content[0].text;
+        const lines = text.split("\n").filter(Boolean);
+
+        // Must return exactly 50 lines (the cap), not 200
+        expect(lines.length).toBe(50);
+        // Each returned line must be a real file path
+        for (const line of lines) {
+            expect(line).toContain("item-");
+        }
+    });
+
+    test("content search caps at 100 lines on large result sets", async () => {
+        // Check if rg is available
+        try {
+            const r = spawnSync("rg", ["--version"]);
+            if (r.status !== 0) throw new Error();
+        } catch {
+            console.log("rg not available, skipping content cap test");
+            return;
+        }
+        // Create a file with many matching lines
+        const dir = mkdtempSync(join(tmpdir(), "search-rg-cap-"));
+        const lines: string[] = [];
+        for (let i = 0; i < 200; i++) {
+            lines.push(`match-line-${i}`);
+        }
+        writeFileSync(join(dir, "big.txt"), lines.join("\n") + "\n");
+
+        const result = await searchTool.execute("test-rg-cap", {
+            pattern: "match-line",
+            path: dir,
+            type: "content",
+        });
+
+        const resultLines = result.content[0].text.split("\n").filter(Boolean);
+        expect(resultLines.length).toBe(100);
     });
 });

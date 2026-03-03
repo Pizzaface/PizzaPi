@@ -1,15 +1,54 @@
 import { Type } from "@mariozechner/pi-ai";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
-import { execFile } from "child_process";
-import { promisify } from "util";
+import { spawn } from "child_process";
 
-const execFileAsync = promisify(execFile);
+/**
+ * Spawn a command with an argument array (no shell) and stream stdout,
+ * collecting at most `maxLines` lines before killing the child process.
+ * This is the shell-free equivalent of `cmd args | head -N`.
+ */
+function spawnHeadLines(
+    cmd: string,
+    args: string[],
+    maxLines: number,
+    timeoutMs: number,
+): Promise<string> {
+    return new Promise((resolve) => {
+        const child = spawn(cmd, args, {
+            stdio: ["ignore", "pipe", "ignore"],
+            timeout: timeoutMs,
+        });
 
-/** Truncate output to the first `maxLines` lines. */
-function truncateLines(text: string, maxLines: number): string {
-    const lines = text.split("\n");
-    if (lines.length <= maxLines) return text;
-    return lines.slice(0, maxLines).join("\n");
+        const collected: string[] = [];
+        let partial = "";
+
+        child.stdout.on("data", (chunk: Buffer) => {
+            partial += chunk.toString();
+            const parts = partial.split("\n");
+            // Last element is an incomplete line (or "" after a trailing \n)
+            partial = parts.pop()!;
+
+            for (const line of parts) {
+                collected.push(line);
+                if (collected.length >= maxLines) {
+                    child.kill();
+                    return;
+                }
+            }
+        });
+
+        child.on("close", () => {
+            // Flush any remaining partial line if we haven't hit the cap
+            if (partial && collected.length < maxLines) {
+                collected.push(partial);
+            }
+            resolve(collected.join("\n"));
+        });
+
+        child.on("error", () => {
+            resolve(collected.join("\n"));
+        });
+    });
 }
 
 export const searchTool: AgentTool = {
@@ -28,29 +67,14 @@ export const searchTool: AgentTool = {
     async execute(_toolCallId, params: any) {
         const type = params.type ?? "content";
 
-        let stdout: string;
-        let maxLines: number;
+        const [cmd, args, maxLines] =
+            type === "files"
+                ? (["find", [params.path, "-name", params.pattern, "-type", "f"], 50] as const)
+                : (["rg", ["--no-heading", "-n", params.pattern, params.path], 100] as const);
 
-        if (type === "files") {
-            // Use execFile to safely pass arguments without a shell
-            const result = await execFileAsync(
-                "find",
-                [params.path, "-name", params.pattern, "-type", "f"],
-                { timeout: 15_000 },
-            ).catch((err) => ({ stdout: err.stdout ?? "", stderr: err.stderr ?? "" }));
-            stdout = result.stdout;
-            maxLines = 50;
-        } else {
-            const result = await execFileAsync(
-                "rg",
-                ["--no-heading", "-n", params.pattern, params.path],
-                { timeout: 15_000 },
-            ).catch((err) => ({ stdout: err.stdout ?? "", stderr: err.stderr ?? "" }));
-            stdout = result.stdout;
-            maxLines = 100;
-        }
+        const stdout = await spawnHeadLines(cmd, [...args], maxLines, 15_000);
 
-        const output = truncateLines(stdout, maxLines) || "No matches found";
+        const output = stdout || "No matches found";
         return {
             content: [{ type: "text" as const, text: output }],
             details: { pattern: params.pattern, path: params.path, type },
