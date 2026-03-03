@@ -108,7 +108,7 @@ async function replayPersistedSnapshot(
 ): Promise<void> {
     try {
         const snapshot = await getPersistedRelaySessionSnapshot(sessionId, userId);
-        if (!snapshot || snapshot.state === null || snapshot.state === undefined) {
+        if (!snapshot) {
             socket.emit("error", { message: "Session not found" });
             socket.disconnect();
             return;
@@ -121,6 +121,14 @@ async function replayPersistedSnapshot(
         const sentFromCache = await sendLatestSnapshotFromCache(socket, sessionId);
 
         if (!sentFromCache) {
+            // Cache miss — fall back to persisted state from SQLite.
+            // If the persisted state is also null (e.g. no relay_session_state
+            // row yet), there is nothing to replay.
+            if (snapshot.state === null || snapshot.state === undefined) {
+                socket.emit("error", { message: "Session snapshot not available" });
+                socket.disconnect();
+                return;
+            }
             socket.emit("event", {
                 event: { type: "session_active", state: snapshot.state },
             });

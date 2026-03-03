@@ -90,6 +90,18 @@ describe("pinRelaySession", () => {
         const result = await pinRelaySession("s3", TEST_USER_ID);
         expect(result).toBe(true);
     });
+
+    it("succeeds on retry when session row appears after a delay", async () => {
+        // Simulate the race: insert the row 300ms after pin is called
+        // (the retry delay is 250ms, so the 2nd attempt should find it)
+        const delayedInsert = setTimeout(async () => {
+            await insertSession({ sessionId: "s-delayed" });
+        }, 300);
+
+        const result = await pinRelaySession("s-delayed", TEST_USER_ID);
+        clearTimeout(delayedInsert);
+        expect(result).toBe(true);
+    });
 });
 
 describe("unpinRelaySession", () => {

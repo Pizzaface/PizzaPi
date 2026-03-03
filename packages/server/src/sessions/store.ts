@@ -292,26 +292,57 @@ export async function listPinnedRelaySessionsForUser(
     return sessions.filter((session) => session.isPinned);
 }
 
+/**
+ * Pin a session. Retries briefly when the relay_session row has not been
+ * persisted yet (race between registerTuiSession broadcasting the live
+ * session and the fire-and-forget recordRelaySessionStart write).
+ */
 export async function pinRelaySession(sessionId: string, userId: string): Promise<boolean> {
-    const result = await getKysely()
-        .updateTable("relay_session")
-        .set({ isPinned: 1 })
-        .where("id", "=", sessionId)
-        .where("userId", "=", userId)
-        .execute();
+    const MAX_ATTEMPTS = 3;
+    const RETRY_DELAY_MS = 250;
 
-    return (result[0]?.numUpdatedRows ?? 0n) > 0n;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        const result = await getKysely()
+            .updateTable("relay_session")
+            .set({ isPinned: 1 })
+            .where("id", "=", sessionId)
+            .where("userId", "=", userId)
+            .execute();
+
+        if ((result[0]?.numUpdatedRows ?? 0n) > 0n) return true;
+
+        // On the last attempt, don't wait — just return failure
+        if (attempt < MAX_ATTEMPTS) {
+            await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
+        }
+    }
+
+    return false;
 }
 
+/**
+ * Unpin a session. Retries briefly (same rationale as pinRelaySession).
+ */
 export async function unpinRelaySession(sessionId: string, userId: string): Promise<boolean> {
-    const result = await getKysely()
-        .updateTable("relay_session")
-        .set({ isPinned: 0 })
-        .where("id", "=", sessionId)
-        .where("userId", "=", userId)
-        .execute();
+    const MAX_ATTEMPTS = 3;
+    const RETRY_DELAY_MS = 250;
 
-    return (result[0]?.numUpdatedRows ?? 0n) > 0n;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        const result = await getKysely()
+            .updateTable("relay_session")
+            .set({ isPinned: 0 })
+            .where("id", "=", sessionId)
+            .where("userId", "=", userId)
+            .execute();
+
+        if ((result[0]?.numUpdatedRows ?? 0n) > 0n) return true;
+
+        if (attempt < MAX_ATTEMPTS) {
+            await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
+        }
+    }
+
+    return false;
 }
 
 export async function pruneExpiredRelaySessions(): Promise<string[]> {
