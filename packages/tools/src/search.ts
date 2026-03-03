@@ -2,8 +2,16 @@ import { Type } from "@mariozechner/pi-ai";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { spawn } from "child_process";
 
-/** Maximum bytes of stderr to retain in memory. */
-const MAX_STDERR_BYTES = 512;
+/** Maximum chars of stderr to retain in memory. */
+const MAX_STDERR_CHARS = 512;
+
+/**
+ * Maximum chars to buffer in the partial (incomplete) line accumulator.
+ * Prevents OOM when a subprocess emits very long lines without newlines
+ * (e.g. minified files, binary output). When exceeded, the partial is
+ * flushed as a complete line and counting continues.
+ */
+const MAX_PARTIAL_CHARS = 256 * 1024; // 256 KB
 
 interface SpawnResult {
     lines: string[];
@@ -37,10 +45,10 @@ function spawnHeadLines(
         let stderr = "";
 
         child.stderr!.on("data", (chunk: Buffer) => {
-            if (stderr.length < MAX_STDERR_BYTES) {
+            if (stderr.length < MAX_STDERR_CHARS) {
                 stderr += chunk.toString();
-                if (stderr.length > MAX_STDERR_BYTES) {
-                    stderr = stderr.slice(0, MAX_STDERR_BYTES);
+                if (stderr.length > MAX_STDERR_CHARS) {
+                    stderr = stderr.slice(0, MAX_STDERR_CHARS);
                 }
             }
         });
@@ -49,6 +57,20 @@ function spawnHeadLines(
             if (done) return;
 
             partial += chunk.toString();
+
+            // Guard against unbounded memory from very long lines (e.g.
+            // minified JS, binary output). Flush partial as a line if it
+            // exceeds the cap, even without a newline.
+            if (!partial.includes("\n") && partial.length > MAX_PARTIAL_CHARS) {
+                collected.push(partial);
+                partial = "";
+                if (collected.length >= maxLines) {
+                    done = true;
+                    child.kill();
+                    return;
+                }
+            }
+
             const parts = partial.split("\n");
             // Last element is an incomplete line (or "" after a trailing \n)
             partial = parts.pop()!;
@@ -137,10 +159,20 @@ export const searchTool: AgentTool = {
 
         const result = await spawnHeadLines(cmd, [...args], maxLines, 15_000);
 
+        // Normalize type for isFailure — unknown values fall through to "content"
+        // (rg branch) in command selection, so must match here too.
+        const normalizedType = type === "files" ? "files" : "content";
+
         let output: string;
         if (result.lines.length > 0) {
             output = result.lines.join("\n");
-        } else if (isFailure(result, type)) {
+            // Surface partial errors (e.g. permission denied on some subdirs)
+            // so the caller knows results may be incomplete.
+            if (isFailure(result, normalizedType) && result.error) {
+                const reason = result.error.split("\n")[0];
+                output += `\n\n[warning: some results may be missing — ${reason}]`;
+            }
+        } else if (isFailure(result, normalizedType)) {
             const reason = result.error?.split("\n")[0];
             if (result.exitCode === null && !result.truncated) {
                 output = `Search failed: ${reason || "timed out or command not found"}`;

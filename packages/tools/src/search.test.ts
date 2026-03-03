@@ -251,4 +251,54 @@ describe("searchTool", () => {
         });
         expect(result.content[0].text).toBe("No matches found");
     });
+
+    test("surfaces partial errors when find has results but also errors", async () => {
+        // Create a directory with an unreadable subdirectory
+        const dir = mkdtempSync(join(tmpdir(), "search-partial-"));
+        writeFileSync(join(dir, "visible.txt"), "data\n");
+        const badDir = join(dir, "noperm");
+        mkdirSync(badDir, { mode: 0o000 });
+
+        try {
+            const result = await searchTool.execute("test-partial-err", {
+                pattern: "*.txt",
+                path: dir,
+                type: "files",
+            });
+            const text = result.content[0].text;
+
+            // Should still return the visible file
+            expect(text).toContain("visible.txt");
+
+            // On systems where permission is actually denied (not running as root),
+            // should include a warning about missing results
+            if (process.getuid?.() !== 0) {
+                expect(text).toContain("[warning:");
+            }
+        } finally {
+            // Restore permissions so temp cleanup works
+            const { chmodSync } = require("fs");
+            chmodSync(badDir, 0o755);
+        }
+    });
+
+    test("handles content search on file with no trailing newline", async () => {
+        try {
+            const r = spawnSync("rg", ["--version"]);
+            if (r.status !== 0) throw new Error();
+        } catch {
+            console.log("rg not available, skipping no-trailing-newline test");
+            return;
+        }
+        const dir = mkdtempSync(join(tmpdir(), "search-nonl-"));
+        // File with no trailing newline
+        writeFileSync(join(dir, "noterminal.txt"), "last-line-no-newline");
+
+        const result = await searchTool.execute("test-nonl", {
+            pattern: "last-line",
+            path: dir,
+            type: "content",
+        });
+        expect(result.content[0].text).toContain("last-line-no-newline");
+    });
 });
