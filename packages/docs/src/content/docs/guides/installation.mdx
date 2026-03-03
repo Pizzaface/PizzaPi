@@ -1,6 +1,6 @@
 ---
 title: Installation
-description: Install the PizzaPi CLI on Linux, macOS, or Windows using npm, Bun, or a pre-built binary.
+description: Install the PizzaPi CLI on Linux, macOS, or Windows using npm, Bun, or a pre-built binary. Includes full reset and uninstall instructions.
 sidebar:
   order: 1
 ---
@@ -110,10 +110,180 @@ bun update -g @pizzapi/pizza
 
 ---
 
-## Uninstalling
+## Files & Directories Created by PizzaPi
+
+PizzaPi stores all its data under `~/.pizzapi/`. Here's what each file is for:
+
+| Path | Created by | Purpose |
+|------|-----------|---------|
+| `~/.pizzapi/config.json` | `pizzapi setup` / manual | CLI config: API key, relay URL, skills, hooks |
+| `~/.pizzapi/auth.json` | `/login` inside a session | AI provider credentials (OAuth tokens, API keys) |
+| `~/.pizzapi/models.json` | first session start | Cached model registry |
+| `~/.pizzapi/runner.json` | `pizzapi runner` (first start) | Runner identity and name (auto-generated) |
+| `~/.pizzapi/runner.pid` | `pizzapi runner` | PID of the running supervisor process |
+| `~/.pizzapi/logs/` | macOS LaunchAgent setup | Log files for runner stdout/stderr |
+| `~/.pizzapi/web/config.json` | `pizzapi web` | Web hub settings (port, VAPID keys, origins) |
+| `~/.pizzapi/web/compose.yml` | `pizzapi web` | Auto-generated Docker Compose file (regenerated each run) |
+| `~/.pizzapi/web/data/` | `pizzapi web` | Persistent SQLite database for user accounts |
+| `~/.pizzapi/web/repo/` | `pizzapi web` | Cloned PizzaPi source repo |
+| `~/.pizzapi/skills/` | manual | Global personal skills |
+
+Project-local config (`.pizzapi/config.json`) is stored in each project's directory and is not part of the global `~/.pizzapi/` tree.
+
+---
+
+## Resetting Configuration
+
+### Re-run setup (switch relay or update credentials)
+
+To switch to a different relay server or update your credentials at any time:
 
 ```bash
-npm uninstall -g @pizzapi/pizza
-# Remove saved config
+pizzapi setup
+```
+
+This overwrites the `apiKey` in `~/.pizzapi/config.json` and prints the WebSocket URL to add to your config. After setup, manually add the relay URL if it's not the default:
+
+```jsonc
+// ~/.pizzapi/config.json
+{
+  "apiKey": "pk_live_...",
+  "relayUrl": "wss://your-relay.example.com"
+}
+```
+
+### Disconnect from the relay (relay-free mode)
+
+To stop connecting to a relay without uninstalling:
+
+```bash
+# Add to ~/.pizzapi/config.json:
+# "relayUrl": "off"
+
+# — or — use an environment variable:
+PIZZAPI_RELAY_URL=off pizzapi
+```
+
+See the [Standalone Mode guide](/PizzaPi/guides/standalone-mode/) for details.
+
+### Reset AI provider credentials
+
+To log out of all AI providers and start fresh with `/login`:
+
+```bash
+rm ~/.pizzapi/auth.json
+rm ~/.pizzapi/models.json
+```
+
+Next time you start `pizzapi`, you'll see "No models available" and can run `/login` to re-authenticate.
+
+### Reset runner identity
+
+The runner identity is auto-generated on first start. To assign a new identity (useful if you've cloned a machine or want a fresh runner registration):
+
+```bash
+# Stop the runner first
+pizzapi runner stop
+
+# Remove the identity file
+rm ~/.pizzapi/runner.json
+
+# Restart — a new ID is generated automatically
+pizzapi runner
+```
+
+### Reset the web hub
+
+To wipe the relay server's database and start fresh (all user accounts and session metadata will be lost):
+
+```bash
+# Stop the web hub first
+pizzapi web stop
+
+# Remove only the database (preserves config, VAPID keys, etc.)
+rm -rf ~/.pizzapi/web/data/
+
+# Restart — a fresh database is created on next start
+pizzapi web
+```
+
+To also reset the web hub configuration (port, VAPID keys, origins):
+
+```bash
+pizzapi web stop
+rm -rf ~/.pizzapi/web/
+pizzapi web   # all defaults restored; new VAPID keys generated
+```
+
+<Aside type="caution">
+  Deleting `~/.pizzapi/web/data/` removes all user accounts. Everyone will need to re-register. Push notification subscriptions are also lost (VAPID keys are in `web/config.json`).
+</Aside>
+
+---
+
+## Uninstalling
+
+### 1. Stop any running processes
+
+```bash
+# Stop the runner daemon (if running)
+pizzapi runner stop
+
+# Stop the web hub (if running)
+pizzapi web stop
+```
+
+### 2. Remove the CLI
+
+<Tabs>
+  <TabItem label="npm">
+  ```bash
+  npm uninstall -g @pizzapi/pizza
+  ```
+  </TabItem>
+  <TabItem label="Bun">
+  ```bash
+  bun remove -g @pizzapi/pizza
+  ```
+  </TabItem>
+  <TabItem label="Pre-built binary">
+  ```bash
+  # Remove the binary from wherever you placed it
+  which pizzapi   # find it
+  sudo rm $(which pizzapi)
+  ```
+  </TabItem>
+</Tabs>
+
+### 3. Remove all PizzaPi data
+
+```bash
+# Removes config, credentials, sessions, web hub data — everything
 rm -rf ~/.pizzapi
+```
+
+Or remove selectively:
+
+```bash
+rm ~/.pizzapi/config.json      # relay credentials only
+rm ~/.pizzapi/auth.json        # AI provider credentials only
+rm -rf ~/.pizzapi/web/         # web hub only
+```
+
+### 4. Remove macOS LaunchAgent (if installed)
+
+If you set up the runner as a macOS LaunchAgent:
+
+```bash
+launchctl unload ~/Library/LaunchAgents/com.pizzapi.runner.plist
+rm ~/Library/LaunchAgents/com.pizzapi.runner.plist
+```
+
+### 5. Remove systemd service (Linux, if installed)
+
+```bash
+sudo systemctl stop pizzapi-runner
+sudo systemctl disable pizzapi-runner
+sudo rm /etc/systemd/system/pizzapi-runner.service
+sudo systemctl daemon-reload
 ```

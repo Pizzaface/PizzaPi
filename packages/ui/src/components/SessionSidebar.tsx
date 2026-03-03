@@ -429,13 +429,24 @@ export const SessionSidebar = React.memo(function SessionSidebar({
 
         const method = currentlyPinned ? "DELETE" : "PUT";
 
-        // Optimistic update
+        // Optimistic update — keep both pinnedSessionIds (Set) and
+        // pinnedSessions (array) in sync so ended-pinned items disappear
+        // immediately when unpinned.
         setPinnedSessionIds((prev) => {
             const next = new Set(prev);
             if (currentlyPinned) next.delete(sessionId);
             else next.add(sessionId);
             return next;
         });
+
+        // Snapshot the removed entry so we can restore it on failure
+        let removedPinnedEntry: PinnedSession | undefined;
+        if (currentlyPinned) {
+            setPinnedSessions((prev) => {
+                removedPinnedEntry = prev.find((s) => s.sessionId === sessionId);
+                return prev.filter((s) => s.sessionId !== sessionId);
+            });
+        }
 
         try {
             const res = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/pin`, {
@@ -456,6 +467,9 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                 else next.delete(sessionId);
                 return next;
             });
+            if (removedPinnedEntry) {
+                setPinnedSessions((prev) => [...prev, removedPinnedEntry!]);
+            }
             setPinError("Failed to update pinned session. Please try again.");
         } finally {
             setPinPending(sessionId, false);
@@ -906,12 +920,12 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                 >
                                                     {/* "Pin" + "End" actions behind the card — only rendered during swipe/reveal (not in select mode) */}
                                                     {!selectMode && (hasOffset || isRevealed) && <div
-                                                        className="absolute inset-y-0 right-0 flex items-stretch"
+                                                        className="absolute inset-y-0 right-0 flex items-stretch rounded-r-lg overflow-hidden"
                                                         style={{ width: REVEAL_WIDTH }}
                                                     >
                                                         <button
                                                             className={cn(
-                                                                "flex flex-col items-center justify-center flex-1 text-xs font-semibold gap-0.5 bg-blue-500 text-white transition-colors",
+                                                                "flex flex-col items-center justify-center w-1/2 text-xs font-semibold gap-0.5 bg-blue-500 text-white transition-colors",
                                                                 isPinPending ? "opacity-60 cursor-not-allowed" : "active:bg-blue-600",
                                                             )}
                                                             onClick={(e) => {
@@ -933,7 +947,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                             <span>{isPinPending ? "Saving" : isPinned ? "Unpin" : "Pin"}</span>
                                                         </button>
                                                         <button
-                                                            className="flex flex-col items-center justify-center flex-1 text-xs font-semibold gap-0.5 bg-red-600 text-white active:bg-red-700 transition-colors"
+                                                            className="flex flex-col items-center justify-center w-1/2 pt-1 text-xs font-semibold gap-0.5 bg-red-600 text-white active:bg-red-700 transition-colors"
                                                             onClick={(e) => {
                                                                 e.stopPropagation();
                                                                 setConfirmEndSessionId(s.sessionId);
@@ -1034,11 +1048,35 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                             />
                                                         </div>
 
+                                                        {/* Pin toggle */}
+                                                        {!selectMode && (
+                                                            <span
+                                                                role="button"
+                                                                tabIndex={-1}
+                                                                className={cn(
+                                                                    "flex-shrink-0 flex items-center justify-center w-5 h-5 rounded transition-colors",
+                                                                    isPinned
+                                                                        ? "text-blue-400 hover:text-blue-300"
+                                                                        : "text-sidebar-foreground/20 hover:text-sidebar-foreground/40",
+                                                                    isPinPending && "opacity-50 pointer-events-none",
+                                                                )}
+                                                                onClick={(e) => {
+                                                                    e.stopPropagation();
+                                                                    e.preventDefault();
+                                                                    if (!isPinPending) togglePinSession(s.sessionId, isPinned);
+                                                                }}
+                                                                onPointerDown={(e) => e.stopPropagation()}
+                                                                aria-label={isPinned ? "Unpin session" : "Pin session"}
+                                                                title={isPinned ? "Unpin" : "Pin"}
+                                                            >
+                                                                <Pin className={cn("h-3.5 w-3.5", isPinned && "fill-blue-400/30")} />
+                                                            </span>
+                                                        )}
+
                                                         {/* Text info */}
                                                         <div className="flex-1 min-w-0">
                                                             <div className="flex items-baseline justify-between gap-1 min-w-0">
-                                                                <span className="truncate text-[0.8rem] font-medium leading-tight flex items-center gap-1">
-                                                                    {isPinned && <Pin className="h-3 w-3 text-blue-400 flex-shrink-0 inline-block" />}
+                                                                <span className="truncate text-[0.8rem] font-medium leading-tight">
                                                                     {s.sessionName?.trim() || `Session ${s.sessionId.slice(0, 8)}…`}
                                                                 </span>
                                                                 <span className="text-[0.65rem] text-sidebar-foreground/45 flex-shrink-0">
@@ -1094,21 +1132,74 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                         ? formatTime(p.lastActiveAt)
                                         : formatRelativeDate(p.startedAt);
                                     const isPinPending = pinPendingSessionIds.has(p.sessionId);
+                                    const swipeOffset = swipeOffsets.get(p.sessionId) ?? 0;
+                                    const isRevealed = revealedSessionId === p.sessionId;
+                                    const hasOffset = swipeOffset !== 0;
+
                                     return (
                                         <div
                                             key={p.sessionId}
-                                            className={cn(
-                                                "flex items-center gap-2.5 w-full min-w-0 px-2.5 py-3 md:py-2.5 rounded-lg transition-colors",
-                                                isActiveSession
-                                                    ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                                                    : "text-sidebar-foreground/60 hover:bg-sidebar-accent/50",
-                                            )}
+                                            className="relative overflow-hidden rounded-lg"
                                         >
+                                            {/* "Unpin" action behind the card — uses REVEAL_WIDTH to match swipe snap distance */}
+                                            {(hasOffset || isRevealed) && <div
+                                                className="absolute inset-y-0 right-0 flex items-stretch rounded-r-lg overflow-hidden"
+                                                style={{ width: REVEAL_WIDTH }}
+                                            >
+                                                <button
+                                                    className={cn(
+                                                        "flex flex-col items-center justify-center w-1/2 text-xs font-semibold gap-0.5 bg-blue-500 text-white transition-colors",
+                                                        isPinPending ? "opacity-60 cursor-not-allowed" : "active:bg-blue-600",
+                                                    )}
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        if (isPinPending) return;
+                                                        togglePinSession(p.sessionId, true);
+                                                        setSwipeOffsets((prev) => {
+                                                            const next = new Map(prev);
+                                                            next.delete(p.sessionId);
+                                                            return next;
+                                                        });
+                                                        setRevealedSessionId(null);
+                                                    }}
+                                                    disabled={isPinPending}
+                                                    aria-label={`Unpin session ${p.sessionId.slice(0, 8)}`}
+                                                >
+                                                    <PinOff className="h-4 w-4" />
+                                                    <span>{isPinPending ? "Saving" : "Unpin"}</span>
+                                                </button>
+                                            </div>}
+
+                                            {/* Sliding session card */}
                                             <button
                                                 type="button"
-                                                onClick={() => onOpenSession(p.sessionId)}
+                                                onClick={() => {
+                                                    if (suppressClickRef.current) { suppressClickRef.current = false; return; }
+                                                    if (isRevealed) {
+                                                        handleCloseRevealed();
+                                                        return;
+                                                    }
+                                                    if (revealedSessionId && revealedSessionId !== p.sessionId) {
+                                                        handleCloseRevealed();
+                                                    }
+                                                    onOpenSession(p.sessionId);
+                                                }}
+                                                onPointerDown={(e) => handleSessionPointerDown(e, p.sessionId)}
+                                                onPointerMove={handleSessionPointerMove}
+                                                onPointerUp={handleSessionPointerUp}
+                                                onContextMenu={(e) => e.preventDefault()}
                                                 title={`View pinned session ${p.sessionId}`}
-                                                className="flex min-w-0 flex-1 items-center gap-2.5 text-left"
+                                                className={cn(
+                                                    "flex items-center gap-2.5 w-full min-w-0 px-2.5 py-3 md:py-2.5 text-left",
+                                                    !hasOffset && "transition-transform duration-200 ease-out",
+                                                    isActiveSession
+                                                        ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                                                        : "bg-sidebar text-sidebar-foreground/60 hover:bg-sidebar-accent/50",
+                                                )}
+                                                style={{
+                                                    transform: hasOffset ? `translateX(${swipeOffset}px)` : undefined,
+                                                    touchAction: "pan-y",
+                                                }}
                                             >
                                                 <div className="relative flex-shrink-0 flex items-center justify-center w-7 h-7 rounded-md bg-sidebar-accent/30">
                                                     <Pin className="size-4 text-blue-400/70" />
@@ -1129,22 +1220,33 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                         <span className="text-[0.6rem] text-sidebar-foreground/25">· ended</span>
                                                     </div>
                                                 </div>
-                                            </button>
 
-                                            <button
-                                                type="button"
-                                                className={cn(
-                                                    "flex-shrink-0 p-1 rounded transition-colors",
-                                                    isPinPending
-                                                        ? "opacity-60 cursor-not-allowed"
-                                                        : "hover:bg-sidebar-accent/80 text-sidebar-foreground/40 hover:text-sidebar-foreground/70",
-                                                )}
-                                                onClick={() => togglePinSession(p.sessionId, true)}
-                                                title="Unpin session"
-                                                aria-label={`Unpin session ${p.sessionId.slice(0, 8)}`}
-                                                disabled={isPinPending}
-                                            >
-                                                <PinOff className="h-3.5 w-3.5" />
+                                                {/* Desktop: inline unpin icon */}
+                                                <div
+                                                    className={cn(
+                                                        "hidden md:flex flex-shrink-0 p-1 rounded transition-colors",
+                                                        isPinPending
+                                                            ? "opacity-60 cursor-not-allowed"
+                                                            : "hover:bg-sidebar-accent/80 text-sidebar-foreground/40 hover:text-sidebar-foreground/70",
+                                                    )}
+                                                    role="button"
+                                                    tabIndex={0}
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        if (!isPinPending) togglePinSession(p.sessionId, true);
+                                                    }}
+                                                    onKeyDown={(e) => {
+                                                        if (e.key === "Enter" || e.key === " ") {
+                                                            e.preventDefault();
+                                                            e.stopPropagation();
+                                                            if (!isPinPending) togglePinSession(p.sessionId, true);
+                                                        }
+                                                    }}
+                                                    title="Unpin session"
+                                                    aria-label={`Unpin session ${p.sessionId.slice(0, 8)}`}
+                                                >
+                                                    <PinOff className="h-3.5 w-3.5" />
+                                                </div>
                                             </button>
                                         </div>
                                     );

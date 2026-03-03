@@ -1,0 +1,162 @@
+---
+title: Standalone & Relay-Free Mode
+description: Run the PizzaPi CLI without a relay server, or use it without the runner daemon — no Docker, no setup required.
+sidebar:
+  order: 0.5
+---
+
+import { Aside, Steps, Tabs, TabItem } from "@astrojs/starlight/components";
+
+Not every workflow needs a relay server or a headless runner. This guide covers:
+
+- **Relay-free mode** — run `pizzapi` with no relay server at all
+- **CLI without the runner daemon** — start interactive sessions without `pizzapi runner`
+- When each mode makes sense and how to configure it
+
+---
+
+## CLI Without the Runner Daemon
+
+The **runner daemon** (`pizzapi runner`) is an optional background process — it's only needed when you want to **spawn sessions headlessly from the web UI** or via the `spawn_session` tool.
+
+For everyday interactive coding sessions, you do **not** need the runner:
+
+```bash
+# Just run this — no pizzapi runner required
+pizzapi
+```
+
+That starts a full interactive `pi` session that streams live to your configured relay. The runner daemon adds remote-spawn capability on top of this, but is completely optional.
+
+| Mode | What you need | What you get |
+|------|--------------|--------------|
+| Interactive session | `pizzapi` | Full coding session, streams to relay |
+| Headless / remote spawn | `pizzapi runner` + `pizzapi` (in worker) | Spawn sessions from web UI or `spawn_session` tool |
+
+<Aside type="tip">
+  Start with just `pizzapi`. Add `pizzapi runner` only when you want to spawn sessions remotely.
+</Aside>
+
+---
+
+## Running Without a Relay Server
+
+Sometimes you want to use the `pizzapi` CLI — with all its extensions, skills, and tools — but without connecting to any relay server. Common reasons:
+
+- Local development or offline use
+- Air-gapped environments
+- Just want the `pi` agent experience without setting up infrastructure
+- Testing PizzaPi without running a server
+
+### Method 1: Skip on First Run (Session-Only)
+
+When you run `pizzapi` for the first time without any saved config, the setup wizard will prompt:
+
+```text
+Skip setup and continue without relay? [y/N]
+```
+
+Type `y` and press Enter. The session starts immediately with no relay connection. This skips setup for **this run only** — the prompt will appear again next time.
+
+### Method 2: Permanently Disable the Relay
+
+To disable the relay for all future sessions, set `relayUrl` to `"off"` in your global config:
+
+```jsonc
+// ~/.pizzapi/config.json
+{
+  "relayUrl": "off"
+}
+```
+
+Or pass it as an environment variable:
+
+```bash
+PIZZAPI_RELAY_URL=off pizzapi
+```
+
+With either method:
+
+- No setup wizard appears on first run
+- No relay connection is attempted
+- All other features (skills, tools, hooks, MCP) work normally
+- Session history is still saved locally in `~/.pizzapi/`
+
+<Aside type="note">
+  The relay-disabled check is case-insensitive — `"off"`, `"OFF"`, and `"Off"` all work.
+</Aside>
+
+### Method 3: Use an Environment Variable for One Session
+
+```bash
+# Relay disabled for this invocation only
+PIZZAPI_RELAY_URL=off pizzapi
+
+# — or start with a specific relay for this invocation:
+PIZZAPI_RELAY_URL=wss://relay.example.com pizzapi
+```
+
+---
+
+## What Still Works Without a Relay
+
+When relay is disabled, everything the `pi` agent core provides continues to work:
+
+| Feature | Works offline? |
+|---------|---------------|
+| Interactive sessions | ✅ Yes |
+| Skills & skill files | ✅ Yes |
+| MCP tools | ✅ Yes |
+| Hooks (pre/post tool) | ✅ Yes |
+| Session history (local) | ✅ Yes |
+| Live web UI streaming | ❌ No relay |
+| Remote session spawning | ❌ No relay |
+| `spawn_session` tool | ❌ No relay |
+| Web push notifications | ❌ No relay |
+
+---
+
+## Reconnecting to a Relay Later
+
+Changed your mind? Connect to a relay at any time without losing your local session history:
+
+```bash
+pizzapi setup
+```
+
+This re-runs the full setup wizard: prompts for the relay URL, email, and password, then saves the API key to `~/.pizzapi/config.json`.
+
+If you previously set `"relayUrl": "off"` in your config, remove it first:
+
+```bash
+# Edit ~/.pizzapi/config.json and delete the "relayUrl" line
+# — or — run setup which will overwrite the relevant keys:
+pizzapi setup
+```
+
+<Aside type="tip">
+  After running `pizzapi setup`, also add `"relayUrl": "wss://your-relay-url"` to `~/.pizzapi/config.json` if your relay isn't at the default `localhost:7492`. The setup wizard authenticates you but doesn't persist the relay URL to the config file — only the API key is saved.
+</Aside>
+
+---
+
+## Config Snippet: Relay-Free Global Setup
+
+```jsonc
+// ~/.pizzapi/config.json — minimal config for relay-free use
+{
+  "relayUrl": "off",
+  "appendSystemPrompt": "This is a TypeScript project. Always use strict mode."
+}
+```
+
+## Config Snippet: Relay-Free Per-Project Setup
+
+```jsonc
+// my-project/.pizzapi/config.json
+{
+  "relayUrl": "off"
+}
+```
+
+Project-level config overrides the global one, so this disables the relay only for sessions started in that directory.

@@ -53,7 +53,7 @@ interface RelayModelInfo {
     contextWindow: number;
 }
 
-const RELAY_DEFAULT = "ws://localhost:3001";
+const RELAY_DEFAULT = "ws://localhost:7492";
 const RELAY_STATUS_KEY = "relay";
 const ASK_USER_TOOL_NAME = "AskUserQuestion";
 
