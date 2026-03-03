@@ -179,6 +179,22 @@ describe("listPinnedRelaySessionsForUser", () => {
         expect(ids).toContain("s-only-pinned");
         expect(ids).not.toContain("s-only-unpinned");
     });
+
+    it("returns pinned sessions even when total session count exceeds the general cap (regression: LIMIT applied before pin filter)", async () => {
+        // Insert 55 unpinned sessions so they fill the default 50-row cap
+        for (let i = 0; i < 55; i++) {
+            await insertSession({ sessionId: `s-cap-unpinned-${i}`, isPinned: 0, isEphemeral: false });
+        }
+        // Insert a pinned session that would have been dropped under the old implementation
+        await insertSession({ sessionId: "s-cap-pinned", isPinned: 1, isEphemeral: false });
+
+        const sessions = await listPinnedRelaySessionsForUser(TEST_USER_ID);
+        const ids = sessions.map((s) => s.sessionId);
+
+        expect(ids).toContain("s-cap-pinned");
+        // All returned sessions must be pinned
+        expect(sessions.every((s) => s.isPinned)).toBe(true);
+    });
 });
 
 describe("getPersistedRelaySessionSnapshot", () => {

@@ -286,10 +286,38 @@ export async function listPersistedRelaySessionsForUser(
 
 export async function listPinnedRelaySessionsForUser(
     userId: string,
-    limit: number = 50,
 ): Promise<PersistedRelaySessionSummary[]> {
-    const sessions = await listPersistedRelaySessionsForUser(userId, limit);
-    return sessions.filter((session) => session.isPinned);
+    // Query pinned rows directly so the result is never truncated by the
+    // general-session cap used in listPersistedRelaySessionsForUser.
+    const rows = await getKysely()
+        .selectFrom("relay_session")
+        .select([
+            "id as sessionId",
+            "cwd",
+            "shareUrl",
+            "startedAt",
+            "lastActiveAt",
+            "endedAt",
+            "isEphemeral",
+            "expiresAt",
+            "isPinned",
+        ])
+        .where("userId", "=", userId)
+        .where("isPinned", "=", 1)
+        .orderBy("lastActiveAt", "desc")
+        .execute();
+
+    return rows.map((row) => ({
+        sessionId: row.sessionId,
+        cwd: row.cwd,
+        shareUrl: row.shareUrl,
+        startedAt: row.startedAt,
+        lastActiveAt: row.lastActiveAt,
+        endedAt: row.endedAt,
+        isEphemeral: row.isEphemeral === 1,
+        expiresAt: row.expiresAt,
+        isPinned: true,
+    }));
 }
 
 /**
