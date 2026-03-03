@@ -119,8 +119,8 @@ PizzaPi stores all its data under `~/.pizzapi/`. Here's what each file is for:
 | `~/.pizzapi/config.json` | `pizzapi setup` / manual | CLI config: API key, relay URL, skills, hooks |
 | `~/.pizzapi/auth.json` | `/login` inside a session | AI provider credentials (OAuth tokens, API keys) |
 | `~/.pizzapi/models.json` | first session start | Cached model registry |
-| `~/.pizzapi/runner.json` | `pizzapi runner` (first start) | Runner identity and name (auto-generated) |
-| `~/.pizzapi/runner.pid` | `pizzapi runner` | PID of the running supervisor process |
+| `~/.pizzapi/runner.json` | `pizzapi runner` (first start) | Runner identity, name, and PID tracking (auto-generated) |
+| `~/.pizzapi/usage-cache.json` | `pizzapi runner` | Shared provider quota cache (written by daemon, read by workers) |
 | `~/.pizzapi/logs/` | macOS LaunchAgent setup | Log files for runner stdout/stderr |
 | `~/.pizzapi/web/config.json` | `pizzapi web` | Web hub settings (port, VAPID keys, origins) |
 | `~/.pizzapi/web/compose.yml` | `pizzapi web` | Auto-generated Docker Compose file (regenerated each run) |

@@ -136,7 +136,7 @@ docker compose -f docker/compose.yml --profile dev up
 | Service | Port | Description |
 |---------|------|-------------|
 | `redis` | 6379 | Redis |
-| `server` (dev) | 3001 | Bun dev server (hot-reload) |
+| `server` (dev) | 7492 | Bun dev server (hot-reload) |
 | `ui` (dev) | 5173 | Vite UI dev server |
 
 Or run without Docker:
@@ -145,7 +145,7 @@ Or run without Docker:
 # Prerequisites: Bun, Redis running locally
 bun install
 bun run dev
-# API → http://localhost:3001
+# API → http://localhost:7492
 # UI  → http://localhost:5173
 ```
 

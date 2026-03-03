@@ -362,7 +362,7 @@ Run \`pizza <command> --help\` for command-specific help.
 
     // First-run: no API key configured — prompt setup before launching TUI
     const hasApiKey = !!(process.env.PIZZAPI_API_KEY ?? config.apiKey);
-    const relayDisabled = (process.env.PIZZAPI_RELAY_URL ?? "").toLowerCase() === "off";
+    const relayDisabled = (process.env.PIZZAPI_RELAY_URL ?? config.relayUrl ?? "").toLowerCase() === "off";
     if (!hasApiKey && !relayDisabled) {
         await runSetup();
     }
