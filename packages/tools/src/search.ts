@@ -2,10 +2,15 @@ import { Type } from "@mariozechner/pi-ai";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { spawn } from "child_process";
 
+/** Maximum bytes of stderr to retain in memory. */
+const MAX_STDERR_BYTES = 512;
+
 interface SpawnResult {
     lines: string[];
     exitCode: number | null;
     signal: string | null;
+    /** True when the child was killed because it hit the line cap. */
+    truncated: boolean;
     error?: string;
 }
 
@@ -29,10 +34,15 @@ function spawnHeadLines(
         const collected: string[] = [];
         let partial = "";
         let done = false;
-        let stderrChunks: string[] = [];
+        let stderr = "";
 
         child.stderr!.on("data", (chunk: Buffer) => {
-            stderrChunks.push(chunk.toString());
+            if (stderr.length < MAX_STDERR_BYTES) {
+                stderr += chunk.toString();
+                if (stderr.length > MAX_STDERR_BYTES) {
+                    stderr = stderr.slice(0, MAX_STDERR_BYTES);
+                }
+            }
         });
 
         child.stdout.on("data", (chunk: Buffer) => {
@@ -63,7 +73,8 @@ function spawnHeadLines(
                 lines: collected.slice(0, maxLines),
                 exitCode: code,
                 signal: signal as string | null,
-                error: stderrChunks.length ? stderrChunks.join("").slice(0, 500) : undefined,
+                truncated: done,
+                error: stderr || undefined,
             });
         });
 
@@ -72,10 +83,29 @@ function spawnHeadLines(
                 lines: collected.slice(0, maxLines),
                 exitCode: null,
                 signal: null,
+                truncated: done,
                 error: err.message,
             });
         });
     });
+}
+
+/**
+ * Determine whether a SpawnResult represents a real failure (vs. "no matches").
+ *
+ * - `rg` exit 1 = no matches (normal), exit 2+ = error.
+ * - `find` exit 0 = success (possibly no matches), exit 1+ = error.
+ * - exitCode null with no truncation = timeout or command not found.
+ */
+function isFailure(result: SpawnResult, type: string): boolean {
+    // Truncated kill is intentional, not a failure
+    if (result.truncated) return false;
+    // exitCode null means process didn't exit normally (timeout, ENOENT, etc.)
+    if (result.exitCode === null) return true;
+    // rg: exit 1 = no matches, exit 0 = matches, exit 2+ = error
+    if (type === "content") return result.exitCode >= 2;
+    // find: exit 0 = success (no matches is just empty stdout), exit 1+ = error
+    return result.exitCode !== 0;
 }
 
 export const searchTool: AgentTool = {
@@ -110,9 +140,13 @@ export const searchTool: AgentTool = {
         let output: string;
         if (result.lines.length > 0) {
             output = result.lines.join("\n");
-        } else if (result.error && result.exitCode !== 1) {
-            // exitCode 1 is normal "no matches" for rg/find — anything else is a real error
-            output = `Search failed: ${result.error.split("\n")[0]}`;
+        } else if (isFailure(result, type)) {
+            const reason = result.error?.split("\n")[0];
+            if (result.exitCode === null && !result.truncated) {
+                output = `Search failed: ${reason || "timed out or command not found"}`;
+            } else {
+                output = `Search failed: ${reason || `exit code ${result.exitCode}`}`;
+            }
         } else {
             output = "No matches found";
         }

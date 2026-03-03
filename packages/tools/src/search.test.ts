@@ -91,14 +91,22 @@ describe("searchTool", () => {
 
     test("does not allow shell injection via path", async () => {
         const dir = makeTempDir();
-        // A malicious path that would execute a command if passed to a shell
+        // A malicious path that would execute a command if passed to a shell.
+        // With spawn (no shell), `; echo INJECTED` is part of the literal path,
+        // so find treats it as a (nonexistent) directory — no command execution.
         const result = await searchTool.execute("test-inject-2", {
             pattern: "*.txt",
             path: `${dir}; echo INJECTED`,
             type: "files",
         });
         const text = result.content[0].text;
-        expect(text).not.toContain("INJECTED");
+        // The output should be an error (nonexistent path) or no matches —
+        // NOT actual output from `echo INJECTED` as a separate command.
+        // The error message may echo the path name, so we check it's a
+        // Search failed message (find error) rather than bare "INJECTED" output.
+        expect(text.startsWith("Search failed:") || text === "No matches found").toBe(true);
+        // Crucially, no files should be returned (injection didn't work)
+        expect(text).not.toContain("hello.txt");
     });
 
     test("truncates output to max lines", async () => {
@@ -196,16 +204,51 @@ describe("searchTool", () => {
         expect(text === "No matches found" || text.startsWith("Search failed:")).toBe(true);
     });
 
-    test("surfaces errors for missing commands or bad paths", async () => {
-        const result = await searchTool.execute("test-error", {
+    test("surfaces find errors for nonexistent paths instead of 'No matches'", async () => {
+        const result = await searchTool.execute("test-find-err", {
             pattern: "*.txt",
             path: "/nonexistent/path/that/does/not/exist",
             type: "files",
         });
         const text = result.content[0].text;
-        // Should not silently say "No matches found" — should indicate failure
-        // (find will error on nonexistent path, or return no results)
-        expect(typeof text).toBe("string");
-        expect(text.length).toBeGreaterThan(0);
+        // find exits non-zero for bad paths — must surface as error, not "No matches found"
+        expect(text).toStartWith("Search failed:");
+        expect(text).not.toBe("No matches found");
+    });
+
+    test("surfaces rg errors for invalid regex", async () => {
+        try {
+            const r = spawnSync("rg", ["--version"]);
+            if (r.status !== 0) throw new Error();
+        } catch {
+            console.log("rg not available, skipping rg error test");
+            return;
+        }
+        const dir = makeTempDir();
+        // Invalid regex — rg exits with code 2
+        const result = await searchTool.execute("test-rg-err", {
+            pattern: "[invalid",
+            path: dir,
+            type: "content",
+        });
+        const text = result.content[0].text;
+        expect(text).toStartWith("Search failed:");
+    });
+
+    test("rg exit 1 (no matches) returns 'No matches found', not an error", async () => {
+        try {
+            const r = spawnSync("rg", ["--version"]);
+            if (r.status !== 0) throw new Error();
+        } catch {
+            console.log("rg not available, skipping rg no-match test");
+            return;
+        }
+        const dir = makeTempDir();
+        const result = await searchTool.execute("test-rg-nomatch", {
+            pattern: "zzz_definitely_not_present_zzz",
+            path: dir,
+            type: "content",
+        });
+        expect(result.content[0].text).toBe("No matches found");
     });
 });
