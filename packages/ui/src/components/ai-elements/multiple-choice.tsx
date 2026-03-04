@@ -36,12 +36,19 @@ export function MultipleChoiceQuestions({
   const [customTexts, setCustomTexts] = React.useState<Map<number, string>>(new Map());
   // Guard against double-submit
   const [isSubmitting, setIsSubmitting] = React.useState(false);
+  // Track the safety-net timeout so it can be cleared on prompt change
+  const submitTimeoutRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Reset state when the prompt identity changes (new AskUserQuestion)
   React.useEffect(() => {
     setSelections(new Map());
     setCustomTexts(new Map());
     setIsSubmitting(false);
+    // Clear any lingering submit timeout from the previous prompt
+    if (submitTimeoutRef.current !== null) {
+      clearTimeout(submitTimeoutRef.current);
+      submitTimeoutRef.current = null;
+    }
   }, [promptKey]);
 
   const allAnswered = questions.every((q, idx) => {
@@ -80,18 +87,22 @@ export function MultipleChoiceQuestions({
     });
     // Safety-net timeout: if the pending question hasn't cleared after 10s
     // (e.g. socket emit succeeded but message was dropped), unlock the button
-    // so the user can retry. The timeout is cleared by the promptKey effect
-    // if the question resolves normally.
-    const timeout = setTimeout(() => setIsSubmitting(false), 10_000);
+    // so the user can retry. Cleared by the promptKey effect on question
+    // change, or explicitly on immediate failure.
+    if (submitTimeoutRef.current !== null) clearTimeout(submitTimeoutRef.current);
+    submitTimeoutRef.current = setTimeout(() => {
+      submitTimeoutRef.current = null;
+      setIsSubmitting(false);
+    }, 10_000);
     Promise.resolve(onSubmit(answers))
       .then((result) => {
         if (result === false) {
-          clearTimeout(timeout);
+          if (submitTimeoutRef.current !== null) { clearTimeout(submitTimeoutRef.current); submitTimeoutRef.current = null; }
           setIsSubmitting(false);
         }
       })
       .catch(() => {
-        clearTimeout(timeout);
+        if (submitTimeoutRef.current !== null) { clearTimeout(submitTimeoutRef.current); submitTimeoutRef.current = null; }
         setIsSubmitting(false);
       });
   };

@@ -170,12 +170,15 @@ async function checkPushNotifications(
                 options = (args.options as unknown[]).filter((o): o is string => typeof o === "string" && o.trim().length > 0);
             }
         }
-        // Multi-question: force open-app flow (no quick-reply buttons)
+        // Quick-reply actions require: single question + collab mode enabled.
+        // Multi-question prompts need the full UI; non-collab sessions reject
+        // push answers with 403, so showing action buttons would be misleading.
+        const canQuickReply = questionCount <= 1 && session?.collabMode === true;
         const toolCallId = typeof event.toolCallId === "string" ? event.toolCallId : undefined;
         if (toolCallId) {
             void setPushPendingQuestion(sessionId, toolCallId);
         }
-        notifyAgentNeedsInput(userId, sessionId, question, sName, questionCount <= 1 ? options : undefined, toolCallId);
+        notifyAgentNeedsInput(userId, sessionId, question, sName, canQuickReply ? options : undefined, toolCallId);
     }
 
     // Clear push-pending state when AskUserQuestion finishes (answered or cancelled)
