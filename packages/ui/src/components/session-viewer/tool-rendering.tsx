@@ -57,6 +57,7 @@ import {
   CheckMessagesCard,
   GetSessionIdCard,
 } from "@/components/session-viewer/cards/InterAgentCards";
+import { AskUserQuestionCard } from "@/components/session-viewer/cards/AskUserQuestionCard";
 
 export function extToLang(path: string): BundledLanguage {
   const ext = path.split(".").pop()?.toLowerCase() ?? "";
@@ -667,6 +668,15 @@ export function renderGroupedToolExecution(
         </div>
       ) : null;
     }
+  } else if (norm === "askuserquestion" || norm.endsWith(".askuserquestion")) {
+    const resultText = hasOutput ? extractTextFromToolContent(content) : null;
+    card = (
+      <AskUserQuestionCard
+        toolInput={toolInput}
+        resultText={resultText}
+        isStreaming={isStreaming}
+      />
+    );
   } else {
     // Default / Generic tool card
     const outputText = hasOutput ? extractTextFromToolContent(content) : null;
