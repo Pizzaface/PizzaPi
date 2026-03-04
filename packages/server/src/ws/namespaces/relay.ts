@@ -125,17 +125,15 @@ function trackThinkingDeltas(sessionId: string, event: Record<string, unknown>):
 
 // ── Push notification checks ─────────────────────────────────────────────────
 
-async function checkPushNotifications(
+/**
+ * Manage the push-pending Redis key for AskUserQuestion lifecycle.
+ * Awaited only for AskUserQuestion start/end events to avoid
+ * blocking the hot relay path for high-frequency events.
+ */
+async function trackPushPendingState(
     sessionId: string,
     event: Record<string, unknown>,
 ): Promise<void> {
-    const session = await getSharedSession(sessionId);
-    const userId = session?.userId;
-    if (!userId) return;
-
-    // ── Push-pending state management (must run regardless of viewer count) ──
-    // Set/clear the Redis key that /api/push/answer uses to validate replies.
-    // Awaited to ensure ordering: set completes before any clear can race.
     if (event.type === "tool_execution_start" && event.toolName === "AskUserQuestion") {
         const toolCallId = typeof event.toolCallId === "string" ? event.toolCallId : undefined;
         if (toolCallId) {
@@ -145,8 +143,16 @@ async function checkPushNotifications(
     if (event.type === "tool_execution_end" && event.toolName === "AskUserQuestion") {
         await clearPushPendingQuestion(sessionId);
     }
+}
 
-    // ── Push notifications (only when no viewers are connected) ──────────────
+async function checkPushNotifications(
+    sessionId: string,
+    event: Record<string, unknown>,
+): Promise<void> {
+    const session = await getSharedSession(sessionId);
+    const userId = session?.userId;
+    if (!userId) return;
+
     const viewerCount = await getViewerCount(sessionId);
     if (viewerCount > 0) return;
 
@@ -285,10 +291,14 @@ export function registerRelayNamespace(io: SocketIOServer): void {
             // Publish to viewers via Redis cache + Socket.IO rooms
             await publishSessionEvent(sessionId, eventToPublish);
 
-            // Push notifications + pending-state tracking.
-            // Awaited to ensure set/clear ordering for push-pending Redis key
-            // (tool_execution_start must complete before tool_execution_end clears).
-            await checkPushNotifications(sessionId, event);
+            // Track push-pending state for AskUserQuestion (awaited to ensure
+            // set/clear ordering; only runs for AskUserQuestion start/end events).
+            if (event.toolName === "AskUserQuestion" &&
+                (event.type === "tool_execution_start" || event.type === "tool_execution_end")) {
+                await trackPushPendingState(sessionId, event);
+            }
+            // Push notifications (fire-and-forget — not on hot path)
+            void checkPushNotifications(sessionId, event);
         });
 
         // ── session_end ──────────────────────────────────────────────────────

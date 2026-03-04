@@ -13,7 +13,7 @@ import {
     recordRunnerSession,
     registerTerminal,
 } from "../ws/sio-registry.js";
-import { getPushPendingQuestion } from "../ws/sio-state.js";
+import { consumePushPendingQuestion } from "../ws/sio-state.js";
 import { sendSkillCommand, sendRunnerCommand } from "../ws/namespaces/runner.js";
 import { waitForSpawnAck } from "../ws/runner-control.js";
 import { getApiKeyRateLimitConfig, getAuth, getKysely } from "../auth.js";
@@ -960,11 +960,10 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
             );
         }
 
-        // Reject stale/mismatched push answers. The pending toolCallId is set
-        // in Redis when the push notification is sent (tool_execution_start)
-        // and cleared when the tool finishes (tool_execution_end). This avoids
-        // the heartbeat-lag race condition.
-        const pendingToolCallId = await getPushPendingQuestion(body.sessionId);
+        // Atomically consume the pending toolCallId (get + delete).
+        // This prevents replay/duplicate submissions — only the first
+        // POST for a given toolCallId succeeds.
+        const pendingToolCallId = await consumePushPendingQuestion(body.sessionId);
         if (!pendingToolCallId) {
             return Response.json(
                 { error: "No question is currently pending for this session" },

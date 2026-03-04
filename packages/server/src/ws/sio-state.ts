@@ -573,6 +573,16 @@ export async function getPushPendingQuestion(sessionId: string): Promise<string 
     return r.get(pushPendingKey(sessionId));
 }
 
+/**
+ * Atomically consume (get + delete) the pending push-notified toolCallId.
+ * Returns the toolCallId if it was present, or null.
+ * Uses GETDEL for single-use acceptance — prevents replay/duplicate submissions.
+ */
+export async function consumePushPendingQuestion(sessionId: string): Promise<string | null> {
+    const r = requireRedis();
+    return r.getDel(pushPendingKey(sessionId));
+}
+
 /** Clear the push-pending question (tool execution ended). */
 export async function clearPushPendingQuestion(sessionId: string): Promise<void> {
     const r = requireRedis();
