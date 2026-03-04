@@ -321,19 +321,17 @@ describe("searchTool", () => {
     });
 
     test("expands ~ to home directory in path", async () => {
-        const home = process.env.HOME || process.env.USERPROFILE || "";
-        if (!home) {
-            console.log("No HOME set, skipping tilde expansion test");
-            return;
-        }
-        // Create a temp subdirectory inside home with a unique name
-        const subdir = `.pizzapi-search-test-${Date.now()}`;
-        const testDir = join(home, subdir);
-        mkdirSync(testDir);
-        writeFileSync(join(testDir, "tilde-marker.txt"), "tilde-test\n");
+        // Temporarily override HOME to a controlled temp directory so the test
+        // doesn't depend on the real home dir (which may not be writable in CI).
+        const origHome = process.env.HOME;
+        const fakeHome = mkdtempSync(join(tmpdir(), "search-tilde-home-"));
+        const subdir = "project";
+        mkdirSync(join(fakeHome, subdir));
+        writeFileSync(join(fakeHome, subdir, "tilde-marker.txt"), "tilde-test\n");
 
+        process.env.HOME = fakeHome;
         try {
-            // Search with ~/subdir path — should expand and find the file
+            // Search with ~/subdir path — should expand to fakeHome/subdir
             const result = await searchTool.execute("test-tilde", {
                 pattern: "*.txt",
                 path: `~/${subdir}`,
@@ -341,16 +339,17 @@ describe("searchTool", () => {
             });
             expect(result.content[0].text).toContain("tilde-marker.txt");
 
-            // Content search with ~/subdir should also resolve
-            const result2 = await searchTool.execute("test-tilde-content", {
-                pattern: "tilde-test",
-                path: `~/${subdir}`,
-                type: "content",
+            // Bare ~ should expand to fakeHome
+            const result2 = await searchTool.execute("test-tilde-bare", {
+                pattern: "*.txt",
+                path: "~",
+                type: "files",
             });
-            expect(result2.content[0].text).toContain("tilde-test");
+            expect(result2.content[0].text).toContain("tilde-marker.txt");
         } finally {
+            process.env.HOME = origHome;
             const { rmSync } = require("fs");
-            try { rmSync(testDir, { recursive: true }); } catch {}
+            try { rmSync(fakeHome, { recursive: true }); } catch {}
         }
     });
 
