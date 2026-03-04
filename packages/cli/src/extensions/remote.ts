@@ -33,7 +33,6 @@ interface AskUserQuestionParams {
     questions?: AskUserQuestionItem[];
     /** Legacy single-question format (auto-wrapped into questions[]) */
     question?: string;
-    placeholder?: string;
     options?: string[];
 }
 
@@ -1792,7 +1791,6 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                     description: "(Legacy) Predefined choices. Prefer `questions` array.",
                 },
             },
-            required: ["questions"],
             additionalProperties: false,
         } as any,
         async execute(toolCallId, rawParams, signal, onUpdate, ctx) {

@@ -58,6 +58,7 @@ import { cn } from "@/lib/utils";
 import { formatPathTail } from "@/lib/path";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { MultipleChoiceQuestions } from "@/components/ai-elements/multiple-choice";
+import { formatAnswersForAgent } from "@/lib/ask-user-questions";
 import { AlertTriangleIcon, ArrowDownIcon, BookOpen, CheckCircle2, ChevronsUpDown, Circle, CircleDashed, Loader2, MessageSquare, OctagonX, PaperclipIcon, Plus, Zap, Clock, X, Trash2, TerminalIcon, DownloadIcon, XCircle, FolderTree } from "lucide-react";
 import { AtMentionPopover } from "@/components/AtMentionPopover";
 import type { Entry as AtMentionEntry } from "@/hooks/useAtMentionFiles";
@@ -1249,15 +1250,11 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
         {pendingQuestion && sessionId && pendingQuestion.questions.length > 0 && (
           <MultipleChoiceQuestions
             questions={pendingQuestion.questions}
+            promptKey={pendingQuestion.toolCallId}
             className="mb-2"
             onSubmit={(answers) => {
               if (!onSendInput) return;
-              // For single question, send just the answer text; for multiple, send JSON
-              const keys = Object.keys(answers);
-              const answerText = keys.length === 1
-                ? answers[keys[0]]
-                : JSON.stringify(answers);
-              onSendInput(answerText);
+              onSendInput(formatAnswersForAgent(answers));
               setInput("");
             }}
           />

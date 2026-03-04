@@ -68,32 +68,7 @@ import {
   shouldDeduplicateInput,
   type InputDedupeState,
 } from "@/lib/input-dedupe";
-
-/** Parse pending question data from various formats (heartbeat, tool_execution_start, etc.) */
-function parsePendingQuestions(data: Record<string, unknown> | undefined | null): Array<{ question: string; options: string[] }> {
-  if (!data) return [];
-  // New format: questions array
-  if (Array.isArray(data.questions)) {
-    const result: Array<{ question: string; options: string[] }> = [];
-    for (const q of data.questions) {
-      if (q && typeof q === "object" && typeof (q as any).question === "string" && (q as any).question.trim()) {
-        const opts = Array.isArray((q as any).options)
-          ? ((q as any).options as unknown[]).filter((o): o is string => typeof o === "string")
-          : [];
-        result.push({ question: (q as any).question.trim(), options: opts });
-      }
-    }
-    if (result.length > 0) return result;
-  }
-  // Legacy format: single question + options
-  if (typeof data.question === "string" && data.question.trim()) {
-    const opts = Array.isArray(data.options)
-      ? (data.options as unknown[]).filter((o): o is string => typeof o === "string")
-      : [];
-    return [{ question: (data.question as string).trim(), options: opts }];
-  }
-  return [];
-}
+import { parsePendingQuestions } from "@/lib/ask-user-questions";
 
 function toRelayMessage(raw: unknown, fallbackId: string): RelayMessage | null {
   if (!raw || typeof raw !== "object") return null;
@@ -1577,10 +1552,11 @@ export function App() {
     if (type === "tool_execution_update" && evt.toolName === "AskUserQuestion") {
       const partial = evt.partialResult as Record<string, unknown> | undefined;
       const details = partial?.details as Record<string, unknown> | undefined;
-      // Try from partial first, then nested details
-      const questions = parsePendingQuestions(partial) || parsePendingQuestions(details);
+      // Try from partial first, then nested details (parsePendingQuestions returns [] not falsy)
+      const fromPartial = parsePendingQuestions(partial);
+      const questions = fromPartial.length > 0 ? fromPartial : parsePendingQuestions(details);
 
-      if (questions && questions.length > 0) {
+      if (questions.length > 0) {
         setPendingQuestion({
           toolCallId: typeof evt.toolCallId === "string" ? evt.toolCallId : "ask-user-question",
           questions,

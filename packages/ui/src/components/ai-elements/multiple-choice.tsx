@@ -8,9 +8,14 @@ export interface MultipleChoiceQuestion {
   options: string[];
 }
 
+/** Answer payload: array of { question, answer } tuples (preserves order, handles duplicate questions). */
+export type MultipleChoiceAnswers = Array<{ question: string; answer: string }>;
+
 export interface MultipleChoiceQuestionsProps {
   questions: MultipleChoiceQuestion[];
-  onSubmit: (answers: Record<string, string>) => void;
+  /** Stable identity for this prompt (e.g. toolCallId). Used to reset selections on new prompt. */
+  promptKey?: string;
+  onSubmit: (answers: MultipleChoiceAnswers) => void;
   className?: string;
 }
 
@@ -21,6 +26,7 @@ export interface MultipleChoiceQuestionsProps {
  */
 export function MultipleChoiceQuestions({
   questions,
+  promptKey,
   onSubmit,
   className,
 }: MultipleChoiceQuestionsProps) {
@@ -29,15 +35,11 @@ export function MultipleChoiceQuestions({
   // Track custom text per question (used when "Write your own…" is selected)
   const [customTexts, setCustomTexts] = React.useState<Map<number, string>>(new Map());
 
-  // Reset state when questions change (e.g. new AskUserQuestion)
-  const questionsKey = React.useMemo(() => questions.map(q => q.question).join("\0"), [questions]);
+  // Reset state when the prompt identity changes (new AskUserQuestion)
   React.useEffect(() => {
     setSelections(new Map());
     setCustomTexts(new Map());
-  }, [questionsKey]);
-
-  // "Write your own…" is always the last option index (= options.length)
-  const isWriteYourOwn = (qIdx: number) => selections.get(qIdx) === questions[qIdx].options.length;
+  }, [promptKey]);
 
   const allAnswered = questions.every((q, idx) => {
     const sel = selections.get(idx);
@@ -65,14 +67,13 @@ export function MultipleChoiceQuestions({
 
   const handleSubmit = () => {
     if (!allAnswered) return;
-    const answers: Record<string, string> = {};
-    for (let i = 0; i < questions.length; i++) {
-      const q = questions[i];
+    const answers: MultipleChoiceAnswers = questions.map((q, i) => {
       const sel = selections.get(i)!;
-      answers[q.question] = sel === q.options.length
+      const answer = sel === q.options.length
         ? (customTexts.get(i) ?? "").trim()
         : q.options[sel];
-    }
+      return { question: q.question, answer };
+    });
     onSubmit(answers);
   };
 
@@ -94,46 +95,58 @@ export function MultipleChoiceQuestions({
           const selected = selections.get(qIdx);
           const writeYourOwnIdx = q.options.length;
           const isCustom = selected === writeYourOwnIdx;
+          const groupName = `mc-q-${promptKey ?? "default"}-${qIdx}`;
 
           return (
-            <div key={qIdx} className="px-3 py-3">
+            <fieldset key={qIdx} className="px-3 py-3 border-0">
               {/* Question text */}
-              <p className="text-sm font-medium leading-relaxed text-foreground/90 whitespace-pre-wrap mb-2.5">
+              <legend className="text-sm font-medium leading-relaxed text-foreground/90 whitespace-pre-wrap mb-2.5 w-full float-left">
                 {questions.length > 1 && (
                   <span className="inline-flex items-center justify-center size-5 rounded-full bg-violet-500/20 text-[11px] font-semibold text-violet-300 mr-1.5 align-text-bottom">
                     {qIdx + 1}
                   </span>
                 )}
                 {q.question}
-              </p>
+              </legend>
 
               {/* Options as radio buttons */}
-              <div className="space-y-1.5">
+              <div className="space-y-1.5 clear-both" role="radiogroup" aria-label={q.question}>
                 {q.options.map((option, optIdx) => {
                   // Skip "Type your own" entries from the agent — we provide our own
                   const isAgentTypeYourOwn = option.toLowerCase().replace(/[^a-z]/g, "") === "typeyourown";
                   if (isAgentTypeYourOwn) return null;
 
                   const isSelected = selected === optIdx;
+                  const inputId = `${groupName}-opt-${optIdx}`;
 
                   return (
                     <label
                       key={optIdx}
+                      htmlFor={inputId}
                       className={cn(
                         "flex items-center gap-2.5 rounded-md px-2.5 py-2 text-sm cursor-pointer transition-all",
                         isSelected
                           ? "border border-violet-500/40 bg-violet-500/15 text-violet-100"
                           : "border border-transparent hover:border-violet-500/20 hover:bg-violet-500/[0.07] text-foreground/70 hover:text-foreground/90",
                       )}
-                      onClick={() => handleSelect(qIdx, optIdx)}
                     >
-                      {/* Radio circle */}
+                      {/* Hidden real radio input for accessibility */}
+                      <input
+                        type="radio"
+                        id={inputId}
+                        name={groupName}
+                        value={option}
+                        checked={isSelected}
+                        onChange={() => handleSelect(qIdx, optIdx)}
+                        className="sr-only"
+                      />
+                      {/* Visual radio circle */}
                       <span className={cn(
                         "flex size-4 shrink-0 items-center justify-center rounded-full border transition-all",
                         isSelected
                           ? "border-violet-400 bg-violet-500"
                           : "border-violet-500/30 bg-transparent",
-                      )}>
+                      )} aria-hidden="true">
                         {isSelected && <Check className="size-2.5 text-white" strokeWidth={3} />}
                       </span>
                       {/* Option letter + text */}
@@ -141,7 +154,7 @@ export function MultipleChoiceQuestions({
                         <span className={cn(
                           "flex size-4 items-center justify-center rounded text-[10px] font-medium shrink-0",
                           isSelected ? "bg-violet-500/30 text-violet-200" : "bg-violet-500/15 text-violet-300/70",
-                        )}>
+                        )} aria-hidden="true">
                           {String.fromCharCode(65 + optIdx)}
                         </span>
                         <span className="text-left leading-snug">{option}</span>
@@ -151,26 +164,40 @@ export function MultipleChoiceQuestions({
                 })}
 
                 {/* "Write your own…" option */}
-                <label
-                  className={cn(
-                    "flex items-center gap-2.5 rounded-md px-2.5 py-2 text-sm cursor-pointer transition-all",
-                    isCustom
-                      ? "border border-violet-500/40 bg-violet-500/15 text-violet-100"
-                      : "border border-dashed border-violet-500/20 hover:border-violet-400/30 hover:bg-violet-500/[0.07] text-violet-300/80 hover:text-violet-200",
-                  )}
-                  onClick={() => handleSelect(qIdx, writeYourOwnIdx)}
-                >
-                  <span className={cn(
-                    "flex size-4 shrink-0 items-center justify-center rounded-full border transition-all",
-                    isCustom
-                      ? "border-violet-400 bg-violet-500"
-                      : "border-violet-500/30 bg-transparent",
-                  )}>
-                    {isCustom && <Check className="size-2.5 text-white" strokeWidth={3} />}
-                  </span>
-                  <PenLine className="size-3 shrink-0 opacity-70" />
-                  <span className="leading-snug">Write your own…</span>
-                </label>
+                {(() => {
+                  const writeId = `${groupName}-write`;
+                  return (
+                    <label
+                      htmlFor={writeId}
+                      className={cn(
+                        "flex items-center gap-2.5 rounded-md px-2.5 py-2 text-sm cursor-pointer transition-all",
+                        isCustom
+                          ? "border border-violet-500/40 bg-violet-500/15 text-violet-100"
+                          : "border border-dashed border-violet-500/20 hover:border-violet-400/30 hover:bg-violet-500/[0.07] text-violet-300/80 hover:text-violet-200",
+                      )}
+                    >
+                      <input
+                        type="radio"
+                        id={writeId}
+                        name={groupName}
+                        value="__write_your_own__"
+                        checked={isCustom}
+                        onChange={() => handleSelect(qIdx, writeYourOwnIdx)}
+                        className="sr-only"
+                      />
+                      <span className={cn(
+                        "flex size-4 shrink-0 items-center justify-center rounded-full border transition-all",
+                        isCustom
+                          ? "border-violet-400 bg-violet-500"
+                          : "border-violet-500/30 bg-transparent",
+                      )} aria-hidden="true">
+                        {isCustom && <Check className="size-2.5 text-white" strokeWidth={3} />}
+                      </span>
+                      <PenLine className="size-3 shrink-0 opacity-70" aria-hidden="true" />
+                      <span className="leading-snug">Write your own…</span>
+                    </label>
+                  );
+                })()}
 
                 {/* Custom text input (shown when "Write your own…" is selected) */}
                 {isCustom && (
@@ -187,6 +214,7 @@ export function MultipleChoiceQuestions({
                         }
                       }}
                       placeholder="Type your answer…"
+                      aria-label={`Custom answer for: ${q.question}`}
                       className={cn(
                         "w-full rounded-md border border-violet-500/25 bg-violet-500/[0.05] px-2.5 py-1.5 text-sm text-foreground/90",
                         "placeholder:text-violet-300/40 focus:border-violet-400/50 focus:outline-none focus:ring-1 focus:ring-violet-400/30",
@@ -195,7 +223,7 @@ export function MultipleChoiceQuestions({
                   </div>
                 )}
               </div>
-            </div>
+            </fieldset>
           );
         })}
       </div>
