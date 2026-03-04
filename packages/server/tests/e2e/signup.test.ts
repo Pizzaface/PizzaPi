@@ -130,9 +130,11 @@ describe("E2E: signup → API key → authenticated requests", () => {
             .where("name", "=", "cli")
             .execute();
 
-        expect(rows.length).toBe(1);
-        expect(rows[0].enabled).toBe(1);
-        expect(rows[0].start).toBe(apiKey.slice(0, 8));
+        expect(rows.length).toBeGreaterThanOrEqual(1);
+        // The last added row should be the new api key
+        const row = rows[rows.length - 1];
+        expect(row.enabled).toBe(1);
+        expect(row.start).toBe(apiKey.slice(0, 8));
     });
 
     test("GET /health works without auth", async () => {

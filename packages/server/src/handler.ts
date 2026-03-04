@@ -2,6 +2,10 @@ import { getAuth, isSignupAllowed } from "./auth.js";
 import { isValidPassword, PASSWORD_REQUIREMENTS_SUMMARY } from "@pizzapi/protocol";
 import { handleApi } from "./routes/api.js";
 import { serveStaticFile } from "./static.js";
+import { RateLimiter } from "./security.js";
+
+// 10 requests per 5 minutes
+const signInRateLimiter = new RateLimiter(10, 5 * 60 * 1000);
 
 /**
  * Fetch-style request handler (REST + auth + static).
@@ -19,6 +23,17 @@ export async function handleFetch(req: Request): Promise<Response> {
                 return Response.json(
                     { error: "Signups are disabled. Contact the administrator." },
                     { status: 403 },
+                );
+            }
+        }
+
+        // Rate limit sign-in attempts
+        if (url.pathname.startsWith("/api/auth/sign-in") && req.method === "POST") {
+            const clientIp = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+            if (!signInRateLimiter.check(clientIp)) {
+                return Response.json(
+                    { error: "Too many sign-in attempts. Please try again later." },
+                    { status: 429 },
                 );
             }
         }
