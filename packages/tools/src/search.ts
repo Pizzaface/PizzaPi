@@ -164,7 +164,19 @@ export const searchTool: AgentTool = {
 
         // Strip null bytes — spawn() throws synchronously if any arg contains \0.
         const pattern = String(params.pattern).replaceAll("\0", "");
-        const rawPath = String(params.path).replaceAll("\0", "");
+        let rawPath = String(params.path).replaceAll("\0", "");
+
+        // Expand ~ to home directory — spawn() doesn't invoke a shell so
+        // tilde expansion doesn't happen automatically. Without this,
+        // ~/project would become ./~/project and fail to resolve.
+        const home = process.env.HOME || process.env.USERPROFILE || "";
+        if (home) {
+            if (rawPath === "~") {
+                rawPath = home;
+            } else if (rawPath.startsWith("~/")) {
+                rawPath = home + rawPath.slice(1);
+            }
+        }
 
         // Normalize path so a leading "-" can't be mistaken for a flag/predicate.
         // This is the standard Unix idiom (e.g. `rm -- ./--help` vs `rm -- --help`).

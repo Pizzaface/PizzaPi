@@ -320,6 +320,40 @@ describe("searchTool", () => {
         expect(typeof result2.content[0].text).toBe("string");
     });
 
+    test("expands ~ to home directory in path", async () => {
+        const home = process.env.HOME || process.env.USERPROFILE || "";
+        if (!home) {
+            console.log("No HOME set, skipping tilde expansion test");
+            return;
+        }
+        // Create a temp subdirectory inside home with a unique name
+        const subdir = `.pizzapi-search-test-${Date.now()}`;
+        const testDir = join(home, subdir);
+        mkdirSync(testDir);
+        writeFileSync(join(testDir, "tilde-marker.txt"), "tilde-test\n");
+
+        try {
+            // Search with ~/subdir path — should expand and find the file
+            const result = await searchTool.execute("test-tilde", {
+                pattern: "*.txt",
+                path: `~/${subdir}`,
+                type: "files",
+            });
+            expect(result.content[0].text).toContain("tilde-marker.txt");
+
+            // Content search with ~/subdir should also resolve
+            const result2 = await searchTool.execute("test-tilde-content", {
+                pattern: "tilde-test",
+                path: `~/${subdir}`,
+                type: "content",
+            });
+            expect(result2.content[0].text).toContain("tilde-test");
+        } finally {
+            const { rmSync } = require("fs");
+            try { rmSync(testDir, { recursive: true }); } catch {}
+        }
+    });
+
     test("preserves Unicode filenames in file search results", async () => {
         const dir = mkdtempSync(join(tmpdir(), "search-unicode-"));
         // Create files with multi-byte UTF-8 names: accented, CJK, emoji
