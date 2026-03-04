@@ -132,45 +132,4 @@ See the [Runner Daemon guide](/PizzaPi/guides/runner-daemon/) for the full proce
 
 ## Development
 
-### With Docker
-
-```bash
-# Dev stack with hot-reload (Redis + server + UI in one container)
-docker compose -f docker/compose.yml --profile dev up
-```
-
-The dev profile starts a single container exposing:
-
-| Port | Description |
-|------|-------------|
-| 7492 | Bun dev server (API + WebSocket relay) |
-| 5173 | Vite UI dev server (hot module reload) |
-
-### Without Docker
-
-```bash
-# Prerequisites: Bun, Redis running locally
-bun install
-bun run dev
-# API server → http://localhost:7492
-# Vite UI   → http://localhost:5173
-```
-
-### Useful Commands
-
-```bash
-# Type-check all packages
-bun run typecheck
-
-# Build everything (protocol → tools → server → ui → cli)
-bun run build
-
-# Build docs separately
-bun run build:docs
-
-# Run DB migrations
-bun run migrate
-
-# Clean all dist/ directories
-bun run clean
-```
+For a complete guide to setting up a local development environment, running tests, and contributing, see the [Development guide](/PizzaPi/guides/development/).

@@ -1,0 +1,277 @@
+---
+title: Development
+description: Set up a local development environment, understand the build system, and contribute to PizzaPi.
+sidebar:
+  order: 8
+---
+
+import { Tabs, TabItem, Steps, Aside, Card, CardGrid } from "@astrojs/starlight/components";
+
+This guide walks you through setting up a local PizzaPi development environment, running the dev servers, and contributing changes.
+
+---
+
+## Prerequisites
+
+You'll need these installed before you start:
+
+| Tool | Why |
+|------|-----|
+| **[Bun](https://bun.sh)** ≥ 1.1 | Runtime, package manager, test runner, and bundler. PizzaPi uses Bun exclusively — not Node, npm, yarn, or pnpm. |
+| **[Redis](https://redis.io)** | The relay server buffers session events in Redis. Run it locally or via Docker. |
+| **[Docker](https://www.docker.com)** *(optional)* | Only needed if you prefer the containerized dev setup, or want to test production builds. |
+| **[Git](https://git-scm.com)** | Version control. You know this one. |
+
+<Aside type="tip">
+  On macOS, `brew install oven-sh/bun/bun redis` gets you both Bun and Redis in one shot.
+</Aside>
+
+---
+
+## Clone and Install
+
+<Steps>
+1. **Clone the repository**
+
+   ```bash
+   git clone https://github.com/Pizzaface/PizzaPi.git
+   cd PizzaPi
+   ```
+
+2. **Install dependencies**
+
+   ```bash
+   bun install
+   ```
+
+   This also applies any patches from the `patches/` directory automatically.
+
+3. **Run database migrations**
+
+   ```bash
+   bun run migrate
+   ```
+
+   This creates (or updates) the SQLite database at `packages/server/auth.db`.
+</Steps>
+
+---
+
+## Running the Dev Servers
+
+### Option A — Without Docker (recommended for most development)
+
+Start Redis in one terminal:
+
+```bash
+redis-server
+```
+
+Then start the dev servers:
+
+```bash
+bun run dev
+```
+
+This launches both servers with hot-reload via [concurrently](https://www.npmjs.com/package/concurrently):
+
+| Port | Service | Details |
+|------|---------|---------|
+| **7492** | Bun API server | HTTP + WebSocket relay, hot-reloads on save |
+| **5173** | Vite UI dev server | React app with HMR |
+
+Open **http://localhost:5173** in your browser for the UI (it proxies API calls to `:7492`).
+
+### Option B — With Docker
+
+If you prefer containers, use the `dev` profile:
+
+```bash
+docker compose -f docker/compose.yml --profile dev up
+```
+
+This starts Redis, the API server, and the Vite UI server in containers with the repo mounted as a volume. Same ports as above.
+
+---
+
+## Repository Layout
+
+```
+packages/
+  protocol/   Shared TypeScript types for the relay wire protocol
+  tools/      Shared agent tools (bash, read-file, write-file, search)
+  server/     Bun HTTP + WebSocket relay server (auth, sessions, push notifications)
+  ui/         React 19 PWA web interface (Vite, TailwindCSS v4, Radix UI / shadcn)
+  cli/        CLI wrapper — launches pi with PizzaPi extensions and the runner daemon
+  docs/       This documentation site (Astro Starlight)
+  npm/        npm distribution — builds & publishes @pizzapi packages
+
+docker/       Docker Compose (redis + server services)
+patches/      Bun patches for upstream pi packages (auto-applied on bun install)
+```
+
+---
+
+## Build System
+
+PizzaPi is a monorepo with ordered package dependencies. The build must follow this sequence:
+
+```
+protocol → tools → server → ui → cli
+```
+
+`docs` and `npm` are independent and can be built separately.
+
+### Common Commands
+
+```bash
+# Build everything (in correct order)
+bun run build
+
+# Build individual packages
+bun run build:protocol
+bun run build:tools
+bun run build:server
+bun run build:ui
+bun run build:cli
+
+# Build the docs site
+bun run build:docs
+
+# Type-check all packages at once
+bun run typecheck
+
+# Clean all dist/ directories
+bun run clean
+```
+
+### Dev Commands
+
+```bash
+# Full dev environment (API server + Vite UI, hot-reload)
+bun run dev
+
+# Run just the server in dev mode
+bun run dev:server
+
+# Run just the UI in dev mode
+bun run dev:ui
+
+# Run the CLI from source
+bun run dev:cli
+
+# Run the runner daemon from source
+bun run dev:runner
+
+# Dev the docs site
+bun run dev:docs
+```
+
+---
+
+## Testing
+
+PizzaPi uses Bun's built-in test runner — no additional frameworks needed.
+
+```bash
+# Run all tests
+bun run test
+
+# Run tests for a specific package
+bun test packages/server
+bun test packages/tools
+cd packages/ui && bun test
+cd packages/cli && bun test
+```
+
+### Test Conventions
+
+- **Co-locate tests** next to their source: `foo.ts` → `foo.test.ts`
+- **Integration tests** go in `packages/<pkg>/tests/`
+- Import `describe`, `test`, and `expect` from `bun:test`
+- Keep tests fast — mock network/Redis/DB calls in unit tests
+
+### Current Test Coverage
+
+| Package | What's tested |
+|---------|---------------|
+| **server** | Validation, security, sessions store, attachments, API routes, pruning |
+| **ui** | Message grouping, session viewer utils, path utilities |
+| **tools** | Toolkit helpers, pi compatibility layer |
+| **cli** | Patch application and runtime behavior |
+
+<Aside type="note">
+  All new code should include tests. Run `bun run test` before committing — tests are part of the quality gate.
+</Aside>
+
+---
+
+## Database Migrations
+
+The relay server uses SQLite (via Kysely) for user accounts and session metadata.
+
+```bash
+# Run pending migrations
+bun run migrate
+```
+
+The database file lives at `packages/server/auth.db`. After schema changes, always run migrations.
+
+---
+
+## Patches
+
+PizzaPi patches some upstream `pi` packages to add relay streaming and other features. Patches live in the `patches/` directory and are **applied automatically** during `bun install`.
+
+**Never edit files in `node_modules` directly.** If you need to change upstream behavior:
+
+1. Make your changes in the installed package
+2. Generate a patch with `bun patch`
+3. Save it to `patches/`
+4. Verify with `bun install` (the patch is re-applied cleanly)
+
+---
+
+## Tech Stack Reference
+
+| Layer | Technology |
+|-------|------------|
+| Runtime & package manager | [Bun](https://bun.sh) |
+| Language | TypeScript (strict mode, ESM throughout) |
+| Server | Bun.serve, [better-auth](https://www.better-auth.com/), Kysely + SQLite, Redis, web-push |
+| UI | React 19, Vite 6, TailwindCSS v4, Radix UI, [shadcn/ui](https://ui.shadcn.com/) |
+| Agent core | [@mariozechner/pi-coding-agent](https://github.com/badlogic/pi-mono) |
+| Docs | [Astro Starlight](https://starlight.astro.build/) |
+| Deployment | Docker Compose |
+
+---
+
+## Useful Tips
+
+- **Hot reload** covers both the API server and the Vite UI when using `bun run dev`. The server restarts on file changes; the UI uses Vite's HMR.
+- **Redis** must be running for the server to start. If you see connection errors, check that `redis-server` is up (or `docker compose up redis`).
+- **TypeScript** errors? Run `bun run typecheck` to get a full picture across all packages at once.
+- **Docs changes** are previewed with `bun run dev:docs` at `http://localhost:4321/PizzaPi/`.
+- **Build order matters.** If you change `protocol` or `tools`, rebuild those before building downstream packages.
+
+---
+
+## What's Next?
+
+<CardGrid>
+  <Card title="Architecture" icon="document">
+    Understand the relay protocol, event flow, and component design.
+
+    [Architecture →](/PizzaPi/reference/architecture/)
+  </Card>
+  <Card title="Environment Variables" icon="setting">
+    Server-side configuration options for development and production.
+
+    [Environment variables →](/PizzaPi/reference/environment-variables/)
+  </Card>
+  <Card title="Self-Hosting" icon="shield">
+    Build and deploy the production Docker image.
+
+    [Self-hosting →](/PizzaPi/guides/self-hosting/)
+  </Card>
+</CardGrid>
