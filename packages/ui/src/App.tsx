@@ -606,8 +606,23 @@ export function App() {
   const [recentFoldersLoading, setRecentFoldersLoading] = React.useState(false);
 
   const [pendingQuestion, setPendingQuestion] = React.useState<{ toolCallId: string; questions: Array<{ question: string; options: string[] }> } | null>(null);
-  // Monotonic counter for generating unique fallback promptKeys when toolCallId is absent.
+  // Cached fallback promptKey for when toolCallId is absent (legacy/compat).
+  // Only changes when the question content changes, preventing heartbeat
+  // re-applications from resetting the MC component's selection state.
+  // Stable fallback promptKey: only changes when question content changes.
+  const pendingQuestionFallbackRef = React.useRef<{ fingerprint: string; key: string }>({ fingerprint: "", key: "" });
   const pendingQuestionSeqRef = React.useRef(0);
+  /** Return a stable fallback key for a set of parsed questions (used when toolCallId is absent). */
+  const getFallbackPromptKey = React.useCallback((questions: Array<{ question: string; options: string[] }>): string => {
+    const fp = JSON.stringify(questions);
+    if (pendingQuestionFallbackRef.current.fingerprint !== fp) {
+      pendingQuestionFallbackRef.current = {
+        fingerprint: fp,
+        key: `ask-user-question-${++pendingQuestionSeqRef.current}`,
+      };
+    }
+    return pendingQuestionFallbackRef.current.key;
+  }, []);
   const [activeToolCalls, setActiveToolCalls] = React.useState<Map<string, string>>(new Map());
 
   // Message queue: messages sent while the agent is active
@@ -1176,7 +1191,7 @@ export function App() {
           const questions = parsePendingQuestions(pq);
           if (questions.length > 0) {
             setPendingQuestion({
-              toolCallId: typeof pq.toolCallId === "string" ? pq.toolCallId : `ask-user-question-${++pendingQuestionSeqRef.current}`,
+              toolCallId: typeof pq.toolCallId === "string" ? pq.toolCallId : getFallbackPromptKey(questions),
               questions,
             });
             setViewerStatus("Waiting for answer…");
@@ -1543,7 +1558,7 @@ export function App() {
 
       if (questions.length > 0) {
         setPendingQuestion({
-          toolCallId: typeof evt.toolCallId === "string" ? evt.toolCallId : `ask-user-question-${++pendingQuestionSeqRef.current}`,
+          toolCallId: typeof evt.toolCallId === "string" ? evt.toolCallId : getFallbackPromptKey(questions),
           questions,
         });
         setViewerStatus("Waiting for answer…");
@@ -1560,7 +1575,7 @@ export function App() {
 
       if (questions.length > 0) {
         setPendingQuestion({
-          toolCallId: typeof evt.toolCallId === "string" ? evt.toolCallId : `ask-user-question-${++pendingQuestionSeqRef.current}`,
+          toolCallId: typeof evt.toolCallId === "string" ? evt.toolCallId : getFallbackPromptKey(questions),
           questions,
         });
       }

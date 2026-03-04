@@ -955,6 +955,23 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
             );
         }
 
+        // Reject if no question is currently pending (stale notification guard).
+        // The heartbeat stores pendingQuestion state; if it's null/absent, the
+        // agent has moved on and this push answer would inject unexpected input.
+        if (session.lastHeartbeat) {
+            try {
+                const hb = JSON.parse(session.lastHeartbeat);
+                if (!hb?.pendingQuestion) {
+                    return Response.json(
+                        { error: "No question is currently pending for this session" },
+                        { status: 409 },
+                    );
+                }
+            } catch {
+                // Malformed heartbeat — allow the input through as a fallback
+            }
+        }
+
         // Find the TUI socket and emit the input
         const tuiSocket = getLocalTuiSocket(body.sessionId);
         if (!tuiSocket) {
