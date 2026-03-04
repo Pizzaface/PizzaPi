@@ -57,7 +57,10 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { formatPathTail } from "@/lib/path";
 import { ProviderIcon } from "@/components/ProviderIcon";
-import { AlertTriangleIcon, ArrowDownIcon, BookOpen, CheckCircle2, ChevronsUpDown, Circle, CircleDashed, Loader2, MessageSquare, MessageCircleQuestion, OctagonX, PaperclipIcon, PenLine, Plus, Zap, Clock, X, Trash2, TerminalIcon, DownloadIcon, XCircle, FolderTree } from "lucide-react";
+import { MultipleChoiceQuestions } from "@/components/ai-elements/multiple-choice";
+import { formatAnswersForAgent, type QuestionDisplayMode } from "@/lib/ask-user-questions";
+import { dismissNotificationsForSession } from "@/lib/push";
+import { AlertTriangleIcon, ArrowDownIcon, BookOpen, CheckCircle2, ChevronsUpDown, Circle, CircleDashed, Loader2, MessageSquare, OctagonX, PaperclipIcon, Plus, Zap, Clock, X, Trash2, TerminalIcon, DownloadIcon, XCircle, FolderTree } from "lucide-react";
 import { AtMentionPopover } from "@/components/AtMentionPopover";
 import type { Entry as AtMentionEntry } from "@/hooks/useAtMentionFiles";
 
@@ -99,7 +102,7 @@ export interface SessionViewerProps {
   /** Active model info for the current session (used to show provider indicator) */
   activeModel?: { provider: string; id: string; name?: string; reasoning?: boolean } | null;
   activeToolCalls?: Map<string, string>;
-  pendingQuestion?: { question: string; options?: string[] } | null;
+  pendingQuestion?: { toolCallId: string; questions: Array<{ question: string; options: string[] }>; display: QuestionDisplayMode } | null;
   availableCommands?: Array<{ name: string; description?: string }>;
   resumeSessions?: ResumeSessionOption[];
   resumeSessionsLoading?: boolean;
@@ -440,6 +443,15 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
   const [commandOpen, setCommandOpen] = React.useState(false);
   const [commandQuery, setCommandQuery] = React.useState("");
   const [commandHighlightedIndex, setCommandHighlightedIndex] = React.useState(0);
+
+  // Dismiss push notifications when a pending question is visible in-app.
+  // This prevents stale notifications from injecting answers after the user
+  // has already seen (or answered) the question in the UI.
+  React.useEffect(() => {
+    if (pendingQuestion && sessionId) {
+      void dismissNotificationsForSession(sessionId);
+    }
+  }, [pendingQuestion, sessionId]);
 
   // Detect touch devices for mobile-specific behavior
   const isTouchDevice = React.useMemo(
@@ -1244,63 +1256,34 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
           </div>
         )}
 
-        {pendingQuestion && sessionId && (
-          <div className="mb-2 overflow-hidden rounded-lg border border-violet-500/30 bg-gradient-to-b from-violet-500/[0.08] to-violet-500/[0.03] shadow-sm shadow-violet-500/5">
-            {/* Header */}
-            <div className="flex items-center gap-2 border-b border-violet-500/15 px-3 py-2">
-              <div className="flex size-6 items-center justify-center rounded-full bg-violet-500/15">
-                <MessageCircleQuestion className="size-3.5 text-violet-400" />
-              </div>
-              <span className="text-xs font-medium text-violet-300">Waiting for your answer</span>
-            </div>
-            {/* Question body */}
-            <div className="px-3 py-2.5">
-              <p className="text-sm leading-relaxed text-foreground/90 whitespace-pre-wrap">{pendingQuestion.question}</p>
-            </div>
-            {/* Options */}
-            {pendingQuestion.options && pendingQuestion.options.length > 0 && (
-              <div className="border-t border-violet-500/10 px-3 py-2.5">
-                <div className="flex flex-wrap gap-1.5">
-                  {pendingQuestion.options.map((option, idx) => {
-                    const isTypeYourOwn = option.toLowerCase().replace(/[^a-z]/g, "") === "typeyourown";
-                    return (
-                      <button
-                        key={option}
-                        type="button"
-                        className={cn(
-                          "inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs transition-all",
-                          isTypeYourOwn
-                            ? "border border-dashed border-violet-500/25 text-violet-300/80 hover:border-violet-400/40 hover:bg-violet-500/10 hover:text-violet-200"
-                            : "border border-violet-500/20 bg-violet-500/[0.07] text-violet-200/90 hover:border-violet-400/40 hover:bg-violet-500/15 hover:text-violet-100",
-                        )}
-                        onClick={() => {
-                          if (isTypeYourOwn) {
-                            const el = document.querySelector<HTMLTextAreaElement>("[data-pp-prompt]");
-                            el?.focus();
-                          } else if (onSendInput) {
-                            onSendInput(option);
-                            setInput("");
-                          }
-                        }}
-                      >
-                        {isTypeYourOwn ? (
-                          <>
-                            <PenLine className="size-3 shrink-0 opacity-70" />
-                            <span>Type your own</span>
-                          </>
-                        ) : (
-                          <>
-                            <span className="flex size-4 items-center justify-center rounded bg-violet-500/20 text-[10px] font-medium text-violet-300 shrink-0">{String.fromCharCode(65 + idx)}</span>
-                            <span className="text-left leading-snug">{option}</span>
-                          </>
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-          </div>
+        {/* Multiple-choice questions (shown above the input area) */}
+        {pendingQuestion && sessionId && pendingQuestion.questions.length > 0 && (
+          <MultipleChoiceQuestions
+            questions={pendingQuestion.questions}
+            promptKey={pendingQuestion.toolCallId}
+            className="mb-2"
+            onSubmit={(answers) => {
+              if (!onSendInput) return Promise.resolve(false);
+              setComposerError(null);
+              const text = formatAnswersForAgent(answers);
+              return Promise.resolve(onSendInput(text))
+                .then((result) => {
+                  if (result !== false) {
+                    setComposerError(null);
+                    setInput("");
+                    // Dismiss the push notification — user answered in-app
+                    if (sessionId) void dismissNotificationsForSession(sessionId);
+                    return true;
+                  }
+                  setComposerError("Failed to send answer.");
+                  return false;
+                })
+                .catch(() => {
+                  setComposerError("Failed to send answer.");
+                  return false;
+                });
+            }}
+          />
         )}
 
         {sessionId && commandOpen && (
@@ -1479,6 +1462,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
           onError={(err) => {
             setComposerError(err.message);
           }}
+          className={pendingQuestion && pendingQuestion.questions.length > 0 ? "hidden" : undefined}
         >
           <ComposerAttachments />
           <PromptInputBody>
@@ -1713,12 +1697,10 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                   sessionId
                     ? isCompacting
                       ? "Compacting…"
-                      : pendingQuestion
-                        ? `Answer: ${pendingQuestion.question}`
-                        : agentActive
-                          ? deliveryMode === "steer"
-                            ? "Type to steer the agent…"
-                            : "Type a follow-up message…"
+                      : agentActive
+                        ? deliveryMode === "steer"
+                          ? "Type to steer the agent…"
+                          : "Type a follow-up message…"
                         : isTouchDevice
                           ? "Send a message…"
                           : "Send a message to this session…"
@@ -1744,9 +1726,9 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                   </span>
                   <ChevronsUpDown className="size-3 opacity-50 shrink-0" />
                 </button>
-              ) : sessionId && !pendingQuestion ? (
+              ) : sessionId ? (
                 <span className="px-2 text-xs text-muted-foreground">
-                  {sessionId ? "Press Enter to send" : "Select a session to send messages"}
+                  Press Enter to send
                 </span>
               ) : null}
               {sessionId && agentActive && (
@@ -1776,11 +1758,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                   </span>
                 </div>
               )}
-              {sessionId && pendingQuestion && !agentActive && (
-                <span className="px-2 text-xs text-muted-foreground">
-                  Provide the answer and press Enter
-                </span>
-              )}
+
             </PromptInputTools>
             <div className="flex items-center gap-0.5">
               <ComposerAttachmentButton />

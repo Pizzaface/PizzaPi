@@ -162,6 +162,8 @@ export interface PushPayload {
     sessionId?: string;
     /** Arbitrary extra data */
     data?: Record<string, unknown>;
+    /** Notification actions (MC options for "agent_needs_input") */
+    actions?: Array<{ action: string; title: string; type?: "button" | "text"; placeholder?: string }>;
 }
 
 function isEventEnabled(enabledEvents: string, eventType: PushEventType): boolean {
@@ -237,17 +239,57 @@ export function notifyAgentFinished(userId: string, sessionId: string, sessionNa
 
 /**
  * Convenience: notify a user that the agent needs input.
+ * When options are provided, the push notification includes action buttons
+ * so the user can answer directly from the notification.
  */
-export function notifyAgentNeedsInput(userId: string, sessionId: string, question?: string, sessionName?: string | null): void {
+export function notifyAgentNeedsInput(
+    userId: string,
+    sessionId: string,
+    question?: string,
+    sessionName?: string | null,
+    options?: string[],
+    toolCallId?: string,
+): void {
     const label = sessionName ?? sessionId.slice(0, 8);
     const body = question
         ? `Agent in "${label}" asks: ${question.slice(0, 120)}`
         : `Agent in "${label}" is waiting for your input.`;
+
+    // Build notification actions from MC options.
+    // Platforms support max 2–3 buttons; we use up to 2 option buttons + 1 inline reply.
+    const actions: PushPayload["actions"] = [];
+    if (options && options.length > 0) {
+        // Filter out agent "Type your own" entries
+        const filtered = options.filter(
+            (o) => o.toLowerCase().replace(/[^a-z]/g, "") !== "typeyourown",
+        );
+        // Add up to 2 option buttons
+        for (let i = 0; i < Math.min(filtered.length, 2); i++) {
+            actions.push({
+                action: `option-${i}`,
+                title: filtered[i].length > 30 ? filtered[i].slice(0, 28) + "…" : filtered[i],
+                type: "button",
+            });
+        }
+        // Add inline reply action
+        actions.push({
+            action: "reply",
+            title: "✏️ Reply",
+            type: "text",
+            placeholder: "Type your answer…",
+        });
+    }
+
     void sendPushToUser(userId, {
         type: "agent_needs_input",
         title: "Input needed",
         body,
         sessionId,
+        actions: actions.length > 0 ? actions : undefined,
+        data: {
+            ...(options && options.length > 0 ? { options } : {}),
+            ...(toolCallId ? { toolCallId } : {}),
+        },
     }).catch((err) => {
         console.error("[push] notifyAgentNeedsInput failed:", err);
     });
