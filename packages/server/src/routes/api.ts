@@ -935,9 +935,9 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
         } catch {
             return Response.json({ error: "Invalid JSON body" }, { status: 400 });
         }
-        if (!body.sessionId || typeof body.text !== "string" || !body.text.trim()) {
+        if (!body.sessionId || typeof body.text !== "string" || !body.text.trim() || typeof body.toolCallId !== "string" || !body.toolCallId) {
             return Response.json(
-                { error: "Missing required fields: sessionId, text" },
+                { error: "Missing required fields: sessionId, text, toolCallId" },
                 { status: 400 },
             );
         }
@@ -967,7 +967,7 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
                 { status: 409 },
             );
         }
-        if (body.toolCallId && body.toolCallId !== pendingToolCallId) {
+        if (body.toolCallId !== pendingToolCallId) {
             return Response.json(
                 { error: "This answer does not match the current pending question" },
                 { status: 409 },

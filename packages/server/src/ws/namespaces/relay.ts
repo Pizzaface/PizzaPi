@@ -133,6 +133,20 @@ async function checkPushNotifications(
     const userId = session?.userId;
     if (!userId) return;
 
+    // ── Push-pending state management (must run regardless of viewer count) ──
+    // Set/clear the Redis key that /api/push/answer uses to validate replies.
+    // Awaited to ensure ordering: set completes before any clear can race.
+    if (event.type === "tool_execution_start" && event.toolName === "AskUserQuestion") {
+        const toolCallId = typeof event.toolCallId === "string" ? event.toolCallId : undefined;
+        if (toolCallId) {
+            await setPushPendingQuestion(sessionId, toolCallId);
+        }
+    }
+    if (event.type === "tool_execution_end" && event.toolName === "AskUserQuestion") {
+        await clearPushPendingQuestion(sessionId);
+    }
+
+    // ── Push notifications (only when no viewers are connected) ──────────────
     const viewerCount = await getViewerCount(sessionId);
     if (viewerCount > 0) return;
 
@@ -175,15 +189,7 @@ async function checkPushNotifications(
         // push answers with 403, so showing action buttons would be misleading.
         const canQuickReply = questionCount <= 1 && session?.collabMode === true;
         const toolCallId = typeof event.toolCallId === "string" ? event.toolCallId : undefined;
-        if (toolCallId) {
-            void setPushPendingQuestion(sessionId, toolCallId);
-        }
         notifyAgentNeedsInput(userId, sessionId, question, sName, canQuickReply ? options : undefined, toolCallId);
-    }
-
-    // Clear push-pending state when AskUserQuestion finishes (answered or cancelled)
-    if (event.type === "tool_execution_end" && event.toolName === "AskUserQuestion") {
-        void clearPushPendingQuestion(sessionId);
     }
 
     if (event.type === "cli_error") {
