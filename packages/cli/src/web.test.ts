@@ -1,7 +1,7 @@
 import { describe, test, expect } from "bun:test";
 import { readFileSync } from "fs";
 import { join } from "path";
-import { extractVapidFromCompose, extractSettingsFromCompose, type WebConfig } from "./web";
+import { extractVapidFromCompose, extractSettingsFromCompose, resolveBetterAuthSecret } from "./web";
 
 /**
  * Validates that the inlined COMPOSE_TEMPLATE in web.ts matches
@@ -27,6 +27,7 @@ services:
     environment:
       - PORT=7492
       - PIZZAPI_REDIS_URL=redis://redis:6379
+      - BETTER_AUTH_SECRET={{BETTER_AUTH_SECRET}}
       - VAPID_PUBLIC_KEY={{VAPID_PUBLIC_KEY}}
       - VAPID_PRIVATE_KEY={{VAPID_PRIVATE_KEY}}
       - VAPID_SUBJECT={{VAPID_SUBJECT}}
@@ -48,6 +49,7 @@ describe("web.ts compose template", () => {
         expect(COMPOSE_TEMPLATE).toContain("{{REPO_PATH}}");
         expect(COMPOSE_TEMPLATE).toContain("{{PORT}}");
         expect(COMPOSE_TEMPLATE).toContain("{{DATA_DIR}}");
+        expect(COMPOSE_TEMPLATE).toContain("{{BETTER_AUTH_SECRET}}");
         expect(COMPOSE_TEMPLATE).toContain("{{VAPID_PUBLIC_KEY}}");
         expect(COMPOSE_TEMPLATE).toContain("{{VAPID_PRIVATE_KEY}}");
         expect(COMPOSE_TEMPLATE).toContain("{{VAPID_SUBJECT}}");
@@ -59,6 +61,7 @@ describe("web.ts compose template", () => {
             .replace(/\{\{REPO_PATH}}/g, "/home/user/.pizzapi/web/repo")
             .replace(/\{\{PORT}}/g, "7492")
             .replace(/\{\{DATA_DIR}}/g, "/home/user/.pizzapi/web/data")
+            .replace(/\{\{BETTER_AUTH_SECRET}}/g, "Secret123")
             .replace(/\{\{VAPID_PUBLIC_KEY}}/g, "BTestPublicKey123")
             .replace(/\{\{VAPID_PRIVATE_KEY}}/g, "TestPrivateKey456")
             .replace(/\{\{VAPID_SUBJECT}}/g, "mailto:admin@pizzapi.local")
@@ -74,6 +77,7 @@ describe("web.ts compose template", () => {
         expect(composed).toContain("server:");
         expect(composed).toContain('context: /home/user/.pizzapi/web/repo');
         expect(composed).toContain('"7492:7492"');
+        expect(composed).toContain("BETTER_AUTH_SECRET=Secret123");
         expect(composed).toContain("VAPID_PUBLIC_KEY=BTestPublicKey123");
         expect(composed).toContain("VAPID_PRIVATE_KEY=TestPrivateKey456");
         expect(composed).toContain("VAPID_SUBJECT=mailto:admin@pizzapi.local");
@@ -86,6 +90,7 @@ describe("web.ts compose template", () => {
             .replace(/\{\{REPO_PATH}}/g, "/repo")
             .replace(/\{\{PORT}}/g, "7492")
             .replace(/\{\{DATA_DIR}}/g, "/data")
+            .replace(/\{\{BETTER_AUTH_SECRET}}/g, "Secret")
             .replace(/\{\{VAPID_PUBLIC_KEY}}/g, "key")
             .replace(/\{\{VAPID_PRIVATE_KEY}}/g, "key")
             .replace(/\{\{VAPID_SUBJECT}}/g, "mailto:test@test.com")
@@ -108,6 +113,7 @@ const FULL_COMPOSE = `services:
       - VAPID_PUBLIC_KEY=BRealPublicKeyABC123
       - VAPID_PRIVATE_KEY=RealPrivateKeyXYZ789
       - VAPID_SUBJECT=mailto:ops@example.com
+      - BETTER_AUTH_SECRET=RealAuthSecret123
       - PIZZAPI_EXTRA_ORIGINS=https://my-tailscale.ts.net`;
 
 describe("extractSettingsFromCompose", () => {
@@ -118,6 +124,7 @@ describe("extractSettingsFromCompose", () => {
             vapidSubject: "mailto:ops@example.com",
             extraOrigins: "https://my-tailscale.ts.net",
             port: 8080,
+            betterAuthSecret: "RealAuthSecret123",
         });
     });
 
@@ -126,10 +133,12 @@ describe("extractSettingsFromCompose", () => {
             .replace("BRealPublicKeyABC123", "{{VAPID_PUBLIC_KEY}}")
             .replace("RealPrivateKeyXYZ789", "{{VAPID_PRIVATE_KEY}}")
             .replace("mailto:ops@example.com", "{{VAPID_SUBJECT}}")
+            .replace("RealAuthSecret123", "{{BETTER_AUTH_SECRET}}")
             .replace("https://my-tailscale.ts.net", "{{EXTRA_ORIGINS}}");
         const result = extractSettingsFromCompose(template);
         expect(result.vapid).toBeUndefined();
         expect(result.vapidSubject).toBeUndefined();
+        expect(result.betterAuthSecret).toBeUndefined();
         expect(result.extraOrigins).toBeUndefined();
     });
 
@@ -171,5 +180,43 @@ describe("extractVapidFromCompose (backward compat)", () => {
 
     test("returns null when keys are missing", () => {
         expect(extractVapidFromCompose("services:\n  redis:\n    image: redis")).toBeNull();
+    });
+});
+
+describe("resolveBetterAuthSecret", () => {
+    test("keeps existing secret", () => {
+        const resolved = resolveBetterAuthSecret({
+            currentSecret: "ExistingSecret",
+            composeContents: ["- BETTER_AUTH_SECRET=FromCompose"],
+            generate: () => "Generated",
+        });
+        expect(resolved).toEqual({ secret: "ExistingSecret", source: "existing" });
+    });
+
+    test("uses secret from compose content when missing", () => {
+        const resolved = resolveBetterAuthSecret({
+            currentSecret: "",
+            composeContents: ["services:\n  server:\n    environment:\n      - BETTER_AUTH_SECRET=FromCompose"],
+            generate: () => "Generated",
+        });
+        expect(resolved).toEqual({ secret: "FromCompose", source: "compose" });
+    });
+
+    test("prefers override compose content (first) when missing", () => {
+        const resolved = resolveBetterAuthSecret({
+            currentSecret: "",
+            composeContents: ["- BETTER_AUTH_SECRET=FromOverride", "- BETTER_AUTH_SECRET=FromCompose"],
+            generate: () => "Generated",
+        });
+        expect(resolved).toEqual({ secret: "FromOverride", source: "compose" });
+    });
+
+    test("ignores commented-out secret lines", () => {
+        const resolved = resolveBetterAuthSecret({
+            currentSecret: "",
+            composeContents: ["# - BETTER_AUTH_SECRET=Nope"],
+            generate: () => "Generated",
+        });
+        expect(resolved).toEqual({ secret: "Generated", source: "generated" });
     });
 });

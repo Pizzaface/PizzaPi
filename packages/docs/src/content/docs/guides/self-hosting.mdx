@@ -21,7 +21,7 @@ pizzapi web
 
 This automatically:
 1. Clones the PizzaPi repo (if not already present) to `~/.pizzapi/web/repo`
-2. Generates a Docker Compose file in `~/.pizzapi/web/`
+2. Generates required secrets (including `BETTER_AUTH_SECRET` and VAPID keys) and a Docker Compose file in `~/.pizzapi/web/`
 3. Builds and starts Redis + the relay server
 4. Serves the web UI at **http://localhost:7492**
 
@@ -136,7 +136,7 @@ docker compose -f docker/compose.yml --profile dev up
 | Service | Port | Description |
 |---------|------|-------------|
 | `redis` | 6379 | Redis |
-| `server` (dev) | 3001 | Bun dev server (hot-reload) |
+| `server` (dev) | 7492 | Bun dev server (hot-reload) |
 | `ui` (dev) | 5173 | Vite UI dev server |
 
 Or run without Docker:
@@ -145,7 +145,7 @@ Or run without Docker:
 # Prerequisites: Bun, Redis running locally
 bun install
 bun run dev
-# API → http://localhost:3001
+# API → http://localhost:7492
 # UI  → http://localhost:5173
 ```
 

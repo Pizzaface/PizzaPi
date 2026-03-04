@@ -15,6 +15,10 @@ export interface RelayMessage {
   stopReason?: string;
   /** For assistant messages with stopReason === "error": the error description */
   errorMessage?: string;
+  /** For compactionSummary / branchSummary messages: the summary text */
+  summary?: string;
+  /** For compactionSummary messages: token count before compaction */
+  tokensBefore?: number;
 }
 
 // ── Sub-agent conversation types ─────────────────────────────────────────────

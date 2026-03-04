@@ -87,6 +87,7 @@ export interface RelaySessionTable {
     endedAt: string | null;
     isEphemeral: number;
     expiresAt: string | null;
+    isPinned: number;
 }
 
 export interface RelaySessionStateTable {

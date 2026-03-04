@@ -78,6 +78,12 @@ function copyAssets(piPkgDir: string, outDir: string): void {
     if (existsSync(exportSrc)) {
         cpSync(exportSrc, join(outDir, "export-html"), { recursive: true });
     }
+
+    // 4. templates/ — compose.yml.template for `pizza web`
+    const templatesSrc = join(import.meta.dirname ?? __dirname, "src", "templates");
+    if (existsSync(templatesSrc)) {
+        cpSync(templatesSrc, join(outDir, "templates"), { recursive: true });
+    }
 }
 
 // ---------------------------------------------------------------------------

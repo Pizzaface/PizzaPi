@@ -13,7 +13,7 @@
  */
 
 import { execSync, spawn } from "child_process";
-import { createECDH } from "crypto";
+import { createECDH, randomBytes } from "crypto";
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
@@ -29,6 +29,8 @@ export interface WebConfig {
     vapidSubject: string;
     /** Comma-separated extra allowed origins for CORS */
     extraOrigins: string;
+    /** Secret key used by better-auth for session signing (persisted). */
+    betterAuthSecret: string;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -50,6 +52,15 @@ function generateVapidKeys(): { publicKey: string; privateKey: string } {
     };
 }
 
+function generateBetterAuthSecret(): string {
+    // 32 bytes (~256 bits) encoded as base64url, suitable for env vars.
+    return randomBytes(32)
+        .toString("base64")
+        .replace(/\+/g, "-")
+        .replace(/\//g, "_")
+        .replace(/=+$/, "");
+}
+
 // ─── Config management ────────────────────────────────────────────────────────
 
 const DEFAULT_CONFIG: WebConfig = {
@@ -57,6 +68,7 @@ const DEFAULT_CONFIG: WebConfig = {
     vapid: { publicKey: "", privateKey: "" },
     vapidSubject: "mailto:admin@pizzapi.local",
     extraOrigins: "",
+    betterAuthSecret: "",
 };
 
 /** Settings that can be extracted from an existing compose.yml */
@@ -65,6 +77,7 @@ export interface ExtractedComposeSettings {
     vapidSubject?: string;
     extraOrigins?: string;
     port?: number;
+    betterAuthSecret?: string;
 }
 
 /** Extract all user settings from compose.yml content (pure function, exported for testing) */
@@ -92,6 +105,15 @@ export function extractSettingsFromCompose(content: string): ExtractedComposeSet
         }
     }
 
+    // better-auth secret
+    const secretMatch = content.match(/^\s*(?:-\s+)?BETTER_AUTH_SECRET=(.+)$/m);
+    if (secretMatch?.[1]) {
+        const val = secretMatch[1].trim();
+        if (!val.startsWith("{{")) {
+            result.betterAuthSecret = val;
+        }
+    }
+
     // Extra origins (skip commented-out lines)
     const originsMatch = content.match(/^\s*-\s+PIZZAPI_EXTRA_ORIGINS=(.+)/m);
     if (originsMatch?.[1]) {
@@ -111,6 +133,27 @@ export function extractSettingsFromCompose(content: string): ExtractedComposeSet
     }
 
     return result;
+}
+
+export function resolveBetterAuthSecret(opts: {
+    currentSecret: string | undefined;
+    composeContents: Array<string | null | undefined>;
+    generate?: () => string;
+}): { secret: string; source: "existing" | "compose" | "generated" } {
+    if (opts.currentSecret) {
+        return { secret: opts.currentSecret, source: "existing" };
+    }
+
+    for (const content of opts.composeContents) {
+        if (!content) continue;
+        const extracted = extractSettingsFromCompose(content);
+        if (extracted.betterAuthSecret) {
+            return { secret: extracted.betterAuthSecret, source: "compose" };
+        }
+    }
+
+    const gen = opts.generate ?? generateBetterAuthSecret;
+    return { secret: gen(), source: "generated" };
 }
 
 /** @deprecated Use extractSettingsFromCompose instead */
@@ -160,6 +203,10 @@ function migrateLegacySettings(): Partial<WebConfig> {
                 migrated.port = extracted.port;
                 sources.push("compose.yml (port)");
             }
+            if (extracted.betterAuthSecret) {
+                migrated.betterAuthSecret = extracted.betterAuthSecret;
+                sources.push("compose.yml (betterAuthSecret)");
+            }
         } catch { /* can't read */ }
     }
 
@@ -178,7 +225,30 @@ export function loadWebConfig(): WebConfig {
         try {
             const stored = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
             // Merge with defaults so new fields get default values
-            return { ...DEFAULT_CONFIG, ...stored };
+            const config: WebConfig = { ...DEFAULT_CONFIG, ...stored };
+
+            // Ensure required secrets exist (migrate older configs)
+            let changed = false;
+            if (!config.betterAuthSecret) {
+                const composePath = join(WEB_DIR, "compose.yml");
+                const overridePath = join(WEB_DIR, "compose.override.yml");
+
+                const overrideContent = existsSync(overridePath) ? readFileSync(overridePath, "utf-8") : null;
+                const composeContent = existsSync(composePath) ? readFileSync(composePath, "utf-8") : null;
+
+                const resolved = resolveBetterAuthSecret({
+                    currentSecret: config.betterAuthSecret,
+                    composeContents: [overrideContent, composeContent],
+                });
+
+                config.betterAuthSecret = resolved.secret;
+                changed = true;
+            }
+            if (changed) {
+                saveWebConfig(config);
+            }
+
+            return config;
         } catch {
             console.warn("Warning: config.json is corrupted, using defaults.");
         }
@@ -197,6 +267,13 @@ export function loadWebConfig(): WebConfig {
     if (legacy.vapidSubject) config.vapidSubject = legacy.vapidSubject;
     if (legacy.extraOrigins) config.extraOrigins = legacy.extraOrigins;
     if (legacy.port) config.port = legacy.port;
+
+    if (legacy.betterAuthSecret) {
+        config.betterAuthSecret = legacy.betterAuthSecret;
+    } else {
+        config.betterAuthSecret = generateBetterAuthSecret();
+        console.log("Generated BETTER_AUTH_SECRET for authentication.");
+    }
 
     saveWebConfig(config);
     return config;
@@ -294,6 +371,7 @@ services:
     environment:
       - PORT=7492
       - PIZZAPI_REDIS_URL=redis://redis:6379
+      - BETTER_AUTH_SECRET={{BETTER_AUTH_SECRET}}
       - VAPID_PUBLIC_KEY={{VAPID_PUBLIC_KEY}}
       - VAPID_PRIVATE_KEY={{VAPID_PRIVATE_KEY}}
       - VAPID_SUBJECT={{VAPID_SUBJECT}}
@@ -330,6 +408,7 @@ function generateComposeFile(repoPath: string, config: WebConfig): string {
         .replace(/\{\{VAPID_PUBLIC_KEY}}/g, config.vapid.publicKey)
         .replace(/\{\{VAPID_PRIVATE_KEY}}/g, config.vapid.privateKey)
         .replace(/\{\{VAPID_SUBJECT}}/g, config.vapidSubject)
+        .replace(/\{\{BETTER_AUTH_SECRET}}/g, config.betterAuthSecret)
         .replace(/\{\{EXTRA_ORIGINS_LINE}}/g, extraOriginsLine);
 
     // Only write if changed
@@ -471,6 +550,7 @@ Settable keys:
         console.log(`  port:          ${config.port}`);
         console.log(`  vapidSubject:  ${config.vapidSubject}`);
         console.log(`  extraOrigins:  ${config.extraOrigins || "(none)"}`);
+        console.log(`  authSecret:    ${config.betterAuthSecret ? "*".repeat(20) + "..." : "(missing)"}`);
         console.log(`  vapid.public:  ${config.vapid.publicKey.slice(0, 20)}...`);
         console.log(`  vapid.private: ${"*".repeat(20)}...`);
         return;

@@ -53,6 +53,9 @@ export {
 import { renderGroupedToolExecution, renderToolResult } from "@/components/session-viewer/tool-rendering";
 import { WriteFileCard } from "@/components/session-viewer/cards/WriteFileCard";
 import { SubAgentConversationCard } from "@/components/session-viewer/cards/SubAgentCards";
+import { CompactionSummaryCard } from "@/components/session-viewer/cards/CompactionSummaryCard";
+
+export { CompactionSummaryCard } from "@/components/session-viewer/cards/CompactionSummaryCard";
 
 export function toMessageRole(role: string): "user" | "assistant" | "system" {
   if (role === "user") return "user";

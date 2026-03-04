@@ -21,7 +21,7 @@ test("touchRelaySession updates ephemeral session correctly", async () => {
     });
 
     // Check initial state
-    let session = await getPersistedRelaySessionSnapshot(sessionId);
+    let session = await getPersistedRelaySessionSnapshot(sessionId, "u1");
     expect(session).not.toBeNull();
     expect(session!.isEphemeral).toBe(true);
     const initialExpiresAt = session!.expiresAt;
@@ -32,7 +32,7 @@ test("touchRelaySession updates ephemeral session correctly", async () => {
 
     await touchRelaySession(sessionId);
 
-    session = await getPersistedRelaySessionSnapshot(sessionId);
+    session = await getPersistedRelaySessionSnapshot(sessionId, "u1");
     expect(session!.expiresAt).not.toBeNull();
     // expiry should be extended, so new expiresAt > initialExpiresAt
     expect(new Date(session!.expiresAt!).getTime()).toBeGreaterThan(new Date(initialExpiresAt!).getTime());
@@ -52,7 +52,7 @@ test("touchRelaySession updates non-ephemeral session correctly", async () => {
     });
 
     // Check initial state
-    let session = await getPersistedRelaySessionSnapshot(sessionId);
+    let session = await getPersistedRelaySessionSnapshot(sessionId, "u1");
     expect(session).not.toBeNull();
     expect(session!.isEphemeral).toBe(false);
     expect(session!.expiresAt).toBeNull();
@@ -71,7 +71,7 @@ test("touchRelaySession updates non-ephemeral session correctly", async () => {
 
     await touchRelaySession(sessionId);
 
-    session = await getPersistedRelaySessionSnapshot(sessionId);
+    session = await getPersistedRelaySessionSnapshot(sessionId, "u1");
     expect(session!.expiresAt).toBeNull();
 
     const updatedRow = await getKysely()

@@ -379,7 +379,7 @@ function stopUsageRefreshLoop(): void {
  *
  * Authentication: API key via PIZZAPI_API_KEY env var (required).
  *                (Back-compat: PIZZAPI_RUNNER_TOKEN server token)
- * Relay URL:      PIZZAPI_RELAY_URL env var (default: ws://localhost:3001).
+ * Relay URL:      PIZZAPI_RELAY_URL env var (default: ws://localhost:7492).
  * State file:     PIZZAPI_RUNNER_STATE_PATH env var (default: ~/.pizzapi/runner.json).
  */
 export async function runDaemon(_args: string[] = []): Promise<number> {
@@ -419,7 +419,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         let isShuttingDown = false;
 
         // ── Socket.IO connection setup ────────────────────────────────────
-        const relayRaw = (process.env.PIZZAPI_RELAY_URL ?? "ws://localhost:3001")
+        const relayRaw = (process.env.PIZZAPI_RELAY_URL ?? "ws://localhost:7492")
             .trim()
             .replace(/\/$/, "");
 
@@ -1223,7 +1223,7 @@ function spawnSession(
     const env: Record<string, string> = {
         ...Object.fromEntries(Object.entries(process.env).filter(([, v]) => typeof v === "string")) as any,
         // Ensure relay URL is present for the remote extension in the worker.
-        PIZZAPI_RELAY_URL: process.env.PIZZAPI_RELAY_URL ?? "ws://localhost:3001",
+        PIZZAPI_RELAY_URL: process.env.PIZZAPI_RELAY_URL ?? "ws://localhost:7492",
         PIZZAPI_API_KEY: apiKey,
         PIZZAPI_SESSION_ID: sessionId,
         // Tell the worker where the runner-managed usage cache lives so it can

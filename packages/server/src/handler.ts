@@ -1,4 +1,5 @@
 import { getAuth, isSignupAllowed } from "./auth.js";
+import { isValidPassword, PASSWORD_REQUIREMENTS_SUMMARY } from "@pizzapi/protocol";
 import { handleApi } from "./routes/api.js";
 import { serveStaticFile } from "./static.js";
 import { RateLimiter } from "./security.js";
@@ -35,6 +36,23 @@ export async function handleFetch(req: Request): Promise<Response> {
                 );
             }
         }
+
+        // Enforce password policy on change-password requests.
+        if (url.pathname === "/api/auth/change-password" && req.method === "POST") {
+            try {
+                const cloned = req.clone();
+                const body = await cloned.json() as { newPassword?: string };
+                if (body.newPassword && !isValidPassword(body.newPassword)) {
+                    return Response.json(
+                        { error: PASSWORD_REQUIREMENTS_SUMMARY },
+                        { status: 400 },
+                    );
+                }
+            } catch {
+                // Let better-auth handle malformed bodies.
+            }
+        }
+
         try {
             return await getAuth().handler(req);
         } catch (e) {

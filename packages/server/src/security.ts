@@ -60,13 +60,8 @@ export function isValidEmail(email: string): boolean {
     return emailRegex.test(email);
 }
 
-export function isValidPassword(password: string): boolean {
-    if (password.length < 8) return false;
-    const hasUpperCase = /[A-Z]/.test(password);
-    const hasLowerCase = /[a-z]/.test(password);
-    const hasNumber = /[0-9]/.test(password);
-    return hasUpperCase && hasLowerCase && hasNumber;
-}
+// Re-export from the shared protocol package so existing imports keep working.
+export { isValidPassword } from "@pizzapi/protocol";
 
 export function normalizePath(value: string): string {
     const trimmed = value.trim().replace(/\\/g, "/");

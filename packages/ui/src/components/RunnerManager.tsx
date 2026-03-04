@@ -1,6 +1,6 @@
 import * as React from "react";
 import { Button } from "@/components/ui/button";
-import { RefreshCw, HardDrive, Hash, Loader2, Server, ChevronDown, Plus, FolderOpen, Terminal, Clock, Power } from "lucide-react";
+import { RefreshCw, HardDrive, Hash, Loader2, Server, ChevronDown, Plus, FolderOpen, Terminal, Clock, Power, AlertTriangle } from "lucide-react";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 import { formatPathTail } from "@/lib/path";
@@ -47,6 +47,7 @@ export function RunnerManager({ onOpenSession }: RunnerManagerProps) {
     const [runners, setRunners] = React.useState<RunnerInfo[]>([]);
     const [sessions, setSessions] = React.useState<LiveSession[]>([]);
     const [loading, setLoading] = React.useState(true);
+    const [latestVersion, setServerVersion] = React.useState<string | null>(null);
     const [restarting, setRestarting] = React.useState<Set<string>>(new Set());
     const [stopping, setStopping] = React.useState<Set<string>>(new Set());
 
@@ -92,6 +93,14 @@ export function RunnerManager({ onOpenSession }: RunnerManagerProps) {
         const interval = setInterval(fetchData, 10000);
         return () => clearInterval(interval);
     }, [fetchData]);
+
+    // Fetch server version once
+    React.useEffect(() => {
+        fetch("/api/version")
+            .then((res) => res.ok ? res.json() : null)
+            .then((data) => { if (data?.version) setServerVersion(data.version); })
+            .catch(() => {});
+    }, []);
 
     // Fetch recent folders when a runner is selected in the spawn dialog
     React.useEffect(() => {
@@ -313,6 +322,7 @@ export function RunnerManager({ onOpenSession }: RunnerManagerProps) {
                                     key={runner.runnerId}
                                     runner={runner}
                                     sessions={runnerSessions}
+                                    latestVersion={latestVersion}
                                     isRestarting={restarting.has(runner.runnerId)}
                                     isStopping={stopping.has(runner.runnerId)}
                                     onRestart={() => handleRestart(runner.runnerId)}
@@ -344,7 +354,7 @@ export function RunnerManager({ onOpenSession }: RunnerManagerProps) {
                         </DialogDescription>
                     </DialogHeader>
 
-                    <div className="flex flex-col gap-4 py-2">
+                    <div className="flex flex-col gap-4 py-2 min-w-0 overflow-hidden">
                         <div className="flex flex-col gap-1.5">
                             <Label htmlFor="spawn-cwd" className="text-sm">Working directory <span className="text-muted-foreground font-normal">(optional)</span></Label>
                             <Input
@@ -359,7 +369,7 @@ export function RunnerManager({ onOpenSession }: RunnerManagerProps) {
 
                         {/* Recent folders */}
                         {(recentFoldersLoading || recentFolders.length > 0) && (
-                            <div className="flex flex-col gap-1.5">
+                            <div className="flex flex-col gap-1.5 min-w-0">
                                 <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Recent folders</p>
                                 {recentFoldersLoading ? (
                                     <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -367,21 +377,21 @@ export function RunnerManager({ onOpenSession }: RunnerManagerProps) {
                                         Loading…
                                     </div>
                                 ) : (
-                                    <div className="flex flex-col gap-1">
+                                    <div className="flex flex-col gap-1 min-w-0">
                                         {recentFolders.map((folder) => (
                                             <button
                                                 key={folder}
                                                 type="button"
                                                 onClick={() => setSpawnCwd(folder)}
                                                 className={cn(
-                                                    "flex items-center gap-2 text-left px-2.5 py-1.5 rounded-md text-xs font-mono transition-colors",
+                                                    "flex items-center gap-2 text-left px-2.5 py-1.5 rounded-md text-xs font-mono transition-colors min-w-0",
                                                     spawnCwd === folder
                                                         ? "bg-accent text-accent-foreground"
                                                         : "text-muted-foreground hover:bg-muted hover:text-foreground"
                                                 )}
                                             >
                                                 <FolderOpen className="h-3.5 w-3.5 flex-shrink-0 opacity-60" />
-                                                <span className="truncate">{folder}</span>
+                                                <span className="truncate [direction:rtl] text-left" dir="rtl">{folder}</span>
                                             </button>
                                         ))}
                                     </div>
@@ -418,9 +428,34 @@ export function RunnerManager({ onOpenSession }: RunnerManagerProps) {
     );
 }
 
+/**
+ * Returns true if version a < b using semver ordering.
+ * Handles prerelease tags: splits on "-" first, compares core numerically,
+ * then treats any prerelease as less than the same core release
+ * (e.g. 1.2.3-rc.1 < 1.2.3, but 1.2.3-rc.1 > 1.2.2).
+ */
+function semverLt(a: string, b: string): boolean {
+    const parse = (v: string) => {
+        const clean = v.replace(/^v/, "");
+        const [core, pre] = clean.split("-", 2);
+        return { parts: core.split(".").map(Number), pre: pre ?? null };
+    };
+    const pa = parse(a), pb = parse(b);
+    for (let i = 0; i < Math.max(pa.parts.length, pb.parts.length); i++) {
+        const na = pa.parts[i] ?? 0, nb = pb.parts[i] ?? 0;
+        if (isNaN(na) || isNaN(nb)) return false; // unparseable → don't flag
+        if (na < nb) return true;
+        if (na > nb) return false;
+    }
+    // Same core: prerelease < release (e.g. 1.0.0-beta < 1.0.0)
+    if (pa.pre !== null && pb.pre === null) return true;
+    return false;
+}
+
 interface RunnerCardProps {
     runner: RunnerInfo;
     sessions: LiveSession[];
+    latestVersion: string | null;
     isRestarting: boolean;
     isStopping: boolean;
     onRestart: () => void;
@@ -434,13 +469,17 @@ function formatTime(iso: string): string {
     return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-function RunnerCard({ runner, sessions, isRestarting, isStopping, onRestart, onStop, onNewSession, onOpenSession, onSkillsChange }: RunnerCardProps) {
+function RunnerCard({ runner, sessions, latestVersion, isRestarting, isStopping, onRestart, onStop, onNewSession, onOpenSession, onSkillsChange }: RunnerCardProps) {
     const [sessionsOpen, setSessionsOpen] = React.useState(true);
+    const isOutdated = !!(runner.version && latestVersion && semverLt(runner.version, latestVersion));
 
     return (
         <div className="group relative rounded-xl border border-border/60 bg-card hover:border-border transition-all duration-200 overflow-hidden">
             {/* Subtle top accent line */}
-            <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-green-500/40 to-transparent" />
+            <div className={cn(
+                "absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent to-transparent",
+                isOutdated ? "via-amber-500/40" : "via-green-500/40"
+            )} />
 
             <div className="p-3 sm:p-4">
                 {/* Top row: name + status + actions */}
@@ -456,9 +495,20 @@ function RunnerCard({ runner, sessions, isRestarting, isStopping, onRestart, onS
                                 <p className="font-semibold text-sm leading-none truncate">
                                     {runner.name || "Unnamed Runner"}
                                 </p>
-                                {runner.version && (
-                                    <span className="inline-flex items-center text-[10px] font-mono px-1.5 py-0.5 rounded-full bg-muted/60 border border-border/40 text-muted-foreground leading-none">
-                                        v{runner.version}
+                                <span className={cn(
+                                    "inline-flex items-center text-[10px] font-mono px-1.5 py-0.5 rounded-full border leading-none gap-1",
+                                    isOutdated
+                                        ? "bg-amber-500/10 border-amber-500/40 text-amber-600 dark:text-amber-400"
+                                        : !runner.version
+                                            ? "bg-muted/60 border-border/40 text-muted-foreground/50 italic"
+                                            : "bg-muted/60 border-border/40 text-muted-foreground"
+                                )}>
+                                    {isOutdated && <AlertTriangle className="h-2.5 w-2.5" />}
+                                    {runner.version ? `v${runner.version}` : "unknown"}
+                                </span>
+                                {isOutdated && (
+                                    <span className="text-[10px] text-amber-600 dark:text-amber-400">
+                                        Update available (v{latestVersion})
                                     </span>
                                 )}
                             </div>

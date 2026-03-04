@@ -107,7 +107,7 @@ export interface PizzaPiConfig {
     appendSystemPrompt?: string;
     /** API key for authenticating with the PizzaPi relay server */
     apiKey?: string;
-    /** WebSocket URL of the PizzaPi relay server. Default: ws://localhost:3001 */
+    /** WebSocket URL of the PizzaPi relay server. Default: ws://localhost:7492. Set to "off" to disable relay entirely. */
     relayUrl?: string;
     /**
      * Additional skill paths to load (files or directories).
