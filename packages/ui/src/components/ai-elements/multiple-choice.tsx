@@ -15,7 +15,7 @@ export interface MultipleChoiceQuestionsProps {
   questions: MultipleChoiceQuestion[];
   /** Stable identity for this prompt (e.g. toolCallId). Used to reset selections on new prompt. */
   promptKey?: string;
-  onSubmit: (answers: MultipleChoiceAnswers) => void;
+  onSubmit: (answers: MultipleChoiceAnswers) => void | Promise<boolean | void>;
   className?: string;
 }
 
@@ -78,7 +78,13 @@ export function MultipleChoiceQuestions({
         : q.options[sel];
       return { question: q.question, answer };
     });
-    onSubmit(answers);
+    Promise.resolve(onSubmit(answers))
+      .then((result) => {
+        if (result === false) setIsSubmitting(false);
+      })
+      .catch(() => {
+        setIsSubmitting(false);
+      });
   };
 
   return (

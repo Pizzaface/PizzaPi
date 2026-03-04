@@ -1253,20 +1253,22 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
             promptKey={pendingQuestion.toolCallId}
             className="mb-2"
             onSubmit={(answers) => {
-              if (!onSendInput) return;
+              if (!onSendInput) return Promise.resolve(false);
               setComposerError(null);
               const text = formatAnswersForAgent(answers);
-              Promise.resolve(onSendInput(text))
+              return Promise.resolve(onSendInput(text))
                 .then((result) => {
                   if (result !== false) {
                     setComposerError(null);
                     setInput("");
-                  } else {
-                    setComposerError("Failed to send answer.");
+                    return true;
                   }
+                  setComposerError("Failed to send answer.");
+                  return false;
                 })
                 .catch(() => {
                   setComposerError("Failed to send answer.");
+                  return false;
                 });
             }}
           />
