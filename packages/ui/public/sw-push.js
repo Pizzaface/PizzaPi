@@ -44,6 +44,7 @@ self.addEventListener("push", function (event) {
             sessionId: payload.sessionId,
             type: payload.type,
             options: payload.data && payload.data.options ? payload.data.options : null,
+            toolCallId: payload.data && payload.data.toolCallId ? payload.data.toolCallId : null,
         },
     };
 
@@ -88,9 +89,10 @@ self.addEventListener("notificationclick", function (event) {
     }
 
     // If we have an answer and a session, send it back to the server
+    var toolCallId = data.toolCallId;
     if (answerText && sessionId) {
         event.waitUntil(
-            sendAnswerToServer(sessionId, answerText).then(function () {
+            sendAnswerToServer(sessionId, answerText, toolCallId).then(function () {
                 // Answer sent successfully — no need to open the app
             }).catch(function () {
                 // Failed to send via API — fall back to opening the app
@@ -108,12 +110,14 @@ self.addEventListener("notificationclick", function (event) {
  * Send an answer to the server via the push answer API endpoint.
  * Uses fetch with credentials (session cookie) from the service worker.
  */
-function sendAnswerToServer(sessionId, text) {
+function sendAnswerToServer(sessionId, text, toolCallId) {
+    var payload = { sessionId: sessionId, text: text };
+    if (toolCallId) payload.toolCallId = toolCallId;
     return fetch(absoluteUrl("/api/push/answer"), {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId: sessionId, text: text }),
+        body: JSON.stringify(payload),
     }).then(function (res) {
         if (!res.ok) throw new Error("Push answer failed: " + res.status);
         return res;

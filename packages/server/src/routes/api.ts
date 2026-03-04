@@ -13,6 +13,7 @@ import {
     recordRunnerSession,
     registerTerminal,
 } from "../ws/sio-registry.js";
+import { getPushPendingQuestion } from "../ws/sio-state.js";
 import { sendSkillCommand, sendRunnerCommand } from "../ws/namespaces/runner.js";
 import { waitForSpawnAck } from "../ws/runner-control.js";
 import { getApiKeyRateLimitConfig, getAuth, getKysely } from "../auth.js";
@@ -928,7 +929,7 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
         const identity = await requireSession(req);
         if (identity instanceof Response) return identity;
 
-        let body: { sessionId?: string; text?: string };
+        let body: { sessionId?: string; text?: string; toolCallId?: string };
         try {
             body = await req.json();
         } catch {
@@ -955,21 +956,22 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
             );
         }
 
-        // Reject if no question is currently pending (stale notification guard).
-        // The heartbeat stores pendingQuestion state; if it's null/absent, the
-        // agent has moved on and this push answer would inject unexpected input.
-        if (session.lastHeartbeat) {
-            try {
-                const hb = JSON.parse(session.lastHeartbeat);
-                if (!hb?.pendingQuestion) {
-                    return Response.json(
-                        { error: "No question is currently pending for this session" },
-                        { status: 409 },
-                    );
-                }
-            } catch {
-                // Malformed heartbeat — allow the input through as a fallback
-            }
+        // Reject stale/mismatched push answers. The pending toolCallId is set
+        // in Redis when the push notification is sent (tool_execution_start)
+        // and cleared when the tool finishes (tool_execution_end). This avoids
+        // the heartbeat-lag race condition.
+        const pendingToolCallId = await getPushPendingQuestion(body.sessionId);
+        if (!pendingToolCallId) {
+            return Response.json(
+                { error: "No question is currently pending for this session" },
+                { status: 409 },
+            );
+        }
+        if (body.toolCallId && body.toolCallId !== pendingToolCallId) {
+            return Response.json(
+                { error: "This answer does not match the current pending question" },
+                { status: 409 },
+            );
         }
 
         // Find the TUI socket and emit the input

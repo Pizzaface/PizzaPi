@@ -248,6 +248,7 @@ export function notifyAgentNeedsInput(
     question?: string,
     sessionName?: string | null,
     options?: string[],
+    toolCallId?: string,
 ): void {
     const label = sessionName ?? sessionId.slice(0, 8);
     const body = question
@@ -285,7 +286,10 @@ export function notifyAgentNeedsInput(
         body,
         sessionId,
         actions: actions.length > 0 ? actions : undefined,
-        data: options && options.length > 0 ? { options } : undefined,
+        data: {
+            ...(options && options.length > 0 ? { options } : {}),
+            ...(toolCallId ? { toolCallId } : {}),
+        },
     }).catch((err) => {
         console.error("[push] notifyAgentNeedsInput failed:", err);
     });

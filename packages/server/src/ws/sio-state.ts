@@ -551,6 +551,34 @@ export async function deletePendingRunnerLink(sessionId: string): Promise<void> 
     await r.del(runnerLinkKey(sessionId));
 }
 
+// ── Push pending question tracking ──────────────────────────────────────────
+// Short-lived Redis key set when a push notification is sent for an
+// AskUserQuestion, cleared when the tool execution ends. Used by
+// /api/push/answer to reject stale or mismatched push replies.
+
+function pushPendingKey(sessionId: string): string {
+    return `pizzapi:push-pending:${sessionId}`;
+}
+
+/** Record the toolCallId of the currently pending push-notified question. */
+export async function setPushPendingQuestion(sessionId: string, toolCallId: string): Promise<void> {
+    const r = requireRedis();
+    // Auto-expire after 30 minutes (safety net — cleared explicitly on tool end)
+    await r.set(pushPendingKey(sessionId), toolCallId, { EX: 1800 });
+}
+
+/** Get the currently pending push-notified toolCallId, or null. */
+export async function getPushPendingQuestion(sessionId: string): Promise<string | null> {
+    const r = requireRedis();
+    return r.get(pushPendingKey(sessionId));
+}
+
+/** Clear the push-pending question (tool execution ended). */
+export async function clearPushPendingQuestion(sessionId: string): Promise<void> {
+    const r = requireRedis();
+    await r.del(pushPendingKey(sessionId));
+}
+
 // ── Cleanup / scan ──────────────────────────────────────────────────────────
 
 /**

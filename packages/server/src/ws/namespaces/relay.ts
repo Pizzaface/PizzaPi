@@ -26,6 +26,10 @@ import {
     broadcastToViewers,
 } from "../sio-registry.js";
 import {
+    setPushPendingQuestion,
+    clearPushPendingQuestion,
+} from "../sio-state.js";
+import {
     notifyAgentFinished,
     notifyAgentNeedsInput,
     notifyAgentError,
@@ -167,7 +171,16 @@ async function checkPushNotifications(
             }
         }
         // Multi-question: force open-app flow (no quick-reply buttons)
-        notifyAgentNeedsInput(userId, sessionId, question, sName, questionCount <= 1 ? options : undefined);
+        const toolCallId = typeof event.toolCallId === "string" ? event.toolCallId : undefined;
+        if (toolCallId) {
+            void setPushPendingQuestion(sessionId, toolCallId);
+        }
+        notifyAgentNeedsInput(userId, sessionId, question, sName, questionCount <= 1 ? options : undefined, toolCallId);
+    }
+
+    // Clear push-pending state when AskUserQuestion finishes (answered or cancelled)
+    if (event.type === "tool_execution_end" && event.toolName === "AskUserQuestion") {
+        void clearPushPendingQuestion(sessionId);
     }
 
     if (event.type === "cli_error") {
