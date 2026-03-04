@@ -23,15 +23,23 @@ interface RelayState {
     ackedSeq: number;
 }
 
-interface AskUserQuestionParams {
+interface AskUserQuestionItem {
     question: string;
+    options: string[];
+}
+
+interface AskUserQuestionParams {
+    /** New multi-question format */
+    questions?: AskUserQuestionItem[];
+    /** Legacy single-question format (auto-wrapped into questions[]) */
+    question?: string;
     placeholder?: string;
     options?: string[];
 }
 
 interface AskUserQuestionDetails {
-    question: string;
-    options?: string[];
+    questions: AskUserQuestionItem[];
+    answers: Record<string, string> | null;
     answer: string | null;
     source: "tui" | "web" | null;
     cancelled: boolean;
@@ -40,8 +48,7 @@ interface AskUserQuestionDetails {
 
 interface PendingAskUserQuestion {
     toolCallId: string;
-    question: string;
-    options?: string[];
+    questions: AskUserQuestionItem[];
     resolve: (answer: string | null) => void;
 }
 
@@ -647,8 +654,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             pendingQuestion: pendingAskUserQuestion
                 ? {
                       toolCallId: pendingAskUserQuestion.toolCallId,
-                      question: pendingAskUserQuestion.question,
-                      options: pendingAskUserQuestion.options,
+                      questions: pendingAskUserQuestion.questions,
                   }
                 : null,
             retryState: lastRetryableError
@@ -1222,9 +1228,21 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         setRelayStatus(relay ? "Connected to Relay" : disconnectedStatusText());
     }
 
+    /** Normalize params into the canonical questions[] format */
+    function normalizeQuestions(params: AskUserQuestionParams): AskUserQuestionItem[] {
+        if (params.questions && params.questions.length > 0) {
+            return params.questions;
+        }
+        // Legacy single-question format
+        if (params.question) {
+            return [{ question: params.question, options: params.options ?? [] }];
+        }
+        return [];
+    }
+
     async function askUserQuestion(
         toolCallId: string,
-        params: AskUserQuestionParams,
+        questions: AskUserQuestionItem[],
         signal: AbortSignal | undefined,
         ctx: ExtensionContext,
     ): Promise<{ answer: string | null; source: "tui" | "web" | null }> {
@@ -1274,8 +1292,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             if (canAskViaWeb) {
                 pendingAskUserQuestion = {
                     toolCallId,
-                    question: params.question,
-                    options: params.options,
+                    questions,
                     resolve: (answer) => {
                         webDone = true;
                         if (answer) {
@@ -1289,15 +1306,18 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             }
 
             if (canAskViaTui) {
-                // If options are provided, format them into the question for the TUI
-                // (until we have a proper select UI method).
-                let displayQuestion = params.question;
-                if (params.options && params.options.length > 0) {
-                    displayQuestion += ` (Options: ${params.options.join(", ")})`;
-                }
+                // Format all questions with their options for TUI display
+                const displayParts = questions.map((q, i) => {
+                    let text = questions.length > 1 ? `Q${i + 1}: ${q.question}` : q.question;
+                    if (q.options.length > 0) {
+                        text += ` (Options: ${q.options.join(", ")})`;
+                    }
+                    return text;
+                });
+                const displayQuestion = displayParts.join("\n");
                 
                 void ctx.ui
-                    .input(displayQuestion, params.placeholder, { signal: localAbort.signal })
+                    .input(displayQuestion, undefined, { signal: localAbort.signal })
                     .then((value) => {
                         localDone = true;
                         const answer = value?.trim();
@@ -1738,25 +1758,41 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         name: ASK_USER_TOOL_NAME,
         label: "Ask User Question",
         description:
-            "Ask the user a clarification question and wait for a response. Use this when you must collect user input before continuing.",
+            "Ask the user one or more multiple-choice questions and wait for responses. Use this when you must collect user input before continuing.",
         parameters: {
             type: "object",
             properties: {
+                questions: {
+                    type: "array",
+                    description: "One or more questions to ask. Each must include options for the user to choose from.",
+                    items: {
+                        type: "object",
+                        properties: {
+                            question: {
+                                type: "string",
+                                description: "The question text.",
+                            },
+                            options: {
+                                type: "array",
+                                items: { type: "string" },
+                                description: "Predefined choices for the user to select from. The UI will automatically add a \"Write your own...\" free-form option.",
+                            },
+                        },
+                        required: ["question", "options"],
+                    },
+                },
+                // Legacy single-question fields (backward compat)
                 question: {
                     type: "string",
-                    description: "The question to ask the user.",
-                },
-                placeholder: {
-                    type: "string",
-                    description: "Optional placeholder hint for the answer input.",
+                    description: "(Legacy) The question to ask the user. Prefer `questions` array.",
                 },
                 options: {
                     type: "array",
                     items: { type: "string" },
-                    description: "Predefined choices for the user to select from. Always include a \"Type your own\" option as the last choice to allow free-form input.",
+                    description: "(Legacy) Predefined choices. Prefer `questions` array.",
                 },
             },
-            required: ["question", "options"],
+            required: ["questions"],
             additionalProperties: false,
         } as any,
         async execute(toolCallId, rawParams, signal, onUpdate, ctx) {
@@ -1764,8 +1800,8 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 return {
                     content: [{ type: "text", text: "A different AskUserQuestion prompt is already pending." }],
                     details: {
-                        question: pendingAskUserQuestion.question,
-                        options: pendingAskUserQuestion.options,
+                        questions: pendingAskUserQuestion.questions,
+                        answers: null,
                         answer: null,
                         source: null,
                         cancelled: true,
@@ -1774,14 +1810,14 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             }
 
             const params = (rawParams ?? {}) as AskUserQuestionParams;
-            const question = params.question?.trim();
+            const questions = normalizeQuestions(params);
 
-            if (!question) {
+            if (questions.length === 0 || !questions.some(q => q.question.trim())) {
                 return {
-                    content: [{ type: "text", text: "AskUserQuestion requires a non-empty question." }],
+                    content: [{ type: "text", text: "AskUserQuestion requires at least one non-empty question." }],
                     details: {
-                        question: "",
-                        options: params.options,
+                        questions: [],
+                        answers: null,
                         answer: null,
                         source: null,
                         cancelled: true,
@@ -1789,11 +1825,12 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 };
             }
 
+            const summaryText = questions.map(q => q.question).join("; ");
             onUpdate?.({
-                content: [{ type: "text", text: `Waiting for answer: ${question}` }],
+                content: [{ type: "text", text: `Waiting for answer: ${summaryText}` }],
                 details: {
-                    question,
-                    options: params.options,
+                    questions,
+                    answers: null,
                     answer: null,
                     source: null,
                     cancelled: false,
@@ -1803,7 +1840,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
 
             const result = await askUserQuestion(
                 toolCallId,
-                { question, placeholder: params.placeholder, options: params.options },
+                questions,
                 signal,
                 ctx,
             );
@@ -1812,8 +1849,8 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 return {
                     content: [{ type: "text", text: "User did not provide an answer." }],
                     details: {
-                        question,
-                        options: params.options,
+                        questions,
+                        answers: null,
                         answer: null,
                         source: null,
                         cancelled: true,
@@ -1821,11 +1858,22 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 };
             }
 
+            // Try to parse structured answers from web UI (JSON object)
+            let parsedAnswers: Record<string, string> | null = null;
+            try {
+                const parsed = JSON.parse(result.answer);
+                if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+                    parsedAnswers = parsed as Record<string, string>;
+                }
+            } catch {
+                // TUI or plain text answer — leave as raw string
+            }
+
             onUpdate?.({
                 content: [{ type: "text", text: `Answer received: ${result.answer}` }],
                 details: {
-                    question,
-                    options: params.options,
+                    questions,
+                    answers: parsedAnswers,
                     answer: result.answer,
                     source: result.source,
                     cancelled: false,
@@ -1836,8 +1884,8 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             return {
                 content: [{ type: "text", text: `User answered: ${result.answer}` }],
                 details: {
-                    question,
-                    options: params.options,
+                    questions,
+                    answers: parsedAnswers,
                     answer: result.answer,
                     source: result.source,
                     cancelled: false,

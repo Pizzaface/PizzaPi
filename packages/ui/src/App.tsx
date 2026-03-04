@@ -69,6 +69,32 @@ import {
   type InputDedupeState,
 } from "@/lib/input-dedupe";
 
+/** Parse pending question data from various formats (heartbeat, tool_execution_start, etc.) */
+function parsePendingQuestions(data: Record<string, unknown> | undefined | null): Array<{ question: string; options: string[] }> {
+  if (!data) return [];
+  // New format: questions array
+  if (Array.isArray(data.questions)) {
+    const result: Array<{ question: string; options: string[] }> = [];
+    for (const q of data.questions) {
+      if (q && typeof q === "object" && typeof (q as any).question === "string" && (q as any).question.trim()) {
+        const opts = Array.isArray((q as any).options)
+          ? ((q as any).options as unknown[]).filter((o): o is string => typeof o === "string")
+          : [];
+        result.push({ question: (q as any).question.trim(), options: opts });
+      }
+    }
+    if (result.length > 0) return result;
+  }
+  // Legacy format: single question + options
+  if (typeof data.question === "string" && data.question.trim()) {
+    const opts = Array.isArray(data.options)
+      ? (data.options as unknown[]).filter((o): o is string => typeof o === "string")
+      : [];
+    return [{ question: (data.question as string).trim(), options: opts }];
+  }
+  return [];
+}
+
 function toRelayMessage(raw: unknown, fallbackId: string): RelayMessage | null {
   if (!raw || typeof raw !== "object") return null;
 
@@ -604,7 +630,7 @@ export function App() {
   const [recentFolders, setRecentFolders] = React.useState<string[]>([]);
   const [recentFoldersLoading, setRecentFoldersLoading] = React.useState(false);
 
-  const [pendingQuestion, setPendingQuestion] = React.useState<{ toolCallId: string; question: string; options?: string[] } | null>(null);
+  const [pendingQuestion, setPendingQuestion] = React.useState<{ toolCallId: string; questions: Array<{ question: string; options: string[] }> } | null>(null);
   const [activeToolCalls, setActiveToolCalls] = React.useState<Map<string, string>>(new Map());
 
   // Message queue: messages sent while the agent is active
@@ -1168,14 +1194,18 @@ export function App() {
 
       // Restore pending AskUserQuestion state when reconnecting to a session.
       if (Object.prototype.hasOwnProperty.call(hb, "pendingQuestion")) {
-        const pq = (hb as any).pendingQuestion as { toolCallId: string; question: string; options?: string[] } | null;
-        if (pq && typeof pq.question === "string" && pq.question.trim()) {
-          setPendingQuestion({
-            toolCallId: typeof pq.toolCallId === "string" ? pq.toolCallId : "ask-user-question",
-            question: pq.question.trim(),
-            options: Array.isArray(pq.options) ? (pq.options as unknown[]).filter((o): o is string => typeof o === "string") : undefined,
-          });
-          setViewerStatus("Waiting for answer…");
+        const pq = (hb as any).pendingQuestion as { toolCallId: string; questions?: Array<{ question: string; options: string[] }>; question?: string; options?: string[] } | null;
+        if (pq) {
+          const questions = parsePendingQuestions(pq);
+          if (questions.length > 0) {
+            setPendingQuestion({
+              toolCallId: typeof pq.toolCallId === "string" ? pq.toolCallId : "ask-user-question",
+              questions,
+            });
+            setViewerStatus("Waiting for answer…");
+          } else {
+            setPendingQuestion(null);
+          }
         } else {
           // Heartbeat explicitly says no pending question; clear any stale state.
           setPendingQuestion(null);
@@ -1532,15 +1562,12 @@ export function App() {
 
     if (type === "tool_execution_start" && evt.toolName === "AskUserQuestion") {
       const args = evt.args as Record<string, unknown> | undefined;
-      const question = typeof args?.question === "string" ? args.question.trim() : "";
-      const rawOptions = Array.isArray(args?.options) ? args.options : undefined;
-      const options = rawOptions ? (rawOptions as unknown[]).filter((o): o is string => typeof o === "string") : undefined;
+      const questions = parsePendingQuestions(args);
 
-      if (question) {
+      if (questions.length > 0) {
         setPendingQuestion({
           toolCallId: typeof evt.toolCallId === "string" ? evt.toolCallId : "ask-user-question",
-          question,
-          options,
+          questions,
         });
         setViewerStatus("Waiting for answer…");
       }
@@ -1550,22 +1577,13 @@ export function App() {
     if (type === "tool_execution_update" && evt.toolName === "AskUserQuestion") {
       const partial = evt.partialResult as Record<string, unknown> | undefined;
       const details = partial?.details as Record<string, unknown> | undefined;
-      const rawQuestion = typeof partial?.question === "string"
-        ? partial.question
-        : typeof details?.question === "string"
-          ? details.question
-          : "";
-      const question = rawQuestion.trim();
+      // Try from partial first, then nested details
+      const questions = parsePendingQuestions(partial) || parsePendingQuestions(details);
 
-      const rawOptions = (Array.isArray(partial?.options) ? partial.options : undefined)
-        ?? (Array.isArray(details?.options) ? details.options : undefined);
-      const options = rawOptions ? (rawOptions as unknown[]).filter((o): o is string => typeof o === "string") : undefined;
-
-      if (question) {
+      if (questions && questions.length > 0) {
         setPendingQuestion({
           toolCallId: typeof evt.toolCallId === "string" ? evt.toolCallId : "ask-user-question",
-          question,
-          options,
+          questions,
         });
       }
       return;
