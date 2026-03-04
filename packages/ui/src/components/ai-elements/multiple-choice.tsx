@@ -111,57 +111,60 @@ export function MultipleChoiceQuestions({
 
               {/* Options as radio buttons */}
               <div className="space-y-1.5 clear-both" role="radiogroup" aria-label={q.question}>
-                {q.options.map((option, optIdx) => {
-                  // Skip "Type your own" entries from the agent — we provide our own
-                  const isAgentTypeYourOwn = option.toLowerCase().replace(/[^a-z]/g, "") === "typeyourown";
-                  if (isAgentTypeYourOwn) return null;
+                {(() => {
+                  // Pre-filter agent "Type your own" entries so letter labels stay sequential
+                  const visibleOptions = q.options
+                    .map((option, origIdx) => ({ option, origIdx }))
+                    .filter(({ option }) => option.toLowerCase().replace(/[^a-z]/g, "") !== "typeyourown");
 
-                  const isSelected = selected === optIdx;
-                  const inputId = `${groupName}-opt-${optIdx}`;
+                  return visibleOptions.map(({ option, origIdx }, displayIdx) => {
+                    const isSelected = selected === origIdx;
+                    const inputId = `${groupName}-opt-${origIdx}`;
 
-                  return (
-                    <label
-                      key={optIdx}
-                      htmlFor={inputId}
-                      className={cn(
-                        "flex items-center gap-2.5 rounded-md px-2.5 py-2 text-sm cursor-pointer transition-all",
-                        isSelected
-                          ? "border border-violet-500/40 bg-violet-500/15 text-violet-100"
-                          : "border border-transparent hover:border-violet-500/20 hover:bg-violet-500/[0.07] text-foreground/70 hover:text-foreground/90",
-                      )}
-                    >
-                      {/* Hidden real radio input for accessibility */}
-                      <input
-                        type="radio"
-                        id={inputId}
-                        name={groupName}
-                        value={option}
-                        checked={isSelected}
-                        onChange={() => handleSelect(qIdx, optIdx)}
-                        className="sr-only"
-                      />
-                      {/* Visual radio circle */}
-                      <span className={cn(
-                        "flex size-4 shrink-0 items-center justify-center rounded-full border transition-all",
-                        isSelected
-                          ? "border-violet-400 bg-violet-500"
-                          : "border-violet-500/30 bg-transparent",
-                      )} aria-hidden="true">
-                        {isSelected && <Check className="size-2.5 text-white" strokeWidth={3} />}
-                      </span>
-                      {/* Option letter + text */}
-                      <span className="flex items-center gap-1.5">
+                    return (
+                      <label
+                        key={origIdx}
+                        htmlFor={inputId}
+                        className={cn(
+                          "flex items-center gap-2.5 rounded-md px-2.5 py-2 text-sm cursor-pointer transition-all",
+                          isSelected
+                            ? "border border-violet-500/40 bg-violet-500/15 text-violet-100"
+                            : "border border-transparent hover:border-violet-500/20 hover:bg-violet-500/[0.07] text-foreground/70 hover:text-foreground/90",
+                        )}
+                      >
+                        {/* Hidden real radio input for accessibility */}
+                        <input
+                          type="radio"
+                          id={inputId}
+                          name={groupName}
+                          value={option}
+                          checked={isSelected}
+                          onChange={() => handleSelect(qIdx, origIdx)}
+                          className="sr-only"
+                        />
+                        {/* Visual radio circle */}
                         <span className={cn(
-                          "flex size-4 items-center justify-center rounded text-[10px] font-medium shrink-0",
-                          isSelected ? "bg-violet-500/30 text-violet-200" : "bg-violet-500/15 text-violet-300/70",
+                          "flex size-4 shrink-0 items-center justify-center rounded-full border transition-all",
+                          isSelected
+                            ? "border-violet-400 bg-violet-500"
+                            : "border-violet-500/30 bg-transparent",
                         )} aria-hidden="true">
-                          {String.fromCharCode(65 + optIdx)}
+                          {isSelected && <Check className="size-2.5 text-white" strokeWidth={3} />}
                         </span>
-                        <span className="text-left leading-snug">{option}</span>
-                      </span>
-                    </label>
-                  );
-                })}
+                        {/* Option letter + text */}
+                        <span className="flex items-center gap-1.5">
+                          <span className={cn(
+                            "flex size-4 items-center justify-center rounded text-[10px] font-medium shrink-0",
+                            isSelected ? "bg-violet-500/30 text-violet-200" : "bg-violet-500/15 text-violet-300/70",
+                          )} aria-hidden="true">
+                            {String.fromCharCode(65 + displayIdx)}
+                          </span>
+                          <span className="text-left leading-snug">{option}</span>
+                        </span>
+                      </label>
+                    );
+                  });
+                })()}
 
                 {/* "Write your own…" option */}
                 {(() => {

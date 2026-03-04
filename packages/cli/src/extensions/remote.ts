@@ -29,11 +29,7 @@ interface AskUserQuestionItem {
 }
 
 interface AskUserQuestionParams {
-    /** New multi-question format */
-    questions?: AskUserQuestionItem[];
-    /** Legacy single-question format (auto-wrapped into questions[]) */
-    question?: string;
-    options?: string[];
+    questions: AskUserQuestionItem[];
 }
 
 interface AskUserQuestionDetails {
@@ -1227,16 +1223,21 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         setRelayStatus(relay ? "Connected to Relay" : disconnectedStatusText());
     }
 
-    /** Normalize params into the canonical questions[] format */
-    function normalizeQuestions(params: AskUserQuestionParams): AskUserQuestionItem[] {
-        if (params.questions && params.questions.length > 0) {
-            return params.questions;
+    /** Defensively sanitize the questions array (trim, filter invalid entries). */
+    function sanitizeQuestions(raw: unknown): AskUserQuestionItem[] {
+        if (!Array.isArray(raw)) return [];
+        const result: AskUserQuestionItem[] = [];
+        for (const item of raw) {
+            if (!item || typeof item !== "object") continue;
+            const q = (item as Record<string, unknown>).question;
+            if (typeof q !== "string" || !q.trim()) continue;
+            const rawOpts = (item as Record<string, unknown>).options;
+            const opts = Array.isArray(rawOpts)
+                ? rawOpts.filter((o): o is string => typeof o === "string")
+                : [];
+            result.push({ question: q.trim(), options: opts });
         }
-        // Legacy single-question format
-        if (params.question) {
-            return [{ question: params.question, options: params.options ?? [] }];
-        }
-        return [];
+        return result;
     }
 
     async function askUserQuestion(
@@ -1780,17 +1781,8 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                         required: ["question", "options"],
                     },
                 },
-                // Legacy single-question fields (backward compat)
-                question: {
-                    type: "string",
-                    description: "(Legacy) The question to ask the user. Prefer `questions` array.",
-                },
-                options: {
-                    type: "array",
-                    items: { type: "string" },
-                    description: "(Legacy) Predefined choices. Prefer `questions` array.",
-                },
             },
+            required: ["questions"],
             additionalProperties: false,
         } as any,
         async execute(toolCallId, rawParams, signal, onUpdate, ctx) {
@@ -1807,8 +1799,8 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 };
             }
 
-            const params = (rawParams ?? {}) as AskUserQuestionParams;
-            const questions = normalizeQuestions(params);
+            const params = (rawParams ?? {}) as Record<string, unknown>;
+            const questions = sanitizeQuestions(params.questions);
 
             if (questions.length === 0 || !questions.some(q => q.question.trim())) {
                 return {

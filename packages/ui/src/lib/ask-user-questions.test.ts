@@ -11,7 +11,11 @@ describe("parsePendingQuestions", () => {
     expect(parsePendingQuestions({})).toEqual([]);
   });
 
-  test("parses new multi-question format", () => {
+  test("returns empty when questions is not an array", () => {
+    expect(parsePendingQuestions({ questions: "not-array" })).toEqual([]);
+  });
+
+  test("parses multi-question format", () => {
     const result = parsePendingQuestions({
       questions: [
         { question: "Color?", options: ["Red", "Blue"] },
@@ -24,30 +28,11 @@ describe("parsePendingQuestions", () => {
     ]);
   });
 
-  test("parses single question in new format", () => {
+  test("parses single question in array", () => {
     const result = parsePendingQuestions({
       questions: [{ question: "Ready?", options: ["Yes", "No"] }],
     });
     expect(result).toEqual([{ question: "Ready?", options: ["Yes", "No"] }]);
-  });
-
-  test("parses legacy single-question format", () => {
-    const result = parsePendingQuestions({
-      question: "What color?",
-      options: ["Red", "Blue", "Green"],
-    });
-    expect(result).toEqual([
-      { question: "What color?", options: ["Red", "Blue", "Green"] },
-    ]);
-  });
-
-  test("handles legacy format with no options", () => {
-    const result = parsePendingQuestions({
-      question: "What do you think?",
-    });
-    expect(result).toEqual([
-      { question: "What do you think?", options: [] },
-    ]);
   });
 
   test("trims whitespace from questions", () => {
@@ -74,29 +59,22 @@ describe("parsePendingQuestions", () => {
     expect(result).toEqual([{ question: "Valid?", options: ["Yes"] }]);
   });
 
-  test("prefers new format over legacy when both present", () => {
-    const result = parsePendingQuestions({
-      questions: [{ question: "New format", options: ["A"] }],
-      question: "Old format",
-      options: ["B"],
-    });
-    expect(result).toEqual([{ question: "New format", options: ["A"] }]);
-  });
-
-  test("falls back to legacy when questions array is empty", () => {
-    const result = parsePendingQuestions({
-      questions: [],
-      question: "Fallback?",
-      options: ["Yes"],
-    });
-    expect(result).toEqual([{ question: "Fallback?", options: ["Yes"] }]);
-  });
-
   test("handles missing options in questions array items", () => {
     const result = parsePendingQuestions({
       questions: [{ question: "No opts?" }],
     });
     expect(result).toEqual([{ question: "No opts?", options: [] }]);
+  });
+
+  test("returns empty for empty questions array", () => {
+    expect(parsePendingQuestions({ questions: [] })).toEqual([]);
+  });
+
+  test("skips non-object entries in questions array", () => {
+    const result = parsePendingQuestions({
+      questions: [null, "string", 42, { question: "Valid?", options: ["Yes"] }],
+    });
+    expect(result).toEqual([{ question: "Valid?", options: ["Yes"] }]);
   });
 });
 

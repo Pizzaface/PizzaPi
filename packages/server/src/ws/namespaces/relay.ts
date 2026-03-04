@@ -140,7 +140,15 @@ async function checkPushNotifications(
 
     if (event.type === "tool_execution_start" && event.toolName === "AskUserQuestion") {
         const args = event.args as Record<string, unknown> | undefined;
-        const question = typeof args?.question === "string" ? args.question : undefined;
+        // Extract first question text from questions[] array
+        let question: string | undefined;
+        if (Array.isArray(args?.questions)) {
+            const first = (args!.questions as unknown[]).find(
+                (q): q is { question: string } =>
+                    !!q && typeof q === "object" && typeof (q as any).question === "string",
+            );
+            question = first ? (first as { question: string }).question : undefined;
+        }
         notifyAgentNeedsInput(userId, sessionId, question, sName);
     }
 
