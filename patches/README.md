@@ -4,7 +4,7 @@ Patches in this directory are applied automatically by Bun via the
 `patchedDependencies` field in the root `package.json`. They are reapplied on
 every `bun install` — no postinstall script is needed.
 
-## @mariozechner/pi-coding-agent@0.55.1
+## @mariozechner/pi-coding-agent@0.55.4
 
 **Purpose:** Two changes:
 

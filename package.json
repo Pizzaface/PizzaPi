@@ -35,9 +35,9 @@
         "postinstall": "true"
     },
     "dependencies": {
-        "@mariozechner/pi-agent-core": "^0.55.1",
-        "@mariozechner/pi-ai": "^0.55.1",
-        "@mariozechner/pi-tui": "^0.55.1",
+        "@mariozechner/pi-agent-core": "^0.55.4",
+        "@mariozechner/pi-ai": "^0.55.4",
+        "@mariozechner/pi-tui": "^0.55.4",
         "motion": "^12.34.2",
         "pizzapi": "."
     },
@@ -48,7 +48,7 @@
         "typescript": "^5.7.0"
     },
     "patchedDependencies": {
-        "@mariozechner/pi-coding-agent@0.55.1": "patches/@mariozechner%2Fpi-coding-agent@0.55.1.patch"
+        "@mariozechner/pi-coding-agent@0.55.4": "patches/@mariozechner%2Fpi-coding-agent@0.55.4.patch"
     },
     "version": ""
 }
