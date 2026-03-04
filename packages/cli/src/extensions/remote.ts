@@ -23,6 +23,8 @@ interface RelayState {
     ackedSeq: number;
 }
 
+type AskUserQuestionDisplay = "stepper";
+
 interface AskUserQuestionItem {
     question: string;
     options: string[];
@@ -31,6 +33,8 @@ interface AskUserQuestionItem {
 interface AskUserQuestionParams {
     /** Canonical format */
     questions?: AskUserQuestionItem[];
+    /** Optional multi-question UI layout preference. */
+    display?: AskUserQuestionDisplay;
     /** Legacy single-question fields (older callers) */
     question?: string;
     placeholder?: string;
@@ -39,6 +43,7 @@ interface AskUserQuestionParams {
 
 interface AskUserQuestionDetails {
     questions: AskUserQuestionItem[];
+    display: AskUserQuestionDisplay;
     answers: Record<string, string> | null;
     answer: string | null;
     source: "tui" | "web" | null;
@@ -49,6 +54,7 @@ interface AskUserQuestionDetails {
 interface PendingAskUserQuestion {
     toolCallId: string;
     questions: AskUserQuestionItem[];
+    display: AskUserQuestionDisplay;
     resolve: (answer: string | null) => void;
 }
 
@@ -655,6 +661,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 ? {
                       toolCallId: pendingAskUserQuestion.toolCallId,
                       questions: pendingAskUserQuestion.questions,
+                      display: pendingAskUserQuestion.display,
                   }
                 : null,
             retryState: lastRetryableError
@@ -1256,9 +1263,14 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         return [];
     }
 
+    function sanitizeDisplay(_rawDisplay: unknown): AskUserQuestionDisplay {
+        return "stepper";
+    }
+
     async function askUserQuestion(
         toolCallId: string,
         questions: AskUserQuestionItem[],
+        display: AskUserQuestionDisplay,
         placeholder: string | undefined,
         signal: AbortSignal | undefined,
         ctx: ExtensionContext,
@@ -1310,6 +1322,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 pendingAskUserQuestion = {
                     toolCallId,
                     questions,
+                    display,
                     resolve: (answer) => {
                         webDone = true;
                         if (answer) {
@@ -1798,6 +1811,11 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                         required: ["question", "options"],
                     },
                 },
+                display: {
+                    type: "string",
+                    enum: ["stepper"],
+                    description: "Optional UI layout hint. Only `stepper` is supported.",
+                },
                 // Legacy single-question fields (backward compat with older callers)
                 question: {
                     type: "string",
@@ -1821,6 +1839,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                     content: [{ type: "text", text: "A different AskUserQuestion prompt is already pending." }],
                     details: {
                         questions: pendingAskUserQuestion.questions,
+                        display: pendingAskUserQuestion.display,
                         answers: null,
                         answer: null,
                         source: null,
@@ -1831,12 +1850,14 @@ export const remoteExtension: ExtensionFactory = (pi) => {
 
             const params = (rawParams ?? {}) as AskUserQuestionParams;
             const questions = sanitizeQuestions(params);
+            const display = sanitizeDisplay(params.display);
 
             if (questions.length === 0 || !questions.some(q => q.question.trim())) {
                 return {
                     content: [{ type: "text", text: "AskUserQuestion requires at least one non-empty question." }],
                     details: {
                         questions: [],
+                        display,
                         answers: null,
                         answer: null,
                         source: null,
@@ -1850,6 +1871,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 content: [{ type: "text", text: `Waiting for answer: ${summaryText}` }],
                 details: {
                     questions,
+                    display,
                     answers: null,
                     answer: null,
                     source: null,
@@ -1861,6 +1883,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             const result = await askUserQuestion(
                 toolCallId,
                 questions,
+                display,
                 typeof params.placeholder === "string" ? params.placeholder : undefined,
                 signal,
                 ctx,
@@ -1871,6 +1894,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                     content: [{ type: "text", text: "User did not provide an answer." }],
                     details: {
                         questions,
+                        display,
                         answers: null,
                         answer: null,
                         source: null,
@@ -1898,6 +1922,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 content: [{ type: "text", text: `Answer received: ${result.answer}` }],
                 details: {
                     questions,
+                    display,
                     answers: parsedAnswers,
                     answer: result.answer,
                     source: result.source,
@@ -1910,6 +1935,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 content: [{ type: "text", text: `User answered: ${result.answer}` }],
                 details: {
                     questions,
+                    display,
                     answers: parsedAnswers,
                     answer: result.answer,
                     source: result.source,

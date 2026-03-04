@@ -2,6 +2,8 @@
  * Shared utilities for AskUserQuestion data parsing.
  */
 
+export type QuestionDisplayMode = "stepper";
+
 export interface ParsedQuestion {
   question: string;
   options: string[];
@@ -38,6 +40,17 @@ export function parsePendingQuestions(data: Record<string, unknown> | undefined 
   }
 
   return [];
+}
+
+/**
+ * Parse AskUserQuestion display preference from tool payload.
+ * Stepper is the only supported mode.
+ */
+export function parsePendingQuestionDisplayMode(
+  _data: Record<string, unknown> | undefined | null,
+  _questionCount: number,
+): QuestionDisplayMode {
+  return "stepper";
 }
 
 /**

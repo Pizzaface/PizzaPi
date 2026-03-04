@@ -58,7 +58,7 @@ import { cn } from "@/lib/utils";
 import { formatPathTail } from "@/lib/path";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { MultipleChoiceQuestions } from "@/components/ai-elements/multiple-choice";
-import { formatAnswersForAgent } from "@/lib/ask-user-questions";
+import { formatAnswersForAgent, type QuestionDisplayMode } from "@/lib/ask-user-questions";
 import { dismissNotificationsForSession } from "@/lib/push";
 import { AlertTriangleIcon, ArrowDownIcon, BookOpen, CheckCircle2, ChevronsUpDown, Circle, CircleDashed, Loader2, MessageSquare, OctagonX, PaperclipIcon, Plus, Zap, Clock, X, Trash2, TerminalIcon, DownloadIcon, XCircle, FolderTree } from "lucide-react";
 import { AtMentionPopover } from "@/components/AtMentionPopover";
@@ -102,7 +102,7 @@ export interface SessionViewerProps {
   /** Active model info for the current session (used to show provider indicator) */
   activeModel?: { provider: string; id: string; name?: string; reasoning?: boolean } | null;
   activeToolCalls?: Map<string, string>;
-  pendingQuestion?: { toolCallId: string; questions: Array<{ question: string; options: string[] }> } | null;
+  pendingQuestion?: { toolCallId: string; questions: Array<{ question: string; options: string[] }>; display: QuestionDisplayMode } | null;
   availableCommands?: Array<{ name: string; description?: string }>;
   resumeSessions?: ResumeSessionOption[];
   resumeSessionsLoading?: boolean;

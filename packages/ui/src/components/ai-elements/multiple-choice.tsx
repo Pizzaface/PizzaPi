@@ -1,6 +1,6 @@
 import * as React from "react";
 import { cn } from "@/lib/utils";
-import { MessageCircleQuestion, PenLine, Send, Check } from "lucide-react";
+import { MessageCircleQuestion, PenLine, Send, Check, ArrowLeft, ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 export interface MultipleChoiceQuestion {
@@ -20,9 +20,8 @@ export interface MultipleChoiceQuestionsProps {
 }
 
 /**
- * A multiple-choice question panel that replaces the text input when the agent
- * asks the user one or more questions. Each question shows radio-style options
- * plus a "Write your own…" free-form option.
+ * Stepper-style multiple-choice question panel that replaces the text input
+ * when the agent asks one or more questions.
  */
 export function MultipleChoiceQuestions({
   questions,
@@ -34,6 +33,8 @@ export function MultipleChoiceQuestions({
   const [selections, setSelections] = React.useState<Map<number, number>>(new Map());
   // Track custom text per question (used when "Write your own…" is selected)
   const [customTexts, setCustomTexts] = React.useState<Map<number, string>>(new Map());
+  // Track active step
+  const [currentStep, setCurrentStep] = React.useState(0);
   // Guard against double-submit
   const [isSubmitting, setIsSubmitting] = React.useState(false);
   // Track the safety-net timeout so it can be cleared on prompt change
@@ -43,21 +44,32 @@ export function MultipleChoiceQuestions({
   React.useEffect(() => {
     setSelections(new Map());
     setCustomTexts(new Map());
+    setCurrentStep(0);
     setIsSubmitting(false);
-    // Clear any lingering submit timeout from the previous prompt
     if (submitTimeoutRef.current !== null) {
       clearTimeout(submitTimeoutRef.current);
       submitTimeoutRef.current = null;
     }
   }, [promptKey]);
 
-  const allAnswered = questions.every((q, idx) => {
+  React.useEffect(() => {
+    if (currentStep >= questions.length) {
+      setCurrentStep(Math.max(questions.length - 1, 0));
+    }
+  }, [currentStep, questions.length]);
+
+  const isQuestionAnswered = (idx: number) => {
+    const q = questions[idx];
+    if (!q) return false;
     const sel = selections.get(idx);
     if (sel === undefined || sel === null) return false;
-    // If "Write your own…" is selected, require non-empty text
     if (sel === q.options.length) return (customTexts.get(idx) ?? "").trim().length > 0;
     return true;
-  });
+  };
+
+  const allAnswered = questions.every((_, idx) => isQuestionAnswered(idx));
+  const currentQuestionAnswered = isQuestionAnswered(currentStep);
+  const isLastStep = currentStep >= questions.length - 1;
 
   const handleSelect = (qIdx: number, optIdx: number) => {
     setSelections((prev) => {
@@ -75,6 +87,15 @@ export function MultipleChoiceQuestions({
     });
   };
 
+  const handleNext = () => {
+    if (!currentQuestionAnswered) return;
+    setCurrentStep((prev) => Math.min(prev + 1, questions.length - 1));
+  };
+
+  const handleBack = () => {
+    setCurrentStep((prev) => Math.max(prev - 1, 0));
+  };
+
   const handleSubmit = () => {
     if (!allAnswered || isSubmitting) return;
     setIsSubmitting(true);
@@ -85,15 +106,13 @@ export function MultipleChoiceQuestions({
         : q.options[sel];
       return { question: q.question, answer };
     });
-    // Safety-net timeout: if the pending question hasn't cleared after 10s
-    // (e.g. socket emit succeeded but message was dropped), unlock the button
-    // so the user can retry. Cleared by the promptKey effect on question
-    // change, or explicitly on immediate failure.
+
     if (submitTimeoutRef.current !== null) clearTimeout(submitTimeoutRef.current);
     submitTimeoutRef.current = setTimeout(() => {
       submitTimeoutRef.current = null;
       setIsSubmitting(false);
     }, 10_000);
+
     Promise.resolve(onSubmit(answers))
       .then((result) => {
         if (result === false) {
@@ -107,176 +126,207 @@ export function MultipleChoiceQuestions({
       });
   };
 
+  const renderQuestion = (q: MultipleChoiceQuestion, qIdx: number) => {
+    const selected = selections.get(qIdx);
+    const writeYourOwnIdx = q.options.length;
+    const isCustom = selected === writeYourOwnIdx;
+    const groupName = `mc-q-${promptKey ?? "default"}-${qIdx}`;
+
+    return (
+      <fieldset key={qIdx} className="px-3 py-3 border-0">
+        <legend className="text-sm font-medium leading-relaxed text-foreground/90 whitespace-pre-wrap mb-2.5 w-full float-left">
+          {questions.length > 1 && (
+            <span className="inline-flex items-center justify-center size-5 rounded-full bg-violet-500/20 text-[11px] font-semibold text-violet-300 mr-1.5 align-text-bottom">
+              {qIdx + 1}
+            </span>
+          )}
+          {q.question}
+        </legend>
+
+        <div className="space-y-1.5 clear-both" role="radiogroup" aria-label={q.question}>
+          {(() => {
+            const visibleOptions = q.options
+              .map((option, origIdx) => ({ option, origIdx }))
+              .filter(({ option }) => option.toLowerCase().replace(/[^a-z]/g, "") !== "typeyourown");
+
+            return visibleOptions.map(({ option, origIdx }, displayIdx) => {
+              const isSelected = selected === origIdx;
+              const inputId = `${groupName}-opt-${origIdx}`;
+
+              return (
+                <label
+                  key={origIdx}
+                  htmlFor={inputId}
+                  className={cn(
+                    "flex items-center gap-2.5 rounded-md px-2.5 py-2 text-sm cursor-pointer transition-all",
+                    isSelected
+                      ? "border border-violet-500/40 bg-violet-500/15 text-violet-100"
+                      : "border border-transparent hover:border-violet-500/20 hover:bg-violet-500/[0.07] text-foreground/70 hover:text-foreground/90",
+                  )}
+                >
+                  <input
+                    type="radio"
+                    id={inputId}
+                    name={groupName}
+                    value={option}
+                    checked={isSelected}
+                    onChange={() => handleSelect(qIdx, origIdx)}
+                    className="sr-only"
+                  />
+                  <span
+                    className={cn(
+                      "flex size-4 shrink-0 items-center justify-center rounded-full border transition-all",
+                      isSelected
+                        ? "border-violet-400 bg-violet-500"
+                        : "border-violet-500/30 bg-transparent",
+                    )}
+                    aria-hidden="true"
+                  >
+                    {isSelected && <Check className="size-2.5 text-white" strokeWidth={3} />}
+                  </span>
+                  <span className="flex items-center gap-1.5">
+                    <span
+                      className={cn(
+                        "flex size-4 items-center justify-center rounded text-[10px] font-medium shrink-0",
+                        isSelected ? "bg-violet-500/30 text-violet-200" : "bg-violet-500/15 text-violet-300/70",
+                      )}
+                      aria-hidden="true"
+                    >
+                      {String.fromCharCode(65 + displayIdx)}
+                    </span>
+                    <span className="text-left leading-snug">{option}</span>
+                  </span>
+                </label>
+              );
+            });
+          })()}
+
+          <label
+            htmlFor={`${groupName}-write`}
+            className={cn(
+              "flex items-center gap-2.5 rounded-md px-2.5 py-2 text-sm cursor-pointer transition-all",
+              isCustom
+                ? "border border-violet-500/40 bg-violet-500/15 text-violet-100"
+                : "border border-dashed border-violet-500/20 hover:border-violet-400/30 hover:bg-violet-500/[0.07] text-violet-300/80 hover:text-violet-200",
+            )}
+          >
+            <input
+              type="radio"
+              id={`${groupName}-write`}
+              name={groupName}
+              value="__write_your_own__"
+              checked={isCustom}
+              onChange={() => handleSelect(qIdx, writeYourOwnIdx)}
+              className="sr-only"
+            />
+            <span
+              className={cn(
+                "flex size-4 shrink-0 items-center justify-center rounded-full border transition-all",
+                isCustom
+                  ? "border-violet-400 bg-violet-500"
+                  : "border-violet-500/30 bg-transparent",
+              )}
+              aria-hidden="true"
+            >
+              {isCustom && <Check className="size-2.5 text-white" strokeWidth={3} />}
+            </span>
+            <PenLine className="size-3 shrink-0 opacity-70" aria-hidden="true" />
+            <span className="leading-snug">Write your own…</span>
+          </label>
+
+          {isCustom && (
+            <div className="ml-9 mt-1">
+              <input
+                type="text"
+                autoFocus
+                value={customTexts.get(qIdx) ?? ""}
+                onChange={(e) => handleCustomText(qIdx, e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key !== "Enter") return;
+                  e.preventDefault();
+                  if (!isLastStep && currentQuestionAnswered) {
+                    handleNext();
+                  } else if (isLastStep && allAnswered) {
+                    handleSubmit();
+                  }
+                }}
+                placeholder="Type your answer…"
+                aria-label={`Custom answer for: ${q.question}`}
+                className={cn(
+                  "w-full rounded-md border border-violet-500/25 bg-violet-500/[0.05] px-2.5 py-1.5 text-sm text-foreground/90",
+                  "placeholder:text-violet-300/40 focus:border-violet-400/50 focus:outline-none focus:ring-1 focus:ring-violet-400/30",
+                )}
+              />
+            </div>
+          )}
+        </div>
+      </fieldset>
+    );
+  };
+
   return (
     <div className={cn("overflow-hidden rounded-lg border border-violet-500/30 bg-gradient-to-b from-violet-500/[0.08] to-violet-500/[0.03] shadow-sm shadow-violet-500/5", className)}>
-      {/* Header */}
       <div className="flex items-center gap-2 border-b border-violet-500/15 px-3 py-2">
         <div className="flex size-6 items-center justify-center rounded-full bg-violet-500/15">
           <MessageCircleQuestion className="size-3.5 text-violet-400" />
         </div>
-        <span className="text-xs font-medium text-violet-300">
-          {questions.length === 1 ? "Waiting for your answer" : `Answer ${questions.length} questions`}
-        </span>
+        <span className="text-xs font-medium text-violet-300">Question {currentStep + 1} of {questions.length}</span>
       </div>
 
-      {/* Questions */}
-      <div className="divide-y divide-violet-500/10">
-        {questions.map((q, qIdx) => {
-          const selected = selections.get(qIdx);
-          const writeYourOwnIdx = q.options.length;
-          const isCustom = selected === writeYourOwnIdx;
-          const groupName = `mc-q-${promptKey ?? "default"}-${qIdx}`;
-
-          return (
-            <fieldset key={qIdx} className="px-3 py-3 border-0">
-              {/* Question text */}
-              <legend className="text-sm font-medium leading-relaxed text-foreground/90 whitespace-pre-wrap mb-2.5 w-full float-left">
-                {questions.length > 1 && (
-                  <span className="inline-flex items-center justify-center size-5 rounded-full bg-violet-500/20 text-[11px] font-semibold text-violet-300 mr-1.5 align-text-bottom">
-                    {qIdx + 1}
-                  </span>
-                )}
-                {q.question}
-              </legend>
-
-              {/* Options as radio buttons */}
-              <div className="space-y-1.5 clear-both" role="radiogroup" aria-label={q.question}>
-                {(() => {
-                  // Pre-filter agent "Type your own" entries so letter labels stay sequential
-                  const visibleOptions = q.options
-                    .map((option, origIdx) => ({ option, origIdx }))
-                    .filter(({ option }) => option.toLowerCase().replace(/[^a-z]/g, "") !== "typeyourown");
-
-                  return visibleOptions.map(({ option, origIdx }, displayIdx) => {
-                    const isSelected = selected === origIdx;
-                    const inputId = `${groupName}-opt-${origIdx}`;
-
-                    return (
-                      <label
-                        key={origIdx}
-                        htmlFor={inputId}
-                        className={cn(
-                          "flex items-center gap-2.5 rounded-md px-2.5 py-2 text-sm cursor-pointer transition-all",
-                          isSelected
-                            ? "border border-violet-500/40 bg-violet-500/15 text-violet-100"
-                            : "border border-transparent hover:border-violet-500/20 hover:bg-violet-500/[0.07] text-foreground/70 hover:text-foreground/90",
-                        )}
-                      >
-                        {/* Hidden real radio input for accessibility */}
-                        <input
-                          type="radio"
-                          id={inputId}
-                          name={groupName}
-                          value={option}
-                          checked={isSelected}
-                          onChange={() => handleSelect(qIdx, origIdx)}
-                          className="sr-only"
-                        />
-                        {/* Visual radio circle */}
-                        <span className={cn(
-                          "flex size-4 shrink-0 items-center justify-center rounded-full border transition-all",
-                          isSelected
-                            ? "border-violet-400 bg-violet-500"
-                            : "border-violet-500/30 bg-transparent",
-                        )} aria-hidden="true">
-                          {isSelected && <Check className="size-2.5 text-white" strokeWidth={3} />}
-                        </span>
-                        {/* Option letter + text */}
-                        <span className="flex items-center gap-1.5">
-                          <span className={cn(
-                            "flex size-4 items-center justify-center rounded text-[10px] font-medium shrink-0",
-                            isSelected ? "bg-violet-500/30 text-violet-200" : "bg-violet-500/15 text-violet-300/70",
-                          )} aria-hidden="true">
-                            {String.fromCharCode(65 + displayIdx)}
-                          </span>
-                          <span className="text-left leading-snug">{option}</span>
-                        </span>
-                      </label>
-                    );
-                  });
-                })()}
-
-                {/* "Write your own…" option */}
-                {(() => {
-                  const writeId = `${groupName}-write`;
-                  return (
-                    <label
-                      htmlFor={writeId}
-                      className={cn(
-                        "flex items-center gap-2.5 rounded-md px-2.5 py-2 text-sm cursor-pointer transition-all",
-                        isCustom
-                          ? "border border-violet-500/40 bg-violet-500/15 text-violet-100"
-                          : "border border-dashed border-violet-500/20 hover:border-violet-400/30 hover:bg-violet-500/[0.07] text-violet-300/80 hover:text-violet-200",
-                      )}
-                    >
-                      <input
-                        type="radio"
-                        id={writeId}
-                        name={groupName}
-                        value="__write_your_own__"
-                        checked={isCustom}
-                        onChange={() => handleSelect(qIdx, writeYourOwnIdx)}
-                        className="sr-only"
-                      />
-                      <span className={cn(
-                        "flex size-4 shrink-0 items-center justify-center rounded-full border transition-all",
-                        isCustom
-                          ? "border-violet-400 bg-violet-500"
-                          : "border-violet-500/30 bg-transparent",
-                      )} aria-hidden="true">
-                        {isCustom && <Check className="size-2.5 text-white" strokeWidth={3} />}
-                      </span>
-                      <PenLine className="size-3 shrink-0 opacity-70" aria-hidden="true" />
-                      <span className="leading-snug">Write your own…</span>
-                    </label>
-                  );
-                })()}
-
-                {/* Custom text input (shown when "Write your own…" is selected) */}
-                {isCustom && (
-                  <div className="ml-9 mt-1">
-                    <input
-                      type="text"
-                      autoFocus
-                      value={customTexts.get(qIdx) ?? ""}
-                      onChange={(e) => handleCustomText(qIdx, e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" && allAnswered) {
-                          e.preventDefault();
-                          handleSubmit();
-                        }
-                      }}
-                      placeholder="Type your answer…"
-                      aria-label={`Custom answer for: ${q.question}`}
-                      className={cn(
-                        "w-full rounded-md border border-violet-500/25 bg-violet-500/[0.05] px-2.5 py-1.5 text-sm text-foreground/90",
-                        "placeholder:text-violet-300/40 focus:border-violet-400/50 focus:outline-none focus:ring-1 focus:ring-violet-400/30",
-                      )}
-                    />
-                  </div>
-                )}
-              </div>
-            </fieldset>
-          );
-        })}
+      <div className="px-3 pt-2.5">
+        <div className="h-1.5 w-full overflow-hidden rounded-full bg-violet-500/15">
+          <div
+            className="h-full rounded-full bg-violet-500/60 transition-all"
+            style={{ width: `${((currentStep + 1) / Math.max(questions.length, 1)) * 100}%` }}
+          />
+        </div>
       </div>
 
-      {/* Submit button */}
-      <div className="border-t border-violet-500/15 px-3 py-2.5">
+      {questions.length > 0 && renderQuestion(questions[currentStep]!, currentStep)}
+
+      <div className="flex items-center gap-2 border-t border-violet-500/15 px-3 py-2.5">
         <Button
           size="sm"
-          onClick={handleSubmit}
-          disabled={!allAnswered || isSubmitting}
-          className={cn(
-            "w-full gap-2 transition-all",
-            allAnswered && !isSubmitting
-              ? "bg-violet-600 hover:bg-violet-500 text-white shadow-sm shadow-violet-500/20"
-              : "bg-violet-500/10 text-violet-300/50 cursor-not-allowed",
-          )}
+          variant="outline"
+          onClick={handleBack}
+          disabled={currentStep === 0 || isSubmitting}
+          className="gap-1.5"
         >
-          <Send className="size-3.5" />
-          {isSubmitting ? "Submitting…" : `Submit ${questions.length === 1 ? "Answer" : "Answers"}`}
+          <ArrowLeft className="size-3.5" />
+          Back
         </Button>
+
+        {!isLastStep ? (
+          <Button
+            size="sm"
+            onClick={handleNext}
+            disabled={!currentQuestionAnswered || isSubmitting}
+            className={cn(
+              "ml-auto gap-1.5",
+              currentQuestionAnswered && !isSubmitting
+                ? "bg-violet-600 hover:bg-violet-500 text-white shadow-sm shadow-violet-500/20"
+                : "bg-violet-500/10 text-violet-300/50 cursor-not-allowed",
+            )}
+          >
+            Next
+            <ArrowRight className="size-3.5" />
+          </Button>
+        ) : (
+          <Button
+            size="sm"
+            onClick={handleSubmit}
+            disabled={!allAnswered || isSubmitting}
+            className={cn(
+              "ml-auto gap-2",
+              allAnswered && !isSubmitting
+                ? "bg-violet-600 hover:bg-violet-500 text-white shadow-sm shadow-violet-500/20"
+                : "bg-violet-500/10 text-violet-300/50 cursor-not-allowed",
+            )}
+          >
+            <Send className="size-3.5" />
+            {isSubmitting ? "Submitting…" : "Submit Answers"}
+          </Button>
+        )}
       </div>
     </div>
   );

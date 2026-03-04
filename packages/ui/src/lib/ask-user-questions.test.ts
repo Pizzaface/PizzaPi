@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { parsePendingQuestions, formatAnswersForAgent } from "./ask-user-questions";
+import { parsePendingQuestionDisplayMode, parsePendingQuestions, formatAnswersForAgent } from "./ask-user-questions";
 
 describe("parsePendingQuestions", () => {
   test("returns empty for null/undefined", () => {
@@ -127,6 +127,28 @@ describe("parsePendingQuestions", () => {
 
   test("ignores legacy format with blank question", () => {
     expect(parsePendingQuestions({ question: "  ", options: ["A"] })).toEqual([]);
+  });
+});
+
+describe("parsePendingQuestionDisplayMode", () => {
+  test("returns stepper for explicit stepper", () => {
+    expect(parsePendingQuestionDisplayMode({ display: "stepper" }, 3)).toBe("stepper");
+  });
+
+  test("forces stepper even when stacked is requested", () => {
+    expect(parsePendingQuestionDisplayMode({ display: "stacked" }, 3)).toBe("stepper");
+  });
+
+  test("defaults to stepper for multi-question prompts", () => {
+    expect(parsePendingQuestionDisplayMode({}, 2)).toBe("stepper");
+  });
+
+  test("defaults to stepper for single-question prompts", () => {
+    expect(parsePendingQuestionDisplayMode({}, 1)).toBe("stepper");
+  });
+
+  test("ignores invalid display values", () => {
+    expect(parsePendingQuestionDisplayMode({ display: "grid" }, 2)).toBe("stepper");
   });
 });
 

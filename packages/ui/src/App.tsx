@@ -68,7 +68,7 @@ import {
   shouldDeduplicateInput,
   type InputDedupeState,
 } from "@/lib/input-dedupe";
-import { parsePendingQuestions } from "@/lib/ask-user-questions";
+import { parsePendingQuestionDisplayMode, parsePendingQuestions, type QuestionDisplayMode } from "@/lib/ask-user-questions";
 
 function toRelayMessage(raw: unknown, fallbackId: string): RelayMessage | null {
   if (!raw || typeof raw !== "object") return null;
@@ -605,7 +605,7 @@ export function App() {
   const [recentFolders, setRecentFolders] = React.useState<string[]>([]);
   const [recentFoldersLoading, setRecentFoldersLoading] = React.useState(false);
 
-  const [pendingQuestion, setPendingQuestion] = React.useState<{ toolCallId: string; questions: Array<{ question: string; options: string[] }> } | null>(null);
+  const [pendingQuestion, setPendingQuestion] = React.useState<{ toolCallId: string; questions: Array<{ question: string; options: string[] }>; display: QuestionDisplayMode } | null>(null);
   // Cached fallback promptKey for when toolCallId is absent (legacy/compat).
   // Only changes when the question content changes, preventing heartbeat
   // re-applications from resetting the MC component's selection state.
@@ -1186,13 +1186,14 @@ export function App() {
 
       // Restore pending AskUserQuestion state when reconnecting to a session.
       if (Object.prototype.hasOwnProperty.call(hb, "pendingQuestion")) {
-        const pq = (hb as any).pendingQuestion as { toolCallId: string; questions?: Array<{ question: string; options: string[] }>; question?: string; options?: string[] } | null;
+        const pq = (hb as any).pendingQuestion as { toolCallId: string; questions?: Array<{ question: string; options: string[] }>; display?: string; question?: string; options?: string[] } | null;
         if (pq) {
           const questions = parsePendingQuestions(pq);
           if (questions.length > 0) {
             setPendingQuestion({
               toolCallId: typeof pq.toolCallId === "string" ? pq.toolCallId : getFallbackPromptKey(questions),
               questions,
+              display: parsePendingQuestionDisplayMode(pq, questions.length),
             });
             setViewerStatus("Waiting for answer…");
           } else {
@@ -1560,6 +1561,7 @@ export function App() {
         setPendingQuestion({
           toolCallId: typeof evt.toolCallId === "string" ? evt.toolCallId : getFallbackPromptKey(questions),
           questions,
+          display: parsePendingQuestionDisplayMode(args, questions.length),
         });
         setViewerStatus("Waiting for answer…");
       }
@@ -1571,12 +1573,16 @@ export function App() {
       const details = partial?.details as Record<string, unknown> | undefined;
       // Try from partial first, then nested details (parsePendingQuestions returns [] not falsy)
       const fromPartial = parsePendingQuestions(partial);
-      const questions = fromPartial.length > 0 ? fromPartial : parsePendingQuestions(details);
+      const fromDetails = parsePendingQuestions(details);
+      const usePartial = fromPartial.length > 0;
+      const questions = usePartial ? fromPartial : fromDetails;
+      const displaySource = usePartial ? partial : details;
 
       if (questions.length > 0) {
         setPendingQuestion({
           toolCallId: typeof evt.toolCallId === "string" ? evt.toolCallId : getFallbackPromptKey(questions),
           questions,
+          display: parsePendingQuestionDisplayMode(displaySource, questions.length),
         });
       }
       return;
