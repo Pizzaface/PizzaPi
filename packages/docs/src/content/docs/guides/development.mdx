@@ -177,11 +177,11 @@ PizzaPi uses Bun's built-in test runner — no additional frameworks needed.
 # Run all tests
 bun run test
 
-# Run tests for a specific package
+# Run tests for a specific package (from the repo root)
 bun test packages/server
 bun test packages/tools
-cd packages/ui && bun test
-cd packages/cli && bun test
+bun test packages/ui
+bun test packages/cli
 ```
 
 ### Test Conventions
