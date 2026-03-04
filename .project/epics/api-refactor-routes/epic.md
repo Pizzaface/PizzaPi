@@ -1,8 +1,8 @@
 ---
 name: api-refactor-routes
-status: backlog
+status: done
 created: 2026-03-04T20:21:09Z
-progress: 0%
+progress: 100%
 prd: .project/prds/api-refactor-routes.md
 beads_id: (pending sync to Beads)
 ---
