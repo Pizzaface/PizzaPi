@@ -5,7 +5,8 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { PizzaLogo } from "@/components/PizzaLogo";
 import { signIn, signUp } from "@/lib/auth-client";
-import { Loader2 } from "lucide-react";
+import { Loader2, Check, X } from "lucide-react";
+import { validatePassword, type PasswordCheck } from "@pizzapi/protocol";
 
 interface AuthPageProps {
     onAuthenticated: () => void;
@@ -21,6 +22,10 @@ export function AuthPage({ onAuthenticated }: AuthPageProps) {
     const [error, setError] = React.useState<string | null>(null);
     const [loading, setLoading] = React.useState(false);
     const [signupEnabled, setSignupEnabled] = React.useState<boolean | null>(null);
+
+    // Live password validation for signup
+    const passwordCheck: PasswordCheck | null =
+        tab === "signup" && password.length > 0 ? validatePassword(password) : null;
 
     const signinRef = React.useRef<HTMLButtonElement>(null);
     const signupRef = React.useRef<HTMLButtonElement>(null);
@@ -197,6 +202,16 @@ export function AuthPage({ onAuthenticated }: AuthPageProps) {
                                 required
                                 autoComplete={tab === "signin" ? "current-password" : "new-password"}
                             />
+                            {passwordCheck && (
+                                <ul className="flex flex-col gap-0.5 mt-1">
+                                    {passwordCheck.checks.map((c) => (
+                                        <li key={c.label} className={`flex items-center gap-1.5 text-xs ${c.met ? "text-green-600 dark:text-green-400" : "text-muted-foreground"}`}>
+                                            {c.met ? <Check className="h-3 w-3" /> : <X className="h-3 w-3" />}
+                                            {c.label}
+                                        </li>
+                                    ))}
+                                </ul>
+                            )}
                         </div>
                         {error && <p className="text-sm text-destructive">{error}</p>}
                     </CardContent>
@@ -204,7 +219,7 @@ export function AuthPage({ onAuthenticated }: AuthPageProps) {
                         <Button
                             type="submit"
                             className="w-full"
-                            disabled={loading || !email || !password || (tab === "signup" && !name)}
+                            disabled={loading || !email || !password || (tab === "signup" && !name) || (tab === "signup" && passwordCheck !== null && !passwordCheck.valid)}
                         >
                             {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                             {loading ? (tab === "signin" ? "Signing in…" : "Creating account…") : (tab === "signin" ? "Sign in" : "Create account")}

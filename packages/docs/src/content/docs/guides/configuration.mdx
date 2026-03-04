@@ -26,8 +26,9 @@ You can also override any setting with **environment variables**.
   // API key issued by the relay server during `pizzapi setup`
   "apiKey": "pk_live_abc123...",
 
-  // WebSocket URL of the relay server
-  // Default: ws://localhost:3001
+  // WebSocket URL of the relay server.
+  // Set to "off" to disable the relay entirely (no setup wizard, no streaming).
+  // Default: ws://localhost:7492 (the pizzapi web default port)
   "relayUrl": "wss://relay.example.com",
 
   // Replace the default system prompt entirely
@@ -56,7 +57,7 @@ You can also override any setting with **environment variables**.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `apiKey` | `string` | — | API key for authenticating with the relay server. Issued during `pizzapi setup`. |
-| `relayUrl` | `string` | `ws://localhost:3001` | WebSocket URL of the relay server |
+| `relayUrl` | `string` | `ws://localhost:7492` | WebSocket URL of the relay server. Set to `"off"` to disable relay entirely. |
 | `systemPrompt` | `string` | *(pi default)* | Fully replace the default system prompt |
 | `appendSystemPrompt` | `string` | — | Append to the default system prompt |
 | `agentDir` | `string` | `~/.pizzapi` | Agent config directory (skills, extensions, etc.) |
@@ -68,10 +69,10 @@ You can also override any setting with **environment variables**.
 
 Every config option can also be set as an environment variable. Environment variables take effect for the current process only and do **not** override saved config values in JSON files — the JSON is loaded first, then env vars for the relay connection are applied on top.
 
-| Variable | Equivalent config key |
-|----------|-----------------------|
-| `PIZZAPI_API_KEY` | `apiKey` |
-| `PIZZAPI_RELAY_URL` | `relayUrl` |
+| Variable | Equivalent config key | Notes |
+|----------|-----------------------|-------|
+| `PIZZAPI_API_KEY` | `apiKey` | |
+| `PIZZAPI_RELAY_URL` | `relayUrl` | Set to `off` to disable relay for this invocation |
 
 **Example:**
 
@@ -81,8 +82,35 @@ export PIZZAPI_RELAY_URL="wss://relay.example.com"
 pizzapi
 ```
 
+**Disable the relay for one invocation:**
+
+```bash
+PIZZAPI_RELAY_URL=off pizzapi
+```
+
+**Disable the relay permanently (no env var needed each time):**
+
+```jsonc
+// ~/.pizzapi/config.json
+{
+  "relayUrl": "off"
+}
+```
+
 <Aside type="tip">
   Environment variables are useful in CI/CD pipelines or when you want to avoid storing credentials in a file.
+</Aside>
+
+<Aside type="note" title="Relay URL is not saved by pizzapi setup">
+  `pizzapi setup` saves your **API key** to `~/.pizzapi/config.json` but does **not** persist the relay URL. If you connect to a non-default relay (anything other than `localhost:7492`), manually add `"relayUrl"` to your config after setup:
+
+  ```jsonc
+  // ~/.pizzapi/config.json
+  {
+    "apiKey": "pk_live_...",
+    "relayUrl": "wss://your-relay.example.com"
+  }
+  ```
 </Aside>
 
 ---

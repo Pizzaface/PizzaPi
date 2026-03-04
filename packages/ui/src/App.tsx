@@ -40,7 +40,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Sun, Moon, LogOut, KeyRound, X, User, ChevronsUpDown, PanelLeftOpen, HardDrive, Bell, BellOff, Check, Plus, TerminalIcon, FolderTree, Keyboard, EyeOff } from "lucide-react";
+import { Sun, Moon, LogOut, KeyRound, X, User, ChevronsUpDown, PanelLeftOpen, HardDrive, Bell, BellOff, Check, Plus, TerminalIcon, FolderTree, Keyboard, EyeOff, Lock } from "lucide-react";
 import { NotificationToggle, MobileNotificationMenuItem } from "@/components/NotificationToggle";
 import { HapticsToggle, MobileHapticsMenuItem } from "@/components/HapticsToggle";
 import { UsageIndicator, type ProviderUsageMap } from "@/components/UsageIndicator";
@@ -60,6 +60,7 @@ import {
   ModelSelectorShortcut,
 } from "@/components/ai-elements/model-selector";
 import { HiddenModelsManager, loadHiddenModels, fetchHiddenModels, modelKey } from "@/components/HiddenModelsManager";
+import { ChangePasswordDialog } from "@/components/ChangePasswordDialog";
 import {
   beginInputAttempt,
   completeInputAttempt,
@@ -616,6 +617,7 @@ export function App() {
   const [isChangingModel, setIsChangingModel] = React.useState(false);
   const [hiddenModels, setHiddenModels] = React.useState<Set<string>>(() => loadHiddenModels());
   const [hiddenModelsOpen, setHiddenModelsOpen] = React.useState(false);
+  const [changePasswordOpen, setChangePasswordOpen] = React.useState(false);
 
   // Live session status from heartbeats
   const [agentActive, setAgentActive] = React.useState(false);
@@ -2445,6 +2447,10 @@ export function App() {
                 <EyeOff className="h-4 w-4" />
                 Model visibility
               </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => setChangePasswordOpen(true)}>
+                <Lock className="h-4 w-4" />
+                Change password
+              </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem variant="destructive" onSelect={() => signOut()}>
                 <LogOut className="h-4 w-4" />
@@ -2604,6 +2610,10 @@ export function App() {
                 <EyeOff className="h-4 w-4" />
                 Model visibility
               </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => { setChangePasswordOpen(true); setSidebarOpen(false); }}>
+                <Lock className="h-4 w-4" />
+                Change password
+              </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem variant="destructive" onSelect={() => signOut()}>
                 <LogOut className="h-4 w-4" />
@@ -2678,6 +2688,11 @@ export function App() {
         models={availableModels}
         hiddenModels={hiddenModels}
         onHiddenModelsChange={setHiddenModels}
+      />
+
+      <ChangePasswordDialog
+        open={changePasswordOpen}
+        onOpenChange={setChangePasswordOpen}
       />
 
       <div className="pp-shell flex flex-1 min-h-0 overflow-hidden relative">

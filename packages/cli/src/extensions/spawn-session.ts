@@ -21,7 +21,7 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
         const configured =
             process.env.PIZZAPI_RELAY_URL ??
             loadConfig(process.cwd()).relayUrl ??
-            "ws://localhost:3001";
+            "ws://localhost:7492";
 
         if (configured.toLowerCase() === "off") return null;
 
