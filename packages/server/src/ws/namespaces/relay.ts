@@ -140,20 +140,27 @@ async function checkPushNotifications(
 
     if (event.type === "tool_execution_start" && event.toolName === "AskUserQuestion") {
         const args = event.args as Record<string, unknown> | undefined;
-        // Extract question text: try new questions[] format, fall back to legacy question field
+        // Extract first question text and options: try questions[] format, fall back to legacy
         let question: string | undefined;
+        let options: string[] | undefined;
         if (Array.isArray(args?.questions)) {
             for (const q of args!.questions as unknown[]) {
                 if (q && typeof q === "object" && typeof (q as any).question === "string" && (q as any).question.trim()) {
                     question = ((q as any).question as string).trim();
+                    if (Array.isArray((q as any).options)) {
+                        options = ((q as any).options as unknown[]).filter((o): o is string => typeof o === "string" && o.trim().length > 0);
+                    }
                     break;
                 }
             }
         }
         if (!question && typeof args?.question === "string" && args.question.trim()) {
             question = (args.question as string).trim();
+            if (Array.isArray(args?.options)) {
+                options = (args.options as unknown[]).filter((o): o is string => typeof o === "string" && o.trim().length > 0);
+            }
         }
-        notifyAgentNeedsInput(userId, sessionId, question, sName);
+        notifyAgentNeedsInput(userId, sessionId, question, sName, options);
     }
 
     if (event.type === "cli_error") {

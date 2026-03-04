@@ -6,6 +6,7 @@ import {
     getRunnerData,
     getRunners,
     getLocalRunnerSocket,
+    getLocalTuiSocket,
     getSessions,
     getSharedSession,
     linkSessionToRunner,
@@ -918,6 +919,51 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
         }
 
         await updateEnabledEvents(identity.userId, body.endpoint, body.enabledEvents);
+        return Response.json({ ok: true });
+    }
+
+    // ── Push answer — respond to AskUserQuestion from push notification ────
+
+    if (url.pathname === "/api/push/answer" && req.method === "POST") {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        const body = await req.json() as { sessionId?: string; text?: string };
+        if (!body.sessionId || typeof body.text !== "string" || !body.text.trim()) {
+            return Response.json(
+                { error: "Missing required fields: sessionId, text" },
+                { status: 400 },
+            );
+        }
+
+        // Verify the session belongs to this user
+        const session = await getSharedSession(body.sessionId);
+        if (!session || session.userId !== identity.userId) {
+            return Response.json({ error: "Session not found" }, { status: 404 });
+        }
+
+        // Require collab mode (same as viewer input)
+        if (!session.collabMode) {
+            return Response.json(
+                { error: "Session is not in collab mode" },
+                { status: 403 },
+            );
+        }
+
+        // Find the TUI socket and emit the input
+        const tuiSocket = getLocalTuiSocket(body.sessionId);
+        if (!tuiSocket) {
+            return Response.json(
+                { error: "Session runner not connected to this server" },
+                { status: 502 },
+            );
+        }
+
+        tuiSocket.emit("input" as string, {
+            text: body.text.trim(),
+            client: "push",
+        });
+
         return Response.json({ ok: true });
     }
 
