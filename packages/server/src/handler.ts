@@ -1,6 +1,6 @@
 import { getAuth, isSignupAllowed } from "./auth.js";
 import { isValidPassword, PASSWORD_REQUIREMENTS_SUMMARY } from "@pizzapi/protocol";
-import { handleApi } from "./routes/api.js";
+import { handleApi } from "./routes/index.js";
 import { serveStaticFile } from "./static.js";
 
 /**
