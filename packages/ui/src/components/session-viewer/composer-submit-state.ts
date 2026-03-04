@@ -11,7 +11,9 @@ interface ComposerSubmitStateInput {
  * Decide which composer submit control should be shown.
  *
  * - Desktop keeps a visible send button at all times and swaps to stop while streaming.
- * - Mobile hides send until the user has a draft, but keeps stop available during streaming.
+ * - Mobile hides send until the user has a draft. During streaming, stop is shown
+ *   unless the user is composing a follow-up, in which case send is shown so they
+ *   can queue the next message.
  */
 export function getComposerSubmitMode({
   isTouchDevice,
