@@ -1,5 +1,14 @@
 pre-commit:
   commands:
+    no-direct-main:
+      run: |
+        branch=$(git rev-parse --abbrev-ref HEAD)
+        if [ "$branch" = "main" ]; then
+          echo "❌ Direct commits to main are not allowed."
+          echo "Create a feature branch and open a pull request instead:"
+          echo "  git checkout -b my-branch"
+          exit 1
+        fi
     no-root-images:
       run: |
         staged=$(git diff --cached --name-only --diff-filter=ACR)
