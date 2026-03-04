@@ -34,11 +34,14 @@ export function MultipleChoiceQuestions({
   const [selections, setSelections] = React.useState<Map<number, number>>(new Map());
   // Track custom text per question (used when "Write your own…" is selected)
   const [customTexts, setCustomTexts] = React.useState<Map<number, string>>(new Map());
+  // Guard against double-submit
+  const [isSubmitting, setIsSubmitting] = React.useState(false);
 
   // Reset state when the prompt identity changes (new AskUserQuestion)
   React.useEffect(() => {
     setSelections(new Map());
     setCustomTexts(new Map());
+    setIsSubmitting(false);
   }, [promptKey]);
 
   const allAnswered = questions.every((q, idx) => {
@@ -66,7 +69,8 @@ export function MultipleChoiceQuestions({
   };
 
   const handleSubmit = () => {
-    if (!allAnswered) return;
+    if (!allAnswered || isSubmitting) return;
+    setIsSubmitting(true);
     const answers: MultipleChoiceAnswers = questions.map((q, i) => {
       const sel = selections.get(i)!;
       const answer = sel === q.options.length
@@ -236,16 +240,16 @@ export function MultipleChoiceQuestions({
         <Button
           size="sm"
           onClick={handleSubmit}
-          disabled={!allAnswered}
+          disabled={!allAnswered || isSubmitting}
           className={cn(
             "w-full gap-2 transition-all",
-            allAnswered
+            allAnswered && !isSubmitting
               ? "bg-violet-600 hover:bg-violet-500 text-white shadow-sm shadow-violet-500/20"
               : "bg-violet-500/10 text-violet-300/50 cursor-not-allowed",
           )}
         >
           <Send className="size-3.5" />
-          Submit {questions.length === 1 ? "Answer" : "Answers"}
+          {isSubmitting ? "Submitting…" : `Submit ${questions.length === 1 ? "Answer" : "Answers"}`}
         </Button>
       </div>
     </div>

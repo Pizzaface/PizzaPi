@@ -143,14 +143,15 @@ async function checkPushNotifications(
         // Extract question text: try new questions[] format, fall back to legacy question field
         let question: string | undefined;
         if (Array.isArray(args?.questions)) {
-            const first = (args!.questions as unknown[]).find(
-                (q): q is { question: string } =>
-                    !!q && typeof q === "object" && typeof (q as any).question === "string",
-            );
-            question = first ? (first as { question: string }).question : undefined;
+            for (const q of args!.questions as unknown[]) {
+                if (q && typeof q === "object" && typeof (q as any).question === "string" && (q as any).question.trim()) {
+                    question = ((q as any).question as string).trim();
+                    break;
+                }
+            }
         }
-        if (!question && typeof args?.question === "string") {
-            question = args.question;
+        if (!question && typeof args?.question === "string" && args.question.trim()) {
+            question = (args.question as string).trim();
         }
         notifyAgentNeedsInput(userId, sessionId, question, sName);
     }

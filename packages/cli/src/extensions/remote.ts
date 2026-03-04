@@ -1259,6 +1259,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
     async function askUserQuestion(
         toolCallId: string,
         questions: AskUserQuestionItem[],
+        placeholder: string | undefined,
         signal: AbortSignal | undefined,
         ctx: ExtensionContext,
     ): Promise<{ answer: string | null; source: "tui" | "web" | null }> {
@@ -1333,7 +1334,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 const displayQuestion = displayParts.join("\n");
                 
                 void ctx.ui
-                    .input(displayQuestion, undefined, { signal: localAbort.signal })
+                    .input(displayQuestion, placeholder, { signal: localAbort.signal })
                     .then((value) => {
                         localDone = true;
                         const answer = value?.trim();
@@ -1860,6 +1861,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             const result = await askUserQuestion(
                 toolCallId,
                 questions,
+                typeof params.placeholder === "string" ? params.placeholder : undefined,
                 signal,
                 ctx,
             );
