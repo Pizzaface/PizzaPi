@@ -848,6 +848,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                         onClick={onShowRunners}
                         className={cn(
                             "flex items-center gap-2.5 w-full px-3 py-3 md:py-2 rounded-lg text-sm font-medium transition-colors active:scale-[0.98]",
+                            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
                             showRunners
                                 ? "bg-sidebar-accent text-sidebar-accent-foreground"
                                 : "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
@@ -1008,7 +1009,8 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                         onPointerUp={selectMode ? undefined : handleSessionPointerUp}
                                                         onContextMenu={(e) => e.preventDefault()}
                                                         className={cn(
-                                                            "relative flex items-center gap-2.5 w-full min-w-0 px-2.5 py-3 md:py-2.5 text-left",
+                                                            "relative flex items-center gap-2.5 w-full min-w-0 px-2.5 py-3 md:py-2.5 text-left rounded-md",
+                                                            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
                                                             !hasOffset && "transition-transform duration-200 ease-out",
                                                             selectMode && isChecked
                                                                 ? "bg-sidebar-accent text-sidebar-accent-foreground"

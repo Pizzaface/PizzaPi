@@ -1,3 +1,7 @@
+
+## 2025-02-13 - [Focus Visible Styles on Navigation Sidebar]
+**Learning:** The application uses generic `focus-visible` ring utilities (`focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset`) from Shadcn UI on deeply customized or complex DOM elements (like sliding session cards with nested hover effects and swipeable actions). By default, these composite buttons lack native or custom focus indicators, completely breaking keyboard accessibility for navigating sessions.
+**Action:** Always verify that newly added complex interactive components (especially custom `<button>` wrappers for list items or cards) explicitly declare `focus-visible` classes to maintain keyboard navigability. Avoid generic `<button>` wrappers without focus state definitions.
 ## 2024-03-04 - [Add focus visible states]
 **Learning:** Common accessible interactive elements without native `<button>` or `<input>` tags, or custom styled buttons (like the `FileTypeCard`, `EditFileCard`, and `CompactionSummaryCard` which look like generic UI cards but use the `<button>` element) often lack default focus indicators because `hover:bg-muted` masks the visual cues of focus for keyboard-only users.
 **Action:** Always ensure that custom styled `button` cards contain `focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background` to provide a clear focus ring that maintains keyboard accessibility.
