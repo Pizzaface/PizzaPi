@@ -32,7 +32,7 @@ describe("normalizePath", () => {
     });
 });
 
-// ── parseJsonArray ──────────────────────────────────────────────────────────
+// ── parseJsonArray (re-exported from utils) ─────────────────────────────────
 
 describe("parseJsonArray", () => {
     test("parses valid JSON array", () => {
@@ -61,10 +61,41 @@ describe("parseJsonArray", () => {
     });
 });
 
-// ── pin endpoint routing ───────────────────────────────────────────────────
+// ── Dispatcher: global endpoints ────────────────────────────────────────────
 
-describe("/api/sessions/:id/pin", () => {
-    test("returns 405 for unsupported methods", async () => {
+describe("handleApi — global endpoints", () => {
+    test("GET /health returns ok", async () => {
+        const url = new URL("http://localhost/health");
+        const req = new Request(url, { method: "GET" });
+
+        const res = await handleApi(req, url);
+        expect(res).toBeTruthy();
+        expect(res!.status).toBe(200);
+        const data = await res!.json();
+        expect(data.status).toBe("ok");
+    });
+
+    test("returns undefined for unmatched paths", async () => {
+        const url = new URL("http://localhost/api/nonexistent");
+        const req = new Request(url, { method: "GET" });
+
+        const res = await handleApi(req, url);
+        expect(res).toBeUndefined();
+    });
+
+    test("returns undefined for non-API paths", async () => {
+        const url = new URL("http://localhost/some/random/path");
+        const req = new Request(url, { method: "GET" });
+
+        const res = await handleApi(req, url);
+        expect(res).toBeUndefined();
+    });
+});
+
+// ── Dispatcher: router delegation ───────────────────────────────────────────
+
+describe("handleApi — router delegation", () => {
+    test("sessions pin returns 405 for unsupported methods", async () => {
         const url = new URL("http://localhost/api/sessions/s-123/pin");
         const req = new Request(url, { method: "POST" });
 
@@ -73,6 +104,20 @@ describe("/api/sessions/:id/pin", () => {
         expect(res!.status).toBe(405);
         expect(res!.headers.get("Allow")).toBe("PUT, DELETE");
     });
+
+    test("push vapid-public-key is accessible without auth", async () => {
+        const url = new URL("http://localhost/api/push/vapid-public-key");
+        const req = new Request(url, { method: "GET" });
+
+        const res = await handleApi(req, url);
+        expect(res).toBeTruthy();
+        expect(res!.status).toBe(200);
+        const data = await res!.json();
+        expect(typeof data.publicKey).toBe("string");
+    });
+
+    // signup-status and register are tested via the E2E test in tests/api-e2e.test.ts
+    // which sets up a real DB. Testing them here would require DB initialization.
 });
 
 // ── cwdMatchesRoots ─────────────────────────────────────────────────────────
@@ -93,7 +138,6 @@ describe("cwdMatchesRoots", () => {
     });
 
     test("rejects prefix match that is not a directory boundary", () => {
-        // /home/user/projects-evil should NOT match /home/user/projects
         expect(cwdMatchesRoots(["/home/user/projects"], "/home/user/projects-evil")).toBe(false);
     });
 
