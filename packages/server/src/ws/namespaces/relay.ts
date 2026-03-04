@@ -140,7 +140,7 @@ async function checkPushNotifications(
 
     if (event.type === "tool_execution_start" && event.toolName === "AskUserQuestion") {
         const args = event.args as Record<string, unknown> | undefined;
-        // Extract first question text from questions[] array
+        // Extract question text: try new questions[] format, fall back to legacy question field
         let question: string | undefined;
         if (Array.isArray(args?.questions)) {
             const first = (args!.questions as unknown[]).find(
@@ -148,6 +148,9 @@ async function checkPushNotifications(
                     !!q && typeof q === "object" && typeof (q as any).question === "string",
             );
             question = first ? (first as { question: string }).question : undefined;
+        }
+        if (!question && typeof args?.question === "string") {
+            question = args.question;
         }
         notifyAgentNeedsInput(userId, sessionId, question, sName);
     }

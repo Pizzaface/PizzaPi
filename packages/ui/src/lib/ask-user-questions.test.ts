@@ -15,6 +15,8 @@ describe("parsePendingQuestions", () => {
     expect(parsePendingQuestions({ questions: "not-array" })).toEqual([]);
   });
 
+  // ── New format ────────────────────────────────────────────────────────
+
   test("parses multi-question format", () => {
     const result = parsePendingQuestions({
       questions: [
@@ -75,6 +77,49 @@ describe("parsePendingQuestions", () => {
       questions: [null, "string", 42, { question: "Valid?", options: ["Yes"] }],
     });
     expect(result).toEqual([{ question: "Valid?", options: ["Yes"] }]);
+  });
+
+  // ── Legacy format (backward compat) ──────────────────────────────────
+
+  test("parses legacy single-question format", () => {
+    const result = parsePendingQuestions({
+      question: "What color?",
+      options: ["Red", "Blue", "Green"],
+    });
+    expect(result).toEqual([
+      { question: "What color?", options: ["Red", "Blue", "Green"] },
+    ]);
+  });
+
+  test("handles legacy format with no options", () => {
+    const result = parsePendingQuestions({
+      question: "What do you think?",
+    });
+    expect(result).toEqual([
+      { question: "What do you think?", options: [] },
+    ]);
+  });
+
+  test("prefers new format over legacy when both present", () => {
+    const result = parsePendingQuestions({
+      questions: [{ question: "New format", options: ["A"] }],
+      question: "Old format",
+      options: ["B"],
+    });
+    expect(result).toEqual([{ question: "New format", options: ["A"] }]);
+  });
+
+  test("falls back to legacy when questions array is empty", () => {
+    const result = parsePendingQuestions({
+      questions: [],
+      question: "Fallback?",
+      options: ["Yes"],
+    });
+    expect(result).toEqual([{ question: "Fallback?", options: ["Yes"] }]);
+  });
+
+  test("ignores legacy format with blank question", () => {
+    expect(parsePendingQuestions({ question: "  ", options: ["A"] })).toEqual([]);
   });
 });
 

@@ -1254,10 +1254,12 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
             className="mb-2"
             onSubmit={(answers) => {
               if (!onSendInput) return;
+              setComposerError(null);
               const text = formatAnswersForAgent(answers);
               Promise.resolve(onSendInput(text))
                 .then((result) => {
                   if (result !== false) {
+                    setComposerError(null);
                     setInput("");
                   } else {
                     setComposerError("Failed to send answer.");

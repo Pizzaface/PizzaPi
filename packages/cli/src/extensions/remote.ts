@@ -29,7 +29,12 @@ interface AskUserQuestionItem {
 }
 
 interface AskUserQuestionParams {
-    questions: AskUserQuestionItem[];
+    /** Canonical format */
+    questions?: AskUserQuestionItem[];
+    /** Legacy single-question fields (older callers) */
+    question?: string;
+    placeholder?: string;
+    options?: string[];
 }
 
 interface AskUserQuestionDetails {
@@ -1223,21 +1228,32 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         setRelayStatus(relay ? "Connected to Relay" : disconnectedStatusText());
     }
 
-    /** Defensively sanitize the questions array (trim, filter invalid entries). */
-    function sanitizeQuestions(raw: unknown): AskUserQuestionItem[] {
-        if (!Array.isArray(raw)) return [];
-        const result: AskUserQuestionItem[] = [];
-        for (const item of raw) {
-            if (!item || typeof item !== "object") continue;
-            const q = (item as Record<string, unknown>).question;
-            if (typeof q !== "string" || !q.trim()) continue;
-            const rawOpts = (item as Record<string, unknown>).options;
-            const opts = Array.isArray(rawOpts)
-                ? rawOpts.filter((o): o is string => typeof o === "string")
-                : [];
-            result.push({ question: q.trim(), options: opts });
+    /** Defensively sanitize questions from params (supports new + legacy format). */
+    function sanitizeQuestions(params: AskUserQuestionParams): AskUserQuestionItem[] {
+        // New format: questions[]
+        if (Array.isArray(params.questions) && params.questions.length > 0) {
+            const result: AskUserQuestionItem[] = [];
+            for (const item of params.questions) {
+                if (!item || typeof item !== "object") continue;
+                const raw = item as unknown as Record<string, unknown>;
+                const q = raw.question;
+                if (typeof q !== "string" || !q.trim()) continue;
+                const rawOpts = raw.options;
+                const opts = Array.isArray(rawOpts)
+                    ? rawOpts.filter((o): o is string => typeof o === "string")
+                    : [];
+                result.push({ question: q.trim(), options: opts });
+            }
+            if (result.length > 0) return result;
         }
-        return result;
+        // Legacy format: single question + options
+        if (typeof params.question === "string" && params.question.trim()) {
+            const opts = Array.isArray(params.options)
+                ? params.options.filter((o): o is string => typeof o === "string")
+                : [];
+            return [{ question: params.question.trim(), options: opts }];
+        }
+        return [];
     }
 
     async function askUserQuestion(
@@ -1781,8 +1797,21 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                         required: ["question", "options"],
                     },
                 },
+                // Legacy single-question fields (backward compat with older callers)
+                question: {
+                    type: "string",
+                    description: "(Legacy) The question to ask the user. Prefer `questions` array.",
+                },
+                placeholder: {
+                    type: "string",
+                    description: "(Legacy) Optional placeholder hint.",
+                },
+                options: {
+                    type: "array",
+                    items: { type: "string" },
+                    description: "(Legacy) Predefined choices. Prefer `questions` array.",
+                },
             },
-            required: ["questions"],
             additionalProperties: false,
         } as any,
         async execute(toolCallId, rawParams, signal, onUpdate, ctx) {
@@ -1799,8 +1828,8 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 };
             }
 
-            const params = (rawParams ?? {}) as Record<string, unknown>;
-            const questions = sanitizeQuestions(params.questions);
+            const params = (rawParams ?? {}) as AskUserQuestionParams;
+            const questions = sanitizeQuestions(params);
 
             if (questions.length === 0 || !questions.some(q => q.question.trim())) {
                 return {
@@ -1853,7 +1882,11 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             try {
                 const parsed = JSON.parse(result.answer);
                 if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-                    parsedAnswers = parsed as Record<string, string>;
+                    // Validate all keys and values are strings
+                    const entries = Object.entries(parsed);
+                    if (entries.every(([k, v]) => typeof k === "string" && typeof v === "string")) {
+                        parsedAnswers = parsed as Record<string, string>;
+                    }
                 }
             } catch {
                 // TUI or plain text answer — leave as raw string

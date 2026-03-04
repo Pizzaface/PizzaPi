@@ -9,23 +9,35 @@ export interface ParsedQuestion {
 
 /**
  * Parse pending question data from heartbeat / tool_execution events.
- * Expects `{ questions: [{ question, options }] }` shape.
- * Defensively filters invalid entries.
+ * Supports the canonical `{ questions: [...] }` shape and the legacy
+ * `{ question, options }` shape (for older CLI workers).
  */
 export function parsePendingQuestions(data: Record<string, unknown> | undefined | null): ParsedQuestion[] {
   if (!data) return [];
-  if (!Array.isArray(data.questions)) return [];
 
-  const result: ParsedQuestion[] = [];
-  for (const q of data.questions) {
-    if (q && typeof q === "object" && typeof (q as any).question === "string" && (q as any).question.trim()) {
-      const opts = Array.isArray((q as any).options)
-        ? ((q as any).options as unknown[]).filter((o): o is string => typeof o === "string")
-        : [];
-      result.push({ question: (q as any).question.trim(), options: opts });
+  // New format: questions[]
+  if (Array.isArray(data.questions)) {
+    const result: ParsedQuestion[] = [];
+    for (const q of data.questions) {
+      if (q && typeof q === "object" && typeof (q as any).question === "string" && (q as any).question.trim()) {
+        const opts = Array.isArray((q as any).options)
+          ? ((q as any).options as unknown[]).filter((o): o is string => typeof o === "string")
+          : [];
+        result.push({ question: (q as any).question.trim(), options: opts });
+      }
     }
+    if (result.length > 0) return result;
   }
-  return result;
+
+  // Legacy format: { question, options }
+  if (typeof data.question === "string" && data.question.trim()) {
+    const opts = Array.isArray(data.options)
+      ? (data.options as unknown[]).filter((o): o is string => typeof o === "string")
+      : [];
+    return [{ question: (data.question as string).trim(), options: opts }];
+  }
+
+  return [];
 }
 
 /**

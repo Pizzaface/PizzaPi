@@ -1169,7 +1169,7 @@ export function App() {
 
       // Restore pending AskUserQuestion state when reconnecting to a session.
       if (Object.prototype.hasOwnProperty.call(hb, "pendingQuestion")) {
-        const pq = (hb as any).pendingQuestion as { toolCallId: string; questions?: Array<{ question: string; options: string[] }> } | null;
+        const pq = (hb as any).pendingQuestion as { toolCallId: string; questions?: Array<{ question: string; options: string[] }>; question?: string; options?: string[] } | null;
         if (pq) {
           const questions = parsePendingQuestions(pq);
           if (questions.length > 0) {
