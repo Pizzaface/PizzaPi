@@ -162,18 +162,30 @@ export const searchTool: AgentTool = {
     async execute(_toolCallId, params: any) {
         const type = params.type ?? "content";
 
+        // Strip null bytes — spawn() throws synchronously if any arg contains \0.
+        const pattern = String(params.pattern).replaceAll("\0", "");
+        const rawPath = String(params.path).replaceAll("\0", "");
+
         // Normalize path so a leading "-" can't be mistaken for a flag/predicate.
         // This is the standard Unix idiom (e.g. `rm -- ./--help` vs `rm -- --help`).
         // GNU find/rg treat `./--help` as a literal path, not the --help flag.
-        const safePath = /^[.\/]/.test(params.path) ? params.path : `./${params.path}`;
+        const safePath = /^[.\/]/.test(rawPath) ? rawPath : `./${rawPath}`;
 
         // -e forces rg to treat pattern as a regex (not a flag); -- ends options before path.
         const [cmd, args, maxLines] =
             type === "files"
-                ? (["find", [safePath, "-name", params.pattern, "-type", "f"], 50] as const)
-                : (["rg", ["--no-heading", "-n", "-e", params.pattern, "--", safePath], 100] as const);
+                ? (["find", [safePath, "-name", pattern, "-type", "f"], 50] as const)
+                : (["rg", ["--no-heading", "-n", "-e", pattern, "--", safePath], 100] as const);
 
-        const result = await spawnHeadLines(cmd, [...args], maxLines, 15_000);
+        let result: SpawnResult;
+        try {
+            result = await spawnHeadLines(cmd, [...args], maxLines, 15_000);
+        } catch (err: any) {
+            return {
+                content: [{ type: "text" as const, text: `Search failed: ${err.message}` }],
+                details: { pattern, path: rawPath, type: type === "files" ? "files" : "content" },
+            };
+        }
 
         // Normalize type for isFailure — unknown values fall through to "content"
         // (rg branch) in command selection, so must match here too.
@@ -202,7 +214,7 @@ export const searchTool: AgentTool = {
 
         return {
             content: [{ type: "text" as const, text: output }],
-            details: { pattern: params.pattern, path: params.path, type: normalizedType },
+            details: { pattern, path: rawPath, type: normalizedType },
         };
     },
 };

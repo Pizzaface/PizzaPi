@@ -302,6 +302,24 @@ describe("searchTool", () => {
         expect(result.content[0].text).toContain("last-line-no-newline");
     });
 
+    test("handles null bytes in pattern and path without throwing", async () => {
+        const dir = makeTempDir();
+        // Null bytes in args would cause spawn() to throw — must be handled gracefully
+        const result1 = await searchTool.execute("test-null-pattern", {
+            pattern: "*.txt\0injected",
+            path: dir,
+            type: "files",
+        });
+        expect(typeof result1.content[0].text).toBe("string");
+
+        const result2 = await searchTool.execute("test-null-path", {
+            pattern: "hello",
+            path: `${dir}\0/etc/passwd`,
+            type: "content",
+        });
+        expect(typeof result2.content[0].text).toBe("string");
+    });
+
     test("preserves Unicode filenames in file search results", async () => {
         const dir = mkdtempSync(join(tmpdir(), "search-unicode-"));
         // Create files with multi-byte UTF-8 names: accented, CJK, emoji
