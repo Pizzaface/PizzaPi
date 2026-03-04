@@ -563,8 +563,10 @@ function pushPendingKey(sessionId: string): string {
 /** Record the toolCallId of the currently pending push-notified question. */
 export async function setPushPendingQuestion(sessionId: string, toolCallId: string): Promise<void> {
     const r = requireRedis();
-    // Auto-expire after 30 minutes (safety net — cleared explicitly on tool end)
-    await r.set(pushPendingKey(sessionId), toolCallId, { EX: 1800 });
+    // Auto-expire after 24 hours (safety net — cleared explicitly on tool end,
+    // session end, and disconnect). Long TTL accommodates users who are away
+    // and respond to the push notification much later.
+    await r.set(pushPendingKey(sessionId), toolCallId, { EX: 86400 });
 }
 
 /** Get the currently pending push-notified toolCallId, or null. */
@@ -600,10 +602,26 @@ export async function consumePushPendingQuestionIfMatches(
     return result === 1;
 }
 
-/** Clear the push-pending question (tool execution ended). */
-export async function clearPushPendingQuestion(sessionId: string): Promise<void> {
+/**
+ * Clear the push-pending question (tool execution ended).
+ * When `toolCallId` is provided, only clears if it matches the stored value —
+ * prevents a cancelled/overlapping AskUserQuestion from clearing the active one's key.
+ */
+export async function clearPushPendingQuestion(sessionId: string, toolCallId?: string): Promise<void> {
     const r = requireRedis();
-    await r.del(pushPendingKey(sessionId));
+    if (toolCallId) {
+        // Atomic compare-and-delete: only clear if the stored value matches
+        const script = `
+            if redis.call('GET', KEYS[1]) == ARGV[1] then
+                return redis.call('DEL', KEYS[1])
+            end
+            return 0
+        `;
+        await r.eval(script, { keys: [pushPendingKey(sessionId)], arguments: [toolCallId] });
+    } else {
+        // Unconditional clear (session teardown paths)
+        await r.del(pushPendingKey(sessionId));
+    }
 }
 
 // ── Cleanup / scan ──────────────────────────────────────────────────────────

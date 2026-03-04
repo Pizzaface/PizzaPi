@@ -141,7 +141,10 @@ async function trackPushPendingState(
         }
     }
     if (event.type === "tool_execution_end" && event.toolName === "AskUserQuestion") {
-        await clearPushPendingQuestion(sessionId);
+        // Pass toolCallId so only the matching key is cleared — prevents a
+        // cancelled/overlapping AskUserQuestion from clearing the active one.
+        const endToolCallId = typeof event.toolCallId === "string" ? event.toolCallId : undefined;
+        await clearPushPendingQuestion(sessionId, endToolCallId);
     }
 }
 
