@@ -1,23 +1,20 @@
-diff --git a/node_modules/@mariozechner/pi-coding-agent/.bun-tag-36c1615415ab9e2b b/.bun-tag-36c1615415ab9e2b
-new file mode 100644
-index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
 diff --git a/dist/core/extensions/loader.js b/dist/core/extensions/loader.js
-index 5125e76b6490f859fa63cea32b0f1df9fb7aed50..cc2a11988ec12fad5afacc81c43aad46dea3b628 100644
+index a69a086d7492b99fc6e7d021e31e9561fd2b1a3a..3025ed381d2cf3e28c65459aa96d9c092c6bdf4c 100644
 --- a/dist/core/extensions/loader.js
 +++ b/dist/core/extensions/loader.js
-@@ -97,6 +97,9 @@ export function createExtensionRuntime() {
-         setThinkingLevel: notInitialized,
-         flagValues: new Map(),
-         pendingProviderRegistrations: [],
+@@ -107,6 +107,9 @@ export function createExtensionRuntime() {
+         unregisterProvider: (name) => {
+             runtime.pendingProviderRegistrations = runtime.pendingProviderRegistrations.filter((r) => r.name !== name);
+         },
 +        // PATCH(pizzapi): session control for extensions
 +        newSession: () => Promise.reject(new Error("Extension runtime not initialized")),
 +        switchSession: () => Promise.reject(new Error("Extension runtime not initialized")),
      };
+     return runtime;
  }
- /**
-@@ -185,6 +188,13 @@ function createExtensionAPI(extension, runtime, cwd, eventBus) {
-         registerProvider(name, config) {
-             runtime.pendingProviderRegistrations.push({ name, config });
+@@ -200,6 +203,13 @@ function createExtensionAPI(extension, runtime, cwd, eventBus) {
+         unregisterProvider(name) {
+             runtime.unregisterProvider(name);
          },
 +        // PATCH(pizzapi): session control for extensions
 +        newSession(options) {
@@ -30,10 +27,10 @@ index 5125e76b6490f859fa63cea32b0f1df9fb7aed50..cc2a11988ec12fad5afacc81c43aad46
      };
      return api;
 diff --git a/dist/core/extensions/runner.js b/dist/core/extensions/runner.js
-index da287dd66dc0b4a356d4a615addd1e5cf40073ec..4f50eb5748741e68669a960f1a01c1042a99bc4a 100644
+index 6c32bd9438c02e12c40b4f98171b37ab622ed18c..be32027918d34daeb819d7b7a38330cb47384a7b 100644
 --- a/dist/core/extensions/runner.js
 +++ b/dist/core/extensions/runner.js
-@@ -148,6 +148,9 @@ export class ExtensionRunner {
+@@ -153,6 +153,9 @@ export class ExtensionRunner {
              this.navigateTreeHandler = actions.navigateTree;
              this.switchSessionHandler = actions.switchSession;
              this.reloadHandler = actions.reload;
@@ -43,7 +40,7 @@ index da287dd66dc0b4a356d4a615addd1e5cf40073ec..4f50eb5748741e68669a960f1a01c104
              return;
          }
          this.waitForIdleFn = async () => { };
-@@ -156,6 +159,8 @@ export class ExtensionRunner {
+@@ -161,6 +164,8 @@ export class ExtensionRunner {
          this.navigateTreeHandler = async () => ({ cancelled: false });
          this.switchSessionHandler = async () => ({ cancelled: false });
          this.reloadHandler = async () => { };
@@ -53,7 +50,7 @@ index da287dd66dc0b4a356d4a615addd1e5cf40073ec..4f50eb5748741e68669a960f1a01c104
      setUIContext(uiContext) {
          this.uiContext = uiContext ?? noOpUIContext;
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index 920f62d9c4370c034ab0a052cd02050e2e6be37e..fb97b46838e4f61f516b7cf6b01eb274bb45ef0c 100644
+index d257afa404987930ba4de685100f5215dcf05ef0..7cf11d7d65c3450f14b48330790dcc6e0445cabe 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
 @@ -355,12 +355,6 @@ export class InteractiveMode {
@@ -99,7 +96,7 @@ index 920f62d9c4370c034ab0a052cd02050e2e6be37e..fb97b46838e4f61f516b7cf6b01eb274
      /**
       * Get changelog entries to display on startup.
       * Only shows new entries since last seen version, skips for resumed sessions.
-@@ -2330,17 +2301,6 @@ export class InteractiveMode {
+@@ -2334,17 +2305,6 @@ export class InteractiveMode {
          this.chatContainer.addChild(new Text(theme.fg("warning", `Warning: ${warningMessage}`), 1, 0));
          this.ui.requestRender();
      }
@@ -117,7 +114,7 @@ index 920f62d9c4370c034ab0a052cd02050e2e6be37e..fb97b46838e4f61f516b7cf6b01eb274
      /**
       * Get all queued messages (read-only).
       * Combines session queue and compaction queue.
-@@ -3119,7 +3079,8 @@ export class InteractiveMode {
+@@ -3123,7 +3083,8 @@ export class InteractiveMode {
              restoreEditor();
              this.session.modelRegistry.refresh();
              await this.updateAvailableProviderCount();
@@ -127,9 +124,3 @@ index 920f62d9c4370c034ab0a052cd02050e2e6be37e..fb97b46838e4f61f516b7cf6b01eb274
          }
          catch (error) {
              restoreEditor();
-diff --git a/examples/server-web-client/node_modules/.vite/deps/_metadata.json b/Users/jordan/.bun/install/cache/@mariozechner/pi-coding-agent@0.55.1@@@1/examples/server-web-client/node_modules/.vite/deps/_metadata.json
-deleted file mode 100644
-index 8c3d274affafed48bf93b210b1f55815c06c028a..0000000000000000000000000000000000000000
-diff --git a/examples/server-web-client/node_modules/.vite/deps/package.json b/Users/jordan/.bun/install/cache/@mariozechner/pi-coding-agent@0.55.1@@@1/examples/server-web-client/node_modules/.vite/deps/package.json
-deleted file mode 100644
-index 3dbc1ca591c0557e35b6004aeba250e6a70b56e3..0000000000000000000000000000000000000000
