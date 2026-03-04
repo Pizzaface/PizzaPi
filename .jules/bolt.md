@@ -1,0 +1,3 @@
+## 2024-03-04 - [Optimize Socket.IO sweeper N+1 queries]
+**Learning:** In sweeping or polling loops across distributed sessions, calling `fetchSockets()` (e.g., in `packages/server/src/ws/sio-registry.ts`) triggers an expensive, cluster-wide network operation (N+1 bottleneck) for each session check.
+**Action:** Perform cheap local state or staleness checks (like checking last heartbeat or start time locally) before executing expensive cluster-wide network operations. If the local condition fails, the remote query is bypassed, significantly reducing unnecessary network/Redis roundtrips for healthy sessions.
