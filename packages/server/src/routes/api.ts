@@ -939,7 +939,7 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
         } catch {
             return Response.json({ error: "Invalid JSON body" }, { status: 400 });
         }
-        if (!body.sessionId || typeof body.text !== "string" || !body.text.trim() || typeof body.toolCallId !== "string" || !body.toolCallId) {
+        if (typeof body.sessionId !== "string" || !body.sessionId.trim() || typeof body.text !== "string" || !body.text.trim() || typeof body.toolCallId !== "string" || !body.toolCallId.trim()) {
             return Response.json(
                 { error: "Missing required fields: sessionId, text, toolCallId" },
                 { status: 400 },

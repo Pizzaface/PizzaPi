@@ -310,6 +310,7 @@ export function registerRelayNamespace(io: SocketIOServer): void {
             }
 
             clearThinkingMaps(sessionId);
+            void clearPushPendingQuestion(sessionId);
             await endSharedSession(sessionId);
             socket.data.sessionId = undefined;
             socketAckedSeqs.delete(socket.id);
@@ -375,6 +376,7 @@ export function registerRelayNamespace(io: SocketIOServer): void {
             const sessionId = socket.data.sessionId;
             if (sessionId) {
                 clearThinkingMaps(sessionId);
+                void clearPushPendingQuestion(sessionId);
                 await endSharedSession(sessionId);
             }
             socketAckedSeqs.delete(socket.id);
