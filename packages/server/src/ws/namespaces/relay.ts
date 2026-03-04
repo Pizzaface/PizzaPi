@@ -184,11 +184,12 @@ async function checkPushNotifications(
                 options = (args.options as unknown[]).filter((o): o is string => typeof o === "string" && o.trim().length > 0);
             }
         }
-        // Quick-reply actions require: single question + collab mode enabled.
+        // Quick-reply actions require: single question + collab mode + toolCallId.
         // Multi-question prompts need the full UI; non-collab sessions reject
-        // push answers with 403, so showing action buttons would be misleading.
-        const canQuickReply = questionCount <= 1 && session?.collabMode === true;
+        // push answers with 403; missing toolCallId means /api/push/answer will
+        // reject with 400 — so don't show action buttons in any of those cases.
         const toolCallId = typeof event.toolCallId === "string" ? event.toolCallId : undefined;
+        const canQuickReply = questionCount <= 1 && session?.collabMode === true && !!toolCallId;
         notifyAgentNeedsInput(userId, sessionId, question, sName, canQuickReply ? options : undefined, toolCallId);
     }
 
@@ -284,8 +285,10 @@ export function registerRelayNamespace(io: SocketIOServer): void {
             // Publish to viewers via Redis cache + Socket.IO rooms
             await publishSessionEvent(sessionId, eventToPublish);
 
-            // Push notifications (only when no browser viewers are watching)
-            void checkPushNotifications(sessionId, event);
+            // Push notifications + pending-state tracking.
+            // Awaited to ensure set/clear ordering for push-pending Redis key
+            // (tool_execution_start must complete before tool_execution_end clears).
+            await checkPushNotifications(sessionId, event);
         });
 
         // ── session_end ──────────────────────────────────────────────────────

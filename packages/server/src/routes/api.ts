@@ -931,7 +931,11 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
 
         let body: { sessionId?: string; text?: string; toolCallId?: string };
         try {
-            body = await req.json();
+            const parsed = await req.json();
+            if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+                return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+            }
+            body = parsed;
         } catch {
             return Response.json({ error: "Invalid JSON body" }, { status: 400 });
         }
