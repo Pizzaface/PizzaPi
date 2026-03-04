@@ -80,7 +80,7 @@ self.addEventListener("notificationclick", function (event) {
         var optIndex = parseInt(action.replace("option-", ""), 10);
         // Filter out "Type your own" entries to match the server's filtering
         var filtered = data.options.filter(function (o) {
-            return o.toLowerCase().replace(/[^a-z]/g, "") !== "typeyourown";
+            return typeof o === "string" && o.toLowerCase().replace(/[^a-z]/g, "") !== "typeyourown";
         });
         if (optIndex >= 0 && optIndex < filtered.length) {
             answerText = filtered[optIndex];

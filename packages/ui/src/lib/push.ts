@@ -146,3 +146,25 @@ export async function isPushSubscribed(): Promise<boolean> {
     const sub = await getExistingSubscription();
     return sub !== null;
 }
+
+/**
+ * Dismiss push notifications matching a tag prefix for a given session.
+ * Call this when the app handles a pending question (via in-app UI) so
+ * stale push notifications can no longer inject unexpected input.
+ */
+export async function dismissNotificationsForSession(
+    sessionId: string,
+    type: string = "agent_needs_input",
+): Promise<void> {
+    if (!isPushSupported()) return;
+    try {
+        const registration = await navigator.serviceWorker.ready;
+        const tag = `pizzapi-${type}-${sessionId}`;
+        const notifications = await registration.getNotifications({ tag });
+        for (const n of notifications) {
+            n.close();
+        }
+    } catch {
+        // Silently ignore — not critical if dismissal fails
+    }
+}

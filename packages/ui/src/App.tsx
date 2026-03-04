@@ -606,6 +606,8 @@ export function App() {
   const [recentFoldersLoading, setRecentFoldersLoading] = React.useState(false);
 
   const [pendingQuestion, setPendingQuestion] = React.useState<{ toolCallId: string; questions: Array<{ question: string; options: string[] }> } | null>(null);
+  // Monotonic counter for generating unique fallback promptKeys when toolCallId is absent.
+  const pendingQuestionSeqRef = React.useRef(0);
   const [activeToolCalls, setActiveToolCalls] = React.useState<Map<string, string>>(new Map());
 
   // Message queue: messages sent while the agent is active
@@ -1174,7 +1176,7 @@ export function App() {
           const questions = parsePendingQuestions(pq);
           if (questions.length > 0) {
             setPendingQuestion({
-              toolCallId: typeof pq.toolCallId === "string" ? pq.toolCallId : "ask-user-question",
+              toolCallId: typeof pq.toolCallId === "string" ? pq.toolCallId : `ask-user-question-${++pendingQuestionSeqRef.current}`,
               questions,
             });
             setViewerStatus("Waiting for answer…");
@@ -1541,7 +1543,7 @@ export function App() {
 
       if (questions.length > 0) {
         setPendingQuestion({
-          toolCallId: typeof evt.toolCallId === "string" ? evt.toolCallId : "ask-user-question",
+          toolCallId: typeof evt.toolCallId === "string" ? evt.toolCallId : `ask-user-question-${++pendingQuestionSeqRef.current}`,
           questions,
         });
         setViewerStatus("Waiting for answer…");
@@ -1558,7 +1560,7 @@ export function App() {
 
       if (questions.length > 0) {
         setPendingQuestion({
-          toolCallId: typeof evt.toolCallId === "string" ? evt.toolCallId : "ask-user-question",
+          toolCallId: typeof evt.toolCallId === "string" ? evt.toolCallId : `ask-user-question-${++pendingQuestionSeqRef.current}`,
           questions,
         });
       }

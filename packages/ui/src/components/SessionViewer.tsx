@@ -59,6 +59,7 @@ import { formatPathTail } from "@/lib/path";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { MultipleChoiceQuestions } from "@/components/ai-elements/multiple-choice";
 import { formatAnswersForAgent } from "@/lib/ask-user-questions";
+import { dismissNotificationsForSession } from "@/lib/push";
 import { AlertTriangleIcon, ArrowDownIcon, BookOpen, CheckCircle2, ChevronsUpDown, Circle, CircleDashed, Loader2, MessageSquare, OctagonX, PaperclipIcon, Plus, Zap, Clock, X, Trash2, TerminalIcon, DownloadIcon, XCircle, FolderTree } from "lucide-react";
 import { AtMentionPopover } from "@/components/AtMentionPopover";
 import type { Entry as AtMentionEntry } from "@/hooks/useAtMentionFiles";
@@ -442,6 +443,15 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
   const [commandOpen, setCommandOpen] = React.useState(false);
   const [commandQuery, setCommandQuery] = React.useState("");
   const [commandHighlightedIndex, setCommandHighlightedIndex] = React.useState(0);
+
+  // Dismiss push notifications when a pending question is visible in-app.
+  // This prevents stale notifications from injecting answers after the user
+  // has already seen (or answered) the question in the UI.
+  React.useEffect(() => {
+    if (pendingQuestion && sessionId) {
+      void dismissNotificationsForSession(sessionId);
+    }
+  }, [pendingQuestion, sessionId]);
 
   // Detect touch devices for mobile-specific behavior
   const isTouchDevice = React.useMemo(
@@ -1261,6 +1271,8 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                   if (result !== false) {
                     setComposerError(null);
                     setInput("");
+                    // Dismiss the push notification — user answered in-app
+                    if (sessionId) void dismissNotificationsForSession(sessionId);
                     return true;
                   }
                   setComposerError("Failed to send answer.");
