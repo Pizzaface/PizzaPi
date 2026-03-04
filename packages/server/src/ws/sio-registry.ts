@@ -646,14 +646,17 @@ async function sweepOrphanedSessions(nowMs: number): Promise<void> {
         // Skip sessions that have an active local relay socket
         if (localTuiSockets.has(sessionId)) continue;
 
-        // Check heartbeat staleness FIRST to avoid expensive cluster-wide socket lookup for active sessions
+        // Check heartbeat staleness locally FIRST (fast memory check)
+        // to avoid expensive cluster-wide N+1 fetchSockets() calls for healthy sessions
         const lastHb = session.lastHeartbeatAt ? Date.parse(session.lastHeartbeatAt) : 0;
         const startedAt = session.startedAt ? Date.parse(session.startedAt) : 0;
         const lastActivity = Math.max(lastHb || 0, startedAt || 0);
 
-        if (nowMs - lastActivity <= HEARTBEAT_STALE_MS) continue;
+        if (nowMs - lastActivity <= HEARTBEAT_STALE_MS) {
+            continue; // Session is active/recent enough, skip remote socket check
+        }
 
-        // Session appears stale locally, check if the relay socket exists on ANY server via Socket.IO rooms
+        // Session appears stale locally, verify if a relay socket exists on ANY server
         const relaySockets = await io.of("/relay").in(relaySessionRoom(sessionId)).fetchSockets();
         if (relaySockets.length > 0) continue;
 
