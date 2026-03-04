@@ -51,6 +51,13 @@ describe("parsePendingQuestions", () => {
     expect(result).toEqual([{ question: "Pick", options: ["A", "B"] }]);
   });
 
+  test("trims options and filters empty/whitespace options", () => {
+    const result = parsePendingQuestions({
+      questions: [{ question: "Pick", options: ["  A  ", "", "  ", "B"] }],
+    });
+    expect(result).toEqual([{ question: "Pick", options: ["A", "B"] }]);
+  });
+
   test("skips questions with empty text", () => {
     const result = parsePendingQuestions({
       questions: [

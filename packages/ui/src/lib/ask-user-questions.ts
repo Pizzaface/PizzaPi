@@ -21,7 +21,7 @@ export function parsePendingQuestions(data: Record<string, unknown> | undefined 
     for (const q of data.questions) {
       if (q && typeof q === "object" && typeof (q as any).question === "string" && (q as any).question.trim()) {
         const opts = Array.isArray((q as any).options)
-          ? ((q as any).options as unknown[]).filter((o): o is string => typeof o === "string")
+          ? ((q as any).options as unknown[]).filter((o): o is string => typeof o === "string" && o.trim().length > 0).map((o) => o.trim())
           : [];
         result.push({ question: (q as any).question.trim(), options: opts });
       }
@@ -32,7 +32,7 @@ export function parsePendingQuestions(data: Record<string, unknown> | undefined 
   // Legacy format: { question, options }
   if (typeof data.question === "string" && data.question.trim()) {
     const opts = Array.isArray(data.options)
-      ? (data.options as unknown[]).filter((o): o is string => typeof o === "string")
+      ? (data.options as unknown[]).filter((o): o is string => typeof o === "string" && o.trim().length > 0).map((o) => o.trim())
       : [];
     return [{ question: (data.question as string).trim(), options: opts }];
   }

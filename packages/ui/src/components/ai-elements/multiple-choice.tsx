@@ -78,11 +78,20 @@ export function MultipleChoiceQuestions({
         : q.options[sel];
       return { question: q.question, answer };
     });
+    // Safety-net timeout: if the pending question hasn't cleared after 10s
+    // (e.g. socket emit succeeded but message was dropped), unlock the button
+    // so the user can retry. The timeout is cleared by the promptKey effect
+    // if the question resolves normally.
+    const timeout = setTimeout(() => setIsSubmitting(false), 10_000);
     Promise.resolve(onSubmit(answers))
       .then((result) => {
-        if (result === false) setIsSubmitting(false);
+        if (result === false) {
+          clearTimeout(timeout);
+          setIsSubmitting(false);
+        }
       })
       .catch(() => {
+        clearTimeout(timeout);
         setIsSubmitting(false);
       });
   };

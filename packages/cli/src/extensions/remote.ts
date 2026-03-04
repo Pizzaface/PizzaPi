@@ -1240,7 +1240,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 if (typeof q !== "string" || !q.trim()) continue;
                 const rawOpts = raw.options;
                 const opts = Array.isArray(rawOpts)
-                    ? rawOpts.filter((o): o is string => typeof o === "string")
+                    ? rawOpts.filter((o): o is string => typeof o === "string" && o.trim().length > 0).map((o) => o.trim())
                     : [];
                 result.push({ question: q.trim(), options: opts });
             }
@@ -1249,7 +1249,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         // Legacy format: single question + options
         if (typeof params.question === "string" && params.question.trim()) {
             const opts = Array.isArray(params.options)
-                ? params.options.filter((o): o is string => typeof o === "string")
+                ? params.options.filter((o): o is string => typeof o === "string" && o.trim().length > 0).map((o) => o.trim())
                 : [];
             return [{ question: params.question.trim(), options: opts }];
         }

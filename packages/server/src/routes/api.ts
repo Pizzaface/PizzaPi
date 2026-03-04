@@ -928,7 +928,12 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
         const identity = await requireSession(req);
         if (identity instanceof Response) return identity;
 
-        const body = await req.json() as { sessionId?: string; text?: string };
+        let body: { sessionId?: string; text?: string };
+        try {
+            body = await req.json();
+        } catch {
+            return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+        }
         if (!body.sessionId || typeof body.text !== "string" || !body.text.trim()) {
             return Response.json(
                 { error: "Missing required fields: sessionId, text" },
