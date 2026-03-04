@@ -97,6 +97,13 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         ? process.env.PIZZAPI_SESSION_ID.trim()
         : randomUUID();
 
+    // ── Direct relay status text ──────────────────────────────────────────────
+    // Maintained alongside ctx.ui.setStatus() so the custom footer can read it
+    // directly from this closure variable. This avoids timing issues where the
+    // framework's extension status Map might not be populated before the first
+    // render cycle (e.g. status set during session_start before ui.start()).
+    let relayStatusText = "";
+
     // ── Provider usage cache ──────────────────────────────────────────────────
     // Generic normalized shape shared with the UI.
     interface UsageWindow { label: string; utilization: number; resets_at: string }
@@ -1184,6 +1191,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
     }
 
     function setRelayStatus(text?: string) {
+        relayStatusText = text ?? "";
         if (!latestCtx) return;
         latestCtx.ui.setStatus(RELAY_STATUS_KEY, text);
     }
@@ -1435,8 +1443,12 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                         modelText += ` • ${currentAuthLabel}`;
                     }
 
-                    const extensionStatuses = footerData.getExtensionStatuses();
-                    const relayStatus = sanitizeStatusText(extensionStatuses.get(RELAY_STATUS_KEY) ?? "");
+                    // Read relay status directly from the closure variable.
+                    // The framework's extensionStatuses Map (via footerData) may not
+                    // be populated before the first render cycle when the status is
+                    // set during session_start (before ui.start()). The closure
+                    // variable is always up to date.
+                    const relayStatus = sanitizeStatusText(relayStatusText);
 
                     const statsText = statsParts.join(" ");
                     const modelBadge = `• ${modelText}`;
