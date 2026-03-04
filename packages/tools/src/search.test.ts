@@ -353,6 +353,29 @@ describe("searchTool", () => {
         }
     });
 
+    test("does not prepend ./ to Windows-style absolute paths", async () => {
+        // Windows paths like C:\Users or C:/Users should not become ./C:\Users
+        // We can't run find on fake Windows paths, but we can verify the path
+        // in the details is preserved and the tool doesn't crash.
+        const result = await searchTool.execute("test-win-path", {
+            pattern: "*.txt",
+            path: "C:\\Users\\test",
+            type: "files",
+        });
+        // Should fail gracefully (path doesn't exist), not crash
+        const text = result.content[0].text;
+        expect(text).not.toContain("./C:");
+        expect(text === "No matches found" || text.startsWith("Search failed:")).toBe(true);
+
+        // Also test forward-slash variant
+        const result2 = await searchTool.execute("test-win-path-2", {
+            pattern: "*.txt",
+            path: "D:/Projects",
+            type: "files",
+        });
+        expect(result2.content[0].text).not.toContain("./D:");
+    });
+
     test("preserves Unicode filenames in file search results", async () => {
         const dir = mkdtempSync(join(tmpdir(), "search-unicode-"));
         // Create files with multi-byte UTF-8 names: accented, CJK, emoji

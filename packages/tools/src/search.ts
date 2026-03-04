@@ -181,7 +181,11 @@ export const searchTool: AgentTool = {
         // Normalize path so a leading "-" can't be mistaken for a flag/predicate.
         // This is the standard Unix idiom (e.g. `rm -- ./--help` vs `rm -- --help`).
         // GNU find/rg treat `./--help` as a literal path, not the --help flag.
-        const safePath = /^[.\/]/.test(rawPath) ? rawPath : `./${rawPath}`;
+        // Preserve Unix absolute (/), relative (. or ..), Windows drive (C:\ or C:/)
+        // and UNC paths (\\server) — only prepend ./ for bare relative paths.
+        const safePath = /^[.\/\\]/.test(rawPath) || /^[a-zA-Z]:/.test(rawPath)
+            ? rawPath
+            : `./${rawPath}`;
 
         // -e forces rg to treat pattern as a regex (not a flag); -- ends options before path.
         const [cmd, args, maxLines] =

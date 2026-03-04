@@ -6,6 +6,7 @@ import {
 } from "@/components/ai-elements/conversation";
 import type { RelayMessage } from "@/components/session-viewer/types";
 import { groupToolExecutionMessages, groupSubAgentConversations } from "@/components/session-viewer/grouping";
+import { getComposerSubmitMode } from "@/components/session-viewer/composer-submit-state";
 import {
   hasVisibleContent,
   resolveCommandPopoverState,
@@ -276,10 +277,19 @@ function ComposerSubmitButton({
 }) {
   const attachments = usePromptInputAttachments();
   const hasAttachments = attachments.files.length > 0;
+  const hasDraft = input.trim().length > 0 || hasAttachments;
+  const submitMode = getComposerSubmitMode({
+    isTouchDevice: Boolean(isTouchDevice),
+    agentActive: Boolean(agentActive),
+    hasDraft,
+    canAbort: Boolean(agentActive && onExec),
+  });
 
-  // On mobile (touch), show a send/queue button instead of stop —
-  // Enter inserts newlines on mobile, so the button is the primary submit action.
-  const showStopMode = agentActive && onExec && !isTouchDevice;
+  if (submitMode === "hidden") {
+    return null;
+  }
+
+  const showStopMode = submitMode === "stop";
 
   return (
     <PromptInputSubmit
@@ -291,7 +301,7 @@ function ComposerSubmitButton({
             }
           : undefined
       }
-      disabled={!sessionId || (!showStopMode && !input.trim() && !hasAttachments)}
+      disabled={!sessionId || (!showStopMode && !hasDraft)}
     />
   );
 }
