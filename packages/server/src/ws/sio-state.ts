@@ -574,13 +574,30 @@ export async function getPushPendingQuestion(sessionId: string): Promise<string 
 }
 
 /**
- * Atomically consume (get + delete) the pending push-notified toolCallId.
- * Returns the toolCallId if it was present, or null.
- * Uses GETDEL for single-use acceptance — prevents replay/duplicate submissions.
+ * Atomically consume the pending push-notified toolCallId **only if it
+ * matches the expected value**. Returns true if consumed, false otherwise.
+ * Uses a Lua script for atomic compare-and-delete — prevents:
+ * - Replay/duplicate submissions (single-use)
+ * - Stale requests from burning the real pending key (compare before delete)
  */
-export async function consumePushPendingQuestion(sessionId: string): Promise<string | null> {
+export async function consumePushPendingQuestionIfMatches(
+    sessionId: string,
+    expectedToolCallId: string,
+): Promise<boolean> {
     const r = requireRedis();
-    return r.getDel(pushPendingKey(sessionId));
+    const script = `
+        local val = redis.call('GET', KEYS[1])
+        if val == ARGV[1] then
+            redis.call('DEL', KEYS[1])
+            return 1
+        end
+        return 0
+    `;
+    const result = await r.eval(script, {
+        keys: [pushPendingKey(sessionId)],
+        arguments: [expectedToolCallId],
+    });
+    return result === 1;
 }
 
 /** Clear the push-pending question (tool execution ended). */

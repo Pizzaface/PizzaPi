@@ -13,7 +13,7 @@ import {
     recordRunnerSession,
     registerTerminal,
 } from "../ws/sio-registry.js";
-import { consumePushPendingQuestion } from "../ws/sio-state.js";
+import { getPushPendingQuestion, consumePushPendingQuestionIfMatches } from "../ws/sio-state.js";
 import { sendSkillCommand, sendRunnerCommand } from "../ws/namespaces/runner.js";
 import { waitForSpawnAck } from "../ws/runner-control.js";
 import { getApiKeyRateLimitConfig, getAuth, getKysely } from "../auth.js";
@@ -960,10 +960,8 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
             );
         }
 
-        // Atomically consume the pending toolCallId (get + delete).
-        // This prevents replay/duplicate submissions — only the first
-        // POST for a given toolCallId succeeds.
-        const pendingToolCallId = await consumePushPendingQuestion(body.sessionId);
+        // Pre-flight: verify a question is pending (non-destructive read)
+        const pendingToolCallId = await getPushPendingQuestion(body.sessionId);
         if (!pendingToolCallId) {
             return Response.json(
                 { error: "No question is currently pending for this session" },
@@ -977,12 +975,25 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
             );
         }
 
-        // Find the TUI socket and emit the input
+        // Verify the TUI socket is available BEFORE consuming the token.
+        // If the runner is disconnected we return 502 without burning the
+        // pending key, so the user can retry when the runner reconnects.
         const tuiSocket = getLocalTuiSocket(body.sessionId);
         if (!tuiSocket) {
             return Response.json(
                 { error: "Session runner not connected to this server" },
                 { status: 502 },
+            );
+        }
+
+        // Atomically consume the pending key (compare-and-delete via Lua).
+        // Only succeeds if the toolCallId still matches — prevents replays
+        // and races with other requests.
+        const consumed = await consumePushPendingQuestionIfMatches(body.sessionId, body.toolCallId);
+        if (!consumed) {
+            return Response.json(
+                { error: "Answer already submitted or question resolved" },
+                { status: 409 },
             );
         }
 
