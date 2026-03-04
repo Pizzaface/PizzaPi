@@ -1,0 +1,3 @@
+## 2024-03-04 - [Add focus visible states]
+**Learning:** Common accessible interactive elements without native `<button>` or `<input>` tags, or custom styled buttons (like the `FileTypeCard`, `EditFileCard`, and `CompactionSummaryCard` which look like generic UI cards but use the `<button>` element) often lack default focus indicators because `hover:bg-muted` masks the visual cues of focus for keyboard-only users.
+**Action:** Always ensure that custom styled `button` cards contain `focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background` to provide a clear focus ring that maintains keyboard accessibility.
