@@ -65,6 +65,8 @@ import { AtMentionPopover } from "@/components/AtMentionPopover";
 import type { Entry as AtMentionEntry } from "@/hooks/useAtMentionFiles";
 import { SessionTopology } from "@/components/SessionTopology";
 import { AgentMessagesPanel, type AgentMessage } from "@/components/AgentMessagesPanel";
+import { GroupMembersPanel } from "@/components/GroupMembersPanel";
+import { ChannelIndicator, type ChannelMembership } from "@/components/ChannelIndicator";
 import type { HubSession } from "@/components/SessionSidebar";
 
 export type { RelayMessage } from "@/components/session-viewer/types";
@@ -154,6 +156,8 @@ export interface SessionViewerProps {
   onNavigateSession?: (sessionId: string) => void;
   /** Inter-agent messages for this session */
   agentMessages?: AgentMessage[];
+  /** Channel memberships for the current session */
+  channelMemberships?: ChannelMembership[];
 }
 
 function formatTokenCount(n: number): string {
@@ -441,7 +445,7 @@ function SessionSkeleton() {
   );
 }
 
-export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, isCompacting, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], runnerId, sessionCwd, liveSessions, onNavigateSession, agentMessages }: SessionViewerProps) {
+export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, isCompacting, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], runnerId, sessionCwd, liveSessions, onNavigateSession, agentMessages, channelMemberships }: SessionViewerProps) {
   const [input, setInput] = React.useState("");
   const [composerError, setComposerError] = React.useState<string | null>(null);
   const [showClearDialog, setShowClearDialog] = React.useState(false);
@@ -1138,11 +1142,32 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
 
       {/* Session topology tree — only visible when the session has parent/children */}
       {sessionId && liveSessions && onNavigateSession && (
-        <SessionTopology
-          currentSessionId={sessionId}
-          sessions={liveSessions}
-          onNavigate={onNavigateSession}
-        />
+        <>
+          <SessionTopology
+            currentSessionId={sessionId}
+            sessions={liveSessions}
+            onNavigate={onNavigateSession}
+          />
+          {/* Group members panel — shows child session details below topology tree */}
+          {(() => {
+            const currentSession = liveSessions.find((s) => s.sessionId === sessionId);
+            const childIds = currentSession?.childSessionIds ?? [];
+            return childIds.length > 0 ? (
+              <GroupMembersPanel
+                childSessionIds={childIds}
+                sessions={liveSessions}
+                onNavigate={onNavigateSession}
+              />
+            ) : null;
+          })()}
+        </>
+      )}
+
+      {/* Channel membership indicator */}
+      {sessionId && channelMemberships && channelMemberships.length > 0 && (
+        <div className="border-b border-border px-3 py-1.5">
+          <ChannelIndicator channels={channelMemberships} />
+        </div>
       )}
 
       <div className="relative flex-1 min-h-0">

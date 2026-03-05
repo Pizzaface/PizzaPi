@@ -29,6 +29,9 @@ type MessageListener = (msg: SessionMessage) => void;
 /** Callback used by the bus to actually send a message over the relay WebSocket. */
 type SendFn = (targetSessionId: string, message: string) => boolean;
 
+/** Callback to emit a channel event (join/leave/message) via the relay socket. */
+type ChannelEmitFn = (event: string, data: Record<string, unknown>) => boolean;
+
 /** Callback to emit a session_status_query via the relay socket. */
 type StatusQueryFn = (requestId: string, targetSessionId: string) => boolean;
 
@@ -41,6 +44,17 @@ type StatusResponseListener = (data: { requestId: string; status: unknown | null
  * Returns true if the message was injected, false if it should be queued.
  */
 type MessageReadyCallback = (formattedMessage: string) => boolean;
+
+/** Callback for incoming channel messages. */
+type ChannelMessageCallback = (data: { channelId: string; fromSessionId: string; message: string }) => void;
+
+/** Shape of a completion result returned by waitForCompletion(). */
+export interface CompletionResult {
+    sessionId: string;
+    result: string;
+    tokenUsage?: Record<string, unknown>;
+    error?: string;
+}
 
 class SessionMessageBus {
     /** Queued incoming messages, keyed by fromSessionId. "any" collects all. */
@@ -67,6 +81,14 @@ class SessionMessageBus {
     private autoDeliveryQueue: SessionMessage[] = [];
     /** Callback for immediate injection. */
     private messageReadyFn: MessageReadyCallback | null = null;
+    /** Pending completion listeners keyed by sessionId. */
+    private completionListeners = new Map<string, (result: CompletionResult) => void>();
+    /** Callback for incoming channel messages. */
+    private channelMessageFn: ChannelMessageCallback | null = null;
+    /** Function to emit channel events via the relay socket. */
+    private channelEmitFn: ChannelEmitFn | null = null;
+    /** Channels this session has joined (for cleanup on disconnect). */
+    private joinedChannels = new Set<string>();
 
     /** Called by remote extension to wire up the send path. */
     setSendFn(fn: SendFn | null): void {
@@ -266,6 +288,95 @@ class SessionMessageBus {
         for (const [, q] of this.queues) all.push(...q);
         this.queues.clear();
         return all.sort((a, b) => a.ts.localeCompare(b.ts));
+    }
+
+    // ── Completion waiting (PizzaPi-7x0.7) ──────────────────────────────────
+
+    /**
+     * Wait for a session_completion event from a specific session.
+     * Returns a Promise that resolves with the completion result or
+     * rejects on timeout.
+     */
+    waitForCompletion(sessionId: string, timeoutMs: number): Promise<CompletionResult> {
+        return new Promise<CompletionResult>((resolve, reject) => {
+            const timer = setTimeout(() => {
+                this.completionListeners.delete(sessionId);
+                reject(new Error(`Timed out waiting for completion from session ${sessionId} after ${Math.round(timeoutMs / 1000)}s`));
+            }, timeoutMs);
+
+            this.completionListeners.set(sessionId, (result) => {
+                clearTimeout(timer);
+                this.completionListeners.delete(sessionId);
+                resolve(result);
+            });
+        });
+    }
+
+    /**
+     * Called by the remote extension when a session_completion event arrives.
+     * Resolves any pending waitForCompletion promise for that sessionId.
+     * Returns true if a listener was found and resolved.
+     */
+    resolveCompletion(result: CompletionResult): boolean {
+        const listener = this.completionListeners.get(result.sessionId);
+        if (listener) {
+            listener(result);
+            return true;
+        }
+        return false;
+    }
+
+    /** Cancel a pending completion listener (e.g. on teardown). */
+    cancelCompletionWait(sessionId: string): void {
+        this.completionListeners.delete(sessionId);
+    }
+
+    // ── Channel message support (PizzaPi-7x0.7) ─────────────────────────────
+
+    /** Register a callback for incoming channel messages. */
+    onChannelMessage(fn: ChannelMessageCallback | null): void {
+        this.channelMessageFn = fn;
+    }
+
+    /** Called by remote extension when a channel_message arrives from the relay. */
+    receiveChannelMessage(data: { channelId: string; fromSessionId: string; message: string }): void {
+        if (this.channelMessageFn) {
+            this.channelMessageFn(data);
+        }
+    }
+
+    // ── Channel emit methods (PizzaPi-7x0.7) ────────────────────────────────
+
+    /** Called by remote extension to wire up the channel emit path. */
+    setChannelEmitFn(fn: ChannelEmitFn | null): void {
+        this.channelEmitFn = fn;
+    }
+
+    /** Emit channel_join to the relay. Returns true if dispatched. */
+    emitChannelJoin(channelId: string): boolean {
+        if (!this.channelEmitFn) return false;
+        const sent = this.channelEmitFn("channel_join", { channelId });
+        if (sent) this.joinedChannels.add(channelId);
+        return sent;
+    }
+
+    /** Emit channel_leave to the relay. Returns true if dispatched. */
+    emitChannelLeave(channelId: string): boolean {
+        if (!this.channelEmitFn) return false;
+        const sent = this.channelEmitFn("channel_leave", { channelId });
+        if (sent) this.joinedChannels.delete(channelId);
+        return sent;
+    }
+
+    /** Emit channel_message to the relay. Returns true if dispatched. */
+    emitChannelMessage(channelId: string, message: string): boolean {
+        if (!this.channelEmitFn) return false;
+        return this.channelEmitFn("channel_message", { channelId, message });
+    }
+
+    /** Get the set of currently joined channels. */
+    getJoinedChannels(): ReadonlySet<string> {
+        return this.joinedChannels;
     }
 
     /** Get count of pending messages. */

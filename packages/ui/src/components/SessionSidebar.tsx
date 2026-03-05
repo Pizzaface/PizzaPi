@@ -14,6 +14,7 @@ import { io } from "socket.io-client";
 import type { HubServerToClientEvents, HubClientToServerEvents } from "@pizzapi/protocol";
 import { formatPathTail } from "@/lib/path";
 import { ProviderIcon } from "@/components/ProviderIcon";
+import { GroupStatusBadge } from "@/components/GroupStatusBadge";
 import { PanelLeftClose, PanelLeftOpen, Plus, X, HardDrive, FolderOpen, CheckSquare, Square, CheckCheck, Trash2, Pin, PinOff } from "lucide-react";
 
 interface HubSession {
@@ -1114,6 +1115,15 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                                             {s.userName ? "·" : ""} {formatPathTail(s.cwd, 2)}
                                                                         </span>
                                                                     )}
+                                                                </div>
+                                                            )}
+                                                            {/* Group status badge — only for sessions with children */}
+                                                            {s.childSessionIds && s.childSessionIds.length > 0 && (
+                                                                <div className="mt-0.5">
+                                                                    <GroupStatusBadge
+                                                                        childSessionIds={s.childSessionIds}
+                                                                        sessions={liveSessions}
+                                                                    />
                                                                 </div>
                                                             )}
                                                         </div>

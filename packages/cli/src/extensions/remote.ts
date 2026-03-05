@@ -1724,6 +1724,13 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 return tryInjectMessage(formattedMessage);
             });
 
+            // PizzaPi-7x0.7: Wire up channel emit function.
+            messageBus.setChannelEmitFn((event: string, data: Record<string, unknown>) => {
+                if (!relay || !sioSocket?.connected) return false;
+                sioSocket.emit(event as any, data as any);
+                return true;
+            });
+
             forwardEvent({ type: "session_active", state: buildSessionState() });
             void refreshAllUsage();
             startHeartbeat();
@@ -1781,6 +1788,20 @@ export const remoteExtension: ExtensionFactory = (pi) => {
 
         // PizzaPi-7x0.4: Incoming completion notification from a child session
         sock.on("session_completion", (data) => {
+            // PizzaPi-7x0.7: Try to resolve a pending waitForCompletion() listener first.
+            // This is used by spawn_and_wait and fan_out tools which register
+            // completion listeners for specific sessionIds.
+            const completionResult: import("./session-message-bus.js").CompletionResult = {
+                sessionId: data.sessionId,
+                result: data.result,
+                tokenUsage: data.tokenUsage,
+                error: data.error,
+            };
+            if (messageBus.resolveCompletion(completionResult)) {
+                // Completion was consumed by a waitForCompletion listener — done.
+                return;
+            }
+
             const completionMsg: import("./session-message-bus.js").SessionMessage = {
                 fromSessionId: data.sessionId,
                 message: data.error
@@ -1806,6 +1827,45 @@ export const remoteExtension: ExtensionFactory = (pi) => {
 
             // Queue for post-turn injection (both "queued" and "immediate" when busy)
             messageBus.queueCompletion(completionMsg);
+        });
+
+        // PizzaPi-7x0.7: Incoming channel message broadcast
+        sock.on("channel_message", (data) => {
+            // Don't deliver our own broadcasts back to ourselves
+            if (data.fromSessionId === relaySessionId) return;
+
+            messageBus.receiveChannelMessage({
+                channelId: data.channelId,
+                fromSessionId: data.fromSessionId,
+                message: data.message,
+            });
+
+            // Also inject as a regular message so the agent sees it
+            const deliveryMode = messageBus.getDeliveryMode();
+            const formatted = formatAgentMessage(
+                data.fromSessionId,
+                "message",
+                `[Channel: ${data.channelId}] ${data.message}`,
+            );
+
+            if (deliveryMode === "immediate" && !isAgentActive) {
+                if (tryInjectMessage(formatted)) return;
+            }
+
+            if (deliveryMode !== "blocked") {
+                messageBus.queueAutoDelivery({
+                    fromSessionId: data.fromSessionId,
+                    message: `[Channel: ${data.channelId}] ${data.message}`,
+                    ts: new Date().toISOString(),
+                });
+            } else {
+                // In blocked mode, queue as regular message for wait_for_message/check_messages
+                messageBus.receive({
+                    fromSessionId: data.fromSessionId,
+                    message: `[Channel: ${data.channelId}] ${data.message}`,
+                    ts: new Date().toISOString(),
+                });
+            }
         });
 
         sock.on("session_expired", (data) => {
@@ -1851,6 +1911,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         cancelPendingAskUserQuestion();
         messageBus.setSendFn(null);
         messageBus.onMessageReady(null);
+        messageBus.setChannelEmitFn(null);
         if (sioSocket) {
             if (relay && sioSocket.connected) {
                 sioSocket.emit("session_end", { sessionId: relay.sessionId, token: relay.token });

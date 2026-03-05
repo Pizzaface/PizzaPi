@@ -205,4 +205,209 @@ describe("SessionMessageBus", () => {
             expect(messageBus.hasQueuedAutoDelivery()).toBe(true);
         });
     });
+
+    // ── waitForCompletion (PizzaPi-7x0.7) ─────────────────────────────────
+
+    describe("waitForCompletion", () => {
+        test("resolves when resolveCompletion is called for matching sessionId", async () => {
+            const promise = messageBus.waitForCompletion("child-session-1", 5000);
+
+            // Simulate completion arriving
+            messageBus.resolveCompletion({
+                sessionId: "child-session-1",
+                result: "Task completed successfully",
+                tokenUsage: { input: 100, output: 50 },
+            });
+
+            const result = await promise;
+            expect(result.sessionId).toBe("child-session-1");
+            expect(result.result).toBe("Task completed successfully");
+            expect(result.tokenUsage).toEqual({ input: 100, output: 50 });
+            expect(result.error).toBeUndefined();
+        });
+
+        test("resolves with error field when completion has error", async () => {
+            const promise = messageBus.waitForCompletion("child-err", 5000);
+
+            messageBus.resolveCompletion({
+                sessionId: "child-err",
+                result: "Partial output",
+                error: "Process crashed",
+            });
+
+            const result = await promise;
+            expect(result.sessionId).toBe("child-err");
+            expect(result.result).toBe("Partial output");
+            expect(result.error).toBe("Process crashed");
+        });
+
+        test("times out with rejection when no completion arrives", async () => {
+            const promise = messageBus.waitForCompletion("slow-session", 50); // 50ms timeout
+
+            try {
+                await promise;
+                // Should not reach here
+                expect(true).toBe(false);
+            } catch (err) {
+                expect(err).toBeInstanceOf(Error);
+                expect((err as Error).message).toContain("Timed out");
+                expect((err as Error).message).toContain("slow-session");
+            }
+        });
+
+        test("does not resolve for wrong sessionId", async () => {
+            const promise = messageBus.waitForCompletion("target-session", 100);
+
+            // Resolve a different session — should not match
+            const resolved = messageBus.resolveCompletion({
+                sessionId: "wrong-session",
+                result: "Wrong result",
+            });
+            expect(resolved).toBe(false);
+
+            // The original promise should time out
+            try {
+                await promise;
+                expect(true).toBe(false);
+            } catch (err) {
+                expect((err as Error).message).toContain("Timed out");
+            }
+        });
+
+        test("resolveCompletion returns true when listener exists", () => {
+            // Register a listener
+            messageBus.waitForCompletion("my-session", 5000);
+
+            const resolved = messageBus.resolveCompletion({
+                sessionId: "my-session",
+                result: "done",
+            });
+            expect(resolved).toBe(true);
+        });
+
+        test("resolveCompletion returns false when no listener exists", () => {
+            const resolved = messageBus.resolveCompletion({
+                sessionId: "nonexistent",
+                result: "done",
+            });
+            expect(resolved).toBe(false);
+        });
+
+        test("cancelCompletionWait removes the listener", async () => {
+            const promise = messageBus.waitForCompletion("cancel-me", 100);
+
+            // Cancel it
+            messageBus.cancelCompletionWait("cancel-me");
+
+            // Resolving should now return false (no listener)
+            const resolved = messageBus.resolveCompletion({
+                sessionId: "cancel-me",
+                result: "too late",
+            });
+            expect(resolved).toBe(false);
+
+            // The promise should still time out since the listener was removed
+            try {
+                await promise;
+                expect(true).toBe(false);
+            } catch (err) {
+                expect((err as Error).message).toContain("Timed out");
+            }
+        });
+    });
+
+    // ── Channel message support (PizzaPi-7x0.7) ──────────────────────────
+
+    describe("channel messages", () => {
+        test("onChannelMessage callback receives channel messages", () => {
+            let received: { channelId: string; fromSessionId: string; message: string } | null = null;
+            messageBus.onChannelMessage((data) => {
+                received = data;
+            });
+
+            messageBus.receiveChannelMessage({
+                channelId: "test-channel",
+                fromSessionId: "sender-1",
+                message: "Hello channel",
+            });
+
+            expect(received).not.toBeNull();
+            expect(received!.channelId).toBe("test-channel");
+            expect(received!.fromSessionId).toBe("sender-1");
+            expect(received!.message).toBe("Hello channel");
+
+            // Cleanup
+            messageBus.onChannelMessage(null);
+        });
+
+        test("receiveChannelMessage is no-op when no callback is set", () => {
+            messageBus.onChannelMessage(null);
+
+            // Should not throw
+            messageBus.receiveChannelMessage({
+                channelId: "ch",
+                fromSessionId: "s1",
+                message: "msg",
+            });
+        });
+    });
+
+    // ── Channel emit methods (PizzaPi-7x0.7) ────────────────────────────
+
+    describe("channel emit", () => {
+        test("emitChannelJoin returns false when no emit function set", () => {
+            messageBus.setChannelEmitFn(null);
+            expect(messageBus.emitChannelJoin("ch1")).toBe(false);
+        });
+
+        test("emitChannelJoin sends correct event and tracks channel", () => {
+            const emitted: Array<{ event: string; data: Record<string, unknown> }> = [];
+            messageBus.setChannelEmitFn((event, data) => {
+                emitted.push({ event, data });
+                return true;
+            });
+
+            const result = messageBus.emitChannelJoin("my-channel");
+            expect(result).toBe(true);
+            expect(emitted).toHaveLength(1);
+            expect(emitted[0].event).toBe("channel_join");
+            expect(emitted[0].data).toEqual({ channelId: "my-channel" });
+            expect(messageBus.getJoinedChannels().has("my-channel")).toBe(true);
+
+            // Cleanup
+            messageBus.setChannelEmitFn(null);
+        });
+
+        test("emitChannelLeave removes channel from tracked set", () => {
+            messageBus.setChannelEmitFn((_e, _d) => true);
+            messageBus.emitChannelJoin("ch-leave");
+            expect(messageBus.getJoinedChannels().has("ch-leave")).toBe(true);
+
+            messageBus.emitChannelLeave("ch-leave");
+            expect(messageBus.getJoinedChannels().has("ch-leave")).toBe(false);
+
+            messageBus.setChannelEmitFn(null);
+        });
+
+        test("emitChannelMessage sends correct data", () => {
+            const emitted: Array<{ event: string; data: Record<string, unknown> }> = [];
+            messageBus.setChannelEmitFn((event, data) => {
+                emitted.push({ event, data });
+                return true;
+            });
+
+            const result = messageBus.emitChannelMessage("broadcast-ch", "Hello everyone!");
+            expect(result).toBe(true);
+            expect(emitted).toHaveLength(1);
+            expect(emitted[0].event).toBe("channel_message");
+            expect(emitted[0].data).toEqual({ channelId: "broadcast-ch", message: "Hello everyone!" });
+
+            messageBus.setChannelEmitFn(null);
+        });
+
+        test("emitChannelMessage returns false when no emit function set", () => {
+            messageBus.setChannelEmitFn(null);
+            expect(messageBus.emitChannelMessage("ch", "msg")).toBe(false);
+        });
+    });
 });
