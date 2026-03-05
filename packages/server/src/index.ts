@@ -1,4 +1,4 @@
-import { getTrustedOrigins } from "./auth.js";
+import { getTrustedOrigins, getHstsEnabled } from "./auth.js";
 import { handleFetch } from "./handler.js";
 import {
     getEphemeralSweepIntervalMs,
@@ -57,9 +57,12 @@ async function sendFetchResponse(res: ServerResponse, response: Response): Promi
         "x-content-type-options": "nosniff",
         "x-frame-options": "DENY",
         "x-xss-protection": "0",
-        "referrer-policy": "strict-origin-when-cross-origin",
-        "strict-transport-security": "max-age=31536000; includeSubDomains"
+        "referrer-policy": "strict-origin-when-cross-origin"
     };
+    if (getHstsEnabled()) {
+        headers["strict-transport-security"] = "max-age=31536000; includeSubDomains";
+    }
+
     response.headers.forEach((value, key) => {
         const existing = headers[key];
         if (existing !== undefined) {
@@ -109,14 +112,17 @@ const httpServer = createServer(async (req, res) => {
     } catch (e) {
         console.error("[http] Unhandled error:", e);
         if (!res.headersSent) {
-            res.writeHead(500, {
+            const headers: Record<string, string> = {
                 "content-type": "application/json",
                 "x-content-type-options": "nosniff",
                 "x-frame-options": "DENY",
                 "x-xss-protection": "0",
-                "referrer-policy": "strict-origin-when-cross-origin",
-                "strict-transport-security": "max-age=31536000; includeSubDomains"
-            });
+                "referrer-policy": "strict-origin-when-cross-origin"
+            };
+            if (getHstsEnabled()) {
+                headers["strict-transport-security"] = "max-age=31536000; includeSubDomains";
+            }
+            res.writeHead(500, headers);
         }
         res.end(JSON.stringify({ error: "Internal server error" }));
     }
