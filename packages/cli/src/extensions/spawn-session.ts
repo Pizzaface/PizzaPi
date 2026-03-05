@@ -100,6 +100,12 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
             body.model = { provider: params.model.provider, id: params.model.id };
         }
 
+        // Set this session as the parent so the child can send completion events back
+        const ownSessionId = messageBus.getOwnSessionId();
+        if (ownSessionId) {
+            body.parentSessionId = ownSessionId;
+        }
+
         if (params.noAutoReply) {
             body.env = { ...(body.env as Record<string, string> ?? {}), PIZZAPI_NO_AUTO_REPLY: "1" };
         }
@@ -234,6 +240,12 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
                     provider: params.model.provider,
                     id: params.model.id,
                 };
+            }
+
+            // Set this session as the parent so the child can send completion events back
+            const ownSessionId = messageBus.getOwnSessionId();
+            if (ownSessionId) {
+                body.parentSessionId = ownSessionId;
             }
 
             // PizzaPi-7x0.3: Pass noAutoReply as an env var for the spawned session.
