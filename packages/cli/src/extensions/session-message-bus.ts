@@ -89,6 +89,8 @@ class SessionMessageBus {
     private channelEmitFn: ChannelEmitFn | null = null;
     /** Channels this session has joined (for cleanup on disconnect). */
     private joinedChannels = new Set<string>();
+    /** Family channels this session has been auto-joined to. */
+    private familyChannelIds = new Set<string>();
 
     /** Called by remote extension to wire up the send path. */
     setSendFn(fn: SendFn | null): void {
@@ -377,6 +379,45 @@ class SessionMessageBus {
     /** Get the set of currently joined channels. */
     getJoinedChannels(): ReadonlySet<string> {
         return this.joinedChannels;
+    }
+
+    // ── Family channel support ─────────────────────────────────────────────
+
+    /** Register a channel as a family channel (auto-joined by the server). */
+    addFamilyChannel(channelId: string): void {
+        this.familyChannelIds.add(channelId);
+        this.joinedChannels.add(channelId);
+    }
+
+    /** Remove a family channel. */
+    removeFamilyChannel(channelId: string): void {
+        this.familyChannelIds.delete(channelId);
+        this.joinedChannels.delete(channelId);
+    }
+
+    /** Get all family channels this session belongs to. */
+    getFamilyChannels(): ReadonlySet<string> {
+        return this.familyChannelIds;
+    }
+
+    /** Check if a channel ID is a family channel. */
+    isFamilyChannel(channelId: string): boolean {
+        return this.familyChannelIds.has(channelId);
+    }
+
+    /**
+     * Emit a message to all family channels.
+     * Returns the number of channels the message was emitted to.
+     */
+    emitToFamily(message: string): number {
+        if (!this.channelEmitFn) return 0;
+        let count = 0;
+        for (const channelId of this.familyChannelIds) {
+            if (this.channelEmitFn("channel_message", { channelId, message })) {
+                count++;
+            }
+        }
+        return count;
     }
 
     /** Get count of pending messages. */

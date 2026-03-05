@@ -410,4 +410,110 @@ describe("SessionMessageBus", () => {
             expect(messageBus.emitChannelMessage("ch", "msg")).toBe(false);
         });
     });
+
+    // ── Family channel support ───────────────────────────────────────────
+
+    describe("family channels", () => {
+        beforeEach(() => {
+            // Clear any family channels from prior tests
+            for (const ch of messageBus.getFamilyChannels()) {
+                messageBus.removeFamilyChannel(ch);
+            }
+        });
+
+        test("addFamilyChannel registers a family channel", () => {
+            messageBus.addFamilyChannel("family:parent-123");
+            expect(messageBus.isFamilyChannel("family:parent-123")).toBe(true);
+            expect(messageBus.getFamilyChannels().has("family:parent-123")).toBe(true);
+        });
+
+        test("addFamilyChannel also adds to joinedChannels", () => {
+            messageBus.addFamilyChannel("family:parent-123");
+            expect(messageBus.getJoinedChannels().has("family:parent-123")).toBe(true);
+        });
+
+        test("removeFamilyChannel removes a family channel", () => {
+            messageBus.addFamilyChannel("family:parent-123");
+            messageBus.removeFamilyChannel("family:parent-123");
+            expect(messageBus.isFamilyChannel("family:parent-123")).toBe(false);
+            expect(messageBus.getFamilyChannels().size).toBe(0);
+        });
+
+        test("isFamilyChannel returns false for non-family channels", () => {
+            expect(messageBus.isFamilyChannel("some-channel")).toBe(false);
+        });
+
+        test("getFamilyChannels returns all registered family channels", () => {
+            messageBus.addFamilyChannel("family:parent-a");
+            messageBus.addFamilyChannel("family:parent-b");
+            const channels = messageBus.getFamilyChannels();
+            expect(channels.size).toBe(2);
+            expect(channels.has("family:parent-a")).toBe(true);
+            expect(channels.has("family:parent-b")).toBe(true);
+        });
+
+        test("emitToFamily returns 0 when no family channels exist", () => {
+            messageBus.setChannelEmitFn((_e, _d) => true);
+            expect(messageBus.emitToFamily("hello")).toBe(0);
+            messageBus.setChannelEmitFn(null);
+        });
+
+        test("emitToFamily returns 0 when no emit function is set", () => {
+            messageBus.addFamilyChannel("family:parent-123");
+            messageBus.setChannelEmitFn(null);
+            expect(messageBus.emitToFamily("hello")).toBe(0);
+        });
+
+        test("emitToFamily broadcasts to all family channels", () => {
+            const emitted: Array<{ event: string; data: Record<string, unknown> }> = [];
+            messageBus.setChannelEmitFn((event, data) => {
+                emitted.push({ event, data });
+                return true;
+            });
+
+            messageBus.addFamilyChannel("family:parent-a");
+            messageBus.addFamilyChannel("family:parent-b");
+
+            const count = messageBus.emitToFamily("status update");
+            expect(count).toBe(2);
+            expect(emitted).toHaveLength(2);
+
+            // Both should be channel_message events
+            expect(emitted[0].event).toBe("channel_message");
+            expect(emitted[1].event).toBe("channel_message");
+
+            // Check the payloads
+            const channelIds = emitted.map((e) => (e.data as any).channelId).sort();
+            expect(channelIds).toEqual(["family:parent-a", "family:parent-b"]);
+
+            for (const e of emitted) {
+                expect((e.data as any).message).toBe("status update");
+            }
+
+            messageBus.setChannelEmitFn(null);
+        });
+
+        test("emitToFamily counts only successful emissions", () => {
+            let callCount = 0;
+            messageBus.setChannelEmitFn((_event, _data) => {
+                callCount++;
+                // First call succeeds, second fails
+                return callCount <= 1;
+            });
+
+            messageBus.addFamilyChannel("family:ch-a");
+            messageBus.addFamilyChannel("family:ch-b");
+
+            const count = messageBus.emitToFamily("test");
+            expect(count).toBe(1);
+
+            messageBus.setChannelEmitFn(null);
+        });
+
+        test("addFamilyChannel is idempotent", () => {
+            messageBus.addFamilyChannel("family:parent-123");
+            messageBus.addFamilyChannel("family:parent-123");
+            expect(messageBus.getFamilyChannels().size).toBe(1);
+        });
+    });
 });

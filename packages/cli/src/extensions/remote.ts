@@ -1731,6 +1731,14 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 return true;
             });
 
+            // ── Innate family channel ────────────────────────────────────────
+            // If this session has a parent, the server auto-joins both to
+            // `family:{parentSessionId}`. Register it as a family channel so
+            // the `emit` tool knows where to broadcast.
+            if (parentSessionId) {
+                messageBus.addFamilyChannel(`family:${parentSessionId}`);
+            }
+
             forwardEvent({ type: "session_active", state: buildSessionState() });
             void refreshAllUsage();
             startHeartbeat();
@@ -1840,12 +1848,16 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 message: data.message,
             });
 
+            // Use "Family" prefix for family channels, "Channel" for others
+            const isFamily = messageBus.isFamilyChannel(data.channelId);
+            const prefix = isFamily ? "Family" : `Channel: ${data.channelId}`;
+
             // Also inject as a regular message so the agent sees it
             const deliveryMode = messageBus.getDeliveryMode();
             const formatted = formatAgentMessage(
                 data.fromSessionId,
                 "message",
-                `[Channel: ${data.channelId}] ${data.message}`,
+                `[${prefix}] ${data.message}`,
             );
 
             if (deliveryMode === "immediate" && !isAgentActive) {
@@ -1855,16 +1867,29 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             if (deliveryMode !== "blocked") {
                 messageBus.queueAutoDelivery({
                     fromSessionId: data.fromSessionId,
-                    message: `[Channel: ${data.channelId}] ${data.message}`,
+                    message: `[${prefix}] ${data.message}`,
                     ts: new Date().toISOString(),
                 });
             } else {
                 // In blocked mode, queue as regular message for wait_for_message/check_messages
                 messageBus.receive({
                     fromSessionId: data.fromSessionId,
-                    message: `[Channel: ${data.channelId}] ${data.message}`,
+                    message: `[${prefix}] ${data.message}`,
                     ts: new Date().toISOString(),
                 });
+            }
+        });
+
+        // ── Incoming channel membership notifications ──────────────────────
+        // When the server auto-joins this session to a family channel (because
+        // a child registered), track it as a family channel so `emit` works.
+        sock.on("channel_membership", (data) => {
+            const channelId = data.channelId;
+            if (!channelId) return;
+
+            // Auto-track family channels (server names them `family:{parentId}`)
+            if (channelId.startsWith("family:") && !messageBus.isFamilyChannel(channelId)) {
+                messageBus.addFamilyChannel(channelId);
             }
         });
 

@@ -322,136 +322,53 @@ export const sessionMessagingExtension: ExtensionFactory = (pi) => {
         renderResult: () => silent,
     });
 
-    // ── channel_join ─────────────────────────────────────────────────────────
+    // ── emit ────────────────────────────────────────────────────────────────
+    // Broadcasts a message to all sessions in this session's family tree.
+    // Family channels are automatically set up when sessions are spawned —
+    // no manual channel_join required.
     pi.registerTool({
-        name: "channel_join",
-        label: "Join Channel",
+        name: "emit",
+        label: "Emit to Family",
         description:
-            "Join the current session to a named channel. " +
-            "Once joined, the session will receive broadcast messages sent to this channel by other members. " +
-            "Use channels for multi-agent coordination where agents need to share status or results.",
+            "Broadcast a message to all sessions in your family tree (parent, " +
+            "children, and siblings). Family channels are automatically set up " +
+            "when sessions are spawned — no setup required. Use this to share " +
+            "status updates, progress, or coordinate work across related sessions.",
         parameters: {
             type: "object",
             properties: {
-                channelId: {
-                    type: "string",
-                    description: "The channel name/ID to join.",
-                },
-            },
-            required: ["channelId"],
-        } as any,
-
-        async execute(_toolCallId, rawParams) {
-            const params = (rawParams ?? {}) as { channelId: string };
-            const ok = (text: string, details?: Record<string, unknown>) => ({
-                content: [{ type: "text" as const, text }],
-                details: details as any,
-            });
-
-            const channelId = params.channelId?.trim();
-            if (!channelId) {
-                return ok("Error: channelId is required.");
-            }
-
-            const sent = messageBus.emitChannelJoin(channelId);
-            if (!sent) {
-                return ok("Error: Not connected to relay. Cannot join channel without a relay connection.");
-            }
-
-            return ok(`Joined channel '${channelId}'.`, { channelId });
-        },
-
-        renderCall: () => silent,
-        renderResult: () => silent,
-    });
-
-    // ── channel_leave ────────────────────────────────────────────────────────
-    pi.registerTool({
-        name: "channel_leave",
-        label: "Leave Channel",
-        description:
-            "Leave a named channel. The session will stop receiving broadcast messages from this channel.",
-        parameters: {
-            type: "object",
-            properties: {
-                channelId: {
-                    type: "string",
-                    description: "The channel name/ID to leave.",
-                },
-            },
-            required: ["channelId"],
-        } as any,
-
-        async execute(_toolCallId, rawParams) {
-            const params = (rawParams ?? {}) as { channelId: string };
-            const ok = (text: string, details?: Record<string, unknown>) => ({
-                content: [{ type: "text" as const, text }],
-                details: details as any,
-            });
-
-            const channelId = params.channelId?.trim();
-            if (!channelId) {
-                return ok("Error: channelId is required.");
-            }
-
-            const sent = messageBus.emitChannelLeave(channelId);
-            if (!sent) {
-                return ok("Error: Not connected to relay. Cannot leave channel without a relay connection.");
-            }
-
-            return ok(`Left channel '${channelId}'.`, { channelId });
-        },
-
-        renderCall: () => silent,
-        renderResult: () => silent,
-    });
-
-    // ── channel_broadcast ────────────────────────────────────────────────────
-    pi.registerTool({
-        name: "channel_broadcast",
-        label: "Channel Broadcast",
-        description:
-            "Send a message to all members of a named channel. " +
-            "You must have joined the channel first using channel_join. " +
-            "All other members of the channel will receive the message.",
-        parameters: {
-            type: "object",
-            properties: {
-                channelId: {
-                    type: "string",
-                    description: "The channel to broadcast to.",
-                },
                 message: {
                     type: "string",
-                    description: "The message text to broadcast.",
+                    description: "The message to broadcast to the family tree.",
                 },
             },
-            required: ["channelId", "message"],
+            required: ["message"],
         } as any,
 
         async execute(_toolCallId, rawParams) {
-            const params = (rawParams ?? {}) as { channelId: string; message: string };
+            const params = (rawParams ?? {}) as { message: string };
             const ok = (text: string, details?: Record<string, unknown>) => ({
                 content: [{ type: "text" as const, text }],
                 details: details as any,
             });
-
-            const channelId = params.channelId?.trim();
-            if (!channelId) {
-                return ok("Error: channelId is required.");
-            }
 
             const message = params.message?.trim();
             if (!message) {
                 return ok("Error: message is required.");
             }
 
-            const sent = messageBus.emitChannelMessage(channelId, message);
-            if (!sent) {
-                return ok("Error: Not connected to relay. Cannot broadcast without a relay connection.");
+            const count = messageBus.emitToFamily(message);
+            if (count === 0) {
+                return ok(
+                    "No family channels to emit to. This session has no parent or children connected.",
+                    { emitted: false, channelCount: 0 },
+                );
             }
 
-            return ok(`Message broadcast to channel '${channelId}'.`, { channelId });
+            return ok(
+                `Message emitted to ${count} family channel(s).`,
+                { emitted: true, channelCount: count },
+            );
         },
 
         renderCall: () => silent,

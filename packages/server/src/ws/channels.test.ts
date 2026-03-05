@@ -246,6 +246,112 @@ describe("ChannelManager", () => {
         });
     });
 
+    // ── family channel auto-join pattern ────────────────────────────────────
+    // Tests the pattern used by the relay namespace to auto-join parent and
+    // child sessions to a family channel on registration.
+
+    describe("family channel auto-join pattern", () => {
+        it("auto-joins parent and child to family:{parentId}", () => {
+            const parentId = "parent-session";
+            const childId = "child-session";
+            const familyChannelId = `family:${parentId}`;
+
+            // Simulate what relay.ts does on child registration:
+            cm.join(familyChannelId, childId);
+            cm.join(familyChannelId, parentId);
+
+            expect(cm.isMember(familyChannelId, childId)).toBe(true);
+            expect(cm.isMember(familyChannelId, parentId)).toBe(true);
+            expect(cm.getMembers(familyChannelId).sort()).toEqual([childId, parentId]);
+        });
+
+        it("second child joins existing family channel", () => {
+            const parentId = "parent-session";
+            const child1Id = "child-1";
+            const child2Id = "child-2";
+            const familyChannelId = `family:${parentId}`;
+
+            // First child registers
+            cm.join(familyChannelId, child1Id);
+            cm.join(familyChannelId, parentId);
+
+            // Second child registers
+            cm.join(familyChannelId, child2Id);
+            cm.join(familyChannelId, parentId); // idempotent
+
+            const members = cm.getMembers(familyChannelId).sort();
+            expect(members).toEqual([child1Id, child2Id, parentId]);
+        });
+
+        it("parent can broadcast to children via getOtherMembers", () => {
+            const parentId = "supervisor";
+            const familyChannelId = `family:${parentId}`;
+
+            cm.join(familyChannelId, "worker-a");
+            cm.join(familyChannelId, "worker-b");
+            cm.join(familyChannelId, parentId);
+
+            const targets = cm.getOtherMembers(familyChannelId, parentId);
+            expect(targets.sort()).toEqual(["worker-a", "worker-b"]);
+        });
+
+        it("child disconnect cleans up family channel membership", () => {
+            const parentId = "parent";
+            const familyChannelId = `family:${parentId}`;
+
+            cm.join(familyChannelId, "child-1");
+            cm.join(familyChannelId, "child-2");
+            cm.join(familyChannelId, parentId);
+
+            // child-1 disconnects
+            const affected = cm.removeFromAll("child-1");
+
+            expect(affected.has(familyChannelId)).toBe(true);
+            expect(affected.get(familyChannelId)!.sort()).toEqual(["child-2", "parent"]);
+            expect(cm.isMember(familyChannelId, "child-1")).toBe(false);
+        });
+
+        it("mid-tree agent belongs to two family channels", () => {
+            // Supervisor → Coordinator → Workers
+            const supervisorId = "supervisor";
+            const coordinatorId = "coordinator";
+            const workerId = "worker-x";
+
+            // Coordinator joins supervisor's family channel
+            const supervisorFamily = `family:${supervisorId}`;
+            cm.join(supervisorFamily, coordinatorId);
+            cm.join(supervisorFamily, supervisorId);
+
+            // Worker joins coordinator's family channel
+            const coordinatorFamily = `family:${coordinatorId}`;
+            cm.join(coordinatorFamily, workerId);
+            cm.join(coordinatorFamily, coordinatorId);
+
+            // Coordinator is in both family channels
+            const coordChannels = cm.getChannelsForSession(coordinatorId).sort();
+            expect(coordChannels).toEqual([coordinatorFamily, supervisorFamily]);
+
+            // Emit from coordinator reaches both supervisor and worker
+            const supervisorReceivers = cm.getOtherMembers(supervisorFamily, coordinatorId);
+            const workerReceivers = cm.getOtherMembers(coordinatorFamily, coordinatorId);
+            expect(supervisorReceivers).toEqual([supervisorId]);
+            expect(workerReceivers).toEqual([workerId]);
+        });
+
+        it("family channel is cleaned up when all members disconnect", () => {
+            const familyChannelId = "family:parent-123";
+
+            cm.join(familyChannelId, "parent-123");
+            cm.join(familyChannelId, "child-1");
+
+            cm.removeFromAll("child-1");
+            cm.removeFromAll("parent-123");
+
+            expect(cm.channelCount).toBe(0);
+            expect(cm.getMembers(familyChannelId)).toEqual([]);
+        });
+    });
+
     // ── complex scenarios ────────────────────────────────────────────────────
 
     describe("complex scenarios", () => {

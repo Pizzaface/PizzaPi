@@ -2,10 +2,14 @@ import { describe, test, expect, beforeEach } from "bun:test";
 import { messageBus } from "./session-message-bus.js";
 
 /**
- * Tests for channel tools (channel_join, channel_leave, channel_broadcast).
+ * Tests for session messaging tools.
  *
  * Since the actual tools depend on the pi extension framework, we test the
- * underlying message bus channel emit methods that the tools call.
+ * underlying message bus methods that the tools call.
+ *
+ * The `emit` tool uses `messageBus.emitToFamily()`.
+ * The internal channel primitives (join/leave/message) are kept for
+ * server-side auto-join but are no longer agent-facing tools.
  */
 
 describe("channel_join tool mechanics", () => {
@@ -192,5 +196,87 @@ describe("incoming channel messages", () => {
         expect(received[1].channelId).toBe("ch-b");
 
         messageBus.onChannelMessage(null);
+    });
+});
+
+// ── emit tool mechanics (innate family channels) ────────────────────────────
+
+describe("emit tool mechanics", () => {
+    beforeEach(() => {
+        messageBus.setChannelEmitFn(null);
+        // Clear any family channels from prior tests
+        for (const ch of messageBus.getFamilyChannels()) {
+            messageBus.removeFamilyChannel(ch);
+        }
+    });
+
+    test("emitToFamily sends to all family channels", () => {
+        const events: Array<{ event: string; data: Record<string, unknown> }> = [];
+        messageBus.setChannelEmitFn((event, data) => {
+            events.push({ event, data });
+            return true;
+        });
+
+        // Simulate being a child of parent-1 and a parent of own children
+        messageBus.addFamilyChannel("family:parent-1");
+        messageBus.addFamilyChannel("family:my-session");
+
+        const count = messageBus.emitToFamily("50% complete");
+        expect(count).toBe(2);
+        expect(events).toHaveLength(2);
+
+        // Both should be channel_message events to family channels
+        const channels = events.map((e) => (e.data as any).channelId).sort();
+        expect(channels).toEqual(["family:my-session", "family:parent-1"]);
+        for (const e of events) {
+            expect(e.event).toBe("channel_message");
+            expect((e.data as any).message).toBe("50% complete");
+        }
+    });
+
+    test("emitToFamily returns 0 when session has no family", () => {
+        messageBus.setChannelEmitFn(() => true);
+        // No family channels registered
+        expect(messageBus.emitToFamily("lonely message")).toBe(0);
+    });
+
+    test("child session auto-registers parent's family channel", () => {
+        // Simulate what remote.ts does for a child session
+        const parentSessionId = "parent-abc";
+        messageBus.addFamilyChannel(`family:${parentSessionId}`);
+
+        expect(messageBus.isFamilyChannel(`family:${parentSessionId}`)).toBe(true);
+        expect(messageBus.getFamilyChannels().size).toBe(1);
+    });
+
+    test("parent session auto-discovers family channel via membership event", () => {
+        // Simulate what remote.ts does when a channel_membership event
+        // arrives for a family: channel
+        const channelId = "family:my-session-id";
+        // Before: not tracked
+        expect(messageBus.isFamilyChannel(channelId)).toBe(false);
+
+        // channel_membership handler adds it
+        if (channelId.startsWith("family:") && !messageBus.isFamilyChannel(channelId)) {
+            messageBus.addFamilyChannel(channelId);
+        }
+
+        expect(messageBus.isFamilyChannel(channelId)).toBe(true);
+    });
+
+    test("emit works for mid-tree agent (both parent and child)", () => {
+        const events: string[] = [];
+        messageBus.setChannelEmitFn((_event, data) => {
+            events.push((data as any).channelId);
+            return true;
+        });
+
+        // Coordinator: child of supervisor, parent of workers
+        messageBus.addFamilyChannel("family:supervisor-id"); // joined as child
+        messageBus.addFamilyChannel("family:coordinator-id"); // joined as parent
+
+        const count = messageBus.emitToFamily("progress update");
+        expect(count).toBe(2);
+        expect(events.sort()).toEqual(["family:coordinator-id", "family:supervisor-id"]);
     });
 });

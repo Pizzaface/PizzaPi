@@ -262,6 +262,35 @@ export function registerRelayNamespace(io: SocketIOServer): void {
                 isEphemeral,
                 collabMode,
             });
+
+            // ── Auto-join family channel for parent/child sessions ───────────
+            // When a child registers with a parentSessionId, both parent and
+            // child are automatically joined to `family:{parentSessionId}`.
+            // This enables zero-setup inter-session communication via `emit`.
+            const parentSessionId = data.parentSessionId ?? null;
+            if (parentSessionId) {
+                const familyChannelId = `family:${parentSessionId}`;
+
+                // Join the child to the family channel
+                channelManager.join(familyChannelId, sessionId);
+
+                // Join the parent too (idempotent — no-op if already a member)
+                channelManager.join(familyChannelId, parentSessionId);
+
+                // Notify all members of the updated membership
+                const members = channelManager.getMembers(familyChannelId);
+                for (const memberId of members) {
+                    const memberSocket = getLocalTuiSocket(memberId);
+                    if (memberSocket) {
+                        memberSocket.emit("channel_membership", {
+                            channelId: familyChannelId,
+                            members,
+                            event: "joined",
+                            sessionId,
+                        });
+                    }
+                }
+            }
         });
 
         // ── event — main event pipeline ──────────────────────────────────────
