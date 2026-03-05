@@ -1,4 +1,5 @@
 import type { ExtensionFactory } from "@mariozechner/pi-coding-agent";
+import { randomUUID } from "crypto";
 import { messageBus, type SessionMessage } from "./session-message-bus.js";
 
 /** Minimal Component that renders nothing — keeps the tool call invisible in the TUI. */
@@ -226,6 +227,148 @@ export const sessionMessagingExtension: ExtensionFactory = (pi) => {
                 content: [{ type: "text" as const, text: `This session's ID: ${id}` }],
                 details: { sessionId: id } as any,
             };
+        },
+
+        renderCall: () => silent,
+        renderResult: () => silent,
+    });
+
+    // ── session_status ────────────────────────────────────────────────────────
+    pi.registerTool({
+        name: "session_status",
+        label: "Session Status",
+        description:
+            "Query the current status of another agent session. Returns session " +
+            "state including active/idle/completed/error status, model, session name, " +
+            "parent/child relationships, and last activity time.",
+        parameters: {
+            type: "object",
+            properties: {
+                sessionId: {
+                    type: "string",
+                    description: "The session ID to query the status of.",
+                },
+            },
+            required: ["sessionId"],
+        } as any,
+
+        async execute(_toolCallId, rawParams) {
+            const params = (rawParams ?? {}) as { sessionId: string };
+            const ok = (text: string, details?: Record<string, unknown>) => ({
+                content: [{ type: "text" as const, text }],
+                details: details as any,
+            });
+
+            if (!params.sessionId?.trim()) {
+                return ok("Error: sessionId is required.");
+            }
+
+            const targetSessionId = params.sessionId.trim();
+            const requestId = randomUUID();
+
+            // Emit query via message bus
+            const sent = messageBus.sendStatusQuery(requestId, targetSessionId);
+            if (!sent) {
+                return ok("Error: Not connected to relay. Cannot query session status.", {
+                    sessionId: targetSessionId,
+                    status: "unknown",
+                    error: "not_connected",
+                });
+            }
+
+            // Await response with 5s timeout
+            const result = await new Promise<{ requestId: string; status: unknown | null } | null>(
+                (resolve) => {
+                    const timer = setTimeout(() => {
+                        messageBus.removeStatusResponseListener(requestId);
+                        resolve(null);
+                    }, 5000);
+
+                    messageBus.onStatusResponse(requestId, (data) => {
+                        clearTimeout(timer);
+                        resolve(data);
+                    });
+                },
+            );
+
+            if (!result || result.status === null) {
+                return ok(
+                    `Session ${targetSessionId} not found or query timed out.`,
+                    {
+                        sessionId: targetSessionId,
+                        status: "unknown",
+                        error: result === null ? "timeout" : "not_found",
+                    },
+                );
+            }
+
+            const status = result.status as Record<string, unknown>;
+            const lines = [
+                `Session: ${status.sessionId}`,
+                `Status: ${status.status}`,
+                status.sessionName ? `Name: ${status.sessionName}` : null,
+                status.model ? `Model: ${status.model}` : null,
+                status.parentSessionId ? `Parent: ${status.parentSessionId}` : null,
+                Array.isArray(status.childSessionIds) && status.childSessionIds.length > 0
+                    ? `Children: ${(status.childSessionIds as string[]).join(", ")}`
+                    : null,
+                status.lastActivity ? `Last Activity: ${status.lastActivity}` : null,
+            ].filter(Boolean);
+
+            return ok(lines.join("\n"), status);
+        },
+
+        renderCall: () => silent,
+        renderResult: () => silent,
+    });
+
+    // ── set_delivery_mode ─────────────────────────────────────────────────────
+    pi.registerTool({
+        name: "set_delivery_mode",
+        label: "Set Delivery Mode",
+        description:
+            "Configure how incoming inter-agent messages are delivered to this session. " +
+            "Modes: 'immediate' — inject messages as soon as they arrive (interrupts current work), " +
+            "'queued' — queue messages and deliver them after the current turn ends, " +
+            "'blocked' — only deliver messages when explicitly requested via wait_for_message/check_messages.",
+        parameters: {
+            type: "object",
+            properties: {
+                mode: {
+                    type: "string",
+                    enum: ["immediate", "queued", "blocked"],
+                    description: "The delivery mode to set.",
+                },
+            },
+            required: ["mode"],
+        } as any,
+
+        async execute(_toolCallId, rawParams) {
+            const params = (rawParams ?? {}) as { mode: string };
+            const ok = (text: string, details?: Record<string, unknown>) => ({
+                content: [{ type: "text" as const, text }],
+                details: details as any,
+            });
+
+            const mode = params.mode?.trim();
+            if (!mode || !["immediate", "queued", "blocked"].includes(mode)) {
+                return ok("Error: mode must be one of 'immediate', 'queued', or 'blocked'.");
+            }
+
+            // TODO: The underlying delivery mode infrastructure is being built in
+            // session-message-bus.ts (PizzaPi-7x0.4). Once that's complete, call:
+            //   messageBus.setDeliveryMode(mode as "immediate" | "queued" | "blocked");
+            // For now, we call it directly since PizzaPi-7x0.4 may have landed.
+            if (typeof (messageBus as any).setDeliveryMode === "function") {
+                (messageBus as any).setDeliveryMode(mode);
+                return ok(`Delivery mode set to '${mode}'.`, { mode });
+            }
+
+            return ok(
+                `Delivery mode '${mode}' acknowledged but infrastructure not yet available. ` +
+                `This will take effect once the message delivery system is fully wired up.`,
+                { mode, pending: true },
+            );
         },
 
         renderCall: () => silent,

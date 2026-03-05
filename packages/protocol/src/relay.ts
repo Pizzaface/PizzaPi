@@ -5,6 +5,20 @@
 import type { Attachment } from "./shared.js";
 
 // ---------------------------------------------------------------------------
+// Session status query/response payload
+// ---------------------------------------------------------------------------
+
+export interface SessionStatusPayload {
+  sessionId: string;
+  status: "active" | "idle" | "completed" | "error" | "unknown";
+  model?: string;
+  sessionName?: string;
+  parentSessionId?: string | null;
+  childSessionIds?: string[];
+  lastActivity?: string;
+}
+
+// ---------------------------------------------------------------------------
 // Client → Server (TUI sends to server)
 // ---------------------------------------------------------------------------
 
@@ -57,6 +71,29 @@ export interface RelayClientToServerEvents {
     result: string;
     tokenUsage?: Record<string, unknown>;
     error?: string;
+  }) => void;
+
+  /** TUI queries the status of another session */
+  session_status_query: (data: {
+    requestId: string;
+    targetSessionId: string;
+  }) => void;
+
+  /** TUI joins a named channel */
+  channel_join: (data: {
+    channelId: string;
+  }) => void;
+
+  /** TUI leaves a named channel */
+  channel_leave: (data: {
+    channelId: string;
+  }) => void;
+
+  /** TUI sends a message to all members of a channel */
+  channel_message: (data: {
+    channelId: string;
+    message: string;
+    metadata?: Record<string, unknown>;
   }) => void;
 }
 
@@ -129,6 +166,28 @@ export interface RelayServerToClientEvents {
 
   /** Notifies that a session has expired */
   session_expired: (data: {
+    sessionId: string;
+  }) => void;
+
+  /** Response to a session status query */
+  session_status_response: (data: {
+    requestId: string;
+    status: SessionStatusPayload | null;
+  }) => void;
+
+  /** Delivers a channel message broadcast */
+  channel_message: (data: {
+    channelId: string;
+    fromSessionId: string;
+    message: string;
+    metadata?: Record<string, unknown>;
+  }) => void;
+
+  /** Channel membership update (join/leave notification) */
+  channel_membership: (data: {
+    channelId: string;
+    members: string[];
+    event: "joined" | "left";
     sessionId: string;
   }) => void;
 

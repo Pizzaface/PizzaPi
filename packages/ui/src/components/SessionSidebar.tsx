@@ -33,6 +33,8 @@ interface HubSession {
     runnerId?: string | null;
     runnerName?: string | null;
     isPinned?: boolean;
+    parentSessionId?: string | null;
+    childSessionIds?: string[];
 }
 
 interface PinnedSession {
@@ -547,6 +549,8 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                         model: s.model ?? null,
                         runnerId: s.runnerId ?? null,
                         runnerName: s.runnerName ?? null,
+                        parentSessionId: s.parentSessionId ?? null,
+                        childSessionIds: Array.isArray(s.childSessionIds) ? s.childSessionIds : [],
                     },
                 ];
             });
@@ -557,7 +561,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
         });
 
         socket.on("session_status", (data) => {
-            const { sessionId, isActive, lastHeartbeatAt, model, sessionName, runnerId, runnerName } = data;
+            const { sessionId, isActive, lastHeartbeatAt, model, sessionName, runnerId, runnerName, parentSessionId, childSessionIds } = data;
             setLiveSessions((prev) =>
                 prev.map((s) =>
                     s.sessionId === sessionId
@@ -569,6 +573,8 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                               sessionName: sessionName === undefined ? (s.sessionName ?? null) : sessionName,
                               runnerId: runnerId === undefined ? (s.runnerId ?? null) : runnerId,
                               runnerName: runnerName === undefined ? (s.runnerName ?? null) : runnerName,
+                              parentSessionId: parentSessionId === undefined ? (s.parentSessionId ?? null) : parentSessionId,
+                              childSessionIds: childSessionIds === undefined ? (s.childSessionIds ?? []) : childSessionIds,
                           }
                         : s,
                 ),

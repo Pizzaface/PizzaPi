@@ -9,7 +9,8 @@ import { loadConfig, defaultAgentDir } from "../config.js";
 import { getMcpBridge } from "./mcp-bridge.js";
 import { getCurrentTodoList, setTodoUpdateCallback, type TodoItem } from "./update-todo.js";
 import type { RemoteExecRequest, RemoteExecResponse } from "./remote-commands.js";
-import { messageBus } from "./session-message-bus.js";
+import { messageBus, formatAgentMessage } from "./session-message-bus.js";
+import { RateLimiter } from "./rate-limiter.js";
 import { io, type Socket } from "socket.io-client";
 import type { RelayClientToServerEvents, RelayServerToClientEvents } from "@pizzapi/protocol";
 
@@ -109,6 +110,15 @@ export const remoteExtension: ExtensionFactory = (pi) => {
     let relaySessionId: string = (process.env.PIZZAPI_SESSION_ID && process.env.PIZZAPI_SESSION_ID.trim().length > 0)
         ? process.env.PIZZAPI_SESSION_ID.trim()
         : randomUUID();
+
+    // ── Inter-agent completion hooks (PizzaPi-7x0.3) ─────────────────────────
+    const parentSessionId: string | null = process.env.PIZZAPI_PARENT_SESSION_ID?.trim() || null;
+    const noAutoReply: boolean = process.env.PIZZAPI_NO_AUTO_REPLY === "1";
+
+    // ── Rate limiters (PizzaPi-7x0.3 + 7x0.4) ──────────────────────────────
+    // Max 5 events per 60 seconds for both completion emissions and message injections.
+    const completionRateLimiter = new RateLimiter(5, 60_000);
+    const injectionRateLimiter = new RateLimiter(5, 60_000);
 
     // ── Direct relay status text ──────────────────────────────────────────────
     // Maintained alongside ctx.ui.setStatus() so the custom footer can read it
@@ -597,6 +607,81 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         }
 
         return parts.length > 0 ? parts : text;
+    }
+
+    // ── Completion hook helpers (PizzaPi-7x0.3) ─────────────────────────────
+
+    function extractLastAssistantMessage(): string | null {
+        if (!latestCtx) return null;
+        const { messages } = buildSessionContext(
+            latestCtx.sessionManager.getEntries(),
+            latestCtx.sessionManager.getLeafId(),
+        );
+        const lastAssistant = [...messages].reverse().find((m: any) => m?.role === "assistant");
+        if (!lastAssistant) return null;
+        const content = (lastAssistant as any)?.content;
+        if (typeof content === "string") return content;
+        if (Array.isArray(content)) {
+            return content
+                .filter((c: any) => c && typeof c === "object" && c.type === "text" && typeof c.text === "string")
+                .map((c: any) => c.text)
+                .join("");
+        }
+        return null;
+    }
+
+    /**
+     * Emit a session_completion event to the relay so the parent session is notified.
+     * Rate-limited to max 5 per minute (AD-1 loop prevention).
+     */
+    function emitSessionCompletion(error?: string): void {
+        if (!parentSessionId || noAutoReply) return;
+        if (!relay || !sioSocket?.connected) return;
+        if (!completionRateLimiter.tryRecord()) return;
+
+        const result = error ?? extractLastAssistantMessage() ?? "(session completed with no output)";
+        const tokenUsage = buildTokenUsage();
+
+        sioSocket.emit("session_completion", {
+            sessionId: relay.sessionId,
+            token: relay.token,
+            result,
+            tokenUsage,
+            ...(error ? { error } : {}),
+        });
+    }
+
+    // ── Event-driven injection helpers (PizzaPi-7x0.4) ───────────────────────
+
+    /**
+     * Try to inject a formatted message into the agent via sendUserMessage().
+     * Rate-limited to max 5 injections per minute.
+     * Returns true if the message was injected.
+     */
+    function tryInjectMessage(formattedMessage: string): boolean {
+        if (injectionRateLimiter.isLimited()) return false;
+        if (isAgentActive) return false;
+
+        pi.sendUserMessage(formattedMessage);
+        injectionRateLimiter.record();
+        return true;
+    }
+
+    /**
+     * Drain all queued auto-delivery messages and inject them as the next user turn.
+     * Called after agent_end to deliver queued completion/message notifications.
+     */
+    function drainAndInjectQueuedMessages(): void {
+        if (!messageBus.hasQueuedAutoDelivery()) return;
+        if (injectionRateLimiter.isLimited()) return;
+
+        const messages = messageBus.drainAutoDeliveryQueue();
+        if (messages.length === 0) return;
+
+        // Combine all messages into a single user turn to avoid flooding
+        const combined = messages.join("\n\n---\n\n");
+        pi.sendUserMessage(combined);
+        injectionRateLimiter.record();
     }
 
     function buildTokenUsage() {
@@ -1626,6 +1711,18 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 });
                 return true;
             });
+            // PizzaPi-7x0.4: Set default delivery mode.
+            // Worker sessions (spawned with a parent) default to "queued" to avoid
+            // interrupting the agent mid-turn. Root sessions stay "blocked" for
+            // backward compatibility with explicit wait_for_message usage.
+            if (parentSessionId) {
+                messageBus.setDeliveryMode("queued");
+            }
+
+            // PizzaPi-7x0.4: Wire up the immediate injection callback.
+            messageBus.onMessageReady((formattedMessage: string) => {
+                return tryInjectMessage(formattedMessage);
+            });
 
             forwardEvent({ type: "session_active", state: buildSessionState() });
             void refreshAllUsage();
@@ -1682,6 +1779,35 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             });
         });
 
+        // PizzaPi-7x0.4: Incoming completion notification from a child session
+        sock.on("session_completion", (data) => {
+            const completionMsg: import("./session-message-bus.js").SessionMessage = {
+                fromSessionId: data.sessionId,
+                message: data.error
+                    ? `[ERROR] ${data.error}\n\n${data.result}`
+                    : data.result,
+                ts: new Date().toISOString(),
+            };
+
+            const deliveryMode = messageBus.getDeliveryMode();
+
+            if (deliveryMode === "blocked") {
+                // Backward-compatible: treat as a regular message for wait_for_message/check_messages
+                messageBus.receive(completionMsg);
+                return;
+            }
+
+            const formatted = formatAgentMessage(data.sessionId, "completion", completionMsg.message);
+
+            if (deliveryMode === "immediate" && !isAgentActive) {
+                // Try immediate injection
+                if (tryInjectMessage(formatted)) return;
+            }
+
+            // Queue for post-turn injection (both "queued" and "immediate" when busy)
+            messageBus.queueCompletion(completionMsg);
+        });
+
         sock.on("session_expired", (data) => {
             // Session was expired by the server — stop retrying.
             shuttingDown = true;
@@ -1724,6 +1850,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         stopHeartbeat();
         cancelPendingAskUserQuestion();
         messageBus.setSendFn(null);
+        messageBus.onMessageReady(null);
         if (sioSocket) {
             if (relay && sioSocket.connected) {
                 sioSocket.emit("session_end", { sessionId: relay.sessionId, token: relay.token });
@@ -1782,6 +1909,17 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         stopSessionNameSync();
         _cliErrorForwarder = null;
         disconnect();
+    });
+
+    // PizzaPi-7x0.3: Emit completion with error on unhandled errors.
+    // Listen for message_end with stopReason=error to detect crashes that
+    // might not trigger a clean agent_end.
+    process.on("uncaughtException", (err) => {
+        emitSessionCompletion(err?.message ?? "Uncaught exception");
+    });
+    process.on("unhandledRejection", (reason) => {
+        const msg = reason instanceof Error ? reason.message : String(reason);
+        emitSessionCompletion(msg || "Unhandled rejection");
     });
 
     // ── AskUserQuestion tool ──────────────────────────────────────────────────
@@ -2000,6 +2138,13 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         forwardEvent(event);
         // Push a heartbeat immediately so viewers see "idle" after the turn.
         forwardEvent(buildHeartbeat());
+
+        // PizzaPi-7x0.3: Emit completion hook to parent session
+        emitSessionCompletion();
+
+        // PizzaPi-7x0.4: Drain queued inter-agent messages and inject as next turn.
+        // Use setTimeout(0) so the agent_end event processing fully completes first.
+        setTimeout(() => drainAndInjectQueuedMessages(), 0);
     });
     pi.on("turn_start", (event) => forwardEvent(event));
     pi.on("turn_end", (event) => forwardEvent(event));

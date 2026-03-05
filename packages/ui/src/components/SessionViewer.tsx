@@ -63,6 +63,9 @@ import { dismissNotificationsForSession } from "@/lib/push";
 import { AlertTriangleIcon, ArrowDownIcon, BookOpen, CheckCircle2, ChevronsUpDown, Circle, CircleDashed, Loader2, MessageSquare, OctagonX, PaperclipIcon, Plus, Zap, Clock, X, Trash2, TerminalIcon, DownloadIcon, XCircle, FolderTree } from "lucide-react";
 import { AtMentionPopover } from "@/components/AtMentionPopover";
 import type { Entry as AtMentionEntry } from "@/hooks/useAtMentionFiles";
+import { SessionTopology } from "@/components/SessionTopology";
+import { AgentMessagesPanel, type AgentMessage } from "@/components/AgentMessagesPanel";
+import type { HubSession } from "@/components/SessionSidebar";
 
 export type { RelayMessage } from "@/components/session-viewer/types";
 
@@ -145,6 +148,12 @@ export interface SessionViewerProps {
   runnerId?: string;
   /** Absolute working directory of the current session (used as base for @-mention file paths) */
   sessionCwd?: string;
+  /** All live sessions (used for session topology tree) */
+  liveSessions?: HubSession[];
+  /** Navigate to another session by ID (used by topology tree) */
+  onNavigateSession?: (sessionId: string) => void;
+  /** Inter-agent messages for this session */
+  agentMessages?: AgentMessage[];
 }
 
 function formatTokenCount(n: number): string {
@@ -432,7 +441,7 @@ function SessionSkeleton() {
   );
 }
 
-export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, isCompacting, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], runnerId, sessionCwd }: SessionViewerProps) {
+export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, isCompacting, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], runnerId, sessionCwd, liveSessions, onNavigateSession, agentMessages }: SessionViewerProps) {
   const [input, setInput] = React.useState("");
   const [composerError, setComposerError] = React.useState<string | null>(null);
   const [showClearDialog, setShowClearDialog] = React.useState(false);
@@ -1127,6 +1136,15 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
         </div>
       )}
 
+      {/* Session topology tree — only visible when the session has parent/children */}
+      {sessionId && liveSessions && onNavigateSession && (
+        <SessionTopology
+          currentSessionId={sessionId}
+          sessions={liveSessions}
+          onNavigate={onNavigateSession}
+        />
+      )}
+
       <div className="relative flex-1 min-h-0">
         {!sessionId ? (
           <ConversationEmptyState
@@ -1190,6 +1208,14 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
           </>
         )}
       </div>
+
+      {/* Inter-agent messages panel */}
+      {sessionId && agentMessages && agentMessages.length > 0 && (
+        <AgentMessagesPanel
+          sessionId={sessionId}
+          messages={agentMessages}
+        />
+      )}
 
       <div className="border-t border-border px-3 py-2 pp-safe-bottom">
         {/* Message queue display */}

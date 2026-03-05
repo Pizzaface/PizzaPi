@@ -11,6 +11,7 @@ import type {
     RelayServerToClientEvents,
     RelayInterServerEvents,
     RelaySocketData,
+    SessionStatusPayload,
 } from "@pizzapi/protocol";
 import { apiKeyAuthMiddleware } from "./auth.js";
 import {
@@ -35,6 +36,8 @@ import {
     notifyAgentNeedsInput,
     notifyAgentError,
 } from "../../push.js";
+import { ChannelManager } from "../channels.js";
+import { getChildren } from "../sio-state.js";
 
 // ── Thinking-block duration tracking ─────────────────────────────────────────
 // Keyed by sessionId → contentIndex → value.
@@ -210,6 +213,12 @@ async function checkPushNotifications(
 }
 
 // ── Namespace registration ───────────────────────────────────────────────────
+
+// ── Channel manager (in-memory, per-server instance) ─────────────────────────
+const channelManager = new ChannelManager();
+
+/** Exported for testing. */
+export { channelManager };
 
 export function registerRelayNamespace(io: SocketIOServer): void {
     const relay: Namespace<
@@ -414,11 +423,180 @@ export function registerRelayNamespace(io: SocketIOServer): void {
             }
         });
 
+        // ── session_status_query — look up session data from Redis ─────────
+        socket.on("session_status_query", async (data) => {
+            const sessionId = socket.data.sessionId;
+            if (!sessionId) {
+                socket.emit("error", { message: "Not registered" });
+                return;
+            }
+
+            const { requestId, targetSessionId } = data;
+            if (!requestId || !targetSessionId) {
+                socket.emit("session_status_response", { requestId: requestId ?? "", status: null });
+                return;
+            }
+
+            const targetSession = await getSharedSession(targetSessionId);
+            if (!targetSession) {
+                socket.emit("session_status_response", { requestId, status: null });
+                return;
+            }
+
+            // Derive status from session state
+            let status: SessionStatusPayload["status"] = "unknown";
+            if (targetSession.isActive) {
+                status = "active";
+            } else if (targetSession.lastHeartbeatAt) {
+                // Has heartbeat data but not active → idle
+                status = "idle";
+            }
+
+            // Extract model from heartbeat if available
+            let model: string | undefined;
+            if (targetSession.lastHeartbeat) {
+                try {
+                    const hb = JSON.parse(targetSession.lastHeartbeat);
+                    if (hb?.model?.provider && hb?.model?.id) {
+                        model = `${hb.model.provider}/${hb.model.id}`;
+                    }
+                } catch {
+                    // Ignore parse errors
+                }
+            }
+
+            const childSessionIds = await getChildren(targetSessionId);
+
+            const payload: SessionStatusPayload = {
+                sessionId: targetSessionId,
+                status,
+                model,
+                sessionName: targetSession.sessionName ?? undefined,
+                parentSessionId: targetSession.parentSessionId,
+                childSessionIds,
+                lastActivity: targetSession.lastHeartbeatAt ?? targetSession.startedAt,
+            };
+
+            socket.emit("session_status_response", { requestId, status: payload });
+        });
+
+        // ── channel_join — add session to a named channel ────────────────────
+        socket.on("channel_join", (data) => {
+            const sessionId = socket.data.sessionId;
+            if (!sessionId) {
+                socket.emit("error", { message: "Not registered" });
+                return;
+            }
+
+            const { channelId } = data;
+            if (!channelId) {
+                socket.emit("error", { message: "channel_join requires channelId" });
+                return;
+            }
+
+            const members = channelManager.join(channelId, sessionId);
+
+            // Notify all members (including the joiner) of the updated membership
+            for (const memberId of members) {
+                const memberSocket = getLocalTuiSocket(memberId);
+                if (memberSocket) {
+                    memberSocket.emit("channel_membership", {
+                        channelId,
+                        members,
+                        event: "joined",
+                        sessionId,
+                    });
+                }
+            }
+        });
+
+        // ── channel_leave — remove session from a named channel ──────────────
+        socket.on("channel_leave", (data) => {
+            const sessionId = socket.data.sessionId;
+            if (!sessionId) {
+                socket.emit("error", { message: "Not registered" });
+                return;
+            }
+
+            const { channelId } = data;
+            if (!channelId) {
+                socket.emit("error", { message: "channel_leave requires channelId" });
+                return;
+            }
+
+            const remaining = channelManager.leave(channelId, sessionId);
+
+            // Notify remaining members of the leave
+            if (remaining) {
+                for (const memberId of remaining) {
+                    const memberSocket = getLocalTuiSocket(memberId);
+                    if (memberSocket) {
+                        memberSocket.emit("channel_membership", {
+                            channelId,
+                            members: remaining,
+                            event: "left",
+                            sessionId,
+                        });
+                    }
+                }
+            }
+        });
+
+        // ── channel_message — broadcast message to channel members ───────────
+        socket.on("channel_message", (data) => {
+            const sessionId = socket.data.sessionId;
+            if (!sessionId) {
+                socket.emit("error", { message: "Not registered" });
+                return;
+            }
+
+            const { channelId, message, metadata } = data;
+            if (!channelId || !message) {
+                socket.emit("error", { message: "channel_message requires channelId and message" });
+                return;
+            }
+
+            if (!channelManager.isMember(channelId, sessionId)) {
+                socket.emit("error", { message: "Not a member of this channel" });
+                return;
+            }
+
+            // Broadcast to all members except the sender
+            const others = channelManager.getOtherMembers(channelId, sessionId);
+            for (const memberId of others) {
+                const memberSocket = getLocalTuiSocket(memberId);
+                if (memberSocket) {
+                    memberSocket.emit("channel_message", {
+                        channelId,
+                        fromSessionId: sessionId,
+                        message,
+                        ...(metadata ? { metadata } : {}),
+                    });
+                }
+            }
+        });
+
         // ── disconnect ───────────────────────────────────────────────────────
         socket.on("disconnect", async (reason) => {
             console.log(`[sio/relay] disconnected: ${socket.id} (${reason})`);
             const sessionId = socket.data.sessionId;
             if (sessionId) {
+                // Clean up channel memberships and notify remaining members
+                const affectedChannels = channelManager.removeFromAll(sessionId);
+                for (const [channelId, remaining] of affectedChannels) {
+                    for (const memberId of remaining) {
+                        const memberSocket = getLocalTuiSocket(memberId);
+                        if (memberSocket) {
+                            memberSocket.emit("channel_membership", {
+                                channelId,
+                                members: remaining,
+                                event: "left",
+                                sessionId,
+                            });
+                        }
+                    }
+                }
+
                 // If this session has a parent, notify parent of unexpected disconnect
                 const session = await getSharedSession(sessionId);
                 if (session?.parentSessionId) {

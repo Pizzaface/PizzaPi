@@ -95,6 +95,13 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
                     description:
                         "Runner ID to spawn on. Usually not needed — defaults to the current runner.",
                 },
+                noAutoReply: {
+                    type: "boolean",
+                    description:
+                        "If true, the spawned session will NOT automatically send its completion " +
+                        "result back to this session when it finishes. Useful when you want to " +
+                        "manage result collection manually via send_message/wait_for_message.",
+                },
             },
             required: ["prompt"],
         } as any,
@@ -105,6 +112,7 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
                 model?: { provider: string; id: string };
                 cwd?: string;
                 runnerId?: string;
+                noAutoReply?: boolean;
             };
 
             const ok = (text: string, details?: Record<string, unknown>) => ({
@@ -147,6 +155,12 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
                     provider: params.model.provider,
                     id: params.model.id,
                 };
+            }
+
+            // PizzaPi-7x0.3: Pass noAutoReply as an env var for the spawned session.
+            // The runner daemon will set PIZZAPI_NO_AUTO_REPLY=1 in the worker's env.
+            if (params.noAutoReply) {
+                body.env = { ...(body.env as Record<string, string> ?? {}), PIZZAPI_NO_AUTO_REPLY: "1" };
             }
 
             try {

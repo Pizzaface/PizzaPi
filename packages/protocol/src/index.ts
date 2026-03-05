@@ -28,6 +28,7 @@ export type {
   RelayServerToClientEvents,
   RelayInterServerEvents,
   RelaySocketData,
+  SessionStatusPayload,
 } from "./relay.js";
 
 // /viewer namespace (Browser viewer ↔ Server)

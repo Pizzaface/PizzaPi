@@ -1,6 +1,7 @@
 import * as React from "react";
 import { SessionSidebar, type DotState, type HubSession } from "@/components/SessionSidebar";
 import { SessionViewer, type RelayMessage } from "@/components/SessionViewer";
+import { extractAgentMessages, type AgentMessage } from "@/lib/agent-messages";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { AuthPage } from "@/components/AuthPage";
 import { ApiKeyManager } from "@/components/ApiKeyManager";
@@ -2327,6 +2328,12 @@ export function App() {
     };
   }, [activeSessionId, liveSessions]);
 
+  // Derive inter-agent messages from the conversation stream
+  const agentMessages = React.useMemo(() => {
+    if (!activeSessionId || messages.length === 0) return [];
+    return extractAgentMessages(messages, activeSessionId);
+  }, [activeSessionId, messages]);
+
   // When both panels are at the same position, combine them into a single tabbed panel
   const areCombined = showTerminal && showFileExplorer && terminalPosition === filesPosition
     && !!activeSessionInfo?.runnerId && !!activeSessionInfo?.cwd;
@@ -2935,6 +2942,9 @@ export function App() {
                   todoList={todoList}
                   runnerId={activeSessionInfo?.runnerId ?? undefined}
                   sessionCwd={activeSessionInfo?.cwd || undefined}
+                  liveSessions={liveSessions}
+                  onNavigateSession={handleOpenSession}
+                  agentMessages={agentMessages}
                 />
               )}
             </div>
