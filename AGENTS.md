@@ -151,23 +151,43 @@ cd packages/cli && bun test src/patches.test.ts
 
 ## Spawning Sub-Agents
 
-When spawning agents, **always expect a response** and **ensure your sub-agents know how to respond.**
+PizzaPi uses a streamlined 3-tool API for sub-agent delegation. The infrastructure handles all inter-agent communication automatically — you never need to manage session IDs, message passing, or delivery modes.
 
-- Always include your session ID in the sub-agent's prompt so it can `send_message` back to you.
-- Use `wait_for_message` (or `check_messages` for polling) to receive the sub-agent's result.
-- The sub-agent's prompt must be **self-contained** — it has no context from the parent session.
-- Explicitly instruct sub-agents to report their results back via `send_message` when done.
+**Available tools:**
 
-**Example pattern:**
+| Tool | Purpose |
+|------|---------|
+| `spawn_and_wait` | Spawn a sub-agent and get its result. Set `noWait: true` for background tasks. |
+| `fan_out` | Spawn multiple sub-agents in parallel and get all results. |
+| `list_models` | Discover available models for sub-agents. |
+
+**Example — single delegation:**
 ```
-1. Get your own session ID with `get_session_id`
-2. Include it in the spawn prompt: "When done, send results to session <ID> using send_message."
-3. After spawning, call `wait_for_message` to block until the sub-agent replies.
+spawn_and_wait({ prompt: "Review the auth module for security issues." })
+→ Returns: { result: "Found 3 issues...", sessionId: "...", tokenUsage: {...} }
+```
+
+**Example — parallel delegation:**
+```
+fan_out({ tasks: [
+  { prompt: "Review frontend code" },
+  { prompt: "Review backend code" },
+  { prompt: "Check test coverage" }
+]})
+→ Returns: { results: [...], succeeded: 3, failed: 0 }
+```
+
+**Example — background task (no wait):**
+```
+spawn_and_wait({ prompt: "Run the full test suite", noWait: true })
+→ Returns immediately: { sessionId: "...", shareUrl: "..." }
 ```
 
 **Rules:**
-- Never fire-and-forget a sub-agent — always await a response.
-- If a sub-agent may take a long time, use `check_messages` to poll between other work.
+- Sub-agent prompts must be **self-contained** — the new session has no context from the parent.
+- Prefer `spawn_and_wait` for most tasks — it handles everything automatically.
+- Use `fan_out` when tasks are independent and can run in parallel.
+- Use `noWait: true` only for long-running background tasks where you don't need the result.
 - Sub-agents must follow the same coding standards (testing, typecheck, etc.) as the parent.
 
 ---

@@ -2,14 +2,13 @@ import { describe, test, expect, beforeEach } from "bun:test";
 import { messageBus } from "./session-message-bus.js";
 
 /**
- * Tests for session messaging tools.
+ * Tests for session messaging bus internals.
  *
- * Since the actual tools depend on the pi extension framework, we test the
- * underlying message bus methods that the tools call.
- *
- * The `emit` tool uses `messageBus.emitToFamily()`.
- * The internal channel primitives (join/leave/message) are kept for
- * server-side auto-join but are no longer agent-facing tools.
+ * The agent-facing messaging tools have been removed (agents now use
+ * spawn_and_wait / fan_out exclusively), but the underlying message bus
+ * is still used internally by the relay and completion system. These
+ * tests verify the bus mechanics: channel join/leave/emit, family
+ * channels, and message delivery.
  */
 
 describe("channel_join tool mechanics", () => {
