@@ -2,7 +2,7 @@
 # For custom overrides, create a compose.override.yml next to this file.
 services:
   redis:
-    image: redis:7-alpine
+    image: public.ecr.aws/docker/library/redis:7-alpine
     command: ["redis-server", "--save", "", "--appendonly", "no"]
     restart: unless-stopped
 
