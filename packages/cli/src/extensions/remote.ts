@@ -1592,12 +1592,14 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         // ── Connection lifecycle ──────────────────────────────────────────
 
         sock.on("connect", () => {
+            const parentSessionId = process.env.PIZZAPI_PARENT_SESSION_ID || undefined;
             sock.emit("register", {
                 sessionId: relaySessionId,
                 cwd: process.cwd(),
                 ephemeral: true,
                 collabMode: true,
                 sessionName: getCurrentSessionName(latestCtx) ?? undefined,
+                ...(parentSessionId ? { parentSessionId } : {}),
             });
         });
 

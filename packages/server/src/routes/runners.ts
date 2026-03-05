@@ -45,6 +45,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         const requestedRunnerId = typeof body.runnerId === "string" ? body.runnerId : undefined;
         const requestedCwd = typeof body.cwd === "string" ? body.cwd : undefined;
         const requestedPrompt = typeof body.prompt === "string" ? body.prompt : undefined;
+        const requestedParentSessionId = typeof body.parentSessionId === "string" ? body.parentSessionId : undefined;
         const requestedModel =
             body.model && typeof body.model === "object" &&
             typeof (body.model as any).provider === "string" &&
@@ -92,6 +93,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
                 ...(requestedPrompt ? { prompt: requestedPrompt } : {}),
                 ...(requestedModel ? { model: requestedModel } : {}),
                 ...(hiddenModels.length > 0 ? { hiddenModels } : {}),
+                ...(requestedParentSessionId ? { parentSessionId: requestedParentSessionId } : {}),
             });
         } catch {
             return Response.json({ error: "Failed to send spawn request to runner" }, { status: 502 });

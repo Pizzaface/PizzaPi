@@ -133,6 +133,7 @@ export interface RedisSessionData {
     lastState: string | null;
     runnerId: string | null;
     runnerName: string | null;
+    parentSessionId: string | null;
     seq: number;
 }
 
@@ -198,6 +199,7 @@ function parseSessionFromHash(hash: Record<string, string>): RedisSessionData | 
         lastState: hash.lastState || null,
         runnerId: hash.runnerId || null,
         runnerName: hash.runnerName || null,
+        parentSessionId: hash.parentSessionId || null,
         seq: parseInt(hash.seq ?? "0", 10) || 0,
     };
 }
@@ -680,6 +682,35 @@ export async function clearPushPendingQuestion(sessionId: string, toolCallId?: s
         // Unconditional clear (session teardown paths)
         await r.del(pushPendingKey(sessionId));
     }
+}
+
+// ── Parent/Child session tracking ────────────────────────────────────────────
+
+/** Redis set key for a session's child session IDs. */
+export function childrenKey(sessionId: string): string {
+    return `${KEY_PREFIX}:children:${sessionId}`;
+}
+
+/** Add a child session ID to a parent's children set. */
+export async function addChild(parentId: string, childId: string): Promise<void> {
+    const r = requireRedis();
+    const key = childrenKey(parentId);
+    const multi = r.multi();
+    multi.sAdd(key, childId);
+    multi.expire(key, SESSION_TTL_SECONDS);
+    await multi.exec();
+}
+
+/** Remove a child session ID from a parent's children set. */
+export async function removeChild(parentId: string, childId: string): Promise<void> {
+    const r = requireRedis();
+    await r.sRem(childrenKey(parentId), childId);
+}
+
+/** Get all child session IDs for a parent. */
+export async function getChildren(parentId: string): Promise<string[]> {
+    const r = requireRedis();
+    return r.sMembers(childrenKey(parentId));
 }
 
 // ── Cleanup / scan ──────────────────────────────────────────────────────────

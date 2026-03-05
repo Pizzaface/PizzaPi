@@ -48,6 +48,9 @@ import {
     deleteRunnerAssociation,
     refreshRunnerAssociationTTL,
     scanExpiredSessions,
+    addChild,
+    removeChild,
+    getChildren,
 } from "./sio-state.js";
 import {
     getEphemeralTtlMs,
@@ -224,6 +227,7 @@ export interface RegisterTuiSessionOpts {
     sessionName?: string | null;
     userId?: string;
     userName?: string;
+    parentSessionId?: string | null;
 }
 
 /**
@@ -286,6 +290,8 @@ export async function registerTuiSession(
         }
     }
 
+    const parentSessionId = opts.parentSessionId ?? null;
+
     const sessionData: RedisSessionData = {
         sessionId,
         token,
@@ -304,10 +310,16 @@ export async function registerTuiSession(
         lastState: null,
         runnerId,
         runnerName,
+        parentSessionId,
         seq: 0,
     };
 
     await setSession(sessionId, sessionData);
+
+    // Add this session to the parent's children set
+    if (parentSessionId) {
+        await addChild(parentSessionId, sessionId);
+    }
 
     // Store local socket reference
     localTuiSockets.set(sessionId, socket);
@@ -345,6 +357,8 @@ export async function registerTuiSession(
             model: null,
             runnerId,
             runnerName,
+            parentSessionId,
+            childSessionIds: [],
         } satisfies SessionInfo,
         userId ?? undefined,
     );
@@ -370,6 +384,18 @@ export function removeLocalTuiSocket(sessionId: string): void {
 /** Returns a public summary of active sessions from Redis. */
 export async function getSessions(filterUserId?: string): Promise<SessionInfo[]> {
     const sessions = await getAllSessions(filterUserId);
+
+    // Batch-fetch children for all sessions
+    const childrenMap = new Map<string, string[]>();
+    await Promise.all(
+        sessions.map(async (s) => {
+            const children = await getChildren(s.sessionId);
+            if (children.length > 0) {
+                childrenMap.set(s.sessionId, children);
+            }
+        }),
+    );
+
     return sessions.map((s) => {
         const heartbeat = s.lastHeartbeat ? safeJsonParse(s.lastHeartbeat) : null;
         const model = modelFromHeartbeat(heartbeat);
@@ -391,6 +417,8 @@ export async function getSessions(filterUserId?: string): Promise<SessionInfo[]>
             model,
             runnerId: s.runnerId,
             runnerName: s.runnerName,
+            parentSessionId: s.parentSessionId,
+            childSessionIds: childrenMap.get(s.sessionId) ?? [],
         };
     });
 }
@@ -423,6 +451,7 @@ export async function updateSessionState(sessionId: string, state: unknown): Pro
 
     if (sessionNameChanged) {
         const heartbeat = session.lastHeartbeat ? safeJsonParse(session.lastHeartbeat) : null;
+        const childSessionIds = await getChildren(sessionId);
         await broadcastToHub(
             "session_status",
             {
@@ -431,6 +460,8 @@ export async function updateSessionState(sessionId: string, state: unknown): Pro
                 lastHeartbeatAt: session.lastHeartbeatAt,
                 sessionName: nextSessionName,
                 model: modelFromHeartbeat(heartbeat),
+                parentSessionId: session.parentSessionId,
+                childSessionIds,
             },
             session.userId ?? undefined,
         );
@@ -554,6 +585,7 @@ export async function updateSessionHeartbeat(
     const sessionNameChanged = hasSessionName && prevSessionName !== nextSessionName;
 
     if (wasActive !== isActive || modelChanged || sessionNameChanged) {
+        const childSessionIds = await getChildren(sessionId);
         await broadcastToHub(
             "session_status",
             {
@@ -562,6 +594,8 @@ export async function updateSessionHeartbeat(
                 lastHeartbeatAt,
                 sessionName: nextSessionName,
                 model: nextModel,
+                parentSessionId: session.parentSessionId,
+                childSessionIds,
             },
             session.userId ?? undefined,
         );
@@ -629,7 +663,12 @@ export async function endSharedSession(sessionId: string, reason: string = "Sess
         }
     }
 
-    // Delete from Redis
+    // Clean up parent/child relationships
+    if (session.parentSessionId) {
+        await removeChild(session.parentSessionId, sessionId);
+    }
+
+    // Delete from Redis (also cleans up children set for this session)
     await deleteSession(sessionId);
 
     // Persist end in SQLite
@@ -845,6 +884,7 @@ export async function linkSessionToRunner(runnerId: string, sessionId: string): 
     await setRunnerAssociation(sessionId, runnerId, runner.name);
 
     const heartbeat = session.lastHeartbeat ? safeJsonParse(session.lastHeartbeat) : null;
+    const childSessionIds = await getChildren(sessionId);
 
     await broadcastToHub(
         "session_status",
@@ -856,6 +896,8 @@ export async function linkSessionToRunner(runnerId: string, sessionId: string): 
             model: modelFromHeartbeat(heartbeat),
             runnerId,
             runnerName: runner.name,
+            parentSessionId: session.parentSessionId,
+            childSessionIds,
         },
         session.userId ?? undefined,
     );

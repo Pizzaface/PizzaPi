@@ -537,7 +537,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
 
         socket.on("new_session", (data) => {
             if (isShuttingDown) return;
-            const { sessionId, cwd: requestedCwd, prompt: requestedPrompt, model: requestedModel, hiddenModels: requestedHiddenModels } = data;
+            const { sessionId, cwd: requestedCwd, prompt: requestedPrompt, model: requestedModel, hiddenModels: requestedHiddenModels, parentSessionId: requestedParentSessionId } = data;
 
             if (!sessionId) {
                 socket.emit("session_error", { sessionId: sessionId ?? "", message: "Missing sessionId" });
@@ -557,8 +557,8 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     // On restart (exit code 43), the session already has
                     // the prompt in its history — re-sending would duplicate it.
                     const spawnOpts = isFirstSpawn
-                        ? { prompt: requestedPrompt, model: requestedModel, hiddenModels: requestedHiddenModels }
-                        : { hiddenModels: requestedHiddenModels }; // Always pass hidden models on restart
+                        ? { prompt: requestedPrompt, model: requestedModel, hiddenModels: requestedHiddenModels, parentSessionId: requestedParentSessionId }
+                        : { hiddenModels: requestedHiddenModels, parentSessionId: requestedParentSessionId }; // Always pass hidden models and parent on restart
                     isFirstSpawn = false;
                     spawnSession(sessionId, apiKey!, requestedCwd, runningSessions, doSpawn, spawnOpts);
                     socket.emit("session_ready", { sessionId });
@@ -1196,6 +1196,7 @@ function spawnSession(
         prompt?: string;
         model?: { provider: string; id: string };
         hiddenModels?: string[];
+        parentSessionId?: string;
     },
 ): void {
     console.log(`pizzapi runner: spawning headless worker for session ${sessionId}…`);
@@ -1241,6 +1242,8 @@ function spawnSession(
         ...(options?.hiddenModels && options.hiddenModels.length > 0
             ? { PIZZAPI_HIDDEN_MODELS: JSON.stringify(options.hiddenModels) }
             : {}),
+        // Parent session ID for inter-agent communication tracking.
+        ...(options?.parentSessionId ? { PIZZAPI_PARENT_SESSION_ID: options.parentSessionId } : {}),
     };
 
     const child = spawn(process.execPath, workerArgs, {

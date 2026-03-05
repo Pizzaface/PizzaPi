@@ -16,6 +16,7 @@ export interface RelayClientToServerEvents {
     ephemeral?: boolean;
     collabMode?: boolean;
     sessionName?: string | null;
+    parentSessionId?: string | null;
   }) => void;
 
   /** TUI forwards an agent event (heartbeat, message_update, etc.) */
@@ -46,6 +47,16 @@ export interface RelayClientToServerEvents {
     token: string;
     targetSessionId: string;
     message: string;
+    metadata?: Record<string, unknown>;
+  }) => void;
+
+  /** TUI reports session completion to its parent session */
+  session_completion: (data: {
+    sessionId: string;
+    token: string;
+    result: string;
+    tokenUsage?: Record<string, unknown>;
+    error?: string;
   }) => void;
 }
 
@@ -98,6 +109,16 @@ export interface RelayServerToClientEvents {
     fromSessionId: string;
     message: string;
     ts: string;
+    metadata?: Record<string, unknown>;
+  }) => void;
+
+  /** Delivers a completion notification from a child session */
+  session_completion: (data: {
+    sessionId: string;
+    parentSessionId: string;
+    result: string;
+    tokenUsage?: Record<string, unknown>;
+    error?: string;
   }) => void;
 
   /** Error delivering an inter-session message */

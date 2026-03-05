@@ -238,6 +238,7 @@ export function registerRelayNamespace(io: SocketIOServer): void {
                 sessionName: data.sessionName,
                 userId: socket.data.userId,
                 userName: (socket.data as RelaySocketData & { userName?: string }).userName,
+                parentSessionId: data.parentSessionId ?? undefined,
             });
 
             socket.data.sessionId = sessionId;
@@ -330,6 +331,41 @@ export function registerRelayNamespace(io: SocketIOServer): void {
             broadcastToViewers(sessionId, "exec_result", data);
         });
 
+        // ── session_completion — child reports completion to parent ──────────
+        socket.on("session_completion", async (data) => {
+            const sessionId = socket.data.sessionId;
+            if (!sessionId || data.token !== socket.data.token) {
+                socket.emit("error", { message: "Invalid token" });
+                return;
+            }
+
+            const session = await getSharedSession(sessionId);
+            if (!session) {
+                socket.emit("error", { message: "Session not found" });
+                return;
+            }
+
+            const parentSessionId = session.parentSessionId;
+            if (!parentSessionId) {
+                socket.emit("error", { message: "Session has no parent" });
+                return;
+            }
+
+            const parentSocket = getLocalTuiSocket(parentSessionId);
+            if (!parentSocket) {
+                socket.emit("error", { message: "Parent session not connected" });
+                return;
+            }
+
+            parentSocket.emit("session_completion", {
+                sessionId,
+                parentSessionId,
+                result: data.result,
+                ...(data.tokenUsage ? { tokenUsage: data.tokenUsage } : {}),
+                ...(data.error ? { error: data.error } : {}),
+            });
+        });
+
         // ── session_message — inter-session messaging ────────────────────────
         socket.on("session_message", async (data) => {
             const sessionId = socket.data.sessionId;
@@ -368,6 +404,7 @@ export function registerRelayNamespace(io: SocketIOServer): void {
                     fromSessionId: sessionId,
                     message: messageText,
                     ts: new Date().toISOString(),
+                    ...(data.metadata ? { metadata: data.metadata } : {}),
                 });
             } catch {
                 socket.emit("session_message_error", {
@@ -382,6 +419,20 @@ export function registerRelayNamespace(io: SocketIOServer): void {
             console.log(`[sio/relay] disconnected: ${socket.id} (${reason})`);
             const sessionId = socket.data.sessionId;
             if (sessionId) {
+                // If this session has a parent, notify parent of unexpected disconnect
+                const session = await getSharedSession(sessionId);
+                if (session?.parentSessionId) {
+                    const parentSocket = getLocalTuiSocket(session.parentSessionId);
+                    if (parentSocket) {
+                        parentSocket.emit("session_completion", {
+                            sessionId,
+                            parentSessionId: session.parentSessionId,
+                            result: "",
+                            error: `Child session disconnected unexpectedly: ${reason}`,
+                        });
+                    }
+                }
+
                 clearThinkingMaps(sessionId);
                 void clearPushPendingQuestion(sessionId);
                 await endSharedSession(sessionId);
