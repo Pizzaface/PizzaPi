@@ -611,10 +611,9 @@ export async function endSharedSession(sessionId: string, reason: string = "Sess
         .emit("disconnected", { reason });
 
     // Forcefully disconnect viewer sockets from the room
-    const viewerSockets = await io.of("/viewer").in(viewerSessionRoom(sessionId)).fetchSockets();
-    for (const vs of viewerSockets) {
-        vs.leave(viewerSessionRoom(sessionId));
-    }
+    // Use socketsLeave instead of fetchSockets() + loop to avoid expensive
+    // cluster-wide Socket.IO queries.
+    io.of("/viewer").in(viewerSessionRoom(sessionId)).socketsLeave(viewerSessionRoom(sessionId));
 
     // Clean up local socket reference
     localTuiSockets.delete(sessionId);
