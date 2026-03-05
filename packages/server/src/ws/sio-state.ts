@@ -551,6 +551,64 @@ export async function deletePendingRunnerLink(sessionId: string): Promise<void> 
     await r.del(runnerLinkKey(sessionId));
 }
 
+// ── Runner association (survives server restart) ────────────────────────────
+// Durable Redis key that records which runner a session belongs to.
+// Unlike the session hash (which is deleted on relay disconnect), this key
+// persists across server restarts so that reconnecting TUI agents can
+// restore their runner association.  Deleted explicitly on graceful
+// session_end or when a session is unlinked from its runner.
+
+/** TTL for runner association keys — matches session TTL (24 hours). */
+const RUNNER_ASSOC_TTL_SECONDS = 24 * 60 * 60;
+
+function runnerAssocKey(sessionId: string): string {
+    return `${KEY_PREFIX}:runner-assoc:${sessionId}`;
+}
+
+/** Store the runner association for a session. */
+export async function setRunnerAssociation(
+    sessionId: string,
+    runnerId: string,
+    runnerName: string | null,
+): Promise<void> {
+    const r = requireRedis();
+    const value = JSON.stringify({ runnerId, runnerName });
+    await r.set(runnerAssocKey(sessionId), value, { EX: RUNNER_ASSOC_TTL_SECONDS });
+}
+
+/** Get the runner association for a session, if it exists. */
+export async function getRunnerAssociation(
+    sessionId: string,
+): Promise<{ runnerId: string; runnerName: string | null } | null> {
+    const r = requireRedis();
+    const value = await r.get(runnerAssocKey(sessionId));
+    if (!value) return null;
+    try {
+        const parsed = JSON.parse(value);
+        if (typeof parsed.runnerId === "string") {
+            return {
+                runnerId: parsed.runnerId,
+                runnerName: typeof parsed.runnerName === "string" ? parsed.runnerName : null,
+            };
+        }
+        return null;
+    } catch {
+        return null;
+    }
+}
+
+/** Delete the runner association for a session. */
+export async function deleteRunnerAssociation(sessionId: string): Promise<void> {
+    const r = requireRedis();
+    await r.del(runnerAssocKey(sessionId));
+}
+
+/** Refresh the TTL on an existing runner association key. */
+export async function refreshRunnerAssociationTTL(sessionId: string): Promise<void> {
+    const r = requireRedis();
+    await r.expire(runnerAssocKey(sessionId), RUNNER_ASSOC_TTL_SECONDS);
+}
+
 // ── Push pending question tracking ──────────────────────────────────────────
 // Short-lived Redis key set when a push notification is sent for an
 // AskUserQuestion, cleared when the tool execution ends. Used by
