@@ -9,3 +9,5 @@ docs-homepage.png
 docs-getting-started.png
 *.tsbuildinfo
 auth.db
+.Jules/
+.project/
