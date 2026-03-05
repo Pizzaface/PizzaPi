@@ -5,3 +5,7 @@
 ## 2026-03-03 - [Optimize Orphaned Session Sweep]
 **Learning:** `sweepOrphanedSessions` runs on an interval and can cause an N+1 problem by making a cluster-wide Socket.IO `fetchSockets()` call for every single active session. Since this function is meant to clean up *orphaned* sessions, active sessions naturally have recent heartbeats. By calculating `lastActivity` and checking against the staleness threshold *first*, we can skip the expensive Socket.IO lookup entirely for the vast majority of active sessions.
 **Action:** When implementing polling or sweeping loops, filter items with cheap, local checks (like staleness from Redis data) before making expensive cluster-wide or database calls to avoid N+1 bottlenecks.
+
+## 2025-03-05 - [Optimize Socket.IO bulk leave operations]
+**Learning:** In Socket.IO, when disconnecting or removing multiple clients from a room across a Redis cluster, using `await io.in(room).fetchSockets()` followed by an iterative `.leave()` loop causes a severe N+1 problem by pulling all remote socket instances into memory unnecessarily.
+**Action:** Use native broadcast methods like `io.in(room).socketsLeave(room)` or `io.in(room).disconnectSockets(true)` to push the operation directly to the Redis adapter without pulling objects into the application layer.
