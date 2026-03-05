@@ -2,9 +2,9 @@
 name: Web UI Group Status Badges + Group Management Controls
 status: open
 created: 2026-03-05T15:02:12Z
-updated: 2026-03-05T15:02:12Z
-beads_id: [Will be updated when synced to Beads]
-depends_on: [005, 007]
+updated: 2026-03-05T15:11:13Z
+beads_id: PizzaPi-7x0.9
+depends_on: [PizzaPi-7x0.6, PizzaPi-7x0.8]
 parallel: false
 conflicts_with: []
 ---

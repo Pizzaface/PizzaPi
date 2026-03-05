@@ -4,7 +4,7 @@ status: backlog
 created: 2026-03-05T14:58:23Z
 progress: 0%
 prd: .project/prds/inter-agent-communication.md
-beads_id: [Will be updated when synced to Beads]
+beads_id: PizzaPi-7x0
 ---
 
 # Epic: Inter-Agent Communication Redesign
@@ -197,17 +197,16 @@ Task 1 → Task 7 (UI visibility)
 - Task 7 (UI topology) has the most unknowns — may require iteration on the tree component
 
 ## Tasks Created
-
-- [ ] 001.md - Protocol + Server Parent/Child Tracking and Completion Forwarding (parallel: false)
-- [ ] 002.md - CLI Completion Hooks — Auto-Send Result on agent_end (parallel: true)
-- [ ] 003.md - CLI Event-Driven Message Delivery via sendUserMessage (parallel: true)
-- [ ] 004.md - Session Status Tool and Query Endpoint (parallel: true)
-- [ ] 005.md - Server Channel Infrastructure — Join/Leave/Broadcast (parallel: true)
-- [ ] 006.md - CLI Orchestration Tools — spawn_and_wait, fan_out, Channel Tools (parallel: false)
-- [ ] 007.md - Web UI Session Topology Tree + Inter-Agent Message Panel (parallel: true)
-- [ ] 008.md - Web UI Group Status Badges + Group Management Controls (parallel: false)
+- [ ] PizzaPi-7x0.2 - Protocol + Server Parent/Child Tracking and Completion Forwarding (parallel: false)
+- [ ] PizzaPi-7x0.3 - CLI Completion Hooks — Auto-Send Result on agent_end (parallel: true)
+- [ ] PizzaPi-7x0.4 - CLI Event-Driven Message Delivery via sendUserMessage (parallel: true)
+- [ ] PizzaPi-7x0.5 - Session Status Tool and Query Endpoint (parallel: true)
+- [ ] PizzaPi-7x0.6 - Server Channel Infrastructure — Join/Leave/Broadcast (parallel: true)
+- [ ] PizzaPi-7x0.7 - CLI Orchestration Tools — spawn_and_wait, fan_out, Channel Tools (parallel: false)
+- [ ] PizzaPi-7x0.8 - Web UI Session Topology Tree + Inter-Agent Message Panel (parallel: true)
+- [ ] PizzaPi-7x0.9 - Web UI Group Status Badges + Group Management Controls (parallel: false)
 
 Total tasks: 8
-Parallel tasks: 5 (002, 003, 004, 005, 007 — all depend only on 001)
-Sequential tasks: 3 (001 — foundation; 006 — depends on 002+003+005; 008 — depends on 005+007)
+Parallel tasks: 5 (PizzaPi-7x0.3, PizzaPi-7x0.4, PizzaPi-7x0.5, PizzaPi-7x0.6, PizzaPi-7x0.8 — all depend only on PizzaPi-7x0.2)
+Sequential tasks: 3 (PizzaPi-7x0.2 — foundation; PizzaPi-7x0.7 — depends on .3+.4+.6; PizzaPi-7x0.9 — depends on .6+.8)
 Estimated total effort: 98-122 hours

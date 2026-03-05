@@ -2,11 +2,11 @@
 name: Web UI Session Topology Tree + Inter-Agent Message Panel
 status: open
 created: 2026-03-05T15:02:12Z
-updated: 2026-03-05T15:02:12Z
-beads_id: [Will be updated when synced to Beads]
-depends_on: [001]
+updated: 2026-03-05T15:11:13Z
+beads_id: PizzaPi-7x0.8
+depends_on: [PizzaPi-7x0.2]
 parallel: true
-conflicts_with: [008]
+conflicts_with: [PizzaPi-7x0.9]
 ---
 
 # Task: Web UI Session Topology Tree + Inter-Agent Message Panel

@@ -2,8 +2,8 @@
 name: Protocol + Server Parent/Child Tracking and Completion Forwarding
 status: open
 created: 2026-03-05T15:02:12Z
-updated: 2026-03-05T15:02:12Z
-beads_id: [Will be updated when synced to Beads]
+updated: 2026-03-05T15:11:13Z
+beads_id: PizzaPi-7x0.2
 depends_on: []
 parallel: false
 conflicts_with: []

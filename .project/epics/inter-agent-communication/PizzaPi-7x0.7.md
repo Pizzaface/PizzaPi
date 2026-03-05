@@ -2,9 +2,9 @@
 name: CLI Orchestration Tools — spawn_and_wait, fan_out, Channel Tools
 status: open
 created: 2026-03-05T15:02:12Z
-updated: 2026-03-05T15:02:12Z
-beads_id: [Will be updated when synced to Beads]
-depends_on: [002, 003, 005]
+updated: 2026-03-05T15:11:13Z
+beads_id: PizzaPi-7x0.7
+depends_on: [PizzaPi-7x0.3, PizzaPi-7x0.4, PizzaPi-7x0.6]
 parallel: false
 conflicts_with: []
 ---
