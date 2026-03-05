@@ -598,6 +598,13 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             const { sessionId } = data;
             const entry = runningSessions.get(sessionId);
             if (entry) {
+                // If the worker child process is still running, the relay notification
+                // is stale (e.g. from the OLD socket disconnecting after a /restart
+                // already re-spawned a new worker). Don't remove a live session.
+                if (entry.child && !entry.child.killed && entry.child.exitCode === null) {
+                    console.log(`pizzapi runner: ignoring stale session_ended for ${sessionId} (worker still running, pid=${entry.child.pid})`);
+                    return;
+                }
                 runningSessions.delete(sessionId);
                 console.log(`pizzapi runner: session ${sessionId} ended on relay${entry.adopted ? " (adopted)" : ""}`);
             }

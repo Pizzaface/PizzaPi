@@ -610,6 +610,16 @@ export function registerRelayNamespace(io: SocketIOServer): void {
             console.log(`[sio/relay] disconnected: ${socket.id} (${reason})`);
             const sessionId = socket.data.sessionId;
             if (sessionId) {
+                // If a new socket has already registered for the same session ID
+                // (e.g. during a /restart), skip cleanup — the new session is
+                // already active and we must not delete it.
+                const currentSocket = getLocalTuiSocket(sessionId);
+                if (currentSocket && currentSocket.id !== socket.id) {
+                    console.log(`[sio/relay] skipping cleanup for ${sessionId}: new socket ${currentSocket.id} already registered`);
+                    socketAckedSeqs.delete(socket.id);
+                    return;
+                }
+
                 // Clean up channel memberships and notify remaining members
                 const affectedChannels = channelManager.removeFromAll(sessionId);
                 for (const [channelId, remaining] of affectedChannels) {
@@ -642,7 +652,10 @@ export function registerRelayNamespace(io: SocketIOServer): void {
 
                 clearThinkingMaps(sessionId);
                 void clearPushPendingQuestion(sessionId);
-                await endSharedSession(sessionId);
+                // Pass the token so endSharedSession can verify this disconnect
+                // belongs to the current session — not a replacement created by
+                // a /restart re-registration that raced with this handler.
+                await endSharedSession(sessionId, "Session disconnected", socket.data.token);
             }
             socketAckedSeqs.delete(socket.id);
         });

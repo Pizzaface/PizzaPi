@@ -633,11 +633,16 @@ export async function sendSnapshotToViewer(sessionId: string, socket: Socket): P
 }
 
 /** End a shared session: notify viewers, clean up Redis, broadcast to hub. */
-export async function endSharedSession(sessionId: string, reason: string = "Session ended"): Promise<void> {
-    await deletePendingRunnerLink(sessionId);
-
+export async function endSharedSession(sessionId: string, reason: string = "Session ended", expectedToken?: string): Promise<void> {
     const session = await getSession(sessionId);
     if (!session) return;
+
+    // If an expected token is provided, verify it matches the current session.
+    // This prevents a stale disconnect handler from deleting a session that was
+    // already replaced by a new registration (e.g. during /restart).
+    if (expectedToken && session.token !== expectedToken) return;
+
+    await deletePendingRunnerLink(sessionId);
 
     // Notify all viewers in the room and disconnect them
     io.of("/viewer")
