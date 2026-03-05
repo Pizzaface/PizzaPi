@@ -10,6 +10,8 @@ import {
     getSubscriptionsForUser,
     updateEnabledEvents,
 } from "../push.js";
+import { getSharedSession, getLocalTuiSocket } from "../ws/sio-registry.js";
+import { getPushPendingQuestion, consumePushPendingQuestionIfMatches } from "../ws/sio-state.js";
 import type { RouteHandler } from "./types.js";
 
 export const handlePushRoute: RouteHandler = async (req, url) => {
@@ -82,6 +84,92 @@ export const handlePushRoute: RouteHandler = async (req, url) => {
         }
 
         await updateEnabledEvents(identity.userId, body.endpoint, body.enabledEvents);
+        return Response.json({ ok: true });
+    }
+
+    // ── Answer a push-notification question ────────────────────────────
+    if (url.pathname === "/api/push/answer" && req.method === "POST") {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        let body: { sessionId?: string; text?: string; toolCallId?: string };
+        try {
+            const parsed = await req.json();
+            if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+                return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+            }
+            body = parsed;
+        } catch {
+            return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+        }
+
+        if (
+            typeof body.sessionId !== "string" || !body.sessionId.trim() ||
+            typeof body.text !== "string" || !body.text.trim() ||
+            typeof body.toolCallId !== "string" || !body.toolCallId.trim()
+        ) {
+            return Response.json(
+                { error: "Missing required fields: sessionId, text, toolCallId" },
+                { status: 400 },
+            );
+        }
+
+        // Verify the session belongs to this user
+        const session = await getSharedSession(body.sessionId);
+        if (!session || session.userId !== identity.userId) {
+            return Response.json({ error: "Session not found" }, { status: 404 });
+        }
+
+        // Require collab mode (same as viewer input)
+        if (!session.collabMode) {
+            return Response.json(
+                { error: "Session is not in collab mode" },
+                { status: 403 },
+            );
+        }
+
+        // Pre-flight: verify a question is pending (non-destructive read)
+        const pendingToolCallId = await getPushPendingQuestion(body.sessionId);
+        if (!pendingToolCallId) {
+            return Response.json(
+                { error: "No question is currently pending for this session" },
+                { status: 409 },
+            );
+        }
+        if (body.toolCallId !== pendingToolCallId) {
+            return Response.json(
+                { error: "This answer does not match the current pending question" },
+                { status: 409 },
+            );
+        }
+
+        // Verify the TUI socket is available BEFORE consuming the token.
+        // If the runner is disconnected we return 502 without burning the
+        // pending key, so the user can retry when the runner reconnects.
+        const tuiSocket = getLocalTuiSocket(body.sessionId);
+        if (!tuiSocket) {
+            return Response.json(
+                { error: "Session runner not connected to this server" },
+                { status: 502 },
+            );
+        }
+
+        // Atomically consume the pending key (compare-and-delete via Lua).
+        // Only succeeds if the toolCallId still matches — prevents replays
+        // and races with other requests.
+        const consumed = await consumePushPendingQuestionIfMatches(body.sessionId, body.toolCallId);
+        if (!consumed) {
+            return Response.json(
+                { error: "Answer already submitted or question resolved" },
+                { status: 409 },
+            );
+        }
+
+        tuiSocket.emit("input" as string, {
+            text: body.text.trim(),
+            client: "push",
+        });
+
         return Response.json({ ok: true });
     }
 

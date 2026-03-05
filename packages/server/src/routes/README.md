@@ -86,5 +86,6 @@ type RouteHandler = (req: Request, url: URL) => Promise<Response | undefined>;
 | POST | `/api/push/unsubscribe` | push.ts | Session |
 | GET | `/api/push/subscriptions` | push.ts | Session |
 | PUT | `/api/push/events` | push.ts | Session |
+| POST | `/api/push/answer` | push.ts | Session |
 | GET | `/api/settings/hidden-models` | settings.ts | Session |
 | PUT | `/api/settings/hidden-models` | settings.ts | Session |
