@@ -1,4 +1,4 @@
-import { spawn, execSync } from "child_process";
+import { execSync } from "child_process";
 import { existsSync } from "fs";
 import { join } from "path";
 import type { ExtensionFactory } from "@mariozechner/pi-coding-agent";
@@ -221,63 +221,66 @@ export function _resetShellCache(): void {
 }
 
 /** Run a single hook script, piping JSON payload on stdin. */
-export function runHook(entry: HookEntry, payload: string, cwd: string): Promise<HookResult> {
-    const timeout = entry.timeout ?? 10_000;
-    return new Promise((resolve) => {
-        let timedOut = false;
-        let settled = false;
+export async function runHook(entry: HookEntry, payload: string, cwd: string): Promise<HookResult> {
+    const hookTimeout = entry.timeout ?? 10_000;
 
-        const { shell, flag } = resolveShell();
-        const proc = spawn(shell, [flag, entry.command], {
+    const { shell, flag } = resolveShell();
+
+    let timedOut = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    try {
+        const proc = Bun.spawn([shell, flag, entry.command], {
             cwd,
-            stdio: ["pipe", "pipe", "pipe"],
-            env: {
-                ...process.env,
-                PIZZAPI_PROJECT_DIR: cwd,
-            },
+            stdin: "pipe",
+            stdout: "pipe",
+            stderr: "pipe",
+            env: { ...process.env, PIZZAPI_PROJECT_DIR: cwd },
         });
 
-        let stdout = "";
-        let stderr = "";
-
-        proc.stdout.on("data", (chunk: Buffer) => {
-            stdout += chunk.toString();
-        });
-        proc.stderr.on("data", (chunk: Buffer) => {
-            stderr += chunk.toString();
-        });
-
-        // Manual timeout with SIGKILL — can't be trapped by the child.
-        const timer = setTimeout(() => {
-            timedOut = true;
-            proc.kill("SIGKILL");
-        }, timeout);
-
-        // Send the JSON payload on stdin
+        // Write the JSON payload on stdin
         proc.stdin.write(payload);
         proc.stdin.end();
 
-        const finish = (code: number | null, signal: string | null) => {
-            if (settled) return;
-            settled = true;
-            clearTimeout(timer);
-            const killed = timedOut || !!signal || proc.killed;
-            const exitCode = killed ? (code ?? 124) : (code ?? 0);
-            resolve({ exitCode, stdout: stdout.trim(), stderr: stderr.trim(), killed });
+        // Race the process exit against a timeout
+        const exitCode = await Promise.race([
+            proc.exited,
+            new Promise<never>((_, reject) => {
+                timer = setTimeout(() => {
+                    timedOut = true;
+                    proc.kill(9); // SIGKILL
+                    reject(new Error("__hook_timeout__"));
+                }, hookTimeout);
+            }),
+        ]);
+
+        // Process exited normally — cancel the timeout
+        clearTimeout(timer);
+
+        const [stdout, stderr] = await Promise.all([
+            new Response(proc.stdout).text(),
+            new Response(proc.stderr).text(),
+        ]);
+
+        const killed = timedOut || proc.signalCode !== null;
+        return {
+            exitCode: killed ? (exitCode ?? 124) : (exitCode ?? 0),
+            stdout: stdout.trim(),
+            stderr: stderr.trim(),
+            killed,
         };
-
-        // Listen to both `exit` and `close` — in Bun, `close` may not fire
-        // after SIGKILL, but `exit` does. First one wins via `settled` guard.
-        proc.on("exit", (code, signal) => finish(code, signal));
-        proc.on("close", (code, signal) => finish(code, signal));
-
-        proc.on("error", (err) => {
-            if (settled) return;
-            settled = true;
-            clearTimeout(timer);
-            resolve({ exitCode: 1, stdout: "", stderr: err.message, killed: false });
-        });
-    });
+    } catch (err) {
+        clearTimeout(timer);
+        if (err instanceof Error && err.message === "__hook_timeout__") {
+            return { exitCode: 124, stdout: "", stderr: "", killed: true };
+        }
+        return {
+            exitCode: 1,
+            stdout: "",
+            stderr: err instanceof Error ? err.message : String(err),
+            killed: false,
+        };
+    }
 }
 
 // ---------------------------------------------------------------------------

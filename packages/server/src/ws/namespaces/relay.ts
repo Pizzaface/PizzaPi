@@ -28,6 +28,7 @@ import {
 import {
     setPushPendingQuestion,
     clearPushPendingQuestion,
+    deleteRunnerAssociation,
 } from "../sio-state.js";
 import {
     notifyAgentFinished,
@@ -314,6 +315,9 @@ export function registerRelayNamespace(io: SocketIOServer): void {
 
             clearThinkingMaps(sessionId);
             void clearPushPendingQuestion(sessionId);
+            // Graceful end — delete the durable runner association so it
+            // isn't restored if a new session reuses this ID later.
+            await deleteRunnerAssociation(sessionId);
             await endSharedSession(sessionId);
             socket.data.sessionId = undefined;
             socketAckedSeqs.delete(socket.id);

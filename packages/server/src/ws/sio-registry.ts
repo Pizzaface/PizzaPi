@@ -43,6 +43,10 @@ import {
     setPendingRunnerLink,
     getPendingRunnerLink,
     deletePendingRunnerLink,
+    setRunnerAssociation,
+    getRunnerAssociation,
+    deleteRunnerAssociation,
+    refreshRunnerAssociationTTL,
     scanExpiredSessions,
 } from "./sio-state.js";
 import {
@@ -265,6 +269,20 @@ export async function registerTuiSession(
         if (runner) {
             runnerId = pendingRunnerId;
             runnerName = runner.name;
+            // Persist the durable association so it survives server restarts.
+            // linkSessionToRunner couldn't set it because the session didn't
+            // exist yet when the runner reported session_ready.
+            await setRunnerAssociation(sessionId, runnerId, runnerName);
+        }
+    }
+
+    // If no pending runner link, check for a durable runner association
+    // that survived a server restart (stored as a TTL'd Redis key).
+    if (!runnerId) {
+        const assoc = await getRunnerAssociation(sessionId);
+        if (assoc) {
+            runnerId = assoc.runnerId;
+            runnerName = assoc.runnerName;
         }
     }
 
@@ -449,6 +467,11 @@ export async function touchSessionActivity(sessionId: string): Promise<void> {
 
     await refreshSessionTTL(sessionId);
 
+    // Keep the durable runner association alive as long as the session is active
+    if (session.runnerId) {
+        await refreshRunnerAssociationTTL(sessionId);
+    }
+
     void touchRelaySession(sessionId).catch((error) => {
         console.error("[sio-registry] Failed to touch relay session:", error);
     });
@@ -517,6 +540,13 @@ export async function updateSessionHeartbeat(
     }
 
     await updateSessionFields(sessionId, fields);
+
+    // Heartbeats bypass touchSessionActivity, so refresh the runner
+    // association TTL here to prevent it from expiring on long-lived
+    // sessions that mostly emit heartbeats.
+    if (session.runnerId) {
+        await refreshRunnerAssociationTTL(sessionId);
+    }
 
     const nextModel = modelFromHeartbeat(heartbeat);
     const nextModelKey = nextModel ? `${nextModel.provider}/${nextModel.id}` : null;
@@ -809,6 +839,11 @@ export async function linkSessionToRunner(runnerId: string, sessionId: string): 
         runnerName: runner.name,
     });
 
+    // Store a durable runner association that survives server restarts.
+    // The session hash is deleted on relay disconnect, but this TTL key
+    // persists so reconnecting TUI agents can restore their runner link.
+    await setRunnerAssociation(sessionId, runnerId, runner.name);
+
     const heartbeat = session.lastHeartbeat ? safeJsonParse(session.lastHeartbeat) : null;
 
     await broadcastToHub(
@@ -831,6 +866,7 @@ export async function removeRunnerSession(runnerId: string, sessionId: string): 
     const session = await getSession(sessionId);
     if (session && session.runnerId === runnerId) {
         await updateSessionFields(sessionId, { runnerId: null, runnerName: null });
+        await deleteRunnerAssociation(sessionId);
     }
 }
 
