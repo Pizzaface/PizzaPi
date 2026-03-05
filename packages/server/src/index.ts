@@ -57,7 +57,8 @@ async function sendFetchResponse(res: ServerResponse, response: Response): Promi
         "x-content-type-options": "nosniff",
         "x-frame-options": "DENY",
         "x-xss-protection": "0",
-        "referrer-policy": "strict-origin-when-cross-origin"
+        "referrer-policy": "strict-origin-when-cross-origin",
+        "strict-transport-security": "max-age=31536000; includeSubDomains"
     };
     response.headers.forEach((value, key) => {
         const existing = headers[key];
@@ -113,7 +114,8 @@ const httpServer = createServer(async (req, res) => {
                 "x-content-type-options": "nosniff",
                 "x-frame-options": "DENY",
                 "x-xss-protection": "0",
-                "referrer-policy": "strict-origin-when-cross-origin"
+                "referrer-policy": "strict-origin-when-cross-origin",
+                "strict-transport-security": "max-age=31536000; includeSubDomains"
             });
         }
         res.end(JSON.stringify({ error: "Internal server error" }));
