@@ -54,6 +54,27 @@ export class RateLimiter {
     }
 }
 
+export function getClientIp(req: Request): string {
+    // Determine whether we're behind a trusted proxy (e.g. Nginx, Cloudflare)
+    // Note: In a production environment, this should be configurable.
+    // If not behind a trusted proxy, x-forwarded-for should be ignored to prevent spoofing.
+    const trustedProxy = process.env.PIZZAPI_TRUST_PROXY === "true" || process.env.PIZZAPI_TRUST_PROXY === "1";
+
+    if (trustedProxy) {
+        const forwardedFor = req.headers.get("x-forwarded-for");
+        if (forwardedFor) {
+            // The first IP is the original client
+            const ip = forwardedFor.split(",")[0]?.trim();
+            if (ip) return ip;
+        }
+    }
+
+    // Fallback: This requires the underlying server to inject the actual remote IP into a trusted header or property.
+    // In our Node.js HTTP server mapping to Fetch Request, we don't have direct access to socket.remoteAddress
+    // unless we pass it along. If not available, we return "unknown".
+    return req.headers.get("x-real-ip") || "unknown";
+}
+
 export function isValidEmail(email: string): boolean {
     // Simple but effective regex for most use cases
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;

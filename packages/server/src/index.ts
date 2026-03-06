@@ -43,6 +43,16 @@ function nodeReqToFetchRequest(req: IncomingMessage): Request {
     const method = (req.method ?? "GET").toUpperCase();
     const hasBody = method !== "GET" && method !== "HEAD";
 
+    // Inject the raw remote address so the application can use it securely
+    // when not behind a trusted proxy.
+    // Unconditionally overwrite x-real-ip to prevent clients from spoofing it.
+    const remoteAddress = req.socket.remoteAddress;
+    if (remoteAddress) {
+        headers.set("x-real-ip", remoteAddress);
+    } else {
+        headers.delete("x-real-ip"); // Ensure no spoofed header makes it through
+    }
+
     return new Request(url.toString(), {
         method,
         headers,
