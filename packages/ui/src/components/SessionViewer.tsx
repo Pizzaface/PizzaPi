@@ -104,7 +104,7 @@ export interface SessionViewerProps {
   activeToolCalls?: Map<string, string>;
   pendingQuestion?: { toolCallId: string; questions: Array<{ question: string; options: string[] }>; display: QuestionDisplayMode } | null;
   /** Plugin trust prompt from the worker — shown as a confirmation dialog */
-  pluginTrustPrompt?: { pluginNames: string[]; pluginSummaries: string[] } | null;
+  pluginTrustPrompt?: { promptId: string; pluginNames: string[]; pluginSummaries: string[] } | null;
   /** Respond to the plugin trust prompt */
   onPluginTrustResponse?: (trusted: boolean) => void;
   availableCommands?: Array<{ name: string; description?: string }>;

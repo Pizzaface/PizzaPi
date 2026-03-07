@@ -670,6 +670,13 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                       detectedAt: lastRetryableError.detectedAt,
                   }
                 : null,
+            pendingPluginTrust: pendingPluginTrust
+                ? {
+                      promptId: pendingPluginTrust.promptId,
+                      pluginNames: pendingPluginTrust.pluginNames,
+                      pluginSummaries: pendingPluginTrust.pluginSummaries,
+                  }
+                : null,
         };
     }
 
@@ -1158,7 +1165,12 @@ export const remoteExtension: ExtensionFactory = (pi) => {
 
             if (req.command === "plugin_trust_response") {
                 if (!pendingPluginTrust) {
-                    replyErr("No pending plugin trust prompt");
+                    replyErr("No pending plugin trust prompt (may have expired)");
+                    return;
+                }
+                // Validate promptId to prevent stale/mismatched responses
+                if (req.promptId !== pendingPluginTrust.promptId) {
+                    replyErr("Prompt ID mismatch — this prompt may have expired");
                     return;
                 }
                 const trusted = req.trusted === true;
@@ -2001,26 +2013,57 @@ export const remoteExtension: ExtensionFactory = (pi) => {
 
     /** Pending plugin trust prompt — only one at a time. */
     let pendingPluginTrust: {
+        promptId: string;
+        pluginNames: string[];
+        pluginSummaries: string[];
         respond: (trusted: boolean) => void;
     } | null = null;
 
     pi.events.on("plugin:trust_prompt", (data: unknown) => {
-        const event = data as {
-            pluginNames: string[];
-            pluginSummaries: string[];
-            respond: (trusted: boolean) => void;
-        };
+        // Runtime validation of event shape
+        const event = data as Record<string, unknown> | null;
+        if (!event || typeof event !== "object") return;
+        if (typeof event.promptId !== "string") return;
+        if (!Array.isArray(event.pluginNames)) return;
+        if (!Array.isArray(event.pluginSummaries)) return;
+        if (typeof event.respond !== "function") return;
+
+        // If there's already a pending prompt, reject it (only one at a time)
+        if (pendingPluginTrust) {
+            pendingPluginTrust.respond(false);
+        }
+
+        const promptId = event.promptId as string;
+        const pluginNames = event.pluginNames as string[];
+        const pluginSummaries = event.pluginSummaries as string[];
+        const respond = event.respond as (trusted: boolean) => void;
 
         // Store the responder so exec handler can resolve it
-        pendingPluginTrust = { respond: event.respond };
+        pendingPluginTrust = { promptId, pluginNames, pluginSummaries, respond };
 
         // Forward to the web viewer as a custom event
         forwardEvent({
             type: "plugin_trust_prompt",
-            pluginNames: event.pluginNames,
-            pluginSummaries: event.pluginSummaries,
+            promptId,
+            pluginNames,
+            pluginSummaries,
             ts: Date.now(),
         });
+    });
+
+    // Clean up when prompt times out on the extension side
+    pi.events.on("plugin:trust_timeout", (data: unknown) => {
+        const event = data as Record<string, unknown> | null;
+        if (!event || typeof event.promptId !== "string") return;
+        if (pendingPluginTrust?.promptId === event.promptId) {
+            pendingPluginTrust = null;
+            // Notify web UI that the prompt expired
+            forwardEvent({
+                type: "plugin_trust_expired",
+                promptId: event.promptId,
+                ts: Date.now(),
+            });
+        }
     });
 
     // ── Forward agent events to relay ─────────────────────────────────────────

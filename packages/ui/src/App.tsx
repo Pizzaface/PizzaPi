@@ -609,6 +609,7 @@ export function App() {
 
   /** Pending plugin trust prompt from the worker — shown as a confirmation dialog in the viewer. */
   const [pluginTrustPrompt, setPluginTrustPrompt] = React.useState<{
+    promptId: string;
     pluginNames: string[];
     pluginSummaries: string[];
   } | null>(null);
@@ -1218,6 +1219,24 @@ export function App() {
         setRetryState(rs);
       }
 
+      // Restore pending plugin trust prompt when reconnecting.
+      if (Object.prototype.hasOwnProperty.call(hb, "pendingPluginTrust")) {
+        const pt = (hb as any).pendingPluginTrust as {
+          promptId: string;
+          pluginNames: string[];
+          pluginSummaries: string[];
+        } | null;
+        if (pt && typeof pt.promptId === "string" && Array.isArray(pt.pluginNames) && pt.pluginNames.length > 0) {
+          setPluginTrustPrompt({
+            promptId: pt.promptId,
+            pluginNames: pt.pluginNames,
+            pluginSummaries: Array.isArray(pt.pluginSummaries) ? pt.pluginSummaries : pt.pluginNames,
+          });
+        } else {
+          setPluginTrustPrompt(null);
+        }
+      }
+
       // Heartbeats also carry the current model; keep activeModel in sync.
       if (hb.model) {
         const m = normalizeModel(hb.model);
@@ -1562,14 +1581,24 @@ export function App() {
     }
 
     if (type === "plugin_trust_prompt") {
+      const promptId = evt.promptId as string | undefined;
       const names = evt.pluginNames as string[] | undefined;
       const summaries = evt.pluginSummaries as string[] | undefined;
-      if (Array.isArray(names) && names.length > 0) {
+      if (typeof promptId === "string" && Array.isArray(names) && names.length > 0) {
         setPluginTrustPrompt({
+          promptId,
           pluginNames: names,
           pluginSummaries: Array.isArray(summaries) ? summaries : names,
         });
       }
+      return;
+    }
+
+    if (type === "plugin_trust_expired") {
+      const promptId = evt.promptId as string | undefined;
+      setPluginTrustPrompt((prev) =>
+        prev && prev.promptId === promptId ? null : prev
+      );
       return;
     }
 
@@ -2058,14 +2087,20 @@ export function App() {
 
   /** Respond to a plugin trust prompt from the worker. */
   const respondPluginTrust = React.useCallback((trusted: boolean) => {
-    sendRemoteExec({
+    const prompt = pluginTrustPrompt;
+    if (!prompt) return;
+    const ok = sendRemoteExec({
       type: "exec",
       id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
       command: "plugin_trust_response",
+      promptId: prompt.promptId,
       trusted,
     });
-    setPluginTrustPrompt(null);
-  }, [sendRemoteExec]);
+    // Only dismiss the banner if the send succeeded
+    if (ok !== false) {
+      setPluginTrustPrompt(null);
+    }
+  }, [sendRemoteExec, pluginTrustPrompt]);
 
   /**
    * End a session by session ID. If it's the currently active session the

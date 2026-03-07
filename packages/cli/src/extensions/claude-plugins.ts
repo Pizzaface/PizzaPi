@@ -22,6 +22,7 @@ import {
     type HookEntry,
 } from "../plugins.js";
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 
 // ── Hook executor ─────────────────────────────────────────────────────────────
@@ -313,6 +314,8 @@ function registerPlugin(pi: ExtensionAPI, plugin: DiscoveredPlugin): void {
  * listener responds within the timeout, the promise auto-rejects (skips).
  */
 export interface PluginTrustPromptEvent {
+    /** Unique ID to correlate prompt with response */
+    promptId: string;
     /** Names of local plugins requesting trust */
     pluginNames: string[];
     /** Summaries for display */
@@ -369,6 +372,11 @@ export function createClaudePluginExtension(cwd: string): ExtensionFactory | nul
             registerPlugin(pi, plugin);
         }
 
+        // Track whether local plugins have already been loaded for this
+        // process lifetime. Once approved and registered, we don't re-prompt
+        // or re-register on subsequent session_start events.
+        let localPluginsLoaded = false;
+
         pi.on("session_start", async (_event, ctx) => {
             // Notify about global plugins
             if (globalPlugins.length > 0) {
@@ -378,8 +386,8 @@ export function createClaudePluginExtension(cwd: string): ExtensionFactory | nul
                 );
             }
 
-            // No local plugins? Nothing more to do.
-            if (localOnly.length === 0) return;
+            // No local plugins, or already loaded? Nothing more to do.
+            if (localOnly.length === 0 || localPluginsLoaded) return;
 
             // Ask the user whether to trust project-local plugins.
             // In TUI interactive mode, use ctx.ui.confirm() directly.
@@ -397,16 +405,21 @@ export function createClaudePluginExtension(cwd: string): ExtensionFactory | nul
                 );
             } else {
                 // Headless/worker mode — emit trust prompt event for remote bridge
+                const promptId = randomUUID();
                 ok = await new Promise<boolean>((resolve) => {
                     let settled = false;
                     const timer = setTimeout(() => {
                         if (!settled) {
                             settled = true;
+                            // Notify listeners that the prompt expired so they
+                            // can dismiss UI and clean up pending state.
+                            pi.events.emit("plugin:trust_timeout", { promptId });
                             resolve(false);
                         }
                     }, TRUST_PROMPT_TIMEOUT_MS);
 
                     const promptEvent: PluginTrustPromptEvent = {
+                        promptId,
                         pluginNames: localOnly.map(p => p.name),
                         pluginSummaries: localOnly.map(pluginSummary),
                         respond: (trusted: boolean) => {
@@ -422,6 +435,7 @@ export function createClaudePluginExtension(cwd: string): ExtensionFactory | nul
             }
 
             if (ok) {
+                localPluginsLoaded = true;
                 for (const plugin of localOnly) {
                     registerPlugin(pi, plugin);
 
