@@ -46,6 +46,18 @@ You can also override any setting with **environment variables**.
   "skills": [
     "~/my-custom-skills",
     "/absolute/path/to/skills"
+  ],
+
+  // Trust gate: allow project-local hooks (.pizzapi/config.json) to run.
+  // Must be in the GLOBAL config (project configs cannot self-authorize).
+  "allowProjectHooks": false,
+
+  // Project-local Claude Code plugins that have been explicitly trusted.
+  // Each entry is the absolute path to the plugin root directory.
+  // Managed via `pizza plugins trust <path>` / `pizza plugins untrust <path>`.
+  // Must be in the GLOBAL config (project configs cannot self-authorize).
+  "trustedPlugins": [
+    "/home/user/projects/my-app/.pizzapi/plugins/my-linter"
   ]
 }
 ```
@@ -62,6 +74,8 @@ You can also override any setting with **environment variables**.
 | `appendSystemPrompt` | `string` | — | Append to the default system prompt |
 | `agentDir` | `string` | `~/.pizzapi` | Agent config directory (skills, extensions, etc.) |
 | `skills` | `string[]` | `[]` | Additional skill directories. Supports `~` expansion. |
+| `allowProjectHooks` | `boolean` | `false` | Trust gate: allow project-local hooks to run. **Global config only.** |
+| `trustedPlugins` | `string[]` | `[]` | Trusted Claude Code plugin paths. **Global config only.** Managed via `pizza plugins trust`. |
 
 ---
 

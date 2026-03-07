@@ -28,6 +28,7 @@ Usage:
   pizza setup                 Run first-time setup
   pizza usage [provider]      Show API usage stats
   pizza models                List available models
+  pizza plugins [cmd]         Manage Claude Code plugins (list/trust/untrust)
 
 Flags:
   --cwd <path>    Set working directory
@@ -289,6 +290,59 @@ anthropic  claude-opus-4-5          reasoning • 200,000 ctx • Claude Opus 4.
 anthropic  claude-sonnet-4-20250514            200,000 ctx • Claude Sonnet 4
 google     gemini-2.5-pro           reasoning • 1,000,000 ctx • Gemini 2.5 Pro
 ```
+
+---
+
+### `pizzapi plugins`
+
+Discover and manage Claude Code plugins. PizzaPi can load plugins designed for Claude Code — their commands become slash commands, hooks map to pi lifecycle events, and skills are shared via the [Agent Skills standard](https://agentskills.io).
+
+```bash
+# List all discovered plugins (global + project-local)
+pizzapi plugins
+
+# Trust all untrusted local plugins in the current project
+pizzapi plugins trust
+
+# Trust a specific plugin directory
+pizzapi plugins trust /path/to/plugin
+
+# Remove a plugin from the trust list
+pizzapi plugins untrust /path/to/plugin
+
+# Clear the entire trust list
+pizzapi plugins untrust
+
+# Show the current trust list
+pizzapi plugins trusted
+
+# Show help
+pizzapi plugins --help
+```
+
+| Subcommand | Description |
+|------------|-------------|
+| *(none)* / `list` | List all discovered plugins with trust status |
+| `trust [path]` | Trust project-local plugins. No path = trust all untrusted in cwd. |
+| `untrust [path]` | Remove from trust list. No path = clear entire list. |
+| `trusted` | Show the current trust list from `~/.pizzapi/config.json` |
+
+**Trust model:**
+
+- **Global plugins** in `~/.pizzapi/plugins/`, `~/.agents/plugins/`, or `~/.claude/plugins/` are **always auto-trusted** — same as global skills or extensions.
+- **Project-local plugins** in `.pizzapi/plugins/`, `.agents/plugins/`, or `.claude/plugins/` under your project directory can execute shell commands via hooks. They require explicit trust before loading.
+
+There are three ways to trust a local plugin:
+
+1. **CLI**: `pizza plugins trust` (pre-approve before starting a session)
+2. **TUI**: Interactive confirmation dialog at session start
+3. **Web UI**: Amber trust banner with Trust / Skip buttons
+
+Once approved by any method, the trust is persisted to `~/.pizzapi/config.json` so future sessions auto-load without re-prompting.
+
+<Aside type="tip">
+  See the [Claude Code Plugins guide](/PizzaPi/guides/claude-plugins/) for details on plugin structure, hook mapping, and how the adapter works.
+</Aside>
 
 ---
 

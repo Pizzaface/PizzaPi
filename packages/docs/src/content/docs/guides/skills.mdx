@@ -76,6 +76,7 @@ PizzaPi ships with several built-in extensions that are always active:
 | **update-todo** | Gives the agent the `update_todo` tool to maintain a live task list in the UI |
 | **spawn-session** | Gives the agent the `spawn_session` tool to launch sub-sessions via the runner |
 | **session-messaging** | Gives the agent `send_message`, `wait_for_message`, and `check_messages` tools for inter-agent communication |
+| **claude-plugins** | Discovers Claude Code plugins and loads their commands, hooks, and skills into the runtime |
 
 ---
 
@@ -117,3 +118,11 @@ Use this skill when working on Next.js projects.
 ```
 
 This skill will automatically be available to every `pizzapi` session started from that project directory.
+
+---
+
+## Claude Code Plugin Skills
+
+PizzaPi can also load skills from **Claude Code plugins**. Both Claude Code and pi use the [Agent Skills standard](https://agentskills.io/specification), so plugin skills work natively.
+
+Skills from global plugins (`~/.pizzapi/plugins/`, `~/.agents/plugins/`, `~/.claude/plugins/`) are automatically discovered alongside your regular skills. See the [Claude Code Plugins guide](/PizzaPi/guides/claude-plugins/) for details.
