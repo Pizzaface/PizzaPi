@@ -12,6 +12,7 @@ import { ModelSelectorLogo } from "@/components/ai-elements/model-selector";
 import { cn } from "@/lib/utils";
 import { Eye, EyeOff, Search, RotateCcw } from "lucide-react";
 import { Input } from "@/components/ui/input";
+import { fireAndForget } from "@/lib/safeFetch";
 
 const STORAGE_KEY = "pp-hidden-models";
 
@@ -34,12 +35,13 @@ export function saveHiddenModels(hidden: Set<string>): void {
   } catch {}
 
   // Fire-and-forget server sync
-  void fetch("/api/settings/hidden-models", {
+  fireAndForget("/api/settings/hidden-models", {
     method: "PUT",
     credentials: "include",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ hiddenModels: arr }),
-  }).catch(() => {});
+    operation: "Save hidden models",
+  });
 }
 
 /**
