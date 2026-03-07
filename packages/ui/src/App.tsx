@@ -13,6 +13,7 @@ import type { ViewerServerToClientEvents, ViewerClientToServerEvents } from "@pi
 import { cn } from "@/lib/utils";
 import { pulseStreamingHaptic, cancelHaptic, startToolHaptic, stopToolHaptic } from "@/lib/haptics";
 import { Button } from "@/components/ui/button";
+import { TooltipProvider, Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { Separator } from "@/components/ui/separator";
 import {
   Dialog,
@@ -2378,6 +2379,7 @@ export function App() {
   }
 
   return (
+    <TooltipProvider delayDuration={0}>
     <div className="flex h-[100dvh] w-full flex-col overflow-hidden bg-background pp-safe-left pp-safe-right">
       {/* ── Desktop header ────────────────────────────────────────────── */}
       <header className="hidden md:flex items-center justify-between gap-3 border-b bg-background px-4 pb-2 pt-[calc(0.5rem_+_env(safe-area-inset-top))] flex-shrink-0">
@@ -2398,41 +2400,53 @@ export function App() {
         </div>
 
         <div className="flex items-center gap-2">
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-9 w-9"
-            onClick={() => setIsDark((d) => !d)}
-            aria-label="Toggle dark mode"
-            title="Toggle dark mode"
-          >
-            {isDark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-          </Button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-9 w-9"
+                onClick={() => setIsDark((d) => !d)}
+                aria-label="Toggle dark mode"
+              >
+                {isDark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Toggle dark mode</TooltipContent>
+          </Tooltip>
 
           <NotificationToggle />
           <HapticsToggle />
 
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-9 w-9"
-            onClick={() => { setShowApiKeys(true); setShowRunners(false); }}
-            aria-label="Manage API keys"
-            title="Manage API keys"
-          >
-            <KeyRound className="h-4 w-4" />
-          </Button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-9 w-9"
+                onClick={() => { setShowApiKeys(true); setShowRunners(false); }}
+                aria-label="Manage API keys"
+              >
+                <KeyRound className="h-4 w-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Manage API keys</TooltipContent>
+          </Tooltip>
 
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-9 w-9"
-            onClick={() => setShowShortcutsHelp(true)}
-            aria-label="Keyboard shortcuts"
-            title="Keyboard shortcuts (?)"
-          >
-            <Keyboard className="h-4 w-4" />
-          </Button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-9 w-9"
+                onClick={() => setShowShortcutsHelp(true)}
+                aria-label="Keyboard shortcuts"
+              >
+                <Keyboard className="h-4 w-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Keyboard shortcuts (?)</TooltipContent>
+          </Tooltip>
 
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -2484,15 +2498,20 @@ export function App() {
         style={{ paddingTop: "calc(0.5rem + env(safe-area-inset-top))", paddingBottom: "0.5rem" }}
       >
         {/* Left: sidebar toggle */}
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-9 w-9 flex-shrink-0"
-          onClick={() => setSidebarOpen(prev => !prev)}
-          aria-label={sidebarOpen ? "Close sidebar" : "Open sidebar"}
-        >
-          <PanelLeftOpen className={`h-5 w-5 transition-transform duration-300 ${sidebarOpen ? "rotate-180" : ""}`} />
-        </Button>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-9 w-9 flex-shrink-0"
+              onClick={() => setSidebarOpen(prev => !prev)}
+              aria-label={sidebarOpen ? "Close sidebar" : "Open sidebar"}
+            >
+              <PanelLeftOpen className={`h-5 w-5 transition-transform duration-300 ${sidebarOpen ? "rotate-180" : ""}`} />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>{sidebarOpen ? "Close sidebar" : "Open sidebar"}</TooltipContent>
+        </Tooltip>
 
         {/* Center: session switcher pill or logo */}
         <div className="flex-1 min-w-0 flex justify-center">
@@ -2588,13 +2607,18 @@ export function App() {
             </div>
           )}
           <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon" className="h-9 w-9" aria-label="User menu">
-                <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-muted text-[11px] font-semibold">
-                  {initials(userLabel)}
-                </span>
-              </Button>
-            </DropdownMenuTrigger>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="ghost" size="icon" className="h-9 w-9" aria-label="User menu">
+                    <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-muted text-[11px] font-semibold">
+                      {initials(userLabel)}
+                    </span>
+                  </Button>
+                </DropdownMenuTrigger>
+              </TooltipTrigger>
+              <TooltipContent>User menu</TooltipContent>
+            </Tooltip>
             <DropdownMenuContent align="end" className="w-64">
               <DropdownMenuLabel className="flex items-center gap-2">
                 <User className="h-4 w-4 text-muted-foreground" />
@@ -3233,15 +3257,20 @@ export function App() {
           <div className="absolute inset-y-0 right-0 z-40 flex w-full max-w-md flex-col shadow-xl border-l bg-background">
             <div className="flex items-center justify-between px-4 py-3 border-b">
               <span className="font-semibold text-sm">API Keys</span>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-7 w-7"
-                onClick={() => setShowApiKeys(false)}
-                aria-label="Close"
-              >
-                <X className="h-4 w-4" />
-              </Button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7"
+                    onClick={() => setShowApiKeys(false)}
+                    aria-label="Close"
+                  >
+                    <X className="h-4 w-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Close</TooltipContent>
+              </Tooltip>
             </div>
             <div className="flex-1 overflow-y-auto p-4">
               <div className="flex flex-col gap-4">
@@ -3286,5 +3315,6 @@ export function App() {
         </Dialog>
       </div>
     </div>
+    </TooltipProvider>
   );
 }
