@@ -494,8 +494,12 @@ export function createClaudePluginExtension(cwd: string): ExtensionFactory | nul
                 });
             }
 
+            // Mark local plugins as processed regardless of the trust
+            // decision.  This prevents re-registering already-loaded trusted
+            // plugins on subsequent session_start events (e.g. reconnects).
+            localPluginsLoaded = true;
+
             if (ok) {
-                localPluginsLoaded = true;
                 for (const plugin of untrusted) {
                     registerPlugin(pi, plugin);
                     // Persist trust so future sessions don't re-prompt

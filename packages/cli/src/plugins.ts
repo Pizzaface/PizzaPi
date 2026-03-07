@@ -660,6 +660,10 @@ export function mapHookEventToPi(claudeEvent: ClaudeHookEvent): string | null {
 export function matchesTool(matcher: string | undefined, toolName: string, toolInput?: Record<string, unknown>): boolean {
     if (!matcher) return true; // No matcher = match all
 
+    // Treat common wildcard patterns as match-all
+    const trimmed = matcher.trim();
+    if (trimmed === ".*" || trimmed === "*" || trimmed === ".+") return true;
+
     const patterns = matcher.split("|").map(s => s.trim());
 
     for (const pattern of patterns) {

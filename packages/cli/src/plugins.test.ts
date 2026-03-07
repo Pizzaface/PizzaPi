@@ -246,6 +246,15 @@ describe("matchesTool", () => {
         expect(matchesTool(undefined, "anything")).toBe(true);
     });
 
+    test("treats wildcard patterns as match-all", () => {
+        expect(matchesTool(".*", "edit")).toBe(true);
+        expect(matchesTool(".*", "bash")).toBe(true);
+        expect(matchesTool("*", "write")).toBe(true);
+        expect(matchesTool(".+", "read")).toBe(true);
+        // With surrounding whitespace
+        expect(matchesTool(" .* ", "anything")).toBe(true);
+    });
+
     test("handles compound OR with Bash prefix", () => {
         expect(matchesTool("Bash(git add:*)|Bash(git commit:*)", "bash", { command: "git commit -m 'x'" })).toBe(true);
         expect(matchesTool("Bash(git add:*)|Bash(git commit:*)", "bash", { command: "git push" })).toBe(false);
