@@ -364,6 +364,28 @@ export interface PluginTrustPromptEvent {
 /** Timeout for trust prompt — if no UI responds in 60s, skip local plugins. */
 const TRUST_PROMPT_TIMEOUT_MS = 60_000;
 
+/**
+ * Fire SessionStart hooks for a plugin immediately.
+ *
+ * Needed when plugins are registered inside an already-running session_start
+ * handler — newly added listeners won't retroactively fire.
+ */
+function fireSessionStartHooks(plugin: DiscoveredPlugin): void {
+    if (!plugin.hooks?.hooks.SessionStart) return;
+    for (const group of plugin.hooks.hooks.SessionStart) {
+        if (!group || !Array.isArray(group.hooks)) continue;
+        for (const hook of group.hooks) {
+            if (hook?.type !== "command" || !hook.command) continue;
+            execHookCommand(
+                hook.command,
+                plugin.rootPath,
+                { session_id: "" },
+                (hook.timeout ?? 10) * 1000,
+            ).catch(() => { /* best-effort */ });
+        }
+    }
+}
+
 // ── Extension factory ─────────────────────────────────────────────────────────
 
 /**
@@ -436,7 +458,13 @@ export function createClaudePluginExtension(cwd: string): ExtensionFactory | nul
             if (preTrusted.length > 0) {
                 for (const plugin of preTrusted) {
                     registerPlugin(pi, plugin);
+
+                    // Fire SessionStart hooks immediately — we're already
+                    // inside session_start so newly registered listeners
+                    // won't retroactively fire.
+                    fireSessionStartHooks(plugin);
                 }
+                pi.events.emit("plugin:loaded", { count: preTrusted.length });
                 ctx.ui.notify(
                     `Loaded ${preTrusted.length} trusted local plugin${preTrusted.length > 1 ? "s" : ""}: ${preTrusted.map(pluginSummary).join(", ")}`,
                     "info",
@@ -504,25 +532,11 @@ export function createClaudePluginExtension(cwd: string): ExtensionFactory | nul
                     registerPlugin(pi, plugin);
                     // Persist trust so future sessions don't re-prompt
                     trustPlugin(plugin.rootPath);
-
-                    // Fire SessionStart hooks immediately for local plugins,
-                    // since we're already inside session_start and registering
-                    // a new session_start handler won't retroactively fire it.
-                    if (plugin.hooks?.hooks.SessionStart) {
-                        for (const group of plugin.hooks.hooks.SessionStart) {
-                            if (!group || !Array.isArray(group.hooks)) continue;
-                            for (const hook of group.hooks) {
-                                if (hook?.type !== "command" || !hook.command) continue;
-                                execHookCommand(
-                                    hook.command,
-                                    plugin.rootPath,
-                                    { session_id: "" },
-                                    (hook.timeout ?? 10) * 1000,
-                                ).catch(() => { /* best-effort */ });
-                            }
-                        }
-                    }
+                    fireSessionStartHooks(plugin);
                 }
+                // Notify listeners (e.g. remote extension) so they can
+                // re-send the capabilities snapshot to the web viewer.
+                pi.events.emit("plugin:loaded", { count: untrusted.length });
                 ctx.ui.notify(
                     `Loaded ${untrusted.length} local plugin${untrusted.length > 1 ? "s" : ""}: ${untrusted.map(pluginSummary).join(", ")}`,
                     "info",

@@ -2067,6 +2067,13 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         }
     });
 
+    // When plugins are loaded after the initial capabilities snapshot (e.g.
+    // after the user trusts project-local plugins), re-send capabilities so
+    // the web viewer picks up the new commands.
+    pi.events.on("plugin:loaded", () => {
+        forwardEvent(buildCapabilitiesState());
+    });
+
     // ── Forward agent events to relay ─────────────────────────────────────────
 
     pi.on("agent_start", (event) => {
