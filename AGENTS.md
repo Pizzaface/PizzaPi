@@ -23,6 +23,35 @@ Build order: `tools` → `server` → `ui` → `cli`.
 
 ---
 
+## Planning & Estimation
+
+**Agents work fast.** Do not use human-centric time estimates.
+
+- ❌ Don't: "80 hours", "4-6 weeks", "Week 1-2"
+- ✅ Do: Dependencies, parallelization, complexity tiers (Simple/Medium/Complex)
+
+**Plan structure:**
+```
+DELIVERABLE: [Name]
+├── Complexity: Simple | Medium | Complex
+├── Dependencies: [What must exist first]
+├── Parallelizable: Yes (spawn N agents) | No
+└── Done when: [Concrete criteria]
+```
+
+**Parallelize when possible:**
+```
+PHASE 1: [parallelizable, no deps]
+├── Agent A: [task]
+├── Agent B: [task]
+└── CHECKPOINT: Review before Phase 2
+
+PHASE 2: [depends on Phase 1]
+└── Agent A: [task]
+```
+
+---
+
 ## Documentation Site
 
 User-facing documentation lives in `packages/docs/` — a [Starlight](https://starlight.astro.build/) (Astro) site deployed to GitHub Pages.
