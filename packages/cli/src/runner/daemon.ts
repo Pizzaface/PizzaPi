@@ -3,6 +3,7 @@ import { promisify } from "node:util";
 
 const execAsync = promisify(exec);
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { fetchWithTimeout, DEFAULT_TIMEOUT_MS } from "../utils/network.js";
 import { mkdir, readdir, stat, readFile } from "node:fs/promises";
 import { randomBytes, randomUUID } from "node:crypto";
 import { homedir, hostname } from "node:os";
@@ -197,13 +198,17 @@ async function fetchAnthropicUsageData(): Promise<ProviderUsageData | null> {
     const token = (auth as any)?.anthropic?.access;
     if (!token || typeof token !== "string") return null;
     try {
-        const res = await fetch("https://api.anthropic.com/api/oauth/usage", {
-            headers: {
-                Authorization: `Bearer ${token}`,
-                "anthropic-version": "2023-06-01",
-                "anthropic-beta": "oauth-2025-04-20",
+        const res = await fetchWithTimeout(
+            "https://api.anthropic.com/api/oauth/usage",
+            {
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                    "anthropic-version": "2023-06-01",
+                    "anthropic-beta": "oauth-2025-04-20",
+                },
             },
-        });
+            { timeoutMs: DEFAULT_TIMEOUT_MS, operation: "anthropic-usage" }
+        );
         if (!res.ok) return null;
         const raw = (await res.json()) as Record<string, unknown>;
         const WINDOW_LABELS: Record<string, string> = {
@@ -246,11 +251,15 @@ async function fetchGeminiUsageData(): Promise<ProviderUsageData | null> {
     try {
         const endpoint = process.env["CODE_ASSIST_ENDPOINT"] ?? "https://cloudcode-pa.googleapis.com";
         const version = process.env["CODE_ASSIST_API_VERSION"] ?? "v1internal";
-        const res = await fetch(`${endpoint}/${version}:retrieveUserQuota`, {
-            method: "POST",
-            headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-            body: JSON.stringify({ project: projectId }),
-        });
+        const res = await fetchWithTimeout(
+            `${endpoint}/${version}:retrieveUserQuota`,
+            {
+                method: "POST",
+                headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+                body: JSON.stringify({ project: projectId }),
+            },
+            { timeoutMs: DEFAULT_TIMEOUT_MS, operation: "gemini-usage" }
+        );
         if (!res.ok) return null;
         const raw = (await res.json()) as {
             buckets?: Array<{ remainingFraction?: number; resetTime?: string; tokenType?: string; modelId?: string }>;
@@ -273,9 +282,11 @@ async function fetchCodexUsageData(): Promise<ProviderUsageData | null> {
     const token = (auth as any)?.["openai-codex"]?.access;
     if (!token || typeof token !== "string") return null;
     try {
-        const res = await fetch("https://chatgpt.com/backend-api/wham/usage", {
-            headers: { Authorization: `Bearer ${token}` },
-        });
+        const res = await fetchWithTimeout(
+            "https://chatgpt.com/backend-api/wham/usage",
+            { headers: { Authorization: `Bearer ${token}` } },
+            { timeoutMs: DEFAULT_TIMEOUT_MS, operation: "codex-usage" }
+        );
         if (!res.ok) return null;
         const raw = (await res.json()) as any;
 
@@ -578,9 +589,10 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             const entry = runningSessions.get(sessionId);
             if (entry) {
                 if (entry.child) {
+                    // Best-effort kill: child may have already exited
                     try {
                         entry.child.kill("SIGTERM");
-                    } catch {}
+                    } catch { /* Intentionally ignored — process may be dead */ }
                 } else if (entry.adopted) {
                     // No child handle — ask the relay to disconnect the worker's
                     // socket, which sends end_session then force-disconnects.
@@ -856,10 +868,11 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                         .map(async (e) => {
                             const fullPath = join(dirPath, e.name);
                             let size: number | undefined;
+                            // Best-effort: stat may fail for broken symlinks, permission issues, etc.
                             try {
                                 const s = await stat(fullPath);
                                 size = s.size;
-                            } catch {}
+                            } catch { /* Intentionally ignored — size is optional */ }
                             return {
                                 name: e.name,
                                 path: fullPath,
@@ -1087,7 +1100,19 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             }
             try {
                 const args = staged ? ["diff", "--cached", "--", filePath] : ["diff", "--", filePath];
-                const { stdout: diff } = await execAsync(`git ${args.join(" ")}`, { cwd, timeout: 10000 });
+                // Use spawn with array arguments to avoid shell injection via filenames
+                const diff = await new Promise<string>((resolve, reject) => {
+                    const child = spawn("git", args, { cwd, timeout: 10000 });
+                    let stdout = "";
+                    let stderr = "";
+                    child.stdout.on("data", (chunk) => { stdout += chunk.toString(); });
+                    child.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
+                    child.on("error", reject);
+                    child.on("close", (code) => {
+                        if (code === 0) resolve(stdout);
+                        else reject(new Error(stderr || `git diff exited with code ${code}`));
+                    });
+                });
                 socket.emit("file_result", { requestId, ok: true, diff });
             } catch (err) {
                 socket.emit("file_result", {

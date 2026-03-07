@@ -79,7 +79,7 @@ function resolvePtyLibPath(): string | undefined {
         const pkgDir = dirname(fileURLToPath(entryUrl));
         const candidate = join(pkgDir, libName);
         if (existsSync(candidate)) return candidate;
-    } catch {}
+    } catch { /* Intentionally ignored */ }
 
     return undefined;
 }
@@ -282,7 +282,7 @@ export function killTerminal(terminalId: string): boolean {
     runningTerminals.delete(terminalId);
     try {
         entry.worker.send({ type: "kill" });
-    } catch {}
+    } catch { /* Intentionally ignored */ }
     try {
         entry.worker.kill("SIGTERM");
     } catch (err) {
@@ -299,8 +299,8 @@ export function listTerminals(): string[] {
 /** Kill all running terminals (used on daemon shutdown). */
 export function killAllTerminals(): void {
     for (const [id, entry] of runningTerminals) {
-        try { entry.worker.send({ type: "kill" }); } catch {}
-        try { entry.worker.kill("SIGTERM"); } catch {}
+        try { entry.worker.send({ type: "kill" }); } catch { /* Intentionally ignored */ }
+        try { entry.worker.kill("SIGTERM"); } catch { /* Intentionally ignored */ }
         runningTerminals.delete(id);
     }
 }

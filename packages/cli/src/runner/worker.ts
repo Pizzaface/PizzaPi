@@ -143,7 +143,7 @@ async function main(): Promise<void> {
     const shutdown = () => {
         try {
             session.dispose();
-        } catch {}
+        } catch { /* Intentionally ignored — shutdown cleanup */ }
         process.exit(0);
     };
 

@@ -124,7 +124,7 @@ process.on("message", (msg: unknown) => {
             break;
         }
         case "kill": {
-            try { ptyProcess.kill(); } catch {}
+            try { ptyProcess.kill(); } catch { /* Intentionally ignored — PTY cleanup */ }
             process.exit(0);
             break;
         }
@@ -133,6 +133,6 @@ process.on("message", (msg: unknown) => {
 
 // If the parent dies, so should we.
 process.on("disconnect", () => {
-    try { ptyProcess.kill(); } catch {}
+    try { ptyProcess.kill(); } catch { /* Intentionally ignored — PTY cleanup */ }
     process.exit(0);
 });

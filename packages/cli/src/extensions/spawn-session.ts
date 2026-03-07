@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionFactory } from "@mariozechner/pi-coding-agent";
 import { loadConfig } from "../config.js";
+import { fetchWithTimeout, SLOW_OPERATION_TIMEOUT_MS } from "../utils/network.js";
 
 /** Minimal Component that renders nothing — keeps the tool call invisible in the TUI. */
 const silent = { render: (_width: number): string[] => [], invalidate: () => {} };
@@ -150,14 +151,18 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
             }
 
             try {
-                const response = await fetch(`${relayBase}/api/runners/spawn`, {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json",
-                        "x-api-key": apiKey,
+                const response = await fetchWithTimeout(
+                    `${relayBase}/api/runners/spawn`,
+                    {
+                        method: "POST",
+                        headers: {
+                            "Content-Type": "application/json",
+                            "x-api-key": apiKey,
+                        },
+                        body: JSON.stringify(body),
                     },
-                    body: JSON.stringify(body),
-                });
+                    { timeoutMs: SLOW_OPERATION_TIMEOUT_MS, operation: "spawn-session" }
+                );
 
                 const result = await response.json() as Record<string, unknown>;
 
