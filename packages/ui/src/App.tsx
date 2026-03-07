@@ -208,7 +208,7 @@ interface SessionUiCacheEntry {
   activeModel: ConfiguredModelInfo | null;
   sessionName: string | null;
   availableModels: ConfiguredModelInfo[];
-  availableCommands: Array<{ name: string; description?: string }>;
+  availableCommands: Array<{ name: string; description?: string; source?: string }>;
   agentActive: boolean;
   isCompacting: boolean;
   effortLevel: string | null;
@@ -676,7 +676,7 @@ export function App() {
   const awaitingSnapshotRef = React.useRef(false);
 
   // Capabilities advertised by the runner (commands, models, etc.)
-  const [availableCommands, setAvailableCommands] = React.useState<Array<{ name: string; description?: string }>>([]);
+  const [availableCommands, setAvailableCommands] = React.useState<Array<{ name: string; description?: string; source?: string }>>([]);
 
   // /resume picker state (fetched from runner session files)
   const [resumeSessions, setResumeSessions] = React.useState<ResumeSessionOption[]>([]);
@@ -1265,7 +1265,7 @@ export function App() {
       const normalizedModels = normalizeModelList(modelsRaw);
       const normalizedCommands = commandsRaw
         .filter((c) => c && typeof c === "object" && typeof c.name === "string")
-        .map((c) => ({ name: String(c.name), description: typeof c.description === "string" ? c.description : undefined }))
+        .map((c) => ({ name: String(c.name), description: typeof c.description === "string" ? c.description : undefined, source: typeof c.source === "string" ? c.source : undefined }))
         .sort((a, b) => a.name.localeCompare(b.name));
 
       // Keep model state in sync with capability snapshots too.

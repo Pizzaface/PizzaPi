@@ -61,7 +61,7 @@ import { ProviderIcon } from "@/components/ProviderIcon";
 import { MultipleChoiceQuestions } from "@/components/ai-elements/multiple-choice";
 import { formatAnswersForAgent, type QuestionDisplayMode } from "@/lib/ask-user-questions";
 import { dismissNotificationsForSession } from "@/lib/push";
-import { AlertTriangleIcon, ArrowDownIcon, BookOpen, CheckCircle2, ChevronsUpDown, Circle, CircleDashed, Loader2, MessageSquare, OctagonX, PaperclipIcon, Plus, ShieldAlert, Zap, Clock, X, Trash2, TerminalIcon, DownloadIcon, XCircle, FolderTree } from "lucide-react";
+import { AlertTriangleIcon, ArrowDownIcon, BookOpen, CheckCircle2, ChevronsUpDown, Circle, CircleDashed, Loader2, MessageSquare, OctagonX, PaperclipIcon, Plus, Puzzle, ShieldAlert, Zap, Clock, X, Trash2, TerminalIcon, DownloadIcon, XCircle, FolderTree } from "lucide-react";
 import { AtMentionPopover } from "@/components/AtMentionPopover";
 import type { Entry as AtMentionEntry } from "@/hooks/useAtMentionFiles";
 
@@ -108,7 +108,7 @@ export interface SessionViewerProps {
   pluginTrustPrompt?: { promptId: string; pluginNames: string[]; pluginSummaries: string[] } | null;
   /** Respond to the plugin trust prompt */
   onPluginTrustResponse?: (trusted: boolean) => void;
-  availableCommands?: Array<{ name: string; description?: string }>;
+  availableCommands?: Array<{ name: string; description?: string; source?: string }>;
   resumeSessions?: ResumeSessionOption[];
   resumeSessionsLoading?: boolean;
   onRequestResumeSessions?: () => boolean | void;
@@ -515,14 +515,33 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [agentActive, onExec, showClearDialog, showEndSessionDialog, commandOpen, atMentionOpen]);
 
-  // Extract skills from availableCommands (CLI sends them as "skill:name")
-  // Defined early so executeSlashCommand can reference it.
-  const skillCommands = React.useMemo(() => {
-    if (!availableCommands) return [];
-    return availableCommands
-      .filter((c) => c.name.startsWith("skill:"))
-      .map((c) => ({ name: c.name, description: c.description }));
-  }, [availableCommands]);
+  // Commands from the CLI that the web UI already handles via executeSlashCommand.
+  // These are excluded from the "CLI Commands" group to avoid duplicates.
+  const webHandledCommands = React.useMemo(() => new Set([
+    "new", "resume", "mcp", "plugins", "skills", "model", "cycle_model",
+    "effort", "cycle_effort", "compact", "name", "copy", "stop", "restart",
+  ]), []);
+
+  // Split availableCommands (from the CLI) into groups by source.
+  // Everything not already handled by the web UI is shown in the hotbar.
+  type CmdEntry = { name: string; description?: string; source?: string };
+  const { extensionCommands, skillCommands, promptCommands } = React.useMemo<{
+    extensionCommands: CmdEntry[];
+    skillCommands: CmdEntry[];
+    promptCommands: CmdEntry[];
+  }>(() => {
+    if (!availableCommands) return { extensionCommands: [], skillCommands: [], promptCommands: [] };
+    const ext: CmdEntry[] = [];
+    const skill: CmdEntry[] = [];
+    const prompt: CmdEntry[] = [];
+    for (const c of availableCommands) {
+      if (webHandledCommands.has(c.name.toLowerCase())) continue;
+      if (c.source === "skill") skill.push(c);
+      else if (c.source === "prompt") prompt.push(c);
+      else ext.push(c); // "extension" or unknown source
+    }
+    return { extensionCommands: ext, skillCommands: skill, promptCommands: prompt };
+  }, [availableCommands, webHandledCommands]);
 
   const executeSlashCommand = React.useCallback((text: string): boolean => {
     const trimmed = text.trim();
@@ -566,14 +585,14 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
       fetch(`/api/runners/${encodeURIComponent(runnerId)}/plugins`, { credentials: "include" })
         .then((res) => res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))
         .then((data: any) => {
-          const raw: Array<{ name: string; description?: string; commands?: Array<{ name: string }>; hookEvents?: string[]; skills?: Array<{ name: string }>; rules?: Array<{ name: string }>; version?: string; hasMcp?: boolean; hasAgents?: boolean }> = Array.isArray(data?.plugins) ? data.plugins : [];
+          const raw: Array<{ name: string; description?: string; commands?: Array<{ name: string; description?: string }>; hookEvents?: string[]; skills?: Array<{ name: string }>; rules?: Array<{ name: string }>; version?: string; hasMcp?: boolean; hasAgents?: boolean }> = Array.isArray(data?.plugins) ? data.plugins : [];
           onAppendSystemMessage?.({
             kind: "plugins",
             plugins: raw.map((p) => ({
               name: p.name,
               description: p.description,
               version: p.version,
-              commandCount: p.commands?.length ?? 0,
+              commands: (p.commands ?? []).map((c) => ({ name: c.name, description: c.description })),
               hookCount: p.hookEvents?.length ?? 0,
               skillCount: p.skills?.length ?? 0,
               ruleCount: p.rules?.length ?? 0,
@@ -761,9 +780,11 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
   const knownCommandNames = React.useMemo(() => {
     const names = new Set<string>();
     for (const c of supportedWebCommands) names.add(c.name.toLowerCase());
-    for (const s of skillCommands) names.add(s.name.toLowerCase());
+    for (const c of extensionCommands) names.add(c.name.toLowerCase());
+    for (const c of skillCommands) names.add(c.name.toLowerCase());
+    for (const c of promptCommands) names.add(c.name.toLowerCase());
     return names;
-  }, [supportedWebCommands, skillCommands]);
+  }, [supportedWebCommands, extensionCommands, skillCommands, promptCommands]);
 
   // Commands that use the popover for argument-mode UI (e.g. resume shows a
   // session picker that the user searches/filters by typing after /resume).
@@ -788,6 +809,22 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
       (c) => c.name.toLowerCase().includes(query) || (c.description?.toLowerCase().includes(query) ?? false),
     );
   }, [commandQuery, skillCommands]);
+
+  const extensionSuggestions = React.useMemo(() => {
+    const query = commandQuery.trim().toLowerCase();
+    if (!query) return extensionCommands;
+    return extensionCommands.filter(
+      (c) => c.name.toLowerCase().includes(query) || (c.description?.toLowerCase().includes(query) ?? false),
+    );
+  }, [commandQuery, extensionCommands]);
+
+  const promptSuggestions = React.useMemo(() => {
+    const query = commandQuery.trim().toLowerCase();
+    if (!query) return promptCommands;
+    return promptCommands.filter(
+      (c) => c.name.toLowerCase().includes(query) || (c.description?.toLowerCase().includes(query) ?? false),
+    );
+  }, [commandQuery, promptCommands]);
 
   // @-mention file selection: replace trigger to cursor with @{relativePath} 
   const handleAtMentionSelectFile = React.useCallback((relativePath: string) => {
@@ -884,9 +921,9 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     if (isResumeMode) {
       return resumeCandidates[commandHighlightedIndex]?.path ?? "";
     }
-    const combined = [...commandSuggestions, ...skillSuggestions];
+    const combined = [...commandSuggestions, ...extensionSuggestions, ...promptSuggestions, ...skillSuggestions];
     return combined[commandHighlightedIndex]?.name ?? "";
-  }, [commandOpen, isResumeMode, resumeCandidates, commandSuggestions, skillSuggestions, commandHighlightedIndex]);
+  }, [commandOpen, isResumeMode, resumeCandidates, commandSuggestions, extensionSuggestions, promptSuggestions, skillSuggestions, commandHighlightedIndex]);
 
   const resumeRequestedRef = React.useRef<string | null>(null);
   const compactingRef = React.useRef(false);
@@ -1424,7 +1461,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                   const idx = resumeCandidates.findIndex(s => s.path.toLowerCase() === v.toLowerCase());
                   if (idx !== -1) setCommandHighlightedIndex(idx);
                 } else {
-                  const combined = [...commandSuggestions, ...skillSuggestions];
+                  const combined = [...commandSuggestions, ...extensionSuggestions, ...promptSuggestions, ...skillSuggestions];
                   const idx = combined.findIndex(c => c.name.toLowerCase() === v.toLowerCase());
                   if (idx !== -1) setCommandHighlightedIndex(idx);
                 }
@@ -1510,6 +1547,59 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                         ))}
                       </CommandGroup>
                     )}
+                    {extensionSuggestions.length > 0 && (
+                      <CommandGroup heading="Plugin Commands">
+                        {extensionSuggestions.map((cmd) => (
+                          <CommandItem
+                            key={cmd.name}
+                            value={cmd.name}
+                            onSelect={() => {
+                              setInput(`/${cmd.name} `);
+                              setCommandQuery("");
+                              setCommandOpen(false);
+                              requestAnimationFrame(() => {
+                                document.querySelector<HTMLTextAreaElement>("[data-pp-prompt]")?.focus();
+                              });
+                            }}
+                          >
+                            <div className="flex w-full items-center justify-between gap-2">
+                              <div className="flex items-center gap-1.5 min-w-0">
+                                <Puzzle className="size-3.5 shrink-0 text-primary/60" />
+                                <span className="font-mono text-sm truncate">/{cmd.name}</span>
+                              </div>
+                              {cmd.description && (
+                                <span className="text-xs text-muted-foreground truncate max-w-[50%]">{cmd.description}</span>
+                              )}
+                            </div>
+                          </CommandItem>
+                        ))}
+                      </CommandGroup>
+                    )}
+                    {promptSuggestions.length > 0 && (
+                      <CommandGroup heading="Prompt Templates">
+                        {promptSuggestions.map((cmd) => (
+                          <CommandItem
+                            key={cmd.name}
+                            value={cmd.name}
+                            onSelect={() => {
+                              setInput(`/${cmd.name} `);
+                              setCommandQuery("");
+                              setCommandOpen(false);
+                              requestAnimationFrame(() => {
+                                document.querySelector<HTMLTextAreaElement>("[data-pp-prompt]")?.focus();
+                              });
+                            }}
+                          >
+                            <div className="flex w-full items-center justify-between gap-2">
+                              <span className="font-mono text-sm truncate">/{cmd.name}</span>
+                              {cmd.description && (
+                                <span className="text-xs text-muted-foreground truncate max-w-[50%]">{cmd.description}</span>
+                              )}
+                            </div>
+                          </CommandItem>
+                        ))}
+                      </CommandGroup>
+                    )}
                     {skillSuggestions.length > 0 && (
                       <CommandGroup heading="Skills">
                         {skillSuggestions.map((skill) => (
@@ -1517,11 +1607,9 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                             key={skill.name}
                             value={skill.name}
                             onSelect={() => {
-                              // Set input to /skill:name and let user add arguments
                               setInput(`/${skill.name} `);
                               setCommandQuery("");
                               setCommandOpen(false);
-                              // Focus the textarea so user can type args or press Enter
                               requestAnimationFrame(() => {
                                 document.querySelector<HTMLTextAreaElement>("[data-pp-prompt]")?.focus();
                               });
@@ -1740,7 +1828,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                       event.preventDefault();
                       const totalItems = isResumeMode
                         ? resumeCandidates.length
-                        : commandSuggestions.length + skillSuggestions.length;
+                        : commandSuggestions.length + extensionSuggestions.length + promptSuggestions.length + skillSuggestions.length;
                       if (totalItems === 0) return;
                       setCommandHighlightedIndex(prev => {
                         if (event.key === "ArrowDown") {
@@ -1765,7 +1853,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                           return;
                         }
                       } else {
-                        const combined = [...commandSuggestions, ...skillSuggestions];
+                        const combined = [...commandSuggestions, ...extensionSuggestions, ...promptSuggestions, ...skillSuggestions];
                         const highlighted = combined[commandHighlightedIndex];
                         if (highlighted) {
                           event.preventDefault();
@@ -1788,9 +1876,9 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                     }
 
                     // Tab: autocomplete the highlighted command (or first match) and close the popover
-                    if (event.key === "Tab" && (commandSuggestions.length > 0 || skillSuggestions.length > 0)) {
+                    if (event.key === "Tab" && (commandSuggestions.length > 0 || extensionSuggestions.length > 0 || promptSuggestions.length > 0 || skillSuggestions.length > 0)) {
                       event.preventDefault();
-                      const combined = [...commandSuggestions, ...skillSuggestions];
+                      const combined = [...commandSuggestions, ...extensionSuggestions, ...promptSuggestions, ...skillSuggestions];
                       const highlighted = combined[commandHighlightedIndex] ?? combined[0];
                       if (highlighted) {
                         setInput(`/${highlighted.name} `);

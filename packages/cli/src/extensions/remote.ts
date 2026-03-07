@@ -767,6 +767,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         const commands = (pi.getCommands?.() ?? []).map((c: any) => ({
             name: c.name,
             description: c.description,
+            source: c.source,
         }));
 
         return {
@@ -832,7 +833,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         try {
             if (req.command === "get_commands") {
                 // Return the same list we already advertise in capabilities
-                const commands = (pi.getCommands?.() ?? []).map((c: any) => ({ name: c.name, description: c.description }));
+                const commands = (pi.getCommands?.() ?? []).map((c: any) => ({ name: c.name, description: c.description, source: c.source }));
                 replyOk({ commands });
                 return;
             }

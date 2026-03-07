@@ -57,11 +57,16 @@ export interface McpResultData {
 
 // ── Plugins ───────────────────────────────────────────────────────────────────
 
+export interface PluginCommandEntry {
+  name: string;
+  description?: string;
+}
+
 export interface PluginEntry {
   name: string;
   description?: string;
   version?: string;
-  commandCount: number;
+  commands: PluginCommandEntry[];
   hookCount: number;
   skillCount: number;
   ruleCount: number;
@@ -242,6 +247,95 @@ function FlatToolList({ toolNames }: { toolNames: string[] }) {
   );
 }
 
+/** Collapsible plugin row that expands to show commands */
+function PluginEntryRow({ plugin }: { plugin: PluginEntry }) {
+  const [open, setOpen] = React.useState(false);
+  const commandCount = plugin.commands.length;
+
+  return (
+    <li className="border-b border-zinc-800/60 last:border-b-0">
+      <button
+        type="button"
+        onClick={() => commandCount > 0 && setOpen(!open)}
+        className={cn(
+          "flex items-start gap-2.5 w-full text-left px-4 py-2.5 transition-colors",
+          commandCount > 0 && "hover:bg-zinc-900/50 cursor-pointer",
+        )}
+      >
+        {commandCount > 0 ? (
+          <ChevronDown className={cn("size-3 mt-0.5 shrink-0 text-zinc-500 transition-transform", open && "rotate-180")} />
+        ) : (
+          <Puzzle className="size-3.5 mt-0.5 shrink-0 text-zinc-500" />
+        )}
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-xs font-semibold font-mono text-zinc-200">{plugin.name}</span>
+            {plugin.version && (
+              <Badge variant="outline" className="h-3.5 px-1 text-[9px] font-mono border-zinc-700 text-zinc-500">
+                v{plugin.version}
+              </Badge>
+            )}
+          </div>
+          {plugin.description && (
+            <p className="text-[11px] text-zinc-500 mt-0.5 line-clamp-2">{plugin.description}</p>
+          )}
+          <div className="flex items-center gap-2 mt-1 flex-wrap">
+            {commandCount > 0 && (
+              <span className="inline-flex items-center gap-0.5 text-[10px] text-zinc-500">
+                <Terminal className="size-2.5" />
+                {commandCount} cmd{commandCount > 1 ? "s" : ""}
+              </span>
+            )}
+            {plugin.hookCount > 0 && (
+              <span className="inline-flex items-center gap-0.5 text-[10px] text-zinc-500">
+                <Zap className="size-2.5" />
+                {plugin.hookCount} hook{plugin.hookCount > 1 ? "s" : ""}
+              </span>
+            )}
+            {plugin.skillCount > 0 && (
+              <span className="inline-flex items-center gap-0.5 text-[10px] text-zinc-500">
+                <BookOpen className="size-2.5" />
+                {plugin.skillCount} skill{plugin.skillCount > 1 ? "s" : ""}
+              </span>
+            )}
+            {(plugin.ruleCount ?? 0) > 0 && (
+              <span className="inline-flex items-center gap-0.5 text-[10px] text-zinc-500">
+                <FileText className="size-2.5" />
+                {plugin.ruleCount} rule{plugin.ruleCount > 1 ? "s" : ""}
+              </span>
+            )}
+            {plugin.hasMcp && (
+              <span className="inline-flex items-center gap-0.5 text-[10px] text-amber-500/80">
+                <AlertTriangle className="size-2.5" />
+                MCP
+              </span>
+            )}
+            {plugin.hasAgents && (
+              <span className="inline-flex items-center gap-0.5 text-[10px] text-amber-500/80">
+                <Bot className="size-2.5" />
+                Agents
+              </span>
+            )}
+          </div>
+        </div>
+      </button>
+      {open && commandCount > 0 && (
+        <div className="px-4 pb-2.5 pt-0.5 flex flex-wrap gap-1">
+          {plugin.commands.map((cmd) => (
+            <span
+              key={cmd.name}
+              className="inline-flex items-center rounded bg-zinc-800/80 px-1.5 py-0.5 text-[10px] font-mono text-zinc-400"
+              title={cmd.description}
+            >
+              /{plugin.name}:{cmd.name}
+            </span>
+          ))}
+        </div>
+      )}
+    </li>
+  );
+}
+
 function PluginsCard({ data }: { data: PluginsResultData }) {
   if (data.plugins.length === 0) {
     return (
@@ -259,72 +353,28 @@ function PluginsCard({ data }: { data: PluginsResultData }) {
     );
   }
 
+  const totalCommands = data.plugins.reduce((sum, p) => sum + p.commands.length, 0);
+
   return (
     <ToolCardShell>
       <ToolCardHeader>
         <ToolCardTitle icon={<Puzzle className="size-4 shrink-0 text-zinc-400" />}>
           <span className="text-sm font-medium text-zinc-300">Plugins</span>
         </ToolCardTitle>
-        <StatusPill variant="success">
-          {data.plugins.length} loaded
-        </StatusPill>
+        <div className="flex items-center gap-1.5">
+          <StatusPill variant="success">
+            {data.plugins.length} loaded
+          </StatusPill>
+          {totalCommands > 0 && (
+            <StatusPill variant="neutral">
+              {totalCommands} cmd{totalCommands !== 1 ? "s" : ""}
+            </StatusPill>
+          )}
+        </div>
       </ToolCardHeader>
-      <ul className="divide-y divide-zinc-800/60">
+      <ul>
         {data.plugins.map((p) => (
-          <li key={p.name} className="px-4 py-2.5 flex items-start gap-2.5">
-            <Puzzle className="size-3.5 mt-0.5 shrink-0 text-zinc-500" />
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="text-xs font-semibold font-mono text-zinc-200">{p.name}</span>
-                {p.version && (
-                  <Badge variant="outline" className="h-3.5 px-1 text-[9px] font-mono border-zinc-700 text-zinc-500">
-                    v{p.version}
-                  </Badge>
-                )}
-              </div>
-              {p.description && (
-                <p className="text-[11px] text-zinc-500 mt-0.5 line-clamp-2">{p.description}</p>
-              )}
-              <div className="flex items-center gap-2 mt-1 flex-wrap">
-                {p.commandCount > 0 && (
-                  <span className="inline-flex items-center gap-0.5 text-[10px] text-zinc-500">
-                    <Terminal className="size-2.5" />
-                    {p.commandCount} cmd{p.commandCount > 1 ? "s" : ""}
-                  </span>
-                )}
-                {p.hookCount > 0 && (
-                  <span className="inline-flex items-center gap-0.5 text-[10px] text-zinc-500">
-                    <Zap className="size-2.5" />
-                    {p.hookCount} hook{p.hookCount > 1 ? "s" : ""}
-                  </span>
-                )}
-                {p.skillCount > 0 && (
-                  <span className="inline-flex items-center gap-0.5 text-[10px] text-zinc-500">
-                    <BookOpen className="size-2.5" />
-                    {p.skillCount} skill{p.skillCount > 1 ? "s" : ""}
-                  </span>
-                )}
-                {(p.ruleCount ?? 0) > 0 && (
-                  <span className="inline-flex items-center gap-0.5 text-[10px] text-zinc-500">
-                    <FileText className="size-2.5" />
-                    {p.ruleCount} rule{p.ruleCount > 1 ? "s" : ""}
-                  </span>
-                )}
-                {p.hasMcp && (
-                  <span className="inline-flex items-center gap-0.5 text-[10px] text-amber-500/80">
-                    <AlertTriangle className="size-2.5" />
-                    MCP
-                  </span>
-                )}
-                {p.hasAgents && (
-                  <span className="inline-flex items-center gap-0.5 text-[10px] text-amber-500/80">
-                    <Bot className="size-2.5" />
-                    Agents
-                  </span>
-                )}
-              </div>
-            </div>
-          </li>
+          <PluginEntryRow key={p.name} plugin={p} />
         ))}
       </ul>
     </ToolCardShell>
