@@ -743,6 +743,7 @@ export interface RegisterRunnerOpts {
     requestedRunnerId?: string;
     runnerSecret?: string;
     skills?: RunnerSkill[];
+    plugins?: unknown[];
     userId?: string | null;
     userName?: string | null;
     version?: string | null;
@@ -787,6 +788,9 @@ export async function registerRunner(
         .filter(Boolean);
 
     const skills = normalizeSkills(opts.skills);
+    const plugins = Array.isArray(opts.plugins)
+        ? opts.plugins.filter((p): p is Record<string, unknown> => p !== null && typeof p === "object" && typeof (p as any).name === "string")
+        : [];
 
     const runnerData: RedisRunnerData = {
         runnerId,
@@ -795,6 +799,7 @@ export async function registerRunner(
         name: opts.name?.trim() || null,
         roots: JSON.stringify(roots),
         skills: JSON.stringify(skills),
+        plugins: JSON.stringify(plugins),
         version: typeof opts.version === "string" ? opts.version : null,
     };
 
@@ -808,6 +813,18 @@ export async function registerRunner(
 export async function updateRunnerSkills(runnerId: string, skills: RunnerSkill[]): Promise<void> {
     const normalized = normalizeSkills(skills);
     await updateRunnerFields(runnerId, { skills: JSON.stringify(normalized) });
+}
+
+/**
+ * Persist the runner's discovered Claude Code plugins to Redis.
+ * Plugins are stored as a JSON-serialized array in the runner hash.
+ */
+export async function updateRunnerPlugins(runnerId: string, plugins: unknown[]): Promise<void> {
+    // Light normalization — keep the plugin info objects as-is but ensure they're valid
+    const normalized = Array.isArray(plugins)
+        ? plugins.filter((p): p is Record<string, unknown> => p !== null && typeof p === "object" && typeof (p as any).name === "string")
+        : [];
+    await updateRunnerFields(runnerId, { plugins: JSON.stringify(normalized) });
 }
 
 /** Record that a runner spawned a session. */
@@ -909,6 +926,7 @@ export async function getRunners(filterUserId?: string): Promise<RunnerInfo[]> {
             roots: safeJsonParse(r.roots) ?? [],
             sessionCount: sessionCounts.get(r.runnerId) ?? 0,
             skills: safeJsonParse(r.skills) ?? [],
+            plugins: safeJsonParse(r.plugins ?? "[]") ?? [],
             version: r.version ?? null,
         });
     }

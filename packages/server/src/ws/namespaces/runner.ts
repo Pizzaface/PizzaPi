@@ -22,6 +22,7 @@ import { apiKeyAuthMiddleware } from "./auth.js";
 import {
     registerRunner,
     updateRunnerSkills,
+    updateRunnerPlugins,
     publishSessionEvent,
     recordRunnerSession,
     linkSessionToRunner,
@@ -172,6 +173,7 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
             const requestedRunnerId = data.runnerId;
             const runnerSecret = data.runnerSecret;
             const skills = data.skills ?? [];
+            const plugins = data.plugins ?? [];
             const version = data.version ?? null;
 
             const result = await registerRunner(socket, {
@@ -180,6 +182,7 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
                 requestedRunnerId,
                 runnerSecret,
                 skills,
+                plugins,
                 version,
                 userId: (socket.data as RunnerSocketData & { userId?: string }).userId ?? null,
                 userName: (socket.data as RunnerSocketData & { userName?: string }).userName ?? null,
@@ -250,6 +253,28 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
             // If the runner also sent an updated skills list, persist it
             if (socket.data.runnerId && data.skills) {
                 await updateRunnerSkills(socket.data.runnerId, data.skills);
+            }
+        });
+
+        // ── plugins_list — runner reports discovered Claude Code plugins ─────
+        socket.on("plugins_list" as any, async (data: any) => {
+            const runnerId = socket.data.runnerId;
+            const plugins = data?.plugins ?? [];
+
+            if (runnerId) {
+                // Store plugins alongside runner in Redis (same pattern as skills)
+                await updateRunnerPlugins(runnerId, plugins);
+            }
+
+            // Resolve pending plugin request if any
+            const requestId = data?.requestId;
+            if (requestId) {
+                const pending = pendingRunnerCommands.get(requestId);
+                if (pending) {
+                    clearTimeout(pending.timer);
+                    pendingRunnerCommands.delete(requestId);
+                    pending.resolve({ ok: true, plugins });
+                }
             }
         });
 

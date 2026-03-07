@@ -297,6 +297,41 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         return undefined;
     }
 
+    // ── Plugins (Claude Code plugin adapter) ─────────────────────────
+    const pluginsMatch = url.pathname.match(/^\/api\/runners\/([^/]+)\/plugins$/);
+    if (pluginsMatch && req.method === "GET") {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        const runnerId = decodeURIComponent(pluginsMatch[1]);
+        const runner = await getRunnerData(runnerId);
+        if (!runner) return Response.json({ error: "Runner not found" }, { status: 404 });
+        if (runner.userId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
+
+        // Return plugins from the Redis cache (populated by daemon on registration)
+        return Response.json({ plugins: parseJsonArray(runner.plugins) });
+    }
+
+    // POST /api/runners/:id/plugins/refresh — ask runner to re-scan plugins
+    const pluginsRefreshMatch = url.pathname.match(/^\/api\/runners\/([^/]+)\/plugins\/refresh$/);
+    if (pluginsRefreshMatch && req.method === "POST") {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        const runnerId = decodeURIComponent(pluginsRefreshMatch[1]);
+        const runner = await getRunnerData(runnerId);
+        if (!runner) return Response.json({ error: "Runner not found" }, { status: 404 });
+        if (runner.userId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
+
+        try {
+            const result = await sendRunnerCommand(runnerId, { type: "list_plugins" });
+            return Response.json({ ok: true, plugins: (result as any).plugins ?? [] });
+        } catch (err) {
+            console.error(`[plugins] refresh failed:`, err);
+            return Response.json({ error: "Failed to refresh plugins" }, { status: 502 });
+        }
+    }
+
     // ── File explorer ──────────────────────────────────────────────────
     const filesMatch = url.pathname.match(/^\/api\/runners\/([^/]+)\/files$/);
     if (filesMatch && req.method === "POST") {

@@ -10,6 +10,7 @@ export type {
   ModelInfo,
   RunnerInfo,
   RunnerSkill,
+  RunnerPlugin,
   Attachment,
 } from "./shared.js";
 

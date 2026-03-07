@@ -15,6 +15,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { SkillsManager, type SkillInfo } from "@/components/SkillsManager";
+import { PluginsManager, type PluginInfo } from "@/components/PluginsManager";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ErrorAlert } from "@/components/ui/error-alert";
 
@@ -24,6 +25,7 @@ interface RunnerInfo {
     roots: string[];
     sessionCount: number;
     skills: SkillInfo[];
+    plugins: PluginInfo[];
     version: string | null;
 }
 
@@ -74,6 +76,7 @@ export function RunnerManager({ onOpenSession }: RunnerManagerProps) {
                     roots: r.roots ?? [],
                     sessionCount: r.sessionCount ?? 0,
                     skills: Array.isArray(r.skills) ? r.skills : [],
+                    plugins: Array.isArray(r.plugins) ? r.plugins : [],
                     version: r.version ?? null,
                 })));
             }
@@ -632,6 +635,12 @@ function RunnerCard({ runner, sessions, latestVersion, isRestarting, isStopping,
                     runnerId={runner.runnerId}
                     skills={runner.skills}
                     onSkillsChange={(updated) => onSkillsChange?.(runner.runnerId, updated)}
+                />
+
+                {/* Plugins manager (Claude Code plugin adapter) */}
+                <PluginsManager
+                    runnerId={runner.runnerId}
+                    plugins={runner.plugins}
                 />
             </div>
         </div>

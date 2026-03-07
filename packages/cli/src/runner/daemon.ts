@@ -159,6 +159,11 @@ import {
     deleteSkill,
 } from "../skills.js";
 
+import {
+    scanAllPluginInfo,
+    type PluginInfo,
+} from "../plugins.js";
+
 // ── Runner-wide usage cache (shared with worker processes via file) ───────────
 //
 // The runner daemon is the single source of truth for provider quota data on
@@ -473,12 +478,14 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         // ── Helper: emit registration ─────────────────────────────────────
         const emitRegister = () => {
             const skills = scanGlobalSkills();
+            const plugins = scanAllPluginInfo(process.cwd());
             socket.emit("register_runner", {
                 runnerId: identity.runnerId,
                 runnerSecret: identity.runnerSecret,
                 name: runnerName,
                 roots: getWorkspaceRoots(),
                 skills,
+                plugins,
                 version: cliVersion,
             });
         };
@@ -832,6 +839,15 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             } else {
                 socket.emit("skill_result", { requestId, ok: true, name: skillName, content });
             }
+        });
+
+        // ── Plugins management ─────────────────────────────────────────────
+
+        socket.on("list_plugins" as any, (data: any) => {
+            if (isShuttingDown) return;
+            const requestId = data?.requestId;
+            const plugins = scanAllPluginInfo(process.cwd());
+            (socket as any).emit("plugins_list", { plugins, requestId });
         });
 
         // ── File Explorer ─────────────────────────────────────────────────

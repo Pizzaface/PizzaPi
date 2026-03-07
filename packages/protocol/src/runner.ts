@@ -2,7 +2,7 @@
 // /runner namespace — Runner daemon ↔ Server
 // ============================================================================
 
-import type { RunnerSkill } from "./shared.js";
+import type { RunnerSkill, RunnerPlugin } from "./shared.js";
 
 // ---------------------------------------------------------------------------
 // Client → Server (Runner daemon sends to server)
@@ -16,6 +16,7 @@ export interface RunnerClientToServerEvents {
     runnerId?: string;
     runnerSecret?: string;
     skills?: RunnerSkill[];
+    plugins?: RunnerPlugin[];
     version?: string;
   }) => void;
 

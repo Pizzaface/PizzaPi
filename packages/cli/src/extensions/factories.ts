@@ -9,6 +9,7 @@ import { sessionMessagingExtension } from "./session-messaging.js";
 import { setSessionNameExtension } from "./set-session-name.js";
 import { spawnSessionExtension } from "./spawn-session.js";
 import { updateTodoExtension } from "./update-todo.js";
+import { createClaudePluginExtension } from "./claude-plugins.js";
 
 export interface BuildExtensionFactoriesOptions {
     cwd: string;
@@ -39,6 +40,12 @@ export function buildPizzaPiExtensionFactories(options: BuildExtensionFactoriesO
     const hooksExtension = createHooksExtension(options.hooks, options.cwd);
     if (hooksExtension) {
         factories.push(hooksExtension);
+    }
+
+    // Claude Code plugin adapter — discovers and loads plugins from standard dirs
+    const pluginExtension = createClaudePluginExtension(options.cwd);
+    if (pluginExtension) {
+        factories.push(pluginExtension);
     }
 
     return factories;
