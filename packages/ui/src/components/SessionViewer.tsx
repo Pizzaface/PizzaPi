@@ -149,6 +149,8 @@ export interface SessionViewerProps {
   runnerId?: string;
   /** Absolute working directory of the current session (used as base for @-mention file paths) */
   sessionCwd?: string;
+  /** Append a local system message to the conversation (used by client-side slash commands) */
+  onAppendSystemMessage?: (text: string) => void;
 }
 
 function formatTokenCount(n: number): string {
@@ -436,7 +438,7 @@ function SessionSkeleton() {
   );
 }
 
-export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, pluginTrustPrompt, onPluginTrustResponse, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, isCompacting, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], runnerId, sessionCwd }: SessionViewerProps) {
+export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, pluginTrustPrompt, onPluginTrustResponse, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, isCompacting, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], runnerId, sessionCwd, onAppendSystemMessage }: SessionViewerProps) {
   const [input, setInput] = React.useState("");
   const [composerError, setComposerError] = React.useState<string | null>(null);
   const [showClearDialog, setShowClearDialog] = React.useState(false);
@@ -500,6 +502,15 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [agentActive, onExec, showClearDialog, showEndSessionDialog, commandOpen, atMentionOpen]);
 
+  // Extract skills from availableCommands (CLI sends them as "skill:name")
+  // Defined early so executeSlashCommand can reference it.
+  const skillCommands = React.useMemo(() => {
+    if (!availableCommands) return [];
+    return availableCommands
+      .filter((c) => c.name.startsWith("skill:"))
+      .map((c) => ({ name: c.name, description: c.description }));
+  }, [availableCommands]);
+
   const executeSlashCommand = React.useCallback((text: string): boolean => {
     const trimmed = text.trim();
     if (!trimmed.startsWith("/")) return false;
@@ -531,6 +542,73 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
       setInput("");
       setCommandOpen(false);
       setCommandQuery("");
+      return true;
+    }
+
+    if (rawCommand === "plugins") {
+      if (!runnerId) return false;
+      setInput("");
+      setCommandOpen(false);
+      setCommandQuery("");
+      fetch(`/api/runners/${encodeURIComponent(runnerId)}/plugins`, { credentials: "include" })
+        .then((res) => res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))
+        .then((data: any) => {
+          const plugins: Array<{ name: string; description?: string; commands?: Array<{ name: string }>; hookEvents?: string[]; skills?: Array<{ name: string }>; version?: string }> = Array.isArray(data?.plugins) ? data.plugins : [];
+          if (plugins.length === 0) {
+            onAppendSystemMessage?.("**Plugins** — No plugins loaded.");
+            return;
+          }
+          const lines = [`**Plugins** — ${plugins.length} loaded\n`];
+          for (const p of plugins) {
+            const caps: string[] = [];
+            if (p.commands?.length) caps.push(`${p.commands.length} cmd${p.commands.length > 1 ? "s" : ""}`);
+            if (p.hookEvents?.length) caps.push(`${p.hookEvents.length} hook${p.hookEvents.length > 1 ? "s" : ""}`);
+            if (p.skills?.length) caps.push(`${p.skills.length} skill${p.skills.length > 1 ? "s" : ""}`);
+            const capsStr = caps.length > 0 ? ` (${caps.join(", ")})` : "";
+            const version = p.version ? ` v${p.version}` : "";
+            lines.push(`• **${p.name}**${version}${capsStr}${p.description ? ` — ${p.description}` : ""}`);
+          }
+          onAppendSystemMessage?.(lines.join("\n"));
+        })
+        .catch((err: Error) => {
+          onAppendSystemMessage?.(`**Plugins** — Failed to load: ${err.message}`);
+        });
+      return true;
+    }
+
+    if (rawCommand === "skills") {
+      if (!runnerId) return false;
+      setInput("");
+      setCommandOpen(false);
+      setCommandQuery("");
+      fetch(`/api/runners/${encodeURIComponent(runnerId)}/skills`, { credentials: "include" })
+        .then((res) => res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))
+        .then((data: any) => {
+          const skills: Array<{ name: string; description?: string }> = Array.isArray(data?.skills) ? data.skills : [];
+          // Merge CLI-advertised skill commands (which include project-local skills the
+          // runner sees but the REST cache may not) so the user gets the full picture.
+          const merged = new Map<string, { name: string; description?: string }>();
+          for (const s of skills) merged.set(s.name, s);
+          for (const cmd of skillCommands) {
+            const skillName = cmd.name.replace(/^skill:/, "");
+            if (!merged.has(skillName)) {
+              merged.set(skillName, { name: skillName, description: cmd.description });
+            }
+          }
+          const allSkills = Array.from(merged.values());
+          if (allSkills.length === 0) {
+            onAppendSystemMessage?.("**Skills** — No skills available.");
+            return;
+          }
+          const lines = [`**Skills** — ${allSkills.length} available\n`];
+          for (const s of allSkills) {
+            lines.push(`• **${s.name}**${s.description ? ` — ${s.description}` : ""}`);
+          }
+          onAppendSystemMessage?.(lines.join("\n"));
+        })
+        .catch((err: Error) => {
+          onAppendSystemMessage?.(`**Skills** — Failed to load: ${err.message}`);
+        });
       return true;
     }
 
@@ -616,7 +694,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     }
 
     return false;
-  }, [onExec, onSendInput, resumeSessions]);
+  }, [onExec, onSendInput, resumeSessions, runnerId, onAppendSystemMessage, skillCommands]);
 
   const handleSubmit = React.useCallback(
     (message: PromptInputMessage) => {
@@ -659,6 +737,8 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
       { name: "resume", description: "Resume the previous session" },
       { name: "mcp", description: "Show MCP status" },
       { name: "mcp_reload", description: "Reload MCP tools" },
+      { name: "plugins", description: "Show loaded plugins" },
+      { name: "skills", description: "Show available skills" },
       { name: "model", description: "Select model" },
       { name: "cycle_model", description: "Select model" },
       { name: "effort", description: "Cycle reasoning effort level" },
@@ -670,14 +750,6 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
       { name: "restart", description: "Restart the CLI process" },
     ];
   }, []);
-
-  // Extract skills from availableCommands (CLI sends them as "skill:name")
-  const skillCommands = React.useMemo(() => {
-    if (!availableCommands) return [];
-    return availableCommands
-      .filter((c) => c.name.startsWith("skill:"))
-      .map((c) => ({ name: c.name, description: c.description }));
-  }, [availableCommands]);
 
   // Set of all known command/skill names for quick lookup (used to auto-close popover
   // once the user has typed a recognized command and started entering arguments).

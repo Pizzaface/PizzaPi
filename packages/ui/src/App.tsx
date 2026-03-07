@@ -3003,6 +3003,7 @@ export function App() {
                   todoList={todoList}
                   runnerId={activeSessionInfo?.runnerId ?? undefined}
                   sessionCwd={activeSessionInfo?.cwd || undefined}
+                  onAppendSystemMessage={appendLocalSystemMessage}
                 />
               )}
             </div>
