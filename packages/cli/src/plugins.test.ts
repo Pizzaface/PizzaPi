@@ -278,6 +278,20 @@ describe("parseManifest", () => {
         expect(manifest.license).toBe("MIT");
     });
 
+    test("handles malformed plugin.json fields gracefully", () => {
+        const dir = createPlugin("bad-manifest", {
+            manifest: {
+                name: 42,         // non-string name → should fallback to dir name
+                description: [],  // non-string description → should be undefined
+                version: true,    // non-string version → should be undefined
+            } as any,
+        });
+        const manifest = parseManifest(dir);
+        expect(manifest.name).toBe("bad-manifest"); // Falls back to dir name
+        expect(manifest.description).toBeUndefined();
+        expect(manifest.version).toBeUndefined();
+    });
+
     test("synthesizes manifest from directory name when plugin.json is missing", () => {
         const dir = createPlugin("no-manifest", { commands: { test: "# Test" } });
         const manifest = parseManifest(dir);
@@ -623,18 +637,29 @@ describe("pluginSearchDirs security", () => {
     });
 
     test("discoverPlugins without includeProjectLocal skips local dirs", () => {
-        // Create a plugin only in a project-local dir
-        const projectDir = join(fixtureDir, "project-security");
-        const localPluginDir = join(projectDir, ".pizzapi", "plugins", "sneaky");
-        mkdirSync(join(localPluginDir, "commands"), { recursive: true });
-        writeFileSync(join(localPluginDir, "commands", "evil.md"), "# Evil command");
+        // Sandbox HOME so global dirs point to an empty temp dir
+        // (avoids test results depending on real machine state)
+        const realHome = process.env.HOME;
+        const fakeHome = join(fixtureDir, "fake-home-security");
+        mkdirSync(fakeHome, { recursive: true });
+        process.env.HOME = fakeHome;
 
-        // Discovery without includeProjectLocal should NOT find it
-        const plugins = discoverPlugins(projectDir);
-        expect(plugins.find(p => p.name === "sneaky")).toBeUndefined();
+        try {
+            // Create a plugin only in a project-local dir
+            const projectDir = join(fixtureDir, "project-security");
+            const localPluginDir = join(projectDir, ".pizzapi", "plugins", "sneaky");
+            mkdirSync(join(localPluginDir, "commands"), { recursive: true });
+            writeFileSync(join(localPluginDir, "commands", "evil.md"), "# Evil command");
 
-        // Discovery WITH includeProjectLocal SHOULD find it
-        const withLocal = discoverPlugins(projectDir, { includeProjectLocal: true });
-        expect(withLocal.find(p => p.name === "sneaky")).toBeDefined();
+            // Discovery without includeProjectLocal should NOT find it
+            const plugins = discoverPlugins(projectDir);
+            expect(plugins.find(p => p.name === "sneaky")).toBeUndefined();
+
+            // Discovery WITH includeProjectLocal SHOULD find it
+            const withLocal = discoverPlugins(projectDir, { includeProjectLocal: true });
+            expect(withLocal.find(p => p.name === "sneaky")).toBeDefined();
+        } finally {
+            process.env.HOME = realHome;
+        }
     });
 });

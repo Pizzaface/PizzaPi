@@ -272,15 +272,18 @@ export function parseManifest(pluginDir: string): PluginManifest {
         try {
             const raw = readFileSync(manifestPath, "utf-8");
             const parsed = JSON.parse(raw);
+            const name = typeof parsed.name === "string" && parsed.name.trim()
+                ? parsed.name.trim()
+                : dirName;
             return {
-                name: parsed.name ?? dirName,
-                description: parsed.description,
-                version: parsed.version,
+                name,
+                description: typeof parsed.description === "string" ? parsed.description : undefined,
+                version: typeof parsed.version === "string" ? parsed.version : undefined,
                 author: parsed.author,
-                homepage: parsed.homepage,
-                repository: parsed.repository,
-                license: parsed.license,
-                keywords: parsed.keywords,
+                homepage: typeof parsed.homepage === "string" ? parsed.homepage : undefined,
+                repository: typeof parsed.repository === "string" ? parsed.repository : undefined,
+                license: typeof parsed.license === "string" ? parsed.license : undefined,
+                keywords: Array.isArray(parsed.keywords) ? parsed.keywords.filter((k: unknown) => typeof k === "string") : undefined,
             };
         } catch {
             // Fall through to synthesized manifest

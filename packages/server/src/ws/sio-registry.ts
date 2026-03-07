@@ -789,7 +789,10 @@ export async function registerRunner(
 
     const skills = normalizeSkills(opts.skills);
     const plugins = Array.isArray(opts.plugins)
-        ? opts.plugins.filter((p): p is Record<string, unknown> => p !== null && typeof p === "object" && typeof (p as any).name === "string")
+        ? opts.plugins
+            .filter((p): p is Record<string, unknown> => p !== null && typeof p === "object")
+            .map(normalizePlugin)
+            .filter((p): p is Record<string, unknown> => p !== null)
         : [];
 
     const runnerData: RedisRunnerData = {
@@ -816,13 +819,39 @@ export async function updateRunnerSkills(runnerId: string, skills: RunnerSkill[]
 }
 
 /**
+ * Normalize a plugin info object to guaranteed types.
+ * Ensures all arrays are arrays, booleans are booleans, strings are strings.
+ */
+function normalizePlugin(raw: Record<string, unknown>): Record<string, unknown> | null {
+    const name = typeof raw.name === "string" ? raw.name.trim() : "";
+    if (!name) return null;
+
+    return {
+        name,
+        description: typeof raw.description === "string" ? raw.description : "",
+        rootPath: typeof raw.rootPath === "string" ? raw.rootPath : "",
+        commands: Array.isArray(raw.commands) ? raw.commands.filter((c: unknown) => c && typeof c === "object") : [],
+        hookEvents: Array.isArray(raw.hookEvents) ? raw.hookEvents.filter((e: unknown) => typeof e === "string") : [],
+        skills: Array.isArray(raw.skills) ? raw.skills.filter((s: unknown) => s && typeof s === "object") : [],
+        hasMcp: raw.hasMcp === true,
+        hasAgents: raw.hasAgents === true,
+        hasLsp: raw.hasLsp === true,
+        version: typeof raw.version === "string" ? raw.version : undefined,
+        author: typeof raw.author === "string" ? raw.author : undefined,
+    };
+}
+
+/**
  * Persist the runner's discovered Claude Code plugins to Redis.
  * Plugins are stored as a JSON-serialized array in the runner hash.
+ * Each plugin is schema-normalized to guarantee expected field types.
  */
 export async function updateRunnerPlugins(runnerId: string, plugins: unknown[]): Promise<void> {
-    // Light normalization — keep the plugin info objects as-is but ensure they're valid
     const normalized = Array.isArray(plugins)
-        ? plugins.filter((p): p is Record<string, unknown> => p !== null && typeof p === "object" && typeof (p as any).name === "string")
+        ? plugins
+            .filter((p): p is Record<string, unknown> => p !== null && typeof p === "object")
+            .map(normalizePlugin)
+            .filter((p): p is Record<string, unknown> => p !== null)
         : [];
     await updateRunnerFields(runnerId, { plugins: JSON.stringify(normalized) });
 }

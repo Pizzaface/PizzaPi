@@ -22,6 +22,7 @@ import {
     type HookEntry,
 } from "../plugins.js";
 import { execFile } from "node:child_process";
+import { join } from "node:path";
 
 // ── Hook executor ─────────────────────────────────────────────────────────────
 
@@ -31,6 +32,13 @@ interface HookExecResult {
     exitCode: number;
 }
 
+/**
+ * Execute a hook command via /bin/sh.
+ *
+ * Platform note: Claude Code plugins assume a POSIX shell environment.
+ * This adapter targets macOS and Linux only (matching pi's supported
+ * platforms). Windows support would require a different shell strategy.
+ */
 async function execHookCommand(
     command: string,
     pluginRoot: string,
@@ -353,6 +361,24 @@ export function createClaudePluginExtension(cwd: string): ExtensionFactory | nul
                 if (ok) {
                     for (const plugin of localOnly) {
                         registerPlugin(pi, plugin);
+
+                        // Fire SessionStart hooks immediately for local plugins,
+                        // since we're already inside session_start and registering
+                        // a new session_start handler won't retroactively fire it.
+                        if (plugin.hooks?.hooks.SessionStart) {
+                            for (const group of plugin.hooks.hooks.SessionStart) {
+                                if (!group || !Array.isArray(group.hooks)) continue;
+                                for (const hook of group.hooks) {
+                                    if (hook?.type !== "command" || !hook.command) continue;
+                                    execHookCommand(
+                                        hook.command,
+                                        plugin.rootPath,
+                                        { session_id: "" },
+                                        (hook.timeout ?? 10) * 1000,
+                                    ).catch(() => { /* best-effort */ });
+                                }
+                            }
+                        }
                     }
                     ctx.ui.notify(
                         `Loaded ${localOnly.length} local plugin${localOnly.length > 1 ? "s" : ""}: ${localOnly.map(pluginSummary).join(", ")}`,
@@ -385,8 +411,7 @@ export function getPluginSkillPaths(cwd: string): string[] {
     const paths: string[] = [];
     for (const plugin of plugins) {
         if (plugin.skills.length > 0) {
-            const skillsDir = plugin.rootPath + "/skills";
-            paths.push(skillsDir);
+            paths.push(join(plugin.rootPath, "skills"));
         }
     }
     return paths;
