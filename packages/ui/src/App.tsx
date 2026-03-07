@@ -287,6 +287,7 @@ export function App() {
   const [showApiKeys, setShowApiKeys] = React.useState(false);
   const [showRunners, setShowRunners] = React.useState(false);
   const [showTerminal, setShowTerminal] = React.useState(false);
+  // Note: localStorage may be unavailable in private browsing — catch blocks return defaults
   const [terminalPosition, setTerminalPosition] = React.useState<"bottom" | "right" | "left">(() => {
     try { return (localStorage.getItem("pp-terminal-position") as "bottom" | "right" | "left") ?? "bottom"; } catch { return "bottom"; }
   });
@@ -294,14 +295,14 @@ export function App() {
     try {
       const saved = localStorage.getItem("pp-terminal-height");
       if (saved) return Math.max(120, Math.min(parseInt(saved, 10), 900));
-    } catch {}
+    } catch { /* localStorage unavailable */ }
     return 280;
   });
   const [terminalWidth, setTerminalWidth] = React.useState<number>(() => {
     try {
       const saved = localStorage.getItem("pp-terminal-width");
       if (saved) return Math.max(200, Math.min(parseInt(saved, 10), 1400));
-    } catch {}
+    } catch { /* localStorage unavailable */ }
     return 480;
   });
   const terminalColumnRef = React.useRef<HTMLDivElement>(null);
@@ -869,6 +870,13 @@ export function App() {
 
   // Debounce streaming delta updates (toolcall_delta, text_delta, thinking_delta) so we
   // flush at most once per animation frame instead of once per character.
+  //
+  // Memory leak prevention: pendingDeltaRef is properly cleaned up via:
+  // - cancelPendingDeltas(): Clears the map and cancels any pending RAF on session switch,
+  //   agent_end, new_session, and full state snapshot events
+  // - RAF flush: After each frame, pendingDeltaRef.current is replaced with a new Map()
+  // - Partial eviction: When a final message lands (evictPartial=true), its streaming
+  //   partial is removed from the pending queue to prevent stale re-insertion
   const pendingDeltaRef = React.useRef<Map<string, { raw: unknown; key: string }>>(new Map());
   const deltaRafRef = React.useRef<number | null>(null);
   // Key of the in-flight streaming partial message; evicted when the final message lands.
@@ -1915,6 +1923,7 @@ export function App() {
           });
           formData.append("files", uploadFile);
         } catch {
+          // Blob fetch or File construction failed — show user-friendly error
           setViewerStatus(`Failed to prepare attachment: ${displayName}`);
           failCurrentAttempt();
           return false;
@@ -1951,6 +1960,7 @@ export function App() {
             expiresAt: typeof first.expiresAt === "string" ? first.expiresAt : undefined,
           });
         } catch {
+          // Network error during upload — show user-friendly error
           setViewerStatus(`Upload failed for ${displayName}`);
           failCurrentAttempt();
           return false;
@@ -2008,6 +2018,7 @@ export function App() {
       }
       return true;
     } catch {
+      // Socket emit or other unexpected error — show user-friendly error
       setViewerStatus("Failed to send message");
       failCurrentAttempt();
       return false;
@@ -2031,6 +2042,7 @@ export function App() {
       socket.emit("exec", rest as any);
       return true;
     } catch {
+      // Socket emit failed — show user-friendly error
       setViewerStatus("Failed to send command");
       return false;
     }
@@ -2140,6 +2152,7 @@ export function App() {
       socket.emit("model_set", { provider: model.provider, modelId: model.id });
       setModelSelectorOpen(false);
     } catch {
+      // Socket emit failed — reset state and show user-friendly error
       setIsChangingModel(false);
       setViewerStatus("Failed to change model");
     }
@@ -2250,7 +2263,7 @@ export function App() {
           if (live) return true;
         }
       } catch {
-        // ignore
+        // Poll failed — will retry after delay
       }
       await new Promise((r) => setTimeout(r, 1000));
     }
