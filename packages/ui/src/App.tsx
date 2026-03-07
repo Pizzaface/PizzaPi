@@ -606,6 +606,12 @@ export function App() {
   const [recentFoldersLoading, setRecentFoldersLoading] = React.useState(false);
 
   const [pendingQuestion, setPendingQuestion] = React.useState<{ toolCallId: string; questions: Array<{ question: string; options: string[] }>; display: QuestionDisplayMode } | null>(null);
+
+  /** Pending plugin trust prompt from the worker — shown as a confirmation dialog in the viewer. */
+  const [pluginTrustPrompt, setPluginTrustPrompt] = React.useState<{
+    pluginNames: string[];
+    pluginSummaries: string[];
+  } | null>(null);
   // Cached fallback promptKey for when toolCallId is absent (legacy/compat).
   // Only changes when the question content changes, preventing heartbeat
   // re-applications from resetting the MC component's selection state.
@@ -922,6 +928,7 @@ export function App() {
     setMessages([]);
     setViewerStatus("Idle");
     setPendingQuestion(null);
+    setPluginTrustPrompt(null);
     setRetryState(null);
     setActiveToolCalls(new Map());
     setMessageQueue([]);
@@ -1277,6 +1284,7 @@ export function App() {
       });
 
       setPendingQuestion(null);
+      setPluginTrustPrompt(null);
       setIsChangingModel(false);
 
       // Clear queued messages — the snapshot contains the full conversation
@@ -1551,6 +1559,18 @@ export function App() {
           return next;
         });
       }
+    }
+
+    if (type === "plugin_trust_prompt") {
+      const names = evt.pluginNames as string[] | undefined;
+      const summaries = evt.pluginSummaries as string[] | undefined;
+      if (Array.isArray(names) && names.length > 0) {
+        setPluginTrustPrompt({
+          pluginNames: names,
+          pluginSummaries: Array.isArray(summaries) ? summaries : names,
+        });
+      }
+      return;
     }
 
     if (type === "tool_execution_start" && evt.toolName === "AskUserQuestion") {
@@ -2035,6 +2055,17 @@ export function App() {
       return false;
     }
   }, []);
+
+  /** Respond to a plugin trust prompt from the worker. */
+  const respondPluginTrust = React.useCallback((trusted: boolean) => {
+    sendRemoteExec({
+      type: "exec",
+      id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      command: "plugin_trust_response",
+      trusted,
+    });
+    setPluginTrustPrompt(null);
+  }, [sendRemoteExec]);
 
   /**
    * End a session by session ID. If it's the currently active session the
@@ -2911,6 +2942,8 @@ export function App() {
                   activeModel={activeModel}
                   activeToolCalls={activeToolCalls}
                   pendingQuestion={pendingQuestion}
+                  pluginTrustPrompt={pluginTrustPrompt}
+                  onPluginTrustResponse={respondPluginTrust}
                   availableCommands={availableCommands}
                   resumeSessions={resumeSessions}
                   resumeSessionsLoading={resumeSessionsLoading}

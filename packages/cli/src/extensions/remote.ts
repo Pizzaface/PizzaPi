@@ -1156,7 +1156,19 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 return;
             }
 
-            replyErr(`Unknown exec command: ${String((req as any).command)}`);
+            if (req.command === "plugin_trust_response") {
+                if (!pendingPluginTrust) {
+                    replyErr("No pending plugin trust prompt");
+                    return;
+                }
+                const trusted = req.trusted === true;
+                pendingPluginTrust.respond(trusted);
+                pendingPluginTrust = null;
+                replyOk({ trusted });
+                return;
+            }
+
+            replyErr(`Unknown exec command: ${String((req satisfies never as any).command)}`);
         } catch (e) {
             replyErr(e instanceof Error ? e.message : String(e));
         }
@@ -1979,6 +1991,36 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 ctx.ui.notify(`Not connected to relay.\nRelay: ${url}\nUse /remote reconnect to retry.`);
             }
         },
+    });
+
+    // ── Plugin trust prompt bridge ────────────────────────────────────────────
+    // The claude-plugins extension emits `plugin:trust_prompt` when it finds
+    // project-local plugins that need user approval.  We forward the prompt to
+    // the web viewer as a custom event and wait for the viewer to respond via
+    // the `plugin_trust_response` exec command.
+
+    /** Pending plugin trust prompt — only one at a time. */
+    let pendingPluginTrust: {
+        respond: (trusted: boolean) => void;
+    } | null = null;
+
+    pi.events.on("plugin:trust_prompt", (data: unknown) => {
+        const event = data as {
+            pluginNames: string[];
+            pluginSummaries: string[];
+            respond: (trusted: boolean) => void;
+        };
+
+        // Store the responder so exec handler can resolve it
+        pendingPluginTrust = { respond: event.respond };
+
+        // Forward to the web viewer as a custom event
+        forwardEvent({
+            type: "plugin_trust_prompt",
+            pluginNames: event.pluginNames,
+            pluginSummaries: event.pluginSummaries,
+            ts: Date.now(),
+        });
     });
 
     // ── Forward agent events to relay ─────────────────────────────────────────

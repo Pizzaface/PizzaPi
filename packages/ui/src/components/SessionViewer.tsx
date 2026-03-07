@@ -60,7 +60,7 @@ import { ProviderIcon } from "@/components/ProviderIcon";
 import { MultipleChoiceQuestions } from "@/components/ai-elements/multiple-choice";
 import { formatAnswersForAgent, type QuestionDisplayMode } from "@/lib/ask-user-questions";
 import { dismissNotificationsForSession } from "@/lib/push";
-import { AlertTriangleIcon, ArrowDownIcon, BookOpen, CheckCircle2, ChevronsUpDown, Circle, CircleDashed, Loader2, MessageSquare, OctagonX, PaperclipIcon, Plus, Zap, Clock, X, Trash2, TerminalIcon, DownloadIcon, XCircle, FolderTree } from "lucide-react";
+import { AlertTriangleIcon, ArrowDownIcon, BookOpen, CheckCircle2, ChevronsUpDown, Circle, CircleDashed, Loader2, MessageSquare, OctagonX, PaperclipIcon, Plus, ShieldAlert, Zap, Clock, X, Trash2, TerminalIcon, DownloadIcon, XCircle, FolderTree } from "lucide-react";
 import { AtMentionPopover } from "@/components/AtMentionPopover";
 import type { Entry as AtMentionEntry } from "@/hooks/useAtMentionFiles";
 
@@ -103,6 +103,10 @@ export interface SessionViewerProps {
   activeModel?: { provider: string; id: string; name?: string; reasoning?: boolean } | null;
   activeToolCalls?: Map<string, string>;
   pendingQuestion?: { toolCallId: string; questions: Array<{ question: string; options: string[] }>; display: QuestionDisplayMode } | null;
+  /** Plugin trust prompt from the worker — shown as a confirmation dialog */
+  pluginTrustPrompt?: { pluginNames: string[]; pluginSummaries: string[] } | null;
+  /** Respond to the plugin trust prompt */
+  onPluginTrustResponse?: (trusted: boolean) => void;
   availableCommands?: Array<{ name: string; description?: string }>;
   resumeSessions?: ResumeSessionOption[];
   resumeSessionsLoading?: boolean;
@@ -432,7 +436,7 @@ function SessionSkeleton() {
   );
 }
 
-export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, isCompacting, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], runnerId, sessionCwd }: SessionViewerProps) {
+export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, pluginTrustPrompt, onPluginTrustResponse, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, isCompacting, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], runnerId, sessionCwd }: SessionViewerProps) {
   const [input, setInput] = React.useState("");
   const [composerError, setComposerError] = React.useState<string | null>(null);
   const [showClearDialog, setShowClearDialog] = React.useState(false);
@@ -1253,6 +1257,51 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
               <span className="font-semibold">Auto-retrying:</span>{" "}
               {retryState.errorMessage}
             </span>
+          </div>
+        )}
+
+        {/* Plugin trust prompt (shown above the input area) */}
+        {pluginTrustPrompt && onPluginTrustResponse && (
+          <div className="mb-2 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 shadow-sm">
+            <div className="flex items-start gap-2.5">
+              <ShieldAlert className="mt-0.5 size-4 shrink-0 text-amber-500" />
+              <div className="flex-1 min-w-0 space-y-2">
+                <div>
+                  <p className="text-sm font-medium text-foreground">Untrusted Project Plugins</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    {pluginTrustPrompt.pluginNames.length === 1
+                      ? "A project-local Claude Code plugin wants to load. It can execute shell commands via hooks."
+                      : `${pluginTrustPrompt.pluginNames.length} project-local Claude Code plugins want to load. They can execute shell commands via hooks.`}
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {pluginTrustPrompt.pluginSummaries.map((summary, i) => (
+                    <span
+                      key={pluginTrustPrompt.pluginNames[i]}
+                      className="inline-flex items-center rounded-md bg-amber-500/10 px-2 py-0.5 text-xs font-mono text-amber-700 dark:text-amber-400 ring-1 ring-amber-500/20"
+                    >
+                      {summary}
+                    </span>
+                  ))}
+                </div>
+                <div className="flex items-center gap-2 pt-1">
+                  <button
+                    type="button"
+                    className="inline-flex items-center rounded-md bg-amber-500 px-3 py-1 text-xs font-medium text-white shadow-sm hover:bg-amber-600 transition-colors"
+                    onClick={() => onPluginTrustResponse(true)}
+                  >
+                    Trust &amp; Load
+                  </button>
+                  <button
+                    type="button"
+                    className="inline-flex items-center rounded-md bg-muted px-3 py-1 text-xs font-medium text-muted-foreground hover:bg-muted/80 transition-colors"
+                    onClick={() => onPluginTrustResponse(false)}
+                  >
+                    Skip
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
         )}
 

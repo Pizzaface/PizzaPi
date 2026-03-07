@@ -301,6 +301,29 @@ function registerPlugin(pi: ExtensionAPI, plugin: DiscoveredPlugin): void {
     registerPluginHooks(pi, plugin);
 }
 
+// ── Trust prompt event ────────────────────────────────────────────────────────
+
+/**
+ * Event payload emitted on `pi.events` when local plugins need user trust.
+ *
+ * The claude-plugins extension emits this; the remote extension (or any
+ * other UI bridge) listens and surfaces the prompt to the user.
+ *
+ * The responder MUST call `respond(true/false)` exactly once. If no
+ * listener responds within the timeout, the promise auto-rejects (skips).
+ */
+export interface PluginTrustPromptEvent {
+    /** Names of local plugins requesting trust */
+    pluginNames: string[];
+    /** Summaries for display */
+    pluginSummaries: string[];
+    /** Call exactly once with the user's decision */
+    respond: (trusted: boolean) => void;
+}
+
+/** Timeout for trust prompt — if no UI responds in 60s, skip local plugins. */
+const TRUST_PROMPT_TIMEOUT_MS = 60_000;
+
 // ── Extension factory ─────────────────────────────────────────────────────────
 
 /**
@@ -313,7 +336,13 @@ function registerPlugin(pi: ExtensionAPI, plugin: DiscoveredPlugin): void {
  * - Project-local plugins (.pizzapi/plugins/, .agents/plugins/, .claude/plugins/
  *   under cwd) can execute arbitrary shell commands via hooks. They are discovered
  *   at session start and require explicit user confirmation before loading.
- *   In headless mode (no UI), project-local plugins are skipped.
+ *
+ * Trust prompt flow:
+ * 1. In TUI interactive mode (ctx.hasUI), uses ctx.ui.confirm() directly.
+ * 2. In headless/worker mode, emits a `plugin:trust_prompt` event on
+ *    pi.events. The remote extension (or any other bridge) can listen for
+ *    this and surface the prompt to the web viewer. If no listener responds
+ *    within 60s, local plugins are skipped.
  *
  * Returns null if no global plugins are found AND no local dirs exist
  * (so the extension is not registered when there's nothing to do).
@@ -349,51 +378,78 @@ export function createClaudePluginExtension(cwd: string): ExtensionFactory | nul
                 );
             }
 
-            // Prompt for project-local plugins (interactive only)
-            if (localOnly.length > 0 && ctx.hasUI) {
-                const names = localOnly.map(p => p.name).join(", ");
-                const ok = await ctx.ui.confirm(
+            // No local plugins? Nothing more to do.
+            if (localOnly.length === 0) return;
+
+            // Ask the user whether to trust project-local plugins.
+            // In TUI interactive mode, use ctx.ui.confirm() directly.
+            // In headless/worker mode, emit a pi.events event so the
+            // remote extension can bridge the prompt to the web viewer.
+            let ok = false;
+            const names = localOnly.map(p => p.name).join(", ");
+
+            if (ctx.hasUI) {
+                // TUI mode — direct confirmation dialog
+                ok = await ctx.ui.confirm(
                     "Untrusted Claude Plugins",
                     `Found ${localOnly.length} project-local plugin${localOnly.length > 1 ? "s" : ""} (${names}). ` +
                     `These can execute shell commands via hooks.\n\nTrust and load them?`,
                 );
+            } else {
+                // Headless/worker mode — emit trust prompt event for remote bridge
+                ok = await new Promise<boolean>((resolve) => {
+                    let settled = false;
+                    const timer = setTimeout(() => {
+                        if (!settled) {
+                            settled = true;
+                            resolve(false);
+                        }
+                    }, TRUST_PROMPT_TIMEOUT_MS);
 
-                if (ok) {
-                    for (const plugin of localOnly) {
-                        registerPlugin(pi, plugin);
+                    const promptEvent: PluginTrustPromptEvent = {
+                        pluginNames: localOnly.map(p => p.name),
+                        pluginSummaries: localOnly.map(pluginSummary),
+                        respond: (trusted: boolean) => {
+                            if (settled) return;
+                            settled = true;
+                            clearTimeout(timer);
+                            resolve(trusted);
+                        },
+                    };
 
-                        // Fire SessionStart hooks immediately for local plugins,
-                        // since we're already inside session_start and registering
-                        // a new session_start handler won't retroactively fire it.
-                        if (plugin.hooks?.hooks.SessionStart) {
-                            for (const group of plugin.hooks.hooks.SessionStart) {
-                                if (!group || !Array.isArray(group.hooks)) continue;
-                                for (const hook of group.hooks) {
-                                    if (hook?.type !== "command" || !hook.command) continue;
-                                    execHookCommand(
-                                        hook.command,
-                                        plugin.rootPath,
-                                        { session_id: "" },
-                                        (hook.timeout ?? 10) * 1000,
-                                    ).catch(() => { /* best-effort */ });
-                                }
+                    pi.events.emit("plugin:trust_prompt", promptEvent);
+                });
+            }
+
+            if (ok) {
+                for (const plugin of localOnly) {
+                    registerPlugin(pi, plugin);
+
+                    // Fire SessionStart hooks immediately for local plugins,
+                    // since we're already inside session_start and registering
+                    // a new session_start handler won't retroactively fire it.
+                    if (plugin.hooks?.hooks.SessionStart) {
+                        for (const group of plugin.hooks.hooks.SessionStart) {
+                            if (!group || !Array.isArray(group.hooks)) continue;
+                            for (const hook of group.hooks) {
+                                if (hook?.type !== "command" || !hook.command) continue;
+                                execHookCommand(
+                                    hook.command,
+                                    plugin.rootPath,
+                                    { session_id: "" },
+                                    (hook.timeout ?? 10) * 1000,
+                                ).catch(() => { /* best-effort */ });
                             }
                         }
                     }
-                    ctx.ui.notify(
-                        `Loaded ${localOnly.length} local plugin${localOnly.length > 1 ? "s" : ""}: ${localOnly.map(pluginSummary).join(", ")}`,
-                        "info",
-                    );
-                } else {
-                    ctx.ui.notify(
-                        `Skipped ${localOnly.length} untrusted local plugin${localOnly.length > 1 ? "s" : ""}.`,
-                        "warning",
-                    );
                 }
-            } else if (localOnly.length > 0) {
-                // Headless mode — skip local plugins silently
                 ctx.ui.notify(
-                    `Skipped ${localOnly.length} project-local plugin${localOnly.length > 1 ? "s" : ""} (headless mode — use global dirs for auto-loading).`,
+                    `Loaded ${localOnly.length} local plugin${localOnly.length > 1 ? "s" : ""}: ${localOnly.map(pluginSummary).join(", ")}`,
+                    "info",
+                );
+            } else {
+                ctx.ui.notify(
+                    `Skipped ${localOnly.length} untrusted local plugin${localOnly.length > 1 ? "s" : ""}.`,
                     "warning",
                 );
             }
