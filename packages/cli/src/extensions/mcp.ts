@@ -466,12 +466,13 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
 
 export async function registerMcpTools(pi: any, config: PizzaPiConfig & McpConfig) {
   const clients = await createMcpClientsFromConfig(config);
-  if (clients.length === 0) return { clients, toolCount: 0, toolNames: [] as string[], errors: [] as Array<{ server: string; error: string }> };
+  if (clients.length === 0) return { clients, toolCount: 0, toolNames: [] as string[], errors: [] as Array<{ server: string; error: string }>, serverTools: {} as Record<string, string[]> };
 
   let toolCount = 0;
   const toolNames: string[] = [];
   const errors: Array<{ server: string; error: string }> = [];
   const usedToolNames = new Set<string>();
+  const serverTools: Record<string, string[]> = {};
 
   for (const client of clients) {
     let tools: McpTool[] = [];
@@ -483,6 +484,9 @@ export async function registerMcpTools(pi: any, config: PizzaPiConfig & McpConfi
       continue;
     }
 
+    const serverToolList: string[] = [];
+    serverTools[client.name] = serverToolList;
+
     for (const tool of tools) {
       if (!tool?.name) continue;
 
@@ -491,6 +495,7 @@ export async function registerMcpTools(pi: any, config: PizzaPiConfig & McpConfi
 
       toolCount++;
       toolNames.push(toolName);
+      serverToolList.push(toolName);
 
       const parameters = (tool.inputSchema ?? { type: "object", additionalProperties: true }) as any;
       if (parameters && typeof parameters === "object" && "$schema" in parameters) {
@@ -522,5 +527,5 @@ export async function registerMcpTools(pi: any, config: PizzaPiConfig & McpConfi
     for (const c of clients) c.close();
   });
 
-  return { clients, toolCount, toolNames, errors };
+  return { clients, toolCount, toolNames, errors, serverTools };
 }

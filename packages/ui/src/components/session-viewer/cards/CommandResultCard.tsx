@@ -47,6 +47,8 @@ export interface McpResultData {
   action: "status" | "reload";
   toolCount: number;
   toolNames: string[];
+  /** Tools grouped by MCP server name */
+  serverTools: Record<string, string[]>;
   serverCount: number;
   servers: McpServerEntry[];
   errors: McpError[];
@@ -85,9 +87,59 @@ export interface SkillsResultData {
 
 // ── Card Renderers ────────────────────────────────────────────────────────────
 
+/** Collapsible per-server tool group */
+function ServerToolGroup({ serverName, tools, transport, scope, defaultOpen }: {
+  serverName: string;
+  tools: string[];
+  transport?: string;
+  scope?: string;
+  defaultOpen: boolean;
+}) {
+  const [open, setOpen] = React.useState(defaultOpen);
+
+  return (
+    <div className="border-b border-zinc-800/60 last:border-b-0">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="flex items-center gap-2 w-full px-4 py-2 hover:bg-zinc-900/50 transition-colors text-left"
+      >
+        <ChevronDown className={cn("size-3 shrink-0 text-zinc-500 transition-transform", open && "rotate-180")} />
+        <Server className="size-3 shrink-0 text-zinc-500" />
+        <span className="text-xs font-mono font-medium text-zinc-300 truncate">{serverName}</span>
+        {transport && (
+          <Badge variant="outline" className="h-3.5 px-1 text-[9px] font-mono border-zinc-700 text-zinc-500">
+            {transport}
+          </Badge>
+        )}
+        <span className="text-[10px] text-zinc-600 tabular-nums ml-auto shrink-0">
+          {tools.length} tool{tools.length !== 1 ? "s" : ""}
+          {scope && <span className="ml-1.5 text-zinc-600/70">{scope}</span>}
+        </span>
+      </button>
+      {open && (
+        <div className="px-4 pb-2.5 pt-0.5 flex flex-wrap gap-1">
+          {tools.map((name) => (
+            <span key={name} className="inline-block rounded bg-zinc-800/80 px-1.5 py-0.5 text-[10px] font-mono text-zinc-400">
+              {name}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function McpCard({ data }: { data: McpResultData }) {
-  const [showTools, setShowTools] = React.useState(false);
   const hasErrors = data.errors.length > 0;
+  const hasServerTools = Object.keys(data.serverTools ?? {}).length > 0;
+
+  // Build a lookup from server name → config entry for transport/scope info
+  const serverConfigMap = React.useMemo(() => {
+    const map = new Map<string, McpServerEntry>();
+    for (const s of data.servers) map.set(s.name, s);
+    return map;
+  }, [data.servers]);
 
   return (
     <ToolCardShell>
@@ -113,27 +165,6 @@ function McpCard({ data }: { data: McpResultData }) {
         </div>
       </ToolCardHeader>
 
-      {/* Servers */}
-      {data.servers.length > 0 && (
-        <div className="border-b border-zinc-800/60 px-4 py-2.5">
-          <div className="text-[10px] uppercase tracking-wide text-zinc-500 mb-1.5">
-            Servers ({data.serverCount})
-          </div>
-          <div className="flex flex-col gap-1">
-            {data.servers.map((s) => (
-              <div key={`${s.name}-${s.scope}`} className="flex items-center gap-2">
-                <Server className="size-3 shrink-0 text-zinc-500" />
-                <span className="text-xs font-mono text-zinc-300 truncate">{s.name}</span>
-                <Badge variant="outline" className="h-3.5 px-1 text-[9px] font-mono border-zinc-700 text-zinc-500">
-                  {s.transport}
-                </Badge>
-                <span className="text-[10px] text-zinc-600 ml-auto">{s.scope}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
       {/* Errors */}
       {hasErrors && (
         <div className="border-b border-zinc-800/60 px-4 py-2.5">
@@ -152,27 +183,26 @@ function McpCard({ data }: { data: McpResultData }) {
         </div>
       )}
 
-      {/* Tools (collapsible) */}
-      {data.toolNames.length > 0 && (
-        <div className="px-4 py-2">
-          <button
-            type="button"
-            onClick={() => setShowTools(!showTools)}
-            className="flex items-center gap-1 text-[10px] uppercase tracking-wide text-zinc-500 hover:text-zinc-400 transition-colors w-full"
-          >
-            <ChevronDown className={cn("size-3 transition-transform", showTools && "rotate-180")} />
-            Tools ({data.toolNames.length})
-          </button>
-          {showTools && (
-            <div className="mt-1.5 flex flex-wrap gap-1">
-              {data.toolNames.map((name) => (
-                <span key={name} className="inline-block rounded bg-zinc-800/80 px-1.5 py-0.5 text-[10px] font-mono text-zinc-400">
-                  {name}
-                </span>
-              ))}
-            </div>
-          )}
-        </div>
+      {/* Tools grouped by server */}
+      {hasServerTools && (
+        Object.entries(data.serverTools).map(([serverName, tools]) => {
+          const config = serverConfigMap.get(serverName);
+          return (
+            <ServerToolGroup
+              key={serverName}
+              serverName={serverName}
+              tools={tools}
+              transport={config?.transport}
+              scope={config?.scope}
+              defaultOpen={Object.keys(data.serverTools).length <= 3}
+            />
+          );
+        })
+      )}
+
+      {/* Fallback: flat tool list if no serverTools grouping available (old CLI) */}
+      {!hasServerTools && data.toolNames.length > 0 && (
+        <FlatToolList toolNames={data.toolNames} />
       )}
 
       {/* No servers configured */}
@@ -182,6 +212,32 @@ function McpCard({ data }: { data: McpResultData }) {
         </div>
       )}
     </ToolCardShell>
+  );
+}
+
+/** Fallback flat tool list for backwards compat with older CLI that doesn't send serverTools */
+function FlatToolList({ toolNames }: { toolNames: string[] }) {
+  const [open, setOpen] = React.useState(false);
+  return (
+    <div className="px-4 py-2 border-b border-zinc-800/60 last:border-b-0">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="flex items-center gap-1 text-[10px] uppercase tracking-wide text-zinc-500 hover:text-zinc-400 transition-colors w-full"
+      >
+        <ChevronDown className={cn("size-3 transition-transform", open && "rotate-180")} />
+        Tools ({toolNames.length})
+      </button>
+      {open && (
+        <div className="mt-1.5 flex flex-wrap gap-1">
+          {toolNames.map((name) => (
+            <span key={name} className="inline-block rounded bg-zinc-800/80 px-1.5 py-0.5 text-[10px] font-mono text-zinc-400">
+              {name}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 

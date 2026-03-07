@@ -40,6 +40,8 @@ type McpConfigInspection = {
 type McpSnapshot = {
   toolCount: number;
   toolNames: string[];
+  /** Tools grouped by MCP server name */
+  serverTools: Record<string, string[]>;
   errors: Array<{ server: string; error: string }>;
   loadedAt: string;
   config: McpConfigInspection;
@@ -262,6 +264,7 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
   let lastSnapshot: McpSnapshot = {
     toolCount: 0,
     toolNames: [],
+    serverTools: {},
     errors: [],
     loadedAt: new Date(0).toISOString(),
     config: inspectMcpConfig(process.cwd()),
@@ -287,12 +290,16 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
     const toolCount = res.toolCount ?? 0;
     const toolNames = Array.isArray((res as any).toolNames) ? (res as any).toolNames : [];
     const errors = Array.isArray((res as any).errors) ? (res as any).errors : [];
+    const serverTools = (res as any).serverTools && typeof (res as any).serverTools === "object"
+      ? (res as any).serverTools as Record<string, string[]>
+      : {};
 
     const summary = `MCP tools loaded: ${toolCount}`;
 
     lastSnapshot = {
       toolCount,
       toolNames,
+      serverTools,
       errors,
       loadedAt,
       config: inspection,

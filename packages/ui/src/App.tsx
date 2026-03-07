@@ -1424,6 +1424,10 @@ export function App() {
           ? (result.config.effectiveServers as Array<{ name: string; transport: string; scope: string; sourcePath?: string }>)
           : [];
         const action = typeof result?.action === "string" && result.action === "reload" ? "reload" as const : "status" as const;
+        // serverTools: Record<string, string[]> — tools grouped by MCP server name
+        const serverTools = result?.serverTools && typeof result.serverTools === "object" && !Array.isArray(result.serverTools)
+          ? result.serverTools as Record<string, string[]>
+          : {};
 
         appendLocalSystemMessage({
           kind: "mcp",
@@ -1433,6 +1437,7 @@ export function App() {
           serverCount: servers.length,
           servers,
           errors,
+          serverTools,
           loadedAt: typeof result?.loadedAt === "string" ? result.loadedAt : undefined,
         });
 
