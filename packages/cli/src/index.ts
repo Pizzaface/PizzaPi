@@ -6,7 +6,7 @@ import {
     InteractiveMode,
     ModelRegistry,
 } from "@mariozechner/pi-coding-agent";
-import { existsSync } from "fs";
+import { existsSync, appendFileSync, mkdirSync } from "fs";
 import { readFile, readdir } from "fs/promises";
 import { join } from "path";
 import { homedir } from "os";
@@ -14,6 +14,62 @@ import { defaultAgentDir, loadConfig } from "./config.js";
 import { buildInteractiveSkillPaths } from "./skills.js";
 import { buildPizzaPiExtensionFactories } from "./extensions/factories.js";
 import { runSetup } from "./setup.js";
+
+// ── Global error handlers ─────────────────────────────────────────────────────
+//
+// Catch unhandled rejections and uncaught exceptions to ensure we log them
+// properly before exiting. This helps debug issues in async code paths.
+
+const LOG_DIR = join(homedir(), ".pizzapi", "logs");
+const ERROR_LOG = join(LOG_DIR, "errors.log");
+
+function ensureLogDir(): void {
+    try {
+        mkdirSync(LOG_DIR, { recursive: true });
+    } catch {
+        // Ignore — may already exist or be unwritable
+    }
+}
+
+function formatErrorLog(type: string, error: unknown, origin?: string): string {
+    const timestamp = new Date().toISOString();
+    const errorMessage = error instanceof Error
+        ? `${error.name}: ${error.message}\n${error.stack ?? "(no stack)"}`
+        : String(error);
+    const originInfo = origin ? ` [origin: ${origin}]` : "";
+    return `[${timestamp}] ${type}${originInfo}\n${errorMessage}\n\n`;
+}
+
+function logError(type: string, error: unknown, origin?: string): void {
+    const logEntry = formatErrorLog(type, error, origin);
+
+    // Always write to stderr
+    process.stderr.write(`\npizzapi: ${type}\n`);
+    process.stderr.write(error instanceof Error ? `${error.message}\n` : `${String(error)}\n`);
+    if (error instanceof Error && error.stack) {
+        process.stderr.write(`${error.stack}\n`);
+    }
+
+    // Best-effort write to log file
+    try {
+        ensureLogDir();
+        appendFileSync(ERROR_LOG, logEntry);
+    } catch {
+        // Ignore logging failures
+    }
+}
+
+process.on("unhandledRejection", (reason, promise) => {
+    logError("Unhandled Promise Rejection", reason, "promise");
+    // Give time for logs to flush, then exit
+    setTimeout(() => process.exit(1), 100);
+});
+
+process.on("uncaughtException", (error, origin) => {
+    logError("Uncaught Exception", error, origin);
+    // Give time for logs to flush, then exit
+    setTimeout(() => process.exit(1), 100);
+});
 
 async function main() {
     const args = process.argv.slice(2);

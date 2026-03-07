@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
 import type { PizzaPiConfig } from "../config.js";
+import { createTimeoutController, SLOW_OPERATION_TIMEOUT_MS } from "../utils/network.js";
 
 /**
  * Minimal MCP client transport + tool bridge.
@@ -190,7 +191,7 @@ function createStdioMcpClient(opts: { name: string; command: string; args?: stri
       return (res ?? {}) as McpCallToolResult;
     },
     close() {
-      try { child.kill(); } catch {}
+      try { child.kill(); } catch { /* Intentionally ignored — process cleanup */ }
     },
   };
 }
@@ -206,18 +207,29 @@ function createHttpMcpClient(opts: { name: string; url: string; headers?: Record
     const id = nextId++;
     const payload = { jsonrpc: "2.0", id, method, params };
 
-    const res = await fetch(opts.url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...(opts.headers ?? {}) },
-      body: JSON.stringify(payload),
-      signal,
-    });
+    // Add timeout, combining with any user-provided signal
+    const { signal: timeoutSignal, cleanup } = createTimeoutController(
+      SLOW_OPERATION_TIMEOUT_MS,
+      `mcp-http:${opts.name}:${method}`
+    );
+    const combinedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
 
-    const json = (await res.json().catch(() => null)) as any;
-    if (!res.ok) throw new Error(`MCP HTTP ${res.status}`);
-    if (!json || typeof json !== "object") throw new Error("Invalid MCP response");
-    if (json.error) throw new Error(String(json.error?.message ?? "MCP error"));
-    return json.result;
+    try {
+      const res = await fetch(opts.url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(opts.headers ?? {}) },
+        body: JSON.stringify(payload),
+        signal: combinedSignal,
+      });
+
+      const json = (await res.json().catch(() => null)) as any;
+      if (!res.ok) throw new Error(`MCP HTTP ${res.status}`);
+      if (!json || typeof json !== "object") throw new Error("Invalid MCP response");
+      if (json.error) throw new Error(String(json.error?.message ?? "MCP error"));
+      return json.result;
+    } finally {
+      cleanup();
+    }
   }
 
   return {
@@ -323,14 +335,22 @@ function createStreamableMcpClient(opts: { name: string; url: string; headers?: 
     const id = nextId++;
     const payload = { jsonrpc: "2.0", id, method, params };
 
-    const res = await fetch(opts.url, {
-      method: "POST",
-      headers: buildHeaders(),
-      body: JSON.stringify(payload),
-      signal,
-    });
+    // Add timeout, combining with any user-provided signal
+    const { signal: timeoutSignal, cleanup } = createTimeoutController(
+      SLOW_OPERATION_TIMEOUT_MS,
+      `mcp-streamable:${opts.name}:${method}`
+    );
+    const combinedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
 
-    // Capture / update session ID
+    try {
+      const res = await fetch(opts.url, {
+        method: "POST",
+        headers: buildHeaders(),
+        body: JSON.stringify(payload),
+        signal: combinedSignal,
+      });
+
+      // Capture / update session ID
     const sid = res.headers.get("mcp-session-id");
     if (sid) sessionId = sid;
 
@@ -347,6 +367,9 @@ function createStreamableMcpClient(opts: { name: string; url: string; headers?: 
     if (!json || typeof json !== "object") throw new Error("MCP streamable: invalid JSON response");
     if (json.error) throw new Error(String(json.error?.message ?? "MCP error"));
     return json.result;
+    } finally {
+      cleanup();
+    }
   }
 
   return {

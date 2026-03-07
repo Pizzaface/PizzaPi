@@ -71,7 +71,7 @@ export async function runSupervisor(_args: string[] = []): Promise<number> {
     const forwardSignal = (sig: NodeJS.Signals) => {
         isShuttingDown = true;
         if (child && !child.killed) {
-            try { child.kill(sig); } catch {}
+            try { child.kill(sig); } catch { /* Intentionally ignored — child may be dead */ }
         }
     };
     process.on("SIGINT",  () => forwardSignal("SIGINT"));

@@ -157,6 +157,6 @@ export async function runSetup(opts: { force?: boolean } = {}): Promise<boolean>
         console.log(`✓ Relay: ${wsRelayUrl}\n`);
         return true;
     } finally {
-        try { iface.close(); } catch {}
+        try { iface.close(); } catch { /* Intentionally ignored — interface cleanup */ }
     }
 }
