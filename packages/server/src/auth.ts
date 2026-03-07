@@ -166,6 +166,8 @@ export interface AuthConfig {
     disableSignupAfterFirstUser?: boolean;
     /** Extra trusted origins. Defaults to PIZZAPI_EXTRA_ORIGINS env. */
     extraOrigins?: string[];
+    /** Whether HSTS headers should be enabled. Defaults to PIZZAPI_HSTS_ENABLED env. */
+    hstsEnabled?: boolean;
 }
 
 // ── Singleton state ───────────────────────────────────────────────────────────
@@ -202,6 +204,7 @@ let _auth: AuthInstance | null = null;
 let _trustedOrigins: string[] | null = null;
 let _disableSignupAfterFirstUser: boolean | null = null;
 let _apiKeyRateLimitConfig: { enabled: boolean; timeWindow: number; maxRequests: number } | null = null;
+let _hstsEnabled: boolean | null = null;
 let _initialized = false;
 
 /**
@@ -215,6 +218,9 @@ export function initAuth(config: AuthConfig = {}): void {
 
     _disableSignupAfterFirstUser = config.disableSignupAfterFirstUser ??
         parseBooleanEnv(process.env.PIZZAPI_DISABLE_SIGNUP_AFTER_FIRST_USER, true);
+
+    _hstsEnabled = config.hstsEnabled ??
+        parseBooleanEnv(process.env.PIZZAPI_HSTS_ENABLED, false);
 
     _apiKeyRateLimitConfig = {
         enabled: parseBooleanEnv(process.env.PIZZAPI_API_KEY_RATE_LIMIT_ENABLED, false),
@@ -303,6 +309,12 @@ export function getApiKeyRateLimitConfig() {
 export function getDisableSignupAfterFirstUser(): boolean {
     ensureInitialized();
     return _disableSignupAfterFirstUser!;
+}
+
+/** Whether HSTS should be enabled. */
+export function getHstsEnabled(): boolean {
+    ensureInitialized();
+    return _hstsEnabled!;
 }
 
 export type Auth = AuthInstance;
