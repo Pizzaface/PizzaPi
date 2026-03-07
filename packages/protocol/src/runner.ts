@@ -26,6 +26,12 @@ export interface RunnerClientToServerEvents {
     requestId?: string;
   }) => void;
 
+  /** Runner responds with its list of discovered Claude Code plugins */
+  plugins_list: (data: {
+    plugins: RunnerPlugin[];
+    requestId?: string;
+  }) => void;
+
   /** Runner responds to a skill CRUD operation */
   skill_result: (data: {
     requestId?: string;
@@ -177,6 +183,11 @@ export interface RunnerServerToClientEvents {
 
   /** Requests a list of skills */
   list_skills: (data: {
+    requestId?: string;
+  }) => void;
+
+  /** Requests a list of discovered Claude Code plugins */
+  list_plugins: (data: {
     requestId?: string;
   }) => void;
 

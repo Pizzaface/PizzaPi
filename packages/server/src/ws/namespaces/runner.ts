@@ -257,7 +257,7 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
         });
 
         // ── plugins_list — runner reports discovered Claude Code plugins ─────
-        socket.on("plugins_list" as any, async (data: any) => {
+        socket.on("plugins_list", async (data) => {
             const runnerId = socket.data.runnerId;
             const plugins = data?.plugins ?? [];
 

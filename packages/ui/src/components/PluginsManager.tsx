@@ -327,9 +327,6 @@ export function PluginsManager({ runnerId, plugins: initialPlugins }: PluginsMan
         }
     };
 
-    // Don't render the section if no plugins are discovered
-    if (plugins.length === 0) return null;
-
     return (
         <>
             <Collapsible open={open} onOpenChange={setOpen}>
@@ -370,13 +367,27 @@ export function PluginsManager({ runnerId, plugins: initialPlugins }: PluginsMan
 
                 <CollapsibleContent>
                     <div className="mt-2 flex flex-col gap-1.5">
-                        {plugins.map((plugin) => (
-                            <PluginRow
-                                key={plugin.name}
-                                plugin={plugin}
-                                onClick={() => setSelectedPlugin(plugin)}
-                            />
-                        ))}
+                        {plugins.length === 0 ? (
+                            <div className="flex flex-col items-center gap-2 py-5 text-center">
+                                <Puzzle className="h-5 w-5 text-muted-foreground/40" />
+                                <div className="space-y-0.5">
+                                    <p className="text-xs font-medium text-muted-foreground">No plugins found</p>
+                                    <p className="text-[11px] text-muted-foreground/60 max-w-[220px]">
+                                        Add Claude Code plugins to{" "}
+                                        <span className="font-mono">~/.pizzapi/plugins/</span>{" "}
+                                        then click &ldquo;Rescan&rdquo;.
+                                    </p>
+                                </div>
+                            </div>
+                        ) : (
+                            plugins.map((plugin) => (
+                                <PluginRow
+                                    key={plugin.name}
+                                    plugin={plugin}
+                                    onClick={() => setSelectedPlugin(plugin)}
+                                />
+                            ))
+                        )}
                     </div>
                 </CollapsibleContent>
             </Collapsible>

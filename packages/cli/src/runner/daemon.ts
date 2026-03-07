@@ -843,11 +843,11 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
 
         // ── Plugins management ─────────────────────────────────────────────
 
-        socket.on("list_plugins" as any, (data: any) => {
+        socket.on("list_plugins", (data) => {
             if (isShuttingDown) return;
             const requestId = data?.requestId;
             const plugins = scanAllPluginInfo(process.cwd());
-            (socket as any).emit("plugins_list", { plugins, requestId });
+            socket.emit("plugins_list", { plugins, requestId });
         });
 
         // ── File Explorer ─────────────────────────────────────────────────

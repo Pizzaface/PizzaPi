@@ -16,6 +16,9 @@ import {
     isPluginDir,
     scanPluginsDir,
     discoverPlugins,
+    pluginSearchDirs,
+    globalPluginDirs,
+    projectPluginDirs,
     resolvePluginRoot,
     matchesTool,
     mapHookEventToPi,
@@ -376,6 +379,34 @@ describe("parseHooks", () => {
         expect(parseHooks(dir)).toBeNull();
     });
 
+    test("handles malformed hooks gracefully", () => {
+        const dir = createPlugin("bad-hooks", { manifest: { name: "bad-hooks" } });
+        mkdirSync(join(dir, "hooks"), { recursive: true });
+
+        // Hooks with non-array groups, missing hooks array, garbage values
+        writeFileSync(join(dir, "hooks", "hooks.json"), JSON.stringify({
+            hooks: {
+                PreToolUse: "not-an-array",
+                PostToolUse: [
+                    { matcher: "Edit", hooks: "also-not-an-array" },
+                    null,
+                    { matcher: "Write", hooks: [{ type: "command", command: "ok.sh" }] },
+                ],
+                Stop: [{ hooks: [{ type: "command", command: "stop.sh" }] }],
+            },
+        }));
+
+        const hooks = parseHooks(dir);
+        expect(hooks).not.toBeNull();
+        // PreToolUse should be skipped (not an array)
+        expect(hooks!.hooks.PreToolUse).toBeUndefined();
+        // PostToolUse: only the valid group should survive
+        expect(hooks!.hooks.PostToolUse).toHaveLength(1);
+        expect(hooks!.hooks.PostToolUse![0].hooks[0].command).toBe("ok.sh");
+        // Stop should be fine
+        expect(hooks!.hooks.Stop).toHaveLength(1);
+    });
+
     test("merges multiple JSON files in hooks/", () => {
         const dir = createPlugin("multi-hooks", { manifest: { name: "multi-hooks" } });
         mkdirSync(join(dir, "hooks"), { recursive: true });
@@ -516,7 +547,8 @@ describe("scanPluginsDir", () => {
     });
 
     test("returns empty for nonexistent directory", () => {
-        expect(scanPluginsDir("/nonexistent/path")).toEqual([]);
+        const missingDir = join(fixtureDir, "definitely-does-not-exist-" + Date.now());
+        expect(scanPluginsDir(missingDir)).toEqual([]);
     });
 });
 
@@ -555,5 +587,54 @@ describe("toPluginInfo", () => {
         expect(info.hookEvents).toEqual(["Stop"]);
         expect(info.skills).toHaveLength(1);
         expect(info.hasMcp).toBe(true);
+    });
+});
+
+// ── Security: global vs project-local dirs ────────────────────────────────────
+
+describe("pluginSearchDirs security", () => {
+    test("default search dirs do NOT include project-local dirs", () => {
+        const dirs = pluginSearchDirs("/some/project");
+        const projectLocal = projectPluginDirs("/some/project");
+        for (const local of projectLocal) {
+            expect(dirs).not.toContain(local);
+        }
+    });
+
+    test("includeProjectLocal adds project dirs", () => {
+        const dirs = pluginSearchDirs("/some/project", { includeProjectLocal: true });
+        const projectLocal = projectPluginDirs("/some/project");
+        for (const local of projectLocal) {
+            expect(dirs).toContain(local);
+        }
+    });
+
+    test("global dirs are always included", () => {
+        const dirs = pluginSearchDirs("/some/project");
+        const globals = globalPluginDirs();
+        for (const g of globals) {
+            expect(dirs).toContain(g);
+        }
+    });
+
+    test("extraDirs are included", () => {
+        const dirs = pluginSearchDirs("/some/project", { extraDirs: ["/custom/path"] });
+        expect(dirs).toContain("/custom/path");
+    });
+
+    test("discoverPlugins without includeProjectLocal skips local dirs", () => {
+        // Create a plugin only in a project-local dir
+        const projectDir = join(fixtureDir, "project-security");
+        const localPluginDir = join(projectDir, ".pizzapi", "plugins", "sneaky");
+        mkdirSync(join(localPluginDir, "commands"), { recursive: true });
+        writeFileSync(join(localPluginDir, "commands", "evil.md"), "# Evil command");
+
+        // Discovery without includeProjectLocal should NOT find it
+        const plugins = discoverPlugins(projectDir);
+        expect(plugins.find(p => p.name === "sneaky")).toBeUndefined();
+
+        // Discovery WITH includeProjectLocal SHOULD find it
+        const withLocal = discoverPlugins(projectDir, { includeProjectLocal: true });
+        expect(withLocal.find(p => p.name === "sneaky")).toBeDefined();
     });
 });

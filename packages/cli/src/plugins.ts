@@ -140,9 +140,12 @@ export interface DiscoveredPlugin {
 // ── Discovery locations ───────────────────────────────────────────────────────
 
 /**
- * Default directories to scan for Claude Code plugins.
+ * Global (trusted) directories to scan for Claude Code plugins.
+ *
+ * These are user-controlled home directories — safe to auto-load because
+ * they have the same trust level as ~/.pi/agent/extensions/ or ~/.agents/skills/.
  */
-export function defaultPluginDirs(): string[] {
+export function globalPluginDirs(): string[] {
     const home = homedir();
     return [
         join(home, ".pizzapi", "plugins"),
@@ -153,17 +156,38 @@ export function defaultPluginDirs(): string[] {
 }
 
 /**
- * Build the full list of plugin search directories, including project-local.
+ * Project-local directories where plugins can live.
+ *
+ * **Security note:** project-local plugins can execute arbitrary shell
+ * commands via hooks. They are NOT auto-loaded. The caller must explicitly
+ * opt in by passing `includeProjectLocal: true` (e.g. from a config flag)
+ * or by listing them in `extraDirs`.
  */
-export function pluginSearchDirs(cwd: string, extraDirs?: string[]): string[] {
-    const dirs = [
-        ...defaultPluginDirs(),
+export function projectPluginDirs(cwd: string): string[] {
+    return [
         join(cwd, ".pizzapi", "plugins"),
         join(cwd, ".agents", "plugins"),
         join(cwd, ".claude", "plugins"),
     ];
-    if (Array.isArray(extraDirs)) {
-        for (const d of extraDirs) {
+}
+
+/**
+ * Build the full list of plugin search directories.
+ *
+ * @param cwd - Project working directory
+ * @param opts.includeProjectLocal - If true, include project-local plugin dirs
+ *   (default: false for security — project-local plugins can run arbitrary code)
+ * @param opts.extraDirs - Additional directories to scan (explicitly trusted by user)
+ */
+export function pluginSearchDirs(cwd: string, opts?: { includeProjectLocal?: boolean; extraDirs?: string[] }): string[] {
+    const dirs = [...globalPluginDirs()];
+
+    if (opts?.includeProjectLocal) {
+        dirs.push(...projectPluginDirs(cwd));
+    }
+
+    if (Array.isArray(opts?.extraDirs)) {
+        for (const d of opts!.extraDirs) {
             if (typeof d === "string" && d.trim()) {
                 dirs.push(d.replace(/^~/, homedir()));
             }
@@ -346,11 +370,15 @@ export function parseHooks(pluginDir: string): HooksConfig | null {
             if (parsed.hooks && typeof parsed.hooks === "object") {
                 for (const [event, groups] of Object.entries(parsed.hooks)) {
                     const key = event as ClaudeHookEvent;
+                    if (!Array.isArray(groups)) continue;
                     if (!merged.hooks[key]) {
                         merged.hooks[key] = [];
                     }
-                    if (Array.isArray(groups)) {
-                        merged.hooks[key]!.push(...groups);
+                    // Validate each group has the expected shape
+                    for (const group of groups) {
+                        if (!group || typeof group !== "object") continue;
+                        if (!Array.isArray((group as any).hooks)) continue;
+                        merged.hooks[key]!.push(group);
                     }
                 }
                 foundAny = true;
@@ -483,9 +511,14 @@ export function scanPluginsDir(dir: string): DiscoveredPlugin[] {
 /**
  * Discover all Claude Code plugins from all search directories.
  * Deduplicates by plugin name (first found wins).
+ *
+ * @param cwd - Project working directory
+ * @param opts.includeProjectLocal - If true, include project-local plugin dirs
+ *   (default: false — project-local plugins can run arbitrary code)
+ * @param opts.extraDirs - Additional directories to scan
  */
-export function discoverPlugins(cwd: string, extraDirs?: string[]): DiscoveredPlugin[] {
-    const dirs = pluginSearchDirs(cwd, extraDirs);
+export function discoverPlugins(cwd: string, opts?: { includeProjectLocal?: boolean; extraDirs?: string[] }): DiscoveredPlugin[] {
+    const dirs = pluginSearchDirs(cwd, opts);
     const seen = new Set<string>();
     const plugins: DiscoveredPlugin[] = [];
 
@@ -622,6 +655,6 @@ export function toPluginInfo(plugin: DiscoveredPlugin): PluginInfo {
 /**
  * Scan and return plugin info for all discovered plugins.
  */
-export function scanAllPluginInfo(cwd: string, extraDirs?: string[]): PluginInfo[] {
-    return discoverPlugins(cwd, extraDirs).map(toPluginInfo);
+export function scanAllPluginInfo(cwd: string, opts?: { includeProjectLocal?: boolean; extraDirs?: string[] }): PluginInfo[] {
+    return discoverPlugins(cwd, opts).map(toPluginInfo);
 }

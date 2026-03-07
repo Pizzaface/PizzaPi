@@ -13,6 +13,8 @@ import {
     resolvePluginRoot,
     matchesTool,
     mapHookEventToPi,
+    scanPluginsDir,
+    projectPluginDirs,
     type DiscoveredPlugin,
     type PluginCommand,
     type HookGroup,
@@ -120,9 +122,11 @@ function registerPluginHooks(pi: ExtensionAPI, plugin: DiscoveredPlugin): void {
         const claudeEvent = eventName as ClaudeHookEvent;
         const piEvent = mapHookEventToPi(claudeEvent);
         if (!piEvent) continue;
+        if (!Array.isArray(groups)) continue;
 
         for (const group of groups as HookGroup[]) {
-            const commandHooks = group.hooks.filter(h => h.type === "command" && h.command);
+            if (!group || !Array.isArray(group.hooks)) continue;
+            const commandHooks = group.hooks.filter(h => h && h.type === "command" && h.command);
             if (commandHooks.length === 0) continue;
             registerHookGroup(pi, plugin, claudeEvent, piEvent, group.matcher, commandHooks);
         }
@@ -268,50 +272,112 @@ function registerHookGroup(
     }
 }
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function pluginSummary(p: DiscoveredPlugin): string {
+    const parts: string[] = [p.name];
+    if (p.commands.length) parts.push(`${p.commands.length} cmd${p.commands.length > 1 ? "s" : ""}`);
+    if (p.hooks) {
+        const hookCount = Object.values(p.hooks.hooks).flat().length;
+        if (hookCount) parts.push(`${hookCount} hook${hookCount > 1 ? "s" : ""}`);
+    }
+    if (p.skills.length) parts.push(`${p.skills.length} skill${p.skills.length > 1 ? "s" : ""}`);
+    if (p.hasMcp) parts.push("mcp⚠️");
+    return parts.join(": ");
+}
+
+function registerPlugin(pi: ExtensionAPI, plugin: DiscoveredPlugin): void {
+    for (const cmd of plugin.commands) {
+        registerPluginCommand(pi, plugin, cmd);
+    }
+    registerPluginHooks(pi, plugin);
+}
+
 // ── Extension factory ─────────────────────────────────────────────────────────
 
 /**
  * Create a pi ExtensionFactory that discovers and loads Claude Code plugins.
  *
- * Returns null if no plugins are found (so the extension is not registered
- * when there are no plugins to load).
+ * **Security model:**
+ * - Global plugins (~/.pizzapi/plugins/, ~/.agents/plugins/, ~/.claude/plugins/)
+ *   are auto-loaded at startup — they have the same trust level as global
+ *   extensions or skills.
+ * - Project-local plugins (.pizzapi/plugins/, .agents/plugins/, .claude/plugins/
+ *   under cwd) can execute arbitrary shell commands via hooks. They are discovered
+ *   at session start and require explicit user confirmation before loading.
+ *   In headless mode (no UI), project-local plugins are skipped.
+ *
+ * Returns null if no global plugins are found AND no local dirs exist
+ * (so the extension is not registered when there's nothing to do).
  */
 export function createClaudePluginExtension(cwd: string): ExtensionFactory | null {
-    const plugins = discoverPlugins(cwd);
-    if (plugins.length === 0) return null;
+    // Discover global (trusted) plugins at factory creation time
+    const globalPlugins = discoverPlugins(cwd);
+
+    // Check if there are any project-local plugin dirs that might have content
+    const localDirs = projectPluginDirs(cwd);
+    const localPluginCandidates: DiscoveredPlugin[] = [];
+    for (const dir of localDirs) {
+        localPluginCandidates.push(...scanPluginsDir(dir));
+    }
+    // Deduplicate against global plugins
+    const globalNames = new Set(globalPlugins.map(p => p.name));
+    const localOnly = localPluginCandidates.filter(p => !globalNames.has(p.name));
+
+    if (globalPlugins.length === 0 && localOnly.length === 0) return null;
 
     return (pi: ExtensionAPI) => {
-        for (const plugin of plugins) {
-            for (const cmd of plugin.commands) {
-                registerPluginCommand(pi, plugin, cmd);
-            }
-            registerPluginHooks(pi, plugin);
+        // Register global plugins immediately (trusted)
+        for (const plugin of globalPlugins) {
+            registerPlugin(pi, plugin);
         }
 
-        // Notify at session start
         pi.on("session_start", async (_event, ctx) => {
-            const summary = plugins.map(p => {
-                const parts: string[] = [p.name];
-                if (p.commands.length) parts.push(`${p.commands.length} cmd${p.commands.length > 1 ? "s" : ""}`);
-                if (p.hooks) {
-                    const hookCount = Object.values(p.hooks.hooks).flat().length;
-                    if (hookCount) parts.push(`${hookCount} hook${hookCount > 1 ? "s" : ""}`);
-                }
-                if (p.skills.length) parts.push(`${p.skills.length} skill${p.skills.length > 1 ? "s" : ""}`);
-                if (p.hasMcp) parts.push("mcp⚠️");
-                return parts.join(": ");
-            });
+            // Notify about global plugins
+            if (globalPlugins.length > 0) {
+                ctx.ui.notify(
+                    `Loaded ${globalPlugins.length} Claude plugin${globalPlugins.length > 1 ? "s" : ""}: ${globalPlugins.map(pluginSummary).join(", ")}`,
+                    "info",
+                );
+            }
 
-            ctx.ui.notify(
-                `Loaded ${plugins.length} Claude plugin${plugins.length > 1 ? "s" : ""}: ${summary.join(", ")}`,
-                "info",
-            );
+            // Prompt for project-local plugins (interactive only)
+            if (localOnly.length > 0 && ctx.hasUI) {
+                const names = localOnly.map(p => p.name).join(", ");
+                const ok = await ctx.ui.confirm(
+                    "Untrusted Claude Plugins",
+                    `Found ${localOnly.length} project-local plugin${localOnly.length > 1 ? "s" : ""} (${names}). ` +
+                    `These can execute shell commands via hooks.\n\nTrust and load them?`,
+                );
+
+                if (ok) {
+                    for (const plugin of localOnly) {
+                        registerPlugin(pi, plugin);
+                    }
+                    ctx.ui.notify(
+                        `Loaded ${localOnly.length} local plugin${localOnly.length > 1 ? "s" : ""}: ${localOnly.map(pluginSummary).join(", ")}`,
+                        "info",
+                    );
+                } else {
+                    ctx.ui.notify(
+                        `Skipped ${localOnly.length} untrusted local plugin${localOnly.length > 1 ? "s" : ""}.`,
+                        "warning",
+                    );
+                }
+            } else if (localOnly.length > 0) {
+                // Headless mode — skip local plugins silently
+                ctx.ui.notify(
+                    `Skipped ${localOnly.length} project-local plugin${localOnly.length > 1 ? "s" : ""} (headless mode — use global dirs for auto-loading).`,
+                    "warning",
+                );
+            }
         });
     };
 }
 
 /**
  * Get the skill paths from all discovered Claude Code plugins.
+ * Only includes global (trusted) plugin skill paths.
  * Used by the worker to add plugin skills to pi's skill discovery.
  */
 export function getPluginSkillPaths(cwd: string): string[] {
@@ -319,7 +385,6 @@ export function getPluginSkillPaths(cwd: string): string[] {
     const paths: string[] = [];
     for (const plugin of plugins) {
         if (plugin.skills.length > 0) {
-            // Add the plugin's skills/ directory so pi discovers the SKILL.md subdirs
             const skillsDir = plugin.rootPath + "/skills";
             paths.push(skillsDir);
         }
