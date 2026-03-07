@@ -52,13 +52,31 @@ function nodeReqToFetchRequest(req: IncomingMessage): Request {
     });
 }
 
+/**
+ * Security headers applied to all responses.
+ */
+const SECURITY_HEADERS: Record<string, string> = {
+    "content-security-policy": [
+        "default-src 'self'",
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:",
+        "style-src 'self' 'unsafe-inline'",
+        "img-src 'self' data: blob: https:",
+        "font-src 'self' data:",
+        "connect-src 'self' wss: ws: https:",
+        "frame-ancestors 'self'",
+        "base-uri 'self'",
+        "form-action 'self'",
+    ].join("; "),
+    "strict-transport-security": "max-age=31536000; includeSubDomains",
+    "x-content-type-options": "nosniff",
+    "x-frame-options": "DENY",
+    "x-xss-protection": "0",
+    "referrer-policy": "strict-origin-when-cross-origin",
+    "permissions-policy": "geolocation=(), microphone=(), camera=()",
+};
+
 async function sendFetchResponse(res: ServerResponse, response: Response): Promise<void> {
-    const headers: Record<string, string | string[]> = {
-        "x-content-type-options": "nosniff",
-        "x-frame-options": "DENY",
-        "x-xss-protection": "0",
-        "referrer-policy": "strict-origin-when-cross-origin"
-    };
+    const headers: Record<string, string | string[]> = { ...SECURITY_HEADERS };
     response.headers.forEach((value, key) => {
         const existing = headers[key];
         if (existing !== undefined) {
@@ -110,10 +128,7 @@ const httpServer = createServer(async (req, res) => {
         if (!res.headersSent) {
             res.writeHead(500, {
                 "content-type": "application/json",
-                "x-content-type-options": "nosniff",
-                "x-frame-options": "DENY",
-                "x-xss-protection": "0",
-                "referrer-policy": "strict-origin-when-cross-origin"
+                ...SECURITY_HEADERS,
             });
         }
         res.end(JSON.stringify({ error: "Internal server error" }));

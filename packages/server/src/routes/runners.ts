@@ -21,7 +21,38 @@ import { getHiddenModels } from "../user-hidden-models.js";
 import { cwdMatchesRoots } from "../security.js";
 import { isValidSkillName } from "../validation.js";
 import { parseJsonArray } from "./utils.js";
+import { spawnRateLimiter, getClientIp, rateLimitResponse } from "../rate-limiters.js";
+import { z } from "zod";
 import type { RouteHandler } from "./types.js";
+
+// Zod schemas for request validation
+const SpawnRequestSchema = z.object({
+    runnerId: z.string().min(1, "Runner ID is required"),
+    cwd: z.string().optional(),
+    prompt: z.string().optional(),
+    model: z.object({
+        provider: z.string().min(1),
+        id: z.string().min(1),
+    }).optional(),
+});
+
+async function parseBody<T>(req: Request, schema: z.ZodType<T>): Promise<T | Response> {
+    let raw: unknown;
+    try {
+        raw = await req.json();
+    } catch {
+        return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+    }
+    const result = schema.safeParse(raw);
+    if (!result.success) {
+        const errors = result.error.issues.map((e) => ({
+            field: String(e.path.join(".")) || "(root)",
+            message: e.message,
+        }));
+        return Response.json({ error: "Validation failed", details: errors }, { status: 400 });
+    }
+    return result.data;
+}
 
 export const handleRunnersRoute: RouteHandler = async (req, url) => {
     // ── List runners ───────────────────────────────────────────────────
@@ -33,30 +64,26 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
 
     // ── Spawn session ──────────────────────────────────────────────────
     if (url.pathname === "/api/runners/spawn" && req.method === "POST") {
+        // Rate limit: 10 requests per minute
+        const clientIp = getClientIp(req);
+        if (!spawnRateLimiter.check(clientIp)) {
+            return rateLimitResponse(60);
+        }
+
         const providedApiKey = req.headers.get("x-api-key") ?? undefined;
         const identity = providedApiKey
             ? await validateApiKey(req, providedApiKey)
             : await requireSession(req);
         if (identity instanceof Response) return identity;
 
-        let body: any = {};
-        try { body = await req.json(); } catch { body = {}; }
+        // Validate request body with Zod
+        const body = await parseBody(req, SpawnRequestSchema);
+        if (body instanceof Response) return body;
 
-        const requestedRunnerId = typeof body.runnerId === "string" ? body.runnerId : undefined;
-        const requestedCwd = typeof body.cwd === "string" ? body.cwd : undefined;
-        const requestedPrompt = typeof body.prompt === "string" ? body.prompt : undefined;
-        const requestedModel =
-            body.model && typeof body.model === "object" &&
-            typeof (body.model as any).provider === "string" &&
-            typeof (body.model as any).id === "string"
-                ? { provider: (body.model as any).provider as string, id: (body.model as any).id as string }
-                : undefined;
-
-        if (!requestedRunnerId) {
-            return Response.json({ error: "Missing runnerId" }, { status: 400 });
-        }
-
-        const runnerId = requestedRunnerId;
+        const runnerId = body.runnerId;
+        const requestedCwd = body.cwd;
+        const requestedPrompt = body.prompt;
+        const requestedModel = body.model;
         const runner = await getRunnerData(runnerId);
         if (!runner) {
             return Response.json({ error: "Runner not found" }, { status: 404 });

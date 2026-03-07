@@ -7,10 +7,17 @@ import { Agent } from "@mariozechner/pi-agent-core";
 import type { AgentEvent } from "@mariozechner/pi-agent-core";
 import { createToolkit } from "@pizzapi/tools";
 import { requireSession } from "../middleware.js";
+import { chatRateLimiter, getClientIp, rateLimitResponse } from "../rate-limiters.js";
 import type { RouteHandler } from "./types.js";
 
 export const handleChatRoute: RouteHandler = async (req, url) => {
     if (url.pathname === "/api/chat" && req.method === "POST") {
+        // Rate limit: 20 requests per minute
+        const clientIp = getClientIp(req);
+        if (!chatRateLimiter.check(clientIp)) {
+            return rateLimitResponse(60);
+        }
+
         const identity = await requireSession(req);
         if (identity instanceof Response) return identity;
         const body = await req.json();
