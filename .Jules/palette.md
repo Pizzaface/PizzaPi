@@ -23,3 +23,6 @@
   <TooltipContent>...</TooltipContent>
 </Tooltip>
 ```
+## 2026-03-06 - Tooltip Consistency for Icon Buttons
+**Learning:** Mixing native `title` attributes with custom `Tooltip` components in the same icon button group creates a jarring, inconsistent hover experience for users. Native tooltips have unpredictable delays and styling.
+**Action:** Always use the design system's `Tooltip` component for top-level icon-only actions to ensure a snappy, visually cohesive interface.
