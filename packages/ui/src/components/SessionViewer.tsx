@@ -16,6 +16,7 @@ import {
   roleLabel,
   toMessageRole,
   CompactionSummaryCard,
+  CommandResultCard,
 } from "@/components/session-viewer/rendering";
 import {
   Message,
@@ -149,8 +150,8 @@ export interface SessionViewerProps {
   runnerId?: string;
   /** Absolute working directory of the current session (used as base for @-mention file paths) */
   sessionCwd?: string;
-  /** Append a local system message to the conversation (used by client-side slash commands) */
-  onAppendSystemMessage?: (text: string) => void;
+  /** Append a local system message to the conversation (string or structured data for card rendering) */
+  onAppendSystemMessage?: (content: unknown) => void;
 }
 
 function formatTokenCount(n: number): string {
@@ -321,6 +322,18 @@ const SessionMessageItem = React.memo(({ message, activeToolCalls, agentActive, 
   agentActive?: boolean;
   isLast: boolean;
 }) => {
+  // System messages with structured command result data render as standalone cards
+  if (message.role === "system" && message.content && typeof message.content === "object" && !Array.isArray(message.content)) {
+    const c = message.content as Record<string, unknown>;
+    if (c.kind === "mcp" || c.kind === "plugins" || c.kind === "skills") {
+      return (
+        <div className="w-full px-4 py-1.5 max-w-3xl mx-auto">
+          <CommandResultCard data={message.content as any} />
+        </div>
+      );
+    }
+  }
+
   // Compaction summary cards render as standalone elements without the message wrapper
   if ((message.role === "compactionSummary" || message.role === "branchSummary") && message.summary) {
     return (
@@ -536,8 +549,8 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
 
     if (!onExec) return false;
 
-    if (rawCommand === "mcp" || rawCommand === "mcp_reload") {
-      const action = rawCommand === "mcp_reload" || args.trim().toLowerCase() === "reload" ? "reload" : "status";
+    if (rawCommand === "mcp") {
+      const action = args.trim().toLowerCase() === "reload" ? "reload" : "status";
       onExec({ type: "exec", id, command: "mcp", action });
       setInput("");
       setCommandOpen(false);
@@ -553,22 +566,20 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
       fetch(`/api/runners/${encodeURIComponent(runnerId)}/plugins`, { credentials: "include" })
         .then((res) => res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))
         .then((data: any) => {
-          const plugins: Array<{ name: string; description?: string; commands?: Array<{ name: string }>; hookEvents?: string[]; skills?: Array<{ name: string }>; version?: string }> = Array.isArray(data?.plugins) ? data.plugins : [];
-          if (plugins.length === 0) {
-            onAppendSystemMessage?.("**Plugins** — No plugins loaded.");
-            return;
-          }
-          const lines = [`**Plugins** — ${plugins.length} loaded\n`];
-          for (const p of plugins) {
-            const caps: string[] = [];
-            if (p.commands?.length) caps.push(`${p.commands.length} cmd${p.commands.length > 1 ? "s" : ""}`);
-            if (p.hookEvents?.length) caps.push(`${p.hookEvents.length} hook${p.hookEvents.length > 1 ? "s" : ""}`);
-            if (p.skills?.length) caps.push(`${p.skills.length} skill${p.skills.length > 1 ? "s" : ""}`);
-            const capsStr = caps.length > 0 ? ` (${caps.join(", ")})` : "";
-            const version = p.version ? ` v${p.version}` : "";
-            lines.push(`• **${p.name}**${version}${capsStr}${p.description ? ` — ${p.description}` : ""}`);
-          }
-          onAppendSystemMessage?.(lines.join("\n"));
+          const raw: Array<{ name: string; description?: string; commands?: Array<{ name: string }>; hookEvents?: string[]; skills?: Array<{ name: string }>; version?: string; hasMcp?: boolean; hasAgents?: boolean }> = Array.isArray(data?.plugins) ? data.plugins : [];
+          onAppendSystemMessage?.({
+            kind: "plugins",
+            plugins: raw.map((p) => ({
+              name: p.name,
+              description: p.description,
+              version: p.version,
+              commandCount: p.commands?.length ?? 0,
+              hookCount: p.hookEvents?.length ?? 0,
+              skillCount: p.skills?.length ?? 0,
+              hasMcp: p.hasMcp,
+              hasAgents: p.hasAgents,
+            })),
+          });
         })
         .catch((err: Error) => {
           onAppendSystemMessage?.(`**Plugins** — Failed to load: ${err.message}`);
@@ -595,16 +606,10 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
               merged.set(skillName, { name: skillName, description: cmd.description });
             }
           }
-          const allSkills = Array.from(merged.values());
-          if (allSkills.length === 0) {
-            onAppendSystemMessage?.("**Skills** — No skills available.");
-            return;
-          }
-          const lines = [`**Skills** — ${allSkills.length} available\n`];
-          for (const s of allSkills) {
-            lines.push(`• **${s.name}**${s.description ? ` — ${s.description}` : ""}`);
-          }
-          onAppendSystemMessage?.(lines.join("\n"));
+          onAppendSystemMessage?.({
+            kind: "skills",
+            skills: Array.from(merged.values()),
+          });
         })
         .catch((err: Error) => {
           onAppendSystemMessage?.(`**Skills** — Failed to load: ${err.message}`);
@@ -735,8 +740,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     return [
       { name: "new", description: "Start a new conversation" },
       { name: "resume", description: "Resume the previous session" },
-      { name: "mcp", description: "Show MCP status" },
-      { name: "mcp_reload", description: "Reload MCP tools" },
+      { name: "mcp", description: "MCP status (or /mcp reload)" },
       { name: "plugins", description: "Show loaded plugins" },
       { name: "skills", description: "Show available skills" },
       { name: "model", description: "Select model" },

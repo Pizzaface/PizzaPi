@@ -1081,16 +1081,17 @@ export function App() {
     }
   }, []);
 
-  const appendLocalSystemMessage = React.useCallback((text: string) => {
-    const content = text.trim();
-    if (!content) return;
+  const appendLocalSystemMessage = React.useCallback((content: unknown) => {
+    if (content === undefined || content === null) return;
+    // For plain strings, trim and skip empties
+    if (typeof content === "string" && !content.trim()) return;
 
     const now = Date.now();
     const message: RelayMessage = {
       key: `system:local:${now}:${Math.random().toString(16).slice(2)}`,
       role: "system",
       timestamp: now,
-      content,
+      content: typeof content === "string" ? content.trim() : content,
     };
 
     setMessages((prev) => {
@@ -1413,18 +1414,31 @@ export function App() {
       }
 
       if (command === "mcp") {
-        const lines = Array.isArray(result?.lines)
-          ? result.lines.filter((line: unknown): line is string => typeof line === "string")
+        // Build structured command result for rich card rendering
+        const toolCount = typeof result?.toolCount === "number" ? result.toolCount : 0;
+        const toolNames = Array.isArray(result?.toolNames)
+          ? result.toolNames.filter((n: unknown): n is string => typeof n === "string")
           : [];
-        if (lines.length > 0) {
-          appendLocalSystemMessage(lines.join("\n"));
-        }
+        const errors = Array.isArray(result?.errors) ? result.errors as Array<{ server: string; error: string }> : [];
+        const servers = Array.isArray(result?.config?.effectiveServers)
+          ? (result.config.effectiveServers as Array<{ name: string; transport: string; scope: string; sourcePath?: string }>)
+          : [];
+        const action = typeof result?.action === "string" && result.action === "reload" ? "reload" as const : "status" as const;
+
+        appendLocalSystemMessage({
+          kind: "mcp",
+          action,
+          toolCount,
+          toolNames,
+          serverCount: servers.length,
+          servers,
+          errors,
+          loadedAt: typeof result?.loadedAt === "string" ? result.loadedAt : undefined,
+        });
 
         const summary = typeof result?.summary === "string"
           ? result.summary
-          : typeof result?.toolCount === "number"
-            ? `MCP tools loaded: ${result.toolCount}`
-            : "MCP status updated";
+          : `MCP tools loaded: ${toolCount}`;
         setViewerStatus(summary);
         return;
       }

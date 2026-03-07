@@ -846,7 +846,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
 
                 const action = req.action === "reload" ? "reload" : "status";
                 const result = action === "reload" ? await bridge.reload() : bridge.status();
-                replyOk(result);
+                replyOk({ ...result as object, action });
                 return;
             }
 

@@ -56,6 +56,16 @@ import { SubAgentConversationCard } from "@/components/session-viewer/cards/SubA
 import { CompactionSummaryCard } from "@/components/session-viewer/cards/CompactionSummaryCard";
 
 export { CompactionSummaryCard } from "@/components/session-viewer/cards/CompactionSummaryCard";
+export { CommandResultCard, type CommandResultData } from "@/components/session-viewer/cards/CommandResultCard";
+
+import { CommandResultCard, type CommandResultData } from "@/components/session-viewer/cards/CommandResultCard";
+
+/** Type guard: is the content a structured command result? */
+function isCommandResult(content: unknown): content is CommandResultData {
+  if (!content || typeof content !== "object" || Array.isArray(content)) return false;
+  const c = content as Record<string, unknown>;
+  return c.kind === "mcp" || c.kind === "plugins" || c.kind === "skills";
+}
 
 export function toMessageRole(role: string): "user" | "assistant" | "system" {
   if (role === "user") return "user";
@@ -84,6 +94,11 @@ export function renderContent(
   thinkingDuration?: number,
   subAgentTurns?: SubAgentTurn[]
 ) {
+  // Structured command result cards (MCP, plugins, skills)
+  if (role === "system" && isCommandResult(content)) {
+    return <CommandResultCard data={content} />;
+  }
+
   // Sub-agent conversation: render as a chat window
   if (role === "subAgentConversation" && subAgentTurns && subAgentTurns.length > 0) {
     return <SubAgentConversationCard turns={subAgentTurns} />;
