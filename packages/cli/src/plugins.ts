@@ -114,6 +114,15 @@ export interface PluginSkillRef {
     skillMdPath: string;
 }
 
+export interface PluginRule {
+    /** Rule name (filename without .md extension) */
+    name: string;
+    /** Raw markdown content of the rule file */
+    content: string;
+    /** Absolute path to the rule .md file */
+    filePath: string;
+}
+
 export interface DiscoveredPlugin {
     /** Plugin name (from manifest or directory name) */
     name: string;
@@ -129,6 +138,8 @@ export interface DiscoveredPlugin {
     hooks: HooksConfig | null;
     /** Skills directories (passed through to pi — already compatible format) */
     skills: PluginSkillRef[];
+    /** Rules — markdown guidelines injected into the system prompt */
+    rules: PluginRule[];
     /** Whether the plugin has MCP configuration (informational — not adapted) */
     hasMcp: boolean;
     /** Whether the plugin has agent definitions (informational — not adapted) */
@@ -262,13 +273,22 @@ export function resolvePluginRoot(text: string, pluginRoot: string): string {
 
 /**
  * Parse a plugin.json manifest file.
- * Returns a synthesized manifest from the directory name if the file is missing.
+ *
+ * Checks in order:
+ *   1. .claude-plugin/plugin.json (Claude Code standard location)
+ *   2. plugin.json (root — common in third-party plugins)
+ *
+ * Returns a synthesized manifest from the directory name if neither is found.
  */
 export function parseManifest(pluginDir: string): PluginManifest {
-    const manifestPath = join(pluginDir, ".claude-plugin", "plugin.json");
+    const candidates = [
+        join(pluginDir, ".claude-plugin", "plugin.json"),
+        join(pluginDir, "plugin.json"),
+    ];
     const dirName = basename(pluginDir);
 
-    if (existsSync(manifestPath)) {
+    for (const manifestPath of candidates) {
+        if (!existsSync(manifestPath)) continue;
         try {
             const raw = readFileSync(manifestPath, "utf-8");
             const parsed = JSON.parse(raw);
@@ -286,7 +306,7 @@ export function parseManifest(pluginDir: string): PluginManifest {
                 keywords: Array.isArray(parsed.keywords) ? parsed.keywords.filter((k: unknown) => typeof k === "string") : undefined,
             };
         } catch {
-            // Fall through to synthesized manifest
+            // Try next candidate
         }
     }
 
@@ -295,6 +315,8 @@ export function parseManifest(pluginDir: string): PluginManifest {
 
 /**
  * Discover all commands in a plugin's commands/ directory.
+ * Recursively scans subdirectories — a command at commands/pm/epic-start.md
+ * is registered with name "pm/epic-start".
  */
 export function parseCommands(pluginDir: string): PluginCommand[] {
     const commandsDir = join(pluginDir, "commands");
@@ -302,41 +324,52 @@ export function parseCommands(pluginDir: string): PluginCommand[] {
 
     const commands: PluginCommand[] = [];
 
-    let entries: string[];
-    try {
-        entries = readdirSync(commandsDir);
-    } catch {
-        return [];
-    }
-
-    for (const entry of entries) {
-        if (!entry.endsWith(".md")) continue;
-
-        const filePath = join(commandsDir, entry);
+    function scanDir(dir: string, prefix: string) {
+        let entries: string[];
         try {
-            if (!statSync(filePath).isFile()) continue;
+            entries = readdirSync(dir);
         } catch {
-            continue;
+            return;
         }
 
-        const name = entry.slice(0, -3); // Strip .md
-        let content: string;
-        try {
-            content = readFileSync(filePath, "utf-8");
-        } catch {
-            continue;
+        for (const entry of entries) {
+            const entryPath = join(dir, entry);
+            let stat;
+            try {
+                stat = statSync(entryPath);
+            } catch {
+                continue;
+            }
+
+            if (stat.isDirectory()) {
+                // Recurse into subdirectory with path prefix
+                scanDir(entryPath, prefix ? `${prefix}/${entry}` : entry);
+                continue;
+            }
+
+            if (!entry.endsWith(".md")) continue;
+
+            let content: string;
+            try {
+                content = readFileSync(entryPath, "utf-8");
+            } catch {
+                continue;
+            }
+
+            const baseName = entry.slice(0, -3); // Strip .md
+            const name = prefix ? `${prefix}/${baseName}` : baseName;
+            const { frontmatter, body } = parseMarkdownFrontmatter(content);
+
+            commands.push({
+                name,
+                content: body,
+                frontmatter: frontmatter as CommandFrontmatter,
+                filePath: entryPath,
+            });
         }
-
-        const { frontmatter, body } = parseMarkdownFrontmatter(content);
-
-        commands.push({
-            name,
-            content: body,
-            frontmatter: frontmatter as CommandFrontmatter,
-            filePath,
-        });
     }
 
+    scanDir(commandsDir, "");
     return commands;
 }
 
@@ -431,20 +464,68 @@ export function parsePluginSkills(pluginDir: string): PluginSkillRef[] {
     return skills;
 }
 
+/**
+ * Discover rules within a plugin's rules/ directory.
+ * Rules are markdown files containing guidelines injected into the system prompt.
+ */
+export function parseRules(pluginDir: string): PluginRule[] {
+    const rulesDir = join(pluginDir, "rules");
+    if (!existsSync(rulesDir)) return [];
+
+    const rules: PluginRule[] = [];
+
+    let entries: string[];
+    try {
+        entries = readdirSync(rulesDir);
+    } catch {
+        return [];
+    }
+
+    for (const entry of entries) {
+        if (!entry.endsWith(".md")) continue;
+
+        const filePath = join(rulesDir, entry);
+        try {
+            if (!statSync(filePath).isFile()) continue;
+        } catch {
+            continue;
+        }
+
+        let content: string;
+        try {
+            content = readFileSync(filePath, "utf-8");
+        } catch {
+            continue;
+        }
+
+        rules.push({
+            name: entry.slice(0, -3), // Strip .md
+            content,
+            filePath,
+        });
+    }
+
+    return rules;
+}
+
 // ── Full plugin discovery ─────────────────────────────────────────────────────
 
 /**
  * Check if a directory looks like a Claude Code plugin.
  * A directory is a plugin if it has any of:
  *   - .claude-plugin/plugin.json
+ *   - plugin.json (root-level manifest)
  *   - commands/ directory
  *   - hooks/ directory with .json files
+ *   - rules/ directory
  *   - skills/ directory with SKILL.md subdirs
  */
 export function isPluginDir(dir: string): boolean {
     if (existsSync(join(dir, ".claude-plugin", "plugin.json"))) return true;
+    if (existsSync(join(dir, "plugin.json"))) return true;
     if (existsSync(join(dir, "commands"))) return true;
     if (existsSync(join(dir, "hooks"))) return true;
+    if (existsSync(join(dir, "rules"))) return true;
     // Don't count skills-only dirs as plugins — they're already handled by pi's skill discovery
     return false;
 }
@@ -458,6 +539,7 @@ export function parsePlugin(pluginDir: string): DiscoveredPlugin {
     const commands = parseCommands(rootPath);
     const hooks = parseHooks(rootPath);
     const skills = parsePluginSkills(rootPath);
+    const rules = parseRules(rootPath);
 
     return {
         name: manifest.name,
@@ -467,6 +549,7 @@ export function parsePlugin(pluginDir: string): DiscoveredPlugin {
         commands,
         hooks,
         skills,
+        rules,
         hasMcp: existsSync(join(rootPath, ".mcp.json")),
         hasAgents: existsSync(join(rootPath, "agents")),
         hasLsp: existsSync(join(rootPath, ".lsp.json")),
@@ -620,6 +703,7 @@ export interface PluginInfo {
     commands: { name: string; description?: string; argumentHint?: string }[];
     hookEvents: string[];
     skills: { name: string; dirPath: string }[];
+    rules: { name: string }[];
     hasMcp: boolean;
     hasAgents: boolean;
     hasLsp: boolean;
@@ -647,6 +731,7 @@ export function toPluginInfo(plugin: DiscoveredPlugin): PluginInfo {
         })),
         hookEvents: plugin.hooks ? Object.keys(plugin.hooks.hooks) : [],
         skills: plugin.skills.map(s => ({ name: s.name, dirPath: s.dirPath })),
+        rules: plugin.rules.map(r => ({ name: r.name })),
         hasMcp: plugin.hasMcp,
         hasAgents: plugin.hasAgents,
         hasLsp: plugin.hasLsp,

@@ -64,6 +64,7 @@ export interface PluginEntry {
   commandCount: number;
   hookCount: number;
   skillCount: number;
+  ruleCount: number;
   hasMcp?: boolean;
   hasAgents?: boolean;
 }
@@ -301,6 +302,12 @@ function PluginsCard({ data }: { data: PluginsResultData }) {
                   <span className="inline-flex items-center gap-0.5 text-[10px] text-zinc-500">
                     <BookOpen className="size-2.5" />
                     {p.skillCount} skill{p.skillCount > 1 ? "s" : ""}
+                  </span>
+                )}
+                {(p.ruleCount ?? 0) > 0 && (
+                  <span className="inline-flex items-center gap-0.5 text-[10px] text-zinc-500">
+                    <FileText className="size-2.5" />
+                    {p.ruleCount} rule{p.ruleCount > 1 ? "s" : ""}
                   </span>
                 )}
                 {p.hasMcp && (

@@ -39,6 +39,7 @@ export interface PluginInfo {
     commands: PluginCommand[];
     hookEvents: string[];
     skills: { name: string; dirPath: string }[];
+    rules: { name: string }[];
     hasMcp: boolean;
     hasAgents: boolean;
     hasLsp: boolean;
@@ -102,6 +103,7 @@ function PluginRow({ plugin, onClick }: PluginRowProps) {
                         <PluginCapBadge icon={Terminal} label={plugin.commands.length === 1 ? "cmd" : "cmds"} count={plugin.commands.length} />
                         <PluginCapBadge icon={Zap} label={plugin.hookEvents.length === 1 ? "hook" : "hooks"} count={plugin.hookEvents.length} />
                         <PluginCapBadge icon={BookOpen} label={plugin.skills.length === 1 ? "skill" : "skills"} count={plugin.skills.length} />
+                        <PluginCapBadge icon={FileText} label={(plugin.rules?.length ?? 0) === 1 ? "rule" : "rules"} count={plugin.rules?.length ?? 0} />
                         {plugin.hasMcp && <UnsupportedBadge label="MCP" />}
                         {plugin.hasAgents && <UnsupportedBadge label="Agents" />}
                     </div>
@@ -231,6 +233,29 @@ function PluginDetailDialog({ plugin, onClose }: PluginDetailDialogProps) {
                                         className="px-2.5 py-1.5 rounded-md bg-muted/30 border border-border/30"
                                     >
                                         <span className="text-[11px] font-mono text-foreground">{skill.name}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Rules */}
+                    {(plugin.rules?.length ?? 0) > 0 && (
+                        <div>
+                            <h4 className="text-xs font-medium text-foreground mb-1.5 flex items-center gap-1.5">
+                                <FileText className="h-3 w-3 text-muted-foreground" />
+                                Rules
+                                <Badge variant="secondary" className="h-4 px-1.5 text-[10px] font-mono rounded-sm">
+                                    {plugin.rules.length}
+                                </Badge>
+                            </h4>
+                            <div className="space-y-1">
+                                {plugin.rules.map((rule) => (
+                                    <div
+                                        key={rule.name}
+                                        className="px-2.5 py-1.5 rounded-md bg-muted/30 border border-border/30"
+                                    >
+                                        <span className="text-[11px] font-mono text-foreground">{rule.name}</span>
                                     </div>
                                 ))}
                             </div>

@@ -566,7 +566,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
       fetch(`/api/runners/${encodeURIComponent(runnerId)}/plugins`, { credentials: "include" })
         .then((res) => res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))
         .then((data: any) => {
-          const raw: Array<{ name: string; description?: string; commands?: Array<{ name: string }>; hookEvents?: string[]; skills?: Array<{ name: string }>; version?: string; hasMcp?: boolean; hasAgents?: boolean }> = Array.isArray(data?.plugins) ? data.plugins : [];
+          const raw: Array<{ name: string; description?: string; commands?: Array<{ name: string }>; hookEvents?: string[]; skills?: Array<{ name: string }>; rules?: Array<{ name: string }>; version?: string; hasMcp?: boolean; hasAgents?: boolean }> = Array.isArray(data?.plugins) ? data.plugins : [];
           onAppendSystemMessage?.({
             kind: "plugins",
             plugins: raw.map((p) => ({
@@ -576,8 +576,9 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
               commandCount: p.commands?.length ?? 0,
               hookCount: p.hookEvents?.length ?? 0,
               skillCount: p.skills?.length ?? 0,
-              hasMcp: p.hasMcp,
-              hasAgents: p.hasAgents,
+              ruleCount: p.rules?.length ?? 0,
+              hasMcp: !!p.hasMcp,
+              hasAgents: !!p.hasAgents,
             })),
           });
         })

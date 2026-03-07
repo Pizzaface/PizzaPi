@@ -292,6 +292,7 @@ function pluginSummary(p: DiscoveredPlugin): string {
         if (hookCount) parts.push(`${hookCount} hook${hookCount > 1 ? "s" : ""}`);
     }
     if (p.skills.length) parts.push(`${p.skills.length} skill${p.skills.length > 1 ? "s" : ""}`);
+    if (p.rules.length) parts.push(`${p.rules.length} rule${p.rules.length > 1 ? "s" : ""}`);
     if (p.hasMcp) parts.push("mcp⚠️");
     return parts.join(": ");
 }
@@ -301,6 +302,30 @@ function registerPlugin(pi: ExtensionAPI, plugin: DiscoveredPlugin): void {
         registerPluginCommand(pi, plugin, cmd);
     }
     registerPluginHooks(pi, plugin);
+    registerPluginRules(pi, plugin);
+}
+
+// ── Rules registration ────────────────────────────────────────────────────────
+
+/**
+ * Inject plugin rules into the system prompt via before_agent_start.
+ * Rules are appended as a section at the end of the system prompt.
+ */
+function registerPluginRules(pi: ExtensionAPI, plugin: DiscoveredPlugin): void {
+    if (plugin.rules.length === 0) return;
+
+    // Build the rules block once
+    const rulesBlock = plugin.rules
+        .map(r => `## [${plugin.name}] ${r.name}\n\n${r.content}`)
+        .join("\n\n");
+
+    const section = `\n\n# Plugin Rules (${plugin.name})\n\n${rulesBlock}`;
+
+    pi.on("before_agent_start", async (event, _ctx) => {
+        return {
+            systemPrompt: event.systemPrompt + section,
+        };
+    });
 }
 
 // ── Trust prompt event ────────────────────────────────────────────────────────

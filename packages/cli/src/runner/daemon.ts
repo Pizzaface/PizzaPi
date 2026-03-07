@@ -478,7 +478,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         // ── Helper: emit registration ─────────────────────────────────────
         const emitRegister = () => {
             const skills = scanGlobalSkills();
-            const plugins = scanAllPluginInfo(process.cwd());
+            const plugins = scanAllPluginInfo(process.cwd(), { includeProjectLocal: true });
             socket.emit("register_runner", {
                 runnerId: identity.runnerId,
                 runnerSecret: identity.runnerSecret,
@@ -846,7 +846,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         socket.on("list_plugins", (data) => {
             if (isShuttingDown) return;
             const requestId = data?.requestId;
-            const plugins = scanAllPluginInfo(process.cwd());
+            const plugins = scanAllPluginInfo(process.cwd(), { includeProjectLocal: true });
             socket.emit("plugins_list", { plugins, requestId });
         });
 

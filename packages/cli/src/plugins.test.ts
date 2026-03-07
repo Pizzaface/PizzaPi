@@ -12,6 +12,7 @@ import {
     parseCommands,
     parseHooks,
     parsePluginSkills,
+    parseRules,
     parsePlugin,
     isPluginDir,
     scanPluginsDir,
@@ -32,9 +33,12 @@ let fixtureDir: string;
 
 function createPlugin(name: string, opts: {
     manifest?: Record<string, unknown>;
+    /** Pass "root" to place manifest at plugin root instead of .claude-plugin/ */
+    manifestLocation?: "standard" | "root";
     commands?: Record<string, string>;
     hooks?: Record<string, unknown>;
     skills?: string[];
+    rules?: Record<string, string>;
     mcp?: boolean;
     agents?: boolean;
 }) {
@@ -43,18 +47,26 @@ function createPlugin(name: string, opts: {
 
     // Manifest
     if (opts.manifest) {
-        mkdirSync(join(pluginDir, ".claude-plugin"), { recursive: true });
-        writeFileSync(
-            join(pluginDir, ".claude-plugin", "plugin.json"),
-            JSON.stringify(opts.manifest, null, 2),
-        );
+        if (opts.manifestLocation === "root") {
+            writeFileSync(
+                join(pluginDir, "plugin.json"),
+                JSON.stringify(opts.manifest, null, 2),
+            );
+        } else {
+            mkdirSync(join(pluginDir, ".claude-plugin"), { recursive: true });
+            writeFileSync(
+                join(pluginDir, ".claude-plugin", "plugin.json"),
+                JSON.stringify(opts.manifest, null, 2),
+            );
+        }
     }
 
-    // Commands
+    // Commands — supports nested paths like "pm/epic-start"
     if (opts.commands) {
-        mkdirSync(join(pluginDir, "commands"), { recursive: true });
         for (const [cmdName, content] of Object.entries(opts.commands)) {
-            writeFileSync(join(pluginDir, "commands", `${cmdName}.md`), content);
+            const cmdPath = join(pluginDir, "commands", `${cmdName}.md`);
+            mkdirSync(join(cmdPath, ".."), { recursive: true });
+            writeFileSync(cmdPath, content);
         }
     }
 
@@ -73,6 +85,14 @@ function createPlugin(name: string, opts: {
             const skillDir = join(pluginDir, "skills", skillName);
             mkdirSync(skillDir, { recursive: true });
             writeFileSync(join(skillDir, "SKILL.md"), `---\nname: ${skillName}\ndescription: Test skill ${skillName}\n---\n# ${skillName}\n`);
+        }
+    }
+
+    // Rules
+    if (opts.rules) {
+        mkdirSync(join(pluginDir, "rules"), { recursive: true });
+        for (const [ruleName, content] of Object.entries(opts.rules)) {
+            writeFileSync(join(pluginDir, "rules", `${ruleName}.md`), content);
         }
     }
 
@@ -298,6 +318,42 @@ describe("parseManifest", () => {
         expect(manifest.name).toBe("no-manifest");
         expect(manifest.description).toBeUndefined();
     });
+
+    test("reads root plugin.json when .claude-plugin/plugin.json is missing", () => {
+        const dir = createPlugin("root-manifest", {
+            manifest: {
+                name: "root-manifest",
+                description: "Plugin with root manifest",
+                version: "0.1.0",
+            },
+            manifestLocation: "root",
+            commands: { test: "# Test" },
+        });
+
+        const manifest = parseManifest(dir);
+        expect(manifest.name).toBe("root-manifest");
+        expect(manifest.description).toBe("Plugin with root manifest");
+        expect(manifest.version).toBe("0.1.0");
+    });
+
+    test("prefers .claude-plugin/plugin.json over root plugin.json", () => {
+        const dir = createPlugin("dual-manifest", {
+            manifest: {
+                name: "from-claude-plugin",
+                description: "Standard location",
+            },
+            commands: { test: "# Test" },
+        });
+        // Also add a root plugin.json
+        writeFileSync(
+            join(dir, "plugin.json"),
+            JSON.stringify({ name: "from-root", description: "Root location" }),
+        );
+
+        const manifest = parseManifest(dir);
+        expect(manifest.name).toBe("from-claude-plugin");
+        expect(manifest.description).toBe("Standard location");
+    });
 });
 
 // ── parseCommands ─────────────────────────────────────────────────────────────
@@ -349,6 +405,40 @@ Push to origin and create PR.`,
         const commands = parseCommands(dir);
         expect(commands).toHaveLength(1);
         expect(commands[0].name).toBe("valid");
+    });
+
+    test("discovers commands in subdirectories recursively", () => {
+        const dir = createPlugin("nested-cmds", {
+            commands: {
+                "top-level": "# Top level command",
+                "pm/epic-start": `---\ndescription: Start an epic\n---\nStart the epic.`,
+                "pm/epic-list": "# List epics",
+                "testing/run": "# Run tests",
+            },
+        });
+
+        const commands = parseCommands(dir);
+        expect(commands).toHaveLength(4);
+
+        const names = commands.map(c => c.name).sort();
+        expect(names).toEqual(["pm/epic-list", "pm/epic-start", "testing/run", "top-level"]);
+
+        const epicStart = commands.find(c => c.name === "pm/epic-start");
+        expect(epicStart).toBeDefined();
+        expect(epicStart!.frontmatter.description).toBe("Start an epic");
+        expect(epicStart!.content).toContain("Start the epic.");
+    });
+
+    test("handles deeply nested command directories", () => {
+        const dir = createPlugin("deep-cmds", {
+            commands: {
+                "a/b/c/deep": "# Deeply nested",
+            },
+        });
+
+        const commands = parseCommands(dir);
+        expect(commands).toHaveLength(1);
+        expect(commands[0].name).toBe("a/b/c/deep");
     });
 });
 
@@ -457,6 +547,44 @@ describe("parsePluginSkills", () => {
     });
 });
 
+// ── parseRules ────────────────────────────────────────────────────────────────
+
+describe("parseRules", () => {
+    test("discovers rule markdown files", () => {
+        const dir = createPlugin("rule-test", {
+            rules: {
+                "beads-operations": "# Beads Operations\n\nStandard patterns for Beads.",
+                "branch-operations": "# Branch Operations\n\nGit branch rules.",
+            },
+        });
+
+        const rules = parseRules(dir);
+        expect(rules).toHaveLength(2);
+
+        const names = rules.map(r => r.name).sort();
+        expect(names).toEqual(["beads-operations", "branch-operations"]);
+
+        const beads = rules.find(r => r.name === "beads-operations");
+        expect(beads).toBeDefined();
+        expect(beads!.content).toContain("Standard patterns for Beads");
+    });
+
+    test("returns empty array when no rules/ directory", () => {
+        const dir = createPlugin("no-rules", { manifest: { name: "no-rules" } });
+        expect(parseRules(dir)).toEqual([]);
+    });
+
+    test("skips non-.md files", () => {
+        const dir = createPlugin("mixed-rules", {
+            rules: { valid: "# Valid rule" },
+        });
+        writeFileSync(join(dir, "rules", "not-a-rule.txt"), "nope");
+        const rules = parseRules(dir);
+        expect(rules).toHaveLength(1);
+        expect(rules[0].name).toBe("valid");
+    });
+});
+
 // ── isPluginDir ───────────────────────────────────────────────────────────────
 
 describe("isPluginDir", () => {
@@ -473,6 +601,21 @@ describe("isPluginDir", () => {
     test("detects plugin with hooks/ only", () => {
         const dir = createPlugin("has-hooks", {
             hooks: { hooks: { Stop: [{ hooks: [{ type: "command", command: "x" }] }] } },
+        });
+        expect(isPluginDir(dir)).toBe(true);
+    });
+
+    test("detects plugin with root plugin.json", () => {
+        const dir = createPlugin("has-root-manifest", {
+            manifest: { name: "x" },
+            manifestLocation: "root",
+        });
+        expect(isPluginDir(dir)).toBe(true);
+    });
+
+    test("detects plugin with rules/ only", () => {
+        const dir = createPlugin("has-rules", {
+            rules: { "my-rule": "# A rule" },
         });
         expect(isPluginDir(dir)).toBe(true);
     });
@@ -497,6 +640,7 @@ describe("parsePlugin", () => {
             commands: {
                 review: `---\ndescription: Review code\n---\nReview the code.`,
                 deploy: `---\ndescription: Deploy\nargument-hint: [env]\n---\nDeploy to $ARGUMENTS.`,
+                "pm/status": `---\ndescription: Show PM status\n---\nShow status.`,
             },
             hooks: {
                 description: "Safety hooks",
@@ -508,6 +652,9 @@ describe("parsePlugin", () => {
                 },
             },
             skills: ["code-review"],
+            rules: {
+                "git-ops": "# Git Operations\n\nAlways use feature branches.",
+            },
             mcp: true,
             agents: true,
         });
@@ -515,10 +662,13 @@ describe("parsePlugin", () => {
         const plugin = parsePlugin(dir);
         expect(plugin.name).toBe("full-plugin");
         expect(plugin.description).toBe("A complete test plugin");
-        expect(plugin.commands).toHaveLength(2);
+        expect(plugin.commands).toHaveLength(3);
+        expect(plugin.commands.find(c => c.name === "pm/status")).toBeDefined();
         expect(plugin.hooks).not.toBeNull();
         expect(plugin.hooks!.hooks.PreToolUse).toHaveLength(1);
         expect(plugin.skills).toHaveLength(1);
+        expect(plugin.rules).toHaveLength(1);
+        expect(plugin.rules[0].name).toBe("git-ops");
         expect(plugin.hasMcp).toBe(true);
         expect(plugin.hasAgents).toBe(true);
         expect(plugin.hasLsp).toBe(false);
@@ -579,11 +729,13 @@ describe("toPluginInfo", () => {
             },
             commands: {
                 cmd1: `---\ndescription: Command 1\nargument-hint: [arg]\n---\nBody`,
+                "pm/sub-cmd": `---\ndescription: Sub command\n---\nBody`,
             },
             hooks: {
                 hooks: { Stop: [{ hooks: [{ type: "command", command: "x" }] }] },
             },
             skills: ["my-skill"],
+            rules: { "my-rule": "# Rule content" },
             mcp: true,
         });
 
@@ -594,12 +746,13 @@ describe("toPluginInfo", () => {
         expect(info.description).toBe("Test plugin");
         expect(info.version).toBe("2.0.0");
         expect(info.author).toBe("Alice");
-        expect(info.commands).toHaveLength(1);
-        expect(info.commands[0].name).toBe("cmd1");
-        expect(info.commands[0].description).toBe("Command 1");
-        expect(info.commands[0].argumentHint).toBe("[arg]");
+        expect(info.commands).toHaveLength(2);
+        expect(info.commands.find(c => c.name === "cmd1")?.description).toBe("Command 1");
+        expect(info.commands.find(c => c.name === "pm/sub-cmd")?.description).toBe("Sub command");
         expect(info.hookEvents).toEqual(["Stop"]);
         expect(info.skills).toHaveLength(1);
+        expect(info.rules).toHaveLength(1);
+        expect(info.rules[0].name).toBe("my-rule");
         expect(info.hasMcp).toBe(true);
     });
 });
