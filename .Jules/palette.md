@@ -9,3 +9,7 @@
 ## 2025-03-05 - [aria-label on buttons with text]
 **Learning:** Adding an `aria-label` to a button that already has visible text (like the user menu button which shows the user's name) completely overrides the visible text in the accessibility tree. This causes a WCAG 2.5.3 (Label in Name) violation, making it harder for assistive technology users (like Voice Control) to interact with the button using its visible label.
 **Action:** Never add `aria-label` attributes to buttons that already contain visible text. Only apply `aria-label` to icon-only buttons or those lacking any visible descriptive text.
+
+## 2026-03-06 - Tooltip Consistency for Icon Buttons
+**Learning:** Mixing native `title` attributes with custom `Tooltip` components in the same icon button group creates a jarring, inconsistent hover experience for users. Native tooltips have unpredictable delays and styling.
+**Action:** Always use the design system's `Tooltip` component for top-level icon-only actions to ensure a snappy, visually cohesive interface.
