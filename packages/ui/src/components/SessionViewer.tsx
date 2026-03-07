@@ -520,6 +520,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
   const webHandledCommands = React.useMemo(() => new Set([
     "new", "resume", "mcp", "plugins", "skills", "model", "cycle_model",
     "effort", "cycle_effort", "compact", "name", "copy", "stop", "restart",
+    "remote",
   ]), []);
 
   // Split availableCommands (from the CLI) into groups by source.
