@@ -10,6 +10,20 @@
 **Learning:** Adding an `aria-label` to a button that already has visible text (like the user menu button which shows the user's name) completely overrides the visible text in the accessibility tree. This causes a WCAG 2.5.3 (Label in Name) violation, making it harder for assistive technology users (like Voice Control) to interact with the button using its visible label.
 **Action:** Never add `aria-label` attributes to buttons that already contain visible text. Only apply `aria-label` to icon-only buttons or those lacking any visible descriptive text.
 
+## $(date +%Y-%m-%d) - Component Composition with Radix UI Tooltips and DropdownMenus
+**Learning:** When adding `Tooltip` components (from shadcn/ui / Radix UI) to buttons that act as triggers for other Radix UI components (like `DropdownMenuTrigger`), placing the `<Tooltip>` wrapper directly inside the `<DropdownMenuTrigger asChild>` breaks event delegation. Because `<Tooltip>` is a context provider and doesn't forward refs or DOM events, the child trigger loses its click/touch listeners. This causes critical functional regressions, especially noticeable on mobile interfaces where the dropdown becomes unopenable.
+**Action:** When composing multiple Radix UI triggers (e.g., a Tooltip on a DropdownMenu trigger), always wrap the inner trigger with the outer one using nested `asChild` props. The correct compositional pattern is:
+```tsx
+<Tooltip>
+  <TooltipTrigger asChild>
+    <DropdownMenuTrigger asChild>
+      <Button>...</Button>
+    </DropdownMenuTrigger>
+  </TooltipTrigger>
+  <TooltipContent>...</TooltipContent>
+</Tooltip>
+```
+
 ## 2026-03-06 - Tooltip Consistency for Icon Buttons
 **Learning:** Mixing native `title` attributes with custom `Tooltip` components in the same icon button group creates a jarring, inconsistent hover experience for users. Native tooltips have unpredictable delays and styling.
 **Action:** Always use the design system's `Tooltip` component for top-level icon-only actions to ensure a snappy, visually cohesive interface.
