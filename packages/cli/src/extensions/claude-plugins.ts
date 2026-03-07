@@ -21,6 +21,7 @@ import {
     type ClaudeHookEvent,
     type HookEntry,
 } from "../plugins.js";
+import { isPluginTrusted, trustPlugin } from "../config.js";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
@@ -389,18 +390,41 @@ export function createClaudePluginExtension(cwd: string): ExtensionFactory | nul
             // No local plugins, or already loaded? Nothing more to do.
             if (localOnly.length === 0 || localPluginsLoaded) return;
 
-            // Ask the user whether to trust project-local plugins.
+            // Split local plugins into pre-trusted (via `pizza plugins trust`)
+            // and untrusted. Pre-trusted plugins load immediately without
+            // prompting — same trust level as global plugins.
+            const preTrusted = localOnly.filter(p => isPluginTrusted(p.rootPath));
+            const untrusted = localOnly.filter(p => !isPluginTrusted(p.rootPath));
+
+            // Load pre-trusted local plugins immediately
+            if (preTrusted.length > 0) {
+                for (const plugin of preTrusted) {
+                    registerPlugin(pi, plugin);
+                }
+                ctx.ui.notify(
+                    `Loaded ${preTrusted.length} trusted local plugin${preTrusted.length > 1 ? "s" : ""}: ${preTrusted.map(pluginSummary).join(", ")}`,
+                    "info",
+                );
+            }
+
+            // If there are no untrusted plugins left, we're done
+            if (untrusted.length === 0) {
+                localPluginsLoaded = true;
+                return;
+            }
+
+            // Ask the user whether to trust the remaining plugins.
             // In TUI interactive mode, use ctx.ui.confirm() directly.
             // In headless/worker mode, emit a pi.events event so the
             // remote extension can bridge the prompt to the web viewer.
             let ok = false;
-            const names = localOnly.map(p => p.name).join(", ");
+            const names = untrusted.map(p => p.name).join(", ");
 
             if (ctx.hasUI) {
                 // TUI mode — direct confirmation dialog
                 ok = await ctx.ui.confirm(
                     "Untrusted Claude Plugins",
-                    `Found ${localOnly.length} project-local plugin${localOnly.length > 1 ? "s" : ""} (${names}). ` +
+                    `Found ${untrusted.length} project-local plugin${untrusted.length > 1 ? "s" : ""} (${names}). ` +
                     `These can execute shell commands via hooks.\n\nTrust and load them?`,
                 );
             } else {
@@ -420,8 +444,8 @@ export function createClaudePluginExtension(cwd: string): ExtensionFactory | nul
 
                     const promptEvent: PluginTrustPromptEvent = {
                         promptId,
-                        pluginNames: localOnly.map(p => p.name),
-                        pluginSummaries: localOnly.map(pluginSummary),
+                        pluginNames: untrusted.map(p => p.name),
+                        pluginSummaries: untrusted.map(pluginSummary),
                         respond: (trusted: boolean) => {
                             if (settled) return;
                             settled = true;
@@ -436,8 +460,10 @@ export function createClaudePluginExtension(cwd: string): ExtensionFactory | nul
 
             if (ok) {
                 localPluginsLoaded = true;
-                for (const plugin of localOnly) {
+                for (const plugin of untrusted) {
                     registerPlugin(pi, plugin);
+                    // Persist trust so future sessions don't re-prompt
+                    trustPlugin(plugin.rootPath);
 
                     // Fire SessionStart hooks immediately for local plugins,
                     // since we're already inside session_start and registering
@@ -458,12 +484,13 @@ export function createClaudePluginExtension(cwd: string): ExtensionFactory | nul
                     }
                 }
                 ctx.ui.notify(
-                    `Loaded ${localOnly.length} local plugin${localOnly.length > 1 ? "s" : ""}: ${localOnly.map(pluginSummary).join(", ")}`,
+                    `Loaded ${untrusted.length} local plugin${untrusted.length > 1 ? "s" : ""}: ${untrusted.map(pluginSummary).join(", ")}`,
                     "info",
                 );
             } else {
                 ctx.ui.notify(
-                    `Skipped ${localOnly.length} untrusted local plugin${localOnly.length > 1 ? "s" : ""}.`,
+                    `Skipped ${untrusted.length} untrusted local plugin${untrusted.length > 1 ? "s" : ""}. ` +
+                    `Use \`pizza plugins trust\` to pre-approve.`,
                     "warning",
                 );
             }
