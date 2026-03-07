@@ -19,6 +19,28 @@ import { initSioRegistry } from "./ws/sio-registry.js";
 import { initStateRedis } from "./ws/sio-state.js";
 
 const PORT = parseInt(process.env.PORT ?? "7492");
+// ── Global error handlers ─────────────────────────────────────────────────
+
+process.on("unhandledRejection", (reason: unknown, promise: Promise<unknown>) => {
+    console.error("[FATAL] Unhandled promise rejection:");
+    console.error("  Reason:", reason);
+    console.error("  Promise:", promise);
+    if (reason instanceof Error && reason.stack) {
+        console.error("  Stack:", reason.stack);
+    }
+});
+
+process.on("uncaughtException", (error: Error, origin: string) => {
+    console.error("[FATAL] Uncaught exception:");
+    console.error("  Origin:", origin);
+    console.error("  Error:", error.message);
+    if (error.stack) {
+        console.error("  Stack:", error.stack);
+    }
+    process.exit(1);
+});
+
+
 
 await runAllMigrations();
 void initializeRelayRedisCache();

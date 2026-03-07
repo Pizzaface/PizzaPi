@@ -58,6 +58,7 @@ import {
 } from "../sessions/store.js";
 import { appendRelayEventToCache } from "../sessions/redis.js";
 import type { ModelInfo, RunnerSkill, SessionInfo, RunnerInfo } from "@pizzapi/protocol";
+import { LIMITS } from "../constants.js";
 
 // ── Socket.IO server reference ──────────────────────────────────────────────
 
@@ -110,8 +111,77 @@ const localTerminalViewerSockets = new Map<string, Set<Socket>>();
 /** Terminal data buffer: terminalId → buffered messages (replayed when viewer connects). */
 const localTerminalBuffers = new Map<string, unknown[]>();
 
+/** Terminal buffer sizes in bytes: terminalId → estimated size. */
+const localTerminalBufferSizes = new Map<string, number>();
+
 /** Terminal GC timers: terminalId → timer handle. */
 const localTerminalGcTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+/**
+ * Estimate the size of a message in bytes.
+ * Uses JSON serialization for a rough byte count.
+ */
+function estimateMessageSize(msg: unknown): number {
+    try {
+        return JSON.stringify(msg).length;
+    } catch {
+        return 100;
+    }
+}
+
+/**
+ * Trim the terminal buffer to stay within configured limits.
+ * Uses LRU eviction (removes oldest messages first).
+ * Returns true if trimming occurred.
+ */
+function trimTerminalBuffer(terminalId: string): boolean {
+    const buffer = localTerminalBuffers.get(terminalId);
+    if (!buffer || buffer.length === 0) return false;
+
+    const currentSize = localTerminalBufferSizes.get(terminalId) ?? 0;
+    const maxLines = LIMITS.MAX_TERMINAL_BUFFER_LINES;
+    const maxBytes = LIMITS.MAX_TERMINAL_BUFFER_BYTES;
+
+    let trimmed = false;
+    let newSize = currentSize;
+
+    // Trim by line count
+    if (buffer.length > maxLines) {
+        const linesToRemove = buffer.length - maxLines;
+        const removed = buffer.splice(0, linesToRemove);
+        for (const msg of removed) {
+            newSize -= estimateMessageSize(msg);
+        }
+        trimmed = true;
+        console.log(
+            `[sio-terminal] Buffer trimmed for terminal ${terminalId}: ` +
+            `removed ${linesToRemove} lines (exceeded ${maxLines} line limit)`
+        );
+    }
+
+    // Trim by byte size
+    while (buffer.length > 0 && newSize > maxBytes) {
+        const removed = buffer.shift();
+        if (removed) {
+            newSize -= estimateMessageSize(removed);
+            trimmed = true;
+        }
+    }
+
+    if (newSize !== currentSize) {
+        localTerminalBufferSizes.set(terminalId, Math.max(0, newSize));
+    }
+
+    if (trimmed && currentSize > maxBytes) {
+        console.log(
+            `[sio-terminal] Buffer trimmed for terminal ${terminalId}: ` +
+            `reduced from ${(currentSize / 1024).toFixed(1)}KB to ${(newSize / 1024).toFixed(1)}KB ` +
+            `(exceeded ${maxBytes / 1024}KB limit)`
+        );
+    }
+
+    return trimmed;
+}
 
 /**
  * Runner credential store (in-memory, per-server).
@@ -972,6 +1042,7 @@ export async function registerTerminal(
 
     await setTerminal(terminalId, data);
     localTerminalBuffers.set(terminalId, []);
+    localTerminalBufferSizes.set(terminalId, 0);
 
     // GC timer: if no viewer connects within timeout, remove unspawned terminal
     const timer = setTimeout(async () => {
@@ -1132,6 +1203,7 @@ async function cleanupTerminal(terminalId: string): Promise<void> {
     localTerminalGcTimers.delete(terminalId);
     localTerminalViewerSockets.delete(terminalId);
     localTerminalBuffers.delete(terminalId);
+    localTerminalBufferSizes.delete(terminalId);
     await deleteTerminalState(terminalId);
 }
 
@@ -1144,3 +1216,26 @@ function safeJsonParse(value: string): any {
         return null;
     }
 }
+
+// ── Test helpers (exported for unit tests) ──────────────────────────────────
+
+export function _getTerminalBuffer(terminalId: string): unknown[] | undefined {
+    return localTerminalBuffers.get(terminalId);
+}
+
+export function _getTerminalBufferSize(terminalId: string): number {
+    return localTerminalBufferSizes.get(terminalId) ?? 0;
+}
+
+export function _initTerminalBuffer(terminalId: string): void {
+    localTerminalBuffers.set(terminalId, []);
+    localTerminalBufferSizes.set(terminalId, 0);
+}
+
+export function _clearTerminalBuffer(terminalId: string): void {
+    localTerminalBuffers.delete(terminalId);
+    localTerminalBufferSizes.delete(terminalId);
+}
+
+export const _trimTerminalBuffer = trimTerminalBuffer;
+export const _estimateMessageSize = estimateMessageSize;
