@@ -217,6 +217,8 @@ function registerHookGroup(
                 for (const hook of hooks) {
                     if (!hook.command) continue;
                     const result = await execHookCommand(hook.command, plugin.rootPath, stdinData, (hook.timeout ?? 10) * 1000);
+                    // Exit code 2 = block (same protocol as tool_call / session_before_compact)
+                    if (result.exitCode === 2) return { action: "handled" as const };
                     if (result.stdout.trim()) {
                         try {
                             const output = JSON.parse(result.stdout.trim());
@@ -554,13 +556,26 @@ export function createClaudePluginExtension(cwd: string): ExtensionFactory | nul
 
 /**
  * Get the skill paths from all discovered Claude Code plugins.
- * Only includes global (trusted) plugin skill paths.
+ * Includes global plugins and any project-local plugins that are
+ * already trusted (via `pizza plugins trust`).
  * Used by the worker to add plugin skills to pi's skill discovery.
  */
 export function getPluginSkillPaths(cwd: string): string[] {
-    const plugins = discoverPlugins(cwd);
+    // Start with global (auto-trusted) plugins
+    const globalPlugins = discoverPlugins(cwd);
+    // Also include trusted project-local plugins
+    const localDirs = projectPluginDirs(cwd);
+    const localPlugins: DiscoveredPlugin[] = [];
+    for (const dir of localDirs) {
+        for (const plugin of scanPluginsDir(dir)) {
+            if (isPluginTrusted(plugin.rootPath)) {
+                localPlugins.push(plugin);
+            }
+        }
+    }
+
     const paths: string[] = [];
-    for (const plugin of plugins) {
+    for (const plugin of [...globalPlugins, ...localPlugins]) {
         if (plugin.skills.length > 0) {
             paths.push(join(plugin.rootPath, "skills"));
         }
