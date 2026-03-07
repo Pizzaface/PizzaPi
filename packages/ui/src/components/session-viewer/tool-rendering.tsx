@@ -58,6 +58,7 @@ import {
   GetSessionIdCard,
 } from "@/components/session-viewer/cards/InterAgentCards";
 import { AskUserQuestionCard } from "@/components/session-viewer/cards/AskUserQuestionCard";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 
 export function extToLang(path: string): BundledLanguage {
   const ext = path.split(".").pop()?.toLowerCase() ?? "";

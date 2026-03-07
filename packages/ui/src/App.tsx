@@ -47,6 +47,7 @@ import { UsageIndicator, type ProviderUsageMap } from "@/components/UsageIndicat
 import { TerminalManager, type TerminalTab } from "@/components/TerminalManager";
 import { FileExplorer } from "@/components/FileExplorer";
 import { CombinedPanel } from "@/components/CombinedPanel";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import {
   ModelSelector,
   ModelSelectorContent,
