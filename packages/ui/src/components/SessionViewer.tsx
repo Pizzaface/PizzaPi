@@ -17,6 +17,8 @@ import {
   toMessageRole,
   CompactionSummaryCard,
   CommandResultCard,
+  isCommandResult,
+  type CommandResultData,
 } from "@/components/session-viewer/rendering";
 import {
   Message,
@@ -151,7 +153,7 @@ export interface SessionViewerProps {
   /** Absolute working directory of the current session (used as base for @-mention file paths) */
   sessionCwd?: string;
   /** Append a local system message to the conversation (string or structured data for card rendering) */
-  onAppendSystemMessage?: (content: unknown) => void;
+  onAppendSystemMessage?: (content: string | CommandResultData) => void;
 }
 
 function formatTokenCount(n: number): string {
@@ -323,15 +325,12 @@ const SessionMessageItem = React.memo(({ message, activeToolCalls, agentActive, 
   isLast: boolean;
 }) => {
   // System messages with structured command result data render as standalone cards
-  if (message.role === "system" && message.content && typeof message.content === "object" && !Array.isArray(message.content)) {
-    const c = message.content as Record<string, unknown>;
-    if (c.kind === "mcp" || c.kind === "plugins" || c.kind === "skills") {
-      return (
-        <div className="w-full px-4 py-1.5 max-w-3xl mx-auto">
-          <CommandResultCard data={message.content as any} />
-        </div>
-      );
-    }
+  if (message.role === "system" && isCommandResult(message.content)) {
+    return (
+      <div className="w-full px-4 py-1.5 max-w-3xl mx-auto">
+        <CommandResultCard data={message.content} />
+      </div>
+    );
   }
 
   // Compaction summary cards render as standalone elements without the message wrapper

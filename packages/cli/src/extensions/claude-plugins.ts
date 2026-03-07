@@ -60,6 +60,17 @@ async function execHookCommand(
                 env: { ...process.env, CLAUDE_PLUGIN_ROOT: pluginRoot },
             },
             (error, stdout, stderr) => {
+                if (error) {
+                    const isMaxBuffer =
+                        (error as any).code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" ||
+                        (error.message ?? "").includes("maxBuffer");
+                    if (isMaxBuffer) {
+                        console.warn(
+                            `[claude-plugins] Hook stdout was truncated (maxBuffer exceeded) for command: ${command}. ` +
+                            `A {"decision":"block"} at the end of large output may have been silently lost.`,
+                        );
+                    }
+                }
                 const exitCode = error && "code" in error ? (error as any).code ?? 1 : 0;
                 resolveP({
                     stdout: typeof stdout === "string" ? stdout : "",

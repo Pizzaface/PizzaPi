@@ -833,6 +833,9 @@ function normalizePlugin(raw: Record<string, unknown>): Record<string, unknown> 
         commands: Array.isArray(raw.commands) ? raw.commands.filter((c: unknown) => c && typeof c === "object") : [],
         hookEvents: Array.isArray(raw.hookEvents) ? raw.hookEvents.filter((e: unknown) => typeof e === "string") : [],
         skills: Array.isArray(raw.skills) ? raw.skills.filter((s: unknown) => s && typeof s === "object") : [],
+        rules: Array.isArray(raw.rules)
+            ? raw.rules.filter((r: unknown): r is { name: string } => r !== null && typeof r === "object" && typeof (r as any).name === "string")
+            : undefined,
         hasMcp: raw.hasMcp === true,
         hasAgents: raw.hasAgents === true,
         hasLsp: raw.hasLsp === true,

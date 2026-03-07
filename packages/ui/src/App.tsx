@@ -1,6 +1,7 @@
 import * as React from "react";
 import { SessionSidebar, type DotState, type HubSession } from "@/components/SessionSidebar";
 import { SessionViewer, type RelayMessage } from "@/components/SessionViewer";
+import type { CommandResultData } from "@/components/session-viewer/rendering";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { AuthPage } from "@/components/AuthPage";
 import { ApiKeyManager } from "@/components/ApiKeyManager";
@@ -1081,7 +1082,7 @@ export function App() {
     }
   }, []);
 
-  const appendLocalSystemMessage = React.useCallback((content: unknown) => {
+  const appendLocalSystemMessage = React.useCallback((content: string | CommandResultData) => {
     if (content === undefined || content === null) return;
     // For plain strings, trim and skip empties
     if (typeof content === "string" && !content.trim()) return;

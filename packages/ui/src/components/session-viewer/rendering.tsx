@@ -61,7 +61,7 @@ export { CommandResultCard, type CommandResultData } from "@/components/session-
 import { CommandResultCard, type CommandResultData } from "@/components/session-viewer/cards/CommandResultCard";
 
 /** Type guard: is the content a structured command result? */
-function isCommandResult(content: unknown): content is CommandResultData {
+export function isCommandResult(content: unknown): content is CommandResultData {
   if (!content || typeof content !== "object" || Array.isArray(content)) return false;
   const c = content as Record<string, unknown>;
   return c.kind === "mcp" || c.kind === "plugins" || c.kind === "skills";
