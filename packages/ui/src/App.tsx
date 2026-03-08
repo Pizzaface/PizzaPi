@@ -1659,6 +1659,14 @@ export function App() {
     if (type === "tool_execution_end") {
       const toolCallId = typeof evt.toolCallId === "string" ? evt.toolCallId : "";
       if (toolCallId) {
+        // Evict any buffered streaming partial for this tool call so a pending
+        // RAF flush can't overwrite the final tool result that arrives shortly
+        // via message_update/message_end.
+        pendingToolStreamRef.current.delete(toolCallId);
+        if (pendingToolStreamRef.current.size === 0 && toolStreamRafRef.current !== null) {
+          cancelAnimationFrame(toolStreamRafRef.current);
+          toolStreamRafRef.current = null;
+        }
         setActiveToolCalls((prev) => {
           const next = new Map(prev);
           next.delete(toolCallId);
