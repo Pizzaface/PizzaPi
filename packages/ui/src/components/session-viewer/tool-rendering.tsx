@@ -36,7 +36,8 @@ import {
   parseToolInputArgs,
   tryParseJsonObject,
 } from "@/components/session-viewer/utils";
-import { ChevronDownIcon, WrenchIcon, Loader2Icon, XCircleIcon as XCircleIcon2 } from "lucide-react";
+import { ChevronDownIcon, WrenchIcon, Loader2Icon, XCircleIcon as XCircleIcon2, SquareIcon } from "lucide-react";
+import { useSessionActions } from "@/components/session-viewer/session-actions-context";
 import {
   ToolCardShell,
   ToolCardHeader,
@@ -382,6 +383,91 @@ export function synthesizeCommandLine(toolName: string, toolInput: unknown): str
   return shortName;
 }
 
+/**
+ * Bash tool card — extracted as a component so it can use hooks (useSessionActions).
+ * Shows a kill/stop button while the command is actively streaming.
+ */
+function BashToolCard({
+  toolName,
+  toolInput,
+  content,
+  isError,
+  isStreaming,
+}: {
+  toolName: string;
+  toolInput: unknown;
+  content: unknown;
+  isError: boolean | undefined;
+  isStreaming: boolean;
+}) {
+  const sessionActions = useSessionActions();
+  const hasOutput = hasVisibleContent(content);
+  const state: ToolState = hasOutput
+    ? isError
+      ? "output-error"
+      : "output-available"
+    : isStreaming
+      ? "input-streaming"
+      : "input-available";
+  const commandLine = synthesizeCommandLine(toolName, toolInput);
+  const outputText = hasOutput ? extractTextFromToolContent(content) : null;
+
+  return (
+    <ToolCardShell className="flex flex-col">
+      <ToolCardHeader>
+        <ToolCardTitle icon={null}>
+          <span className="text-sm text-zinc-400"><TerminalTitle>{toolName}</TerminalTitle></span>
+        </ToolCardTitle>
+        <ToolCardActions>
+          {isStreaming && sessionActions && (
+            <button
+              type="button"
+              onClick={() => sessionActions.abort()}
+              className="inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-medium text-red-400 bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 transition-colors cursor-pointer"
+              title="Kill this command (aborts the current agent turn)"
+            >
+              <SquareIcon className="size-3 fill-current" />
+              <span>Kill</span>
+            </button>
+          )}
+          <StatusBadge status={state} />
+        </ToolCardActions>
+      </ToolCardHeader>
+      <div className="px-4 py-2 font-mono text-xs border-b border-zinc-800">
+        <span className="text-zinc-600 select-none mr-1">$</span>
+        <span className="text-zinc-300 whitespace-pre-wrap break-all">
+          {commandLine}
+        </span>
+      </div>
+      {(hasOutput || isStreaming) && (
+        <Terminal
+          output={outputText ?? ""}
+          isStreaming={isStreaming}
+          className="rounded-none border-0"
+        >
+          <details open={isStreaming || undefined} className="flex flex-col">
+            <summary className="cursor-pointer list-none">
+              <div className="flex items-center justify-between gap-2 px-4 py-1.5 border-b border-zinc-800 hover:bg-zinc-900 transition-colors">
+                <span className="text-[11px] text-zinc-500 select-none">
+                  Output
+                </span>
+                <div className="flex items-center gap-2">
+                  <TerminalStatus />
+                  <TerminalActions>
+                    {outputText && <TerminalCopyButton />}
+                  </TerminalActions>
+                  <ChevronDownIcon className="size-3 text-zinc-600 transition-transform [[open]_&]:rotate-180" />
+                </div>
+              </div>
+            </summary>
+            <TerminalContent className="text-xs" />
+          </details>
+        </Terminal>
+      )}
+    </ToolCardShell>
+  );
+}
+
 export function renderGroupedToolExecution(
   toolKey: string,
   toolName: string,
@@ -405,48 +491,14 @@ export function renderGroupedToolExecution(
   let card: React.ReactNode = null;
 
   if (norm === "bash" || norm.endsWith(".bash")) {
-    const commandLine = synthesizeCommandLine(toolName, toolInput);
-    const outputText = hasOutput ? extractTextFromToolContent(content) : null;
     card = (
-      <ToolCardShell className="flex flex-col">
-        <ToolCardHeader>
-          <ToolCardTitle icon={null}>
-            <span className="text-sm text-zinc-400"><TerminalTitle>{toolName}</TerminalTitle></span>
-          </ToolCardTitle>
-          <ToolCardActions><StatusBadge status={state} /></ToolCardActions>
-        </ToolCardHeader>
-        <div className="px-4 py-2 font-mono text-xs border-b border-zinc-800">
-          <span className="text-zinc-600 select-none mr-1">$</span>
-          <span className="text-zinc-300 whitespace-pre-wrap break-all">
-            {commandLine}
-          </span>
-        </div>
-        {(hasOutput || isStreaming) && (
-          <Terminal
-            output={outputText ?? ""}
-            isStreaming={isStreaming}
-            className="rounded-none border-0"
-          >
-            <details open={isStreaming || undefined} className="flex flex-col">
-              <summary className="cursor-pointer list-none">
-                <div className="flex items-center justify-between gap-2 px-4 py-1.5 border-b border-zinc-800 hover:bg-zinc-900 transition-colors">
-                  <span className="text-[11px] text-zinc-500 select-none">
-                    Output
-                  </span>
-                  <div className="flex items-center gap-2">
-                    <TerminalStatus />
-                    <TerminalActions>
-                      {outputText && <TerminalCopyButton />}
-                    </TerminalActions>
-                    <ChevronDownIcon className="size-3 text-zinc-600 transition-transform [[open]_&]:rotate-180" />
-                  </div>
-                </div>
-              </summary>
-              <TerminalContent className="text-xs" />
-            </details>
-          </Terminal>
-        )}
-      </ToolCardShell>
+      <BashToolCard
+        toolName={toolName}
+        toolInput={toolInput}
+        content={content}
+        isError={isError}
+        isStreaming={isStreaming}
+      />
     );
   } else if (norm === "read" || norm.endsWith(".read")) {
     if (hasOutput) {
