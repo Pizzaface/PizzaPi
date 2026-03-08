@@ -1,6 +1,6 @@
 {
     "name": "@pizzapi/npm",
-    "version": "0.1.32",
+    "version": "0.2.4",
     "private": true,
     "type": "module",
     "scripts": {

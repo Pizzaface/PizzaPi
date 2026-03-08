@@ -13,7 +13,7 @@ on:
           - dev
           - pull
       version:
-        description: "Version (e.g. 0.2.3). For dev/beta a suffix is appended automatically. For pull, the exact version to yank."
+        description: "Version (e.g. 0.2.4). For dev/beta a suffix is appended automatically. For pull, the exact version to yank."
         required: true
         type: string
       dry-run:
@@ -41,13 +41,30 @@ jobs:
           echo "::error::Only @Pizzaface can trigger releases. Actor: ${{ github.actor }}"
           exit 1
 
+  # ─── Gate: releases must run from a branch ref ────────────────
+  # Prevent partial releases when workflow_dispatch is triggered on
+  # a tag ref: publish could succeed, then branch-only git operations
+  # (version bump push) would fail afterwards.
+  validate-release-ref:
+    name: Validate release ref
+    needs: authorize
+    if: inputs.action != 'pull'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check ref type
+        run: |
+          if [ "${{ github.ref_type }}" != "branch" ]; then
+            echo "::error::Release actions (latest/beta/dev) must be dispatched from a branch ref. Got: ${{ github.ref_type }} (${{ github.ref_name }})"
+            exit 1
+          fi
+
   # ─── Compute the release version before building binaries ─────
   # The CLI reads its version from package.json at runtime (--version,
   # runner reporting).  `bun build --compile` bakes package.json into
   # the binary, so we must stamp the correct version BEFORE compiling.
   compute-version:
     name: Compute version
-    needs: authorize
+    needs: [authorize, validate-release-ref]
     if: inputs.action != 'pull'
     runs-on: ubuntu-latest
     outputs:
@@ -284,13 +301,58 @@ jobs:
             --tag ${{ needs.compute-version.outputs.tag }} \
             $ARGS
 
+      - name: Commit and push package.json version bump
+        if: inputs.dry-run != true
+        run: |
+          VERSION="${{ needs.compute-version.outputs.version }}"
+          SOURCE_SHA="${{ github.sha }}"
+          REF_TYPE="${{ github.ref_type }}"
+          BRANCH="${{ github.ref_name }}"
+
+          if [ "$REF_TYPE" != "branch" ]; then
+            echo "⚠️ Skipping package.json push: non-branch ref (${REF_TYPE})"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Keep release provenance tied to the original dispatch commit.
+          CURRENT_SHA=$(git rev-parse HEAD)
+          if [ "$CURRENT_SHA" != "$SOURCE_SHA" ]; then
+            echo "::error::Unexpected HEAD drift before version bump commit (expected ${SOURCE_SHA}, got ${CURRENT_SHA})"
+            exit 1
+          fi
+
+          git add packages/cli/package.json packages/npm/package.json
+
+          if git diff --cached --quiet; then
+            echo "ℹ️ No package.json changes to commit"
+          else
+            git commit -m "chore(release): bump package versions to ${VERSION} [skip ci]"
+
+            PUSH_OUTPUT=$(git push origin "HEAD:${BRANCH}" 2>&1) && {
+              echo "$PUSH_OUTPUT"
+              echo "✅ Pushed version bump commit to ${BRANCH}"
+            } || {
+              if echo "$PUSH_OUTPUT" | grep -qiE 'non-fast-forward|fetch first'; then
+                echo "::warning::Branch advanced during release; skipped pushing version bump commit to avoid retargeting this release. Commit $(git rev-parse HEAD) can be cherry-picked manually."
+              else
+                echo "::error::Failed to push package.json version bump"
+                echo "$PUSH_OUTPUT"
+                exit 1
+              fi
+            }
+          fi
+
       - name: Create git tag
         if: inputs.dry-run != true
         run: |
           VERSION="${{ needs.compute-version.outputs.version }}"
+          SOURCE_SHA="${{ github.sha }}"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "v${VERSION}" -m "Release v${VERSION}"
+          git tag -a "v${VERSION}" "$SOURCE_SHA" -m "Release v${VERSION}"
           git push origin "v${VERSION}"
 
       - name: Summary
