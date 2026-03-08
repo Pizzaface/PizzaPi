@@ -30,6 +30,11 @@ export interface RunnerClientToServerEvents {
   plugins_list: (data: {
     plugins: RunnerPlugin[];
     requestId?: string;
+    /** false when the scan was rejected (e.g. invalid cwd) */
+    ok?: boolean;
+    message?: string;
+    /** true when this was a per-cwd scoped scan (should not overwrite global cache) */
+    scoped?: boolean;
   }) => void;
 
   /** Runner responds to a skill CRUD operation */
@@ -189,6 +194,8 @@ export interface RunnerServerToClientEvents {
   /** Requests a list of discovered Claude Code plugins */
   list_plugins: (data: {
     requestId?: string;
+    /** Optional cwd override for project-local plugin scanning */
+    cwd?: string;
   }) => void;
 
   /** Creates a new skill */

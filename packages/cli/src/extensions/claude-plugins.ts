@@ -218,11 +218,19 @@ function registerHookGroup(
                     if (!hook.command) continue;
                     const result = await execHookCommand(hook.command, plugin.rootPath, stdinData, (hook.timeout ?? 10) * 1000);
                     // Exit code 2 = block (same protocol as tool_call / session_before_compact)
-                    if (result.exitCode === 2) return { action: "handled" as const };
+                    if (result.exitCode === 2) {
+                        const reason = result.stderr.trim() || result.stdout.trim() || `Blocked by ${plugin.name}`;
+                        pi.sendUserMessage(reason, { deliverAs: "followUp" });
+                        return { action: "handled" as const };
+                    }
                     if (result.stdout.trim()) {
                         try {
                             const output = JSON.parse(result.stdout.trim());
-                            if (output.decision === "block") return { action: "handled" as const };
+                            if (output.decision === "block") {
+                                const reason = output.reason || `Blocked by ${plugin.name}`;
+                                pi.sendUserMessage(reason, { deliverAs: "followUp" });
+                                return { action: "handled" as const };
+                            }
                             if (output.transformedPrompt) return { action: "transform" as const, text: output.transformedPrompt };
                         } catch { /* not JSON */ }
                     }
@@ -372,18 +380,34 @@ const TRUST_PROMPT_TIMEOUT_MS = 60_000;
  * Needed when plugins are registered inside an already-running session_start
  * handler — newly added listeners won't retroactively fire.
  */
-function fireSessionStartHooks(plugin: DiscoveredPlugin): void {
+async function fireSessionStartHooks(pi: ExtensionAPI, plugin: DiscoveredPlugin): Promise<void> {
     if (!plugin.hooks?.hooks.SessionStart) return;
     for (const group of plugin.hooks.hooks.SessionStart) {
         if (!group || !Array.isArray(group.hooks)) continue;
         for (const hook of group.hooks) {
             if (hook?.type !== "command" || !hook.command) continue;
-            execHookCommand(
-                hook.command,
-                plugin.rootPath,
-                { session_id: "" },
-                (hook.timeout ?? 10) * 1000,
-            ).catch(() => { /* best-effort */ });
+            try {
+                const result = await execHookCommand(
+                    hook.command,
+                    plugin.rootPath,
+                    { session_id: "" },
+                    (hook.timeout ?? 10) * 1000,
+                );
+                // Parse JSON output same as registerHookGroup session_start path
+                if (result.stdout.trim()) {
+                    try {
+                        const output = JSON.parse(result.stdout.trim());
+                        const context = output.hookSpecificOutput?.additionalContext;
+                        if (context) {
+                            pi.sendMessage({
+                                customType: `plugin:${plugin.name}:session-context`,
+                                content: context,
+                                display: false,
+                            }, { deliverAs: "nextTurn", triggerTurn: false });
+                        }
+                    } catch { /* not JSON */ }
+                }
+            } catch { /* best-effort */ }
         }
     }
 }
@@ -421,9 +445,25 @@ export function createClaudePluginExtension(cwd: string): ExtensionFactory | nul
     for (const dir of localDirs) {
         localPluginCandidates.push(...scanPluginsDir(dir));
     }
-    // Deduplicate against global plugins
+    // Deduplicate: remove local plugins that share a name with a global
+    // plugin, and deduplicate among local dirs themselves (the same plugin
+    // may exist under .pizzapi/plugins/, .agents/plugins/, .claude/plugins/).
+    // When the same name appears in multiple local dirs, prefer the trusted
+    // candidate so an untrusted duplicate doesn't shadow a trusted one.
     const globalNames = new Set(globalPlugins.map(p => p.name));
-    const localOnly = localPluginCandidates.filter(p => !globalNames.has(p.name));
+    const localByName = new Map<string, DiscoveredPlugin>();
+    for (const p of localPluginCandidates) {
+        if (globalNames.has(p.name)) continue;
+        const existing = localByName.get(p.name);
+        if (!existing) {
+            localByName.set(p.name, p);
+        } else if (!isPluginTrusted(existing.rootPath) && isPluginTrusted(p.rootPath)) {
+            // Prefer the trusted candidate over the untrusted one
+            localByName.set(p.name, p);
+        }
+        // Otherwise keep first occurrence (dir precedence)
+    }
+    const localOnly = Array.from(localByName.values());
 
     if (globalPlugins.length === 0 && localOnly.length === 0) return null;
 
@@ -464,7 +504,7 @@ export function createClaudePluginExtension(cwd: string): ExtensionFactory | nul
                     // Fire SessionStart hooks immediately — we're already
                     // inside session_start so newly registered listeners
                     // won't retroactively fire.
-                    fireSessionStartHooks(plugin);
+                    fireSessionStartHooks(pi, plugin);
                 }
                 pi.events.emit("plugin:loaded", { count: preTrusted.length });
                 ctx.ui.notify(
@@ -483,7 +523,7 @@ export function createClaudePluginExtension(cwd: string): ExtensionFactory | nul
             // In TUI interactive mode, use ctx.ui.confirm() directly.
             // In headless/worker mode, emit a pi.events event so the
             // remote extension can bridge the prompt to the web viewer.
-            let ok = false;
+            let ok: boolean | "timeout" = false;
             const names = untrusted.map(p => p.name).join(", ");
 
             if (ctx.hasUI) {
@@ -496,7 +536,7 @@ export function createClaudePluginExtension(cwd: string): ExtensionFactory | nul
             } else {
                 // Headless/worker mode — emit trust prompt event for remote bridge
                 const promptId = randomUUID();
-                ok = await new Promise<boolean>((resolve) => {
+                ok = await new Promise<boolean | "timeout">((resolve) => {
                     let settled = false;
                     const timer = setTimeout(() => {
                         if (!settled) {
@@ -504,7 +544,7 @@ export function createClaudePluginExtension(cwd: string): ExtensionFactory | nul
                             // Notify listeners that the prompt expired so they
                             // can dismiss UI and clean up pending state.
                             pi.events.emit("plugin:trust_timeout", { promptId });
-                            resolve(false);
+                            resolve("timeout");
                         }
                     }, TRUST_PROMPT_TIMEOUT_MS);
 
@@ -524,17 +564,19 @@ export function createClaudePluginExtension(cwd: string): ExtensionFactory | nul
                 });
             }
 
-            // Mark local plugins as processed regardless of the trust
-            // decision.  This prevents re-registering already-loaded trusted
-            // plugins on subsequent session_start events (e.g. reconnects).
-            localPluginsLoaded = true;
+            // Mark local plugins as processed on explicit user decision.
+            // On timeout, allow re-prompting on next session_start so the
+            // user gets another chance when a viewer is connected.
+            if (ok !== "timeout") {
+                localPluginsLoaded = true;
+            }
 
-            if (ok) {
+            if (ok === true) {
                 for (const plugin of untrusted) {
                     registerPlugin(pi, plugin);
                     // Persist trust so future sessions don't re-prompt
                     trustPlugin(plugin.rootPath);
-                    fireSessionStartHooks(plugin);
+                    fireSessionStartHooks(pi, plugin);
                 }
                 // Notify listeners (e.g. remote extension) so they can
                 // re-send the capabilities snapshot to the web viewer.
@@ -563,19 +605,30 @@ export function createClaudePluginExtension(cwd: string): ExtensionFactory | nul
 export function getPluginSkillPaths(cwd: string): string[] {
     // Start with global (auto-trusted) plugins
     const globalPlugins = discoverPlugins(cwd);
-    // Also include trusted project-local plugins
+    const globalNames = new Set(globalPlugins.map(p => p.name));
+
+    // Dedup local plugins with the same policy as createClaudePluginExtension:
+    // prefer trusted candidate when same name appears in multiple dirs.
+    // This ensures skills are sourced from the same plugin path that
+    // would be used for commands/hooks registration.
     const localDirs = projectPluginDirs(cwd);
-    const localPlugins: DiscoveredPlugin[] = [];
+    const localByName = new Map<string, DiscoveredPlugin>();
     for (const dir of localDirs) {
         for (const plugin of scanPluginsDir(dir)) {
-            if (isPluginTrusted(plugin.rootPath)) {
-                localPlugins.push(plugin);
+            if (globalNames.has(plugin.name)) continue;
+            const existing = localByName.get(plugin.name);
+            if (!existing) {
+                localByName.set(plugin.name, plugin);
+            } else if (!isPluginTrusted(existing.rootPath) && isPluginTrusted(plugin.rootPath)) {
+                localByName.set(plugin.name, plugin);
             }
         }
     }
+    // Only include trusted local plugins for skill loading
+    const trustedLocal = Array.from(localByName.values()).filter(p => isPluginTrusted(p.rootPath));
 
     const paths: string[] = [];
-    for (const plugin of [...globalPlugins, ...localPlugins]) {
+    for (const plugin of [...globalPlugins, ...trustedLocal]) {
         if (plugin.skills.length > 0) {
             paths.push(join(plugin.rootPath, "skills"));
         }

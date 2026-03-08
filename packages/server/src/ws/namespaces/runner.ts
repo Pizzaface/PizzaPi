@@ -260,9 +260,12 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
         socket.on("plugins_list", async (data) => {
             const runnerId = socket.data.runnerId;
             const plugins = data?.plugins ?? [];
+            const scanOk = data?.ok !== false; // treat missing ok as success
+            const isScoped = !!data?.scoped;
 
-            if (runnerId) {
-                // Store plugins alongside runner in Redis (same pattern as skills)
+            if (runnerId && scanOk && !isScoped) {
+                // Only update the runner-wide cache for unscoped (global) scans.
+                // Per-cwd scans are one-off and shouldn't overwrite the baseline.
                 await updateRunnerPlugins(runnerId, plugins);
             }
 
@@ -273,7 +276,7 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
                 if (pending) {
                     clearTimeout(pending.timer);
                     pendingRunnerCommands.delete(requestId);
-                    pending.resolve({ ok: true, plugins });
+                    pending.resolve({ ok: scanOk, plugins, message: data?.message });
                 }
             }
         });

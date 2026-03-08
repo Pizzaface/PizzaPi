@@ -566,25 +566,28 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
       return true;
     }
 
-    if (!onExec) return false;
-
-    if (rawCommand === "mcp") {
-      const action = args.trim().toLowerCase() === "reload" ? "reload" : "status";
-      onExec({ type: "exec", id, command: "mcp", action });
-      setInput("");
-      setCommandOpen(false);
-      setCommandQuery("");
-      return true;
-    }
-
+    // /plugins and /skills use HTTP fetch, not onExec — handle before the exec guard
     if (rawCommand === "plugins") {
-      if (!runnerId) return false;
+      if (!runnerId) {
+        setInput("");
+        setCommandOpen(false);
+        setCommandQuery("");
+        onAppendSystemMessage?.("**Plugins** — Runner not connected yet. Try again in a moment.");
+        return true;
+      }
       setInput("");
       setCommandOpen(false);
       setCommandQuery("");
-      fetch(`/api/runners/${encodeURIComponent(runnerId)}/plugins`, { credentials: "include" })
+      const pluginsUrl = sessionCwd
+        ? `/api/runners/${encodeURIComponent(runnerId)}/plugins?cwd=${encodeURIComponent(sessionCwd)}`
+        : `/api/runners/${encodeURIComponent(runnerId)}/plugins`;
+      // Capture sessionId at dispatch time; compare against mutable ref
+      // to detect session switches while the fetch is in-flight.
+      const dispatchSessionId = sessionId;
+      fetch(pluginsUrl, { credentials: "include" })
         .then((res) => res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))
         .then((data: any) => {
+          if (dispatchSessionId !== sessionIdRef.current) return; // session changed, discard
           const raw: Array<{ name: string; description?: string; commands?: Array<{ name: string; description?: string }>; hookEvents?: string[]; skills?: Array<{ name: string }>; rules?: Array<{ name: string }>; version?: string; hasMcp?: boolean; hasAgents?: boolean }> = Array.isArray(data?.plugins) ? data.plugins : [];
           onAppendSystemMessage?.({
             kind: "plugins",
@@ -602,6 +605,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
           });
         })
         .catch((err: Error) => {
+          if (dispatchSessionId !== sessionIdRef.current) return;
           onAppendSystemMessage?.(`**Plugins** — Failed to load: ${err.message}`);
         });
       return true;
@@ -634,6 +638,17 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
         .catch((err: Error) => {
           onAppendSystemMessage?.(`**Skills** — Failed to load: ${err.message}`);
         });
+      return true;
+    }
+
+    if (!onExec) return false;
+
+    if (rawCommand === "mcp") {
+      const action = args.trim().toLowerCase() === "reload" ? "reload" : "status";
+      onExec({ type: "exec", id, command: "mcp", action });
+      setInput("");
+      setCommandOpen(false);
+      setCommandQuery("");
       return true;
     }
 
@@ -719,7 +734,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     }
 
     return false;
-  }, [onExec, onSendInput, resumeSessions, runnerId, onAppendSystemMessage, skillCommands]);
+  }, [onExec, onSendInput, resumeSessions, runnerId, onAppendSystemMessage, skillCommands, sessionCwd, onShowModelSelector, isCompacting, sessionId]);
 
   const handleSubmit = React.useCallback(
     (message: PromptInputMessage) => {
@@ -927,6 +942,10 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
 
   const resumeRequestedRef = React.useRef<string | null>(null);
   const compactingRef = React.useRef(false);
+  // Mutable ref for current sessionId — used by async slash-command callbacks
+  // to detect session switches after dispatch.
+  const sessionIdRef = React.useRef(sessionId);
+  React.useEffect(() => { sessionIdRef.current = sessionId; }, [sessionId]);
 
   React.useEffect(() => {
     if (!sessionId || !commandOpen || !isResumeMode || !onRequestResumeSessions) return;

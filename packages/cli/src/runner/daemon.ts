@@ -2,7 +2,7 @@ import { spawn, exec, execSync, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 
 const execAsync = promisify(exec);
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { mkdir, readdir, stat, readFile } from "node:fs/promises";
 import { randomBytes, randomUUID } from "node:crypto";
 import { homedir, hostname } from "node:os";
@@ -14,7 +14,7 @@ import {
     listTerminals,
     killAllTerminals,
 } from "./terminal.js";
-import { join, dirname, relative, basename } from "node:path";
+import { join, dirname, relative, basename, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { io, type Socket } from "socket.io-client";
 import type { RunnerClientToServerEvents, RunnerServerToClientEvents } from "@pizzapi/protocol";
@@ -478,7 +478,8 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         // ── Helper: emit registration ─────────────────────────────────────
         const emitRegister = () => {
             const skills = scanGlobalSkills();
-            const plugins = scanAllPluginInfo(process.cwd(), { includeProjectLocal: true });
+            // Only include project-local plugins if daemon cwd is within allowed roots
+            const plugins = scanAllPluginInfo(process.cwd(), { includeProjectLocal: isCwdAllowed(process.cwd()) });
             socket.emit("register_runner", {
                 runnerId: identity.runnerId,
                 runnerSecret: identity.runnerSecret,
@@ -846,8 +847,21 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         socket.on("list_plugins", (data) => {
             if (isShuttingDown) return;
             const requestId = data?.requestId;
-            const plugins = scanAllPluginInfo(process.cwd(), { includeProjectLocal: true });
-            socket.emit("plugins_list", { plugins, requestId });
+            // Use the provided cwd (e.g. session's working directory) if
+            // available, otherwise fall back to the daemon's own cwd.
+            // Validate against workspace roots to prevent arbitrary path scanning.
+            const rawCwd = (typeof data?.cwd === "string" && data.cwd) ? data.cwd : undefined;
+            if (rawCwd && !isCwdAllowed(rawCwd)) {
+                socket.emit("plugins_list", { plugins: [], requestId, ok: false, message: "cwd outside allowed workspace roots" });
+                return;
+            }
+            const scanCwd = rawCwd ?? process.cwd();
+            // Only include project-local plugins if the scan cwd is within allowed roots.
+            // If daemon started outside workspace roots, avoid leaking local plugin metadata.
+            const includeLocal = isCwdAllowed(scanCwd);
+            const plugins = scanAllPluginInfo(scanCwd, { includeProjectLocal: includeLocal });
+            // Echo scoped flag so the server can skip cache updates for per-session scans
+            socket.emit("plugins_list", { plugins, requestId, ...(rawCwd ? { scoped: true } : {}) });
         });
 
         // ── File Explorer ─────────────────────────────────────────────────
@@ -1198,8 +1212,23 @@ function isCwdAllowed(cwd: string | undefined): boolean {
     if (!cwd) return true;
     const roots = getWorkspaceRoots();
     if (roots.length === 0) return true; // unscoped runner
-    const nCwd = cwd.replace(/\\/g, "/").replace(/\/+$/, "");
-    return roots.some((root) => nCwd === root || nCwd.startsWith(root + "/"));
+    // Resolve symlinks + normalize ".." segments to prevent path traversal.
+    // Use realpathSync when the path exists (resolves symlinks), fall back
+    // to resolve() for non-existent paths (still collapses "..").
+    const canonicalize = (p: string) => {
+        try { return realpathSync(p); } catch { return resolve(p); }
+    };
+    const nCwd = canonicalize(cwd).replace(/\\/g, "/").replace(/\/+$/, "") || "/";
+    // Windows paths are case-insensitive
+    const isWin = /^[A-Za-z]:/.test(cwd);
+    return roots.some((root) => {
+        const nRoot = canonicalize(root).replace(/\\/g, "/").replace(/\/+$/, "") || "/";
+        // Special-case filesystem root: everything is under "/"
+        if (nRoot === "/") return true;
+        const rc = isWin ? nCwd.toLowerCase() : nCwd;
+        const rr = isWin ? nRoot.toLowerCase() : nRoot;
+        return rc === rr || rc.startsWith(rr + "/");
+    });
 }
 
 function spawnSession(

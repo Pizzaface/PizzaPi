@@ -21,8 +21,29 @@
  *   │   └── hooks.json
  *   └── scripts/                  # Helper scripts referenced by hooks/commands
  */
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+/** Maximum size (bytes) for individual plugin files (commands, hooks, rules).
+ *  Files exceeding this are skipped to prevent DoS from oversized local plugins. */
+const MAX_PLUGIN_FILE_SIZE = 2 * 1024 * 1024; // 2 MB
+
+/** Maximum number of entries (files) per plugin subdirectory (commands, hooks, rules, skills).
+ *  Limits CPU/IO during discovery of untrusted local plugins. */
+const MAX_ENTRIES_PER_DIR = 200;
+
+/** Read a file only if it's within the size limit. Returns null if too large or unreadable. */
+function readFileCapped(path: string, maxBytes: number = MAX_PLUGIN_FILE_SIZE): string | null {
+    try {
+        const s = statSync(path);
+        if (s.size > maxBytes) return null;
+        return readFileSync(path, "utf-8");
+    } catch {
+        return null;
+    }
+}
 import { homedir } from "node:os";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -322,9 +343,20 @@ export function parseCommands(pluginDir: string): PluginCommand[] {
     const commandsDir = join(pluginDir, "commands");
     if (!existsSync(commandsDir)) return [];
 
+    // Reject if commands/ itself is a symlink (prevents scanning outside plugin root)
+    try {
+        if (lstatSync(commandsDir).isSymbolicLink()) return [];
+    } catch { return []; }
+
     const commands: PluginCommand[] = [];
 
-    function scanDir(dir: string, prefix: string) {
+    const MAX_DEPTH = 10;
+    let entryCount = 0;
+
+    function scanDir(dir: string, prefix: string, depth: number = 0) {
+        if (depth > MAX_DEPTH) return;
+        if (entryCount >= MAX_ENTRIES_PER_DIR) return;
+
         let entries: string[];
         try {
             entries = readdirSync(dir);
@@ -333,28 +365,32 @@ export function parseCommands(pluginDir: string): PluginCommand[] {
         }
 
         for (const entry of entries) {
+            if (entryCount >= MAX_ENTRIES_PER_DIR) break;
+            entryCount++;
+
             const entryPath = join(dir, entry);
             let stat;
             try {
-                stat = statSync(entryPath);
+                // Use lstatSync to avoid following symlinks (prevents cycles)
+                stat = lstatSync(entryPath);
             } catch {
                 continue;
             }
 
+            // lstatSync does not follow symlinks — a symlinked dir will
+            // show isSymbolicLink()=true, isDirectory()=false. Skip symlink
+            // dirs to prevent recursive symlink DoS.
+            if (stat.isSymbolicLink()) continue;
+
             if (stat.isDirectory()) {
-                // Recurse into subdirectory with path prefix
-                scanDir(entryPath, prefix ? `${prefix}/${entry}` : entry);
+                scanDir(entryPath, prefix ? `${prefix}/${entry}` : entry, depth + 1);
                 continue;
             }
 
             if (!entry.endsWith(".md")) continue;
 
-            let content: string;
-            try {
-                content = readFileSync(entryPath, "utf-8");
-            } catch {
-                continue;
-            }
+            const content = readFileCapped(entryPath);
+            if (content === null) continue;
 
             const baseName = entry.slice(0, -3); // Strip .md
             const name = prefix ? `${prefix}/${baseName}` : baseName;
@@ -381,12 +417,17 @@ export function parseHooks(pluginDir: string): HooksConfig | null {
     const hooksDir = join(pluginDir, "hooks");
     if (!existsSync(hooksDir)) return null;
 
+    // Reject if hooks/ itself is a symlink (prevents scanning outside plugin root)
+    try {
+        if (lstatSync(hooksDir).isSymbolicLink()) return null;
+    } catch { return null; }
+
     const merged: HooksConfig = { hooks: {} };
     let foundAny = false;
 
     let entries: string[];
     try {
-        entries = readdirSync(hooksDir);
+        entries = readdirSync(hooksDir).slice(0, MAX_ENTRIES_PER_DIR);
     } catch {
         return null;
     }
@@ -395,8 +436,13 @@ export function parseHooks(pluginDir: string): HooksConfig | null {
         if (!entry.endsWith(".json")) continue;
 
         const filePath = join(hooksDir, entry);
+        // Skip symlinked hook files
         try {
-            const raw = readFileSync(filePath, "utf-8");
+            if (lstatSync(filePath).isSymbolicLink()) continue;
+        } catch { continue; }
+        const raw = readFileCapped(filePath);
+        if (raw === null) continue;
+        try {
             const parsed = JSON.parse(raw) as Partial<HooksConfig>;
 
             if (parsed.description && !merged.description) {
@@ -414,7 +460,17 @@ export function parseHooks(pluginDir: string): HooksConfig | null {
                     for (const group of groups) {
                         if (!group || typeof group !== "object") continue;
                         if (!Array.isArray((group as any).hooks)) continue;
-                        merged.hooks[key]!.push(group);
+                        // Sanitize individual hook entries: require type+command strings
+                        const g = group as HookGroup;
+                        g.hooks = g.hooks.filter((h): h is HookEntry => {
+                            if (!h || typeof h !== "object") return false;
+                            if (h.type === "command") {
+                                return typeof h.command === "string" && h.command.trim().length > 0;
+                            }
+                            return true; // allow future hook types
+                        });
+                        if (g.hooks.length === 0) continue;
+                        merged.hooks[key]!.push(g);
                     }
                 }
                 foundAny = true;
@@ -434,11 +490,16 @@ export function parsePluginSkills(pluginDir: string): PluginSkillRef[] {
     const skillsDir = join(pluginDir, "skills");
     if (!existsSync(skillsDir)) return [];
 
+    // Reject if skills/ itself is a symlink
+    try {
+        if (lstatSync(skillsDir).isSymbolicLink()) return [];
+    } catch { return []; }
+
     const skills: PluginSkillRef[] = [];
 
     let entries: string[];
     try {
-        entries = readdirSync(skillsDir);
+        entries = readdirSync(skillsDir).slice(0, MAX_ENTRIES_PER_DIR);
     } catch {
         return [];
     }
@@ -446,7 +507,9 @@ export function parsePluginSkills(pluginDir: string): PluginSkillRef[] {
     for (const entry of entries) {
         const entryPath = join(skillsDir, entry);
         try {
-            if (!statSync(entryPath).isDirectory()) continue;
+            // Use lstatSync: skip symlinked skill dirs
+            const s = lstatSync(entryPath);
+            if (s.isSymbolicLink() || !s.isDirectory()) continue;
         } catch {
             continue;
         }
@@ -472,11 +535,16 @@ export function parseRules(pluginDir: string): PluginRule[] {
     const rulesDir = join(pluginDir, "rules");
     if (!existsSync(rulesDir)) return [];
 
+    // Reject if rules/ itself is a symlink
+    try {
+        if (lstatSync(rulesDir).isSymbolicLink()) return [];
+    } catch { return []; }
+
     const rules: PluginRule[] = [];
 
     let entries: string[];
     try {
-        entries = readdirSync(rulesDir);
+        entries = readdirSync(rulesDir).slice(0, MAX_ENTRIES_PER_DIR);
     } catch {
         return [];
     }
@@ -486,17 +554,15 @@ export function parseRules(pluginDir: string): PluginRule[] {
 
         const filePath = join(rulesDir, entry);
         try {
-            if (!statSync(filePath).isFile()) continue;
+            // Use lstatSync: skip symlinked rule files
+            const s = lstatSync(filePath);
+            if (s.isSymbolicLink() || !s.isFile()) continue;
         } catch {
             continue;
         }
 
-        let content: string;
-        try {
-            content = readFileSync(filePath, "utf-8");
-        } catch {
-            continue;
-        }
+        const content = readFileCapped(filePath);
+        if (content === null) continue;
 
         rules.push({
             name: entry.slice(0, -3), // Strip .md
@@ -565,7 +631,7 @@ export function scanPluginsDir(dir: string): DiscoveredPlugin[] {
 
     let entries: string[];
     try {
-        entries = readdirSync(dir);
+        entries = readdirSync(dir).slice(0, MAX_ENTRIES_PER_DIR);
     } catch {
         return [];
     }
@@ -577,7 +643,10 @@ export function scanPluginsDir(dir: string): DiscoveredPlugin[] {
 
         const entryPath = join(dir, entry);
         try {
-            if (!statSync(entryPath).isDirectory()) continue;
+            // Use lstatSync to avoid following symlinks — reject symlinked
+            // plugin root dirs to prevent scanning outside the plugins dir
+            const s = lstatSync(entryPath);
+            if (s.isSymbolicLink() || !s.isDirectory()) continue;
         } catch {
             continue;
         }
