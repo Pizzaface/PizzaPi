@@ -88,6 +88,32 @@ async function execHookCommand(
     });
 }
 
+// ── Template expansion ────────────────────────────────────────────────────────
+
+/**
+ * Expand `$ARGUMENTS`, `${ARGUMENTS}`, and `$ARGUMENTS[N]` placeholders
+ * in a command template string.
+ *
+ * Positional `$ARGUMENTS[N]` placeholders are expanded FIRST so that the
+ * broader `$ARGUMENTS` regex doesn't corrupt them (e.g. turning
+ * `$ARGUMENTS[0]` into `"foo bar[0]"`).
+ */
+export function expandArguments(template: string, args: string | undefined): string {
+    const argParts = (args ?? "").split(/\s+/).filter(Boolean);
+
+    // 1. Positional first — $ARGUMENTS[0], $ARGUMENTS[1], …
+    let result = template.replace(/\$ARGUMENTS\[(\d+)\]/g, (_, idx) => {
+        return argParts[parseInt(idx, 10)] ?? "";
+    });
+
+    // 2. Global — $ARGUMENTS and ${ARGUMENTS}
+    result = result
+        .replace(/\$\{ARGUMENTS\}/g, args ?? "")
+        .replace(/\$ARGUMENTS/g, args ?? "");
+
+    return result;
+}
+
 // ── Command registration ──────────────────────────────────────────────────────
 
 function registerPluginCommand(
@@ -101,14 +127,7 @@ function registerPluginCommand(
     pi.registerCommand(commandName, {
         description: cmd.frontmatter.description ?? `[${plugin.name}] ${cmd.name}`,
         handler: async (args, ctx) => {
-            let prompt = templateContent
-                .replace(/\$ARGUMENTS/g, args ?? "")
-                .replace(/\$\{ARGUMENTS\}/g, args ?? "");
-
-            const argParts = (args ?? "").split(/\s+/).filter(Boolean);
-            prompt = prompt.replace(/\$ARGUMENTS\[(\d+)\]/g, (_, idx) => {
-                return argParts[parseInt(idx, 10)] ?? "";
-            });
+            let prompt = expandArguments(templateContent, args);
 
             // Resolve inline shell commands: !`command`
             const inlineShellPattern = /!\`([^`]+)\`/g;
