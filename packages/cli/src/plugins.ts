@@ -388,6 +388,10 @@ export function parseCommands(pluginDir: string): PluginCommand[] {
                 continue;
             }
 
+            // Only read regular files — skip FIFOs, devices, sockets, etc.
+            // that could block readFileSync before trust approval.
+            if (!stat.isFile()) continue;
+
             if (!entry.endsWith(".md")) continue;
 
             const content = readFileCapped(entryPath);

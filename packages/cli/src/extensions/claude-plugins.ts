@@ -492,10 +492,11 @@ export function createClaudePluginExtension(cwd: string): ExtensionFactory | nul
             registerPlugin(pi, plugin);
         }
 
-        // Track whether local plugins have already been loaded for this
-        // process lifetime. Once approved and registered, we don't re-prompt
-        // or re-register on subsequent session_start events.
-        let localPluginsLoaded = false;
+        // Track whether the trust prompt has been shown and answered (not
+        // timed out) for this process lifetime. When true, we don't
+        // re-prompt on subsequent session_start events — but we still
+        // check for newly pre-trusted plugins each time.
+        let trustPromptAnswered = false;
         // Track which local plugins have been registered (by rootPath) so
         // that plugins trusted mid-session (via `pizza plugins trust`) are
         // picked up on the next session_start without re-registering ones
@@ -511,8 +512,8 @@ export function createClaudePluginExtension(cwd: string): ExtensionFactory | nul
                 );
             }
 
-            // No local plugins, or already loaded? Nothing more to do.
-            if (localOnly.length === 0 || localPluginsLoaded) return;
+            // No local plugins at all? Nothing more to do.
+            if (localOnly.length === 0) return;
 
             // Split local plugins into pre-trusted (via `pizza plugins trust`)
             // and untrusted. Pre-trusted plugins load immediately without
@@ -542,11 +543,15 @@ export function createClaudePluginExtension(cwd: string): ExtensionFactory | nul
                 );
             }
 
-            // If there are no untrusted plugins left, we're done
-            if (untrusted.length === 0) {
-                localPluginsLoaded = true;
-                return;
-            }
+            // If there are no untrusted plugins left, we're done.
+            // (All locals are either already registered or newly pre-trusted.)
+            if (untrusted.length === 0) return;
+
+            // User already answered the trust prompt this process? Don't
+            // re-prompt — pre-trusted plugins were handled above, and the
+            // remaining untrusted ones stay unloaded until process restart
+            // or until the user runs `pizza plugins trust`.
+            if (trustPromptAnswered) return;
 
             // Ask the user whether to trust the remaining plugins.
             // In TUI interactive mode, use ctx.ui.confirm() directly.
@@ -593,11 +598,13 @@ export function createClaudePluginExtension(cwd: string): ExtensionFactory | nul
                 });
             }
 
-            // Mark local plugins as processed on explicit user decision.
+            // Mark the trust prompt as answered on explicit user decision.
             // On timeout, allow re-prompting on next session_start so the
             // user gets another chance when a viewer is connected.
+            // Note: pre-trusted plugins are always checked above regardless
+            // of this flag, so `pizza plugins trust` works mid-process.
             if (ok !== "timeout") {
-                localPluginsLoaded = true;
+                trustPromptAnswered = true;
             }
 
             if (ok === true) {
