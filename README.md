@@ -38,4 +38,4 @@ Full docs are at **[pizzaface.github.io/PizzaPi](https://pizzaface.github.io/Piz
 
 ## License
 
-MIT
+Apache 2.0
