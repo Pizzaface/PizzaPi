@@ -260,12 +260,16 @@ describe("matchesTool", () => {
         expect(matchesTool("Bash(git add:*)|Bash(git commit:*)", "bash", { command: "git push" })).toBe(false);
     });
 
-    test("handles non-string matchers gracefully (treats as match-all)", () => {
+    test("rejects non-string matchers (returns false to avoid match-all)", () => {
         // Malformed plugin configs may pass numbers, booleans, objects, etc.
-        expect(matchesTool(123 as any, "edit")).toBe(true);
-        expect(matchesTool(true as any, "bash")).toBe(true);
-        expect(matchesTool({} as any, "write")).toBe(true);
+        // These should NOT match any tool — returning true would cause hooks
+        // to fire on every tool call unexpectedly.
+        expect(matchesTool(123 as any, "edit")).toBe(false);
+        expect(matchesTool(true as any, "bash")).toBe(false);
+        expect(matchesTool({} as any, "write")).toBe(false);
+        // null/undefined is intentionally match-all (means "no matcher specified")
         expect(matchesTool(null as any, "read")).toBe(true);
+        expect(matchesTool(undefined, "read")).toBe(true);
     });
 });
 
@@ -541,6 +545,32 @@ describe("parseHooks", () => {
         expect(hooks!.hooks.Stop).toHaveLength(1);
     });
 
+    test("rejects hook groups with non-string matcher", () => {
+        const dir = createPlugin("bad-matcher-hooks", { manifest: { name: "bad-matcher" } });
+        mkdirSync(join(dir, "hooks"), { recursive: true });
+        writeFileSync(join(dir, "hooks", "hooks.json"), JSON.stringify({
+            hooks: {
+                PreToolUse: [
+                    // Invalid: matcher is a number — should be rejected
+                    { matcher: 123, hooks: [{ type: "command", command: "bad.sh" }] },
+                    // Valid: string matcher
+                    { matcher: "Edit", hooks: [{ type: "command", command: "good.sh" }] },
+                    // Valid: no matcher (match-all by design)
+                    { hooks: [{ type: "command", command: "also-good.sh" }] },
+                ],
+            },
+        }));
+
+        const hooks = parseHooks(dir);
+        expect(hooks).not.toBeNull();
+        expect(hooks!.hooks.PreToolUse).toHaveLength(2);
+        // Only the valid groups should survive
+        expect(hooks!.hooks.PreToolUse![0].matcher).toBe("Edit");
+        expect(hooks!.hooks.PreToolUse![0].hooks[0].command).toBe("good.sh");
+        expect(hooks!.hooks.PreToolUse![1].matcher).toBeUndefined();
+        expect(hooks!.hooks.PreToolUse![1].hooks[0].command).toBe("also-good.sh");
+    });
+
     test("merges multiple JSON files in hooks/", () => {
         const dir = createPlugin("multi-hooks", { manifest: { name: "multi-hooks" } });
         mkdirSync(join(dir, "hooks"), { recursive: true });
@@ -650,10 +680,11 @@ describe("isPluginDir", () => {
         expect(isPluginDir(dir)).toBe(true);
     });
 
-    test("does NOT detect skills-only directories", () => {
+    test("detects skills-only directories as plugins", () => {
         const dir = createPlugin("skills-only", { skills: ["my-skill"] });
-        // Skills-only dirs are handled by pi's native skill discovery
-        expect(isPluginDir(dir)).toBe(false);
+        // Skills-only dirs need to be discovered so their SKILL.md entries
+        // are added to pi via getPluginSkillPaths().
+        expect(isPluginDir(dir)).toBe(true);
     });
 });
 

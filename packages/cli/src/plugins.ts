@@ -461,6 +461,8 @@ export function parseHooks(pluginDir: string): HooksConfig | null {
                     for (const group of groups) {
                         if (!group || typeof group !== "object") continue;
                         if (!Array.isArray((group as any).hooks)) continue;
+                        // Reject groups with invalid matcher types (must be string or absent)
+                        if ("matcher" in (group as any) && typeof (group as any).matcher !== "string") continue;
                         // Sanitize individual hook entries: require type+command strings
                         const g = group as HookGroup;
                         g.hooks = g.hooks.filter((h): h is HookEntry => {
@@ -583,9 +585,9 @@ export function parseRules(pluginDir: string): PluginRule[] {
  *   - .claude-plugin/plugin.json
  *   - plugin.json (root-level manifest)
  *   - commands/ directory
- *   - hooks/ directory with .json files
+ *   - hooks/ directory
  *   - rules/ directory
- *   - skills/ directory with SKILL.md subdirs
+ *   - skills/ directory
  */
 export function isPluginDir(dir: string): boolean {
     if (existsSync(join(dir, ".claude-plugin", "plugin.json"))) return true;
@@ -593,7 +595,9 @@ export function isPluginDir(dir: string): boolean {
     if (existsSync(join(dir, "commands"))) return true;
     if (existsSync(join(dir, "hooks"))) return true;
     if (existsSync(join(dir, "rules"))) return true;
-    // Don't count skills-only dirs as plugins — they're already handled by pi's skill discovery
+    // Skills-only dirs are valid plugins — their SKILL.md entries are
+    // added to pi via getPluginSkillPaths() and need to be discovered here.
+    if (existsSync(join(dir, "skills"))) return true;
     return false;
 }
 
@@ -730,8 +734,10 @@ export function mapHookEventToPi(claudeEvent: ClaudeHookEvent): string | null {
 export function matchesTool(matcher: string | undefined | unknown, toolName: string, toolInput?: Record<string, unknown>): boolean {
     if (matcher == null) return true; // No matcher = match all
 
-    // Guard against non-string matchers from malformed plugin configs
-    if (typeof matcher !== "string") return true;
+    // Reject non-string matchers from malformed plugin configs — they
+    // should NOT match any tool (previously returned true = match-all,
+    // which could cause hooks to fire on every tool call by mistake).
+    if (typeof matcher !== "string") return false;
 
     // Treat common wildcard patterns as match-all
     const trimmed = matcher.trim();
