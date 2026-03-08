@@ -1161,9 +1161,15 @@ export function App() {
 
     // While awaiting the initial snapshot, skip streaming delta events.
     // They'd render briefly and then be replaced when the snapshot arrives,
-    // causing visible "jumping".
+    // causing visible "jumping".  This also covers tool execution events —
+    // without this guard, tool_execution_update partials can write synthetic
+    // toolResult messages into state before the snapshot hydrates the real
+    // conversation, producing orphan/duplicate tool output on reconnect.
     if (awaitingSnapshotRef.current) {
-      if (type === "message_update" || type === "message_start" || type === "message_end" || type === "turn_end") {
+      if (
+        type === "message_update" || type === "message_start" || type === "message_end" || type === "turn_end" ||
+        type === "tool_execution_start" || type === "tool_execution_update" || type === "tool_execution_end"
+      ) {
         return;
       }
     }
@@ -1801,6 +1807,10 @@ export function App() {
   }, [upsertMessage, upsertMessageDebounced, cancelPendingDeltas, appendLocalSystemMessage, scheduleToolStreamFlush]);
 
   const openSession = React.useCallback((relaySessionId: string) => {
+    // Flush/cancel any pending RAF queues (streaming deltas & tool-stream
+    // partials) from the previous session so they can't leak into the new one.
+    cancelPendingDeltas();
+
     // Stop any in-flight haptics from the previous session immediately.
     cancelHaptic();
 
@@ -1971,7 +1981,7 @@ export function App() {
         }
       }
     });
-  }, [handleRelayEvent, patchSessionCache]);
+  }, [handleRelayEvent, patchSessionCache, cancelPendingDeltas]);
 
   // Auto-reopen the last viewed session once live sessions arrive.
   React.useEffect(() => {
