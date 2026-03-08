@@ -612,7 +612,13 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     }
 
     if (rawCommand === "skills") {
-      if (!runnerId) return false;
+      if (!runnerId) {
+        setInput("");
+        setCommandOpen(false);
+        setCommandQuery("");
+        onAppendSystemMessage?.("**Skills** — Runner not connected yet. Try again in a moment.");
+        return true;
+      }
       setInput("");
       setCommandOpen(false);
       setCommandQuery("");
