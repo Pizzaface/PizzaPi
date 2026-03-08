@@ -311,7 +311,8 @@ export function parseManifest(pluginDir: string): PluginManifest {
     for (const manifestPath of candidates) {
         if (!existsSync(manifestPath)) continue;
         try {
-            const raw = readFileSync(manifestPath, "utf-8");
+            const raw = readFileCapped(manifestPath);
+            if (raw === null) continue; // Too large or unreadable — skip
             const parsed = JSON.parse(raw);
             const name = typeof parsed.name === "string" && parsed.name.trim()
                 ? parsed.name.trim()
@@ -726,8 +727,11 @@ export function mapHookEventToPi(claudeEvent: ClaudeHookEvent): string | null {
  * Matchers use `|` for OR: "Edit|Write|MultiEdit"
  * Matchers can use `Bash(prefix:*)` for bash command prefix matching.
  */
-export function matchesTool(matcher: string | undefined, toolName: string, toolInput?: Record<string, unknown>): boolean {
-    if (!matcher) return true; // No matcher = match all
+export function matchesTool(matcher: string | undefined | unknown, toolName: string, toolInput?: Record<string, unknown>): boolean {
+    if (matcher == null) return true; // No matcher = match all
+
+    // Guard against non-string matchers from malformed plugin configs
+    if (typeof matcher !== "string") return true;
 
     // Treat common wildcard patterns as match-all
     const trimmed = matcher.trim();

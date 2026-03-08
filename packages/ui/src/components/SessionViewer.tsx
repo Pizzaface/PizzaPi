@@ -616,9 +616,13 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
       setInput("");
       setCommandOpen(false);
       setCommandQuery("");
+      // Capture sessionId at dispatch time to discard stale responses
+      // when the user switches sessions while the fetch is in-flight.
+      const dispatchSessionId = sessionId;
       fetch(`/api/runners/${encodeURIComponent(runnerId)}/skills`, { credentials: "include" })
         .then((res) => res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))
         .then((data: any) => {
+          if (dispatchSessionId !== sessionIdRef.current) return; // session changed, discard
           const skills: Array<{ name: string; description?: string }> = Array.isArray(data?.skills) ? data.skills : [];
           // Merge CLI-advertised skill commands (which include project-local skills the
           // runner sees but the REST cache may not) so the user gets the full picture.
@@ -636,6 +640,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
           });
         })
         .catch((err: Error) => {
+          if (dispatchSessionId !== sessionIdRef.current) return;
           onAppendSystemMessage?.(`**Skills** — Failed to load: ${err.message}`);
         });
       return true;

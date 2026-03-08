@@ -259,6 +259,14 @@ describe("matchesTool", () => {
         expect(matchesTool("Bash(git add:*)|Bash(git commit:*)", "bash", { command: "git commit -m 'x'" })).toBe(true);
         expect(matchesTool("Bash(git add:*)|Bash(git commit:*)", "bash", { command: "git push" })).toBe(false);
     });
+
+    test("handles non-string matchers gracefully (treats as match-all)", () => {
+        // Malformed plugin configs may pass numbers, booleans, objects, etc.
+        expect(matchesTool(123 as any, "edit")).toBe(true);
+        expect(matchesTool(true as any, "bash")).toBe(true);
+        expect(matchesTool({} as any, "write")).toBe(true);
+        expect(matchesTool(null as any, "read")).toBe(true);
+    });
 });
 
 // ── mapHookEventToPi ──────────────────────────────────────────────────────────
@@ -343,6 +351,19 @@ describe("parseManifest", () => {
         expect(manifest.name).toBe("root-manifest");
         expect(manifest.description).toBe("Plugin with root manifest");
         expect(manifest.version).toBe("0.1.0");
+    });
+
+    test("skips oversized manifest files gracefully", () => {
+        const dir = createPlugin("huge-manifest", { commands: { test: "# Test" } });
+        // Write an oversized manifest (> 2MB)
+        mkdirSync(join(dir, ".claude-plugin"), { recursive: true });
+        const huge = JSON.stringify({ name: "huge", description: "x".repeat(3 * 1024 * 1024) });
+        writeFileSync(join(dir, ".claude-plugin", "plugin.json"), huge);
+
+        const manifest = parseManifest(dir);
+        // Should fall back to directory name since the file is too large
+        expect(manifest.name).toBe("huge-manifest");
+        expect(manifest.description).toBeUndefined();
     });
 
     test("prefers .claude-plugin/plugin.json over root plugin.json", () => {
