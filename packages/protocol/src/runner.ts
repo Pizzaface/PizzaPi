@@ -2,7 +2,7 @@
 // /runner namespace — Runner daemon ↔ Server
 // ============================================================================
 
-import type { RunnerSkill } from "./shared.js";
+import type { RunnerSkill, RunnerPlugin } from "./shared.js";
 
 // ---------------------------------------------------------------------------
 // Client → Server (Runner daemon sends to server)
@@ -16,6 +16,7 @@ export interface RunnerClientToServerEvents {
     runnerId?: string;
     runnerSecret?: string;
     skills?: RunnerSkill[];
+    plugins?: RunnerPlugin[];
     version?: string;
   }) => void;
 
@@ -23,6 +24,17 @@ export interface RunnerClientToServerEvents {
   skills_list: (data: {
     skills: RunnerSkill[];
     requestId?: string;
+  }) => void;
+
+  /** Runner responds with its list of discovered Claude Code plugins */
+  plugins_list: (data: {
+    plugins: RunnerPlugin[];
+    requestId?: string;
+    /** false when the scan was rejected (e.g. invalid cwd) */
+    ok?: boolean;
+    message?: string;
+    /** true when this was a per-cwd scoped scan (should not overwrite global cache) */
+    scoped?: boolean;
   }) => void;
 
   /** Runner responds to a skill CRUD operation */
@@ -177,6 +189,13 @@ export interface RunnerServerToClientEvents {
   /** Requests a list of skills */
   list_skills: (data: {
     requestId?: string;
+  }) => void;
+
+  /** Requests a list of discovered Claude Code plugins */
+  list_plugins: (data: {
+    requestId?: string;
+    /** Optional cwd override for project-local plugin scanning */
+    cwd?: string;
   }) => void;
 
   /** Creates a new skill */

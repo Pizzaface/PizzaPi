@@ -280,6 +280,12 @@ async function main() {
         return;
     }
 
+    if (args[0] === "plugins") {
+        const { runPluginsCommand } = await import("./plugins-cli.js");
+        await runPluginsCommand(args.slice(1), cwd);
+        return;
+    }
+
     if (args[0] === "models") {
         const config = loadConfig(cwd);
         const agentDir = config.agentDir ? config.agentDir.replace(/^~/, homedir()) : defaultAgentDir();
@@ -346,6 +352,7 @@ Usage:
   pizza setup                 Run first-time setup
   pizza usage [provider]      Show API usage stats
   pizza models                List available models
+  pizza plugins [cmd]         Manage Claude Code plugins (list/trust/untrust)
 
 Flags:
   --cwd <path>    Set working directory

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { defaultAgentDir, loadConfig } from "../config.js";
 import { buildWorkerSkillPaths } from "../skills.js";
+import { getPluginSkillPaths } from "../extensions/claude-plugins.js";
 
 /**
  * Build additional prompt template paths for the headless worker.
@@ -72,7 +73,10 @@ async function main(): Promise<void> {
             hooks: config.hooks,
             includeInitialPrompt: true,
         }),
-        additionalSkillPaths: buildWorkerSkillPaths(cwd, config.skills),
+        additionalSkillPaths: [
+            ...buildWorkerSkillPaths(cwd, config.skills),
+            ...getPluginSkillPaths(cwd),
+        ],
         additionalPromptTemplatePaths: buildPromptPaths(cwd),
         ...(config.systemPrompt !== undefined && {
             systemPromptOverride: () => config.systemPrompt,

@@ -69,12 +69,22 @@ export function normalizePath(value: string): string {
 }
 
 /** Check whether a cwd is inside one of the allowed roots. */
+/**
+ * Lexical root-matching check for cwd validation.
+ * This is a pre-filter — the runner daemon performs authoritative symlink-aware
+ * validation via realpathSync. The server cannot resolve symlinks because it
+ * doesn't have access to the runner's filesystem (may be on a different host).
+ */
 export function cwdMatchesRoots(roots: string[], cwd: string): boolean {
     // 1. Normalize slashes first
     const nCwd = normalizePath(cwd);
 
     // 2. Resolve '..' segments using path.posix.normalize
     const resolvedCwd = path.normalize(nCwd);
+
+    // Detect Windows-style paths for case-insensitive comparison
+    const isWinPath = (p: string) => /^[A-Za-z]:[\\/]/.test(p);
+    const ciCompare = isWinPath(cwd);
 
     return roots.some((root) => {
         const nRoot = normalizePath(root);
@@ -84,7 +94,14 @@ export function cwdMatchesRoots(roots: string[], cwd: string): boolean {
         // Important: Append '/' to ensure we don't match partial folder names
         // e.g. /home/admin matches /home/admin-secret
 
-        if (resolvedCwd === resolvedRoot) return true;
-        return resolvedCwd.startsWith(resolvedRoot + "/");
+        // Special-case filesystem root: everything is under "/"
+        if (resolvedRoot === "/" || resolvedRoot === "\\") return true;
+
+        // Windows paths are case-insensitive
+        const rc = ciCompare ? resolvedCwd.toLowerCase() : resolvedCwd;
+        const rr = ciCompare ? resolvedRoot.toLowerCase() : resolvedRoot;
+
+        if (rc === rr) return true;
+        return rc.startsWith(rr + "/");
     });
 }

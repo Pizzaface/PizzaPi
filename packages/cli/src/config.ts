@@ -130,6 +130,17 @@ export interface PizzaPiConfig {
      * When false/unset, only hooks from ~/.pizzapi/config.json (global) run.
      */
     allowProjectHooks?: boolean;
+
+    /**
+     * Project-local Claude Code plugins that have been explicitly trusted.
+     * Each entry is the absolute path to the plugin root directory.
+     *
+     * Must be set in the GLOBAL ~/.pizzapi/config.json — project configs
+     * cannot self-authorize (same pattern as allowProjectHooks).
+     *
+     * Managed via `pizza plugins trust <path>` / `pizza plugins untrust <path>`.
+     */
+    trustedPlugins?: string[];
 }
 
 function readJsonSafe(path: string): Partial<PizzaPiConfig> {
@@ -226,6 +237,52 @@ export function expandHome(path: string): string {
 
 export function defaultAgentDir(): string {
     return join(homedir(), ".pizzapi");
+}
+
+// ── Plugin trust helpers ──────────────────────────────────────────────────────
+
+/**
+ * Read the global trusted plugins list.
+ * Returns the normalized list of absolute plugin root paths.
+ */
+export function getTrustedPlugins(): string[] {
+    const globalPath = join(homedir(), ".pizzapi", "config.json");
+    const global = readJsonSafe(globalPath);
+    return Array.isArray(global.trustedPlugins) ? global.trustedPlugins.filter((p): p is string => typeof p === "string") : [];
+}
+
+/**
+ * Check whether a plugin at the given root path is in the trust list.
+ */
+export function isPluginTrusted(pluginRootPath: string): boolean {
+    const resolved = pluginRootPath.replace(/\/+$/, ""); // strip trailing slashes
+    return getTrustedPlugins().some((p) => p.replace(/\/+$/, "") === resolved);
+}
+
+/**
+ * Add a plugin root path to the global trust list.
+ * Returns true if it was added (false if already present).
+ */
+export function trustPlugin(pluginRootPath: string): boolean {
+    const resolved = pluginRootPath.replace(/\/+$/, "");
+    const list = getTrustedPlugins();
+    if (list.some((p) => p.replace(/\/+$/, "") === resolved)) return false;
+    list.push(resolved);
+    saveGlobalConfig({ trustedPlugins: list });
+    return true;
+}
+
+/**
+ * Remove a plugin root path from the global trust list.
+ * Returns true if it was removed (false if not found).
+ */
+export function untrustPlugin(pluginRootPath: string): boolean {
+    const resolved = pluginRootPath.replace(/\/+$/, "");
+    const list = getTrustedPlugins();
+    const filtered = list.filter((p) => p.replace(/\/+$/, "") !== resolved);
+    if (filtered.length === list.length) return false;
+    saveGlobalConfig({ trustedPlugins: filtered });
+    return true;
 }
 
 /**

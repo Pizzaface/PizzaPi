@@ -57,7 +57,7 @@ The monorepo is organized into focused packages:
 | `packages/tools` | Shared agent tools (bash, read-file, write-file, search) |
 | `packages/server` | Bun HTTP + WebSocket relay server (auth, sessions, push notifications) |
 | `packages/ui` | React 19 PWA web interface (Vite, TailwindCSS v4, Radix UI) |
-| `packages/cli` | CLI wrapper — launches `pi` with PizzaPi extensions and the runner daemon |
+| `packages/cli` | CLI wrapper — launches `pi` with PizzaPi extensions, the runner daemon, and the Claude Code plugin adapter |
 | `packages/control-plane` | Multi-tenant provisioner — org management, JWT auth, Caddy config, and database migrations for hosted deployments |
 | `packages/docs` | This documentation site (Astro Starlight) |
 | `packages/npm` | npm distribution tooling — builds and publishes the `npx pizzapi` packages |
@@ -127,6 +127,20 @@ See the [Runner Daemon guide](/PizzaPi/guides/runner-daemon/) for the full proce
 - The **supervisor** (`pizzapi runner`) is the stable outer process
 - It spawns the **daemon** as a child and restarts it on crash
 - The daemon spawns one **worker** per session request, isolated so a crash never affects other sessions
+
+---
+
+## Claude Code Plugin Adapter
+
+The CLI includes a **plugin adapter** that discovers Claude Code plugins and maps them into pi's runtime:
+
+- **Commands** (`commands/*.md`) → pi slash commands (`/plugin-name:command`)
+- **Hooks** (`hooks/hooks.json`) → pi lifecycle events (`tool_call`, `tool_result`, `input`, etc.)
+- **Skills** (`skills/*/SKILL.md`) → pi skills (loaded via the Agent Skills standard)
+
+The adapter scans global dirs (`~/.pizzapi/plugins/`, `~/.agents/plugins/`, `~/.claude/plugins/`) automatically. Project-local plugins require explicit trust — managed via `pizza plugins trust` or interactive confirmation at session start.
+
+See the [Claude Code Plugins guide](/PizzaPi/guides/claude-plugins/) for full details.
 
 ---
 

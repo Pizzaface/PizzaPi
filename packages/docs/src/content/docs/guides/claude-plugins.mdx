@@ -1,0 +1,338 @@
+---
+title: Claude Code Plugins
+description: Use Claude Code plugins with PizzaPi — commands, hooks, and skills from the Claude ecosystem.
+sidebar:
+  order: 8
+---
+
+import { Aside, FileTree, Steps } from "@astrojs/starlight/components";
+
+PizzaPi includes a **Claude Code plugin adapter** that discovers plugins designed for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and loads them into the `pi` coding agent runtime. Plugin commands become slash commands, hooks map to pi lifecycle events, and skills are shared via the [Agent Skills standard](https://agentskills.io).
+
+---
+
+## Quick Start
+
+<Steps>
+
+1. **Place a plugin** in one of the global plugin directories:
+
+   ```bash
+   # Any of these work:
+   ~/.pizzapi/plugins/my-plugin/
+   ~/.agents/plugins/my-plugin/
+   ~/.claude/plugins/my-plugin/
+   ```
+
+2. **Check that it's detected:**
+
+   ```bash
+   pizza plugins
+   ```
+
+3. **Start a session** — plugin commands and hooks are active immediately:
+
+   ```bash
+   pizza
+   ```
+
+</Steps>
+
+---
+
+## Plugin Structure
+
+A Claude Code plugin is a directory with any combination of commands, hooks, skills, and metadata:
+
+<FileTree>
+- my-plugin/
+  - plugin.json *(optional — name, description, version)*
+  - commands/
+    - review.md
+    - deploy.md
+  - hooks/
+    - hooks.json
+  - skills/
+    - my-skill/
+      - SKILL.md
+  - mcp.json *(not adapted — shown as warning)*
+</FileTree>
+
+### `plugin.json` (optional)
+
+```json
+{
+  "name": "my-plugin",
+  "description": "A helpful plugin for code reviews",
+  "version": "1.0.0",
+  "author": "Your Name"
+}
+```
+
+If `plugin.json` is missing, the plugin name is inferred from the directory name.
+
+---
+
+## Commands
+
+Command files are Markdown files in the `commands/` directory. Each file becomes a pi slash command namespaced to the plugin:
+
+```
+commands/review.md  →  /my-plugin:review
+commands/deploy.md  →  /my-plugin:deploy
+```
+
+### Command file format
+
+Commands support YAML frontmatter and several template variables:
+
+```markdown
+---
+description: Run a code review on the current changes
+---
+
+Review the following changes and provide feedback:
+
+$ARGUMENTS
+
+Focus on:
+- Security issues
+- Performance problems
+- Code style
+
+Current branch: !`git branch --show-current`
+```
+
+| Variable | Description |
+|----------|-------------|
+| `$ARGUMENTS` | Replaced with whatever the user types after the command |
+| `$ARGUMENTS[0]`, `$ARGUMENTS[1]`, … | Individual space-separated arguments |
+| `` !`command` `` | Inline shell execution — replaced with stdout at invocation time |
+| `${CLAUDE_PLUGIN_ROOT}` | Absolute path to the plugin directory |
+
+---
+
+## Hooks
+
+Hooks are shell commands that run at specific lifecycle events. They're defined in `hooks/hooks.json`:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/check-lint.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/on-stop.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+### Hook event mapping
+
+Claude Code hook events are mapped to pi lifecycle events:
+
+| Claude Event | Pi Event | Behavior |
+|--------------|----------|----------|
+| `PreToolUse` | `tool_call` | Can **block** tool execution (exit code 2 or `{"decision":"block"}`) |
+| `PostToolUse` | `tool_result` | Observes tool results |
+| `PostToolUseFailure` | `tool_result` (error only) | Fires only on tool errors |
+| `UserPromptSubmit` | `input` | Can transform or block user input |
+| `Stop` | `agent_end` | Can inject a follow-up message to continue |
+| `SessionStart` | `session_start` | Runs on session initialization |
+| `SessionEnd` | `session_shutdown` | Runs on session teardown |
+| `PreCompact` | `session_before_compact` | Can cancel compaction (exit code 2) |
+
+<Aside type="note">
+  Only hooks with `"type": "command"` are adapted. Claude-specific types like `"prompt"` and `"agent"` are ignored.
+</Aside>
+
+### Hook I/O protocol
+
+Hook commands receive JSON on stdin and communicate via exit codes and stdout:
+
+| Exit Code | Meaning |
+|-----------|---------|
+| `0` | Allow — continue normally |
+| `2` | Block — reject the tool call or cancel the action |
+
+Stdout JSON can include:
+
+```json
+{
+  "decision": "block",
+  "reason": "This file is read-only",
+  "transformedPrompt": "Modified input text",
+  "hookSpecificOutput": {
+    "additionalContext": "Extra context for the agent"
+  }
+}
+```
+
+### Matchers
+
+Matchers filter which tools a hook applies to:
+
+| Pattern | Matches |
+|---------|---------|
+| `Edit` | Only the `Edit` tool |
+| `Edit\|Write` | `Edit` or `Write` |
+| `.*` or omitted | All tools |
+
+---
+
+## Skills
+
+Plugin skills follow the [Agent Skills standard](https://agentskills.io/specification) — the same `SKILL.md` format used by both Claude Code and pi. They're automatically discovered and loaded alongside PizzaPi's own skills.
+
+<FileTree>
+- my-plugin/
+  - skills/
+    - code-review/
+      - **SKILL.md**
+    - testing/
+      - **SKILL.md**
+</FileTree>
+
+<Aside type="tip">
+  Skills are the most portable part of Claude Code plugins — they work identically in both ecosystems because both implement the Agent Skills open standard.
+</Aside>
+
+---
+
+## Plugin Discovery
+
+PizzaPi searches for plugins in these directories:
+
+### Global (auto-trusted)
+
+| Directory | Source |
+|-----------|--------|
+| `~/.pizzapi/plugins/` | PizzaPi's own plugin directory |
+| `~/.agents/plugins/` | Agent Skills standard directory |
+| `~/.claude/plugins/` | Claude Code's plugin directory |
+
+### Project-local (require trust)
+
+| Directory | Source |
+|-----------|--------|
+| `<cwd>/.pizzapi/plugins/` | Project-level PizzaPi plugins |
+| `<cwd>/.agents/plugins/` | Project-level Agent Skills plugins |
+| `<cwd>/.claude/plugins/` | Project-level Claude Code plugins |
+
+---
+
+## Trust Model
+
+Plugins can execute arbitrary shell commands via hooks, so project-local plugins require explicit trust.
+
+### Global plugins — always trusted
+
+Plugins in global directories (`~/.pizzapi/plugins/` etc.) load automatically without any prompt. They have the same trust level as global extensions or skills.
+
+### Project-local plugins — require trust
+
+Plugins under the project directory (`.pizzapi/plugins/` etc.) need explicit approval. There are three ways to grant it:
+
+1. **CLI** — pre-approve before starting a session:
+
+   ```bash
+   # Trust all untrusted local plugins in the current project
+   pizza plugins trust
+
+   # Trust a specific plugin
+   pizza plugins trust .pizzapi/plugins/my-linter
+   ```
+
+2. **TUI** — interactive confirmation dialog at session start (when running `pizza` directly)
+
+3. **Web UI** — amber trust banner with Trust / Skip buttons (when running via the runner daemon)
+
+Once approved by any method, trust is persisted to `~/.pizzapi/config.json` (the `trustedPlugins` array). Future sessions auto-load without re-prompting.
+
+### Managing trust
+
+```bash
+# Show trusted plugin paths
+pizza plugins trusted
+
+# Remove a specific plugin from the trust list
+pizza plugins untrust /path/to/plugin
+
+# Clear the entire trust list
+pizza plugins untrust
+```
+
+<Aside type="caution">
+  Trust state is stored in the **global** config (`~/.pizzapi/config.json`). Project-local configs cannot self-authorize — this prevents a malicious repo from auto-trusting its own plugins.
+</Aside>
+
+---
+
+## What's Not Adapted
+
+Some Claude Code plugin features don't have direct pi equivalents:
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| **MCP servers** (`mcp.json`) | ⚠️ Shown as warning | Use pi's own MCP integration instead |
+| **Agents** (`agents/`) | ⚠️ Informational | Claude Code–specific agent definitions |
+| **LSP** (`lsp/`) | ⚠️ Informational | Language Server Protocol — Claude-specific |
+| **Prompt hooks** (`"type": "prompt"`) | Skipped | Claude-specific hook type |
+| **Agent hooks** (`"type": "agent"`) | Skipped | Claude-specific hook type |
+
+These are surfaced in the web UI's plugin detail view so you know they exist but aren't active.
+
+---
+
+## Web UI
+
+The PizzaPi web UI includes a **Plugins** panel in the runner manager that shows all discovered plugins:
+
+- Plugin names with capability badges (commands, hooks, skills, MCP)
+- Click to expand and see full details
+- **Rescan** button to re-discover after adding new plugins
+- Empty state with instructions when no plugins are found
+
+---
+
+## Using Official Claude Plugins
+
+Anthropic publishes a collection of reference plugins at [`anthropics/claude-plugins-official`](https://github.com/anthropics/claude-plugins-official). To use them:
+
+```bash
+# Clone to a global plugin directory
+git clone https://github.com/anthropics/claude-plugins-official.git /tmp/claude-plugins
+
+# Symlink individual plugins you want
+ln -s /tmp/claude-plugins/plugins/code-review ~/.pizzapi/plugins/code-review
+ln -s /tmp/claude-plugins/plugins/testing ~/.pizzapi/plugins/testing
+
+# Verify they're discovered
+pizza plugins
+```
+
+Or symlink the entire `plugins/` directory contents:
+
+```bash
+for plugin in /tmp/claude-plugins/plugins/*/; do
+  ln -s "$plugin" ~/.pizzapi/plugins/
+done
+```

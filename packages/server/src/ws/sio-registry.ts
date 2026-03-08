@@ -743,6 +743,7 @@ export interface RegisterRunnerOpts {
     requestedRunnerId?: string;
     runnerSecret?: string;
     skills?: RunnerSkill[];
+    plugins?: unknown[];
     userId?: string | null;
     userName?: string | null;
     version?: string | null;
@@ -787,6 +788,12 @@ export async function registerRunner(
         .filter(Boolean);
 
     const skills = normalizeSkills(opts.skills);
+    const plugins = Array.isArray(opts.plugins)
+        ? opts.plugins
+            .filter((p): p is Record<string, unknown> => p !== null && typeof p === "object")
+            .map(normalizePlugin)
+            .filter((p): p is Record<string, unknown> => p !== null)
+        : [];
 
     const runnerData: RedisRunnerData = {
         runnerId,
@@ -795,6 +802,7 @@ export async function registerRunner(
         name: opts.name?.trim() || null,
         roots: JSON.stringify(roots),
         skills: JSON.stringify(skills),
+        plugins: JSON.stringify(plugins),
         version: typeof opts.version === "string" ? opts.version : null,
     };
 
@@ -808,6 +816,47 @@ export async function registerRunner(
 export async function updateRunnerSkills(runnerId: string, skills: RunnerSkill[]): Promise<void> {
     const normalized = normalizeSkills(skills);
     await updateRunnerFields(runnerId, { skills: JSON.stringify(normalized) });
+}
+
+/**
+ * Normalize a plugin info object to guaranteed types.
+ * Ensures all arrays are arrays, booleans are booleans, strings are strings.
+ */
+function normalizePlugin(raw: Record<string, unknown>): Record<string, unknown> | null {
+    const name = typeof raw.name === "string" ? raw.name.trim() : "";
+    if (!name) return null;
+
+    return {
+        name,
+        description: typeof raw.description === "string" ? raw.description : "",
+        rootPath: typeof raw.rootPath === "string" ? raw.rootPath : "",
+        commands: Array.isArray(raw.commands) ? raw.commands.filter((c: unknown) => c && typeof c === "object") : [],
+        hookEvents: Array.isArray(raw.hookEvents) ? raw.hookEvents.filter((e: unknown) => typeof e === "string") : [],
+        skills: Array.isArray(raw.skills) ? raw.skills.filter((s: unknown) => s && typeof s === "object") : [],
+        rules: Array.isArray(raw.rules)
+            ? raw.rules.filter((r: unknown): r is { name: string } => r !== null && typeof r === "object" && typeof (r as any).name === "string")
+            : undefined,
+        hasMcp: raw.hasMcp === true,
+        hasAgents: raw.hasAgents === true,
+        hasLsp: raw.hasLsp === true,
+        version: typeof raw.version === "string" ? raw.version : undefined,
+        author: typeof raw.author === "string" ? raw.author : undefined,
+    };
+}
+
+/**
+ * Persist the runner's discovered Claude Code plugins to Redis.
+ * Plugins are stored as a JSON-serialized array in the runner hash.
+ * Each plugin is schema-normalized to guarantee expected field types.
+ */
+export async function updateRunnerPlugins(runnerId: string, plugins: unknown[]): Promise<void> {
+    const normalized = Array.isArray(plugins)
+        ? plugins
+            .filter((p): p is Record<string, unknown> => p !== null && typeof p === "object")
+            .map(normalizePlugin)
+            .filter((p): p is Record<string, unknown> => p !== null)
+        : [];
+    await updateRunnerFields(runnerId, { plugins: JSON.stringify(normalized) });
 }
 
 /** Record that a runner spawned a session. */
@@ -909,6 +958,7 @@ export async function getRunners(filterUserId?: string): Promise<RunnerInfo[]> {
             roots: safeJsonParse(r.roots) ?? [],
             sessionCount: sessionCounts.get(r.runnerId) ?? 0,
             skills: safeJsonParse(r.skills) ?? [],
+            plugins: safeJsonParse(r.plugins ?? "[]") ?? [],
             version: r.version ?? null,
         });
     }

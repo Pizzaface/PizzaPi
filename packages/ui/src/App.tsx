@@ -1,6 +1,7 @@
 import * as React from "react";
 import { SessionSidebar, type DotState, type HubSession } from "@/components/SessionSidebar";
 import { SessionViewer, type RelayMessage } from "@/components/SessionViewer";
+import type { CommandResultData } from "@/components/session-viewer/rendering";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { AuthPage } from "@/components/AuthPage";
 import { ApiKeyManager } from "@/components/ApiKeyManager";
@@ -209,7 +210,7 @@ interface SessionUiCacheEntry {
   activeModel: ConfiguredModelInfo | null;
   sessionName: string | null;
   availableModels: ConfiguredModelInfo[];
-  availableCommands: Array<{ name: string; description?: string }>;
+  availableCommands: Array<{ name: string; description?: string; source?: string }>;
   agentActive: boolean;
   isCompacting: boolean;
   effortLevel: string | null;
@@ -607,6 +608,13 @@ export function App() {
   const [recentFoldersLoading, setRecentFoldersLoading] = React.useState(false);
 
   const [pendingQuestion, setPendingQuestion] = React.useState<{ toolCallId: string; questions: Array<{ question: string; options: string[] }>; display: QuestionDisplayMode } | null>(null);
+
+  /** Pending plugin trust prompt from the worker — shown as a confirmation dialog in the viewer. */
+  const [pluginTrustPrompt, setPluginTrustPrompt] = React.useState<{
+    promptId: string;
+    pluginNames: string[];
+    pluginSummaries: string[];
+  } | null>(null);
   // Cached fallback promptKey for when toolCallId is absent (legacy/compat).
   // Only changes when the question content changes, preventing heartbeat
   // re-applications from resetting the MC component's selection state.
@@ -670,7 +678,7 @@ export function App() {
   const awaitingSnapshotRef = React.useRef(false);
 
   // Capabilities advertised by the runner (commands, models, etc.)
-  const [availableCommands, setAvailableCommands] = React.useState<Array<{ name: string; description?: string }>>([]);
+  const [availableCommands, setAvailableCommands] = React.useState<Array<{ name: string; description?: string; source?: string }>>([]);
 
   // /resume picker state (fetched from runner session files)
   const [resumeSessions, setResumeSessions] = React.useState<ResumeSessionOption[]>([]);
@@ -923,6 +931,7 @@ export function App() {
     setMessages([]);
     setViewerStatus("Idle");
     setPendingQuestion(null);
+    setPluginTrustPrompt(null);
     setRetryState(null);
     setActiveToolCalls(new Map());
     setMessageQueue([]);
@@ -1074,16 +1083,17 @@ export function App() {
     }
   }, []);
 
-  const appendLocalSystemMessage = React.useCallback((text: string) => {
-    const content = text.trim();
-    if (!content) return;
+  const appendLocalSystemMessage = React.useCallback((content: string | CommandResultData) => {
+    if (content === undefined || content === null) return;
+    // For plain strings, trim and skip empties
+    if (typeof content === "string" && !content.trim()) return;
 
     const now = Date.now();
     const message: RelayMessage = {
       key: `system:local:${now}:${Math.random().toString(16).slice(2)}`,
       role: "system",
       timestamp: now,
-      content,
+      content: typeof content === "string" ? content.trim() : content,
     };
 
     setMessages((prev) => {
@@ -1212,6 +1222,24 @@ export function App() {
         setRetryState(rs);
       }
 
+      // Restore pending plugin trust prompt when reconnecting.
+      if (Object.prototype.hasOwnProperty.call(hb, "pendingPluginTrust")) {
+        const pt = (hb as any).pendingPluginTrust as {
+          promptId: string;
+          pluginNames: string[];
+          pluginSummaries: string[];
+        } | null;
+        if (pt && typeof pt.promptId === "string" && Array.isArray(pt.pluginNames) && pt.pluginNames.length > 0) {
+          setPluginTrustPrompt({
+            promptId: pt.promptId,
+            pluginNames: pt.pluginNames,
+            pluginSummaries: Array.isArray(pt.pluginSummaries) ? pt.pluginSummaries : pt.pluginNames,
+          });
+        } else {
+          setPluginTrustPrompt(null);
+        }
+      }
+
       // Heartbeats also carry the current model; keep activeModel in sync.
       if (hb.model) {
         const m = normalizeModel(hb.model);
@@ -1239,7 +1267,7 @@ export function App() {
       const normalizedModels = normalizeModelList(modelsRaw);
       const normalizedCommands = commandsRaw
         .filter((c) => c && typeof c === "object" && typeof c.name === "string")
-        .map((c) => ({ name: String(c.name), description: typeof c.description === "string" ? c.description : undefined }))
+        .map((c) => ({ name: String(c.name), description: typeof c.description === "string" ? c.description : undefined, source: typeof c.source === "string" ? c.source : undefined }))
         .sort((a, b) => a.name.localeCompare(b.name));
 
       // Keep model state in sync with capability snapshots too.
@@ -1278,6 +1306,7 @@ export function App() {
       });
 
       setPendingQuestion(null);
+      setPluginTrustPrompt(null);
       setIsChangingModel(false);
 
       // Clear queued messages — the snapshot contains the full conversation
@@ -1387,18 +1416,36 @@ export function App() {
       }
 
       if (command === "mcp") {
-        const lines = Array.isArray(result?.lines)
-          ? result.lines.filter((line: unknown): line is string => typeof line === "string")
+        // Build structured command result for rich card rendering
+        const toolCount = typeof result?.toolCount === "number" ? result.toolCount : 0;
+        const toolNames = Array.isArray(result?.toolNames)
+          ? result.toolNames.filter((n: unknown): n is string => typeof n === "string")
           : [];
-        if (lines.length > 0) {
-          appendLocalSystemMessage(lines.join("\n"));
-        }
+        const errors = Array.isArray(result?.errors) ? result.errors as Array<{ server: string; error: string }> : [];
+        const servers = Array.isArray(result?.config?.effectiveServers)
+          ? (result.config.effectiveServers as Array<{ name: string; transport: string; scope: string; sourcePath?: string }>)
+          : [];
+        const action = typeof result?.action === "string" && result.action === "reload" ? "reload" as const : "status" as const;
+        // serverTools: Record<string, string[]> — tools grouped by MCP server name
+        const serverTools = result?.serverTools && typeof result.serverTools === "object" && !Array.isArray(result.serverTools)
+          ? result.serverTools as Record<string, string[]>
+          : {};
+
+        appendLocalSystemMessage({
+          kind: "mcp",
+          action,
+          toolCount,
+          toolNames,
+          serverCount: servers.length,
+          servers,
+          errors,
+          serverTools,
+          loadedAt: typeof result?.loadedAt === "string" ? result.loadedAt : undefined,
+        });
 
         const summary = typeof result?.summary === "string"
           ? result.summary
-          : typeof result?.toolCount === "number"
-            ? `MCP tools loaded: ${result.toolCount}`
-            : "MCP status updated";
+          : `MCP tools loaded: ${toolCount}`;
         setViewerStatus(summary);
         return;
       }
@@ -1552,6 +1599,28 @@ export function App() {
           return next;
         });
       }
+    }
+
+    if (type === "plugin_trust_prompt") {
+      const promptId = evt.promptId as string | undefined;
+      const names = evt.pluginNames as string[] | undefined;
+      const summaries = evt.pluginSummaries as string[] | undefined;
+      if (typeof promptId === "string" && Array.isArray(names) && names.length > 0) {
+        setPluginTrustPrompt({
+          promptId,
+          pluginNames: names,
+          pluginSummaries: Array.isArray(summaries) ? summaries : names,
+        });
+      }
+      return;
+    }
+
+    if (type === "plugin_trust_expired") {
+      const promptId = evt.promptId as string | undefined;
+      setPluginTrustPrompt((prev) =>
+        prev && prev.promptId === promptId ? null : prev
+      );
+      return;
     }
 
     if (type === "tool_execution_start" && evt.toolName === "AskUserQuestion") {
@@ -2036,6 +2105,23 @@ export function App() {
       return false;
     }
   }, []);
+
+  /** Respond to a plugin trust prompt from the worker. */
+  const respondPluginTrust = React.useCallback((trusted: boolean) => {
+    const prompt = pluginTrustPrompt;
+    if (!prompt) return;
+    const ok = sendRemoteExec({
+      type: "exec",
+      id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      command: "plugin_trust_response",
+      promptId: prompt.promptId,
+      trusted,
+    });
+    // Only dismiss the banner if the send succeeded
+    if (ok !== false) {
+      setPluginTrustPrompt(null);
+    }
+  }, [sendRemoteExec, pluginTrustPrompt]);
 
   /**
    * End a session by session ID. If it's the currently active session the
@@ -2935,6 +3021,8 @@ export function App() {
                   activeModel={activeModel}
                   activeToolCalls={activeToolCalls}
                   pendingQuestion={pendingQuestion}
+                  pluginTrustPrompt={pluginTrustPrompt}
+                  onPluginTrustResponse={respondPluginTrust}
                   availableCommands={availableCommands}
                   resumeSessions={resumeSessions}
                   resumeSessionsLoading={resumeSessionsLoading}
@@ -2959,6 +3047,7 @@ export function App() {
                   todoList={todoList}
                   runnerId={activeSessionInfo?.runnerId ?? undefined}
                   sessionCwd={activeSessionInfo?.cwd || undefined}
+                  onAppendSystemMessage={appendLocalSystemMessage}
                 />
               )}
             </div>

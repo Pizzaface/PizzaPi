@@ -16,6 +16,9 @@ import {
   roleLabel,
   toMessageRole,
   CompactionSummaryCard,
+  CommandResultCard,
+  isCommandResult,
+  type CommandResultData,
 } from "@/components/session-viewer/rendering";
 import {
   Message,
@@ -60,7 +63,7 @@ import { ProviderIcon } from "@/components/ProviderIcon";
 import { MultipleChoiceQuestions } from "@/components/ai-elements/multiple-choice";
 import { formatAnswersForAgent, type QuestionDisplayMode } from "@/lib/ask-user-questions";
 import { dismissNotificationsForSession } from "@/lib/push";
-import { AlertTriangleIcon, ArrowDownIcon, BookOpen, CheckCircle2, ChevronsUpDown, Circle, CircleDashed, Loader2, MessageSquare, OctagonX, PaperclipIcon, Plus, Zap, Clock, X, Trash2, TerminalIcon, DownloadIcon, XCircle, FolderTree } from "lucide-react";
+import { AlertTriangleIcon, ArrowDownIcon, BookOpen, CheckCircle2, ChevronsUpDown, Circle, CircleDashed, Loader2, MessageSquare, OctagonX, PaperclipIcon, Plus, Puzzle, ShieldAlert, Zap, Clock, X, Trash2, TerminalIcon, DownloadIcon, XCircle, FolderTree } from "lucide-react";
 import { AtMentionPopover } from "@/components/AtMentionPopover";
 import type { Entry as AtMentionEntry } from "@/hooks/useAtMentionFiles";
 
@@ -103,7 +106,11 @@ export interface SessionViewerProps {
   activeModel?: { provider: string; id: string; name?: string; reasoning?: boolean } | null;
   activeToolCalls?: Map<string, string>;
   pendingQuestion?: { toolCallId: string; questions: Array<{ question: string; options: string[] }>; display: QuestionDisplayMode } | null;
-  availableCommands?: Array<{ name: string; description?: string }>;
+  /** Plugin trust prompt from the worker — shown as a confirmation dialog */
+  pluginTrustPrompt?: { promptId: string; pluginNames: string[]; pluginSummaries: string[] } | null;
+  /** Respond to the plugin trust prompt */
+  onPluginTrustResponse?: (trusted: boolean) => void;
+  availableCommands?: Array<{ name: string; description?: string; source?: string }>;
   resumeSessions?: ResumeSessionOption[];
   resumeSessionsLoading?: boolean;
   onRequestResumeSessions?: () => boolean | void;
@@ -145,6 +152,8 @@ export interface SessionViewerProps {
   runnerId?: string;
   /** Absolute working directory of the current session (used as base for @-mention file paths) */
   sessionCwd?: string;
+  /** Append a local system message to the conversation (string or structured data for card rendering) */
+  onAppendSystemMessage?: (content: string | CommandResultData) => void;
 }
 
 function formatTokenCount(n: number): string {
@@ -315,6 +324,15 @@ const SessionMessageItem = React.memo(({ message, activeToolCalls, agentActive, 
   agentActive?: boolean;
   isLast: boolean;
 }) => {
+  // System messages with structured command result data render as standalone cards
+  if (message.role === "system" && isCommandResult(message.content)) {
+    return (
+      <div className="w-full px-4 py-1.5 max-w-3xl mx-auto">
+        <CommandResultCard data={message.content} />
+      </div>
+    );
+  }
+
   // Compaction summary cards render as standalone elements without the message wrapper
   if ((message.role === "compactionSummary" || message.role === "branchSummary") && message.summary) {
     return (
@@ -432,7 +450,7 @@ function SessionSkeleton() {
   );
 }
 
-export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, isCompacting, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], runnerId, sessionCwd }: SessionViewerProps) {
+export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, pluginTrustPrompt, onPluginTrustResponse, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, isCompacting, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], runnerId, sessionCwd, onAppendSystemMessage }: SessionViewerProps) {
   const [input, setInput] = React.useState("");
   const [composerError, setComposerError] = React.useState<string | null>(null);
   const [showClearDialog, setShowClearDialog] = React.useState(false);
@@ -496,6 +514,35 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     return () => document.removeEventListener("keydown", handleKeyDown);
   }, [agentActive, onExec, showClearDialog, showEndSessionDialog, commandOpen, atMentionOpen]);
 
+  // Commands from the CLI that the web UI already handles via executeSlashCommand.
+  // These are excluded from the "CLI Commands" group to avoid duplicates.
+  const webHandledCommands = React.useMemo(() => new Set([
+    "new", "resume", "mcp", "plugins", "skills", "model", "cycle_model",
+    "effort", "cycle_effort", "compact", "name", "copy", "stop", "restart",
+    "remote",
+  ]), []);
+
+  // Split availableCommands (from the CLI) into groups by source.
+  // Everything not already handled by the web UI is shown in the hotbar.
+  type CmdEntry = { name: string; description?: string; source?: string };
+  const { extensionCommands, skillCommands, promptCommands } = React.useMemo<{
+    extensionCommands: CmdEntry[];
+    skillCommands: CmdEntry[];
+    promptCommands: CmdEntry[];
+  }>(() => {
+    if (!availableCommands) return { extensionCommands: [], skillCommands: [], promptCommands: [] };
+    const ext: CmdEntry[] = [];
+    const skill: CmdEntry[] = [];
+    const prompt: CmdEntry[] = [];
+    for (const c of availableCommands) {
+      if (webHandledCommands.has(c.name.toLowerCase())) continue;
+      if (c.source === "skill") skill.push(c);
+      else if (c.source === "prompt") prompt.push(c);
+      else ext.push(c); // "extension" or unknown source
+    }
+    return { extensionCommands: ext, skillCommands: skill, promptCommands: prompt };
+  }, [availableCommands, webHandledCommands]);
+
   const executeSlashCommand = React.useCallback((text: string): boolean => {
     const trimmed = text.trim();
     if (!trimmed.startsWith("/")) return false;
@@ -519,10 +566,96 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
       return true;
     }
 
+    // /plugins and /skills use HTTP fetch, not onExec — handle before the exec guard
+    if (rawCommand === "plugins") {
+      if (!runnerId) {
+        setInput("");
+        setCommandOpen(false);
+        setCommandQuery("");
+        onAppendSystemMessage?.("**Plugins** — Runner not connected yet. Try again in a moment.");
+        return true;
+      }
+      setInput("");
+      setCommandOpen(false);
+      setCommandQuery("");
+      const pluginsUrl = sessionCwd
+        ? `/api/runners/${encodeURIComponent(runnerId)}/plugins?cwd=${encodeURIComponent(sessionCwd)}`
+        : `/api/runners/${encodeURIComponent(runnerId)}/plugins`;
+      // Capture sessionId at dispatch time; compare against mutable ref
+      // to detect session switches while the fetch is in-flight.
+      const dispatchSessionId = sessionId;
+      fetch(pluginsUrl, { credentials: "include" })
+        .then((res) => res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))
+        .then((data: any) => {
+          if (dispatchSessionId !== sessionIdRef.current) return; // session changed, discard
+          const raw: Array<{ name: string; description?: string; commands?: Array<{ name: string; description?: string }>; hookEvents?: string[]; skills?: Array<{ name: string }>; rules?: Array<{ name: string }>; version?: string; hasMcp?: boolean; hasAgents?: boolean }> = Array.isArray(data?.plugins) ? data.plugins : [];
+          onAppendSystemMessage?.({
+            kind: "plugins",
+            plugins: raw.map((p) => ({
+              name: p.name,
+              description: p.description,
+              version: p.version,
+              commands: (p.commands ?? []).map((c) => ({ name: c.name, description: c.description })),
+              hookCount: p.hookEvents?.length ?? 0,
+              skillCount: p.skills?.length ?? 0,
+              ruleCount: p.rules?.length ?? 0,
+              hasMcp: !!p.hasMcp,
+              hasAgents: !!p.hasAgents,
+            })),
+          });
+        })
+        .catch((err: Error) => {
+          if (dispatchSessionId !== sessionIdRef.current) return;
+          onAppendSystemMessage?.(`**Plugins** — Failed to load: ${err.message}`);
+        });
+      return true;
+    }
+
+    if (rawCommand === "skills") {
+      if (!runnerId) {
+        setInput("");
+        setCommandOpen(false);
+        setCommandQuery("");
+        onAppendSystemMessage?.("**Skills** — Runner not connected yet. Try again in a moment.");
+        return true;
+      }
+      setInput("");
+      setCommandOpen(false);
+      setCommandQuery("");
+      // Capture sessionId at dispatch time to discard stale responses
+      // when the user switches sessions while the fetch is in-flight.
+      const dispatchSessionId = sessionId;
+      fetch(`/api/runners/${encodeURIComponent(runnerId)}/skills`, { credentials: "include" })
+        .then((res) => res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))
+        .then((data: any) => {
+          if (dispatchSessionId !== sessionIdRef.current) return; // session changed, discard
+          const skills: Array<{ name: string; description?: string }> = Array.isArray(data?.skills) ? data.skills : [];
+          // Merge CLI-advertised skill commands (which include project-local skills the
+          // runner sees but the REST cache may not) so the user gets the full picture.
+          const merged = new Map<string, { name: string; description?: string }>();
+          for (const s of skills) merged.set(s.name, s);
+          for (const cmd of skillCommands) {
+            const skillName = cmd.name.replace(/^skill:/, "");
+            if (!merged.has(skillName)) {
+              merged.set(skillName, { name: skillName, description: cmd.description });
+            }
+          }
+          onAppendSystemMessage?.({
+            kind: "skills",
+            skills: Array.from(merged.values()),
+          });
+        })
+        .catch((err: Error) => {
+          if (dispatchSessionId !== sessionIdRef.current) return;
+          onAppendSystemMessage?.(`**Skills** — Failed to load: ${err.message}`);
+        });
+      return true;
+    }
+
     if (!onExec) return false;
 
-    if (rawCommand === "mcp" || rawCommand === "mcp_reload") {
-      const action = rawCommand === "mcp_reload" || args.trim().toLowerCase() === "reload" ? "reload" : "status";
+    if (rawCommand === "mcp") {
+      const action = args.trim().toLowerCase() === "reload" ? "reload" : "status";
       onExec({ type: "exec", id, command: "mcp", action });
       setInput("");
       setCommandOpen(false);
@@ -612,7 +745,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     }
 
     return false;
-  }, [onExec, onSendInput, resumeSessions]);
+  }, [onExec, onSendInput, resumeSessions, runnerId, onAppendSystemMessage, skillCommands, sessionCwd, onShowModelSelector, isCompacting, sessionId]);
 
   const handleSubmit = React.useCallback(
     (message: PromptInputMessage) => {
@@ -653,8 +786,9 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     return [
       { name: "new", description: "Start a new conversation" },
       { name: "resume", description: "Resume the previous session" },
-      { name: "mcp", description: "Show MCP status" },
-      { name: "mcp_reload", description: "Reload MCP tools" },
+      { name: "mcp", description: "MCP status (or /mcp reload)" },
+      { name: "plugins", description: "Show loaded plugins" },
+      { name: "skills", description: "Show available skills" },
       { name: "model", description: "Select model" },
       { name: "cycle_model", description: "Select model" },
       { name: "effort", description: "Cycle reasoning effort level" },
@@ -667,22 +801,16 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     ];
   }, []);
 
-  // Extract skills from availableCommands (CLI sends them as "skill:name")
-  const skillCommands = React.useMemo(() => {
-    if (!availableCommands) return [];
-    return availableCommands
-      .filter((c) => c.name.startsWith("skill:"))
-      .map((c) => ({ name: c.name, description: c.description }));
-  }, [availableCommands]);
-
   // Set of all known command/skill names for quick lookup (used to auto-close popover
   // once the user has typed a recognized command and started entering arguments).
   const knownCommandNames = React.useMemo(() => {
     const names = new Set<string>();
     for (const c of supportedWebCommands) names.add(c.name.toLowerCase());
-    for (const s of skillCommands) names.add(s.name.toLowerCase());
+    for (const c of extensionCommands) names.add(c.name.toLowerCase());
+    for (const c of skillCommands) names.add(c.name.toLowerCase());
+    for (const c of promptCommands) names.add(c.name.toLowerCase());
     return names;
-  }, [supportedWebCommands, skillCommands]);
+  }, [supportedWebCommands, extensionCommands, skillCommands, promptCommands]);
 
   // Commands that use the popover for argument-mode UI (e.g. resume shows a
   // session picker that the user searches/filters by typing after /resume).
@@ -707,6 +835,22 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
       (c) => c.name.toLowerCase().includes(query) || (c.description?.toLowerCase().includes(query) ?? false),
     );
   }, [commandQuery, skillCommands]);
+
+  const extensionSuggestions = React.useMemo(() => {
+    const query = commandQuery.trim().toLowerCase();
+    if (!query) return extensionCommands;
+    return extensionCommands.filter(
+      (c) => c.name.toLowerCase().includes(query) || (c.description?.toLowerCase().includes(query) ?? false),
+    );
+  }, [commandQuery, extensionCommands]);
+
+  const promptSuggestions = React.useMemo(() => {
+    const query = commandQuery.trim().toLowerCase();
+    if (!query) return promptCommands;
+    return promptCommands.filter(
+      (c) => c.name.toLowerCase().includes(query) || (c.description?.toLowerCase().includes(query) ?? false),
+    );
+  }, [commandQuery, promptCommands]);
 
   // @-mention file selection: replace trigger to cursor with @{relativePath} 
   const handleAtMentionSelectFile = React.useCallback((relativePath: string) => {
@@ -803,12 +947,16 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     if (isResumeMode) {
       return resumeCandidates[commandHighlightedIndex]?.path ?? "";
     }
-    const combined = [...commandSuggestions, ...skillSuggestions];
+    const combined = [...commandSuggestions, ...extensionSuggestions, ...promptSuggestions, ...skillSuggestions];
     return combined[commandHighlightedIndex]?.name ?? "";
-  }, [commandOpen, isResumeMode, resumeCandidates, commandSuggestions, skillSuggestions, commandHighlightedIndex]);
+  }, [commandOpen, isResumeMode, resumeCandidates, commandSuggestions, extensionSuggestions, promptSuggestions, skillSuggestions, commandHighlightedIndex]);
 
   const resumeRequestedRef = React.useRef<string | null>(null);
   const compactingRef = React.useRef(false);
+  // Mutable ref for current sessionId — used by async slash-command callbacks
+  // to detect session switches after dispatch.
+  const sessionIdRef = React.useRef(sessionId);
+  React.useEffect(() => { sessionIdRef.current = sessionId; }, [sessionId]);
 
   React.useEffect(() => {
     if (!sessionId || !commandOpen || !isResumeMode || !onRequestResumeSessions) return;
@@ -1256,6 +1404,51 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
           </div>
         )}
 
+        {/* Plugin trust prompt (shown above the input area) */}
+        {pluginTrustPrompt && onPluginTrustResponse && (
+          <div className="mb-2 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3 shadow-sm">
+            <div className="flex items-start gap-2.5">
+              <ShieldAlert className="mt-0.5 size-4 shrink-0 text-amber-500" />
+              <div className="flex-1 min-w-0 space-y-2">
+                <div>
+                  <p className="text-sm font-medium text-foreground">Untrusted Project Plugins</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    {pluginTrustPrompt.pluginNames.length === 1
+                      ? "A project-local Claude Code plugin wants to load. It can execute shell commands via hooks."
+                      : `${pluginTrustPrompt.pluginNames.length} project-local Claude Code plugins want to load. They can execute shell commands via hooks.`}
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {pluginTrustPrompt.pluginSummaries.map((summary, i) => (
+                    <span
+                      key={pluginTrustPrompt.pluginNames[i]}
+                      className="inline-flex items-center rounded-md bg-amber-500/10 px-2 py-0.5 text-xs font-mono text-amber-700 dark:text-amber-400 ring-1 ring-amber-500/20"
+                    >
+                      {summary}
+                    </span>
+                  ))}
+                </div>
+                <div className="flex items-center gap-2 pt-1">
+                  <button
+                    type="button"
+                    className="inline-flex items-center rounded-md bg-amber-500 px-3 py-1 text-xs font-medium text-white shadow-sm hover:bg-amber-600 transition-colors"
+                    onClick={() => onPluginTrustResponse(true)}
+                  >
+                    Trust &amp; Load
+                  </button>
+                  <button
+                    type="button"
+                    className="inline-flex items-center rounded-md bg-muted px-3 py-1 text-xs font-medium text-muted-foreground hover:bg-muted/80 transition-colors"
+                    onClick={() => onPluginTrustResponse(false)}
+                  >
+                    Skip
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Multiple-choice questions (shown above the input area) */}
         {pendingQuestion && sessionId && pendingQuestion.questions.length > 0 && (
           <MultipleChoiceQuestions
@@ -1298,7 +1491,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                   const idx = resumeCandidates.findIndex(s => s.path.toLowerCase() === v.toLowerCase());
                   if (idx !== -1) setCommandHighlightedIndex(idx);
                 } else {
-                  const combined = [...commandSuggestions, ...skillSuggestions];
+                  const combined = [...commandSuggestions, ...extensionSuggestions, ...promptSuggestions, ...skillSuggestions];
                   const idx = combined.findIndex(c => c.name.toLowerCase() === v.toLowerCase());
                   if (idx !== -1) setCommandHighlightedIndex(idx);
                 }
@@ -1384,6 +1577,59 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                         ))}
                       </CommandGroup>
                     )}
+                    {extensionSuggestions.length > 0 && (
+                      <CommandGroup heading="Plugin Commands">
+                        {extensionSuggestions.map((cmd) => (
+                          <CommandItem
+                            key={cmd.name}
+                            value={cmd.name}
+                            onSelect={() => {
+                              setInput(`/${cmd.name} `);
+                              setCommandQuery("");
+                              setCommandOpen(false);
+                              requestAnimationFrame(() => {
+                                document.querySelector<HTMLTextAreaElement>("[data-pp-prompt]")?.focus();
+                              });
+                            }}
+                          >
+                            <div className="flex w-full items-center justify-between gap-2">
+                              <div className="flex items-center gap-1.5 min-w-0">
+                                <Puzzle className="size-3.5 shrink-0 text-primary/60" />
+                                <span className="font-mono text-sm truncate">/{cmd.name}</span>
+                              </div>
+                              {cmd.description && (
+                                <span className="text-xs text-muted-foreground truncate max-w-[50%]">{cmd.description}</span>
+                              )}
+                            </div>
+                          </CommandItem>
+                        ))}
+                      </CommandGroup>
+                    )}
+                    {promptSuggestions.length > 0 && (
+                      <CommandGroup heading="Prompt Templates">
+                        {promptSuggestions.map((cmd) => (
+                          <CommandItem
+                            key={cmd.name}
+                            value={cmd.name}
+                            onSelect={() => {
+                              setInput(`/${cmd.name} `);
+                              setCommandQuery("");
+                              setCommandOpen(false);
+                              requestAnimationFrame(() => {
+                                document.querySelector<HTMLTextAreaElement>("[data-pp-prompt]")?.focus();
+                              });
+                            }}
+                          >
+                            <div className="flex w-full items-center justify-between gap-2">
+                              <span className="font-mono text-sm truncate">/{cmd.name}</span>
+                              {cmd.description && (
+                                <span className="text-xs text-muted-foreground truncate max-w-[50%]">{cmd.description}</span>
+                              )}
+                            </div>
+                          </CommandItem>
+                        ))}
+                      </CommandGroup>
+                    )}
                     {skillSuggestions.length > 0 && (
                       <CommandGroup heading="Skills">
                         {skillSuggestions.map((skill) => (
@@ -1391,11 +1637,9 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                             key={skill.name}
                             value={skill.name}
                             onSelect={() => {
-                              // Set input to /skill:name and let user add arguments
                               setInput(`/${skill.name} `);
                               setCommandQuery("");
                               setCommandOpen(false);
-                              // Focus the textarea so user can type args or press Enter
                               requestAnimationFrame(() => {
                                 document.querySelector<HTMLTextAreaElement>("[data-pp-prompt]")?.focus();
                               });
@@ -1614,7 +1858,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                       event.preventDefault();
                       const totalItems = isResumeMode
                         ? resumeCandidates.length
-                        : commandSuggestions.length + skillSuggestions.length;
+                        : commandSuggestions.length + extensionSuggestions.length + promptSuggestions.length + skillSuggestions.length;
                       if (totalItems === 0) return;
                       setCommandHighlightedIndex(prev => {
                         if (event.key === "ArrowDown") {
@@ -1639,7 +1883,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                           return;
                         }
                       } else {
-                        const combined = [...commandSuggestions, ...skillSuggestions];
+                        const combined = [...commandSuggestions, ...extensionSuggestions, ...promptSuggestions, ...skillSuggestions];
                         const highlighted = combined[commandHighlightedIndex];
                         if (highlighted) {
                           event.preventDefault();
@@ -1662,9 +1906,9 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                     }
 
                     // Tab: autocomplete the highlighted command (or first match) and close the popover
-                    if (event.key === "Tab" && (commandSuggestions.length > 0 || skillSuggestions.length > 0)) {
+                    if (event.key === "Tab" && (commandSuggestions.length > 0 || extensionSuggestions.length > 0 || promptSuggestions.length > 0 || skillSuggestions.length > 0)) {
                       event.preventDefault();
-                      const combined = [...commandSuggestions, ...skillSuggestions];
+                      const combined = [...commandSuggestions, ...extensionSuggestions, ...promptSuggestions, ...skillSuggestions];
                       const highlighted = combined[commandHighlightedIndex] ?? combined[0];
                       if (highlighted) {
                         setInput(`/${highlighted.name} `);

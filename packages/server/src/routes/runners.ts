@@ -297,6 +297,71 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         return undefined;
     }
 
+    // ── Plugins (Claude Code plugin adapter) ─────────────────────────
+    const pluginsMatch = url.pathname.match(/^\/api\/runners\/([^/]+)\/plugins$/);
+    if (pluginsMatch && req.method === "GET") {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        const runnerId = decodeURIComponent(pluginsMatch[1]);
+        const runner = await getRunnerData(runnerId);
+        if (!runner) return Response.json({ error: "Runner not found" }, { status: 404 });
+        if (runner.userId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
+
+        // If a session cwd is provided, ask the runner daemon to scan from
+        // that directory so project-local plugins are correct for the active
+        // session (rather than the daemon's own cwd).
+        const cwdParam = url.searchParams.get("cwd");
+        if (cwdParam) {
+            // Validate cwd against runner workspace roots (same check as session spawn)
+            // Accept POSIX absolute paths (/...) and Windows drive paths (C:\...)
+            const isAbsolute = cwdParam.startsWith("/") || /^[A-Za-z]:[\\/]/.test(cwdParam);
+            if (!isAbsolute) {
+                return Response.json({ error: "cwd must be an absolute path" }, { status: 400 });
+            }
+            const roots = parseJsonArray(runner.roots);
+            if (roots.length > 0 && !cwdMatchesRoots(roots, cwdParam)) {
+                return Response.json({ error: "cwd outside allowed workspace roots" }, { status: 403 });
+            }
+            try {
+                const result = await sendRunnerCommand(runnerId, { type: "list_plugins", cwd: cwdParam }) as any;
+                if (result?.ok === false) {
+                    return Response.json({ error: result.message ?? "Plugin scan rejected" }, { status: 403 });
+                }
+                return Response.json({ plugins: result?.plugins ?? [] });
+            } catch (err) {
+                console.error(`[plugins] cwd-scoped scan failed:`, err);
+                return Response.json({ error: "Failed to scan plugins" }, { status: 502 });
+            }
+        }
+
+        // Return plugins from the Redis cache (populated by daemon on registration)
+        return Response.json({ plugins: parseJsonArray(runner.plugins) });
+    }
+
+    // POST /api/runners/:id/plugins/refresh — ask runner to re-scan plugins
+    const pluginsRefreshMatch = url.pathname.match(/^\/api\/runners\/([^/]+)\/plugins\/refresh$/);
+    if (pluginsRefreshMatch && req.method === "POST") {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        const runnerId = decodeURIComponent(pluginsRefreshMatch[1]);
+        const runner = await getRunnerData(runnerId);
+        if (!runner) return Response.json({ error: "Runner not found" }, { status: 404 });
+        if (runner.userId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
+
+        try {
+            const result = await sendRunnerCommand(runnerId, { type: "list_plugins" }) as any;
+            if (result?.ok === false) {
+                return Response.json({ error: result.message ?? "Plugin scan rejected" }, { status: 403 });
+            }
+            return Response.json({ ok: true, plugins: result?.plugins ?? [] });
+        } catch (err) {
+            console.error(`[plugins] refresh failed:`, err);
+            return Response.json({ error: "Failed to refresh plugins" }, { status: 502 });
+        }
+    }
+
     // ── File explorer ──────────────────────────────────────────────────
     const filesMatch = url.pathname.match(/^\/api\/runners\/([^/]+)\/files$/);
     if (filesMatch && req.method === "POST") {

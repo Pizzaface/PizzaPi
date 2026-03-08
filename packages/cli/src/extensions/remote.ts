@@ -670,6 +670,13 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                       detectedAt: lastRetryableError.detectedAt,
                   }
                 : null,
+            pendingPluginTrust: pendingPluginTrust
+                ? {
+                      promptId: pendingPluginTrust.promptId,
+                      pluginNames: pendingPluginTrust.pluginNames,
+                      pluginSummaries: pendingPluginTrust.pluginSummaries,
+                  }
+                : null,
         };
     }
 
@@ -760,6 +767,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         const commands = (pi.getCommands?.() ?? []).map((c: any) => ({
             name: c.name,
             description: c.description,
+            source: c.source,
         }));
 
         return {
@@ -825,7 +833,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         try {
             if (req.command === "get_commands") {
                 // Return the same list we already advertise in capabilities
-                const commands = (pi.getCommands?.() ?? []).map((c: any) => ({ name: c.name, description: c.description }));
+                const commands = (pi.getCommands?.() ?? []).map((c: any) => ({ name: c.name, description: c.description, source: c.source }));
                 replyOk({ commands });
                 return;
             }
@@ -839,7 +847,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
 
                 const action = req.action === "reload" ? "reload" : "status";
                 const result = action === "reload" ? await bridge.reload() : bridge.status();
-                replyOk(result);
+                replyOk({ ...result as object, action });
                 return;
             }
 
@@ -1156,7 +1164,24 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 return;
             }
 
-            replyErr(`Unknown exec command: ${String((req as any).command)}`);
+            if (req.command === "plugin_trust_response") {
+                if (!pendingPluginTrust) {
+                    replyErr("No pending plugin trust prompt (may have expired)");
+                    return;
+                }
+                // Validate promptId to prevent stale/mismatched responses
+                if (req.promptId !== pendingPluginTrust.promptId) {
+                    replyErr("Prompt ID mismatch — this prompt may have expired");
+                    return;
+                }
+                const trusted = req.trusted === true;
+                pendingPluginTrust.respond(trusted);
+                pendingPluginTrust = null;
+                replyOk({ trusted });
+                return;
+            }
+
+            replyErr(`Unknown exec command: ${String((req satisfies never as any).command)}`);
         } catch (e) {
             replyErr(e instanceof Error ? e.message : String(e));
         }
@@ -1979,6 +2004,74 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 ctx.ui.notify(`Not connected to relay.\nRelay: ${url}\nUse /remote reconnect to retry.`);
             }
         },
+    });
+
+    // ── Plugin trust prompt bridge ────────────────────────────────────────────
+    // The claude-plugins extension emits `plugin:trust_prompt` when it finds
+    // project-local plugins that need user approval.  We forward the prompt to
+    // the web viewer as a custom event and wait for the viewer to respond via
+    // the `plugin_trust_response` exec command.
+
+    /** Pending plugin trust prompt — only one at a time. */
+    let pendingPluginTrust: {
+        promptId: string;
+        pluginNames: string[];
+        pluginSummaries: string[];
+        respond: (trusted: boolean) => void;
+    } | null = null;
+
+    pi.events.on("plugin:trust_prompt", (data: unknown) => {
+        // Runtime validation of event shape
+        const event = data as Record<string, unknown> | null;
+        if (!event || typeof event !== "object") return;
+        if (typeof event.promptId !== "string") return;
+        if (!Array.isArray(event.pluginNames)) return;
+        if (!Array.isArray(event.pluginSummaries)) return;
+        if (typeof event.respond !== "function") return;
+
+        // If there's already a pending prompt, reject it (only one at a time)
+        if (pendingPluginTrust) {
+            pendingPluginTrust.respond(false);
+        }
+
+        const promptId = event.promptId as string;
+        const pluginNames = event.pluginNames as string[];
+        const pluginSummaries = event.pluginSummaries as string[];
+        const respond = event.respond as (trusted: boolean) => void;
+
+        // Store the responder so exec handler can resolve it
+        pendingPluginTrust = { promptId, pluginNames, pluginSummaries, respond };
+
+        // Forward to the web viewer as a custom event
+        forwardEvent({
+            type: "plugin_trust_prompt",
+            promptId,
+            pluginNames,
+            pluginSummaries,
+            ts: Date.now(),
+        });
+    });
+
+    // Clean up when prompt times out on the extension side
+    pi.events.on("plugin:trust_timeout", (data: unknown) => {
+        const event = data as Record<string, unknown> | null;
+        if (!event || typeof event.promptId !== "string") return;
+        if (pendingPluginTrust?.promptId === event.promptId) {
+            pendingPluginTrust = null;
+            // Notify web UI that the prompt expired
+            forwardEvent({
+                type: "plugin_trust_expired",
+                promptId: event.promptId,
+                ts: Date.now(),
+            });
+        }
+    });
+
+    // When plugins are loaded after the initial capabilities snapshot (e.g.
+    // after the user trusts project-local plugins), re-send capabilities so
+    // the web viewer picks up the new commands.
+    pi.events.on("plugin:loaded", () => {
+        forwardEvent(buildCapabilitiesState());
     });
 
     // ── Forward agent events to relay ─────────────────────────────────────────

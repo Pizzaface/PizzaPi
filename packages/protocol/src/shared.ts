@@ -35,7 +35,24 @@ export interface RunnerInfo {
   roots: string[];
   sessionCount: number;
   skills: RunnerSkill[];
+  plugins?: RunnerPlugin[];
   version: string | null;
+}
+
+/** A discovered Claude Code plugin on a runner */
+export interface RunnerPlugin {
+  name: string;
+  description: string;
+  rootPath: string;
+  commands: { name: string; description?: string; argumentHint?: string }[];
+  hookEvents: string[];
+  skills: { name: string; dirPath: string }[];
+  rules?: { name: string }[];
+  hasMcp: boolean;
+  hasAgents: boolean;
+  hasLsp: boolean;
+  version?: string;
+  author?: string;
 }
 
 /** A skill available on a runner */
