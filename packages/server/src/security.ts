@@ -88,3 +88,26 @@ export function cwdMatchesRoots(roots: string[], cwd: string): boolean {
         return resolvedCwd.startsWith(resolvedRoot + "/");
     });
 }
+
+/**
+ * Safely extracts the client IP from a Request object.
+ * It uses the x-pizzapi-client-ip header (set by our http server) which represents the
+ * direct network connection.
+ * If the connection comes from a trusted local proxy (e.g. 127.0.0.1, ::1, or private ranges),
+ * it optionally respects the X-Forwarded-For header if present.
+ */
+export function getClientIp(req: Request): string {
+    const directIp = req.headers.get("x-pizzapi-client-ip") || "unknown";
+
+    // Define trusted proxy IPs/ranges here. For now, we trust local loopbacks.
+    const isTrustedProxy = directIp === "127.0.0.1" || directIp === "::1" || directIp === "::ffff:127.0.0.1";
+
+    if (isTrustedProxy) {
+        const xff = req.headers.get("x-forwarded-for");
+        if (xff) {
+            return xff.split(",")[0].trim();
+        }
+    }
+
+    return directIp;
+}

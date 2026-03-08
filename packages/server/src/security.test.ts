@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeAll, afterAll } from "bun:test";
-import { RateLimiter, isValidEmail, isValidPassword, cwdMatchesRoots } from "./security";
+import { RateLimiter, isValidEmail, isValidPassword, cwdMatchesRoots, getClientIp } from "./security";
 
 describe("RateLimiter", () => {
     test("allows requests within limit", () => {
@@ -144,5 +144,49 @@ describe("isValidPassword", () => {
         expect(cwdMatchesRoots(roots, "/app/data/file.txt")).toBe(true);
         expect(cwdMatchesRoots(roots, "/tmp/temp.txt")).toBe(true);
         expect(cwdMatchesRoots(roots, "/app/config")).toBe(false);
+    });
+});
+
+describe("getClientIp", () => {
+    test("extracts direct IP when no proxy", () => {
+        const req = new Request("http://localhost", {
+            headers: { "x-pizzapi-client-ip": "192.168.1.10" }
+        });
+        expect(getClientIp(req)).toBe("192.168.1.10");
+    });
+
+    test("defaults to unknown when no header", () => {
+        const req = new Request("http://localhost");
+        expect(getClientIp(req)).toBe("unknown");
+    });
+
+    test("respects X-Forwarded-For if direct IP is local loopback", () => {
+        const req = new Request("http://localhost", {
+            headers: {
+                "x-pizzapi-client-ip": "127.0.0.1",
+                "x-forwarded-for": "203.0.113.5, 198.51.100.2"
+            }
+        });
+        expect(getClientIp(req)).toBe("203.0.113.5");
+    });
+
+    test("ignores X-Forwarded-For if direct IP is not trusted", () => {
+        const req = new Request("http://localhost", {
+            headers: {
+                "x-pizzapi-client-ip": "198.51.100.99",
+                "x-forwarded-for": "203.0.113.5"
+            }
+        });
+        expect(getClientIp(req)).toBe("198.51.100.99");
+    });
+
+    test("handles IPv6 loopback", () => {
+        const req = new Request("http://localhost", {
+            headers: {
+                "x-pizzapi-client-ip": "::1",
+                "x-forwarded-for": "10.0.0.5"
+            }
+        });
+        expect(getClientIp(req)).toBe("10.0.0.5");
     });
 });
