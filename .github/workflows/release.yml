@@ -288,6 +288,7 @@ jobs:
         if: inputs.dry-run != true
         run: |
           VERSION="${{ needs.compute-version.outputs.version }}"
+          SOURCE_SHA="${{ github.sha }}"
           REF_TYPE="${{ github.ref_type }}"
           BRANCH="${{ github.ref_name }}"
 
@@ -299,24 +300,12 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Sync to the latest remote branch tip before creating the version-bump commit.
-          git fetch origin "$BRANCH"
-          git checkout -B "$BRANCH" "origin/$BRANCH"
-
-          # Re-stamp versions on top of the latest branch state.
-          cd packages/cli
-          bun -e "
-            const pkg = JSON.parse(require('fs').readFileSync('package.json','utf8'));
-            pkg.version = '${VERSION}';
-            require('fs').writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
-          "
-          cd ../npm
-          bun -e "
-            const pkg = JSON.parse(require('fs').readFileSync('package.json','utf8'));
-            pkg.version = '${VERSION}';
-            require('fs').writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
-          "
-          cd ../..
+          # Keep release provenance tied to the original dispatch commit.
+          CURRENT_SHA=$(git rev-parse HEAD)
+          if [ "$CURRENT_SHA" != "$SOURCE_SHA" ]; then
+            echo "::error::Unexpected HEAD drift before version bump commit (expected ${SOURCE_SHA}, got ${CURRENT_SHA})"
+            exit 1
+          fi
 
           git add packages/cli/package.json packages/npm/package.json
 
@@ -325,36 +314,28 @@ jobs:
           else
             git commit -m "chore(release): bump package versions to ${VERSION} [skip ci]"
 
-            PUSHED=0
-            for ATTEMPT in 1 2 3; do
-              if git push origin "HEAD:${BRANCH}"; then
-                PUSHED=1
-                echo "✅ Pushed version bump commit to ${BRANCH}"
-                break
+            PUSH_OUTPUT=$(git push origin "HEAD:${BRANCH}" 2>&1) && {
+              echo "$PUSH_OUTPUT"
+              echo "✅ Pushed version bump commit to ${BRANCH}"
+            } || {
+              if echo "$PUSH_OUTPUT" | grep -qiE 'non-fast-forward|fetch first'; then
+                echo "::warning::Branch advanced during release; skipped pushing version bump commit to avoid retargeting this release. Commit $(git rev-parse HEAD) can be cherry-picked manually."
+              else
+                echo "::error::Failed to push package.json version bump"
+                echo "$PUSH_OUTPUT"
+                exit 1
               fi
-
-              if [ "$ATTEMPT" -eq 3 ]; then
-                break
-              fi
-
-              echo "⚠️ Push rejected (attempt ${ATTEMPT}); rebasing onto origin/${BRANCH} and retrying..."
-              git fetch origin "$BRANCH"
-              git rebase "origin/$BRANCH"
-            done
-
-            if [ "$PUSHED" -ne 1 ]; then
-              echo "::error::Failed to push package.json version bump after multiple retries"
-              exit 1
-            fi
+            }
           fi
 
       - name: Create git tag
         if: inputs.dry-run != true
         run: |
           VERSION="${{ needs.compute-version.outputs.version }}"
+          SOURCE_SHA="${{ github.sha }}"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "v${VERSION}" -m "Release v${VERSION}"
+          git tag -a "v${VERSION}" "$SOURCE_SHA" -m "Release v${VERSION}"
           git push origin "v${VERSION}"
 
       - name: Summary
