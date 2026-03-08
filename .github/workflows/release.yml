@@ -13,7 +13,7 @@ on:
           - dev
           - pull
       version:
-        description: "Version (e.g. 0.2.3). For dev/beta a suffix is appended automatically. For pull, the exact version to yank."
+        description: "Version (e.g. 0.2.4). For dev/beta a suffix is appended automatically. For pull, the exact version to yank."
         required: true
         type: string
       dry-run:
@@ -283,6 +283,31 @@ jobs:
           bun packages/npm/publish-npm.ts \
             --tag ${{ needs.compute-version.outputs.tag }} \
             $ARGS
+
+      - name: Commit and push package.json version bump
+        if: inputs.dry-run != true
+        run: |
+          VERSION="${{ needs.compute-version.outputs.version }}"
+          REF_TYPE="${{ github.ref_type }}"
+          BRANCH="${{ github.ref_name }}"
+
+          if [ "$REF_TYPE" != "branch" ]; then
+            echo "::error::Release workflow must run from a branch to push package.json updates (got ref type: ${REF_TYPE})"
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add packages/cli/package.json packages/npm/package.json
+
+          if git diff --cached --quiet; then
+            echo "ℹ️ No package.json changes to commit"
+          else
+            git commit -m "chore(release): bump package versions to ${VERSION} [skip ci]"
+            git push origin "HEAD:${BRANCH}"
+            echo "✅ Pushed version bump commit to ${BRANCH}"
+          fi
 
       - name: Create git tag
         if: inputs.dry-run != true
