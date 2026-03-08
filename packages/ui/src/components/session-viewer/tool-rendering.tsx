@@ -402,12 +402,14 @@ function BashToolCard({
 }) {
   const sessionActions = useSessionActions();
   const hasOutput = hasVisibleContent(content);
-  const state: ToolState = hasOutput
-    ? isError
-      ? "output-error"
-      : "output-available"
-    : isStreaming
-      ? "input-streaming"
+  // When streaming, always show the streaming state — even if partial output
+  // has already arrived via tool_execution_update events.
+  const state: ToolState = isStreaming
+    ? "input-streaming"
+    : hasOutput
+      ? isError
+        ? "output-error"
+        : "output-available"
       : "input-available";
   const commandLine = synthesizeCommandLine(toolName, toolInput);
   const outputText = hasOutput ? extractTextFromToolContent(content) : null;
@@ -479,12 +481,13 @@ export function renderGroupedToolExecution(
   thinkingDuration?: number
 ) {
   const hasOutput = hasVisibleContent(content);
-  const state: ToolState = hasOutput
-    ? isError
-      ? "output-error"
-      : "output-available"
-    : isStreaming
-      ? "input-streaming"
+  // Streaming takes priority: a tool with partial output is still running.
+  const state: ToolState = isStreaming
+    ? "input-streaming"
+    : hasOutput
+      ? isError
+        ? "output-error"
+        : "output-available"
       : "input-available";
 
   const norm = normalizeToolName(toolName);

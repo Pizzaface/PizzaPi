@@ -106,9 +106,11 @@ export function renderContent(
 
   if (role === "toolResult" || role === "tool") {
     if (toolInput !== undefined) {
+      // A tool is "streaming" when it's still in activeToolCalls, regardless
+      // of whether partial output content has already arrived (e.g. bash
+      // commands that stream output via tool_execution_update events).
       const isStreaming =
-        !hasVisibleContent(content) &&
-        (toolKey ? (activeToolCalls?.has(toolKey) ?? false) : false);
+        toolKey ? (activeToolCalls?.has(toolKey) ?? false) : false;
       return renderGroupedToolExecution(
         toolKey,
         toolName ?? "tool",
