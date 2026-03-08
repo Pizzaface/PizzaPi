@@ -311,6 +311,11 @@ export function parseManifest(pluginDir: string): PluginManifest {
     for (const manifestPath of candidates) {
         if (!existsSync(manifestPath)) continue;
         try {
+            // Verify it's a regular file — a FIFO/device here could block
+            // readFileSync during discovery before trust approval.
+            const mstat = lstatSync(manifestPath);
+            if (mstat.isSymbolicLink() || !mstat.isFile()) continue;
+
             const raw = readFileCapped(manifestPath);
             if (raw === null) continue; // Too large or unreadable — skip
             const parsed = JSON.parse(raw);
@@ -441,9 +446,11 @@ export function parseHooks(pluginDir: string): HooksConfig | null {
         if (!entry.endsWith(".json")) continue;
 
         const filePath = join(hooksDir, entry);
-        // Skip symlinked hook files
+        // Skip symlinks and non-regular files (FIFOs, devices, sockets)
+        // that could block readFileSync before trust approval.
         try {
-            if (lstatSync(filePath).isSymbolicLink()) continue;
+            const hookStat = lstatSync(filePath);
+            if (hookStat.isSymbolicLink() || !hookStat.isFile()) continue;
         } catch { continue; }
         const raw = readFileCapped(filePath);
         if (raw === null) continue;
