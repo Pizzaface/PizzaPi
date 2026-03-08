@@ -41,13 +41,30 @@ jobs:
           echo "::error::Only @Pizzaface can trigger releases. Actor: ${{ github.actor }}"
           exit 1
 
+  # ─── Gate: releases must run from a branch ref ────────────────
+  # Prevent partial releases when workflow_dispatch is triggered on
+  # a tag ref: publish could succeed, then branch-only git operations
+  # (version bump push) would fail afterwards.
+  validate-release-ref:
+    name: Validate release ref
+    needs: authorize
+    if: inputs.action != 'pull'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check ref type
+        run: |
+          if [ "${{ github.ref_type }}" != "branch" ]; then
+            echo "::error::Release actions (latest/beta/dev) must be dispatched from a branch ref. Got: ${{ github.ref_type }} (${{ github.ref_name }})"
+            exit 1
+          fi
+
   # ─── Compute the release version before building binaries ─────
   # The CLI reads its version from package.json at runtime (--version,
   # runner reporting).  `bun build --compile` bakes package.json into
   # the binary, so we must stamp the correct version BEFORE compiling.
   compute-version:
     name: Compute version
-    needs: authorize
+    needs: [authorize, validate-release-ref]
     if: inputs.action != 'pull'
     runs-on: ubuntu-latest
     outputs:
@@ -293,8 +310,8 @@ jobs:
           BRANCH="${{ github.ref_name }}"
 
           if [ "$REF_TYPE" != "branch" ]; then
-            echo "::error::Release workflow must run from a branch to push package.json updates (got ref type: ${REF_TYPE})"
-            exit 1
+            echo "⚠️ Skipping package.json push: non-branch ref (${REF_TYPE})"
+            exit 0
           fi
 
           git config user.name "github-actions[bot]"
