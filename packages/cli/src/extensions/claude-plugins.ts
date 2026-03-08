@@ -496,9 +496,11 @@ export function createClaudePluginExtension(cwd: string): ExtensionFactory | nul
         // process lifetime. Once approved and registered, we don't re-prompt
         // or re-register on subsequent session_start events.
         let localPluginsLoaded = false;
-        // Track pre-trusted local plugins separately so they aren't
-        // re-registered when the untrusted prompt times out or is rejected.
-        let preTrustedLoaded = false;
+        // Track which local plugins have been registered (by rootPath) so
+        // that plugins trusted mid-session (via `pizza plugins trust`) are
+        // picked up on the next session_start without re-registering ones
+        // already loaded.
+        const registeredLocalPaths = new Set<string>();
 
         pi.on("session_start", async (_event, ctx) => {
             // Notify about global plugins
@@ -518,20 +520,24 @@ export function createClaudePluginExtension(cwd: string): ExtensionFactory | nul
             const preTrusted = localOnly.filter(p => isPluginTrusted(p.rootPath));
             const untrusted = localOnly.filter(p => !isPluginTrusted(p.rootPath));
 
-            // Load pre-trusted local plugins immediately (only once)
-            if (preTrusted.length > 0 && !preTrustedLoaded) {
-                preTrustedLoaded = true;
-                for (const plugin of preTrusted) {
+            // Load pre-trusted local plugins that haven't been registered yet.
+            // This handles both the initial load and plugins that become
+            // trusted mid-process (via `pizza plugins trust`) after a
+            // previous timeout or rejection.
+            const newPreTrusted = preTrusted.filter(p => !registeredLocalPaths.has(p.rootPath));
+            if (newPreTrusted.length > 0) {
+                for (const plugin of newPreTrusted) {
                     registerPlugin(pi, plugin);
+                    registeredLocalPaths.add(plugin.rootPath);
 
                     // Fire SessionStart hooks immediately — we're already
                     // inside session_start so newly registered listeners
                     // won't retroactively fire.
                     fireSessionStartHooks(pi, plugin);
                 }
-                pi.events.emit("plugin:loaded", { count: preTrusted.length });
+                pi.events.emit("plugin:loaded", { count: newPreTrusted.length });
                 ctx.ui.notify(
-                    `Loaded ${preTrusted.length} trusted local plugin${preTrusted.length > 1 ? "s" : ""}: ${preTrusted.map(pluginSummary).join(", ")}`,
+                    `Loaded ${newPreTrusted.length} trusted local plugin${newPreTrusted.length > 1 ? "s" : ""}: ${newPreTrusted.map(pluginSummary).join(", ")}`,
                     "info",
                 );
             }
@@ -597,6 +603,7 @@ export function createClaudePluginExtension(cwd: string): ExtensionFactory | nul
             if (ok === true) {
                 for (const plugin of untrusted) {
                     registerPlugin(pi, plugin);
+                    registeredLocalPaths.add(plugin.rootPath);
                     // Persist trust so future sessions don't re-prompt
                     trustPlugin(plugin.rootPath);
                     fireSessionStartHooks(pi, plugin);
