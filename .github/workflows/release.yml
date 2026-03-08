@@ -299,14 +299,53 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
+          # Sync to the latest remote branch tip before creating the version-bump commit.
+          git fetch origin "$BRANCH"
+          git checkout -B "$BRANCH" "origin/$BRANCH"
+
+          # Re-stamp versions on top of the latest branch state.
+          cd packages/cli
+          bun -e "
+            const pkg = JSON.parse(require('fs').readFileSync('package.json','utf8'));
+            pkg.version = '${VERSION}';
+            require('fs').writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+          cd ../npm
+          bun -e "
+            const pkg = JSON.parse(require('fs').readFileSync('package.json','utf8'));
+            pkg.version = '${VERSION}';
+            require('fs').writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+          cd ../..
+
           git add packages/cli/package.json packages/npm/package.json
 
           if git diff --cached --quiet; then
             echo "ℹ️ No package.json changes to commit"
           else
             git commit -m "chore(release): bump package versions to ${VERSION} [skip ci]"
-            git push origin "HEAD:${BRANCH}"
-            echo "✅ Pushed version bump commit to ${BRANCH}"
+
+            PUSHED=0
+            for ATTEMPT in 1 2 3; do
+              if git push origin "HEAD:${BRANCH}"; then
+                PUSHED=1
+                echo "✅ Pushed version bump commit to ${BRANCH}"
+                break
+              fi
+
+              if [ "$ATTEMPT" -eq 3 ]; then
+                break
+              fi
+
+              echo "⚠️ Push rejected (attempt ${ATTEMPT}); rebasing onto origin/${BRANCH} and retrying..."
+              git fetch origin "$BRANCH"
+              git rebase "origin/$BRANCH"
+            done
+
+            if [ "$PUSHED" -ne 1 ]; then
+              echo "::error::Failed to push package.json version bump after multiple retries"
+              exit 1
+            fi
           fi
 
       - name: Create git tag
