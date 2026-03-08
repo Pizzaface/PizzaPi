@@ -145,4 +145,40 @@ describe("isValidPassword", () => {
         expect(cwdMatchesRoots(roots, "/tmp/temp.txt")).toBe(true);
         expect(cwdMatchesRoots(roots, "/app/config")).toBe(false);
     });
+
+    test("cwdMatchesRoots — filesystem root '/' matches everything", () => {
+        // Root "/" is a special case — everything is under it
+        expect(cwdMatchesRoots(["/"], "/home/user/project")).toBe(true);
+        expect(cwdMatchesRoots(["/"], "/etc/passwd")).toBe(true);
+        expect(cwdMatchesRoots(["/"], "/")).toBe(true);
+    });
+
+    test("cwdMatchesRoots — Windows-style paths are case-insensitive", () => {
+        const root = "C:\\Users\\Admin\\Project";
+        // Same path, different case
+        expect(cwdMatchesRoots([root], "C:\\Users\\Admin\\Project")).toBe(true);
+        expect(cwdMatchesRoots([root], "c:\\users\\admin\\project")).toBe(true);
+        expect(cwdMatchesRoots([root], "C:\\Users\\Admin\\Project\\src")).toBe(true);
+        expect(cwdMatchesRoots([root], "c:\\users\\admin\\project\\src")).toBe(true);
+
+        // Should NOT match unrelated Windows path
+        expect(cwdMatchesRoots([root], "C:\\Users\\Other\\Project")).toBe(false);
+    });
+
+    test("cwdMatchesRoots — path traversal via '..' is normalized", () => {
+        const root = "/home/user/project";
+        // ".." that collapses back into the allowed root should pass
+        expect(cwdMatchesRoots([root], "/home/user/project/a/b/../../c")).toBe(true);
+
+        // ".." that escapes the root should fail
+        expect(cwdMatchesRoots([root], "/home/user/project/../other-project")).toBe(false);
+        expect(cwdMatchesRoots([root], "/home/user/project/a/../../../../etc")).toBe(false);
+    });
+
+    test("cwdMatchesRoots — trailing slashes are normalized", () => {
+        const root = "/home/user/project";
+        expect(cwdMatchesRoots([root], "/home/user/project/")).toBe(true);
+        expect(cwdMatchesRoots(["/home/user/project/"], "/home/user/project")).toBe(true);
+        expect(cwdMatchesRoots(["/home/user/project/"], "/home/user/project/src")).toBe(true);
+    });
 });
