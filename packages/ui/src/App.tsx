@@ -883,6 +883,12 @@ export function App() {
   // Key of the in-flight streaming partial message; evicted when the final message lands.
   const streamingPartialKeyRef = React.useRef<string | null>(null);
 
+  // Separate RAF-based debounce for tool_execution_update streaming (e.g. bash
+  // output). Kept independent of the assistant delta debounce above to avoid
+  // interference with streamingPartialKeyRef / evictPartial logic.
+  const pendingToolStreamRef = React.useRef<Map<string, unknown>>(new Map());
+  const toolStreamRafRef = React.useRef<number | null>(null);
+
   // Track wall-clock timing of thinking blocks so we can bake duration into the content.
   // contentIndex → Date.now() at thinking_start
   const thinkingStartTimesRef = React.useRef<Map<number, number>>(new Map());
@@ -962,6 +968,11 @@ export function App() {
     streamingPartialKeyRef.current = null;
     thinkingStartTimesRef.current = new Map();
     thinkingDurationsRef.current = new Map();
+    if (toolStreamRafRef.current !== null) {
+      cancelAnimationFrame(toolStreamRafRef.current);
+      toolStreamRafRef.current = null;
+    }
+    pendingToolStreamRef.current = new Map();
   }, []);
 
   const upsertMessage = React.useCallback((raw: unknown, fallback: string, evictPartial = false) => {
@@ -1081,6 +1092,38 @@ export function App() {
         });
       });
     }
+  }, []);
+
+  /**
+   * Schedule a batched flush of pending tool_execution_update partials via RAF.
+   * Each tool call accumulates its latest partial in pendingToolStreamRef, and
+   * once per animation frame we upsert them into state as synthetic toolResult
+   * messages so the UI renders live output (e.g. bash command streaming).
+   */
+  const scheduleToolStreamFlush = React.useCallback(() => {
+    if (toolStreamRafRef.current !== null) return; // already scheduled
+    toolStreamRafRef.current = requestAnimationFrame(() => {
+      toolStreamRafRef.current = null;
+      const pending = pendingToolStreamRef.current;
+      if (pending.size === 0) return;
+      pendingToolStreamRef.current = new Map();
+      setMessages((prev) => {
+        let result = prev;
+        for (const [, raw] of pending) {
+          const msg = toRelayMessage(raw, "tool-stream");
+          if (!msg) continue;
+          const idx = result.findIndex((m) => m.key === msg.key);
+          if (idx >= 0) {
+            if (result === prev) result = prev.slice();
+            result[idx] = msg;
+          } else {
+            if (result === prev) result = prev.slice();
+            result.push(msg);
+          }
+        }
+        return result;
+      });
+    });
   }, []);
 
   const appendLocalSystemMessage = React.useCallback((content: string | CommandResultData) => {
@@ -1589,6 +1632,30 @@ export function App() {
       }
     }
 
+    if (type === "tool_execution_update") {
+      const toolCallId = typeof evt.toolCallId === "string" ? evt.toolCallId : "";
+      const toolName = typeof evt.toolName === "string" ? evt.toolName : "unknown";
+      // AskUserQuestion updates are handled separately below — skip here.
+      if (toolCallId && toolName !== "AskUserQuestion") {
+        const partial = evt.partialResult as Record<string, unknown> | undefined;
+        const content = partial?.content;
+        if (content !== undefined && content !== null) {
+          // Buffer the partial as a synthetic toolResult keyed by toolCallId.
+          // The RAF-based scheduleToolStreamFlush will upsert it into message
+          // state (at most once per frame), so the grouping code merges it with
+          // the pending-tool card and the UI renders live output.
+          pendingToolStreamRef.current.set(toolCallId, {
+            role: "toolResult",
+            toolCallId,
+            toolName,
+            content,
+            isError: false,
+          });
+          scheduleToolStreamFlush();
+        }
+      }
+    }
+
     if (type === "tool_execution_end") {
       const toolCallId = typeof evt.toolCallId === "string" ? evt.toolCallId : "";
       if (toolCallId) {
@@ -1723,7 +1790,7 @@ export function App() {
       thinkingStartTimesRef.current = new Map();
       thinkingDurationsRef.current = new Map();
     }
-  }, [upsertMessage, upsertMessageDebounced, cancelPendingDeltas, appendLocalSystemMessage]);
+  }, [upsertMessage, upsertMessageDebounced, cancelPendingDeltas, appendLocalSystemMessage, scheduleToolStreamFlush]);
 
   const openSession = React.useCallback((relaySessionId: string) => {
     // Stop any in-flight haptics from the previous session immediately.
