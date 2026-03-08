@@ -533,8 +533,10 @@ export function createClaudePluginExtension(cwd: string): ExtensionFactory | nul
 
                     // Fire SessionStart hooks immediately — we're already
                     // inside session_start so newly registered listeners
-                    // won't retroactively fire.
-                    fireSessionStartHooks(pi, plugin);
+                    // won't retroactively fire. Await so hook output
+                    // (e.g. initial context) is applied before the first
+                    // user turn begins.
+                    await fireSessionStartHooks(pi, plugin);
                 }
                 pi.events.emit("plugin:loaded", { count: newPreTrusted.length });
                 ctx.ui.notify(
@@ -613,7 +615,9 @@ export function createClaudePluginExtension(cwd: string): ExtensionFactory | nul
                     registeredLocalPaths.add(plugin.rootPath);
                     // Persist trust so future sessions don't re-prompt
                     trustPlugin(plugin.rootPath);
-                    fireSessionStartHooks(pi, plugin);
+                    // Await so hook output (e.g. initial context injection)
+                    // completes before the session continues.
+                    await fireSessionStartHooks(pi, plugin);
                 }
                 // Notify listeners (e.g. remote extension) so they can
                 // re-send the capabilities snapshot to the web viewer.
