@@ -2145,6 +2145,77 @@ export const remoteExtension: ExtensionFactory = (pi) => {
     });
 
     // ── Forward MCP startup reports to relay ──────────────────────────────────
+    // ── MCP OAuth relay context ──────────────────────────────────────────────
+    // When the relay connects, inject the relay context into the MCP OAuth
+    // providers so they can route OAuth callbacks through the PizzaPi server.
+    const oauthPendingCallbacks = new Map<string, (code: string) => void>();
+
+    function updateMcpRelayContext() {
+        const bridge = getMcpBridge();
+        if (!bridge?.setRelayContext) return;
+
+        if (relay && sioSocket?.connected) {
+            bridge.setRelayContext({
+                serverBaseUrl: relayHttpBaseUrl(),
+                sessionId: relay.sessionId,
+                emitEvent: (_eventName: string, data: unknown) => {
+                    forwardEvent(data);
+                },
+                waitForCallback: (nonce: string, timeoutMs: number = 120_000) => {
+                    return new Promise<string>((resolve, reject) => {
+                        const timer = setTimeout(() => {
+                            oauthPendingCallbacks.delete(nonce);
+                            reject(new Error("OAuth callback timed out"));
+                        }, timeoutMs);
+
+                        oauthPendingCallbacks.set(nonce, (code: string) => {
+                            clearTimeout(timer);
+                            resolve(code);
+                        });
+                    });
+                },
+            });
+        } else {
+            bridge.setRelayContext(null);
+        }
+    }
+
+    // Update context when relay state changes
+    if (sioSocket) {
+        sioSocket.on("connect", () => updateMcpRelayContext());
+        sioSocket.on("disconnect", () => {
+            const bridge = getMcpBridge();
+            bridge?.setRelayContext?.(null);
+        });
+
+        // Listen for OAuth callback delivery from the server
+        (sioSocket as any).on("mcp_oauth_callback", (data: any) => {
+            if (data && typeof data === "object" && typeof data.nonce === "string" && typeof data.code === "string") {
+                // Deliver to the pending callback
+                const resolve = oauthPendingCallbacks.get(data.nonce);
+                if (resolve) {
+                    oauthPendingCallbacks.delete(data.nonce);
+                    resolve(data.code);
+                }
+                // Also try via bridge
+                const bridge = getMcpBridge();
+                bridge?.deliverOAuthCallback?.(data.nonce, data.code);
+            }
+        });
+    }
+
+    // Set context now if already connected
+    updateMcpRelayContext();
+
+    // ── MCP auth events → web UI ─────────────────────────────────────────────
+    pi.events.on("mcp:auth_required", (data: unknown) => {
+        forwardEvent(data);
+    });
+
+    pi.events.on("mcp:auth_complete", (data: unknown) => {
+        forwardEvent(data);
+    });
+
     // The MCP extension emits this event after initialization so the web UI
     // can display timing info, slow-startup warnings, and server errors.
     pi.events.on("mcp:startup_report", (report: unknown) => {

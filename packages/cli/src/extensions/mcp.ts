@@ -674,6 +674,14 @@ export type McpConfig = {
   >;
 };
 
+/** Track active OAuth providers so the relay context can be injected later. */
+const activeOAuthProviders: PizzaPiOAuthProvider[] = [];
+
+/** Get all active OAuth providers (used by the MCP extension to inject relay context). */
+export function getOAuthProviders(): PizzaPiOAuthProvider[] {
+  return activeOAuthProviders;
+}
+
 export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConfig): Promise<McpClient[]> {
   const clients: McpClient[] = [];
 
@@ -698,15 +706,14 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
         }),
       );
     } else if (s.transport === "streamable") {
+      const provider = new PizzaPiOAuthProvider({ serverUrl: s.url, serverName: s.name });
+      activeOAuthProviders.push(provider);
       clients.push(
         createStreamableMcpClient({
           name: s.name,
           url: s.url,
           headers: s.headers,
-          oauthProvider: new PizzaPiOAuthProvider({
-            serverUrl: s.url,
-            serverName: s.name,
-          }),
+          oauthProvider: provider,
         }),
       );
     }
@@ -741,14 +748,13 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
         (d.type === "http" && d.transport === undefined);
 
       if (useStreamable) {
+        const provider = new PizzaPiOAuthProvider({ serverUrl: d.url, serverName: name });
+        activeOAuthProviders.push(provider);
         clients.push(createStreamableMcpClient({
           name,
           url: d.url,
           headers: d.headers,
-          oauthProvider: new PizzaPiOAuthProvider({
-            serverUrl: d.url,
-            serverName: name,
-          }),
+          oauthProvider: provider,
         }));
       } else {
         clients.push(createHttpMcpClient({ name, url: d.url, headers: d.headers }));

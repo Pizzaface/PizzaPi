@@ -1744,6 +1744,47 @@ export function App() {
       return;
     }
 
+    if (type === "mcp_auth_required") {
+      const serverName = typeof evt.serverName === "string" ? evt.serverName : "MCP server";
+      const authUrl = typeof evt.authUrl === "string" ? evt.authUrl : null;
+      const ts = typeof evt.ts === "number" ? evt.ts : Date.now();
+
+      if (authUrl) {
+        const message: RelayMessage = {
+          key: `mcp_auth:${ts}:${Math.random().toString(16).slice(2)}`,
+          role: "system",
+          timestamp: ts,
+          content: `🔐 **${serverName}** requires authentication.\n\n[Click here to authenticate](${authUrl})`,
+          isError: false,
+        };
+        setMessages((prev) => {
+          const next = [...prev, message];
+          patchSessionCache({ messages: next });
+          return next;
+        });
+      }
+      return;
+    }
+
+    if (type === "mcp_auth_complete") {
+      const serverName = typeof evt.serverName === "string" ? evt.serverName : "MCP server";
+      const ts = typeof evt.ts === "number" ? evt.ts : Date.now();
+
+      const message: RelayMessage = {
+        key: `mcp_auth_ok:${ts}:${Math.random().toString(16).slice(2)}`,
+        role: "system",
+        timestamp: ts,
+        content: `✅ Authenticated with **${serverName}**`,
+        isError: false,
+      };
+      setMessages((prev) => {
+        const next = [...prev, message];
+        patchSessionCache({ messages: next });
+        return next;
+      });
+      return;
+    }
+
     if (type === "cli_error") {
       const message = typeof evt.message === "string" ? evt.message : "An error occurred in the CLI";
       const source = typeof evt.source === "string" && evt.source ? evt.source : null;

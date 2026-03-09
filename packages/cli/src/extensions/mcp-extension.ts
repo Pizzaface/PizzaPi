@@ -3,8 +3,9 @@ import { existsSync, readFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import { loadConfig, type PizzaPiConfig } from "../config.js";
-import { registerMcpTools, type McpConfig, type McpServerInitResult, type McpRegistrationResult } from "./mcp.js";
+import { registerMcpTools, type McpConfig, type McpServerInitResult, type McpRegistrationResult, getOAuthProviders } from "./mcp.js";
 import { setMcpBridge } from "./mcp-bridge.js";
+import type { RelayContext } from "./mcp-oauth.js";
 
 type McpServerConfigEntry = {
   name: string;
@@ -407,11 +408,34 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
     };
   }
 
+  // ── OAuth relay support ──────────────────────────────────────────────────
+  // Pending OAuth callbacks: nonce → resolve(code)
+  const pendingOAuthCallbacks = new Map<string, (code: string) => void>();
+
   const bridge: McpBridge = {
     status: () => lastSnapshot,
     reload: () => load(),
+
+    setRelayContext(ctx: RelayContext | null) {
+      // Propagate relay context to all active OAuth providers
+      for (const provider of getOAuthProviders()) {
+        provider.relayContext = ctx;
+      }
+    },
+
+    deliverOAuthCallback(nonce: string, code: string) {
+      const resolve = pendingOAuthCallbacks.get(nonce);
+      if (resolve) {
+        pendingOAuthCallbacks.delete(nonce);
+        resolve(code);
+      }
+    },
   };
   setMcpBridge(bridge);
+
+  // Expose the callback-wait function so OAuth providers can use it
+  // (relay context's waitForCallback delegates here).
+  (bridge as any)._pendingOAuthCallbacks = pendingOAuthCallbacks;
 
   try {
     await load();
