@@ -1930,6 +1930,7 @@ export function App() {
     setRetryState(null);
     setActiveToolCalls(new Map());
     setIsChangingModel(false);
+    setUsageRefreshing(false);
     setResumeSessions([]);
     setResumeSessionsLoading(false);
 
