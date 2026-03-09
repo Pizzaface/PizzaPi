@@ -1425,6 +1425,7 @@ export function App() {
 
       setPendingQuestion(null);
       setPluginTrustPrompt(null);
+      setActiveToolCalls(new Map());
       setIsChangingModel(false);
 
       // Clear queued messages — the snapshot contains the full conversation
@@ -1457,6 +1458,7 @@ export function App() {
       patchSessionCache({ messages: normalized });
       setPendingQuestion(null);
       setRetryState(null);
+      setActiveToolCalls(new Map());
       // Clear message queue — the agent processed any queued steer/followUp messages
       setMessageQueue([]);
       return;
