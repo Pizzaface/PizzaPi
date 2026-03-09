@@ -1723,6 +1723,10 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             forwardEvent({ type: "session_active", state: buildSessionState() });
             void refreshAllUsage();
             startHeartbeat();
+
+            // Now that relay is set, inject the relay context into MCP OAuth
+            // providers so they can route callbacks through the PizzaPi server.
+            updateMcpRelayContext();
         });
 
         // ── Incoming events from server ───────────────────────────────────
