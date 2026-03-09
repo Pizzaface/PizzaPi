@@ -1848,6 +1848,11 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         stopHeartbeat();
         cancelPendingAskUserQuestion();
         messageBus.setSendFn(null);
+        // Clear MCP OAuth relay context before tearing down the socket,
+        // since removeAllListeners() would prevent the disconnect handler
+        // from clearing it automatically.
+        const bridge = getMcpBridge();
+        bridge?.setRelayContext?.(null);
         if (sioSocket) {
             if (relay && sioSocket.connected) {
                 sioSocket.emit("session_end", { sessionId: relay.sessionId, token: relay.token });
