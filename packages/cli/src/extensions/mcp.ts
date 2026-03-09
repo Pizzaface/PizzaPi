@@ -576,10 +576,8 @@ export async function registerMcpTools(pi: any, config: PizzaPiConfig & McpConfi
 
     if (result.error) {
       errors.push({ server: client.name, error: result.error });
-      // Kill timed-out STDIO servers so they don't linger
-      if (result.timedOut) {
-        try { client.close(); } catch {}
-      }
+      // Close errored clients so child processes don't leak
+      try { client.close(); } catch {}
       continue;
     }
 

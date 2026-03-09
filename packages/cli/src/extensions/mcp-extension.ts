@@ -301,6 +301,8 @@ export type McpStartupReport = {
     error?: string;
   }>;
   slow: boolean;
+  /** Whether slow-startup warnings should be shown (from config). Errors are always shown. */
+  showSlowWarning: boolean;
   ts: number;
 };
 
@@ -375,6 +377,7 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
   function buildStartupReport(): McpStartupReport | null {
     if (!lastRegistrationResult) return null;
     const res = lastRegistrationResult;
+    const cfg = loadConfig(process.cwd());
     return {
       type: "mcp_startup_report",
       toolCount: res.toolCount,
@@ -389,6 +392,7 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
         error: t.error,
       })),
       slow: res.totalDurationMs >= SLOW_STARTUP_THRESHOLD_MS,
+      showSlowWarning: cfg.slowStartupWarning !== false,
       ts: Date.now(),
     };
   }

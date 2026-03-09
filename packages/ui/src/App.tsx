@@ -679,6 +679,10 @@ export function App() {
   // replaced, which causes visible message "jumping".
   const awaitingSnapshotRef = React.useRef(false);
 
+  // Track which MCP startup report timestamps have already been rendered
+  // to avoid duplicates when heartbeats re-deliver the same report.
+  const renderedMcpReportTsRef = React.useRef<number | null>(null);
+
   // Capabilities advertised by the runner (commands, models, etc.)
   const [availableCommands, setAvailableCommands] = React.useState<Array<{ name: string; description?: string; source?: string }>>([]);
 
@@ -936,6 +940,7 @@ export function App() {
     activeSessionRef.current = null;
     lastSeqRef.current = null;
     awaitingSnapshotRef.current = false;
+    renderedMcpReportTsRef.current = null;
     setActiveSessionId(null);
     setMessages([]);
     setViewerStatus("Idle");
@@ -1305,6 +1310,63 @@ export function App() {
         }
       }
 
+      // Restore MCP startup diagnostics for reconnecting viewers. The runner
+      // includes the last report in every heartbeat; deduplicate by timestamp
+      // so it only renders once per report.
+      if ((hb as any).mcpStartupReport && typeof (hb as any).mcpStartupReport === "object") {
+        const mcpReport = (hb as any).mcpStartupReport as {
+          slow?: boolean;
+          showSlowWarning?: boolean;
+          errors?: Array<{ server: string; error: string }>;
+          serverTimings?: Array<{ name: string; durationMs: number; toolCount: number; timedOut: boolean; error?: string }>;
+          totalDurationMs?: number;
+          ts?: number;
+        };
+        const reportTs = typeof mcpReport.ts === "number" ? mcpReport.ts : 0;
+        if (reportTs > 0 && reportTs !== renderedMcpReportTsRef.current) {
+          const hasErrors = Array.isArray(mcpReport.errors) && mcpReport.errors.length > 0;
+          const showSlow = mcpReport.showSlowWarning !== false;
+          const isSlow = mcpReport.slow === true && showSlow;
+          if (hasErrors || isSlow) {
+            renderedMcpReportTsRef.current = reportTs;
+            // Build the same system message the mcp_startup_report handler would.
+            const totalMs = typeof mcpReport.totalDurationMs === "number" ? mcpReport.totalDurationMs : 0;
+            const totalDur = totalMs >= 1000 ? `${(totalMs / 1000).toFixed(1)}s` : `${totalMs}ms`;
+            const parts: string[] = [];
+            if (isSlow) parts.push(`⏱ MCP startup took ${totalDur}`);
+            const timings = Array.isArray(mcpReport.serverTimings) ? mcpReport.serverTimings : [];
+            const noteworthy = timings.filter((t) => t.error || t.timedOut || t.durationMs >= 3000);
+            for (const t of noteworthy) {
+              const dur = t.durationMs >= 1000 ? `${(t.durationMs / 1000).toFixed(1)}s` : `${t.durationMs}ms`;
+              if (t.timedOut) parts.push(`  ⏱ ${t.name}: timed out (${dur})`);
+              else if (t.error) parts.push(`  ✗ ${t.name}: ${t.error} (${dur})`);
+              else parts.push(`  ● ${t.name}: ${dur}`);
+            }
+            if (hasErrors && !isSlow) {
+              const errLines = mcpReport.errors!.map((e) => `  ✗ ${e.server}: ${e.error}`);
+              parts.push(`⚠ MCP server errors:\n${errLines.join("\n")}`);
+            }
+            if (isSlow) parts.push("Tip: Use --safe-mode or --no-mcp for instant startup.");
+            if (parts.length > 0) {
+              const message: RelayMessage = {
+                key: `mcp_startup:${reportTs}:hb`,
+                role: "system",
+                timestamp: reportTs,
+                content: parts.join("\n"),
+                isError: hasErrors,
+              };
+              setMessages((prev) => {
+                // Avoid duplicate if the live event already rendered it.
+                if (prev.some((m) => m.key?.startsWith(`mcp_startup:${reportTs}`))) return prev;
+                const next = [...prev, message];
+                patchSessionCache({ messages: next });
+                return next;
+              });
+            }
+          }
+        }
+      }
+
       patchSessionCache(cachePatch);
       return;
     }
@@ -1622,9 +1684,11 @@ export function App() {
         ts?: number;
       };
 
-      // Only show a message if something noteworthy happened (errors or slow startup)
+      // Only show a message if something noteworthy happened (errors, or slow startup
+      // when the user hasn't disabled slow-startup warnings via config).
       const hasErrors = Array.isArray(report.errors) && report.errors.length > 0;
-      const isSlow = report.slow === true;
+      const showSlowWarning = (report as any).showSlowWarning !== false;
+      const isSlow = report.slow === true && showSlowWarning;
 
       if (hasErrors || isSlow) {
         const ts = typeof report.ts === "number" ? report.ts : Date.now();
@@ -1924,6 +1988,7 @@ export function App() {
     lastSeqRef.current = null;
     lastViewerEventAtRef.current = Date.now(); // treat open as an "event" so we don't fire immediately
     awaitingSnapshotRef.current = true;
+    renderedMcpReportTsRef.current = null;
     setActiveSessionId(relaySessionId);
     setViewerStatus("Connecting…");
     setPendingQuestion(null);
