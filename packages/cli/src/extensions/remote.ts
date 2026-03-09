@@ -1811,6 +1811,33 @@ export const remoteExtension: ExtensionFactory = (pi) => {
 
         // socket.io fires "connect" again on reconnect, which triggers
         // re-registration automatically via the handler above.
+
+        // ── MCP OAuth relay context ───────────────────────────────────────
+        // Update OAuth relay context when connection state changes so MCP
+        // OAuth providers can route callbacks through the PizzaPi server.
+        sock.on("connect", () => updateMcpRelayContext());
+        sock.on("disconnect", () => {
+            const bridge = getMcpBridge();
+            bridge?.setRelayContext?.(null);
+        });
+
+        // Listen for OAuth callback delivery from the server
+        (sock as any).on("mcp_oauth_callback", (data: any) => {
+            if (data && typeof data === "object" && typeof data.nonce === "string" && typeof data.code === "string") {
+                // Deliver to the pending callback
+                const resolve = oauthPendingCallbacks.get(data.nonce);
+                if (resolve) {
+                    oauthPendingCallbacks.delete(data.nonce);
+                    resolve(data.code);
+                }
+                // Also try via bridge
+                const bridge = getMcpBridge();
+                bridge?.deliverOAuthCallback?.(data.nonce, data.code);
+            }
+        });
+
+        // Set context now if already connected
+        updateMcpRelayContext();
     }
 
     function disconnect() {
@@ -2180,32 +2207,8 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         }
     }
 
-    // Update context when relay state changes
-    if (sioSocket) {
-        sioSocket.on("connect", () => updateMcpRelayContext());
-        sioSocket.on("disconnect", () => {
-            const bridge = getMcpBridge();
-            bridge?.setRelayContext?.(null);
-        });
-
-        // Listen for OAuth callback delivery from the server
-        (sioSocket as any).on("mcp_oauth_callback", (data: any) => {
-            if (data && typeof data === "object" && typeof data.nonce === "string" && typeof data.code === "string") {
-                // Deliver to the pending callback
-                const resolve = oauthPendingCallbacks.get(data.nonce);
-                if (resolve) {
-                    oauthPendingCallbacks.delete(data.nonce);
-                    resolve(data.code);
-                }
-                // Also try via bridge
-                const bridge = getMcpBridge();
-                bridge?.deliverOAuthCallback?.(data.nonce, data.code);
-            }
-        });
-    }
-
-    // Set context now if already connected
-    updateMcpRelayContext();
+    // Note: OAuth relay context listeners are registered inside connect()
+    // so they have access to the live socket.
 
     // ── MCP auth events → web UI ─────────────────────────────────────────────
     pi.events.on("mcp:auth_required", (data: unknown) => {

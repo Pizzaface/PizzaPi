@@ -683,6 +683,10 @@ export function getOAuthProviders(): PizzaPiOAuthProvider[] {
 }
 
 export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConfig): Promise<McpClient[]> {
+  // Clear stale OAuth providers from previous loads (e.g. /mcp reload)
+  // to prevent unbounded growth and iteration over dead providers.
+  activeOAuthProviders.length = 0;
+
   const clients: McpClient[] = [];
 
   // Preferred format

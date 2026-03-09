@@ -75,16 +75,20 @@ export const handleMcpOAuthRoute: RouteHandler = async (req, url) => {
             { status: 409, headers: { "Content-Type": "text/html" } },
         );
     }
-    consumedNonces.add(nonceKey);
 
     // ── Forward to runner ────────────────────────────────────────────────
     const socket = getLocalTuiSocket(sessionId);
     if (!socket) {
+        // Don't consume the nonce — the session may reconnect and retry.
         return new Response(
             htmlPage("Session Not Found", "<p>The agent session is no longer connected. Please try again.</p>"),
             { status: 404, headers: { "Content-Type": "text/html" } },
         );
     }
+
+    // Mark nonce consumed only after confirming the session socket exists,
+    // so a retry can succeed if the session was temporarily disconnected.
+    consumedNonces.add(nonceKey);
 
     // Emit to the runner's relay socket. The remote extension listens for
     // this event and forwards it to the OAuth provider.

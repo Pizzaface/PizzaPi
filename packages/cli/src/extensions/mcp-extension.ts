@@ -57,6 +57,8 @@ type McpSnapshot = {
 type McpBridge = {
   status: () => McpSnapshot;
   reload: () => Promise<McpSnapshot>;
+  setRelayContext: (ctx: RelayContext | null) => void;
+  deliverOAuthCallback: (nonce: string, code: string) => void;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
