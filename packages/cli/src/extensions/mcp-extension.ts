@@ -414,11 +414,25 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
   // Pending OAuth callbacks: nonce → resolve(code)
   const pendingOAuthCallbacks = new Map<string, (code: string) => void>();
 
+  // Stash the current relay context so it can be reapplied after /mcp reload
+  // creates fresh OAuth providers (which start with relayContext = null).
+  let currentRelayContext: RelayContext | null = null;
+
   const bridge: McpBridge = {
     status: () => lastSnapshot,
-    reload: () => load(),
+    async reload() {
+      const snapshot = await load();
+      // Reapply relay context to newly created providers after reload
+      if (currentRelayContext) {
+        for (const provider of getOAuthProviders()) {
+          provider.relayContext = currentRelayContext;
+        }
+      }
+      return snapshot;
+    },
 
     setRelayContext(ctx: RelayContext | null) {
+      currentRelayContext = ctx;
       // Propagate relay context to all active OAuth providers
       for (const provider of getOAuthProviders()) {
         provider.relayContext = ctx;

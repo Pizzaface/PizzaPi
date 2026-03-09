@@ -20,7 +20,7 @@ import { join } from "path";
 import { homedir } from "os";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
 import { createHash, randomBytes } from "crypto";
-import { exec } from "child_process";
+import { execFile } from "child_process";
 import type {
   OAuthClientProvider,
 } from "@modelcontextprotocol/sdk/client/auth.js";
@@ -67,13 +67,13 @@ function savePersistedAuth(serverUrl: string, auth: PersistedAuth): void {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function openBrowser(url: string): void {
-  const cmd =
+  const [cmd, args] =
     process.platform === "darwin"
-      ? `open "${url}"`
+      ? ["open", [url]]
       : process.platform === "win32"
-        ? `start "" "${url}"`
-        : `xdg-open "${url}"`;
-  exec(cmd, (err) => {
+        ? ["cmd", ["/c", "start", "", url]]
+        : ["xdg-open", [url]];
+  execFile(cmd, args, (err) => {
     if (err) {
       process.stderr.write(`\n🔐 Open this URL to authenticate:\n${url}\n\n`);
     }
@@ -240,11 +240,13 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
       // Relay mode: callback goes to the PizzaPi server
       return `${this.relayContext!.serverBaseUrl}/api/mcp-oauth-callback`;
     }
-    // Local mode: callback goes to localhost
-    if (this._callbackServer) {
-      return `http://localhost:${this._callbackServer.getPort()}/callback`;
+    // Local mode: ensure the callback server is started so we have a real port.
+    // The MCP SDK calls redirectUrl (via clientMetadata) before startCallbackAndWait(),
+    // so we must eagerly start the server to avoid registering localhost:0.
+    if (!this._callbackServer) {
+      this._callbackServer = startCallbackServer(this._callbackPort);
     }
-    return `http://localhost:${this._callbackPort}/callback`;
+    return `http://localhost:${this._callbackServer.getPort()}/callback`;
   }
 
   get clientMetadata(): OAuthClientMetadata {

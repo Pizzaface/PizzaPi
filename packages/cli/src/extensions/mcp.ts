@@ -494,15 +494,18 @@ function createStreamableMcpClient(opts: {
     return { result: json.result, status: res.status, response: res };
   }
 
-  /** Flag to prevent infinite OAuth loops. */
-  let hasCompletedOAuth = false;
+  /** Guard to prevent infinite OAuth loops within a single request. */
+  let oauthInProgress = false;
 
   async function request(method: string, params?: any, signal?: AbortSignal): Promise<any> {
     const { result, status, response } = await rawRequest(method, params, signal);
 
     // ── OAuth 401 handling ──────────────────────────────────────────────────
-    if (status === 401 && oauthProvider && !hasCompletedOAuth) {
+    // Use a per-request guard instead of a permanent flag so that token
+    // expiry mid-session can trigger re-authentication.
+    if (status === 401 && oauthProvider && !oauthInProgress) {
       process.stderr.write(`🔐 MCP server "${opts.name}" requires authentication…\n`);
+      oauthInProgress = true;
 
       try {
         // ── Strategy 1: Try environment tokens first ──────────────────────
@@ -512,7 +515,6 @@ function createStreamableMcpClient(opts: {
         if (envToken) {
           process.stderr.write(`🔑 Using token from ${envToken.source}\n`);
           oauthProvider.saveTokens({ access_token: envToken.token, token_type: "bearer" });
-          hasCompletedOAuth = true;
 
           const retry = await rawRequest(method, params, signal);
           if (retry.response.ok) {
@@ -521,7 +523,6 @@ function createStreamableMcpClient(opts: {
           }
           // Token didn't work — fall through to OAuth
           oauthProvider.invalidateCredentials("tokens");
-          hasCompletedOAuth = false;
           process.stderr.write(`⚠ Token from ${envToken.source} was rejected, trying OAuth…\n`);
         }
 
@@ -558,7 +559,6 @@ function createStreamableMcpClient(opts: {
           }
         }
 
-        hasCompletedOAuth = true;
         process.stderr.write(`✅ Authenticated with ${opts.name}\n`);
 
         // Retry the original request with the new token
@@ -572,6 +572,8 @@ function createStreamableMcpClient(opts: {
         throw new Error(
           `OAuth authentication failed for "${opts.name}": ${err instanceof Error ? err.message : String(err)}`,
         );
+      } finally {
+        oauthInProgress = false;
       }
     }
 
