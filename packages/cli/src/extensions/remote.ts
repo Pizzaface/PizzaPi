@@ -125,6 +125,8 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         serverCount: number;
         totalDurationMs: number;
         slow: boolean;
+        /** Whether slow-startup warnings should be shown (from config). */
+        showSlowWarning: boolean;
         errors: Array<{ server: string; error: string }>;
         serverTimings: Array<{
             name: string;
@@ -133,6 +135,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             timedOut: boolean;
             error?: string;
         }>;
+        ts: number;
     }
     let lastMcpStartupReport: McpStartupReportSummary | null = null;
 
@@ -2153,8 +2156,10 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 serverCount: typeof r.serverCount === "number" ? r.serverCount : 0,
                 totalDurationMs: typeof r.totalDurationMs === "number" ? r.totalDurationMs : 0,
                 slow: r.slow === true,
+                showSlowWarning: r.showSlowWarning !== false,
                 errors: Array.isArray(r.errors) ? r.errors as any : [],
                 serverTimings: Array.isArray(r.serverTimings) ? r.serverTimings as any : [],
+                ts: typeof r.ts === "number" ? r.ts : Date.now(),
             };
         }
         forwardEvent(report);
