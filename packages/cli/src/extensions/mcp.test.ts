@@ -269,6 +269,70 @@ describe("MCP initialize handshake (HTTP)", () => {
     });
 });
 
+describe("MCP config compatibility", () => {
+    test("type: 'http' in mcpServers uses streamable transport", async () => {
+        // When type: "http" is used (Claude Code / VS Code format), it should
+        // create a streamable client, not a plain HTTP client. We verify this by
+        // checking that it sends the Accept header that includes text/event-stream.
+        let receivedAcceptHeader = "";
+
+        const server = Bun.serve({
+            port: 0,
+            async fetch(req) {
+                receivedAcceptHeader = req.headers.get("accept") ?? "";
+
+                const body = await req.json() as any;
+                if (!("id" in body)) return new Response(null, { status: 202 });
+
+                if (body.method === "initialize") {
+                    return Response.json({
+                        jsonrpc: "2.0",
+                        id: body.id,
+                        result: {
+                            protocolVersion: MCP_PROTOCOL_VERSION,
+                            capabilities: {},
+                            serverInfo: { name: "test", version: "1.0" },
+                        },
+                    });
+                }
+
+                if (body.method === "tools/list") {
+                    return Response.json({
+                        jsonrpc: "2.0",
+                        id: body.id,
+                        result: { tools: [] },
+                    });
+                }
+
+                return Response.json({ jsonrpc: "2.0", id: body.id, result: {} });
+            },
+        });
+
+        try {
+            const { createMcpClientsFromConfig } = await import("./mcp.js");
+            const clients = await createMcpClientsFromConfig({
+                mcpServers: {
+                    "github-style": {
+                        type: "http",
+                        url: `http://localhost:${server.port}`,
+                    },
+                },
+            } as any);
+
+            expect(clients).toHaveLength(1);
+            await clients[0].listTools();
+
+            // Streamable client sends Accept: application/json, text/event-stream
+            // Plain HTTP client only sends Content-Type: application/json
+            expect(receivedAcceptHeader).toContain("text/event-stream");
+
+            clients[0].close();
+        } finally {
+            server.stop(true);
+        }
+    });
+});
+
 describe("MCP initialize handshake (Streamable HTTP)", () => {
     test("Streamable client sends initialize and captures session ID", async () => {
         const receivedRequests: Array<{ method: string; hasId: boolean }> = [];

@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
 import type { PizzaPiConfig } from "../config.js";
+import { PizzaPiOAuthProvider } from "./mcp-oauth.js";
 
 /**
  * Minimal MCP client transport + tool bridge.
@@ -315,6 +316,56 @@ function createHttpMcpClient(opts: { name: string; url: string; headers?: Record
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Environment token detection (used as fallback before full OAuth)
+// ─────────────────────────────────────────────────────────────────────────────
+
+type EnvironmentToken = { token: string; source: string };
+
+/**
+ * Try to find an existing token that might work for the given MCP server URL.
+ * Checks environment variables and CLI tools (e.g. `gh auth token`).
+ */
+async function detectEnvironmentToken(serverUrl: string): Promise<EnvironmentToken | null> {
+  const url = serverUrl.toLowerCase();
+
+  // GitHub-specific: check env vars and `gh` CLI
+  if (url.includes("github")) {
+    // GITHUB_TOKEN is the standard env var
+    if (process.env.GITHUB_TOKEN) {
+      return { token: process.env.GITHUB_TOKEN, source: "GITHUB_TOKEN env var" };
+    }
+    // GH_TOKEN is used by the GitHub CLI
+    if (process.env.GH_TOKEN) {
+      return { token: process.env.GH_TOKEN, source: "GH_TOKEN env var" };
+    }
+    // Try `gh auth token` as a last resort
+    try {
+      const proc = Bun.spawn(["gh", "auth", "token"], {
+        stdout: "pipe",
+        stderr: "ignore",
+      });
+      const text = await new Response(proc.stdout).text();
+      const token = text.trim();
+      if (token && token.startsWith("gh")) {
+        return { token, source: "gh CLI (gh auth token)" };
+      }
+    } catch {
+      // gh not installed or not authenticated — skip
+    }
+  }
+
+  // Generic: check for MCP_TOKEN or MCP_ACCESS_TOKEN
+  if (process.env.MCP_TOKEN) {
+    return { token: process.env.MCP_TOKEN, source: "MCP_TOKEN env var" };
+  }
+  if (process.env.MCP_ACCESS_TOKEN) {
+    return { token: process.env.MCP_ACCESS_TOKEN, source: "MCP_ACCESS_TOKEN env var" };
+  }
+
+  return null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // HTTP Streamable client (MCP spec 2025-03-26)
 //
 // Sends JSON-RPC over POST with Accept: application/json, text/event-stream.
@@ -328,18 +379,31 @@ function createHttpMcpClient(opts: { name: string; url: string; headers?: Record
 //   - close() sends DELETE to the endpoint so the server can clean up.
 // ─────────────────────────────────────────────────────────────────────────────
 
-function createStreamableMcpClient(opts: { name: string; url: string; headers?: Record<string, string> }): McpClient {
+function createStreamableMcpClient(opts: {
+  name: string;
+  url: string;
+  headers?: Record<string, string>;
+  oauthProvider?: PizzaPiOAuthProvider;
+}): McpClient {
   let nextId = 1;
   let sessionId: string | undefined;
+  const oauthProvider = opts.oauthProvider;
 
   function buildHeaders(extra?: Record<string, string>): Record<string, string> {
-    return {
+    const h: Record<string, string> = {
       "Content-Type": "application/json",
       Accept: "application/json, text/event-stream",
       ...(opts.headers ?? {}),
       ...(sessionId ? { "mcp-session-id": sessionId } : {}),
       ...(extra ?? {}),
     };
+
+    // Attach stored OAuth access token if available
+    if (oauthProvider?.getAccessToken() && !h["Authorization"]) {
+      h["Authorization"] = `Bearer ${oauthProvider.getAccessToken()}`;
+    }
+
+    return h;
   }
 
   async function parseSSE(res: Response, targetId: number, signal?: AbortSignal): Promise<any> {
@@ -399,7 +463,7 @@ function createStreamableMcpClient(opts: { name: string; url: string; headers?: 
     throw new Error("MCP streamable: SSE stream ended without a matching response");
   }
 
-  async function request(method: string, params?: any, signal?: AbortSignal): Promise<any> {
+  async function rawRequest(method: string, params?: any, signal?: AbortSignal): Promise<{ result: any; status: number; response: Response }> {
     const id = nextId++;
     const payload = { jsonrpc: "2.0", id, method, params };
 
@@ -414,19 +478,108 @@ function createStreamableMcpClient(opts: { name: string; url: string; headers?: 
     const sid = res.headers.get("mcp-session-id");
     if (sid) sessionId = sid;
 
-    if (!res.ok) throw new Error(`MCP streamable HTTP ${res.status}`);
+    if (!res.ok) return { result: null, status: res.status, response: res };
 
     const ct = res.headers.get("content-type") ?? "";
 
     if (ct.includes("text/event-stream")) {
-      return parseSSE(res, id, signal);
+      const result = await parseSSE(res, id, signal);
+      return { result, status: res.status, response: res };
     }
 
     // Fallback: plain JSON
     const json = (await res.json().catch(() => null)) as any;
     if (!json || typeof json !== "object") throw new Error("MCP streamable: invalid JSON response");
     if (json.error) throw new Error(String(json.error?.message ?? "MCP error"));
-    return json.result;
+    return { result: json.result, status: res.status, response: res };
+  }
+
+  /** Flag to prevent infinite OAuth loops. */
+  let hasCompletedOAuth = false;
+
+  async function request(method: string, params?: any, signal?: AbortSignal): Promise<any> {
+    const { result, status, response } = await rawRequest(method, params, signal);
+
+    // ── OAuth 401 handling ──────────────────────────────────────────────────
+    if (status === 401 && oauthProvider && !hasCompletedOAuth) {
+      process.stderr.write(`🔐 MCP server "${opts.name}" requires authentication…\n`);
+
+      try {
+        // ── Strategy 1: Try environment tokens first ──────────────────────
+        // Many servers (e.g. GitHub) accept a PAT. Check common env vars
+        // and the `gh` CLI before starting a full OAuth flow.
+        const envToken = await detectEnvironmentToken(opts.url);
+        if (envToken) {
+          process.stderr.write(`🔑 Using token from ${envToken.source}\n`);
+          oauthProvider.saveTokens({ access_token: envToken.token, token_type: "bearer" });
+          hasCompletedOAuth = true;
+
+          const retry = await rawRequest(method, params, signal);
+          if (retry.response.ok) {
+            process.stderr.write(`✅ Authenticated with ${opts.name}\n`);
+            return retry.result;
+          }
+          // Token didn't work — fall through to OAuth
+          oauthProvider.invalidateCredentials("tokens");
+          hasCompletedOAuth = false;
+          process.stderr.write(`⚠ Token from ${envToken.source} was rejected, trying OAuth…\n`);
+        }
+
+        // ── Strategy 2: Full MCP OAuth 2.1 flow ──────────────────────────
+        const { auth, extractWWWAuthenticateParams } = await import(
+          "@modelcontextprotocol/sdk/client/auth.js"
+        );
+
+        // Extract hints from the 401 response (scope, resource_metadata URL)
+        const wwwAuthParams = extractWWWAuthenticateParams(response);
+
+        // Phase 1: Start the auth flow → opens browser for consent
+        const result1 = await auth(oauthProvider, {
+          serverUrl: opts.url,
+          scope: wwwAuthParams.scope,
+          resourceMetadataUrl: wwwAuthParams.resourceMetadataUrl,
+        });
+
+        if (result1 === "REDIRECT") {
+          // Wait for the OAuth callback (browser → local server)
+          const { code } = await oauthProvider.startCallbackAndWait();
+          oauthProvider.closeCallback();
+
+          // Phase 2: Exchange code for token
+          const result2 = await auth(oauthProvider, {
+            serverUrl: opts.url,
+            authorizationCode: code,
+            scope: wwwAuthParams.scope,
+            resourceMetadataUrl: wwwAuthParams.resourceMetadataUrl,
+          });
+
+          if (result2 !== "AUTHORIZED") {
+            throw new Error("OAuth token exchange failed");
+          }
+        }
+
+        hasCompletedOAuth = true;
+        process.stderr.write(`✅ Authenticated with ${opts.name}\n`);
+
+        // Retry the original request with the new token
+        const retry = await rawRequest(method, params, signal);
+        if (!retry.response.ok) {
+          throw new Error(`MCP streamable HTTP ${retry.status} (after OAuth)`);
+        }
+        return retry.result;
+      } catch (err) {
+        oauthProvider.closeCallback();
+        throw new Error(
+          `OAuth authentication failed for "${opts.name}": ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+
+    if (status !== 200 && result === null) {
+      throw new Error(`MCP streamable HTTP ${status}`);
+    }
+
+    return result;
   }
 
   async function notify(method: string, params?: any): Promise<void> {
@@ -508,10 +661,16 @@ export type McpConfig = {
   //     "myserver":   { "url": "http://localhost:3000/mcp", "transport": "streamable" }
   //   }
   // }
+  //
+  // Also supports the Claude Code / VS Code format where "type" is used
+  // instead of "transport":
+  //   "github": { "type": "http", "url": "https://api.githubcopilot.com/mcp/" }
+  //
+  // Note: in the standard MCP ecosystem, type "http" means Streamable HTTP.
   mcpServers?: Record<
     string,
     | { command: string; args?: string[]; env?: Record<string, string> }
-    | { url: string; transport?: "http" | "streamable"; headers?: Record<string, string> }
+    | { url: string; transport?: "http" | "streamable"; type?: "http" | "sse"; headers?: Record<string, string> }
   >;
 };
 
@@ -544,6 +703,10 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
           name: s.name,
           url: s.url,
           headers: s.headers,
+          oauthProvider: new PizzaPiOAuthProvider({
+            serverUrl: s.url,
+            serverName: s.name,
+          }),
         }),
       );
     }
@@ -568,9 +731,25 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
     }
 
     if ("url" in def && typeof (def as any).url === "string") {
-      const d = def as { url: string; transport?: "http" | "streamable"; headers?: Record<string, string> };
-      if (d.transport === "streamable") {
-        clients.push(createStreamableMcpClient({ name, url: d.url, headers: d.headers }));
+      const d = def as { url: string; transport?: string; type?: string; headers?: Record<string, string> };
+
+      // Determine transport mode:
+      //  - "transport" field (our format): "streamable" → streamable, else plain HTTP
+      //  - "type" field (Claude Code / VS Code format): "http" → streamable (per MCP spec)
+      const useStreamable =
+        d.transport === "streamable" ||
+        (d.type === "http" && d.transport === undefined);
+
+      if (useStreamable) {
+        clients.push(createStreamableMcpClient({
+          name,
+          url: d.url,
+          headers: d.headers,
+          oauthProvider: new PizzaPiOAuthProvider({
+            serverUrl: d.url,
+            serverName: name,
+          }),
+        }));
       } else {
         clients.push(createHttpMcpClient({ name, url: d.url, headers: d.headers }));
       }

@@ -130,7 +130,17 @@ function parseConfigFile(scope: "global" | "project", path: string): McpConfigFi
       if (isRecord(value) && typeof value.command === "string") {
         transport = "stdio";
       } else if (isRecord(value) && typeof value.url === "string") {
-        transport = typeof value.transport === "string" ? value.transport : "http";
+        // "transport" is our field; "type" is Claude Code / VS Code format.
+        // In the standard MCP ecosystem, type "http" = streamable HTTP.
+        if (typeof value.transport === "string") {
+          transport = value.transport;
+        } else if (value.type === "http") {
+          transport = "streamable";
+        } else if (typeof value.type === "string") {
+          transport = value.type;
+        } else {
+          transport = "http";
+        }
       }
 
       compatibilityServers.push({
