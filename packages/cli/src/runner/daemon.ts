@@ -251,7 +251,11 @@ async function getRunnerAnthropicUsageData(opts: { force?: boolean } = {}): Prom
     }
 
     const data = await fetchAnthropicUsageData();
-    _lastAnthropicUsage = { data, fetchedAt: now };
+    // Only cache successful fetches so transient failures don't suppress
+    // retries for the full 15-minute interval.
+    if (data !== null) {
+        _lastAnthropicUsage = { data, fetchedAt: now };
+    }
     return data;
 }
 
