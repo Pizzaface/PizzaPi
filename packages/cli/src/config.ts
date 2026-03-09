@@ -141,6 +141,21 @@ export interface PizzaPiConfig {
      * Managed via `pizza plugins trust <path>` / `pizza plugins untrust <path>`.
      */
     trustedPlugins?: string[];
+
+    /**
+     * Timeout (in milliseconds) for each MCP server's tools/list call during
+     * startup. Servers that don't respond within this window are skipped with
+     * an error. Default: 30000 (30 seconds).
+     * Set to 0 to disable the timeout entirely.
+     */
+    mcpTimeout?: number;
+
+    /**
+     * Show a warning notification when startup takes longer than expected
+     * (e.g. slow MCP servers, relay connection issues).
+     * Default: true. Set to false to suppress these warnings.
+     */
+    slowStartupWarning?: boolean;
 }
 
 function readJsonSafe(path: string): Partial<PizzaPiConfig> {

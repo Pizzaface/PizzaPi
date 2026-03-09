@@ -356,6 +356,11 @@ Usage:
 
 Flags:
   --cwd <path>    Set working directory
+  --safe-mode     Skip MCP, plugins, hooks, and relay (fast startup)
+  --no-mcp        Skip MCP server connections
+  --no-plugins    Skip Claude Code plugin loading
+  --no-hooks      Skip hook execution
+  --no-relay      Skip relay server connection
   -v, --version   Show version
   -h, --help      Show this help
 
@@ -364,14 +369,31 @@ Run \`pizza <command> --help\` for command-specific help.
         return;
     }
 
+    // ── Safe-mode flags ──────────────────────────────────────────────────────
+    const safeMode = args.includes("--safe-mode");
+    const noMcp = safeMode || args.includes("--no-mcp");
+    const noPlugins = safeMode || args.includes("--no-plugins");
+    const noHooks = safeMode || args.includes("--no-hooks");
+    const noRelay = safeMode || args.includes("--no-relay");
+
+    // Strip safe-mode flags so pi doesn't see them
+    for (const flag of ["--safe-mode", "--no-mcp", "--no-plugins", "--no-hooks", "--no-relay"]) {
+        const idx = args.indexOf(flag);
+        if (idx !== -1) args.splice(idx, 1);
+    }
+
     const config = loadConfig(cwd);
     const agentDir = config.agentDir ? config.agentDir.replace(/^~/, homedir()) : defaultAgentDir();
 
     // First-run: no API key configured — prompt setup before launching TUI
     const hasApiKey = !!(process.env.PIZZAPI_API_KEY ?? config.apiKey);
-    const relayDisabled = (process.env.PIZZAPI_RELAY_URL ?? config.relayUrl ?? "").toLowerCase() === "off";
+    const relayDisabled = noRelay || (process.env.PIZZAPI_RELAY_URL ?? config.relayUrl ?? "").toLowerCase() === "off";
     if (!hasApiKey && !relayDisabled) {
         await runSetup();
+    }
+
+    if (safeMode) {
+        console.log("\n⚡ Safe mode — MCP servers, plugins, hooks, and relay are disabled.\n");
     }
 
     // Load AGENTS.md from cwd (if present)
@@ -397,10 +419,18 @@ Run \`pizza <command> --help\` for command-specific help.
         agentFiles.push(...loadedAgents);
     }
 
+    // Override relay URL if --no-relay was passed
+    if (noRelay) {
+        process.env.PIZZAPI_RELAY_URL = "off";
+    }
+
     // Build extension list — includes configured hooks when present.
     const extensionFactories = buildPizzaPiExtensionFactories({
         cwd,
-        hooks: config.hooks,
+        hooks: noHooks ? undefined : config.hooks,
+        skipMcp: noMcp,
+        skipPlugins: noPlugins,
+        skipRelay: noRelay,
     });
 
     const loader = new DefaultResourceLoader({

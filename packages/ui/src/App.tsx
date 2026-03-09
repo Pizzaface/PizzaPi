@@ -216,6 +216,7 @@ interface SessionUiCacheEntry {
   effortLevel: string | null;
   authSource: string | null;
   tokenUsage: TokenUsageInfo | null;
+  providerUsage: ProviderUsageMap | null;
   lastHeartbeatAt: number | null;
   todoList: TodoItem[];
 }
@@ -653,6 +654,7 @@ export function App() {
   const [tokenUsage, setTokenUsage] = React.useState<TokenUsageInfo | null>(null);
   const [lastHeartbeatAt, setLastHeartbeatAt] = React.useState<number | null>(null);
   const [providerUsage, setProviderUsage] = React.useState<ProviderUsageMap | null>(null);
+  const [usageRefreshing, setUsageRefreshing] = React.useState(false);
   const [todoList, setTodoList] = React.useState<TodoItem[]>([]);
   const [authSource, setAuthSource] = React.useState<string | null>(null);
 
@@ -868,6 +870,7 @@ export function App() {
       effortLevel: prev?.effortLevel ?? null,
       authSource: prev?.authSource ?? null,
       tokenUsage: prev?.tokenUsage ?? null,
+      providerUsage: prev?.providerUsage ?? null,
       lastHeartbeatAt: prev?.lastHeartbeatAt ?? null,
       todoList: prev?.todoList ?? [],
       ...patch,
@@ -953,6 +956,8 @@ export function App() {
     setEffortLevel(null);
     setAuthSource(null);
     setTokenUsage(null);
+    setProviderUsage(null);
+    setUsageRefreshing(false);
     setLastHeartbeatAt(null);
   }, []);
 
@@ -1223,7 +1228,9 @@ export function App() {
       }
 
       if ((hb as any).providerUsage !== undefined) {
-        setProviderUsage((hb as any).providerUsage ?? null);
+        const nextProviderUsage = (hb as any).providerUsage ?? null;
+        setProviderUsage(nextProviderUsage);
+        cachePatch.providerUsage = nextProviderUsage;
       }
 
       if ((hb as any).authSource !== undefined) {
@@ -1416,6 +1423,9 @@ export function App() {
         if (command === "list_resume_sessions") {
           setResumeSessionsLoading(false);
         }
+        if (command === "refresh_usage") {
+          setUsageRefreshing(false);
+        }
         if (command === "compact") {
           // Don't force isCompacting=false here — let the heartbeat remain
           // the source of truth. The error may be "already in progress"
@@ -1423,6 +1433,19 @@ export function App() {
           // flag would re-enable input prematurely until the next heartbeat.
         }
         setViewerStatus(`/${command}: ${error}`);
+        return;
+      }
+
+      if (command === "refresh_usage") {
+        const nextUsage = result?.providerUsage && typeof result.providerUsage === "object"
+          ? (result.providerUsage as ProviderUsageMap)
+          : null;
+        setUsageRefreshing(false);
+        if (nextUsage) {
+          setProviderUsage(nextUsage);
+          patchSessionCache({ providerUsage: nextUsage });
+        }
+        setViewerStatus("Usage refreshed");
         return;
       }
 
@@ -1579,6 +1602,79 @@ export function App() {
       }
 
       setViewerStatus("OK");
+      return;
+    }
+
+    if (type === "mcp_startup_report") {
+      const report = evt as {
+        toolCount?: number;
+        serverCount?: number;
+        totalDurationMs?: number;
+        slow?: boolean;
+        errors?: Array<{ server: string; error: string }>;
+        serverTimings?: Array<{
+          name: string;
+          durationMs: number;
+          toolCount: number;
+          timedOut: boolean;
+          error?: string;
+        }>;
+        ts?: number;
+      };
+
+      // Only show a message if something noteworthy happened (errors or slow startup)
+      const hasErrors = Array.isArray(report.errors) && report.errors.length > 0;
+      const isSlow = report.slow === true;
+
+      if (hasErrors || isSlow) {
+        const ts = typeof report.ts === "number" ? report.ts : Date.now();
+        const totalMs = typeof report.totalDurationMs === "number" ? report.totalDurationMs : 0;
+        const totalDur = totalMs >= 1000 ? `${(totalMs / 1000).toFixed(1)}s` : `${totalMs}ms`;
+
+        const parts: string[] = [];
+
+        if (isSlow) {
+          parts.push(`⏱ MCP startup took ${totalDur}`);
+        }
+
+        // Show per-server breakdown for slow or erroring servers
+        const timings = Array.isArray(report.serverTimings) ? report.serverTimings : [];
+        const noteworthy = timings.filter((t) => t.error || t.timedOut || t.durationMs >= 3000);
+        if (noteworthy.length > 0) {
+          for (const t of noteworthy) {
+            const dur = t.durationMs >= 1000 ? `${(t.durationMs / 1000).toFixed(1)}s` : `${t.durationMs}ms`;
+            if (t.timedOut) {
+              parts.push(`  ⏱ ${t.name}: timed out (${dur})`);
+            } else if (t.error) {
+              parts.push(`  ✗ ${t.name}: ${t.error} (${dur})`);
+            } else {
+              parts.push(`  ● ${t.name}: ${dur}`);
+            }
+          }
+        }
+
+        if (hasErrors && !isSlow) {
+          const errLines = report.errors!.map((e) => `  ✗ ${e.server}: ${e.error}`);
+          parts.push(`⚠ MCP server errors:\n${errLines.join("\n")}`);
+        }
+
+        if (isSlow) {
+          parts.push("Tip: Use --safe-mode or --no-mcp for instant startup.");
+        }
+
+        const message: RelayMessage = {
+          key: `mcp_startup:${ts}:${Math.random().toString(16).slice(2)}`,
+          role: "system",
+          timestamp: ts,
+          content: parts.join("\n"),
+          isError: hasErrors,
+        };
+        setMessages((prev) => {
+          const next = [...prev, message];
+          patchSessionCache({ messages: next });
+          return next;
+        });
+      }
       return;
     }
 
@@ -1848,6 +1944,7 @@ export function App() {
     setEffortLevel(cached?.effortLevel ?? null);
     setAuthSource(cached?.authSource ?? null);
     setTokenUsage(cached?.tokenUsage ?? null);
+    setProviderUsage(cached?.providerUsage ?? null);
     setLastHeartbeatAt(cached?.lastHeartbeatAt ?? null);
     setTodoList(cached?.todoList ?? []);
 
@@ -2263,6 +2360,21 @@ export function App() {
     return ok;
   }, [sendRemoteExec]);
 
+  const refreshUsage = React.useCallback(() => {
+    if (usageRefreshing) return false;
+    setUsageRefreshing(true);
+    setViewerStatus("Refreshing usage…");
+    const ok = sendRemoteExec({
+      type: "exec",
+      id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      command: "refresh_usage",
+    });
+    if (!ok) {
+      setUsageRefreshing(false);
+    }
+    return ok;
+  }, [sendRemoteExec, usageRefreshing]);
+
   const removeQueuedMessage = React.useCallback((id: string) => {
     setMessageQueue((prev) => prev.filter((m) => m.id !== id));
   }, []);
@@ -2565,7 +2677,13 @@ export function App() {
           {(providerUsage || authSource) && (
             <>
               <Separator orientation="vertical" className="h-5" />
-              <UsageIndicator usage={providerUsage} authSource={authSource} activeProvider={activeModel?.provider} />
+              <UsageIndicator
+                usage={providerUsage}
+                authSource={authSource}
+                activeProvider={activeModel?.provider}
+                onRefresh={refreshUsage}
+                refreshing={usageRefreshing}
+              />
             </>
           )}
         </div>
@@ -2774,7 +2892,13 @@ export function App() {
         <div className="flex items-center gap-1 flex-shrink-0">
           {(providerUsage || authSource) && (
             <div className="hidden xs:flex">
-              <UsageIndicator usage={providerUsage} authSource={authSource} activeProvider={activeModel?.provider} />
+              <UsageIndicator
+                usage={providerUsage}
+                authSource={authSource}
+                activeProvider={activeModel?.provider}
+                onRefresh={refreshUsage}
+                refreshing={usageRefreshing}
+              />
             </div>
           )}
           <DropdownMenu>
@@ -2800,7 +2924,13 @@ export function App() {
               )}
               {(providerUsage || authSource) && (
                 <div className="px-2 py-1.5 border-t border-border/50">
-                  <UsageIndicator usage={providerUsage} authSource={authSource} activeProvider={activeModel?.provider} />
+                  <UsageIndicator
+                    usage={providerUsage}
+                    authSource={authSource}
+                    activeProvider={activeModel?.provider}
+                    onRefresh={refreshUsage}
+                    refreshing={usageRefreshing}
+                  />
                 </div>
               )}
               <DropdownMenuSeparator />

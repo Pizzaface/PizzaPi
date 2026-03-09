@@ -77,6 +77,64 @@ describe("buildPizzaPiExtensionFactories", () => {
     });
 });
 
+// ── Safe mode / skip flags ────────────────────────────────────────────────────
+
+describe("buildPizzaPiExtensionFactories — safe mode", () => {
+    test("skipMcp excludes MCP extension", () => {
+        const factories = buildPizzaPiExtensionFactories({ cwd: "/tmp/pizzapi-test", skipMcp: true });
+        expect(factories).not.toContain(mcpExtension);
+        // Other core extensions should still be present
+        expect(factories).toContain(remoteExtension);
+        expect(factories).toContain(restartExtension);
+    });
+
+    test("skipRelay excludes remote extension", () => {
+        const factories = buildPizzaPiExtensionFactories({ cwd: "/tmp/pizzapi-test", skipRelay: true });
+        expect(factories).not.toContain(remoteExtension);
+        expect(factories).toContain(mcpExtension);
+    });
+
+    test("skipPlugins excludes plugin extension even when plugins exist", () => {
+        const projectDir = mkdtempSync(join(tmpdir(), "pizzapi-factories-skip-"));
+        try {
+            const pluginDir = join(projectDir, ".pizzapi", "plugins", "test-plugin");
+            mkdirSync(join(pluginDir, "commands"), { recursive: true });
+            writeFileSync(join(pluginDir, "commands", "hello.md"), "# Hello");
+
+            const withPlugins = buildPizzaPiExtensionFactories({ cwd: projectDir });
+            const withoutPlugins = buildPizzaPiExtensionFactories({ cwd: projectDir, skipPlugins: true });
+
+            // Without skipPlugins, there should be more extensions (plugin extension appended)
+            expect(withPlugins.length).toBeGreaterThan(withoutPlugins.length);
+        } finally {
+            try { rmSync(projectDir, { recursive: true, force: true }); } catch {}
+        }
+    });
+
+    test("all skip flags together leaves only non-optional extensions", () => {
+        const hooks: HooksConfig = {
+            PreToolUse: [{ matcher: "Bash", hooks: [{ command: "echo hook" }] }],
+        };
+
+        const factories = buildPizzaPiExtensionFactories({
+            cwd: "/tmp/pizzapi-test",
+            skipMcp: true,
+            skipRelay: true,
+            skipPlugins: true,
+            // hooks are omitted by passing undefined (simulating --no-hooks behavior)
+        });
+
+        expect(factories).not.toContain(remoteExtension);
+        expect(factories).not.toContain(mcpExtension);
+        // Should still have the always-on extensions
+        expect(factories).toContain(restartExtension);
+        expect(factories).toContain(setSessionNameExtension);
+        expect(factories).toContain(updateTodoExtension);
+        expect(factories).toContain(spawnSessionExtension);
+        expect(factories).toContain(sessionMessagingExtension);
+    });
+});
+
 // ── Plugin extension inclusion ────────────────────────────────────────────────
 //
 // NOTE: Bun caches homedir() from process start, so overriding HOME doesn't

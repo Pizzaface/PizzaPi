@@ -117,12 +117,36 @@ export const remoteExtension: ExtensionFactory = (pi) => {
     // render cycle (e.g. status set during session_start before ui.start()).
     let relayStatusText = "";
 
+    // ── MCP startup report cache ──────────────────────────────────────────────
+    // Captured when the MCP extension emits mcp:startup_report, and included
+    // in heartbeats so reconnecting web viewers can see startup timing info.
+    interface McpStartupReportSummary {
+        toolCount: number;
+        serverCount: number;
+        totalDurationMs: number;
+        slow: boolean;
+        errors: Array<{ server: string; error: string }>;
+        serverTimings: Array<{
+            name: string;
+            durationMs: number;
+            toolCount: number;
+            timedOut: boolean;
+            error?: string;
+        }>;
+    }
+    let lastMcpStartupReport: McpStartupReportSummary | null = null;
+
     // ── Provider usage cache ──────────────────────────────────────────────────
     // Generic normalized shape shared with the UI.
     interface UsageWindow { label: string; utilization: number; resets_at: string }
-    interface ProviderUsageData { windows: UsageWindow[] }
+    interface ProviderUsageData {
+        windows: UsageWindow[];
+        status?: "ok" | "unknown";
+        errorCode?: number;
+    }
 
-    const USAGE_CACHE_TTL = 5 * 60 * 1000; // 5 min
+    const DEFAULT_USAGE_CACHE_TTL = 5 * 60 * 1000; // 5 min
+    const ANTHROPIC_USAGE_CACHE_TTL = 15 * 60 * 1000; // 15 min (rate-limit anthropic checks)
     const usageCache = new Map<string, { data: ProviderUsageData; fetchedAt: number }>();
 
     // When running as a runner-spawned worker the daemon is responsible for
@@ -174,9 +198,15 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         }
     }
 
-    function isCached(providerId: string): boolean {
+    function providerUsageTtl(providerId: string): number {
+        return providerId === "anthropic" ? ANTHROPIC_USAGE_CACHE_TTL : DEFAULT_USAGE_CACHE_TTL;
+    }
+
+    function isCached(providerId: string, opts: { force?: boolean } = {}): boolean {
+        if (opts.force) return false;
         const entry = usageCache.get(providerId);
-        return !!entry && Date.now() - entry.fetchedAt < USAGE_CACHE_TTL;
+        if (!entry) return false;
+        return Date.now() - entry.fetchedAt < providerUsageTtl(providerId);
     }
 
     function buildProviderUsage(): Record<string, ProviderUsageData> {
@@ -212,8 +242,8 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         }
     }
 
-    async function refreshAnthropicUsage(): Promise<void> {
-        if (isCached("anthropic")) return;
+    async function refreshAnthropicUsage(opts: { force?: boolean } = {}): Promise<void> {
+        if (isCached("anthropic", opts)) return;
         const token = getOAuthToken("anthropic");
         if (!token) return;
         try {
@@ -224,7 +254,15 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                     "anthropic-beta": "oauth-2025-04-20",
                 },
             });
-            if (!res.ok) return;
+            if (!res.ok) {
+                if (res.status === 403) {
+                    usageCache.set("anthropic", {
+                        data: { windows: [], status: "unknown", errorCode: 403 },
+                        fetchedAt: Date.now(),
+                    });
+                }
+                return;
+            }
             const raw = (await res.json()) as Record<string, unknown>;
 
             // Map known windows; ignore nulls and unknown fields.
@@ -244,15 +282,15 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 }
             }
             if (windows.length > 0) {
-                usageCache.set("anthropic", { data: { windows }, fetchedAt: Date.now() });
+                usageCache.set("anthropic", { data: { windows, status: "ok" }, fetchedAt: Date.now() });
             }
         } catch {
             // Non-fatal
         }
     }
 
-    async function refreshCodexUsage(): Promise<void> {
-        if (isCached("openai-codex")) return;
+    async function refreshCodexUsage(opts: { force?: boolean } = {}): Promise<void> {
+        if (isCached("openai-codex", opts)) return;
         const token = getOAuthToken("openai-codex");
         if (!token) return;
         try {
@@ -262,7 +300,15 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                     Authorization: `Bearer ${token}`,
                 },
             });
-            if (!res.ok) return;
+            if (!res.ok) {
+                if (res.status === 403) {
+                    usageCache.set("openai-codex", {
+                        data: { windows: [], status: "unknown", errorCode: 403 },
+                        fetchedAt: Date.now(),
+                    });
+                }
+                return;
+            }
             const raw = (await res.json()) as {
                 plan_type?: string;
                 rate_limit?: {
@@ -340,15 +386,15 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             }
 
             if (windows.length > 0) {
-                usageCache.set("openai-codex", { data: { windows }, fetchedAt: Date.now() });
+                usageCache.set("openai-codex", { data: { windows, status: "ok" }, fetchedAt: Date.now() });
             }
         } catch {
             // Non-fatal
         }
     }
 
-    async function refreshGeminiUsage(): Promise<void> {
-        if (isCached("google-gemini-cli")) return;
+    async function refreshGeminiUsage(opts: { force?: boolean } = {}): Promise<void> {
+        if (isCached("google-gemini-cli", opts)) return;
         // Credentials are stored as JSON: { token, projectId }
         let token: string;
         let projectId: string;
@@ -377,7 +423,15 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 },
                 body: JSON.stringify({ project: projectId }),
             });
-            if (!res.ok) return;
+            if (!res.ok) {
+                if (res.status === 403) {
+                    usageCache.set("google-gemini-cli", {
+                        data: { windows: [], status: "unknown", errorCode: 403 },
+                        fetchedAt: Date.now(),
+                    });
+                }
+                return;
+            }
 
             const raw = (await res.json()) as {
                 buckets?: Array<{
@@ -398,26 +452,30 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 windows.push({ label, utilization, resets_at: bucket.resetTime });
             }
             if (windows.length > 0) {
-                usageCache.set("google-gemini-cli", { data: { windows }, fetchedAt: Date.now() });
+                usageCache.set("google-gemini-cli", { data: { windows, status: "ok" }, fetchedAt: Date.now() });
             }
         } catch {
             // Non-fatal
         }
     }
 
-    async function refreshAllUsage(): Promise<void> {
-        if (runnerUsageCachePath) {
+    async function refreshAllUsage(opts: { force?: boolean } = {}): Promise<void> {
+        const force = opts.force === true;
+
+        if (runnerUsageCachePath && !force) {
             // Runner-spawned worker: read the daemon's shared cache instead of
             // making independent API calls.  The daemon already fetches on our
-            // behalf and keeps the file fresh every 5 minutes.
+            // behalf and keeps the file fresh.
             await refreshFromRunnerCache();
             return;
         }
-        // CLI session: fetch directly from each provider as before.
+
+        // CLI session, or an explicit manual refresh in runner mode: fetch
+        // directly from each provider.
         await Promise.allSettled([
-            refreshAnthropicUsage(),
-            refreshCodexUsage(),
-            refreshGeminiUsage(),
+            refreshAnthropicUsage({ force }),
+            refreshCodexUsage({ force }),
+            refreshGeminiUsage({ force }),
         ]);
     }
 
@@ -677,6 +735,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                       pluginSummaries: pendingPluginTrust.pluginSummaries,
                   }
                 : null,
+            mcpStartupReport: lastMcpStartupReport,
         };
     }
 
@@ -956,6 +1015,14 @@ export const remoteExtension: ExtensionFactory = (pi) => {
 
             if (req.command === "set_follow_up_mode") {
                 replyErr("set_follow_up_mode is not supported by the PizzaPi runner yet");
+                return;
+            }
+
+            if (req.command === "refresh_usage") {
+                await refreshAllUsage({ force: true });
+                const providerUsage = buildProviderUsage();
+                replyOk({ providerUsage, refreshedAt: Date.now() });
+                forwardEvent(buildHeartbeat());
                 return;
             }
 
@@ -2072,6 +2139,25 @@ export const remoteExtension: ExtensionFactory = (pi) => {
     // the web viewer picks up the new commands.
     pi.events.on("plugin:loaded", () => {
         forwardEvent(buildCapabilitiesState());
+    });
+
+    // ── Forward MCP startup reports to relay ──────────────────────────────────
+    // The MCP extension emits this event after initialization so the web UI
+    // can display timing info, slow-startup warnings, and server errors.
+    pi.events.on("mcp:startup_report", (report: unknown) => {
+        // Cache for heartbeats so reconnecting viewers see it
+        if (report && typeof report === "object") {
+            const r = report as Record<string, unknown>;
+            lastMcpStartupReport = {
+                toolCount: typeof r.toolCount === "number" ? r.toolCount : 0,
+                serverCount: typeof r.serverCount === "number" ? r.serverCount : 0,
+                totalDurationMs: typeof r.totalDurationMs === "number" ? r.totalDurationMs : 0,
+                slow: r.slow === true,
+                errors: Array.isArray(r.errors) ? r.errors as any : [],
+                serverTimings: Array.isArray(r.serverTimings) ? r.serverTimings as any : [],
+            };
+        }
+        forwardEvent(report);
     });
 
     // ── Forward agent events to relay ─────────────────────────────────────────

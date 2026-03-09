@@ -464,30 +464,130 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
   return clients;
 }
 
-export async function registerMcpTools(pi: any, config: PizzaPiConfig & McpConfig) {
-  const clients = await createMcpClientsFromConfig(config);
-  if (clients.length === 0) return { clients, toolCount: 0, toolNames: [] as string[], errors: [] as Array<{ server: string; error: string }>, serverTools: {} as Record<string, string[]> };
+/** Default timeout for MCP server tools/list calls: 30 seconds. */
+const DEFAULT_MCP_TIMEOUT = 30_000;
 
+/** Per-server initialization result collected during parallel init. */
+export type McpServerInitResult = {
+  name: string;
+  tools: McpTool[];
+  error?: string;
+  /** Time in milliseconds the server took to respond to tools/list */
+  durationMs: number;
+  timedOut: boolean;
+};
+
+/** Overall result of registerMcpTools() including per-server timing. */
+export type McpRegistrationResult = {
+  clients: McpClient[];
+  toolCount: number;
+  toolNames: string[];
+  errors: Array<{ server: string; error: string }>;
+  serverTools: Record<string, string[]>;
+  /** Per-server timing breakdown. */
+  serverTimings: McpServerInitResult[];
+  /** Total wall-clock time for MCP initialization (ms). */
+  totalDurationMs: number;
+};
+
+/**
+ * List tools from a single MCP client with a timeout.
+ * Returns the collected tools or an error if the server doesn't respond in time.
+ *
+ * When the timeout fires, the dangling listTools() promise is caught silently
+ * to prevent unhandled rejection crashes (the child process will be killed by
+ * the caller, which causes the pending request to reject).
+ */
+async function listToolsWithTimeout(client: McpClient, timeoutMs: number): Promise<{ tools: McpTool[]; error?: string; timedOut: boolean }> {
+  if (timeoutMs <= 0) {
+    // Timeout disabled — call directly
+    const tools = await client.listTools();
+    return { tools, timedOut: false };
+  }
+
+  // Keep a reference to the listTools promise so we can suppress its rejection
+  // if the timeout fires first (the child process will be killed, causing the
+  // pending JSON-RPC request to reject with "server exited").
+  const listToolsPromise = client.listTools().then(
+    (tools) => ({ tools, timedOut: false as const }),
+  );
+
+  const timeoutPromise = new Promise<{ tools: McpTool[]; error: string; timedOut: true }>((resolve) =>
+    setTimeout(
+      () => resolve({ tools: [], error: `Timed out after ${Math.round(timeoutMs / 1000)}s waiting for tools/list`, timedOut: true }),
+      timeoutMs,
+    ),
+  );
+
+  const result = await Promise.race([listToolsPromise, timeoutPromise]);
+
+  if (result.timedOut) {
+    // Suppress the dangling promise rejection that will fire when the child is killed
+    listToolsPromise.catch(() => {});
+  }
+
+  return result;
+}
+
+export async function registerMcpTools(pi: any, config: PizzaPiConfig & McpConfig): Promise<McpRegistrationResult> {
+  const totalStart = Date.now();
+  const clients = await createMcpClientsFromConfig(config);
+  const empty: McpRegistrationResult = { clients: [], toolCount: 0, toolNames: [], errors: [], serverTools: {}, serverTimings: [], totalDurationMs: 0 };
+  if (clients.length === 0) return { ...empty, totalDurationMs: Date.now() - totalStart };
+
+  // Determine per-server timeout from config (0 = disabled)
+  const timeoutMs = typeof (config as any).mcpTimeout === "number" ? (config as any).mcpTimeout : DEFAULT_MCP_TIMEOUT;
+
+  // ── Phase 1: Initialize all servers in parallel ──────────────────────────
+  const initResults = await Promise.all(
+    clients.map(async (client): Promise<McpServerInitResult> => {
+      const start = Date.now();
+      try {
+        const { tools, error, timedOut } = await listToolsWithTimeout(client, timeoutMs);
+        const durationMs = Date.now() - start;
+        if (error) {
+          return { name: client.name, tools: [], error, durationMs, timedOut };
+        }
+        return { name: client.name, tools, durationMs, timedOut };
+      } catch (err) {
+        const durationMs = Date.now() - start;
+        return {
+          name: client.name,
+          tools: [],
+          error: err instanceof Error ? err.message : String(err),
+          durationMs,
+          timedOut: false,
+        };
+      }
+    }),
+  );
+
+  // ── Phase 2: Register tools sequentially (name allocation needs Set) ─────
   let toolCount = 0;
   const toolNames: string[] = [];
   const errors: Array<{ server: string; error: string }> = [];
   const usedToolNames = new Set<string>();
   const serverTools: Record<string, string[]> = {};
+  const liveClients: McpClient[] = [];
 
-  for (const client of clients) {
-    let tools: McpTool[] = [];
-    try {
-      tools = await client.listTools();
-    } catch (err) {
-      errors.push({ server: client.name, error: err instanceof Error ? err.message : String(err) });
-      // ignore broken server
+  for (let i = 0; i < clients.length; i++) {
+    const client = clients[i];
+    const result = initResults[i];
+
+    if (result.error) {
+      errors.push({ server: client.name, error: result.error });
+      // Kill timed-out STDIO servers so they don't linger
+      if (result.timedOut) {
+        try { client.close(); } catch {}
+      }
       continue;
     }
 
+    liveClients.push(client);
     const serverToolList: string[] = [];
     serverTools[client.name] = serverToolList;
 
-    for (const tool of tools) {
+    for (const tool of result.tools) {
       if (!tool?.name) continue;
 
       const sourceName = `mcp:${client.name}:${tool.name}`;
@@ -508,11 +608,9 @@ export async function registerMcpTools(pi: any, config: PizzaPiConfig & McpConfi
         description: tool.description
           ? `${tool.description} (source: ${sourceName})`
           : `MCP tool from ${client.name} (source: ${sourceName})`,
-        // pi expects JSON schema-ish. MCP uses inputSchema.
         parameters,
         async execute(_toolCallId: string, rawParams: unknown, signal: AbortSignal | undefined) {
           const result = await client.callTool(tool.name, rawParams ?? {}, signal);
-          // Ensure we return something pi can render.
           if (result && typeof result === "object" && "content" in result) {
             return (result as any);
           }
@@ -524,8 +622,9 @@ export async function registerMcpTools(pi: any, config: PizzaPiConfig & McpConfi
 
   // Best-effort shutdown.
   pi.on?.("session_shutdown", () => {
-    for (const c of clients) c.close();
+    for (const c of liveClients) c.close();
   });
 
-  return { clients, toolCount, toolNames, errors, serverTools };
+  const totalDurationMs = Date.now() - totalStart;
+  return { clients: liveClients, toolCount, toolNames, errors, serverTools, serverTimings: initResults, totalDurationMs };
 }

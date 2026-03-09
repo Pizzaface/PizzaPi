@@ -70,8 +70,11 @@ async function main(): Promise<void> {
         agentDir,
         extensionFactories: buildPizzaPiExtensionFactories({
             cwd,
-            hooks: config.hooks,
+            hooks: process.env.PIZZAPI_NO_HOOKS === "1" ? undefined : config.hooks,
             includeInitialPrompt: true,
+            skipMcp: process.env.PIZZAPI_NO_MCP === "1",
+            skipPlugins: process.env.PIZZAPI_NO_PLUGINS === "1",
+            skipRelay: process.env.PIZZAPI_NO_RELAY === "1",
         }),
         additionalSkillPaths: [
             ...buildWorkerSkillPaths(cwd, config.skills),

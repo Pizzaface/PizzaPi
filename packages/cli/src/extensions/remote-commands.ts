@@ -9,6 +9,7 @@ export type RemoteExecRequest =
     | { type: "exec"; id: string; command: "cycle_thinking_level" }
     | { type: "exec"; id: string; command: "set_steering_mode"; mode: string }
     | { type: "exec"; id: string; command: "set_follow_up_mode"; mode: string }
+    | { type: "exec"; id: string; command: "refresh_usage" }
     | { type: "exec"; id: string; command: "compact"; customInstructions?: string }
     | { type: "exec"; id: string; command: "set_session_name"; name: string }
     | { type: "exec"; id: string; command: "get_last_assistant_text" }
