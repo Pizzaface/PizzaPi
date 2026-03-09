@@ -7,10 +7,17 @@ import type { PizzaPiConfig } from "../config.js";
  * Supports:
  *  - STDIO transport via spawning a command
  *  - HTTP transport via POSTing JSON-RPC-ish MCP messages
+ *  - Streamable HTTP transport (MCP spec 2025-03-26)
  *
  * This is intentionally lightweight and only implements what we need:
+ *  - initialize (lifecycle handshake — required by the MCP spec)
  *  - listTools
  *  - callTool
+ *
+ * All transports perform the MCP initialization handshake lazily before
+ * the first real request (tools/list or tools/call). The handshake sends
+ * an `initialize` request followed by a `notifications/initialized`
+ * notification, as required by the MCP specification.
  */
 
 type Json = null | boolean | number | string | Json[] | { [k: string]: Json };
@@ -36,6 +43,18 @@ type McpClient = {
   callTool(toolName: string, args: unknown, signal?: AbortSignal): Promise<McpCallToolResult>;
   close(): void;
 };
+
+/**
+ * Protocol version we advertise during the MCP initialize handshake.
+ * Using the 2025-03-26 spec (widely supported); servers may negotiate down.
+ */
+export const MCP_PROTOCOL_VERSION = "2025-03-26";
+
+/** Versions we accept from the server in its InitializeResult. */
+export const MCP_SUPPORTED_VERSIONS = new Set(["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05", "2024-10-07"]);
+
+/** Client info sent during the initialize handshake. */
+export const MCP_CLIENT_INFO = { name: "pizzapi", version: "1.0.0" };
 
 const PROVIDER_TOOL_NAME_MAX_LENGTH = 64;
 
@@ -179,13 +198,38 @@ function createStdioMcpClient(opts: { name: string; command: string; args?: stri
     pending.clear();
   });
 
+  // ── Lazy MCP initialize handshake ──────────────────────────────────────
+  let initPromise: Promise<void> | null = null;
+
+  function ensureInitialized(): Promise<void> {
+    if (!initPromise) {
+      initPromise = (async () => {
+        const result = await request("initialize", {
+          protocolVersion: MCP_PROTOCOL_VERSION,
+          capabilities: {},
+          clientInfo: MCP_CLIENT_INFO,
+        });
+
+        if (result?.protocolVersion && !MCP_SUPPORTED_VERSIONS.has(result.protocolVersion)) {
+          throw new Error(`MCP server "${opts.name}" returned unsupported protocol version: ${result.protocolVersion}`);
+        }
+
+        // Send the initialized notification (no id → notification, no response expected)
+        send({ jsonrpc: "2.0", method: "notifications/initialized" });
+      })();
+    }
+    return initPromise;
+  }
+
   return {
     name: opts.name,
     async listTools() {
+      await ensureInitialized();
       const res = (await request("tools/list")) as McpListToolsResult;
       return Array.isArray(res?.tools) ? res.tools : [];
     },
     async callTool(toolName: string, args: unknown, signal?: AbortSignal) {
+      await ensureInitialized();
       const res = await request("tools/call", { name: toolName, arguments: args ?? {} }, signal);
       return (res ?? {}) as McpCallToolResult;
     },
@@ -220,13 +264,49 @@ function createHttpMcpClient(opts: { name: string; url: string; headers?: Record
     return json.result;
   }
 
+  async function notify(method: string, params?: any): Promise<void> {
+    // Notifications have no id and expect no response body.
+    const payload: any = { jsonrpc: "2.0", method };
+    if (params !== undefined) payload.params = params;
+
+    await fetch(opts.url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...(opts.headers ?? {}) },
+      body: JSON.stringify(payload),
+    }).catch(() => {}); // best-effort
+  }
+
+  // ── Lazy MCP initialize handshake ──────────────────────────────────────
+  let initPromise: Promise<void> | null = null;
+
+  function ensureInitialized(): Promise<void> {
+    if (!initPromise) {
+      initPromise = (async () => {
+        const result = await request("initialize", {
+          protocolVersion: MCP_PROTOCOL_VERSION,
+          capabilities: {},
+          clientInfo: MCP_CLIENT_INFO,
+        });
+
+        if (result?.protocolVersion && !MCP_SUPPORTED_VERSIONS.has(result.protocolVersion)) {
+          throw new Error(`MCP server "${opts.name}" returned unsupported protocol version: ${result.protocolVersion}`);
+        }
+
+        await notify("notifications/initialized");
+      })();
+    }
+    return initPromise;
+  }
+
   return {
     name: opts.name,
     async listTools() {
+      await ensureInitialized();
       const res = (await request("tools/list")) as McpListToolsResult;
       return Array.isArray(res?.tools) ? res.tools : [];
     },
     async callTool(toolName: string, args: unknown, signal?: AbortSignal) {
+      await ensureInitialized();
       const res = await request("tools/call", { name: toolName, arguments: args ?? {} }, signal);
       return (res ?? {}) as McpCallToolResult;
     },
@@ -349,13 +429,49 @@ function createStreamableMcpClient(opts: { name: string; url: string; headers?: 
     return json.result;
   }
 
+  async function notify(method: string, params?: any): Promise<void> {
+    // Notifications have no id and expect no response body.
+    const payload: any = { jsonrpc: "2.0", method };
+    if (params !== undefined) payload.params = params;
+
+    await fetch(opts.url, {
+      method: "POST",
+      headers: buildHeaders(),
+      body: JSON.stringify(payload),
+    }).catch(() => {}); // best-effort
+  }
+
+  // ── Lazy MCP initialize handshake ──────────────────────────────────────
+  let initPromise: Promise<void> | null = null;
+
+  function ensureInitialized(): Promise<void> {
+    if (!initPromise) {
+      initPromise = (async () => {
+        const result = await request("initialize", {
+          protocolVersion: MCP_PROTOCOL_VERSION,
+          capabilities: {},
+          clientInfo: MCP_CLIENT_INFO,
+        });
+
+        if (result?.protocolVersion && !MCP_SUPPORTED_VERSIONS.has(result.protocolVersion)) {
+          throw new Error(`MCP server "${opts.name}" returned unsupported protocol version: ${result.protocolVersion}`);
+        }
+
+        await notify("notifications/initialized");
+      })();
+    }
+    return initPromise;
+  }
+
   return {
     name: opts.name,
     async listTools() {
+      await ensureInitialized();
       const res = (await request("tools/list")) as McpListToolsResult;
       return Array.isArray(res?.tools) ? res.tools : [];
     },
     async callTool(toolName: string, args: unknown, signal?: AbortSignal) {
+      await ensureInitialized();
       const res = await request("tools/call", { name: toolName, arguments: args ?? {} }, signal);
       return (res ?? {}) as McpCallToolResult;
     },
