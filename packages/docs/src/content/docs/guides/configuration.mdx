@@ -84,8 +84,8 @@ You can also override any setting with **environment variables**.
 | `skills` | `string[]` | `[]` | Additional skill directories. Supports `~` expansion. |
 | `allowProjectHooks` | `boolean` | `false` | Trust gate: allow project-local hooks to run. **Global config only.** |
 | `trustedPlugins` | `string[]` | `[]` | Trusted Claude Code plugin paths. **Global config only.** Managed via `pizza plugins trust`. |
-| `mcpTimeout` | `number` | `30000` | Timeout (ms) for each MCP server's `tools/list` call during startup. Set to `0` to disable. |
-| `slowStartupWarning` | `boolean` | `true` | Show warnings when startup takes longer than expected (slow MCP servers, etc.). |
+| `mcpTimeout` | `number` | `30000` | Timeout (ms) for each MCP server's `tools/list` call during startup. Set to `0` to disable. See [Safe Mode](/PizzaPi/guides/safe-mode/). |
+| `slowStartupWarning` | `boolean` | `true` | Show warnings when startup takes longer than expected (slow MCP servers, etc.). See [Safe Mode](/PizzaPi/guides/safe-mode/). |
 
 ---
 
@@ -97,10 +97,10 @@ Every config option can also be set as an environment variable. Environment vari
 |----------|-----------------------|-------|
 | `PIZZAPI_API_KEY` | `apiKey` | |
 | `PIZZAPI_RELAY_URL` | `relayUrl` | Set to `off` to disable relay for this invocation |
-| `PIZZAPI_NO_MCP` | — | Set to `1` to skip MCP servers (runner workers) |
-| `PIZZAPI_NO_PLUGINS` | — | Set to `1` to skip plugin loading (runner workers) |
-| `PIZZAPI_NO_HOOKS` | — | Set to `1` to skip hook execution (runner workers) |
-| `PIZZAPI_NO_RELAY` | — | Set to `1` to skip relay connection (runner workers) |
+| `PIZZAPI_NO_MCP` | — | Set to `1` to skip MCP servers ([Safe Mode](/PizzaPi/guides/safe-mode/)) |
+| `PIZZAPI_NO_PLUGINS` | — | Set to `1` to skip plugin loading ([Safe Mode](/PizzaPi/guides/safe-mode/)) |
+| `PIZZAPI_NO_HOOKS` | — | Set to `1` to skip hook execution ([Safe Mode](/PizzaPi/guides/safe-mode/)) |
+| `PIZZAPI_NO_RELAY` | — | Set to `1` to skip relay connection ([Safe Mode](/PizzaPi/guides/safe-mode/)) |
 
 **Example:**
 
