@@ -295,6 +295,15 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
     this._persisted.tokens = tokens;
     savePersistedAuth(this._serverUrl, this._persisted);
     this._onAuthComplete?.();
+
+    // Notify web UI that authentication completed
+    if (this._useRelay) {
+      this.relayContext!.emitEvent("mcp:auth_complete", {
+        type: "mcp_auth_complete",
+        serverName: this._serverName,
+        ts: Date.now(),
+      });
+    }
   }
 
   redirectToAuthorization(authorizationUrl: URL): void {
