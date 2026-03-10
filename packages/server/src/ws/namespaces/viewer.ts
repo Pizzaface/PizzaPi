@@ -202,50 +202,14 @@ export function registerViewerNamespace(io: SocketIOServer): void {
             return;
         }
 
-        // Session is live — send connection info and initial snapshot BEFORE
-        // joining the broadcast room. This avoids a race where live streaming
-        // deltas arrive (via the room) before the snapshot, causing the UI to
-        // show partial content that then gets replaced by the snapshot — making
-        // messages visibly "jump".
-        //
-        // Any events emitted between snapshot read and room join are detected
-        // by the client's sequence-gap logic (seq gap > 1 → resync request).
-        const lastSeq = await getSessionSeq(sessionId);
-        socket.emit("connected", {
-            sessionId,
-            lastSeq,
-            isActive: session.isActive,
-            lastHeartbeatAt: session.lastHeartbeatAt,
-            sessionName: session.sessionName,
-        });
-
-        // Send the snapshot while the viewer is NOT yet in the room.
-        // Inline the snapshot send using already-fetched session data to avoid
-        // an extra Redis round-trip (which would widen the race window).
-        if (session.lastHeartbeat) {
-            try {
-                socket.emit("event", { event: JSON.parse(session.lastHeartbeat), seq: lastSeq });
-            } catch {}
-        }
-        if (session.lastState) {
-            try {
-                socket.emit("event", { event: { type: "session_active", state: JSON.parse(session.lastState) }, seq: lastSeq });
-            } catch {}
-        } else {
-            // No in-memory state — fall back to event cache
-            await sendLatestSnapshotFromCache(socket, sessionId);
-        }
-
-        // NOW join the room for live events — any missed events between
-        // snapshot read and this point will be caught by gap detection.
-        const ok = await addViewer(sessionId, socket);
-        if (!ok) {
-            socket.emit("disconnected", { reason: "Session ended" });
-            // Use disconnect() (not true) so the client can still auto-reconnect;
-            // the session may have just cycled and will come back shortly.
-            socket.disconnect();
-            return;
-        }
+        // ── Register ALL event handlers FIRST ────────────────────────────────
+        // Handlers must be registered synchronously before any async work
+        // (snapshot sending, addViewer, etc.) to avoid a race condition where
+        // the client receives "connected", immediately fires "exec" or
+        // "input", but the handler isn't registered yet because we're still
+        // awaiting Redis calls. This is the root cause of Check+Kill failing
+        // for non-active sessions (especially when ending 3+ sessions at
+        // once — the concurrent async work widens the race window).
 
         // ── connected — viewer greeting, notify TUI ─────────────────────────
         socket.on("connected", () => {
@@ -331,5 +295,51 @@ export function registerViewerNamespace(io: SocketIOServer): void {
             console.log(`[sio/viewer] disconnected: ${socket.id} sessionId=${sessionId} (${reason})`);
             await removeViewer(sessionId, socket);
         });
+
+        // ── Now do async snapshot/room work ──────────────────────────────────
+        // Session is live — send connection info and initial snapshot BEFORE
+        // joining the broadcast room. This avoids a race where live streaming
+        // deltas arrive (via the room) before the snapshot, causing the UI to
+        // show partial content that then gets replaced by the snapshot — making
+        // messages visibly "jump".
+        //
+        // Any events emitted between snapshot read and room join are detected
+        // by the client's sequence-gap logic (seq gap > 1 → resync request).
+        const lastSeq = await getSessionSeq(sessionId);
+        socket.emit("connected", {
+            sessionId,
+            lastSeq,
+            isActive: session.isActive,
+            lastHeartbeatAt: session.lastHeartbeatAt,
+            sessionName: session.sessionName,
+        });
+
+        // Send the snapshot while the viewer is NOT yet in the room.
+        // Inline the snapshot send using already-fetched session data to avoid
+        // an extra Redis round-trip (which would widen the race window).
+        if (session.lastHeartbeat) {
+            try {
+                socket.emit("event", { event: JSON.parse(session.lastHeartbeat), seq: lastSeq });
+            } catch {}
+        }
+        if (session.lastState) {
+            try {
+                socket.emit("event", { event: { type: "session_active", state: JSON.parse(session.lastState) }, seq: lastSeq });
+            } catch {}
+        } else {
+            // No in-memory state — fall back to event cache
+            await sendLatestSnapshotFromCache(socket, sessionId);
+        }
+
+        // NOW join the room for live events — any missed events between
+        // snapshot read and this point will be caught by gap detection.
+        const ok = await addViewer(sessionId, socket);
+        if (!ok) {
+            socket.emit("disconnected", { reason: "Session ended" });
+            // Use disconnect() (not true) so the client can still auto-reconnect;
+            // the session may have just cycled and will come back shortly.
+            socket.disconnect();
+            return;
+        }
     });
 }
