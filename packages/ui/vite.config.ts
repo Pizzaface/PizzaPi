@@ -77,6 +77,7 @@ export default defineConfig({
                 // Inject the push notification handler into the generated service worker.
                 importScripts: ["sw-push.js"],
                 navigateFallback: "/index.html",
+                navigateFallbackDenylist: [/^\/api\//],
                 runtimeCaching: [
                     {
                         // Cache JS chunks (including lazy shiki/mermaid language chunks)
