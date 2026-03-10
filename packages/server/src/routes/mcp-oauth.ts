@@ -16,7 +16,7 @@
  */
 
 import type { RouteHandler } from "./types.js";
-import { getLocalTuiSocket } from "../ws/sio-registry.js";
+import { emitToRelaySession } from "../ws/sio-registry.js";
 
 /** In-memory set of consumed nonces to prevent replay (cleared periodically). */
 const consumedNonces = new Set<string>();
@@ -76,28 +76,26 @@ export const handleMcpOAuthRoute: RouteHandler = async (req, url) => {
         );
     }
 
-    // ── Forward to runner ────────────────────────────────────────────────
-    const socket = getLocalTuiSocket(sessionId);
-    if (!socket) {
-        // Don't consume the nonce — the session may reconnect and retry.
-        return new Response(
-            htmlPage("Session Not Found", "<p>The agent session is no longer connected. Please try again.</p>"),
-            { status: 404, headers: { "Content-Type": "text/html" } },
-        );
-    }
-
-    // Mark nonce consumed only after confirming the session socket exists,
-    // so a retry can succeed if the session was temporarily disconnected.
+    // ── Forward to runner (cluster-wide via Redis adapter) ─────────────
+    // In a multi-instance deployment, the OAuth callback may hit a different
+    // server than the one owning the runner's relay socket. Emit to the
+    // session room (broadcast via Redis) instead of looking up a local socket.
     consumedNonces.add(nonceKey);
 
-    // Emit to the runner's relay socket. The remote extension listens for
-    // this event and forwards it to the OAuth provider.
-    socket.emit("mcp_oauth_callback" as any, {
+    const emitted = emitToRelaySession(sessionId, "mcp_oauth_callback", {
         sessionId,
         nonce,
         code,
         oauthState: state.oauthState,
     });
+
+    if (!emitted) {
+        consumedNonces.delete(nonceKey); // Allow retry
+        return new Response(
+            htmlPage("Server Error", "<p>Relay not initialized. Please try again.</p>"),
+            { status: 503, headers: { "Content-Type": "text/html" } },
+        );
+    }
 
     return new Response(
         htmlPage("Authentication Successful", `

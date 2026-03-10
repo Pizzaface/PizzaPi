@@ -573,8 +573,13 @@ function createStreamableMcpClient(opts: {
 
         if (result1 === "REDIRECT") {
           // Wait for the OAuth callback (browser → local server)
-          const { code } = await oauthProvider.startCallbackAndWait();
+          const { code, state: callbackState } = await oauthProvider.startCallbackAndWait();
           oauthProvider.closeCallback();
+
+          // Validate state to prevent CSRF (defense-in-depth alongside PKCE)
+          if (!oauthProvider.validateCallbackState(callbackState)) {
+            throw new Error("OAuth state mismatch — possible CSRF attack");
+          }
 
           // Phase 2: Exchange code for token
           const result2 = await auth(oauthProvider, {
@@ -859,7 +864,10 @@ async function listToolsWithTimeout(client: McpClient, timeoutMs: number): Promi
   const result = await Promise.race([listToolsPromise, timeoutPromise]);
 
   if (result.timedOut) {
-    // Suppress the dangling promise rejection that will fire when the child is killed
+    // Close the client immediately to abort the in-flight request and prevent
+    // it from establishing a remote MCP session that would never be cleaned up.
+    try { client.close(); } catch {}
+    // Suppress the dangling promise rejection that fires when the connection is killed
     listToolsPromise.catch(() => {});
   }
 

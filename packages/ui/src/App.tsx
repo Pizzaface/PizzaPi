@@ -684,6 +684,11 @@ export function App() {
   // to avoid duplicates when heartbeats re-deliver the same report.
   const renderedMcpReportTsRef = React.useRef<number | null>(null);
 
+  // Whether session_active has been received for the current session.
+  // Heartbeat MCP reports are deferred until after session_active hydrates
+  // messages, otherwise the report gets appended then immediately replaced.
+  const sessionHydratedRef = React.useRef(false);
+
   // Capabilities advertised by the runner (commands, models, etc.)
   const [availableCommands, setAvailableCommands] = React.useState<Array<{ name: string; description?: string; source?: string }>>([]);
 
@@ -1324,7 +1329,11 @@ export function App() {
           ts?: number;
         };
         const reportTs = typeof mcpReport.ts === "number" ? mcpReport.ts : 0;
-        if (reportTs > 0 && reportTs !== renderedMcpReportTsRef.current) {
+        // Defer rendering until session_active has hydrated messages. Heartbeats
+        // can arrive before session_active; appending here would be immediately
+        // replaced by the snapshot, and the deduplication ref would prevent later
+        // re-rendering from subsequent heartbeats.
+        if (reportTs > 0 && reportTs !== renderedMcpReportTsRef.current && sessionHydratedRef.current) {
           const hasErrors = Array.isArray(mcpReport.errors) && mcpReport.errors.length > 0;
           const showSlow = mcpReport.showSlowWarning !== false;
           const isSlow = mcpReport.slow === true && showSlow;
@@ -1432,6 +1441,7 @@ export function App() {
       // for toolCall blocks that have no matching toolResult.
       setActiveToolCalls(detectInFlightTools(normalizedMessages));
       setIsChangingModel(false);
+      sessionHydratedRef.current = true;
 
       // Clear queued messages — the snapshot contains the full conversation
       // including any follow-ups that were consumed by the agent.
@@ -2037,6 +2047,7 @@ export function App() {
     lastViewerEventAtRef.current = Date.now(); // treat open as an "event" so we don't fire immediately
     awaitingSnapshotRef.current = true;
     renderedMcpReportTsRef.current = null;
+    sessionHydratedRef.current = false;
     setActiveSessionId(relaySessionId);
     setViewerStatus("Connecting…");
     setPendingQuestion(null);

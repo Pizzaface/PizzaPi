@@ -92,6 +92,21 @@ function openBrowser(url: string): void {
   });
 }
 
+/** Check if client registration has localhost-based redirect URIs. */
+function hasLocalhostRedirects(clientInfo: OAuthClientInformationMixed): boolean {
+  // OAuthClientInformationMixed is a union — redirect_uris may not be on all branches.
+  const info = clientInfo as Record<string, unknown>;
+  const uris = Array.isArray(info.redirect_uris) ? info.redirect_uris : [];
+  return uris.some((uri: unknown) => {
+    try {
+      const hostname = new URL(String(uri)).hostname;
+      return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+    } catch {
+      return false;
+    }
+  });
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Local callback server (CLI mode — receives OAuth redirect on localhost)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -251,6 +266,9 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
   /** Nonce for the current auth flow (relay mode). */
   private _currentNonce: string | null = null;
 
+  /** Expected OAuth state from the most recent authorization request (for CSRF validation). */
+  private _pendingState: string | null = null;
+
   constructor(opts: McpOAuthOptions) {
     this._serverUrl = opts.serverUrl;
     this._serverName = opts.serverName;
@@ -281,7 +299,9 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
           this._callbackServer.close();
           this._callbackServer = null;
         }
-        if (this._persisted.clientInfo) {
+        // Only invalidate client info if its redirect_uris point to localhost
+        // (registered in local mode). Relay-registered clients are still valid.
+        if (this._persisted.clientInfo && hasLocalhostRedirects(this._persisted.clientInfo)) {
           this.invalidateCredentials("client");
         }
       }
@@ -352,13 +372,27 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
   async state(): Promise<string> {
     if (this._useRelay) {
       this._currentNonce = randomBytes(16).toString("hex");
-      return encodeRelayState(
+      const s = encodeRelayState(
         this.relayContext!.sessionId,
         this._currentNonce,
       );
+      this._pendingState = s;
+      return s;
     }
     // Local mode: simple random state for CSRF protection
-    return randomBytes(16).toString("hex");
+    const s = randomBytes(16).toString("hex");
+    this._pendingState = s;
+    return s;
+  }
+
+  /**
+   * Validate that a callback state matches the one we generated.
+   * Returns true if state matches (or if no state was expected).
+   */
+  validateCallbackState(returnedState?: string): boolean {
+    if (!this._pendingState) return true; // No state to validate
+    if (!returnedState) return false; // Expected state but none returned
+    return this._pendingState === returnedState;
   }
 
   clientInformation(): OAuthClientInformationMixed | undefined {
