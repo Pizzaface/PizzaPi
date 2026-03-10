@@ -2,6 +2,7 @@ import * as React from "react";
 import { SessionSidebar, type DotState, type HubSession } from "@/components/SessionSidebar";
 import { SessionViewer, type RelayMessage } from "@/components/SessionViewer";
 import type { CommandResultData } from "@/components/session-viewer/rendering";
+import { detectInFlightTools } from "@/components/session-viewer/utils";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { AuthPage } from "@/components/AuthPage";
 import { ApiKeyManager } from "@/components/ApiKeyManager";
@@ -1425,7 +1426,11 @@ export function App() {
 
       setPendingQuestion(null);
       setPluginTrustPrompt(null);
-      setActiveToolCalls(new Map());
+      // Restore in-flight tool calls from the snapshot so reconnecting mid-command
+      // keeps streaming indicators and Kill buttons visible. The snapshot payload
+      // doesn't include explicit active-tool IDs, so we infer them by scanning
+      // for toolCall blocks that have no matching toolResult.
+      setActiveToolCalls(detectInFlightTools(normalizedMessages));
       setIsChangingModel(false);
 
       // Clear queued messages — the snapshot contains the full conversation

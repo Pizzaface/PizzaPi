@@ -172,6 +172,32 @@ describe("PizzaPiOAuthProvider", () => {
             expect(meta.redirect_uris).toHaveLength(1);
             expect(meta.redirect_uris[0]).toBe("https://relay.example.com/api/mcp-oauth-callback");
         });
+
+        test("reconnect (null→ctx after disconnect) preserves client credentials", () => {
+            const provider = new PizzaPiOAuthProvider({
+                serverUrl: `https://reconnect-${Date.now()}.example.com/mcp`,
+                serverName: "reconnect-server",
+            });
+
+            // First transition: local → relay (should invalidate localhost client info)
+            const ctx = createMockRelayContext();
+            provider.relayContext = ctx;
+
+            // Save client credentials in relay mode
+            provider.saveClientInformation({
+                client_id: "test-client",
+                client_secret: "test-secret",
+                redirect_uris: ["https://pizza.example.com/api/mcp-oauth-callback"],
+            } as any);
+            expect(provider.clientInformation()?.client_id).toBe("test-client");
+
+            // Simulate disconnect → reconnect cycle
+            provider.relayContext = null;
+            provider.relayContext = createMockRelayContext();
+
+            // Client credentials should survive the reconnect
+            expect(provider.clientInformation()?.client_id).toBe("test-client");
+        });
     });
 
     describe("hasTokens", () => {

@@ -231,6 +231,14 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
   /** Internal relay context storage. Use the getter/setter. */
   private _relayContext: RelayContext | null = null;
 
+  /**
+   * Whether we have ever entered relay mode. Used to distinguish the initial
+   * local→relay transition (where we must invalidate localhost-bound client
+   * credentials) from subsequent reconnects (null→ctx after a transient
+   * disconnect) where credentials should be preserved.
+   */
+  private _hasBeenInRelayMode = false;
+
   /** Callbacks waiting for relay context to become available. */
   private _relayReadyResolvers: Array<() => void> = [];
 
@@ -252,19 +260,24 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
   }
 
   set relayContext(ctx: RelayContext | null) {
-    const wasLocal = this._relayContext === null;
     this._relayContext = ctx;
     if (ctx) {
-      // Transitioning to relay mode: clean up any local callback server that
+      // First time entering relay mode: clean up any local callback server that
       // was eagerly started (e.g., if redirectUrl was accessed before relay
       // connected) and invalidate cached client info whose redirect_uris
       // pointed to localhost.
-      if (wasLocal && this._callbackServer) {
-        this._callbackServer.close();
-        this._callbackServer = null;
-      }
-      if (wasLocal && this._persisted.clientInfo) {
-        this.invalidateCredentials("client");
+      //
+      // On reconnects (transient null→ctx after a disconnect), skip invalidation
+      // so persisted client credentials survive network blips.
+      if (!this._hasBeenInRelayMode) {
+        this._hasBeenInRelayMode = true;
+        if (this._callbackServer) {
+          this._callbackServer.close();
+          this._callbackServer = null;
+        }
+        if (this._persisted.clientInfo) {
+          this.invalidateCredentials("client");
+        }
       }
       // Notify anyone waiting for relay context
       const resolvers = this._relayReadyResolvers.splice(0);
