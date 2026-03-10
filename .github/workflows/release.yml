@@ -28,6 +28,7 @@ on:
 permissions:
   id-token: write
   contents: write
+  pull-requests: write
 
 jobs:
   # ─── Gate: only Pizzaface can trigger this ────────────────────
@@ -303,6 +304,8 @@ jobs:
 
       - name: Commit and push package.json version bump
         if: inputs.dry-run != true
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           VERSION="${{ needs.compute-version.outputs.version }}"
           SOURCE_SHA="${{ github.sha }}"
@@ -329,14 +332,50 @@ jobs:
           if git diff --cached --quiet; then
             echo "ℹ️ No package.json changes to commit"
           else
-            git commit -m "chore(release): bump package versions to ${VERSION} [skip ci]"
+            COMMIT_MSG="chore(release): bump package versions to ${VERSION} [skip ci]"
+            git commit -m "$COMMIT_MSG"
 
+            # Try direct push first (works if no branch protection).
             PUSH_OUTPUT=$(git push origin "HEAD:${BRANCH}" 2>&1) && {
               echo "$PUSH_OUTPUT"
               echo "✅ Pushed version bump commit to ${BRANCH}"
             } || {
               if echo "$PUSH_OUTPUT" | grep -qiE 'non-fast-forward|fetch first'; then
                 echo "::warning::Branch advanced during release; skipped pushing version bump commit to avoid retargeting this release. Commit $(git rev-parse HEAD) can be cherry-picked manually."
+              elif echo "$PUSH_OUTPUT" | grep -qiE 'rule violations|pull request|protected branch'; then
+                # Branch protection requires a PR — create one and merge it.
+                echo "ℹ️ Branch protection active; creating PR for version bump..."
+                BUMP_BRANCH="release/version-bump-v${VERSION}"
+
+                # Clean up any leftover branch from a previous attempt.
+                git push origin --delete "$BUMP_BRANCH" 2>/dev/null || true
+
+                git checkout -b "$BUMP_BRANCH"
+                git push origin "$BUMP_BRANCH"
+
+                PR_URL=$(gh pr create \
+                  --base "$BRANCH" \
+                  --head "$BUMP_BRANCH" \
+                  --title "$COMMIT_MSG" \
+                  --body "Automated version bump from release workflow run [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}).") && {
+
+                  echo "✅ Created PR: $PR_URL"
+
+                  # Merge immediately (0 required approvals) then clean up.
+                  gh pr merge "$PR_URL" --squash --delete-branch && {
+                    echo "✅ Version bump PR merged"
+                  } || {
+                    # If immediate merge fails (e.g. pending checks), enable auto-merge.
+                    echo "ℹ️ Immediate merge blocked; enabling auto-merge..."
+                    gh pr merge "$PR_URL" --squash --auto --delete-branch && {
+                      echo "✅ Auto-merge enabled — PR will merge when checks pass"
+                    } || {
+                      echo "::warning::Could not merge version bump PR automatically. Please merge manually: $PR_URL"
+                    }
+                  }
+                } || {
+                  echo "::warning::Could not create version bump PR. The commit can be cherry-picked from branch ${BUMP_BRANCH}."
+                }
               else
                 echo "::error::Failed to push package.json version bump"
                 echo "$PUSH_OUTPUT"
