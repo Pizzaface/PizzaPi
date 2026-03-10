@@ -531,7 +531,11 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
       if (arg === "reload") {
         ctx?.ui?.notify?.("Reloading MCP tools…");
         try {
-          const snapshot = await load();
+          // Use bridge.reload() instead of load() directly so that relay
+          // context is reapplied to freshly created OAuth providers. Calling
+          // load() directly would leave providers in local-callback mode,
+          // breaking web-based MCP OAuth for remote sessions.
+          const snapshot = await bridge.reload();
           ctx?.ui?.notify?.(snapshot.lines.join("\n"));
           // Emit report so web UI can update
           const report = buildStartupReport();
