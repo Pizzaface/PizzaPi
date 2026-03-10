@@ -321,15 +321,36 @@ function createHttpMcpClient(opts: { name: string; url: string; headers?: Record
 
 type EnvironmentToken = { token: string; source: string };
 
+/** Trusted GitHub hostnames for automatic token detection. */
+const GITHUB_HOSTS = new Set([
+  "github.com",
+  "api.github.com",
+  "api.githubcopilot.com",
+]);
+
+/**
+ * Check whether a URL points to a known GitHub host.
+ * Uses exact hostname matching (or `.github.com` suffix) to prevent
+ * token exfiltration to attacker-controlled URLs like `github.evil.com`.
+ */
+export function isGitHubHost(serverUrl: string): boolean {
+  try {
+    const hostname = new URL(serverUrl).hostname.toLowerCase();
+    return GITHUB_HOSTS.has(hostname) || hostname.endsWith(".github.com");
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Try to find an existing token that might work for the given MCP server URL.
  * Checks environment variables and CLI tools (e.g. `gh auth token`).
  */
 async function detectEnvironmentToken(serverUrl: string): Promise<EnvironmentToken | null> {
-  const url = serverUrl.toLowerCase();
-
-  // GitHub-specific: check env vars and `gh` CLI
-  if (url.includes("github")) {
+  // GitHub-specific: check env vars and `gh` CLI.
+  // Use strict hostname matching to prevent token exfiltration to attacker-controlled URLs.
+  const isGitHub = isGitHubHost(serverUrl);
+  if (isGitHub) {
     // GITHUB_TOKEN is the standard env var
     if (process.env.GITHUB_TOKEN) {
       return { token: process.env.GITHUB_TOKEN, source: "GITHUB_TOKEN env var" };

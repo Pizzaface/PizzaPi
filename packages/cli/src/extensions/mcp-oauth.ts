@@ -34,12 +34,16 @@ import type {
 // Token / client info persistence
 // ─────────────────────────────────────────────────────────────────────────────
 
-const MCP_AUTH_DIR = join(homedir(), ".pizzapi", "mcp-auth");
+/** Resolve auth directory lazily so tests can override HOME. */
+function getMcpAuthDir(): string {
+  return join(homedir(), ".pizzapi", "mcp-auth");
+}
 
 /** Derive a short, filesystem-safe key from a server URL. */
 function serverKey(serverUrl: string): string {
-  // Use base64url encoding (no crypto hash) to create a safe filename from the URL.
-  return Buffer.from(serverUrl).toString("base64url").slice(0, 32);
+  // Use SHA-256 hash to avoid prefix-truncation collisions between similar URLs.
+  const hash = new Bun.CryptoHasher("sha256").update(serverUrl).digest("hex");
+  return hash.slice(0, 32);
 }
 
 interface PersistedAuth {
@@ -49,7 +53,7 @@ interface PersistedAuth {
 }
 
 function loadPersistedAuth(serverUrl: string): PersistedAuth {
-  const path = join(MCP_AUTH_DIR, `${serverKey(serverUrl)}.json`);
+  const path = join(getMcpAuthDir(), `${serverKey(serverUrl)}.json`);
   if (!existsSync(path)) return {};
   try {
     return JSON.parse(readFileSync(path, "utf-8"));
@@ -59,8 +63,9 @@ function loadPersistedAuth(serverUrl: string): PersistedAuth {
 }
 
 function savePersistedAuth(serverUrl: string, auth: PersistedAuth): void {
-  mkdirSync(MCP_AUTH_DIR, { recursive: true });
-  const path = join(MCP_AUTH_DIR, `${serverKey(serverUrl)}.json`);
+  const dir = getMcpAuthDir();
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, `${serverKey(serverUrl)}.json`);
   writeFileSync(path, JSON.stringify(auth, null, 2));
 }
 

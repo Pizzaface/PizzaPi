@@ -1,5 +1,21 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test, beforeAll, afterAll } from "bun:test";
+import { mkdtempSync, rmSync } from "fs";
+import { join } from "path";
+import { tmpdir } from "os";
 import { PizzaPiOAuthProvider, startCallbackServer, encodeRelayState, type RelayContext } from "./mcp-oauth.js";
+
+// Redirect HOME to a temp directory so tests don't write to the real home.
+const originalHome = process.env.HOME;
+const tempHome = mkdtempSync(join(tmpdir(), "mcp-oauth-test-"));
+
+beforeAll(() => {
+    process.env.HOME = tempHome;
+});
+
+afterAll(() => {
+    process.env.HOME = originalHome;
+    try { rmSync(tempHome, { recursive: true, force: true }); } catch {}
+});
 
 describe("PizzaPiOAuthProvider", () => {
     function createProvider() {

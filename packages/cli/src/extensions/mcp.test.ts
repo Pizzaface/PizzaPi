@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { McpServerInitResult, McpRegistrationResult } from "./mcp.js";
-import { MCP_PROTOCOL_VERSION, MCP_SUPPORTED_VERSIONS, MCP_CLIENT_INFO } from "./mcp.js";
+import { MCP_PROTOCOL_VERSION, MCP_SUPPORTED_VERSIONS, MCP_CLIENT_INFO, isGitHubHost } from "./mcp.js";
 
 /**
  * Unit tests for MCP client initialization, timeout, and parallel init behavior.
@@ -425,5 +425,40 @@ describe("MCP initialize handshake (Streamable HTTP)", () => {
         } finally {
             server.stop(true);
         }
+    });
+});
+
+describe("isGitHubHost", () => {
+    test("accepts known GitHub hosts", () => {
+        expect(isGitHubHost("https://github.com/owner/repo")).toBe(true);
+        expect(isGitHubHost("https://api.github.com/repos")).toBe(true);
+        expect(isGitHubHost("https://api.githubcopilot.com/mcp")).toBe(true);
+    });
+
+    test("accepts subdomains of github.com", () => {
+        expect(isGitHubHost("https://models.github.com/mcp")).toBe(true);
+        expect(isGitHubHost("https://copilot.github.com/v1")).toBe(true);
+    });
+
+    test("rejects attacker-controlled URLs containing 'github'", () => {
+        expect(isGitHubHost("https://github.evil.com/mcp")).toBe(false);
+        expect(isGitHubHost("https://notgithub.com/mcp")).toBe(false);
+        expect(isGitHubHost("https://evil.com/github")).toBe(false);
+        expect(isGitHubHost("https://github.attacker.example/mcp")).toBe(false);
+    });
+
+    test("rejects non-GitHub URLs", () => {
+        expect(isGitHubHost("https://example.com/mcp")).toBe(false);
+        expect(isGitHubHost("https://gitlab.com/mcp")).toBe(false);
+    });
+
+    test("handles invalid URLs gracefully", () => {
+        expect(isGitHubHost("not-a-url")).toBe(false);
+        expect(isGitHubHost("")).toBe(false);
+    });
+
+    test("is case-insensitive", () => {
+        expect(isGitHubHost("https://GitHub.COM/owner/repo")).toBe(true);
+        expect(isGitHubHost("https://API.GITHUB.COM/repos")).toBe(true);
     });
 });
