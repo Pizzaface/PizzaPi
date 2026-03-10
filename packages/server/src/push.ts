@@ -9,11 +9,37 @@ import { getKysely } from "./auth.js";
 let vapidPublicKey = process.env.VAPID_PUBLIC_KEY ?? "";
 let vapidPrivateKey = process.env.VAPID_PRIVATE_KEY ?? "";
 
-if (!vapidPublicKey || !vapidPrivateKey) {
+/**
+ * Validate that VAPID keys are well-formed before passing them to web-push.
+ * The private key must decode to exactly 32 bytes (256-bit EC key).
+ * The public key must decode to exactly 65 bytes (uncompressed EC point).
+ * Returns true if both keys look valid; false otherwise.
+ */
+function areVapidKeysValid(publicKey: string, privateKey: string): boolean {
+    if (!publicKey || !privateKey) return false;
+    try {
+        // web-push expects URL-safe base64. Decode and check byte lengths.
+        const privBytes = Buffer.from(privateKey, "base64url");
+        const pubBytes = Buffer.from(publicKey, "base64url");
+        // EC P-256: private key = 32 bytes, public key (uncompressed) = 65 bytes
+        if (privBytes.length !== 32) return false;
+        if (pubBytes.length !== 65) return false;
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+if (!areVapidKeysValid(vapidPublicKey, vapidPrivateKey)) {
+    if (vapidPublicKey || vapidPrivateKey) {
+        // Keys were provided but are malformed — warn loudly so the user can fix them.
+        console.warn("[push] ⚠️  VAPID keys are set but invalid (private key must be 32 bytes, public key 65 bytes when base64url-decoded).");
+        console.warn("[push]    Falling back to ephemeral keys.");
+    }
     const generated = webpush.generateVAPIDKeys();
     vapidPublicKey = generated.publicKey;
     vapidPrivateKey = generated.privateKey;
-    console.warn("[push] ⚠️  No VAPID keys configured — using ephemeral keys.");
+    console.warn("[push] ⚠️  No valid VAPID keys configured — using ephemeral keys.");
     console.warn("[push]    Push subscriptions will break on every server restart.");
     console.warn("[push]    To fix, add these to your environment:");
     console.warn(`[push]    VAPID_PUBLIC_KEY=${vapidPublicKey}`);

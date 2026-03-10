@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
 import type { PizzaPiConfig } from "../config.js";
-import { PizzaPiOAuthProvider } from "./mcp-oauth.js";
+import { PizzaPiOAuthProvider, type RelayContext } from "./mcp-oauth.js";
 
 /**
  * Minimal MCP client transport + tool bridge.
@@ -40,6 +40,15 @@ type McpCallToolResult = {
 
 type McpClient = {
   name: string;
+  /**
+   * Perform the MCP initialize handshake (and any OAuth if needed).
+   * Separating this from listTools() allows callers to complete auth
+   * without being constrained by tool-listing timeouts.
+   *
+   * An optional AbortSignal can be passed to cancel the in-flight
+   * handshake request (e.g. when an init timeout fires).
+   */
+  initialize(signal?: AbortSignal): Promise<void>;
   listTools(): Promise<McpTool[]>;
   callTool(toolName: string, args: unknown, signal?: AbortSignal): Promise<McpCallToolResult>;
   close(): void;
@@ -202,14 +211,14 @@ function createStdioMcpClient(opts: { name: string; command: string; args?: stri
   // ── Lazy MCP initialize handshake ──────────────────────────────────────
   let initPromise: Promise<void> | null = null;
 
-  function ensureInitialized(): Promise<void> {
+  function ensureInitialized(signal?: AbortSignal): Promise<void> {
     if (!initPromise) {
       initPromise = (async () => {
         const result = await request("initialize", {
           protocolVersion: MCP_PROTOCOL_VERSION,
           capabilities: {},
           clientInfo: MCP_CLIENT_INFO,
-        });
+        }, signal);
 
         if (result?.protocolVersion && !MCP_SUPPORTED_VERSIONS.has(result.protocolVersion)) {
           throw new Error(`MCP server "${opts.name}" returned unsupported protocol version: ${result.protocolVersion}`);
@@ -224,6 +233,7 @@ function createStdioMcpClient(opts: { name: string; command: string; args?: stri
 
   return {
     name: opts.name,
+    initialize: (signal?: AbortSignal) => ensureInitialized(signal),
     async listTools() {
       await ensureInitialized();
       const res = (await request("tools/list")) as McpListToolsResult;
@@ -280,14 +290,14 @@ function createHttpMcpClient(opts: { name: string; url: string; headers?: Record
   // ── Lazy MCP initialize handshake ──────────────────────────────────────
   let initPromise: Promise<void> | null = null;
 
-  function ensureInitialized(): Promise<void> {
+  function ensureInitialized(signal?: AbortSignal): Promise<void> {
     if (!initPromise) {
       initPromise = (async () => {
         const result = await request("initialize", {
           protocolVersion: MCP_PROTOCOL_VERSION,
           capabilities: {},
           clientInfo: MCP_CLIENT_INFO,
-        });
+        }, signal);
 
         if (result?.protocolVersion && !MCP_SUPPORTED_VERSIONS.has(result.protocolVersion)) {
           throw new Error(`MCP server "${opts.name}" returned unsupported protocol version: ${result.protocolVersion}`);
@@ -301,6 +311,7 @@ function createHttpMcpClient(opts: { name: string; url: string; headers?: Record
 
   return {
     name: opts.name,
+    initialize: (signal?: AbortSignal) => ensureInitialized(signal),
     async listTools() {
       await ensureInitialized();
       const res = (await request("tools/list")) as McpListToolsResult;
@@ -408,6 +419,7 @@ function createStreamableMcpClient(opts: {
 }): McpClient {
   let nextId = 1;
   let sessionId: string | undefined;
+  let closed = false;
   const oauthProvider = opts.oauthProvider;
 
   function buildHeaders(extra?: Record<string, string>): Record<string, string> {
@@ -495,9 +507,21 @@ function createStreamableMcpClient(opts: {
       signal,
     });
 
-    // Capture / update session ID
+    // Capture / update session ID.
+    // If the client was already closed (e.g. init timeout fired while this
+    // request was in flight), don't adopt the session — send DELETE immediately
+    // to prevent an orphaned remote session.
     const sid = res.headers.get("mcp-session-id");
-    if (sid) sessionId = sid;
+    if (sid) {
+      if (closed) {
+        fetch(opts.url, {
+          method: "DELETE",
+          headers: { ...(opts.headers ?? {}), "mcp-session-id": sid },
+        }).catch(() => {});
+      } else {
+        sessionId = sid;
+      }
+    }
 
     if (!res.ok) return { result: null, status: res.status, response: res };
 
@@ -634,14 +658,14 @@ function createStreamableMcpClient(opts: {
   // ── Lazy MCP initialize handshake ──────────────────────────────────────
   let initPromise: Promise<void> | null = null;
 
-  function ensureInitialized(): Promise<void> {
+  function ensureInitialized(signal?: AbortSignal): Promise<void> {
     if (!initPromise) {
       initPromise = (async () => {
         const result = await request("initialize", {
           protocolVersion: MCP_PROTOCOL_VERSION,
           capabilities: {},
           clientInfo: MCP_CLIENT_INFO,
-        });
+        }, signal);
 
         if (result?.protocolVersion && !MCP_SUPPORTED_VERSIONS.has(result.protocolVersion)) {
           throw new Error(`MCP server "${opts.name}" returned unsupported protocol version: ${result.protocolVersion}`);
@@ -655,6 +679,7 @@ function createStreamableMcpClient(opts: {
 
   return {
     name: opts.name,
+    initialize: (signal?: AbortSignal) => ensureInitialized(signal),
     async listTools() {
       await ensureInitialized();
       const res = (await request("tools/list")) as McpListToolsResult;
@@ -666,6 +691,8 @@ function createStreamableMcpClient(opts: {
       return (res ?? {}) as McpCallToolResult;
     },
     close() {
+      // Mark as closed so late-arriving responses don't adopt a session ID.
+      closed = true;
       // Best-effort session teardown
       if (sessionId) {
         const sid = sessionId;
@@ -809,6 +836,17 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
 /** Default timeout for MCP server tools/list calls: 30 seconds. */
 const DEFAULT_MCP_TIMEOUT = 30_000;
 
+/**
+ * Default timeout for MCP server initialization (handshake + possible OAuth): 3 minutes.
+ * This is intentionally much longer than the tool-listing timeout because
+ * OAuth flows require user interaction (opening a browser, clicking through
+ * consent screens). The OAuth callback server itself has a 2-minute timeout,
+ * so 3 minutes gives enough headroom. For non-OAuth servers, the init
+ * handshake completes in milliseconds — the timeout is just a safety net
+ * against hung processes or stalled network endpoints.
+ */
+const DEFAULT_MCP_INIT_TIMEOUT = 180_000;
+
 /** Per-server initialization result collected during parallel init. */
 export type McpServerInitResult = {
   name: string;
@@ -874,20 +912,78 @@ async function listToolsWithTimeout(client: McpClient, timeoutMs: number): Promi
   return result;
 }
 
-export async function registerMcpTools(pi: any, config: PizzaPiConfig & McpConfig): Promise<McpRegistrationResult> {
+export async function registerMcpTools(pi: any, config: PizzaPiConfig & McpConfig, relayContext?: RelayContext | null): Promise<McpRegistrationResult> {
   const totalStart = Date.now();
   const clients = await createMcpClientsFromConfig(config);
   const empty: McpRegistrationResult = { clients: [], toolCount: 0, toolNames: [], errors: [], serverTools: {}, serverTimings: [], totalDurationMs: 0 };
   if (clients.length === 0) return { ...empty, totalDurationMs: Date.now() - totalStart };
 
-  // Determine per-server timeout from config (0 = disabled)
-  const timeoutMs = typeof (config as any).mcpTimeout === "number" ? (config as any).mcpTimeout : DEFAULT_MCP_TIMEOUT;
+  // Apply relay context to newly created OAuth providers before initialization.
+  // During /mcp reload the relay is already connected, so providers need the
+  // context immediately — otherwise waitForRelayContext() falls through to
+  // local mode and OAuth opens in a local browser instead of the web UI.
+  if (relayContext) {
+    for (const provider of getOAuthProviders()) {
+      provider.relayContext = relayContext;
+    }
+  }
 
-  // ── Phase 1: Initialize all servers in parallel ──────────────────────────
+  // Determine per-server timeouts from config (0 = disabled)
+  const timeoutMs = typeof (config as any).mcpTimeout === "number" ? (config as any).mcpTimeout : DEFAULT_MCP_TIMEOUT;
+  const initTimeoutMs = typeof (config as any).mcpInitTimeout === "number" ? (config as any).mcpInitTimeout : DEFAULT_MCP_INIT_TIMEOUT;
+
+  // ── Phase 1: Initialize + list tools for all servers in parallel ─────────
+  //
+  // Initialization is performed first (may trigger OAuth which requires user
+  // interaction and can take minutes). The tool-listing timeout only applies
+  // to the subsequent tools/list call — not the auth flow — so servers that
+  // require OAuth are not killed by the 30 s default timeout.
   const initResults = await Promise.all(
     clients.map(async (client): Promise<McpServerInitResult> => {
       const start = Date.now();
       try {
+        // Initialize the MCP handshake (+ any OAuth) with a generous timeout.
+        // OAuth flows have their own 2-min callback timeout; the init timeout
+        // (default 3 min) is a safety net against hung processes / stalled
+        // endpoints that would otherwise block forever.
+        //
+        // When the timeout fires we:
+        //  1. Abort the in-flight request via AbortController (cancels fetch /
+        //     STDIO pending request so the handshake doesn't complete late).
+        //  2. Close the client immediately (kills child process / marks
+        //     streamable client as closed so a late response can't set
+        //     sessionId and leak a remote MCP session).
+        //  3. Suppress the dangling initPromise rejection to prevent
+        //     unhandled-rejection crashes.
+        if (initTimeoutMs > 0) {
+          const ac = new AbortController();
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          const initPromise = client.initialize(ac.signal);
+          try {
+            const initTimer = new Promise<never>((_, reject) => {
+              timer = setTimeout(() => reject(new Error(
+                `Timed out after ${Math.round(initTimeoutMs / 1000)}s waiting for MCP initialize handshake`,
+              )), initTimeoutMs);
+            });
+            await Promise.race([initPromise, initTimer]);
+          } catch (err) {
+            // Abort in-flight requests and close the client to prevent
+            // orphaned remote MCP sessions from late-arriving responses.
+            ac.abort();
+            try { client.close(); } catch {}
+            // Suppress the dangling init promise to avoid unhandled rejection
+            initPromise.catch(() => {});
+            throw err;
+          } finally {
+            if (timer !== undefined) clearTimeout(timer);
+          }
+        } else {
+          await client.initialize();
+        }
+
+        // Now list tools with the configurable timeout.  Since initialize()
+        // already resolved, ensureInitialized() inside listTools() returns
+        // immediately — the timeout only covers the tools/list request.
         const { tools, error, timedOut } = await listToolsWithTimeout(client, timeoutMs);
         const durationMs = Date.now() - start;
         if (error) {
