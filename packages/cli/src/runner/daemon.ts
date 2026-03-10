@@ -1,7 +1,8 @@
-import { spawn, exec, execSync, type ChildProcess } from "node:child_process";
+import { spawn, exec, execFile, execSync, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { mkdir, readdir, stat, readFile } from "node:fs/promises";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -937,8 +938,9 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 // Use git ls-files to get tracked + untracked-not-ignored files.
                 // Use async exec to avoid blocking the event loop (which would
                 // prevent Socket.IO pings from being answered).
-                const { stdout } = await execAsync(
-                    "git ls-files --cached --others --exclude-standard",
+                const { stdout } = await execFileAsync(
+                    "git",
+                    ["ls-files", "--cached", "--others", "--exclude-standard"],
                     { cwd, timeout: 10000, maxBuffer: 10 * 1024 * 1024 },
                 );
                 const lowerQuery = query.toLowerCase();
@@ -1043,10 +1045,10 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 // event loop (which would prevent Socket.IO pings from being
                 // answered, causing spurious disconnects).
                 const [branchResult, statusResult, diffStagedResult, abResult] = await Promise.allSettled([
-                    execAsync("git rev-parse --abbrev-ref HEAD", { cwd, timeout: 5000 }),
-                    execAsync("git status --porcelain=v1 -uall", { cwd, timeout: 10000 }),
-                    execAsync("git diff --cached --stat", { cwd, timeout: 10000 }),
-                    execAsync("git rev-list --left-right --count HEAD...@{u}", { cwd, timeout: 5000 }),
+                    execFileAsync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd, timeout: 5000 }),
+                    execFileAsync("git", ["status", "--porcelain=v1", "-uall"], { cwd, timeout: 10000 }),
+                    execFileAsync("git", ["diff", "--cached", "--stat"], { cwd, timeout: 10000 }),
+                    execFileAsync("git", ["rev-list", "--left-right", "--count", "HEAD...@{u}"], { cwd, timeout: 5000 }),
                 ]);
 
                 const branch = branchResult.status === "fulfilled" ? branchResult.value.stdout.trim() : "";
@@ -1117,7 +1119,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             }
             try {
                 const args = staged ? ["diff", "--cached", "--", filePath] : ["diff", "--", filePath];
-                const { stdout: diff } = await execAsync(`git ${args.join(" ")}`, { cwd, timeout: 10000 });
+                const { stdout: diff } = await execFileAsync("git", args, { cwd, timeout: 10000 });
                 socket.emit("file_result", { requestId, ok: true, diff });
             } catch (err) {
                 socket.emit("file_result", {
