@@ -160,6 +160,16 @@ describe("getClientIp", () => {
         expect(getClientIp(req)).toBe("unknown");
     });
 
+    test("respects X-Forwarded-For if direct IP is IPv4-mapped IPv6 private network", () => {
+        const req = new Request("http://localhost", {
+            headers: {
+                "x-pizzapi-client-ip": "::ffff:172.18.0.22",
+                "x-forwarded-for": "198.51.100.3"
+            }
+        });
+        expect(getClientIp(req)).toBe("198.51.100.3");
+    });
+
     test("respects X-Forwarded-For if direct IP is local loopback", () => {
         const req = new Request("http://localhost", {
             headers: {
@@ -168,6 +178,36 @@ describe("getClientIp", () => {
             }
         });
         expect(getClientIp(req)).toBe("203.0.113.5");
+    });
+
+    test("respects X-Forwarded-For if direct IP is private network (10.x)", () => {
+        const req = new Request("http://localhost", {
+            headers: {
+                "x-pizzapi-client-ip": "10.42.0.5",
+                "x-forwarded-for": "198.51.100.3"
+            }
+        });
+        expect(getClientIp(req)).toBe("198.51.100.3");
+    });
+
+    test("respects X-Forwarded-For if direct IP is private network (172.16-31.x)", () => {
+        const req = new Request("http://localhost", {
+            headers: {
+                "x-pizzapi-client-ip": "172.18.0.22",
+                "x-forwarded-for": "198.51.100.3"
+            }
+        });
+        expect(getClientIp(req)).toBe("198.51.100.3");
+    });
+
+    test("respects X-Forwarded-For if direct IP is private network (192.168.x)", () => {
+        const req = new Request("http://localhost", {
+            headers: {
+                "x-pizzapi-client-ip": "192.168.1.100",
+                "x-forwarded-for": "198.51.100.3"
+            }
+        });
+        expect(getClientIp(req)).toBe("198.51.100.3");
     });
 
     test("ignores X-Forwarded-For if direct IP is not trusted", () => {
