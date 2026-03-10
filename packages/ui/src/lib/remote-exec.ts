@@ -9,6 +9,7 @@ export type RemoteExecCommand =
   | { command: "cycle_thinking_level" }
   | { command: "set_steering_mode"; mode: string }
   | { command: "set_follow_up_mode"; mode: string }
+  | { command: "refresh_usage" }
   | { command: "compact"; customInstructions?: string }
   | { command: "set_session_name"; name: string }
   | { command: "get_last_assistant_text" }

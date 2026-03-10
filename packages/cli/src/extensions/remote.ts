@@ -117,12 +117,39 @@ export const remoteExtension: ExtensionFactory = (pi) => {
     // render cycle (e.g. status set during session_start before ui.start()).
     let relayStatusText = "";
 
+    // ── MCP startup report cache ──────────────────────────────────────────────
+    // Captured when the MCP extension emits mcp:startup_report, and included
+    // in heartbeats so reconnecting web viewers can see startup timing info.
+    interface McpStartupReportSummary {
+        toolCount: number;
+        serverCount: number;
+        totalDurationMs: number;
+        slow: boolean;
+        /** Whether slow-startup warnings should be shown (from config). */
+        showSlowWarning: boolean;
+        errors: Array<{ server: string; error: string }>;
+        serverTimings: Array<{
+            name: string;
+            durationMs: number;
+            toolCount: number;
+            timedOut: boolean;
+            error?: string;
+        }>;
+        ts: number;
+    }
+    let lastMcpStartupReport: McpStartupReportSummary | null = null;
+
     // ── Provider usage cache ──────────────────────────────────────────────────
     // Generic normalized shape shared with the UI.
     interface UsageWindow { label: string; utilization: number; resets_at: string }
-    interface ProviderUsageData { windows: UsageWindow[] }
+    interface ProviderUsageData {
+        windows: UsageWindow[];
+        status?: "ok" | "unknown";
+        errorCode?: number;
+    }
 
-    const USAGE_CACHE_TTL = 5 * 60 * 1000; // 5 min
+    const DEFAULT_USAGE_CACHE_TTL = 5 * 60 * 1000; // 5 min
+    const ANTHROPIC_USAGE_CACHE_TTL = 15 * 60 * 1000; // 15 min (rate-limit anthropic checks)
     const usageCache = new Map<string, { data: ProviderUsageData; fetchedAt: number }>();
 
     // When running as a runner-spawned worker the daemon is responsible for
@@ -174,9 +201,15 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         }
     }
 
-    function isCached(providerId: string): boolean {
+    function providerUsageTtl(providerId: string): number {
+        return providerId === "anthropic" ? ANTHROPIC_USAGE_CACHE_TTL : DEFAULT_USAGE_CACHE_TTL;
+    }
+
+    function isCached(providerId: string, opts: { force?: boolean } = {}): boolean {
+        if (opts.force) return false;
         const entry = usageCache.get(providerId);
-        return !!entry && Date.now() - entry.fetchedAt < USAGE_CACHE_TTL;
+        if (!entry) return false;
+        return Date.now() - entry.fetchedAt < providerUsageTtl(providerId);
     }
 
     function buildProviderUsage(): Record<string, ProviderUsageData> {
@@ -212,8 +245,8 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         }
     }
 
-    async function refreshAnthropicUsage(): Promise<void> {
-        if (isCached("anthropic")) return;
+    async function refreshAnthropicUsage(opts: { force?: boolean } = {}): Promise<void> {
+        if (isCached("anthropic", opts)) return;
         const token = getOAuthToken("anthropic");
         if (!token) return;
         try {
@@ -224,7 +257,15 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                     "anthropic-beta": "oauth-2025-04-20",
                 },
             });
-            if (!res.ok) return;
+            if (!res.ok) {
+                if (res.status === 403) {
+                    usageCache.set("anthropic", {
+                        data: { windows: [], status: "unknown", errorCode: 403 },
+                        fetchedAt: Date.now(),
+                    });
+                }
+                return;
+            }
             const raw = (await res.json()) as Record<string, unknown>;
 
             // Map known windows; ignore nulls and unknown fields.
@@ -244,15 +285,15 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 }
             }
             if (windows.length > 0) {
-                usageCache.set("anthropic", { data: { windows }, fetchedAt: Date.now() });
+                usageCache.set("anthropic", { data: { windows, status: "ok" }, fetchedAt: Date.now() });
             }
         } catch {
             // Non-fatal
         }
     }
 
-    async function refreshCodexUsage(): Promise<void> {
-        if (isCached("openai-codex")) return;
+    async function refreshCodexUsage(opts: { force?: boolean } = {}): Promise<void> {
+        if (isCached("openai-codex", opts)) return;
         const token = getOAuthToken("openai-codex");
         if (!token) return;
         try {
@@ -262,7 +303,15 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                     Authorization: `Bearer ${token}`,
                 },
             });
-            if (!res.ok) return;
+            if (!res.ok) {
+                if (res.status === 403) {
+                    usageCache.set("openai-codex", {
+                        data: { windows: [], status: "unknown", errorCode: 403 },
+                        fetchedAt: Date.now(),
+                    });
+                }
+                return;
+            }
             const raw = (await res.json()) as {
                 plan_type?: string;
                 rate_limit?: {
@@ -340,15 +389,15 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             }
 
             if (windows.length > 0) {
-                usageCache.set("openai-codex", { data: { windows }, fetchedAt: Date.now() });
+                usageCache.set("openai-codex", { data: { windows, status: "ok" }, fetchedAt: Date.now() });
             }
         } catch {
             // Non-fatal
         }
     }
 
-    async function refreshGeminiUsage(): Promise<void> {
-        if (isCached("google-gemini-cli")) return;
+    async function refreshGeminiUsage(opts: { force?: boolean } = {}): Promise<void> {
+        if (isCached("google-gemini-cli", opts)) return;
         // Credentials are stored as JSON: { token, projectId }
         let token: string;
         let projectId: string;
@@ -377,7 +426,15 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 },
                 body: JSON.stringify({ project: projectId }),
             });
-            if (!res.ok) return;
+            if (!res.ok) {
+                if (res.status === 403) {
+                    usageCache.set("google-gemini-cli", {
+                        data: { windows: [], status: "unknown", errorCode: 403 },
+                        fetchedAt: Date.now(),
+                    });
+                }
+                return;
+            }
 
             const raw = (await res.json()) as {
                 buckets?: Array<{
@@ -398,26 +455,30 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 windows.push({ label, utilization, resets_at: bucket.resetTime });
             }
             if (windows.length > 0) {
-                usageCache.set("google-gemini-cli", { data: { windows }, fetchedAt: Date.now() });
+                usageCache.set("google-gemini-cli", { data: { windows, status: "ok" }, fetchedAt: Date.now() });
             }
         } catch {
             // Non-fatal
         }
     }
 
-    async function refreshAllUsage(): Promise<void> {
-        if (runnerUsageCachePath) {
+    async function refreshAllUsage(opts: { force?: boolean } = {}): Promise<void> {
+        const force = opts.force === true;
+
+        if (runnerUsageCachePath && !force) {
             // Runner-spawned worker: read the daemon's shared cache instead of
             // making independent API calls.  The daemon already fetches on our
-            // behalf and keeps the file fresh every 5 minutes.
+            // behalf and keeps the file fresh.
             await refreshFromRunnerCache();
             return;
         }
-        // CLI session: fetch directly from each provider as before.
+
+        // CLI session, or an explicit manual refresh in runner mode: fetch
+        // directly from each provider.
         await Promise.allSettled([
-            refreshAnthropicUsage(),
-            refreshCodexUsage(),
-            refreshGeminiUsage(),
+            refreshAnthropicUsage({ force }),
+            refreshCodexUsage({ force }),
+            refreshGeminiUsage({ force }),
         ]);
     }
 
@@ -677,6 +738,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                       pluginSummaries: pendingPluginTrust.pluginSummaries,
                   }
                 : null,
+            mcpStartupReport: lastMcpStartupReport,
         };
     }
 
@@ -956,6 +1018,14 @@ export const remoteExtension: ExtensionFactory = (pi) => {
 
             if (req.command === "set_follow_up_mode") {
                 replyErr("set_follow_up_mode is not supported by the PizzaPi runner yet");
+                return;
+            }
+
+            if (req.command === "refresh_usage") {
+                await refreshAllUsage({ force: true });
+                const providerUsage = buildProviderUsage();
+                replyOk({ providerUsage, refreshedAt: Date.now() });
+                forwardEvent(buildHeartbeat());
                 return;
             }
 
@@ -1653,6 +1723,10 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             forwardEvent({ type: "session_active", state: buildSessionState() });
             void refreshAllUsage();
             startHeartbeat();
+
+            // Now that relay is set, inject the relay context into MCP OAuth
+            // providers so they can route callbacks through the PizzaPi server.
+            updateMcpRelayContext();
         });
 
         // ── Incoming events from server ───────────────────────────────────
@@ -1741,12 +1815,44 @@ export const remoteExtension: ExtensionFactory = (pi) => {
 
         // socket.io fires "connect" again on reconnect, which triggers
         // re-registration automatically via the handler above.
+
+        // ── MCP OAuth relay context ───────────────────────────────────────
+        // Update OAuth relay context when connection state changes so MCP
+        // OAuth providers can route callbacks through the PizzaPi server.
+        sock.on("connect", () => updateMcpRelayContext());
+        sock.on("disconnect", () => {
+            const bridge = getMcpBridge();
+            bridge?.setRelayContext?.(null);
+        });
+
+        // Listen for OAuth callback delivery from the server
+        (sock as any).on("mcp_oauth_callback", (data: any) => {
+            if (data && typeof data === "object" && typeof data.nonce === "string" && typeof data.code === "string") {
+                // Deliver to the pending callback
+                const resolve = oauthPendingCallbacks.get(data.nonce);
+                if (resolve) {
+                    oauthPendingCallbacks.delete(data.nonce);
+                    resolve(data.code);
+                }
+                // Also try via bridge
+                const bridge = getMcpBridge();
+                bridge?.deliverOAuthCallback?.(data.nonce, data.code);
+            }
+        });
+
+        // Set context now if already connected
+        updateMcpRelayContext();
     }
 
     function disconnect() {
         stopHeartbeat();
         cancelPendingAskUserQuestion();
         messageBus.setSendFn(null);
+        // Clear MCP OAuth relay context before tearing down the socket,
+        // since removeAllListeners() would prevent the disconnect handler
+        // from clearing it automatically.
+        const bridge = getMcpBridge();
+        bridge?.setRelayContext?.(null);
         if (sioSocket) {
             if (relay && sioSocket.connected) {
                 sioSocket.emit("session_end", { sessionId: relay.sessionId, token: relay.token });
@@ -2072,6 +2178,74 @@ export const remoteExtension: ExtensionFactory = (pi) => {
     // the web viewer picks up the new commands.
     pi.events.on("plugin:loaded", () => {
         forwardEvent(buildCapabilitiesState());
+    });
+
+    // ── Forward MCP startup reports to relay ──────────────────────────────────
+    // ── MCP OAuth relay context ──────────────────────────────────────────────
+    // When the relay connects, inject the relay context into the MCP OAuth
+    // providers so they can route OAuth callbacks through the PizzaPi server.
+    const oauthPendingCallbacks = new Map<string, (code: string) => void>();
+
+    function updateMcpRelayContext() {
+        const bridge = getMcpBridge();
+        if (!bridge?.setRelayContext) return;
+
+        if (relay && sioSocket?.connected) {
+            bridge.setRelayContext({
+                serverBaseUrl: relayHttpBaseUrl(),
+                sessionId: relay.sessionId,
+                emitEvent: (_eventName: string, data: unknown) => {
+                    forwardEvent(data);
+                },
+                waitForCallback: (nonce: string, timeoutMs: number = 120_000) => {
+                    return new Promise<string>((resolve, reject) => {
+                        const timer = setTimeout(() => {
+                            oauthPendingCallbacks.delete(nonce);
+                            reject(new Error("OAuth callback timed out"));
+                        }, timeoutMs);
+
+                        oauthPendingCallbacks.set(nonce, (code: string) => {
+                            clearTimeout(timer);
+                            resolve(code);
+                        });
+                    });
+                },
+            });
+        } else {
+            bridge.setRelayContext(null);
+        }
+    }
+
+    // Note: OAuth relay context listeners are registered inside connect()
+    // so they have access to the live socket.
+
+    // ── MCP auth events → web UI ─────────────────────────────────────────────
+    pi.events.on("mcp:auth_required", (data: unknown) => {
+        forwardEvent(data);
+    });
+
+    pi.events.on("mcp:auth_complete", (data: unknown) => {
+        forwardEvent(data);
+    });
+
+    // The MCP extension emits this event after initialization so the web UI
+    // can display timing info, slow-startup warnings, and server errors.
+    pi.events.on("mcp:startup_report", (report: unknown) => {
+        // Cache for heartbeats so reconnecting viewers see it
+        if (report && typeof report === "object") {
+            const r = report as Record<string, unknown>;
+            lastMcpStartupReport = {
+                toolCount: typeof r.toolCount === "number" ? r.toolCount : 0,
+                serverCount: typeof r.serverCount === "number" ? r.serverCount : 0,
+                totalDurationMs: typeof r.totalDurationMs === "number" ? r.totalDurationMs : 0,
+                slow: r.slow === true,
+                showSlowWarning: r.showSlowWarning !== false,
+                errors: Array.isArray(r.errors) ? r.errors as any : [],
+                serverTimings: Array.isArray(r.serverTimings) ? r.serverTimings as any : [],
+                ts: typeof r.ts === "number" ? r.ts : Date.now(),
+            };
+        }
+        forwardEvent(report);
     });
 
     // ── Forward agent events to relay ─────────────────────────────────────────

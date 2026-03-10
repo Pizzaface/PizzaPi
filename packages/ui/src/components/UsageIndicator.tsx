@@ -1,22 +1,17 @@
 import * as React from "react";
+import { RefreshCw } from "lucide-react";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
+import { Button } from "@/components/ui/button";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { cn } from "@/lib/utils";
+import {
+    providerUsageDisplay,
+    type UsageWindow,
+    type ProviderUsageData,
+    type ProviderUsageMap,
+} from "@/lib/provider-usage";
 
-// ── Shared types (mirrored from runner) ──────────────────────────────────────
-
-export interface UsageWindow {
-    label: string;
-    utilization: number; // 0–100
-    resets_at: string;   // ISO timestamp
-}
-
-export interface ProviderUsageData {
-    windows: UsageWindow[];
-}
-
-// Record<providerId, ProviderUsageData>  e.g. { anthropic: {...}, "openai-codex": {...} }
-export type ProviderUsageMap = Record<string, ProviderUsageData>;
+export { providerUsageDisplay, type UsageWindow, type ProviderUsageData, type ProviderUsageMap };
 
 // Auth source types relayed from the CLI
 export type AuthSource = "oauth" | "env" | "auth.json" | "unknown" | null;
@@ -56,7 +51,6 @@ function formatReset(isoString: string) {
     });
 }
 
-
 // ── Sub-components ───────────────────────────────────────────────────────────
 
 function UsageBar({ window: w }: { window: UsageWindow }) {
@@ -79,12 +73,27 @@ function UsageBar({ window: w }: { window: UsageWindow }) {
 }
 
 function ProviderSection({ providerId, data }: { providerId: string; data: ProviderUsageData }) {
+    const displayName = getProviderDisplayName(providerId);
+    if (data.status === "unknown") {
+        return (
+            <div className="flex flex-col gap-2">
+                <div className="flex items-center gap-1.5">
+                    <ProviderIcon provider={providerId} className="size-3 flex-shrink-0" />
+                    <span className="text-[0.7rem] font-semibold text-foreground">{displayName}</span>
+                </div>
+                <div className="text-[0.7rem] text-muted-foreground">
+                    Usage status unknown{typeof data.errorCode === "number" ? ` (HTTP ${data.errorCode})` : ""}.
+                </div>
+            </div>
+        );
+    }
+
     if (data.windows.length === 0) return null;
     return (
         <div className="flex flex-col gap-2">
             <div className="flex items-center gap-1.5">
                 <ProviderIcon provider={providerId} className="size-3 flex-shrink-0" />
-                <span className="text-[0.7rem] font-semibold text-foreground">{getProviderDisplayName(providerId)}</span>
+                <span className="text-[0.7rem] font-semibold text-foreground">{displayName}</span>
             </div>
             {data.windows.map((w) => (
                 <UsageBar key={w.label} window={w} />
@@ -106,12 +115,10 @@ function ProviderBadge({
     providerId: string;
     data: ProviderUsageData;
 }) {
-    const usedPct = Math.min(
-        100,
-        Math.max(0, ...data.windows.map((w) => w.utilization)),
-    );
-    const remainingPct = Math.max(0, 100 - usedPct);
-    const label = `${getProviderDisplayName(providerId)} subscription usage (${remainingPct.toFixed(0)}% remaining)`;
+    const display = providerUsageDisplay(data);
+    const label = display.kind === "unknown"
+        ? `${getProviderDisplayName(providerId)} subscription usage (unknown)`
+        : `${getProviderDisplayName(providerId)} subscription usage (${display.remainingPct.toFixed(0)}% remaining)`;
 
     // hovered: controlled by HoverCard's internal hover logic via onOpenChange
     // locked: toggled on click; cleared when pointer leaves while not hovering
@@ -128,8 +135,11 @@ function ProviderBadge({
                     onClick={() => setLocked((l) => !l)}
                 >
                     <ProviderIcon provider={providerId} className="size-3 flex-shrink-0" />
-                    <span className={cn("inline-block h-2 w-2 rounded-full flex-shrink-0", dotColorClass(usedPct))} />
-                    <span className="tabular-nums">{remainingPct.toFixed(0)}%</span>
+                    <span className={cn(
+                        "inline-block h-2 w-2 rounded-full flex-shrink-0",
+                        display.kind === "unknown" ? "bg-slate-400 dark:bg-slate-500" : dotColorClass(display.usedPct),
+                    )} />
+                    <span className="tabular-nums">{display.kind === "unknown" ? "UNKNOWN" : `${display.remainingPct.toFixed(0)}%`}</span>
                 </button>
             </HoverCardTrigger>
             <HoverCardContent
@@ -168,11 +178,14 @@ export interface UsageIndicatorProps {
     authSource?: string | null;
     /** Provider ID of the currently active model */
     activeProvider?: string | null;
+    /** Optional manual refresh action */
+    onRefresh?: () => void;
+    refreshing?: boolean;
 }
 
-export function UsageIndicator({ usage, authSource: rawAuthSource, activeProvider }: UsageIndicatorProps) {
+export function UsageIndicator({ usage, authSource: rawAuthSource, activeProvider, onRefresh, refreshing = false }: UsageIndicatorProps) {
     const entries = React.useMemo(
-        () => Object.entries(usage ?? {}).filter(([, d]) => d.windows.length > 0),
+        () => Object.entries(usage ?? {}).filter(([, d]) => d.status === "unknown" || d.windows.length > 0),
         [usage],
     );
 
@@ -182,19 +195,34 @@ export function UsageIndicator({ usage, authSource: rawAuthSource, activeProvide
     ) ? rawAuthSource : null;
 
     // env / auth.json → show "USAGE" badge (no subscription quota)
-    // oauth → only show if there's actual usage data (normal percentage badges)
+    // oauth → show if there's usage data, or an explicit unknown state.
     const showApiKeyBadge = !!activeProvider && (authSource === "env" || authSource === "auth.json");
 
-    if (entries.length === 0 && !showApiKeyBadge) return null;
+    if (entries.length === 0 && !showApiKeyBadge && !onRefresh) return null;
 
     return (
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2">
             {showApiKeyBadge && activeProvider && (
                 <ApiKeyUsageBadge provider={activeProvider} />
             )}
             {entries.map(([id, data]) => (
                 <ProviderBadge key={id} providerId={id} data={data} />
             ))}
+            {onRefresh && (
+                <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 px-2 text-[0.65rem] sm:text-xs"
+                    onClick={onRefresh}
+                    disabled={refreshing}
+                    aria-label="Refresh usage"
+                    title="Refresh usage"
+                >
+                    <RefreshCw className={cn("mr-1 h-3 w-3", refreshing && "animate-spin")} />
+                    Refresh
+                </Button>
+            )}
         </div>
     );
 }

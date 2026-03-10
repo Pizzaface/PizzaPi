@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+    detectInFlightTools,
     hasVisibleContent,
     tryParseJsonObject,
     normalizeToolName,
@@ -12,6 +13,105 @@ import {
     extToMime,
     resolveCommandPopoverState,
 } from "./utils";
+import type { RelayMessage } from "./types";
+
+// ── detectInFlightTools ─────────────────────────────────────────────────────
+
+function msg(overrides: Partial<RelayMessage> & { key: string; role: string }): RelayMessage {
+    return { ...overrides } as RelayMessage;
+}
+
+describe("detectInFlightTools", () => {
+    test("returns empty map when no messages", () => {
+        expect(detectInFlightTools([])).toEqual(new Map());
+    });
+
+    test("returns empty map when all tool calls have results", () => {
+        const messages: RelayMessage[] = [
+            msg({
+                key: "a1", role: "assistant",
+                content: [{ type: "toolCall", id: "tc1", name: "Bash" }],
+            }),
+            msg({ key: "r1", role: "toolResult", toolCallId: "tc1" }),
+        ];
+        expect(detectInFlightTools(messages)).toEqual(new Map());
+    });
+
+    test("detects in-flight tool call with no result", () => {
+        const messages: RelayMessage[] = [
+            msg({
+                key: "a1", role: "assistant",
+                content: [{ type: "toolCall", id: "tc1", name: "Bash" }],
+            }),
+        ];
+        const result = detectInFlightTools(messages);
+        expect(result.size).toBe(1);
+        expect(result.get("tc1")).toBe("Bash");
+    });
+
+    test("handles toolCallId field (instead of id) on toolCall blocks", () => {
+        const messages: RelayMessage[] = [
+            msg({
+                key: "a1", role: "assistant",
+                content: [{ type: "toolCall", toolCallId: "tc2", name: "Read" }],
+            }),
+        ];
+        const result = detectInFlightTools(messages);
+        expect(result.size).toBe(1);
+        expect(result.get("tc2")).toBe("Read");
+    });
+
+    test("detects multiple in-flight tools and removes completed ones", () => {
+        const messages: RelayMessage[] = [
+            msg({
+                key: "a1", role: "assistant",
+                content: [
+                    { type: "toolCall", id: "tc1", name: "Bash" },
+                    { type: "toolCall", id: "tc2", name: "Read" },
+                    { type: "toolCall", id: "tc3", name: "Edit" },
+                ],
+            }),
+            msg({ key: "r1", role: "toolResult", toolCallId: "tc1" }),
+            msg({ key: "r3", role: "tool", toolCallId: "tc3" }),
+        ];
+        const result = detectInFlightTools(messages);
+        expect(result.size).toBe(1);
+        expect(result.get("tc2")).toBe("Read");
+    });
+
+    test("ignores non-toolCall content blocks", () => {
+        const messages: RelayMessage[] = [
+            msg({
+                key: "a1", role: "assistant",
+                content: [
+                    { type: "text", text: "thinking..." },
+                    { type: "toolCall", id: "tc1", name: "Bash" },
+                ],
+            }),
+        ];
+        const result = detectInFlightTools(messages);
+        expect(result.size).toBe(1);
+        expect(result.get("tc1")).toBe("Bash");
+    });
+
+    test("ignores messages without array content", () => {
+        const messages: RelayMessage[] = [
+            msg({ key: "a1", role: "assistant", content: "just text" }),
+            msg({ key: "a2", role: "assistant" }), // no content
+        ];
+        expect(detectInFlightTools(messages)).toEqual(new Map());
+    });
+
+    test("defaults tool name to 'unknown' when missing", () => {
+        const messages: RelayMessage[] = [
+            msg({
+                key: "a1", role: "assistant",
+                content: [{ type: "toolCall", id: "tc1" }],
+            }),
+        ];
+        expect(detectInFlightTools(messages).get("tc1")).toBe("unknown");
+    });
+});
 
 // ── hasVisibleContent ───────────────────────────────────────────────────────
 

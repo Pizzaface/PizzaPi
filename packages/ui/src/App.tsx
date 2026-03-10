@@ -2,6 +2,7 @@ import * as React from "react";
 import { SessionSidebar, type DotState, type HubSession } from "@/components/SessionSidebar";
 import { SessionViewer, type RelayMessage } from "@/components/SessionViewer";
 import type { CommandResultData } from "@/components/session-viewer/rendering";
+import { detectInFlightTools } from "@/components/session-viewer/utils";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { AuthPage } from "@/components/AuthPage";
 import { ApiKeyManager } from "@/components/ApiKeyManager";
@@ -216,6 +217,7 @@ interface SessionUiCacheEntry {
   effortLevel: string | null;
   authSource: string | null;
   tokenUsage: TokenUsageInfo | null;
+  providerUsage: ProviderUsageMap | null;
   lastHeartbeatAt: number | null;
   todoList: TodoItem[];
 }
@@ -653,6 +655,7 @@ export function App() {
   const [tokenUsage, setTokenUsage] = React.useState<TokenUsageInfo | null>(null);
   const [lastHeartbeatAt, setLastHeartbeatAt] = React.useState<number | null>(null);
   const [providerUsage, setProviderUsage] = React.useState<ProviderUsageMap | null>(null);
+  const [usageRefreshing, setUsageRefreshing] = React.useState(false);
   const [todoList, setTodoList] = React.useState<TodoItem[]>([]);
   const [authSource, setAuthSource] = React.useState<string | null>(null);
 
@@ -676,6 +679,15 @@ export function App() {
   // This prevents pre-snapshot live events from rendering and then being
   // replaced, which causes visible message "jumping".
   const awaitingSnapshotRef = React.useRef(false);
+
+  // Track which MCP startup report timestamps have already been rendered
+  // to avoid duplicates when heartbeats re-deliver the same report.
+  const renderedMcpReportTsRef = React.useRef<number | null>(null);
+
+  // Whether session_active has been received for the current session.
+  // Heartbeat MCP reports are deferred until after session_active hydrates
+  // messages, otherwise the report gets appended then immediately replaced.
+  const sessionHydratedRef = React.useRef(false);
 
   // Capabilities advertised by the runner (commands, models, etc.)
   const [availableCommands, setAvailableCommands] = React.useState<Array<{ name: string; description?: string; source?: string }>>([]);
@@ -868,6 +880,7 @@ export function App() {
       effortLevel: prev?.effortLevel ?? null,
       authSource: prev?.authSource ?? null,
       tokenUsage: prev?.tokenUsage ?? null,
+      providerUsage: prev?.providerUsage ?? null,
       lastHeartbeatAt: prev?.lastHeartbeatAt ?? null,
       todoList: prev?.todoList ?? [],
       ...patch,
@@ -882,6 +895,12 @@ export function App() {
   const deltaRafRef = React.useRef<number | null>(null);
   // Key of the in-flight streaming partial message; evicted when the final message lands.
   const streamingPartialKeyRef = React.useRef<string | null>(null);
+
+  // Separate RAF-based debounce for tool_execution_update streaming (e.g. bash
+  // output). Kept independent of the assistant delta debounce above to avoid
+  // interference with streamingPartialKeyRef / evictPartial logic.
+  const pendingToolStreamRef = React.useRef<Map<string, unknown>>(new Map());
+  const toolStreamRafRef = React.useRef<number | null>(null);
 
   // Track wall-clock timing of thinking blocks so we can bake duration into the content.
   // contentIndex → Date.now() at thinking_start
@@ -927,6 +946,7 @@ export function App() {
     activeSessionRef.current = null;
     lastSeqRef.current = null;
     awaitingSnapshotRef.current = false;
+    renderedMcpReportTsRef.current = null;
     setActiveSessionId(null);
     setMessages([]);
     setViewerStatus("Idle");
@@ -947,6 +967,8 @@ export function App() {
     setEffortLevel(null);
     setAuthSource(null);
     setTokenUsage(null);
+    setProviderUsage(null);
+    setUsageRefreshing(false);
     setLastHeartbeatAt(null);
   }, []);
 
@@ -962,6 +984,11 @@ export function App() {
     streamingPartialKeyRef.current = null;
     thinkingStartTimesRef.current = new Map();
     thinkingDurationsRef.current = new Map();
+    if (toolStreamRafRef.current !== null) {
+      cancelAnimationFrame(toolStreamRafRef.current);
+      toolStreamRafRef.current = null;
+    }
+    pendingToolStreamRef.current = new Map();
   }, []);
 
   const upsertMessage = React.useCallback((raw: unknown, fallback: string, evictPartial = false) => {
@@ -1083,6 +1110,38 @@ export function App() {
     }
   }, []);
 
+  /**
+   * Schedule a batched flush of pending tool_execution_update partials via RAF.
+   * Each tool call accumulates its latest partial in pendingToolStreamRef, and
+   * once per animation frame we upsert them into state as synthetic toolResult
+   * messages so the UI renders live output (e.g. bash command streaming).
+   */
+  const scheduleToolStreamFlush = React.useCallback(() => {
+    if (toolStreamRafRef.current !== null) return; // already scheduled
+    toolStreamRafRef.current = requestAnimationFrame(() => {
+      toolStreamRafRef.current = null;
+      const pending = pendingToolStreamRef.current;
+      if (pending.size === 0) return;
+      pendingToolStreamRef.current = new Map();
+      setMessages((prev) => {
+        let result = prev;
+        for (const [, raw] of pending) {
+          const msg = toRelayMessage(raw, "tool-stream");
+          if (!msg) continue;
+          const idx = result.findIndex((m) => m.key === msg.key);
+          if (idx >= 0) {
+            if (result === prev) result = prev.slice();
+            result[idx] = msg;
+          } else {
+            if (result === prev) result = prev.slice();
+            result.push(msg);
+          }
+        }
+        return result;
+      });
+    });
+  }, []);
+
   const appendLocalSystemMessage = React.useCallback((content: string | CommandResultData) => {
     if (content === undefined || content === null) return;
     // For plain strings, trim and skip empties
@@ -1118,9 +1177,15 @@ export function App() {
 
     // While awaiting the initial snapshot, skip streaming delta events.
     // They'd render briefly and then be replaced when the snapshot arrives,
-    // causing visible "jumping".
+    // causing visible "jumping".  This also covers tool execution events —
+    // without this guard, tool_execution_update partials can write synthetic
+    // toolResult messages into state before the snapshot hydrates the real
+    // conversation, producing orphan/duplicate tool output on reconnect.
     if (awaitingSnapshotRef.current) {
-      if (type === "message_update" || type === "message_start" || type === "message_end" || type === "turn_end") {
+      if (
+        type === "message_update" || type === "message_start" || type === "message_end" || type === "turn_end" ||
+        type === "tool_execution_start" || type === "tool_execution_update" || type === "tool_execution_end"
+      ) {
         return;
       }
     }
@@ -1174,7 +1239,9 @@ export function App() {
       }
 
       if ((hb as any).providerUsage !== undefined) {
-        setProviderUsage((hb as any).providerUsage ?? null);
+        const nextProviderUsage = (hb as any).providerUsage ?? null;
+        setProviderUsage(nextProviderUsage);
+        cachePatch.providerUsage = nextProviderUsage;
       }
 
       if ((hb as any).authSource !== undefined) {
@@ -1249,6 +1316,67 @@ export function App() {
         }
       }
 
+      // Restore MCP startup diagnostics for reconnecting viewers. The runner
+      // includes the last report in every heartbeat; deduplicate by timestamp
+      // so it only renders once per report.
+      if ((hb as any).mcpStartupReport && typeof (hb as any).mcpStartupReport === "object") {
+        const mcpReport = (hb as any).mcpStartupReport as {
+          slow?: boolean;
+          showSlowWarning?: boolean;
+          errors?: Array<{ server: string; error: string }>;
+          serverTimings?: Array<{ name: string; durationMs: number; toolCount: number; timedOut: boolean; error?: string }>;
+          totalDurationMs?: number;
+          ts?: number;
+        };
+        const reportTs = typeof mcpReport.ts === "number" ? mcpReport.ts : 0;
+        // Defer rendering until session_active has hydrated messages. Heartbeats
+        // can arrive before session_active; appending here would be immediately
+        // replaced by the snapshot, and the deduplication ref would prevent later
+        // re-rendering from subsequent heartbeats.
+        if (reportTs > 0 && reportTs !== renderedMcpReportTsRef.current && sessionHydratedRef.current) {
+          const hasErrors = Array.isArray(mcpReport.errors) && mcpReport.errors.length > 0;
+          const showSlow = mcpReport.showSlowWarning !== false;
+          const isSlow = mcpReport.slow === true && showSlow;
+          if (hasErrors || isSlow) {
+            renderedMcpReportTsRef.current = reportTs;
+            // Build the same system message the mcp_startup_report handler would.
+            const totalMs = typeof mcpReport.totalDurationMs === "number" ? mcpReport.totalDurationMs : 0;
+            const totalDur = totalMs >= 1000 ? `${(totalMs / 1000).toFixed(1)}s` : `${totalMs}ms`;
+            const parts: string[] = [];
+            if (isSlow) parts.push(`⏱ MCP startup took ${totalDur}`);
+            const timings = Array.isArray(mcpReport.serverTimings) ? mcpReport.serverTimings : [];
+            const noteworthy = timings.filter((t) => t.error || t.timedOut || t.durationMs >= 3000);
+            for (const t of noteworthy) {
+              const dur = t.durationMs >= 1000 ? `${(t.durationMs / 1000).toFixed(1)}s` : `${t.durationMs}ms`;
+              if (t.timedOut) parts.push(`  ⏱ ${t.name}: timed out (${dur})`);
+              else if (t.error) parts.push(`  ✗ ${t.name}: ${t.error} (${dur})`);
+              else parts.push(`  ● ${t.name}: ${dur}`);
+            }
+            if (hasErrors && !isSlow) {
+              const errLines = mcpReport.errors!.map((e) => `  ✗ ${e.server}: ${e.error}`);
+              parts.push(`⚠ MCP server errors:\n${errLines.join("\n")}`);
+            }
+            if (isSlow) parts.push("Tip: Use --safe-mode or --no-mcp for instant startup.");
+            if (parts.length > 0) {
+              const message: RelayMessage = {
+                key: `mcp_startup:${reportTs}:hb`,
+                role: "system",
+                timestamp: reportTs,
+                content: parts.join("\n"),
+                isError: hasErrors,
+              };
+              setMessages((prev) => {
+                // Avoid duplicate if the live event already rendered it.
+                if (prev.some((m) => m.key?.startsWith(`mcp_startup:${reportTs}`))) return prev;
+                const next = [...prev, message];
+                patchSessionCache({ messages: next });
+                return next;
+              });
+            }
+          }
+        }
+      }
+
       patchSessionCache(cachePatch);
       return;
     }
@@ -1307,7 +1435,13 @@ export function App() {
 
       setPendingQuestion(null);
       setPluginTrustPrompt(null);
+      // Restore in-flight tool calls from the snapshot so reconnecting mid-command
+      // keeps streaming indicators and Kill buttons visible. The snapshot payload
+      // doesn't include explicit active-tool IDs, so we infer them by scanning
+      // for toolCall blocks that have no matching toolResult.
+      setActiveToolCalls(detectInFlightTools(normalizedMessages));
       setIsChangingModel(false);
+      sessionHydratedRef.current = true;
 
       // Clear queued messages — the snapshot contains the full conversation
       // including any follow-ups that were consumed by the agent.
@@ -1339,6 +1473,7 @@ export function App() {
       patchSessionCache({ messages: normalized });
       setPendingQuestion(null);
       setRetryState(null);
+      setActiveToolCalls(new Map());
       // Clear message queue — the agent processed any queued steer/followUp messages
       setMessageQueue([]);
       return;
@@ -1367,6 +1502,9 @@ export function App() {
         if (command === "list_resume_sessions") {
           setResumeSessionsLoading(false);
         }
+        if (command === "refresh_usage") {
+          setUsageRefreshing(false);
+        }
         if (command === "compact") {
           // Don't force isCompacting=false here — let the heartbeat remain
           // the source of truth. The error may be "already in progress"
@@ -1374,6 +1512,19 @@ export function App() {
           // flag would re-enable input prematurely until the next heartbeat.
         }
         setViewerStatus(`/${command}: ${error}`);
+        return;
+      }
+
+      if (command === "refresh_usage") {
+        const nextUsage = result?.providerUsage && typeof result.providerUsage === "object"
+          ? (result.providerUsage as ProviderUsageMap)
+          : null;
+        setUsageRefreshing(false);
+        if (nextUsage) {
+          setProviderUsage(nextUsage);
+          patchSessionCache({ providerUsage: nextUsage });
+        }
+        setViewerStatus("Usage refreshed");
         return;
       }
 
@@ -1533,6 +1684,122 @@ export function App() {
       return;
     }
 
+    if (type === "mcp_startup_report") {
+      const report = evt as {
+        toolCount?: number;
+        serverCount?: number;
+        totalDurationMs?: number;
+        slow?: boolean;
+        errors?: Array<{ server: string; error: string }>;
+        serverTimings?: Array<{
+          name: string;
+          durationMs: number;
+          toolCount: number;
+          timedOut: boolean;
+          error?: string;
+        }>;
+        ts?: number;
+      };
+
+      // Only show a message if something noteworthy happened (errors, or slow startup
+      // when the user hasn't disabled slow-startup warnings via config).
+      const hasErrors = Array.isArray(report.errors) && report.errors.length > 0;
+      const showSlowWarning = (report as any).showSlowWarning !== false;
+      const isSlow = report.slow === true && showSlowWarning;
+
+      if (hasErrors || isSlow) {
+        const ts = typeof report.ts === "number" ? report.ts : Date.now();
+        const totalMs = typeof report.totalDurationMs === "number" ? report.totalDurationMs : 0;
+        const totalDur = totalMs >= 1000 ? `${(totalMs / 1000).toFixed(1)}s` : `${totalMs}ms`;
+
+        const parts: string[] = [];
+
+        if (isSlow) {
+          parts.push(`⏱ MCP startup took ${totalDur}`);
+        }
+
+        // Show per-server breakdown for slow or erroring servers
+        const timings = Array.isArray(report.serverTimings) ? report.serverTimings : [];
+        const noteworthy = timings.filter((t) => t.error || t.timedOut || t.durationMs >= 3000);
+        if (noteworthy.length > 0) {
+          for (const t of noteworthy) {
+            const dur = t.durationMs >= 1000 ? `${(t.durationMs / 1000).toFixed(1)}s` : `${t.durationMs}ms`;
+            if (t.timedOut) {
+              parts.push(`  ⏱ ${t.name}: timed out (${dur})`);
+            } else if (t.error) {
+              parts.push(`  ✗ ${t.name}: ${t.error} (${dur})`);
+            } else {
+              parts.push(`  ● ${t.name}: ${dur}`);
+            }
+          }
+        }
+
+        if (hasErrors && !isSlow) {
+          const errLines = report.errors!.map((e) => `  ✗ ${e.server}: ${e.error}`);
+          parts.push(`⚠ MCP server errors:\n${errLines.join("\n")}`);
+        }
+
+        if (isSlow) {
+          parts.push("Tip: Use --safe-mode or --no-mcp for instant startup.");
+        }
+
+        const message: RelayMessage = {
+          key: `mcp_startup:${ts}:${Math.random().toString(16).slice(2)}`,
+          role: "system",
+          timestamp: ts,
+          content: parts.join("\n"),
+          isError: hasErrors,
+        };
+        setMessages((prev) => {
+          const next = [...prev, message];
+          patchSessionCache({ messages: next });
+          return next;
+        });
+      }
+      return;
+    }
+
+    if (type === "mcp_auth_required") {
+      const serverName = typeof evt.serverName === "string" ? evt.serverName : "MCP server";
+      const authUrl = typeof evt.authUrl === "string" ? evt.authUrl : null;
+      const ts = typeof evt.ts === "number" ? evt.ts : Date.now();
+
+      if (authUrl) {
+        const message: RelayMessage = {
+          key: `mcp_auth:${ts}:${Math.random().toString(16).slice(2)}`,
+          role: "system",
+          timestamp: ts,
+          content: `🔐 **${serverName}** requires authentication.\n\n[Click here to authenticate](${authUrl})`,
+          isError: false,
+        };
+        setMessages((prev) => {
+          const next = [...prev, message];
+          patchSessionCache({ messages: next });
+          return next;
+        });
+      }
+      return;
+    }
+
+    if (type === "mcp_auth_complete") {
+      const serverName = typeof evt.serverName === "string" ? evt.serverName : "MCP server";
+      const ts = typeof evt.ts === "number" ? evt.ts : Date.now();
+
+      const message: RelayMessage = {
+        key: `mcp_auth_ok:${ts}:${Math.random().toString(16).slice(2)}`,
+        role: "system",
+        timestamp: ts,
+        content: `✅ Authenticated with **${serverName}**`,
+        isError: false,
+      };
+      setMessages((prev) => {
+        const next = [...prev, message];
+        patchSessionCache({ messages: next });
+        return next;
+      });
+      return;
+    }
+
     if (type === "cli_error") {
       const message = typeof evt.message === "string" ? evt.message : "An error occurred in the CLI";
       const source = typeof evt.source === "string" && evt.source ? evt.source : null;
@@ -1589,9 +1856,41 @@ export function App() {
       }
     }
 
+    if (type === "tool_execution_update") {
+      const toolCallId = typeof evt.toolCallId === "string" ? evt.toolCallId : "";
+      const toolName = typeof evt.toolName === "string" ? evt.toolName : "unknown";
+      // AskUserQuestion updates are handled separately below — skip here.
+      if (toolCallId && toolName !== "AskUserQuestion") {
+        const partial = evt.partialResult as Record<string, unknown> | undefined;
+        const content = partial?.content;
+        if (content !== undefined && content !== null) {
+          // Buffer the partial as a synthetic toolResult keyed by toolCallId.
+          // The RAF-based scheduleToolStreamFlush will upsert it into message
+          // state (at most once per frame), so the grouping code merges it with
+          // the pending-tool card and the UI renders live output.
+          pendingToolStreamRef.current.set(toolCallId, {
+            role: "toolResult",
+            toolCallId,
+            toolName,
+            content,
+            isError: false,
+          });
+          scheduleToolStreamFlush();
+        }
+      }
+    }
+
     if (type === "tool_execution_end") {
       const toolCallId = typeof evt.toolCallId === "string" ? evt.toolCallId : "";
       if (toolCallId) {
+        // Evict any buffered streaming partial for this tool call so a pending
+        // RAF flush can't overwrite the final tool result that arrives shortly
+        // via message_update/message_end.
+        pendingToolStreamRef.current.delete(toolCallId);
+        if (pendingToolStreamRef.current.size === 0 && toolStreamRafRef.current !== null) {
+          cancelAnimationFrame(toolStreamRafRef.current);
+          toolStreamRafRef.current = null;
+        }
         setActiveToolCalls((prev) => {
           const next = new Map(prev);
           next.delete(toolCallId);
@@ -1723,9 +2022,13 @@ export function App() {
       thinkingStartTimesRef.current = new Map();
       thinkingDurationsRef.current = new Map();
     }
-  }, [upsertMessage, upsertMessageDebounced, cancelPendingDeltas, appendLocalSystemMessage]);
+  }, [upsertMessage, upsertMessageDebounced, cancelPendingDeltas, appendLocalSystemMessage, scheduleToolStreamFlush]);
 
   const openSession = React.useCallback((relaySessionId: string) => {
+    // Flush/cancel any pending RAF queues (streaming deltas & tool-stream
+    // partials) from the previous session so they can't leak into the new one.
+    cancelPendingDeltas();
+
     // Stop any in-flight haptics from the previous session immediately.
     cancelHaptic();
 
@@ -1743,12 +2046,15 @@ export function App() {
     lastSeqRef.current = null;
     lastViewerEventAtRef.current = Date.now(); // treat open as an "event" so we don't fire immediately
     awaitingSnapshotRef.current = true;
+    renderedMcpReportTsRef.current = null;
+    sessionHydratedRef.current = false;
     setActiveSessionId(relaySessionId);
     setViewerStatus("Connecting…");
     setPendingQuestion(null);
     setRetryState(null);
     setActiveToolCalls(new Map());
     setIsChangingModel(false);
+    setUsageRefreshing(false);
     setResumeSessions([]);
     setResumeSessionsLoading(false);
 
@@ -1763,6 +2069,7 @@ export function App() {
     setEffortLevel(cached?.effortLevel ?? null);
     setAuthSource(cached?.authSource ?? null);
     setTokenUsage(cached?.tokenUsage ?? null);
+    setProviderUsage(cached?.providerUsage ?? null);
     setLastHeartbeatAt(cached?.lastHeartbeatAt ?? null);
     setTodoList(cached?.todoList ?? []);
 
@@ -1896,7 +2203,7 @@ export function App() {
         }
       }
     });
-  }, [handleRelayEvent, patchSessionCache]);
+  }, [handleRelayEvent, patchSessionCache, cancelPendingDeltas]);
 
   // Auto-reopen the last viewed session once live sessions arrive.
   React.useEffect(() => {
@@ -2177,6 +2484,21 @@ export function App() {
     }
     return ok;
   }, [sendRemoteExec]);
+
+  const refreshUsage = React.useCallback(() => {
+    if (usageRefreshing) return false;
+    setUsageRefreshing(true);
+    setViewerStatus("Refreshing usage…");
+    const ok = sendRemoteExec({
+      type: "exec",
+      id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      command: "refresh_usage",
+    });
+    if (!ok) {
+      setUsageRefreshing(false);
+    }
+    return ok;
+  }, [sendRemoteExec, usageRefreshing]);
 
   const removeQueuedMessage = React.useCallback((id: string) => {
     setMessageQueue((prev) => prev.filter((m) => m.id !== id));
@@ -2480,7 +2802,13 @@ export function App() {
           {(providerUsage || authSource) && (
             <>
               <Separator orientation="vertical" className="h-5" />
-              <UsageIndicator usage={providerUsage} authSource={authSource} activeProvider={activeModel?.provider} />
+              <UsageIndicator
+                usage={providerUsage}
+                authSource={authSource}
+                activeProvider={activeModel?.provider}
+                onRefresh={refreshUsage}
+                refreshing={usageRefreshing}
+              />
             </>
           )}
         </div>
@@ -2689,7 +3017,13 @@ export function App() {
         <div className="flex items-center gap-1 flex-shrink-0">
           {(providerUsage || authSource) && (
             <div className="hidden xs:flex">
-              <UsageIndicator usage={providerUsage} authSource={authSource} activeProvider={activeModel?.provider} />
+              <UsageIndicator
+                usage={providerUsage}
+                authSource={authSource}
+                activeProvider={activeModel?.provider}
+                onRefresh={refreshUsage}
+                refreshing={usageRefreshing}
+              />
             </div>
           )}
           <DropdownMenu>
@@ -2715,7 +3049,13 @@ export function App() {
               )}
               {(providerUsage || authSource) && (
                 <div className="px-2 py-1.5 border-t border-border/50">
-                  <UsageIndicator usage={providerUsage} authSource={authSource} activeProvider={activeModel?.provider} />
+                  <UsageIndicator
+                    usage={providerUsage}
+                    authSource={authSource}
+                    activeProvider={activeModel?.provider}
+                    onRefresh={refreshUsage}
+                    refreshing={usageRefreshing}
+                  />
                 </div>
               )}
               <DropdownMenuSeparator />

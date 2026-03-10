@@ -172,16 +172,23 @@ import {
 // and read from this file instead of each making their own API calls.
 
 interface UsageWindow { label: string; utilization: number; resets_at: string }
-interface ProviderUsageData { windows: UsageWindow[] }
+interface ProviderUsageData {
+    windows: UsageWindow[];
+    status?: "ok" | "unknown";
+    errorCode?: number;
+}
 interface RunnerUsageCacheFile {
     fetchedAt: number;
     providers: Record<string, ProviderUsageData>;
 }
 
-/** Refresh interval — every 5 minutes, matching the per-session TTL in remote.ts */
+/** Runner cache write cadence for provider usage snapshots. */
 const RUNNER_USAGE_REFRESH_INTERVAL = 5 * 60 * 1000;
+/** Anthropic usage changes slowly; poll less frequently by default. */
+const ANTHROPIC_USAGE_REFRESH_INTERVAL = 15 * 60 * 1000;
 
 let _usageRefreshTimer: ReturnType<typeof setInterval> | null = null;
+let _lastAnthropicUsage: { data: ProviderUsageData | null; fetchedAt: number } | null = null;
 
 function runnerUsageCacheFilePath(): string {
     return join(homedir(), ".pizzapi", "usage-cache.json");
@@ -210,7 +217,10 @@ async function fetchAnthropicUsageData(): Promise<ProviderUsageData | null> {
                 "anthropic-beta": "oauth-2025-04-20",
             },
         });
-        if (!res.ok) return null;
+        if (!res.ok) {
+            if (res.status === 403) return { windows: [], status: "unknown", errorCode: 403 };
+            return null;
+        }
         const raw = (await res.json()) as Record<string, unknown>;
         const WINDOW_LABELS: Record<string, string> = {
             five_hour: "5-hour",
@@ -227,10 +237,27 @@ async function fetchAnthropicUsageData(): Promise<ProviderUsageData | null> {
                 windows.push({ label, utilization: w.utilization, resets_at: w.resets_at });
             }
         }
-        return windows.length > 0 ? { windows } : null;
+        return windows.length > 0 ? { windows, status: "ok" } : null;
     } catch {
         return null;
     }
+}
+
+async function getRunnerAnthropicUsageData(opts: { force?: boolean } = {}): Promise<ProviderUsageData | null> {
+    const now = Date.now();
+    const force = opts.force === true;
+
+    if (!force && _lastAnthropicUsage && now - _lastAnthropicUsage.fetchedAt < ANTHROPIC_USAGE_REFRESH_INTERVAL) {
+        return _lastAnthropicUsage.data;
+    }
+
+    const data = await fetchAnthropicUsageData();
+    // Only cache successful fetches so transient failures don't suppress
+    // retries for the full 15-minute interval.
+    if (data !== null) {
+        _lastAnthropicUsage = { data, fetchedAt: now };
+    }
+    return data;
 }
 
 async function fetchGeminiUsageData(): Promise<ProviderUsageData | null> {
@@ -257,7 +284,10 @@ async function fetchGeminiUsageData(): Promise<ProviderUsageData | null> {
             headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
             body: JSON.stringify({ project: projectId }),
         });
-        if (!res.ok) return null;
+        if (!res.ok) {
+            if (res.status === 403) return { windows: [], status: "unknown", errorCode: 403 };
+            return null;
+        }
         const raw = (await res.json()) as {
             buckets?: Array<{ remainingFraction?: number; resetTime?: string; tokenType?: string; modelId?: string }>;
         };
@@ -268,7 +298,7 @@ async function fetchGeminiUsageData(): Promise<ProviderUsageData | null> {
             const label = [bucket.tokenType, bucket.modelId].filter(Boolean).join(" / ") || "Quota";
             windows.push({ label, utilization, resets_at: bucket.resetTime });
         }
-        return windows.length > 0 ? { windows } : null;
+        return windows.length > 0 ? { windows, status: "ok" } : null;
     } catch {
         return null;
     }
@@ -282,7 +312,10 @@ async function fetchCodexUsageData(): Promise<ProviderUsageData | null> {
         const res = await fetch("https://chatgpt.com/backend-api/wham/usage", {
             headers: { Authorization: `Bearer ${token}` },
         });
-        if (!res.ok) return null;
+        if (!res.ok) {
+            if (res.status === 403) return { windows: [], status: "unknown", errorCode: 403 };
+            return null;
+        }
         const raw = (await res.json()) as any;
 
         function windowLabel(minutes: number | null | undefined): string {
@@ -317,7 +350,7 @@ async function fetchCodexUsageData(): Promise<ProviderUsageData | null> {
             const w = toWin(extra.rate_limit?.primary_window ?? extra.rate_limit?.primary, extra.limit_name);
             if (w) { w.label = extra.limit_name; windows.push(w); }
         }
-        return windows.length > 0 ? { windows } : null;
+        return windows.length > 0 ? { windows, status: "ok" } : null;
     } catch {
         return null;
     }
@@ -328,9 +361,9 @@ async function fetchCodexUsageData(): Promise<ProviderUsageData | null> {
  * cache file so every worker on this runner node can read it without making
  * their own API calls.
  */
-async function refreshAndWriteRunnerUsageCache(): Promise<void> {
+async function refreshAndWriteRunnerUsageCache(opts: { forceAnthropic?: boolean } = {}): Promise<void> {
     const [anthropicResult, geminiResult, codexResult] = await Promise.allSettled([
-        fetchAnthropicUsageData(),
+        getRunnerAnthropicUsageData({ force: opts.forceAnthropic === true }),
         fetchGeminiUsageData(),
         fetchCodexUsageData(),
     ]);

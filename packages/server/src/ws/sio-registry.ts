@@ -361,6 +361,19 @@ export function getLocalTuiSocket(sessionId: string): Socket | undefined {
 }
 
 /**
+ * Emit an event to the relay session room (cluster-wide via Redis adapter).
+ * This reaches the runner's relay socket regardless of which server instance
+ * the callback lands on. Returns true if the emit was dispatched.
+ */
+export function emitToRelaySession(sessionId: string, eventName: string, data: unknown): boolean {
+    if (!io) return false;
+    io.of("/relay")
+        .to(relaySessionRoom(sessionId))
+        .emit(eventName, data);
+    return true;
+}
+
+/**
  * Remove the local TUI socket reference for a session.
  */
 export function removeLocalTuiSocket(sessionId: string): void {

@@ -5,6 +5,7 @@ import {
   ConversationEmptyState,
 } from "@/components/ai-elements/conversation";
 import type { RelayMessage } from "@/components/session-viewer/types";
+import { SessionActionsProvider, type SessionActions } from "@/components/session-viewer/session-actions-context";
 import { groupToolExecutionMessages, groupSubAgentConversations } from "@/components/session-viewer/grouping";
 import { getComposerSubmitMode } from "@/components/session-viewer/composer-submit-state";
 import {
@@ -978,6 +979,17 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     }
   }, [commandOpen, isResumeMode]);
 
+  // Session actions context — allows deeply nested tool cards (e.g. bash) to
+  // trigger session-level actions without prop drilling.
+  const sessionActions = React.useMemo<SessionActions | null>(() => {
+    if (!onExec) return null;
+    return {
+      abort: () => {
+        onExec({ type: "exec", id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, command: "abort" });
+      },
+    };
+  }, [onExec]);
+
   const groupedMessages = React.useMemo(
     () => groupSubAgentConversations(groupToolExecutionMessages(messages)),
     [messages],
@@ -1110,6 +1122,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
   }, [visibleMessages, isNearBottom, scrollToBottom, updateNearBottomState]);
 
   return (
+    <SessionActionsProvider value={sessionActions}>
     <div className="flex flex-col flex-1 min-h-0">
       {/* Session info bar */}
       {sessionId && (
@@ -2072,5 +2085,6 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
         </DialogContent>
       </Dialog>
     </div>
+    </SessionActionsProvider>
   );
 }

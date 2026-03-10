@@ -15,6 +15,12 @@ export interface BuildExtensionFactoriesOptions {
     cwd: string;
     hooks?: HooksConfig;
     includeInitialPrompt?: boolean;
+    /** Skip MCP server connections (safe mode). */
+    skipMcp?: boolean;
+    /** Skip Claude Code plugin discovery (safe mode). */
+    skipPlugins?: boolean;
+    /** Skip relay server connection (safe mode). */
+    skipRelay?: boolean;
 }
 
 /**
@@ -23,15 +29,23 @@ export interface BuildExtensionFactoriesOptions {
  * Shared by interactive CLI and runner worker mode so capabilities stay in sync.
  */
 export function buildPizzaPiExtensionFactories(options: BuildExtensionFactoriesOptions): ExtensionFactory[] {
-    const factories: ExtensionFactory[] = [
-        remoteExtension,
-        mcpExtension,
+    const factories: ExtensionFactory[] = [];
+
+    if (!options.skipRelay) {
+        factories.push(remoteExtension);
+    }
+
+    if (!options.skipMcp) {
+        factories.push(mcpExtension);
+    }
+
+    factories.push(
         restartExtension,
         setSessionNameExtension,
         updateTodoExtension,
         spawnSessionExtension,
         sessionMessagingExtension,
-    ];
+    );
 
     if (options.includeInitialPrompt) {
         factories.push(initialPromptExtension);
@@ -43,9 +57,11 @@ export function buildPizzaPiExtensionFactories(options: BuildExtensionFactoriesO
     }
 
     // Claude Code plugin adapter — discovers and loads plugins from standard dirs
-    const pluginExtension = createClaudePluginExtension(options.cwd);
-    if (pluginExtension) {
-        factories.push(pluginExtension);
+    if (!options.skipPlugins) {
+        const pluginExtension = createClaudePluginExtension(options.cwd);
+        if (pluginExtension) {
+            factories.push(pluginExtension);
+        }
     }
 
     return factories;

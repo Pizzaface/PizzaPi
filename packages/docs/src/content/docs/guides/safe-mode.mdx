@@ -1,0 +1,245 @@
+---
+title: Safe Mode & Startup Performance
+description: Diagnose and fix slow CLI startup, skip external dependencies, and tune MCP server timeouts.
+sidebar:
+  order: 11
+---
+
+import { Aside, Steps, Tabs, TabItem, Badge } from "@astrojs/starlight/components";
+
+PizzaPi connects to external services during startup — MCP servers, the relay server, Claude Code plugins, and hooks. If any of these are slow or unreachable, your CLI session can take a long time to become interactive.
+
+**Safe mode** lets you skip some or all of these dependencies for an instant startup, and built-in **slow-startup warnings** help you identify which services are the bottleneck.
+
+---
+
+## Quick Fix: Safe Mode
+
+If `pizza` is hanging or taking too long:
+
+```bash
+# Skip everything external — instant startup
+pizza --safe-mode
+```
+
+This disables MCP servers, plugins, hooks, and the relay connection. You get a fully functional coding session without any of the integrations.
+
+<Aside type="tip">
+  Safe mode is great for quick one-off tasks, debugging, or when you're on a slow network. If you want to skip only MCP at startup but retain the ability to load it later, use `--no-mcp` instead — you can then run `/mcp reload` inside the session to connect MCP servers on demand.
+</Aside>
+
+<Aside type="caution">
+  In full `--safe-mode`, the MCP extension is not loaded at all, so `/mcp reload` is not available. Use the granular `--no-mcp` flag below if you need MCP recovery within a session.
+</Aside>
+
+---
+
+## Granular Skip Flags
+
+If you only want to skip specific subsystems, use the targeted flags:
+
+| Flag | What it skips | When to use |
+|------|---------------|-------------|
+| `--safe-mode` | Everything below | Fastest possible startup |
+| `--no-mcp` | MCP server connections | MCP server is down or slow |
+| `--no-plugins` | Claude Code plugins | Plugin scanning is slow (network drives, many plugins) |
+| `--no-hooks` | Hook execution | A hook script is hanging |
+| `--no-relay` | Relay server connection | Relay is unreachable or you don't need the web UI |
+
+**Examples:**
+
+```bash
+# Skip only MCP servers (keep relay, plugins, hooks)
+pizza --no-mcp
+
+# Skip MCP and plugins but keep relay
+pizza --no-mcp --no-plugins
+
+# Equivalent to PIZZAPI_RELAY_URL=off
+pizza --no-relay
+```
+
+---
+
+## What Causes Slow Startup?
+
+### 1. MCP Servers <Badge text="Most common" variant="caution" />
+
+MCP servers are the #1 cause of slow startup. Each configured MCP server must:
+
+1. **Spawn** a child process (STDIO transport) or open an HTTP connection
+2. **Initialize** — install dependencies, compile, connect to databases, etc.
+3. **Respond** to a `tools/list` JSON-RPC call with available tools
+
+Any step can hang. Common culprits:
+
+- **`npx` commands** that download packages on first run (e.g., `npx @playwright/mcp@latest`)
+- **Docker-based servers** that pull images on startup
+- **Servers with heavy initialization** (database connections, model loading)
+- **Unreachable HTTP/Streamable endpoints** (DNS timeout, firewall rules)
+
+#### How PizzaPi Handles This
+
+PizzaPi mitigates slow MCP servers with two mechanisms:
+
+**Parallel initialization** — All configured MCP servers start simultaneously. Five servers that each take 5 seconds still finish in ~5 seconds total (not 25).
+
+**Per-server timeouts** — Each server gets 30 seconds (configurable) to respond to `tools/list`. If it doesn't respond in time, it's skipped with an error and the remaining servers continue loading.
+
+```jsonc
+// ~/.pizzapi/config.json
+{
+  // Increase timeout for slow servers (ms). Default: 30000.
+  "mcpTimeout": 60000,
+
+  // Or disable timeout entirely (not recommended — can hang forever)
+  "mcpTimeout": 0
+}
+```
+
+### 2. Relay Server Connection
+
+If the relay server is unreachable (wrong URL, server down, network issues), the connection attempt adds latency. The relay uses Socket.IO with built-in reconnection, so it won't hang forever, but the initial handshake can take 10–30 seconds on a bad network.
+
+**Fix:** Use `--no-relay` or set `"relayUrl": "off"` in your config if you don't need the web UI.
+
+### 3. Claude Code Plugins
+
+Plugin discovery scans multiple directories for plugin manifests:
+
+- `~/.pizzapi/plugins/`, `~/.agents/plugins/`, `~/.claude/plugins/` (global)
+- `.pizzapi/plugins/`, `.agents/plugins/`, `.claude/plugins/` (project-local)
+
+This is usually fast on local filesystems but can be slow on network-mounted drives or with many plugins that have `SessionStart` hooks.
+
+**Fix:** Use `--no-plugins` to skip plugin loading entirely.
+
+### 4. Hooks
+
+Hook scripts run at lifecycle points like `SessionStart` and `BeforeAgentStart`. A hanging hook script blocks startup.
+
+**Fix:** Use `--no-hooks` or check your hook commands for issues.
+
+---
+
+## Slow-Startup Warnings
+
+When MCP initialization takes longer than **5 seconds**, PizzaPi shows a warning with a per-server timing breakdown. This appears in both the **TUI** and the **web UI**.
+
+### In the TUI
+
+```
+⏱ MCP startup took 12.3s
+Slow servers:
+  • playwright: 8.2s
+  • tavily: 4.1s (timed out)
+
+Tip: Use --safe-mode or --no-mcp for instant startup.
+Disable this warning: set slowStartupWarning: false in config.
+```
+
+### In the Web UI
+
+The same information appears as a system message in the session viewer when you're connected via the web interface. Servers with errors or timeouts are highlighted.
+
+### Disabling Warnings
+
+If you expect MCP startup to be slow (e.g., servers with heavy initialization) and don't want the warning:
+
+```jsonc
+// ~/.pizzapi/config.json
+{
+  "slowStartupWarning": false
+}
+```
+
+This only suppresses the warning notification — timeouts and error reporting still work normally.
+
+---
+
+## Diagnosing MCP Issues
+
+Use the `/mcp` command inside a running session to see detailed status:
+
+```
+/mcp
+```
+
+This shows:
+
+- Number of loaded tools and which server provides each one
+- Any errors that occurred during initialization
+- Per-server timing breakdown (how long each took to respond)
+- Config file locations and which entries are in effect
+
+To reload all MCP servers without restarting the session:
+
+```
+/mcp reload
+```
+
+### Example `/mcp` Output
+
+```
+MCP tools loaded: 12
+Configured MCP server entries: 3
+
+Tools:
+- mcp_playwright_browser_navigate
+- mcp_playwright_browser_click
+- mcp_tavily_tavily_search
+...
+
+Server init timing:
+- playwright: ✓ 8 tools (2.1s)
+- tavily: ✓ 4 tools (1.8s)
+- broken-server: ✗ Connection refused (0.1s)
+Total MCP init: 2.1s
+
+Config files:
+- global: ~/.pizzapi/config.json (ok)
+- project: .pizzapi/config.json (missing)
+```
+
+---
+
+## Runner / Worker Mode
+
+When running sessions through the [runner daemon](/PizzaPi/guides/runner-daemon/), you can pass safe-mode options via environment variables:
+
+| Variable | Effect |
+|----------|--------|
+| `PIZZAPI_NO_MCP=1` | Skip MCP servers |
+| `PIZZAPI_NO_PLUGINS=1` | Skip plugin loading |
+| `PIZZAPI_NO_HOOKS=1` | Skip hook execution |
+| `PIZZAPI_NO_RELAY=1` | Skip relay connection |
+
+These are picked up by worker processes spawned by the daemon.
+
+---
+
+## Configuration Reference
+
+All startup-related config options:
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `mcpTimeout` | `number` | `30000` | Per-server timeout (ms) for MCP `tools/list` calls. Set to `0` to disable. |
+| `slowStartupWarning` | `boolean` | `true` | Show warnings when startup takes longer than 5 seconds. |
+| `relayUrl` | `string` | `ws://localhost:7492` | Relay server URL. Set to `"off"` to disable. |
+
+See the [Configuration guide](/PizzaPi/guides/configuration/) for the full config reference.
+
+---
+
+## Summary
+
+| Scenario | Solution |
+|----------|----------|
+| Everything is slow | `pizza --safe-mode` |
+| One MCP server hangs | Increase `mcpTimeout` or remove it from config |
+| Relay is unreachable | `pizza --no-relay` or `"relayUrl": "off"` |
+| Plugin scanning is slow | `pizza --no-plugins` |
+| Hook script hangs | `pizza --no-hooks` |
+| Want permanent fix | Tune `mcpTimeout` and review your MCP server config |
+| Don't want warnings | `"slowStartupWarning": false` |

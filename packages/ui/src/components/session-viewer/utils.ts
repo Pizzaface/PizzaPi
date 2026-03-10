@@ -1,3 +1,37 @@
+import type { RelayMessage } from "./types";
+
+/**
+ * Scan a messages array for in-flight tool calls: toolCall blocks in assistant
+ * messages that have no matching toolResult message yet.
+ *
+ * Used on reconnect (session_active) to restore `activeToolCalls` so streaming
+ * indicators and Kill buttons remain visible for long-running commands.
+ */
+export function detectInFlightTools(messages: RelayMessage[]): Map<string, string> {
+  // Collect all toolCallIds from assistant content blocks.
+  const pending = new Map<string, string>(); // toolCallId → toolName
+  for (const msg of messages) {
+    if (msg.role !== "assistant" || !Array.isArray(msg.content)) continue;
+    for (const block of msg.content) {
+      if (!block || typeof block !== "object") continue;
+      const b = block as Record<string, unknown>;
+      if (b.type !== "toolCall") continue;
+      const toolCallId =
+        typeof b.toolCallId === "string" ? b.toolCallId
+        : typeof b.id === "string" ? b.id
+        : "";
+      const toolName = typeof b.name === "string" ? b.name : "unknown";
+      if (toolCallId) pending.set(toolCallId, toolName);
+    }
+  }
+  // Remove any that have a matching toolResult.
+  for (const msg of messages) {
+    if (msg.role !== "toolResult" && msg.role !== "tool") continue;
+    if (msg.toolCallId) pending.delete(msg.toolCallId);
+  }
+  return pending;
+}
+
 export function hasVisibleContent(content: unknown): boolean {
   if (content === undefined || content === null || content === "") return false;
   if (Array.isArray(content)) {

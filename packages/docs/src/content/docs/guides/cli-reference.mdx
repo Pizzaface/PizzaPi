@@ -32,6 +32,11 @@ Usage:
 
 Flags:
   --cwd <path>    Set working directory
+  --safe-mode     Skip MCP, plugins, hooks, and relay (fast startup)
+  --no-mcp        Skip MCP server connections
+  --no-plugins    Skip Claude Code plugin loading
+  --no-hooks      Skip hook execution
+  --no-relay      Skip relay server connection
   -v, --version   Show version
   -h, --help      Show this help
 
@@ -49,15 +54,32 @@ Start an interactive `pi` coding session and relay it to the web UI.
 ```bash
 pizzapi
 pizzapi --cwd /path/to/project
+pizzapi --safe-mode            # Skip MCP, plugins, hooks, relay
+pizzapi --no-mcp               # Skip only MCP servers
 ```
 
 | Flag | Description |
 |------|-------------|
 | `--cwd <path>` | Working directory for the session (default: current directory) |
+| `--safe-mode` | Skip all external dependencies (MCP, plugins, hooks, relay) for instant startup |
+| `--no-mcp` | Skip MCP server connections only |
+| `--no-plugins` | Skip Claude Code plugin discovery and loading |
+| `--no-hooks` | Skip all hook execution |
+| `--no-relay` | Skip relay server connection |
 
 The session ID is derived from the runner configuration and displayed on startup. Open the relay server's web UI to watch the session live.
 
 If no API key is configured and the relay is not disabled, the CLI will automatically launch the setup wizard before starting the session.
+
+#### Startup Performance
+
+MCP servers are initialized in parallel with per-server timeouts (default: 30 seconds). If a server doesn't respond in time, it's skipped and an error is shown.
+
+When startup takes longer than 5 seconds, a warning is displayed in both the TUI and web UI showing which servers were slow. You can disable this warning by setting `"slowStartupWarning": false` in your config.
+
+<Aside type="tip">
+  See the [Safe Mode & Startup Performance guide](/PizzaPi/guides/safe-mode/) for detailed troubleshooting, timeout tuning, and per-server diagnostics.
+</Aside>
 
 ---
 

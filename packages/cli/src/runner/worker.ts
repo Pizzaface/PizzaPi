@@ -52,6 +52,7 @@ async function main(): Promise<void> {
 
     const config = loadConfig(cwd);
     const agentDir = config.agentDir?.replace(/^~/, homedir()) ?? defaultAgentDir();
+    const skipPlugins = process.env.PIZZAPI_NO_PLUGINS === "1";
 
     // Load .agents/*.md files from cwd (same behavior as CLI)
     const dotAgentsDir = join(cwd, ".agents");
@@ -70,12 +71,15 @@ async function main(): Promise<void> {
         agentDir,
         extensionFactories: buildPizzaPiExtensionFactories({
             cwd,
-            hooks: config.hooks,
+            hooks: process.env.PIZZAPI_NO_HOOKS === "1" ? undefined : config.hooks,
             includeInitialPrompt: true,
+            skipMcp: process.env.PIZZAPI_NO_MCP === "1",
+            skipPlugins,
+            skipRelay: process.env.PIZZAPI_NO_RELAY === "1",
         }),
         additionalSkillPaths: [
             ...buildWorkerSkillPaths(cwd, config.skills),
-            ...getPluginSkillPaths(cwd),
+            ...(skipPlugins ? [] : getPluginSkillPaths(cwd)),
         ],
         additionalPromptTemplatePaths: buildPromptPaths(cwd),
         ...(config.systemPrompt !== undefined && {

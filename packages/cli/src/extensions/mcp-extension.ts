@@ -3,8 +3,9 @@ import { existsSync, readFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import { loadConfig, type PizzaPiConfig } from "../config.js";
-import { registerMcpTools, type McpConfig } from "./mcp.js";
+import { registerMcpTools, type McpConfig, type McpServerInitResult, type McpRegistrationResult, getOAuthProviders } from "./mcp.js";
 import { setMcpBridge } from "./mcp-bridge.js";
+import type { RelayContext } from "./mcp-oauth.js";
 
 type McpServerConfigEntry = {
   name: string;
@@ -47,11 +48,17 @@ type McpSnapshot = {
   config: McpConfigInspection;
   summary: string;
   lines: string[];
+  /** Per-server init timing breakdown (available after first load). */
+  serverTimings: McpServerInitResult[];
+  /** Total wall-clock MCP initialization time (ms). */
+  totalDurationMs: number;
 };
 
 type McpBridge = {
   status: () => McpSnapshot;
   reload: () => Promise<McpSnapshot>;
+  setRelayContext: (ctx: RelayContext | null) => void;
+  deliverOAuthCallback: (nonce: string, code: string) => void;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -126,7 +133,17 @@ function parseConfigFile(scope: "global" | "project", path: string): McpConfigFi
       if (isRecord(value) && typeof value.command === "string") {
         transport = "stdio";
       } else if (isRecord(value) && typeof value.url === "string") {
-        transport = typeof value.transport === "string" ? value.transport : "http";
+        // "transport" is our field; "type" is Claude Code / VS Code format.
+        // In the standard MCP ecosystem, type "http" = streamable HTTP.
+        if (typeof value.transport === "string") {
+          transport = value.transport;
+        } else if (value.type === "http") {
+          transport = "streamable";
+        } else if (typeof value.type === "string") {
+          transport = value.type;
+        } else {
+          transport = "http";
+        }
       }
 
       compatibilityServers.push({
@@ -246,17 +263,73 @@ function buildStatusLines(snapshot: McpSnapshot): string[] {
     lines.push("No MCP server entries are currently configured.");
   }
 
+  // Per-server timing breakdown
+  if (snapshot.serverTimings.length > 0) {
+    lines.push("");
+    lines.push("Server init timing:");
+    for (const timing of snapshot.serverTimings) {
+      const status = timing.error
+        ? (timing.timedOut ? "⏱ timed out" : `✗ ${timing.error}`)
+        : `✓ ${timing.tools.length} tool${timing.tools.length !== 1 ? "s" : ""}`;
+      const dur = timing.durationMs >= 1000
+        ? `${(timing.durationMs / 1000).toFixed(1)}s`
+        : `${timing.durationMs}ms`;
+      lines.push(`- ${timing.name}: ${status} (${dur})`);
+    }
+    if (snapshot.totalDurationMs > 0) {
+      const totalDur = snapshot.totalDurationMs >= 1000
+        ? `${(snapshot.totalDurationMs / 1000).toFixed(1)}s`
+        : `${snapshot.totalDurationMs}ms`;
+      lines.push(`Total MCP init: ${totalDur}`);
+    }
+  }
+
   lines.push("");
   lines.push(`Last loaded: ${snapshot.loadedAt}`);
 
   return lines;
 }
 
+/** Threshold (ms) above which we warn about slow MCP startup. */
+const SLOW_STARTUP_THRESHOLD_MS = 5_000;
+
+/** Threshold (ms) above which an individual server is flagged as slow. */
+const SLOW_SERVER_THRESHOLD_MS = 3_000;
+
+/**
+ * Build a startup_report event payload for forwarding to the web UI.
+ * Emitted as a pi.events custom event so the remote extension can pick it up.
+ */
+export type McpStartupReport = {
+  type: "mcp_startup_report";
+  toolCount: number;
+  serverCount: number;
+  totalDurationMs: number;
+  errors: Array<{ server: string; error: string }>;
+  serverTimings: Array<{
+    name: string;
+    durationMs: number;
+    toolCount: number;
+    timedOut: boolean;
+    error?: string;
+  }>;
+  slow: boolean;
+  /** Whether slow-startup warnings should be shown (from config). Errors are always shown. */
+  showSlowWarning: boolean;
+  ts: number;
+};
+
 /**
  * MCP extension.
  *
  * Reads MCP server definitions from ~/.pizzapi/config.json (and project .pizzapi/config.json)
  * and registers MCP tools as pi tools.
+ *
+ * Features:
+ * - Per-server timeouts (configurable via `mcpTimeout` in config, default 30s)
+ * - Parallel server initialization
+ * - Startup timing breakdown
+ * - Slow-startup warnings in TUI and web UI (disableable via `slowStartupWarning: false`)
  */
 export const mcpExtension: ExtensionFactory = async (pi: any) => {
   let activeClients: Array<{ close: () => void }> = [];
@@ -270,9 +343,14 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
     config: inspectMcpConfig(process.cwd()),
     summary: "MCP tools loaded: 0",
     lines: ["MCP tools loaded: 0"],
+    serverTimings: [],
+    totalDurationMs: 0,
   };
 
-  async function load() {
+  // Stash the last registration result so session_start can build reports.
+  let lastRegistrationResult: McpRegistrationResult | null = null;
+
+  async function load(): Promise<McpSnapshot> {
     const mergedConfig = loadConfig(process.cwd()) as PizzaPiConfig & McpConfig;
     const inspection = inspectMcpConfig(process.cwd());
     const res = await registerMcpTools(pi, mergedConfig);
@@ -285,44 +363,161 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
       }
     }
     activeClients = Array.isArray(res.clients) ? res.clients : [];
+    lastRegistrationResult = res;
 
     const loadedAt = new Date().toISOString();
-    const toolCount = res.toolCount ?? 0;
-    const toolNames = Array.isArray((res as any).toolNames) ? (res as any).toolNames : [];
-    const errors = Array.isArray((res as any).errors) ? (res as any).errors : [];
-    const serverTools = (res as any).serverTools && typeof (res as any).serverTools === "object"
-      ? (res as any).serverTools as Record<string, string[]>
-      : {};
 
-    const summary = `MCP tools loaded: ${toolCount}`;
+    const summary = `MCP tools loaded: ${res.toolCount}`;
 
     lastSnapshot = {
-      toolCount,
-      toolNames,
-      serverTools,
-      errors,
+      toolCount: res.toolCount,
+      toolNames: res.toolNames,
+      serverTools: res.serverTools,
+      errors: res.errors,
       loadedAt,
       config: inspection,
       summary,
       lines: [],
+      serverTimings: res.serverTimings,
+      totalDurationMs: res.totalDurationMs,
     };
     lastSnapshot.lines = buildStatusLines(lastSnapshot);
 
     return lastSnapshot;
   }
 
+  /** Build a startup report event from the last registration result. */
+  function buildStartupReport(): McpStartupReport | null {
+    if (!lastRegistrationResult) return null;
+    const res = lastRegistrationResult;
+    const cfg = loadConfig(process.cwd());
+    return {
+      type: "mcp_startup_report",
+      toolCount: res.toolCount,
+      serverCount: res.serverTimings.length,
+      totalDurationMs: res.totalDurationMs,
+      errors: res.errors,
+      serverTimings: res.serverTimings.map((t) => ({
+        name: t.name,
+        durationMs: t.durationMs,
+        toolCount: t.tools.length,
+        timedOut: t.timedOut,
+        error: t.error,
+      })),
+      slow: res.totalDurationMs >= SLOW_STARTUP_THRESHOLD_MS,
+      showSlowWarning: cfg.slowStartupWarning !== false,
+      ts: Date.now(),
+    };
+  }
+
+  // ── OAuth relay support ──────────────────────────────────────────────────
+  // Pending OAuth callbacks: nonce → resolve(code)
+  const pendingOAuthCallbacks = new Map<string, (code: string) => void>();
+
+  // Stash the current relay context so it can be reapplied after /mcp reload
+  // creates fresh OAuth providers (which start with relayContext = null).
+  let currentRelayContext: RelayContext | null = null;
+
   const bridge: McpBridge = {
     status: () => lastSnapshot,
-    reload: () => load(),
+    async reload() {
+      const snapshot = await load();
+      // Reapply relay context to newly created providers after reload
+      if (currentRelayContext) {
+        for (const provider of getOAuthProviders()) {
+          provider.relayContext = currentRelayContext;
+        }
+      }
+      return snapshot;
+    },
+
+    setRelayContext(ctx: RelayContext | null) {
+      currentRelayContext = ctx;
+      // Propagate relay context to all active OAuth providers
+      for (const provider of getOAuthProviders()) {
+        provider.relayContext = ctx;
+      }
+    },
+
+    deliverOAuthCallback(nonce: string, code: string) {
+      const resolve = pendingOAuthCallbacks.get(nonce);
+      if (resolve) {
+        pendingOAuthCallbacks.delete(nonce);
+        resolve(code);
+      }
+    },
   };
   setMcpBridge(bridge);
 
-  try {
-    await load();
-  } catch {
-    // No UI available here (no ExtensionContext in factory), so swallow.
-    // The user can diagnose via /mcp once UI is up.
-  }
+  // Expose the callback-wait function so OAuth providers can use it
+  // (relay context's waitForCallback delegates here).
+  (bridge as any)._pendingOAuthCallbacks = pendingOAuthCallbacks;
+
+  // NOTE: MCP initialization is deferred to session_start (below) rather than
+  // running here in the factory.  Extension factories are awaited sequentially
+  // by pi, and session_start only fires AFTER all factories complete.  If an
+  // MCP server needs OAuth during init, the OAuth provider must wait for the
+  // relay connection (which happens asynchronously during session_start).
+  // Running load() here would deadlock: the relay can't connect because
+  // session_start hasn't fired, and session_start can't fire because load()
+  // is blocking the factory.  By deferring to session_start, the relay
+  // connection can establish in parallel while MCP servers initialize.
+
+  // ── session_start: load MCP tools + report timing to TUI/web UI ──────────
+  pi.on?.("session_start", async (_event: any, ctx: any) => {
+    try {
+      await load();
+    } catch {
+      // Swallow — user can diagnose via /mcp.
+    }
+
+    const config = loadConfig(process.cwd());
+    const showWarnings = config.slowStartupWarning !== false;
+    const report = buildStartupReport();
+
+    if (!report) return;
+
+    // Always emit the startup report event so the remote extension can
+    // forward it to the web UI (the web UI decides whether to render it).
+    pi.events?.emit?.("mcp:startup_report", report);
+
+    // TUI notifications
+    if (report.errors.length > 0) {
+      const errSummary = report.errors
+        .map((e) => `  • ${e.server}: ${e.error}`)
+        .join("\n");
+      ctx?.ui?.notify?.(
+        `⚠ MCP server errors:\n${errSummary}\n\nUse /mcp for details, or --no-mcp to skip.`,
+        "warning",
+      );
+    }
+
+    if (showWarnings && report.slow) {
+      const slowServers = report.serverTimings
+        .filter((t) => t.durationMs >= SLOW_SERVER_THRESHOLD_MS)
+        .map((t) => {
+          const dur = t.durationMs >= 1000
+            ? `${(t.durationMs / 1000).toFixed(1)}s`
+            : `${t.durationMs}ms`;
+          return `  • ${t.name}: ${dur}${t.timedOut ? " (timed out)" : ""}`;
+        });
+
+      const totalDur = report.totalDurationMs >= 1000
+        ? `${(report.totalDurationMs / 1000).toFixed(1)}s`
+        : `${report.totalDurationMs}ms`;
+
+      const lines = [`⏱ MCP startup took ${totalDur}`];
+      if (slowServers.length > 0) {
+        lines.push("Slow servers:");
+        lines.push(...slowServers);
+      }
+      lines.push("");
+      lines.push("Tip: Use --safe-mode or --no-mcp for instant startup.");
+      lines.push("Disable this warning: set slowStartupWarning: false in config.");
+
+      ctx?.ui?.notify?.(lines.join("\n"), "warning");
+    }
+  });
 
   pi.registerCommand?.("mcp", {
     description: "Show MCP status, or: /mcp reload",
@@ -336,8 +531,15 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
       if (arg === "reload") {
         ctx?.ui?.notify?.("Reloading MCP tools…");
         try {
-          const snapshot = await load();
+          // Use bridge.reload() instead of load() directly so that relay
+          // context is reapplied to freshly created OAuth providers. Calling
+          // load() directly would leave providers in local-callback mode,
+          // breaking web-based MCP OAuth for remote sessions.
+          const snapshot = await bridge.reload();
           ctx?.ui?.notify?.(snapshot.lines.join("\n"));
+          // Emit report so web UI can update
+          const report = buildStartupReport();
+          if (report) pi.events?.emit?.("mcp:startup_report", report);
         } catch (err) {
           ctx?.ui?.notify?.(`MCP reload failed: ${err instanceof Error ? err.message : String(err)}`, "error");
         }

@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
 import type { PizzaPiConfig } from "../config.js";
+import { PizzaPiOAuthProvider } from "./mcp-oauth.js";
 
 /**
  * Minimal MCP client transport + tool bridge.
@@ -7,10 +8,17 @@ import type { PizzaPiConfig } from "../config.js";
  * Supports:
  *  - STDIO transport via spawning a command
  *  - HTTP transport via POSTing JSON-RPC-ish MCP messages
+ *  - Streamable HTTP transport (MCP spec 2025-03-26)
  *
  * This is intentionally lightweight and only implements what we need:
+ *  - initialize (lifecycle handshake — required by the MCP spec)
  *  - listTools
  *  - callTool
+ *
+ * All transports perform the MCP initialization handshake lazily before
+ * the first real request (tools/list or tools/call). The handshake sends
+ * an `initialize` request followed by a `notifications/initialized`
+ * notification, as required by the MCP specification.
  */
 
 type Json = null | boolean | number | string | Json[] | { [k: string]: Json };
@@ -36,6 +44,18 @@ type McpClient = {
   callTool(toolName: string, args: unknown, signal?: AbortSignal): Promise<McpCallToolResult>;
   close(): void;
 };
+
+/**
+ * Protocol version we advertise during the MCP initialize handshake.
+ * Using the 2025-03-26 spec (widely supported); servers may negotiate down.
+ */
+export const MCP_PROTOCOL_VERSION = "2025-03-26";
+
+/** Versions we accept from the server in its InitializeResult. */
+export const MCP_SUPPORTED_VERSIONS = new Set(["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05", "2024-10-07"]);
+
+/** Client info sent during the initialize handshake. */
+export const MCP_CLIENT_INFO = { name: "pizzapi", version: "1.0.0" };
 
 const PROVIDER_TOOL_NAME_MAX_LENGTH = 64;
 
@@ -179,13 +199,38 @@ function createStdioMcpClient(opts: { name: string; command: string; args?: stri
     pending.clear();
   });
 
+  // ── Lazy MCP initialize handshake ──────────────────────────────────────
+  let initPromise: Promise<void> | null = null;
+
+  function ensureInitialized(): Promise<void> {
+    if (!initPromise) {
+      initPromise = (async () => {
+        const result = await request("initialize", {
+          protocolVersion: MCP_PROTOCOL_VERSION,
+          capabilities: {},
+          clientInfo: MCP_CLIENT_INFO,
+        });
+
+        if (result?.protocolVersion && !MCP_SUPPORTED_VERSIONS.has(result.protocolVersion)) {
+          throw new Error(`MCP server "${opts.name}" returned unsupported protocol version: ${result.protocolVersion}`);
+        }
+
+        // Send the initialized notification (no id → notification, no response expected)
+        send({ jsonrpc: "2.0", method: "notifications/initialized" });
+      })();
+    }
+    return initPromise;
+  }
+
   return {
     name: opts.name,
     async listTools() {
+      await ensureInitialized();
       const res = (await request("tools/list")) as McpListToolsResult;
       return Array.isArray(res?.tools) ? res.tools : [];
     },
     async callTool(toolName: string, args: unknown, signal?: AbortSignal) {
+      await ensureInitialized();
       const res = await request("tools/call", { name: toolName, arguments: args ?? {} }, signal);
       return (res ?? {}) as McpCallToolResult;
     },
@@ -220,18 +265,125 @@ function createHttpMcpClient(opts: { name: string; url: string; headers?: Record
     return json.result;
   }
 
+  async function notify(method: string, params?: any): Promise<void> {
+    // Notifications have no id and expect no response body.
+    const payload: any = { jsonrpc: "2.0", method };
+    if (params !== undefined) payload.params = params;
+
+    await fetch(opts.url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...(opts.headers ?? {}) },
+      body: JSON.stringify(payload),
+    }).catch(() => {}); // best-effort
+  }
+
+  // ── Lazy MCP initialize handshake ──────────────────────────────────────
+  let initPromise: Promise<void> | null = null;
+
+  function ensureInitialized(): Promise<void> {
+    if (!initPromise) {
+      initPromise = (async () => {
+        const result = await request("initialize", {
+          protocolVersion: MCP_PROTOCOL_VERSION,
+          capabilities: {},
+          clientInfo: MCP_CLIENT_INFO,
+        });
+
+        if (result?.protocolVersion && !MCP_SUPPORTED_VERSIONS.has(result.protocolVersion)) {
+          throw new Error(`MCP server "${opts.name}" returned unsupported protocol version: ${result.protocolVersion}`);
+        }
+
+        await notify("notifications/initialized");
+      })();
+    }
+    return initPromise;
+  }
+
   return {
     name: opts.name,
     async listTools() {
+      await ensureInitialized();
       const res = (await request("tools/list")) as McpListToolsResult;
       return Array.isArray(res?.tools) ? res.tools : [];
     },
     async callTool(toolName: string, args: unknown, signal?: AbortSignal) {
+      await ensureInitialized();
       const res = await request("tools/call", { name: toolName, arguments: args ?? {} }, signal);
       return (res ?? {}) as McpCallToolResult;
     },
     close() {},
   };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Environment token detection (used as fallback before full OAuth)
+// ─────────────────────────────────────────────────────────────────────────────
+
+type EnvironmentToken = { token: string; source: string };
+
+/** Trusted GitHub hostnames for automatic token detection. */
+const GITHUB_HOSTS = new Set([
+  "github.com",
+  "api.github.com",
+  "api.githubcopilot.com",
+]);
+
+/**
+ * Check whether a URL points to a known GitHub host.
+ * Uses exact hostname matching (or `.github.com` suffix) to prevent
+ * token exfiltration to attacker-controlled URLs like `github.evil.com`.
+ */
+export function isGitHubHost(serverUrl: string): boolean {
+  try {
+    const hostname = new URL(serverUrl).hostname.toLowerCase();
+    return GITHUB_HOSTS.has(hostname) || hostname.endsWith(".github.com");
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Try to find an existing token that might work for the given MCP server URL.
+ * Checks environment variables and CLI tools (e.g. `gh auth token`).
+ */
+async function detectEnvironmentToken(serverUrl: string): Promise<EnvironmentToken | null> {
+  // GitHub-specific: check env vars and `gh` CLI.
+  // Use strict hostname matching to prevent token exfiltration to attacker-controlled URLs.
+  const isGitHub = isGitHubHost(serverUrl);
+  if (isGitHub) {
+    // GITHUB_TOKEN is the standard env var
+    if (process.env.GITHUB_TOKEN) {
+      return { token: process.env.GITHUB_TOKEN, source: "GITHUB_TOKEN env var" };
+    }
+    // GH_TOKEN is used by the GitHub CLI
+    if (process.env.GH_TOKEN) {
+      return { token: process.env.GH_TOKEN, source: "GH_TOKEN env var" };
+    }
+    // Try `gh auth token` as a last resort
+    try {
+      const proc = Bun.spawn(["gh", "auth", "token"], {
+        stdout: "pipe",
+        stderr: "ignore",
+      });
+      const text = await new Response(proc.stdout).text();
+      const token = text.trim();
+      if (token && token.startsWith("gh")) {
+        return { token, source: "gh CLI (gh auth token)" };
+      }
+    } catch {
+      // gh not installed or not authenticated — skip
+    }
+  }
+
+  // Generic: check for MCP_TOKEN or MCP_ACCESS_TOKEN
+  if (process.env.MCP_TOKEN) {
+    return { token: process.env.MCP_TOKEN, source: "MCP_TOKEN env var" };
+  }
+  if (process.env.MCP_ACCESS_TOKEN) {
+    return { token: process.env.MCP_ACCESS_TOKEN, source: "MCP_ACCESS_TOKEN env var" };
+  }
+
+  return null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -248,18 +400,31 @@ function createHttpMcpClient(opts: { name: string; url: string; headers?: Record
 //   - close() sends DELETE to the endpoint so the server can clean up.
 // ─────────────────────────────────────────────────────────────────────────────
 
-function createStreamableMcpClient(opts: { name: string; url: string; headers?: Record<string, string> }): McpClient {
+function createStreamableMcpClient(opts: {
+  name: string;
+  url: string;
+  headers?: Record<string, string>;
+  oauthProvider?: PizzaPiOAuthProvider;
+}): McpClient {
   let nextId = 1;
   let sessionId: string | undefined;
+  const oauthProvider = opts.oauthProvider;
 
   function buildHeaders(extra?: Record<string, string>): Record<string, string> {
-    return {
+    const h: Record<string, string> = {
       "Content-Type": "application/json",
       Accept: "application/json, text/event-stream",
       ...(opts.headers ?? {}),
       ...(sessionId ? { "mcp-session-id": sessionId } : {}),
       ...(extra ?? {}),
     };
+
+    // Attach stored OAuth access token if available
+    if (oauthProvider?.getAccessToken() && !h["Authorization"]) {
+      h["Authorization"] = `Bearer ${oauthProvider.getAccessToken()}`;
+    }
+
+    return h;
   }
 
   async function parseSSE(res: Response, targetId: number, signal?: AbortSignal): Promise<any> {
@@ -319,7 +484,7 @@ function createStreamableMcpClient(opts: { name: string; url: string; headers?: 
     throw new Error("MCP streamable: SSE stream ended without a matching response");
   }
 
-  async function request(method: string, params?: any, signal?: AbortSignal): Promise<any> {
+  async function rawRequest(method: string, params?: any, signal?: AbortSignal): Promise<{ result: any; status: number; response: Response }> {
     const id = nextId++;
     const payload = { jsonrpc: "2.0", id, method, params };
 
@@ -334,28 +499,169 @@ function createStreamableMcpClient(opts: { name: string; url: string; headers?: 
     const sid = res.headers.get("mcp-session-id");
     if (sid) sessionId = sid;
 
-    if (!res.ok) throw new Error(`MCP streamable HTTP ${res.status}`);
+    if (!res.ok) return { result: null, status: res.status, response: res };
 
     const ct = res.headers.get("content-type") ?? "";
 
     if (ct.includes("text/event-stream")) {
-      return parseSSE(res, id, signal);
+      const result = await parseSSE(res, id, signal);
+      return { result, status: res.status, response: res };
     }
 
     // Fallback: plain JSON
     const json = (await res.json().catch(() => null)) as any;
     if (!json || typeof json !== "object") throw new Error("MCP streamable: invalid JSON response");
     if (json.error) throw new Error(String(json.error?.message ?? "MCP error"));
-    return json.result;
+    return { result: json.result, status: res.status, response: res };
+  }
+
+  /** Guard to prevent infinite OAuth loops within a single request. */
+  let oauthInProgress = false;
+
+  async function request(method: string, params?: any, signal?: AbortSignal): Promise<any> {
+    const { result, status, response } = await rawRequest(method, params, signal);
+
+    // ── OAuth 401 handling ──────────────────────────────────────────────────
+    // Use a per-request guard instead of a permanent flag so that token
+    // expiry mid-session can trigger re-authentication.
+    if (status === 401 && oauthProvider && !oauthInProgress) {
+      process.stderr.write(`🔐 MCP server "${opts.name}" requires authentication…\n`);
+      oauthInProgress = true;
+
+      try {
+        // ── Strategy 1: Try environment tokens first ──────────────────────
+        // Many servers (e.g. GitHub) accept a PAT. Check common env vars
+        // and the `gh` CLI before starting a full OAuth flow.
+        const envToken = await detectEnvironmentToken(opts.url);
+        if (envToken) {
+          process.stderr.write(`🔑 Using token from ${envToken.source}\n`);
+          oauthProvider.saveTokens({ access_token: envToken.token, token_type: "bearer" });
+
+          const retry = await rawRequest(method, params, signal);
+          if (retry.response.ok) {
+            process.stderr.write(`✅ Authenticated with ${opts.name}\n`);
+            return retry.result;
+          }
+          // Token didn't work — fall through to OAuth
+          oauthProvider.invalidateCredentials("tokens");
+          process.stderr.write(`⚠ Token from ${envToken.source} was rejected, trying OAuth…\n`);
+        }
+
+        // ── Strategy 2: Full MCP OAuth 2.1 flow ──────────────────────────
+
+        // Wait for relay context to become available before starting OAuth.
+        // During startup, MCP init can race ahead of the relay connection.
+        // If we start OAuth in local mode, the redirect_uri points to localhost
+        // which is unreachable when running remotely. Waiting here gives the
+        // relay connection time to establish so OAuth uses the server callback
+        // URL instead. Falls back to local mode after the timeout.
+        await oauthProvider.waitForRelayContext();
+
+        const { auth, extractWWWAuthenticateParams } = await import(
+          "@modelcontextprotocol/sdk/client/auth.js"
+        );
+
+        // Extract hints from the 401 response (scope, resource_metadata URL)
+        const wwwAuthParams = extractWWWAuthenticateParams(response);
+
+        // Phase 1: Start the auth flow → opens browser for consent
+        const result1 = await auth(oauthProvider, {
+          serverUrl: opts.url,
+          scope: wwwAuthParams.scope,
+          resourceMetadataUrl: wwwAuthParams.resourceMetadataUrl,
+        });
+
+        if (result1 === "REDIRECT") {
+          // Wait for the OAuth callback (browser → local server)
+          const { code, state: callbackState } = await oauthProvider.startCallbackAndWait();
+          oauthProvider.closeCallback();
+
+          // Validate state to prevent CSRF (defense-in-depth alongside PKCE)
+          if (!oauthProvider.validateCallbackState(callbackState)) {
+            throw new Error("OAuth state mismatch — possible CSRF attack");
+          }
+
+          // Phase 2: Exchange code for token
+          const result2 = await auth(oauthProvider, {
+            serverUrl: opts.url,
+            authorizationCode: code,
+            scope: wwwAuthParams.scope,
+            resourceMetadataUrl: wwwAuthParams.resourceMetadataUrl,
+          });
+
+          if (result2 !== "AUTHORIZED") {
+            throw new Error("OAuth token exchange failed");
+          }
+        }
+
+        process.stderr.write(`✅ Authenticated with ${opts.name}\n`);
+
+        // Retry the original request with the new token
+        const retry = await rawRequest(method, params, signal);
+        if (!retry.response.ok) {
+          throw new Error(`MCP streamable HTTP ${retry.status} (after OAuth)`);
+        }
+        return retry.result;
+      } catch (err) {
+        oauthProvider.closeCallback();
+        throw new Error(
+          `OAuth authentication failed for "${opts.name}": ${err instanceof Error ? err.message : String(err)}`,
+        );
+      } finally {
+        oauthInProgress = false;
+      }
+    }
+
+    if (status !== 200 && result === null) {
+      throw new Error(`MCP streamable HTTP ${status}`);
+    }
+
+    return result;
+  }
+
+  async function notify(method: string, params?: any): Promise<void> {
+    // Notifications have no id and expect no response body.
+    const payload: any = { jsonrpc: "2.0", method };
+    if (params !== undefined) payload.params = params;
+
+    await fetch(opts.url, {
+      method: "POST",
+      headers: buildHeaders(),
+      body: JSON.stringify(payload),
+    }).catch(() => {}); // best-effort
+  }
+
+  // ── Lazy MCP initialize handshake ──────────────────────────────────────
+  let initPromise: Promise<void> | null = null;
+
+  function ensureInitialized(): Promise<void> {
+    if (!initPromise) {
+      initPromise = (async () => {
+        const result = await request("initialize", {
+          protocolVersion: MCP_PROTOCOL_VERSION,
+          capabilities: {},
+          clientInfo: MCP_CLIENT_INFO,
+        });
+
+        if (result?.protocolVersion && !MCP_SUPPORTED_VERSIONS.has(result.protocolVersion)) {
+          throw new Error(`MCP server "${opts.name}" returned unsupported protocol version: ${result.protocolVersion}`);
+        }
+
+        await notify("notifications/initialized");
+      })();
+    }
+    return initPromise;
   }
 
   return {
     name: opts.name,
     async listTools() {
+      await ensureInitialized();
       const res = (await request("tools/list")) as McpListToolsResult;
       return Array.isArray(res?.tools) ? res.tools : [];
     },
     async callTool(toolName: string, args: unknown, signal?: AbortSignal) {
+      await ensureInitialized();
       const res = await request("tools/call", { name: toolName, arguments: args ?? {} }, signal);
       return (res ?? {}) as McpCallToolResult;
     },
@@ -392,14 +698,32 @@ export type McpConfig = {
   //     "myserver":   { "url": "http://localhost:3000/mcp", "transport": "streamable" }
   //   }
   // }
+  //
+  // Also supports the Claude Code / VS Code format where "type" is used
+  // instead of "transport":
+  //   "github": { "type": "http", "url": "https://api.githubcopilot.com/mcp/" }
+  //
+  // Note: in the standard MCP ecosystem, type "http" means Streamable HTTP.
   mcpServers?: Record<
     string,
     | { command: string; args?: string[]; env?: Record<string, string> }
-    | { url: string; transport?: "http" | "streamable"; headers?: Record<string, string> }
+    | { url: string; transport?: "http" | "streamable"; type?: "http" | "sse"; headers?: Record<string, string> }
   >;
 };
 
+/** Track active OAuth providers so the relay context can be injected later. */
+const activeOAuthProviders: PizzaPiOAuthProvider[] = [];
+
+/** Get all active OAuth providers (used by the MCP extension to inject relay context). */
+export function getOAuthProviders(): PizzaPiOAuthProvider[] {
+  return activeOAuthProviders;
+}
+
 export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConfig): Promise<McpClient[]> {
+  // Clear stale OAuth providers from previous loads (e.g. /mcp reload)
+  // to prevent unbounded growth and iteration over dead providers.
+  activeOAuthProviders.length = 0;
+
   const clients: McpClient[] = [];
 
   // Preferred format
@@ -423,11 +747,14 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
         }),
       );
     } else if (s.transport === "streamable") {
+      const provider = new PizzaPiOAuthProvider({ serverUrl: s.url, serverName: s.name });
+      activeOAuthProviders.push(provider);
       clients.push(
         createStreamableMcpClient({
           name: s.name,
           url: s.url,
           headers: s.headers,
+          oauthProvider: provider,
         }),
       );
     }
@@ -452,9 +779,24 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
     }
 
     if ("url" in def && typeof (def as any).url === "string") {
-      const d = def as { url: string; transport?: "http" | "streamable"; headers?: Record<string, string> };
-      if (d.transport === "streamable") {
-        clients.push(createStreamableMcpClient({ name, url: d.url, headers: d.headers }));
+      const d = def as { url: string; transport?: string; type?: string; headers?: Record<string, string> };
+
+      // Determine transport mode:
+      //  - "transport" field (our format): "streamable" → streamable, else plain HTTP
+      //  - "type" field (Claude Code / VS Code format): "http" → streamable (per MCP spec)
+      const useStreamable =
+        d.transport === "streamable" ||
+        (d.type === "http" && d.transport === undefined);
+
+      if (useStreamable) {
+        const provider = new PizzaPiOAuthProvider({ serverUrl: d.url, serverName: name });
+        activeOAuthProviders.push(provider);
+        clients.push(createStreamableMcpClient({
+          name,
+          url: d.url,
+          headers: d.headers,
+          oauthProvider: provider,
+        }));
       } else {
         clients.push(createHttpMcpClient({ name, url: d.url, headers: d.headers }));
       }
@@ -464,30 +806,131 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
   return clients;
 }
 
-export async function registerMcpTools(pi: any, config: PizzaPiConfig & McpConfig) {
-  const clients = await createMcpClientsFromConfig(config);
-  if (clients.length === 0) return { clients, toolCount: 0, toolNames: [] as string[], errors: [] as Array<{ server: string; error: string }>, serverTools: {} as Record<string, string[]> };
+/** Default timeout for MCP server tools/list calls: 30 seconds. */
+const DEFAULT_MCP_TIMEOUT = 30_000;
 
+/** Per-server initialization result collected during parallel init. */
+export type McpServerInitResult = {
+  name: string;
+  tools: McpTool[];
+  error?: string;
+  /** Time in milliseconds the server took to respond to tools/list */
+  durationMs: number;
+  timedOut: boolean;
+};
+
+/** Overall result of registerMcpTools() including per-server timing. */
+export type McpRegistrationResult = {
+  clients: McpClient[];
+  toolCount: number;
+  toolNames: string[];
+  errors: Array<{ server: string; error: string }>;
+  serverTools: Record<string, string[]>;
+  /** Per-server timing breakdown. */
+  serverTimings: McpServerInitResult[];
+  /** Total wall-clock time for MCP initialization (ms). */
+  totalDurationMs: number;
+};
+
+/**
+ * List tools from a single MCP client with a timeout.
+ * Returns the collected tools or an error if the server doesn't respond in time.
+ *
+ * When the timeout fires, the dangling listTools() promise is caught silently
+ * to prevent unhandled rejection crashes (the child process will be killed by
+ * the caller, which causes the pending request to reject).
+ */
+async function listToolsWithTimeout(client: McpClient, timeoutMs: number): Promise<{ tools: McpTool[]; error?: string; timedOut: boolean }> {
+  if (timeoutMs <= 0) {
+    // Timeout disabled — call directly
+    const tools = await client.listTools();
+    return { tools, timedOut: false };
+  }
+
+  // Keep a reference to the listTools promise so we can suppress its rejection
+  // if the timeout fires first (the child process will be killed, causing the
+  // pending JSON-RPC request to reject with "server exited").
+  const listToolsPromise = client.listTools().then(
+    (tools) => ({ tools, timedOut: false as const }),
+  );
+
+  const timeoutPromise = new Promise<{ tools: McpTool[]; error: string; timedOut: true }>((resolve) =>
+    setTimeout(
+      () => resolve({ tools: [], error: `Timed out after ${Math.round(timeoutMs / 1000)}s waiting for tools/list`, timedOut: true }),
+      timeoutMs,
+    ),
+  );
+
+  const result = await Promise.race([listToolsPromise, timeoutPromise]);
+
+  if (result.timedOut) {
+    // Close the client immediately to abort the in-flight request and prevent
+    // it from establishing a remote MCP session that would never be cleaned up.
+    try { client.close(); } catch {}
+    // Suppress the dangling promise rejection that fires when the connection is killed
+    listToolsPromise.catch(() => {});
+  }
+
+  return result;
+}
+
+export async function registerMcpTools(pi: any, config: PizzaPiConfig & McpConfig): Promise<McpRegistrationResult> {
+  const totalStart = Date.now();
+  const clients = await createMcpClientsFromConfig(config);
+  const empty: McpRegistrationResult = { clients: [], toolCount: 0, toolNames: [], errors: [], serverTools: {}, serverTimings: [], totalDurationMs: 0 };
+  if (clients.length === 0) return { ...empty, totalDurationMs: Date.now() - totalStart };
+
+  // Determine per-server timeout from config (0 = disabled)
+  const timeoutMs = typeof (config as any).mcpTimeout === "number" ? (config as any).mcpTimeout : DEFAULT_MCP_TIMEOUT;
+
+  // ── Phase 1: Initialize all servers in parallel ──────────────────────────
+  const initResults = await Promise.all(
+    clients.map(async (client): Promise<McpServerInitResult> => {
+      const start = Date.now();
+      try {
+        const { tools, error, timedOut } = await listToolsWithTimeout(client, timeoutMs);
+        const durationMs = Date.now() - start;
+        if (error) {
+          return { name: client.name, tools: [], error, durationMs, timedOut };
+        }
+        return { name: client.name, tools, durationMs, timedOut };
+      } catch (err) {
+        const durationMs = Date.now() - start;
+        return {
+          name: client.name,
+          tools: [],
+          error: err instanceof Error ? err.message : String(err),
+          durationMs,
+          timedOut: false,
+        };
+      }
+    }),
+  );
+
+  // ── Phase 2: Register tools sequentially (name allocation needs Set) ─────
   let toolCount = 0;
   const toolNames: string[] = [];
   const errors: Array<{ server: string; error: string }> = [];
   const usedToolNames = new Set<string>();
   const serverTools: Record<string, string[]> = {};
+  const liveClients: McpClient[] = [];
 
-  for (const client of clients) {
-    let tools: McpTool[] = [];
-    try {
-      tools = await client.listTools();
-    } catch (err) {
-      errors.push({ server: client.name, error: err instanceof Error ? err.message : String(err) });
-      // ignore broken server
+  for (let i = 0; i < clients.length; i++) {
+    const client = clients[i];
+    const result = initResults[i];
+
+    if (result.error) {
+      errors.push({ server: client.name, error: result.error });
+      // Close errored clients so child processes don't leak
+      try { client.close(); } catch {}
       continue;
     }
 
+    liveClients.push(client);
     const serverToolList: string[] = [];
     serverTools[client.name] = serverToolList;
 
-    for (const tool of tools) {
+    for (const tool of result.tools) {
       if (!tool?.name) continue;
 
       const sourceName = `mcp:${client.name}:${tool.name}`;
@@ -508,11 +951,9 @@ export async function registerMcpTools(pi: any, config: PizzaPiConfig & McpConfi
         description: tool.description
           ? `${tool.description} (source: ${sourceName})`
           : `MCP tool from ${client.name} (source: ${sourceName})`,
-        // pi expects JSON schema-ish. MCP uses inputSchema.
         parameters,
         async execute(_toolCallId: string, rawParams: unknown, signal: AbortSignal | undefined) {
           const result = await client.callTool(tool.name, rawParams ?? {}, signal);
-          // Ensure we return something pi can render.
           if (result && typeof result === "object" && "content" in result) {
             return (result as any);
           }
@@ -524,8 +965,9 @@ export async function registerMcpTools(pi: any, config: PizzaPiConfig & McpConfi
 
   // Best-effort shutdown.
   pi.on?.("session_shutdown", () => {
-    for (const c of clients) c.close();
+    for (const c of liveClients) c.close();
   });
 
-  return { clients, toolCount, toolNames, errors, serverTools };
+  const totalDurationMs = Date.now() - totalStart;
+  return { clients: liveClients, toolCount, toolNames, errors, serverTools, serverTimings: initResults, totalDurationMs };
 }

@@ -28,6 +28,17 @@ These are read by the PizzaPi CLI runner process (`pizzapi` / daemon).
 | `PIZZAPI_RUNNER_STATE_PATH` | Path to the runner state JSON file. | `~/.pizzapi/runner.json` |
 | `PIZZAPI_WORKSPACE_ROOTS` | Comma-separated list of workspace root directories. `PIZZAPI_WORKSPACE_ROOT` (single) and `PIZZAPI_RUNNER_ROOTS` (legacy) are also accepted. | — |
 
+### Worker Safe-Mode Variables
+
+These variables control which subsystems are loaded by runner-spawned worker sessions. They're equivalent to the CLI's `--no-*` flags. See [Safe Mode & Startup Performance](/PizzaPi/guides/safe-mode/) for details.
+
+| Variable | Description | Default |
+|---|---|---|
+| `PIZZAPI_NO_MCP` | Set to `1` to skip MCP server connections. | — |
+| `PIZZAPI_NO_PLUGINS` | Set to `1` to skip Claude Code plugin loading. | — |
+| `PIZZAPI_NO_HOOKS` | Set to `1` to skip hook execution. | — |
+| `PIZZAPI_NO_RELAY` | Set to `1` to skip relay server connection. | — |
+
 ---
 
 ## Server Variables
