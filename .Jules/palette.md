@@ -27,3 +27,7 @@
 ## 2026-03-06 - Tooltip Consistency for Icon Buttons
 **Learning:** Mixing native `title` attributes with custom `Tooltip` components in the same icon button group creates a jarring, inconsistent hover experience for users. Native tooltips have unpredictable delays and styling.
 **Action:** Always use the design system's `Tooltip` component for top-level icon-only actions to ensure a snappy, visually cohesive interface.
+
+## 2026-03-10 - Consistent Icon Button Accessibility and Tooltips
+**Learning:** Relying on native `title` attributes for icon-only buttons creates inconsistent hover delays across different components and lacks screen-reader robustness when not paired with explicit `aria-label` attributes. Within specific utility components like banner actions, this discrepancy becomes especially noticeable when other parts of the application utilize unified design system tooltips.
+**Action:** Consistently replace native `title` attributes on icon-only buttons with the design system's `Tooltip` components (`TooltipProvider`, `Tooltip`, `TooltipTrigger`, `TooltipContent`). Furthermore, always explicitly declare `aria-label` on these buttons so that screen readers correctly identify their action, rather than relying solely on tooltip text or raw DOM content.
