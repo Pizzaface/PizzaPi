@@ -4,17 +4,23 @@ import { join } from "path";
 import { tmpdir } from "os";
 import { PizzaPiOAuthProvider, startCallbackServer, encodeRelayState, type RelayContext } from "./mcp-oauth.js";
 
-// Redirect HOME to a temp directory so tests don't write to the real home.
-const originalHome = process.env.HOME;
-const tempHome = mkdtempSync(join(tmpdir(), "mcp-oauth-test-"));
+// Redirect MCP auth dir to a temp directory so tests don't write to the real home.
+// Note: Bun caches os.homedir() at process start, so mutating HOME has no effect.
+// We use PIZZAPI_MCP_AUTH_DIR instead, which getMcpAuthDir() checks first.
+const originalAuthDir = process.env.PIZZAPI_MCP_AUTH_DIR;
+const tempAuthDir = mkdtempSync(join(tmpdir(), "mcp-oauth-test-"));
 
 beforeAll(() => {
-    process.env.HOME = tempHome;
+    process.env.PIZZAPI_MCP_AUTH_DIR = tempAuthDir;
 });
 
 afterAll(() => {
-    process.env.HOME = originalHome;
-    try { rmSync(tempHome, { recursive: true, force: true }); } catch {}
+    if (originalAuthDir !== undefined) {
+        process.env.PIZZAPI_MCP_AUTH_DIR = originalAuthDir;
+    } else {
+        delete process.env.PIZZAPI_MCP_AUTH_DIR;
+    }
+    try { rmSync(tempAuthDir, { recursive: true, force: true }); } catch {}
 });
 
 describe("PizzaPiOAuthProvider", () => {

@@ -34,9 +34,14 @@ import type {
 // Token / client info persistence
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** Resolve auth directory lazily so tests can override HOME. */
+/**
+ * Resolve the MCP auth directory.
+ * Uses PIZZAPI_MCP_AUTH_DIR env var if set (for testing), otherwise ~/.pizzapi/mcp-auth.
+ * Note: Bun caches os.homedir() at process start, so mutating HOME at runtime
+ * does not work — the env var override is necessary for test isolation.
+ */
 function getMcpAuthDir(): string {
-  return join(homedir(), ".pizzapi", "mcp-auth");
+  return process.env.PIZZAPI_MCP_AUTH_DIR || join(homedir(), ".pizzapi", "mcp-auth");
 }
 
 /** Derive a short, filesystem-safe key from a server URL. */
