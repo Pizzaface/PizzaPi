@@ -2446,7 +2446,10 @@ export function App() {
       return;
     }
 
-    // Non-active session: open a temporary viewer socket, fire the exec, disconnect
+    // Non-active session: open a temporary viewer socket, fire the exec, disconnect.
+    // We wait for the exec_result confirmation (or a generous timeout) instead of
+    // blindly disconnecting after 500ms, which was too aggressive and caused the
+    // exec to be dropped when the server was still processing.
     const tempSocket: Socket<ViewerServerToClientEvents, ViewerClientToServerEvents> = io("/viewer", {
       auth: { sessionId },
       withCredentials: true,
@@ -2457,12 +2460,21 @@ export function App() {
 
     tempSocket.on("connected", () => {
       clearTimeout(timeout);
+      const execId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+      // Listen for exec_result confirmation before disconnecting
+      const resultTimeout = setTimeout(cleanup, 5_000); // fallback if no reply
+      tempSocket.on("exec_result" as any, (data: any) => {
+        if (data && data.id === execId) {
+          clearTimeout(resultTimeout);
+          cleanup();
+        }
+      });
+
       tempSocket.emit("exec", {
-        id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        id: execId,
         command: "end_session",
       } as any);
-      // Give the exec a moment to reach the runner before disconnecting
-      setTimeout(cleanup, 500);
     });
 
     tempSocket.on("connect_error", () => {
