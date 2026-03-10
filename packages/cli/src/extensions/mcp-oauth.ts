@@ -19,7 +19,7 @@
 import { join } from "path";
 import { homedir } from "os";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
-import { createHash, randomBytes } from "crypto";
+import { randomBytes } from "crypto";
 import { execFile } from "child_process";
 import type {
   OAuthClientProvider,
@@ -36,8 +36,10 @@ import type {
 
 const MCP_AUTH_DIR = join(homedir(), ".pizzapi", "mcp-auth");
 
+/** Derive a short, filesystem-safe key from a server URL. */
 function serverKey(serverUrl: string): string {
-  return createHash("sha256").update(serverUrl).digest("hex").slice(0, 16);
+  // Use base64url encoding (no crypto hash) to create a safe filename from the URL.
+  return Buffer.from(serverUrl).toString("base64url").slice(0, 32);
 }
 
 interface PersistedAuth {
