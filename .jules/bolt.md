@@ -9,3 +9,7 @@
 ## 2025-03-05 - [Optimize Socket.IO bulk leave operations]
 **Learning:** In Socket.IO, when disconnecting or removing multiple clients from a room across a Redis cluster, using `await io.in(room).fetchSockets()` followed by an iterative `.leave()` loop causes a severe N+1 problem by pulling all remote socket instances into memory unnecessarily.
 **Action:** Use native broadcast methods like `io.in(room).socketsLeave(room)` or `io.in(room).disconnectSockets(true)` to push the operation directly to the Redis adapter without pulling objects into the application layer.
+
+## 2025-03-09 - Socket.IO Cluster Network Bottlenecks
+**Learning:** `fetchSockets()` is highly inefficient when only checking for socket presence in a clustered (Redis) environment, as it pulls full `RemoteSocket` objects across the network. `.allSockets()` is deprecated in Socket.IO v4.
+**Action:** Use `adapter.sockets(new Set([roomName]))` directly to efficiently return a `Set` of socket IDs without cross-cluster serialization overhead.

@@ -676,7 +676,7 @@ async function sweepOrphanedSessions(nowMs: number): Promise<void> {
         if (localTuiSockets.has(sessionId)) continue;
 
         // Check heartbeat staleness locally FIRST (fast memory check)
-        // to avoid expensive cluster-wide N+1 fetchSockets() calls for healthy sessions
+        // to avoid expensive cluster-wide N+1 socket queries for healthy sessions
         const lastHb = session.lastHeartbeatAt ? Date.parse(session.lastHeartbeatAt) : 0;
         const startedAt = session.startedAt ? Date.parse(session.startedAt) : 0;
         const lastActivity = Math.max(lastHb || 0, startedAt || 0);
@@ -686,8 +686,12 @@ async function sweepOrphanedSessions(nowMs: number): Promise<void> {
         }
 
         // Session appears stale locally, verify if a relay socket exists on ANY server
-        const relaySockets = await io.of("/relay").in(relaySessionRoom(sessionId)).fetchSockets();
-        if (relaySockets.length > 0) continue;
+        // ⚡ Bolt: Using the adapter directly prevents an expensive cluster-wide N+1
+        // fetchSockets() call that pulls all socket instances into memory, and avoids
+        // the deprecated allSockets() method.
+        const roomName = relaySessionRoom(sessionId);
+        const relaySockets = await io.of("/relay").adapter.sockets(new Set([roomName]));
+        if (relaySockets.size > 0) continue;
 
         console.log(
             `[sio-registry] Sweeping orphaned session ${sessionId} ` +
