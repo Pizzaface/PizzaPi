@@ -370,11 +370,12 @@ Run \`pizza <command> --help\` for command-specific help.
     }
 
     // ── Safe-mode flags ──────────────────────────────────────────────────────
+    // Support both CLI flags and PIZZAPI_NO_* env vars (same as worker mode).
     const safeMode = args.includes("--safe-mode");
-    const noMcp = safeMode || args.includes("--no-mcp");
-    const noPlugins = safeMode || args.includes("--no-plugins");
-    const noHooks = safeMode || args.includes("--no-hooks");
-    const noRelay = safeMode || args.includes("--no-relay");
+    const noMcp = safeMode || args.includes("--no-mcp") || process.env.PIZZAPI_NO_MCP === "1";
+    const noPlugins = safeMode || args.includes("--no-plugins") || process.env.PIZZAPI_NO_PLUGINS === "1";
+    const noHooks = safeMode || args.includes("--no-hooks") || process.env.PIZZAPI_NO_HOOKS === "1";
+    const noRelay = safeMode || args.includes("--no-relay") || process.env.PIZZAPI_NO_RELAY === "1";
 
     // Strip safe-mode flags so pi doesn't see them
     for (const flag of ["--safe-mode", "--no-mcp", "--no-plugins", "--no-hooks", "--no-relay"]) {

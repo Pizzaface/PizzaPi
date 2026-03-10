@@ -69,9 +69,9 @@ function loadPersistedAuth(serverUrl: string): PersistedAuth {
 
 function savePersistedAuth(serverUrl: string, auth: PersistedAuth): void {
   const dir = getMcpAuthDir();
-  mkdirSync(dir, { recursive: true });
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
   const path = join(dir, `${serverKey(serverUrl)}.json`);
-  writeFileSync(path, JSON.stringify(auth, null, 2));
+  writeFileSync(path, JSON.stringify(auth, null, 2), { mode: 0o600 });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -164,7 +164,13 @@ export function startCallbackServer(
   return {
     promise,
     getPort: () => server?.port ?? port,
-    close: () => { clearTimeout(timer); server?.stop(true); },
+    close: () => {
+      clearTimeout(timer);
+      server?.stop(true);
+      // Reject the pending promise so callers awaiting callback don't hang
+      // forever (e.g., when relay context arrives and we switch to relay mode).
+      rejectPromise(new Error("OAuth callback server closed"));
+    },
   };
 }
 

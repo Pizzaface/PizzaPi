@@ -25,7 +25,11 @@ pizza --safe-mode
 This disables MCP servers, plugins, hooks, and the relay connection. You get a fully functional coding session without any of the integrations.
 
 <Aside type="tip">
-  Safe mode is great for quick one-off tasks, debugging, or when you're on a slow network. You can always run `/mcp reload` inside the session to reconnect MCP servers later.
+  Safe mode is great for quick one-off tasks, debugging, or when you're on a slow network. If you want to skip only MCP at startup but retain the ability to load it later, use `--no-mcp` instead — you can then run `/mcp reload` inside the session to connect MCP servers on demand.
+</Aside>
+
+<Aside type="caution">
+  In full `--safe-mode`, the MCP extension is not loaded at all, so `/mcp reload` is not available. Use the granular `--no-mcp` flag below if you need MCP recovery within a session.
 </Aside>
 
 ---

@@ -241,11 +241,13 @@ describe("encodeRelayState", () => {
 
 describe("startCallbackServer", () => {
     test("returns a server with getPort and close", () => {
-        const { getPort, close } = startCallbackServer(0, 5000);
+        const { promise, getPort, close } = startCallbackServer(0, 5000);
         try {
             const port = getPort();
             expect(port).toBeGreaterThan(0);
         } finally {
+            // close() now rejects the pending promise — catch it to avoid unhandled rejection.
+            promise.catch(() => {});
             close();
         }
     });
@@ -281,5 +283,13 @@ describe("startCallbackServer", () => {
         } finally {
             close();
         }
+    });
+
+    test("close() rejects pending promise so callers don't hang", async () => {
+        const { promise, close } = startCallbackServer(0, 30_000);
+        // Close the server before any callback arrives
+        close();
+        // The pending promise should reject (not hang forever)
+        await expect(promise).rejects.toThrow("closed");
     });
 });
