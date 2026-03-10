@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
 import type { PizzaPiConfig } from "../config.js";
-import { PizzaPiOAuthProvider } from "./mcp-oauth.js";
+import { PizzaPiOAuthProvider, type RelayContext } from "./mcp-oauth.js";
 
 /**
  * Minimal MCP client transport + tool bridge.
@@ -40,6 +40,12 @@ type McpCallToolResult = {
 
 type McpClient = {
   name: string;
+  /**
+   * Perform the MCP initialize handshake (and any OAuth if needed).
+   * Separating this from listTools() allows callers to complete auth
+   * without being constrained by tool-listing timeouts.
+   */
+  initialize(): Promise<void>;
   listTools(): Promise<McpTool[]>;
   callTool(toolName: string, args: unknown, signal?: AbortSignal): Promise<McpCallToolResult>;
   close(): void;
@@ -224,6 +230,7 @@ function createStdioMcpClient(opts: { name: string; command: string; args?: stri
 
   return {
     name: opts.name,
+    initialize: () => ensureInitialized(),
     async listTools() {
       await ensureInitialized();
       const res = (await request("tools/list")) as McpListToolsResult;
@@ -301,6 +308,7 @@ function createHttpMcpClient(opts: { name: string; url: string; headers?: Record
 
   return {
     name: opts.name,
+    initialize: () => ensureInitialized(),
     async listTools() {
       await ensureInitialized();
       const res = (await request("tools/list")) as McpListToolsResult;
@@ -655,6 +663,7 @@ function createStreamableMcpClient(opts: {
 
   return {
     name: opts.name,
+    initialize: () => ensureInitialized(),
     async listTools() {
       await ensureInitialized();
       const res = (await request("tools/list")) as McpListToolsResult;
@@ -874,20 +883,42 @@ async function listToolsWithTimeout(client: McpClient, timeoutMs: number): Promi
   return result;
 }
 
-export async function registerMcpTools(pi: any, config: PizzaPiConfig & McpConfig): Promise<McpRegistrationResult> {
+export async function registerMcpTools(pi: any, config: PizzaPiConfig & McpConfig, relayContext?: RelayContext | null): Promise<McpRegistrationResult> {
   const totalStart = Date.now();
   const clients = await createMcpClientsFromConfig(config);
   const empty: McpRegistrationResult = { clients: [], toolCount: 0, toolNames: [], errors: [], serverTools: {}, serverTimings: [], totalDurationMs: 0 };
   if (clients.length === 0) return { ...empty, totalDurationMs: Date.now() - totalStart };
 
+  // Apply relay context to newly created OAuth providers before initialization.
+  // During /mcp reload the relay is already connected, so providers need the
+  // context immediately — otherwise waitForRelayContext() falls through to
+  // local mode and OAuth opens in a local browser instead of the web UI.
+  if (relayContext) {
+    for (const provider of getOAuthProviders()) {
+      provider.relayContext = relayContext;
+    }
+  }
+
   // Determine per-server timeout from config (0 = disabled)
   const timeoutMs = typeof (config as any).mcpTimeout === "number" ? (config as any).mcpTimeout : DEFAULT_MCP_TIMEOUT;
 
-  // ── Phase 1: Initialize all servers in parallel ──────────────────────────
+  // ── Phase 1: Initialize + list tools for all servers in parallel ─────────
+  //
+  // Initialization is performed first (may trigger OAuth which requires user
+  // interaction and can take minutes). The tool-listing timeout only applies
+  // to the subsequent tools/list call — not the auth flow — so servers that
+  // require OAuth are not killed by the 30 s default timeout.
   const initResults = await Promise.all(
     clients.map(async (client): Promise<McpServerInitResult> => {
       const start = Date.now();
       try {
+        // Initialize the MCP handshake (+ any OAuth) without a timeout.
+        // The OAuth flow has its own internal timeout (2 min callback wait).
+        await client.initialize();
+
+        // Now list tools with the configurable timeout.  Since initialize()
+        // already resolved, ensureInitialized() inside listTools() returns
+        // immediately — the timeout only covers the tools/list request.
         const { tools, error, timedOut } = await listToolsWithTimeout(client, timeoutMs);
         const durationMs = Date.now() - start;
         if (error) {

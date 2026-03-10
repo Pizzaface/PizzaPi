@@ -353,7 +353,12 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
   async function load(): Promise<McpSnapshot> {
     const mergedConfig = loadConfig(process.cwd()) as PizzaPiConfig & McpConfig;
     const inspection = inspectMcpConfig(process.cwd());
-    const res = await registerMcpTools(pi, mergedConfig);
+    // Pass current relay context so that freshly created OAuth providers have
+    // it *before* initialization begins.  During /mcp reload the relay is
+    // already connected — without this, providers fall back to local OAuth.
+    // During initial session_start, currentRelayContext is null (relay hasn't
+    // connected yet) and providers use waitForRelayContext() as before.
+    const res = await registerMcpTools(pi, mergedConfig, currentRelayContext);
 
     for (const client of activeClients) {
       try {
