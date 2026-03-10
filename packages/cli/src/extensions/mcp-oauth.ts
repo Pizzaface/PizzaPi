@@ -296,6 +296,11 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
       if (!this._hasBeenInRelayMode) {
         this._hasBeenInRelayMode = true;
         if (this._callbackServer) {
+          // Swallow the rejection from close() — the promise may have no
+          // consumer yet (eager creation from the redirectUrl getter before
+          // startCallbackAndWait() is called), so the rejection would be
+          // unhandled and Bun would treat it as a fatal error.
+          this._callbackServer.promise.catch(() => {});
           this._callbackServer.close();
           this._callbackServer = null;
         }
@@ -492,8 +497,13 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
 
   /** Clean up the callback server. */
   closeCallback(): void {
-    this._callbackServer?.close();
-    this._callbackServer = null;
+    if (this._callbackServer) {
+      // Suppress unhandled rejection — same rationale as in the relayContext
+      // setter: the promise may have been created eagerly with no consumer.
+      this._callbackServer.promise.catch(() => {});
+      this._callbackServer.close();
+      this._callbackServer = null;
+    }
     this._currentNonce = null;
   }
 

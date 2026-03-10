@@ -173,6 +173,47 @@ describe("PizzaPiOAuthProvider", () => {
             expect(meta.redirect_uris[0]).toBe("https://relay.example.com/api/mcp-oauth-callback");
         });
 
+        test("relay transition after eager callback start does not cause unhandled rejection", async () => {
+            const provider = createProvider();
+
+            // Eagerly create callback server by reading redirectUrl in local mode
+            // (this is what happens when the MCP SDK calls clientMetadata before
+            // startCallbackAndWait — the promise has no consumer yet).
+            const localUrl = provider.redirectUrl.toString();
+            expect(localUrl).toMatch(/^http:\/\/localhost:\d+\/callback$/);
+
+            // Transition to relay mode — this closes the callback server.
+            // Before the fix, this rejected an unobserved promise → fatal in Bun.
+            provider.relayContext = createMockRelayContext();
+
+            // If we get here without an unhandled rejection, the fix works.
+            // Give the microtask queue a tick so any unhandled rejection would fire.
+            await new Promise((r) => setTimeout(r, 50));
+
+            // Verify we're now in relay mode
+            expect(provider.redirectUrl.toString()).toBe(
+                "https://pizza.example.com/api/mcp-oauth-callback",
+            );
+        });
+
+        test("closeCallback after eager start does not cause unhandled rejection", async () => {
+            const provider = createProvider();
+
+            // Eagerly create callback server
+            const localUrl = provider.redirectUrl.toString();
+            expect(localUrl).toMatch(/^http:\/\/localhost:\d+\/callback$/);
+
+            // Close without anyone awaiting the promise
+            provider.closeCallback();
+
+            // Give the microtask queue a tick
+            await new Promise((r) => setTimeout(r, 50));
+
+            // Should be cleanly closed — accessing redirectUrl starts a fresh server
+            const newUrl = provider.redirectUrl.toString();
+            expect(newUrl).toMatch(/^http:\/\/localhost:\d+\/callback$/);
+        });
+
         test("reconnect (null→ctx after disconnect) preserves client credentials", () => {
             const provider = new PizzaPiOAuthProvider({
                 serverUrl: `https://reconnect-${Date.now()}.example.com/mcp`,
