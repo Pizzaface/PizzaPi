@@ -218,8 +218,11 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
   private _onAuthStart?: (authUrl: string) => void;
   private _onAuthComplete?: () => void;
 
-  /** Set externally by the remote extension when relay is connected. */
-  relayContext: RelayContext | null = null;
+  /** Internal relay context storage. Use the getter/setter. */
+  private _relayContext: RelayContext | null = null;
+
+  /** Callbacks waiting for relay context to become available. */
+  private _relayReadyResolvers: Array<() => void> = [];
 
   /** Nonce for the current auth flow (relay mode). */
   private _currentNonce: string | null = null;
@@ -233,8 +236,59 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
     this._persisted = loadPersistedAuth(this._serverUrl);
   }
 
+  /** Relay context — set by the remote extension when relay is connected. */
+  get relayContext(): RelayContext | null {
+    return this._relayContext;
+  }
+
+  set relayContext(ctx: RelayContext | null) {
+    const wasLocal = this._relayContext === null;
+    this._relayContext = ctx;
+    if (ctx) {
+      // Transitioning to relay mode: clean up any local callback server that
+      // was eagerly started (e.g., if redirectUrl was accessed before relay
+      // connected) and invalidate cached client info whose redirect_uris
+      // pointed to localhost.
+      if (wasLocal && this._callbackServer) {
+        this._callbackServer.close();
+        this._callbackServer = null;
+      }
+      if (wasLocal && this._persisted.clientInfo) {
+        this.invalidateCredentials("client");
+      }
+      // Notify anyone waiting for relay context
+      const resolvers = this._relayReadyResolvers.splice(0);
+      for (const resolve of resolvers) resolve();
+    }
+  }
+
+  /**
+   * Wait for relay context to become available (e.g. during startup when
+   * MCP init races ahead of the relay connection).
+   *
+   * Returns immediately if relay context is already set, otherwise waits
+   * up to `timeoutMs` before resolving (caller falls back to local mode).
+   */
+  waitForRelayContext(timeoutMs: number = 15_000): Promise<void> {
+    if (this._relayContext) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      const timer = setTimeout(() => {
+        // Timeout — remove from waiters and resolve so caller falls back to local mode
+        const idx = this._relayReadyResolvers.indexOf(wrappedResolve);
+        if (idx >= 0) this._relayReadyResolvers.splice(idx, 1);
+        resolve();
+      }, timeoutMs);
+
+      const wrappedResolve = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+      this._relayReadyResolvers.push(wrappedResolve);
+    });
+  }
+
   private get _useRelay(): boolean {
-    return this.relayContext !== null;
+    return this._relayContext !== null;
   }
 
   get redirectUrl(): string | URL {

@@ -527,6 +527,15 @@ function createStreamableMcpClient(opts: {
         }
 
         // ── Strategy 2: Full MCP OAuth 2.1 flow ──────────────────────────
+
+        // Wait for relay context to become available before starting OAuth.
+        // During startup, MCP init can race ahead of the relay connection.
+        // If we start OAuth in local mode, the redirect_uri points to localhost
+        // which is unreachable when running remotely. Waiting here gives the
+        // relay connection time to establish so OAuth uses the server callback
+        // URL instead. Falls back to local mode after the timeout.
+        await oauthProvider.waitForRelayContext();
+
         const { auth, extractWWWAuthenticateParams } = await import(
           "@modelcontextprotocol/sdk/client/auth.js"
         );

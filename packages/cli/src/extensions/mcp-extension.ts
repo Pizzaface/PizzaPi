@@ -453,15 +453,24 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
   // (relay context's waitForCallback delegates here).
   (bridge as any)._pendingOAuthCallbacks = pendingOAuthCallbacks;
 
-  try {
-    await load();
-  } catch {
-    // No UI available here (no ExtensionContext in factory), so swallow.
-    // The user can diagnose via /mcp once UI is up.
-  }
+  // NOTE: MCP initialization is deferred to session_start (below) rather than
+  // running here in the factory.  Extension factories are awaited sequentially
+  // by pi, and session_start only fires AFTER all factories complete.  If an
+  // MCP server needs OAuth during init, the OAuth provider must wait for the
+  // relay connection (which happens asynchronously during session_start).
+  // Running load() here would deadlock: the relay can't connect because
+  // session_start hasn't fired, and session_start can't fire because load()
+  // is blocking the factory.  By deferring to session_start, the relay
+  // connection can establish in parallel while MCP servers initialize.
 
-  // ── session_start: report timing to TUI + emit events for web UI ─────────
+  // ── session_start: load MCP tools + report timing to TUI/web UI ──────────
   pi.on?.("session_start", async (_event: any, ctx: any) => {
+    try {
+      await load();
+    } catch {
+      // Swallow — user can diagnose via /mcp.
+    }
+
     const config = loadConfig(process.cwd());
     const showWarnings = config.slowStartupWarning !== false;
     const report = buildStartupReport();
