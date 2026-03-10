@@ -929,13 +929,18 @@ export async function registerMcpTools(pi: any, config: PizzaPiConfig & McpConfi
         // (default 3 min) is a safety net against hung processes / stalled
         // endpoints that would otherwise block forever.
         if (initTimeoutMs > 0) {
-          const initPromise = client.initialize();
-          const initTimer = new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error(
-              `Timed out after ${Math.round(initTimeoutMs / 1000)}s waiting for MCP initialize handshake`,
-            )), initTimeoutMs),
-          );
-          await Promise.race([initPromise, initTimer]);
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          try {
+            const initPromise = client.initialize();
+            const initTimer = new Promise<never>((_, reject) => {
+              timer = setTimeout(() => reject(new Error(
+                `Timed out after ${Math.round(initTimeoutMs / 1000)}s waiting for MCP initialize handshake`,
+              )), initTimeoutMs);
+            });
+            await Promise.race([initPromise, initTimer]);
+          } finally {
+            if (timer !== undefined) clearTimeout(timer);
+          }
         } else {
           await client.initialize();
         }
