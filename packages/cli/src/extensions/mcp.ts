@@ -818,6 +818,17 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
 /** Default timeout for MCP server tools/list calls: 30 seconds. */
 const DEFAULT_MCP_TIMEOUT = 30_000;
 
+/**
+ * Default timeout for MCP server initialization (handshake + possible OAuth): 3 minutes.
+ * This is intentionally much longer than the tool-listing timeout because
+ * OAuth flows require user interaction (opening a browser, clicking through
+ * consent screens). The OAuth callback server itself has a 2-minute timeout,
+ * so 3 minutes gives enough headroom. For non-OAuth servers, the init
+ * handshake completes in milliseconds — the timeout is just a safety net
+ * against hung processes or stalled network endpoints.
+ */
+const DEFAULT_MCP_INIT_TIMEOUT = 180_000;
+
 /** Per-server initialization result collected during parallel init. */
 export type McpServerInitResult = {
   name: string;
@@ -899,8 +910,9 @@ export async function registerMcpTools(pi: any, config: PizzaPiConfig & McpConfi
     }
   }
 
-  // Determine per-server timeout from config (0 = disabled)
+  // Determine per-server timeouts from config (0 = disabled)
   const timeoutMs = typeof (config as any).mcpTimeout === "number" ? (config as any).mcpTimeout : DEFAULT_MCP_TIMEOUT;
+  const initTimeoutMs = typeof (config as any).mcpInitTimeout === "number" ? (config as any).mcpInitTimeout : DEFAULT_MCP_INIT_TIMEOUT;
 
   // ── Phase 1: Initialize + list tools for all servers in parallel ─────────
   //
@@ -912,9 +924,21 @@ export async function registerMcpTools(pi: any, config: PizzaPiConfig & McpConfi
     clients.map(async (client): Promise<McpServerInitResult> => {
       const start = Date.now();
       try {
-        // Initialize the MCP handshake (+ any OAuth) without a timeout.
-        // The OAuth flow has its own internal timeout (2 min callback wait).
-        await client.initialize();
+        // Initialize the MCP handshake (+ any OAuth) with a generous timeout.
+        // OAuth flows have their own 2-min callback timeout; the init timeout
+        // (default 3 min) is a safety net against hung processes / stalled
+        // endpoints that would otherwise block forever.
+        if (initTimeoutMs > 0) {
+          const initPromise = client.initialize();
+          const initTimer = new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error(
+              `Timed out after ${Math.round(initTimeoutMs / 1000)}s waiting for MCP initialize handshake`,
+            )), initTimeoutMs),
+          );
+          await Promise.race([initPromise, initTimer]);
+        } else {
+          await client.initialize();
+        }
 
         // Now list tools with the configurable timeout.  Since initialize()
         // already resolved, ensureInitialized() inside listTools() returns
