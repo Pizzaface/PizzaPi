@@ -479,7 +479,8 @@ export function renderGroupedToolExecution(
   isError: boolean | undefined,
   isStreaming: boolean,
   thinking?: string,
-  thinkingDuration?: number
+  thinkingDuration?: number,
+  details?: unknown,
 ) {
   const hasOutput = hasVisibleContent(content);
   // Streaming takes priority: a tool with partial output is still running.
@@ -731,6 +732,7 @@ export function renderGroupedToolExecution(
         content={content}
         isStreaming={isStreaming}
         isError={isError}
+        details={details}
       />
     );
   } else if (norm === "askuserquestion" || norm.endsWith(".askuserquestion")) {

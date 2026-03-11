@@ -97,6 +97,9 @@ function toRelayMessage(raw: unknown, fallbackId: string): RelayMessage | null {
   const summary = typeof msg.summary === "string" ? msg.summary : undefined;
   const tokensBefore = typeof msg.tokensBefore === "number" ? msg.tokensBefore : undefined;
 
+  // Preserve structured details (e.g., subagent SubagentDetails) for tool results
+  const details = msg.details !== undefined && msg.details !== null ? msg.details : undefined;
+
   return {
     key,
     role,
@@ -109,6 +112,7 @@ function toRelayMessage(raw: unknown, fallbackId: string): RelayMessage | null {
     errorMessage,
     summary,
     tokensBefore,
+    details,
   };
 }
 

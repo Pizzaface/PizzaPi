@@ -142,6 +142,16 @@ function getToolCallCount(messages: Array<{ role: string; content: unknown[] }>)
   return count;
 }
 
+// ── Parse details from top-level details prop ──────────────────────────
+
+function parseSubagentDetails(details: unknown): SubagentDetails | null {
+  if (details && typeof details === "object" && !Array.isArray(details)) {
+    const d = details as SubagentDetails;
+    if (d.mode && d.results) return d;
+  }
+  return null;
+}
+
 // ── Parse details from tool result ─────────────────────────────────────
 
 function parseDetails(content: unknown): SubagentDetails | null {
@@ -303,14 +313,18 @@ export function SubagentResultCard({
   content,
   isStreaming,
   isError: isErrorProp,
+  details: detailsProp,
 }: {
   toolInput: unknown;
   content: unknown;
   isStreaming: boolean;
   isError?: boolean;
+  details?: unknown;
 }) {
   const inputArgs = parseToolInputArgs(toolInput);
-  const details = parseDetails(content);
+  // Try parsing details from content first (streaming path), then fall back
+  // to the top-level details prop (preserved from final tool result message).
+  const details = parseDetails(content) ?? parseSubagentDetails(detailsProp);
   const resultText = extractTextFromToolContent(content);
 
   const mode: "single" | "parallel" | "chain" =

@@ -186,6 +186,11 @@ export interface SubagentDetails {
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
+/** Shared predicate for determining if a subagent result represents a failure. */
+function isFailed(r: SingleResult): boolean {
+    return r.exitCode !== 0 || r.stopReason === "error" || r.stopReason === "aborted";
+}
+
 function getFinalOutput(messages: Message[]): string {
     for (let i = messages.length - 1; i >= 0; i--) {
         const msg = messages[i];
@@ -250,13 +255,23 @@ const BUILTIN_TOOLS: Record<string, (typeof codingTools)[number]> = {
 
 /**
  * Resolve agent tool names to actual Tool objects from the built-in set.
+ * Returns null if any requested tool name is unknown (fail-closed).
  */
-function resolveTools(toolNames: string[]): (typeof codingTools)[number][] {
+function resolveTools(toolNames: string[]): { tools: (typeof codingTools)[number][] } | { error: string } {
     const resolved: (typeof codingTools)[number][] = [];
+    const unknown: string[] = [];
     for (const name of toolNames) {
         if (BUILTIN_TOOLS[name]) resolved.push(BUILTIN_TOOLS[name]);
+        else unknown.push(name);
     }
-    return resolved.length > 0 ? resolved : [...codingTools];
+    if (unknown.length > 0) {
+        const available = Object.keys(BUILTIN_TOOLS).join(", ");
+        return { error: `Unknown tool(s): ${unknown.join(", ")}. Available: ${available}` };
+    }
+    if (resolved.length === 0) {
+        return { error: "No tools specified. Use at least one built-in tool." };
+    }
+    return { tools: resolved };
 }
 
 async function runSingleAgent(
@@ -286,13 +301,19 @@ async function runSingleAgent(
         };
     }
 
-    // Resolve effective tools — apply disallowedTools filtering
+    // Resolve effective tools — apply disallowedTools filtering to both explicit and default toolsets
     let effectiveToolNames: string[] | undefined;
     if (agent.tools && agent.tools.length > 0) {
         effectiveToolNames = [...agent.tools];
-        if (agent.disallowedTools && agent.disallowedTools.length > 0) {
-            const denied = new Set(agent.disallowedTools);
+    }
+    // Apply disallowedTools to whichever toolset is active (explicit or default)
+    if (agent.disallowedTools && agent.disallowedTools.length > 0) {
+        const denied = new Set(agent.disallowedTools);
+        if (effectiveToolNames) {
             effectiveToolNames = effectiveToolNames.filter(t => !denied.has(t));
+        } else {
+            // Apply disallowedTools to the default coding tools
+            effectiveToolNames = Object.keys(BUILTIN_TOOLS).filter(t => !denied.has(t));
         }
     }
 
@@ -320,8 +341,26 @@ async function runSingleAgent(
     };
 
     try {
-        // Build session options
-        const tools = effectiveToolNames ? resolveTools(effectiveToolNames) : codingTools;
+        // Build session options — resolve tools fail-closed
+        let tools: (typeof codingTools)[number][];
+        if (effectiveToolNames) {
+            const resolved = resolveTools(effectiveToolNames);
+            if ("error" in resolved) {
+                return {
+                    agent: agentName,
+                    agentSource: agent.source,
+                    task,
+                    exitCode: 1,
+                    messages: [],
+                    stderr: resolved.error,
+                    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+                    step,
+                };
+            }
+            tools = resolved.tools;
+        } else {
+            tools = [...codingTools];
+        }
         const sessionCwd = cwd ?? defaultCwd;
 
         // Use a lightweight resource loader — no extensions, skills, themes, etc.
@@ -344,7 +383,6 @@ async function runSingleAgent(
         });
 
         // Subscribe to events to track messages and usage
-        let abortController: AbortController | undefined;
 
         session.subscribe((event) => {
             if (event.type === "message_end" && "message" in event) {
@@ -367,10 +405,10 @@ async function runSingleAgent(
                     if (assistantMsg.stopReason) currentResult.stopReason = assistantMsg.stopReason;
                     if (assistantMsg.errorMessage) currentResult.errorMessage = assistantMsg.errorMessage;
 
-                    // Enforce maxTurns
+                    // Enforce maxTurns — use session.abort() to actually stop the session
                     if (maxTurns > 0 && currentResult.usage.turns >= maxTurns) {
                         currentResult.stderr += `\n[subagent] maxTurns limit reached (${maxTurns}), stopping.`;
-                        abortController?.abort();
+                        session.abort().catch(() => {});
                     }
                 }
                 emitUpdate();
@@ -388,14 +426,13 @@ async function runSingleAgent(
             }
         });
 
-        // Handle external abort signal
+        // Handle external abort signal — use session.abort() for real cancellation
         if (signal?.aborted) throw new Error("Subagent was aborted");
-        const onAbort = () => abortController?.abort();
+        const onAbort = () => { session.abort().catch(() => {}); };
         signal?.addEventListener("abort", onAbort, { once: true });
 
         try {
             // Run the prompt
-            abortController = new AbortController();
             await session.prompt(`Task: ${task}`);
         } catch (err) {
             if (signal?.aborted) throw new Error("Subagent was aborted");
@@ -524,7 +561,7 @@ export const subagentExtension = (pi: ExtensionAPI) => {
             }
 
             // Confirm project-scope agents when required
-            if ((agentScope === "project" || agentScope === "both") && confirmProjectAgents && ctx.hasUI) {
+            if ((agentScope === "project" || agentScope === "both") && confirmProjectAgents) {
                 const requestedAgentNames = new Set<string>();
                 if (params.chain) for (const step of params.chain) requestedAgentNames.add(step.agent);
                 if (params.tasks) for (const t of params.tasks) requestedAgentNames.add(t.agent);
@@ -535,6 +572,19 @@ export const subagentExtension = (pi: ExtensionAPI) => {
                     .filter((a): a is AgentConfig => a?.source === "project");
 
                 if (projectAgentsRequested.length > 0) {
+                    if (!ctx.hasUI) {
+                        // Fail closed in headless/runner contexts — no UI to confirm
+                        const names = projectAgentsRequested.map((a) => a.name).join(", ");
+                        return {
+                            content: [
+                                {
+                                    type: "text",
+                                    text: `Refused: project-local agents (${names}) require confirmation but no UI is available. Set confirmProjectAgents: false to allow in headless mode.`,
+                                },
+                            ],
+                            details: makeDetails(hasChain ? "chain" : hasTasks ? "parallel" : "single")([]),
+                        };
+                    }
                     const names = projectAgentsRequested.map((a) => a.name).join(", ");
                     const dir = discovery.projectAgentsDir ?? "(unknown)";
                     const ok = await ctx.ui.confirm(
@@ -577,8 +627,7 @@ export const subagentExtension = (pi: ExtensionAPI) => {
                     );
                     results.push(result);
 
-                    const isError = result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
-                    if (isError) {
+                    if (isFailed(result)) {
                         const errorMsg = result.errorMessage || result.stderr || getFinalOutput(result.messages) || "(no output)";
                         return {
                             content: [{ type: "text", text: `Chain stopped at step ${i + 1} (${step.agent}): ${errorMsg}` }],
@@ -644,11 +693,11 @@ export const subagentExtension = (pi: ExtensionAPI) => {
                     return result;
                 });
 
-                const successCount = results.filter((r) => r.exitCode === 0).length;
+                const successCount = results.filter((r) => !isFailed(r)).length;
                 const summaries = results.map((r) => {
                     const output = getFinalOutput(r.messages);
                     const preview = output.slice(0, 100) + (output.length > 100 ? "..." : "");
-                    return `[${r.agent}] ${r.exitCode === 0 ? "completed" : "failed"}: ${preview || "(no output)"}`;
+                    return `[${r.agent}] ${isFailed(r) ? "failed" : "completed"}: ${preview || "(no output)"}`;
                 });
                 return {
                     content: [
@@ -664,8 +713,7 @@ export const subagentExtension = (pi: ExtensionAPI) => {
                     ctx.cwd, agents, params.agent, params.task,
                     params.cwd, undefined, signal, onUpdate, makeDetails("single"),
                 );
-                const isError = result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
-                if (isError) {
+                if (isFailed(result)) {
                     const errorMsg = result.errorMessage || result.stderr || getFinalOutput(result.messages) || "(no output)";
                     return {
                         content: [{ type: "text", text: `Agent ${result.stopReason || "failed"}: ${errorMsg}` }],
