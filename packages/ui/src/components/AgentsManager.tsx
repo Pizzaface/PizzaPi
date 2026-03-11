@@ -175,8 +175,14 @@ function AgentEditorDialog({ runnerId, open, agent, onClose, onSaved }: AgentEdi
             return;
         }
 
-        // Validate name
-        if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(trimmedName)) {
+        // Validate name — strict for new agents, relaxed for edits (discovered
+        // agents may have uppercase, underscores, or dots in their names)
+        if (isEditing) {
+            if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(trimmedName)) {
+                setError("Invalid agent name");
+                return;
+            }
+        } else if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(trimmedName)) {
             setError("Name must contain only lowercase letters, numbers, and hyphens");
             return;
         }
