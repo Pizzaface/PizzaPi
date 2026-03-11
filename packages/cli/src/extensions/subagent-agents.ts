@@ -51,6 +51,32 @@ export interface AgentDiscoveryResult {
     projectAgentsDir: string | null;
 }
 
+// ── Built-in agents ────────────────────────────────────────────────────
+
+/**
+ * Built-in agents that are always available without any .md file.
+ * User or project agents with the same name take precedence (override).
+ */
+export const BUILTIN_AGENTS: AgentConfig[] = [
+    {
+        name: "task",
+        description: "General-purpose agent — can be tasked with anything",
+        systemPrompt: [
+            "You are a general-purpose task agent. You can read, write, edit, and run commands to accomplish any task delegated to you.",
+            "",
+            "## Guidelines",
+            "",
+            "- Read and understand context before making changes",
+            "- Use the right tool for the job — `bash` for commands, `edit` for surgical changes, `write` for new files",
+            "- Be thorough but concise — do the work, report what you did",
+            "- If something fails, diagnose and fix it rather than giving up",
+            "- When the task is complete, provide a clear summary of what was done",
+        ].join("\n"),
+        source: "user",
+        filePath: "(built-in)",
+    },
+];
+
 /**
  * Load agent definitions from a directory of .md files.
  *
@@ -228,8 +254,11 @@ export function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryRe
 
     const agentMap = new Map<string, AgentConfig>();
 
+    // Built-in agents go first (lowest priority — overridden by user/project)
+    for (const agent of BUILTIN_AGENTS) agentMap.set(agent.name, agent);
+
     if (scope === "both") {
-        // User agents first, project agents override
+        // User agents override built-ins, project agents override user
         for (const agent of userAgents) agentMap.set(agent.name, agent);
         for (const agent of projectAgents) agentMap.set(agent.name, agent);
     } else if (scope === "user") {
