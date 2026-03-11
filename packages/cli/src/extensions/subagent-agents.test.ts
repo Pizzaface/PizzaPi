@@ -2,7 +2,7 @@ import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { discoverAgents, formatAgentList, getUserAgentsDir, getUserAgentsDirs, type AgentConfig } from "./subagent-agents.js";
+import { discoverAgents, formatAgentList, getUserAgentsDir, getUserAgentsDirs, BUILTIN_AGENTS, type AgentConfig } from "./subagent-agents.js";
 
 /**
  * Tests for agent discovery in PizzaPi subagent system.
@@ -34,9 +34,11 @@ describe("discoverAgents", () => {
         try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
     });
 
-    test("returns empty agents when no agent directories exist", () => {
+    test("returns only built-in agents when no agent directories exist", () => {
         const result = discoverAgents(tmpDir, "project");
-        expect(result.agents).toEqual([]);
+        // Built-in agents are always present
+        expect(result.agents.length).toBe(BUILTIN_AGENTS.length);
+        expect(result.agents.find(a => a.name === "task")).toBeDefined();
         expect(result.projectAgentsDir).toBeNull();
     });
 
@@ -51,12 +53,12 @@ describe("discoverAgents", () => {
         }, "You are a research agent. Analyze code without modifying it.");
 
         const result = discoverAgents(tmpDir, "project");
-        expect(result.agents).toHaveLength(1);
-        expect(result.agents[0].name).toBe("researcher");
-        expect(result.agents[0].description).toBe("Read-only codebase research");
-        expect(result.agents[0].tools).toEqual(["read", "grep", "find"]);
-        expect(result.agents[0].source).toBe("project");
-        expect(result.agents[0].systemPrompt).toContain("research agent");
+        const researcher = result.agents.find(a => a.name === "researcher");
+        expect(researcher).toBeDefined();
+        expect(researcher!.description).toBe("Read-only codebase research");
+        expect(researcher!.tools).toEqual(["read", "grep", "find"]);
+        expect(researcher!.source).toBe("project");
+        expect(researcher!.systemPrompt).toContain("research agent");
         expect(result.projectAgentsDir).toBe(agentsDir);
     });
 
@@ -74,8 +76,9 @@ describe("discoverAgents", () => {
         mkdirSync(nestedDir, { recursive: true });
 
         const result = discoverAgents(nestedDir, "project");
-        expect(result.agents).toHaveLength(1);
-        expect(result.agents[0].name).toBe("scout");
+        const scout = result.agents.find(a => a.name === "scout");
+        expect(scout).toBeDefined();
+        expect(scout!.name).toBe("scout");
         expect(result.projectAgentsDir).toBe(agentsDir);
     });
 
@@ -91,8 +94,10 @@ describe("discoverAgents", () => {
         createAgentFile(agentsDir, "valid.md", { name: "valid", description: "Valid agent" }, "Body text");
 
         const result = discoverAgents(tmpDir, "project");
-        expect(result.agents).toHaveLength(1);
-        expect(result.agents[0].name).toBe("valid");
+        // Only the valid file + built-in agents
+        const nonBuiltin = result.agents.filter(a => a.filePath !== "(built-in)");
+        expect(nonBuiltin).toHaveLength(1);
+        expect(nonBuiltin[0].name).toBe("valid");
     });
 
     test("skips non-.md files", () => {
@@ -104,8 +109,9 @@ describe("discoverAgents", () => {
         createAgentFile(agentsDir, "real-agent.md", { name: "real", description: "Agent" });
 
         const result = discoverAgents(tmpDir, "project");
-        expect(result.agents).toHaveLength(1);
-        expect(result.agents[0].name).toBe("real");
+        const nonBuiltin = result.agents.filter(a => a.filePath !== "(built-in)");
+        expect(nonBuiltin).toHaveLength(1);
+        expect(nonBuiltin[0].name).toBe("real");
     });
 
     test("handles empty frontmatter body gracefully", () => {
@@ -118,8 +124,9 @@ describe("discoverAgents", () => {
         });
 
         const result = discoverAgents(tmpDir, "project");
-        expect(result.agents).toHaveLength(1);
-        expect(result.agents[0].systemPrompt).toBe("");
+        const minimal = result.agents.find(a => a.name === "minimal");
+        expect(minimal).toBeDefined();
+        expect(minimal!.systemPrompt).toBe("");
     });
 
     test("parses optional tools and model from frontmatter", () => {
@@ -134,8 +141,10 @@ describe("discoverAgents", () => {
         }, "Review code for bugs.");
 
         const result = discoverAgents(tmpDir, "project");
-        expect(result.agents[0].tools).toEqual(["read", "grep", "find", "ls"]);
-        expect(result.agents[0].model).toBe("claude-haiku-3");
+        const reviewer = result.agents.find(a => a.name === "reviewer");
+        expect(reviewer).toBeDefined();
+        expect(reviewer!.tools).toEqual(["read", "grep", "find", "ls"]);
+        expect(reviewer!.model).toBe("claude-haiku-3");
     });
 
     test("parses Claude Code frontmatter fields (disallowedTools, maxTurns, etc.)", () => {
@@ -154,13 +163,13 @@ describe("discoverAgents", () => {
         }, "Restricted agent prompt.");
 
         const result = discoverAgents(tmpDir, "project");
-        expect(result.agents).toHaveLength(1);
-        const agent = result.agents[0];
-        expect(agent.tools).toEqual(["read", "write", "bash", "edit"]);
-        expect(agent.disallowedTools).toEqual(["bash", "write"]);
-        expect(agent.maxTurns).toBe(10);
-        expect(agent.permissionMode).toBe("dontAsk");
-        expect(agent.background).toBe(true);
+        const agent = result.agents.find(a => a.name === "restricted");
+        expect(agent).toBeDefined();
+        expect(agent!.tools).toEqual(["read", "write", "bash", "edit"]);
+        expect(agent!.disallowedTools).toEqual(["bash", "write"]);
+        expect(agent!.maxTurns).toBe(10);
+        expect(agent!.permissionMode).toBe("dontAsk");
+        expect(agent!.background).toBe(true);
     });
 
     test("discovers agents from .claude/agents/ (Claude Code compat)", () => {
@@ -173,9 +182,9 @@ describe("discoverAgents", () => {
         }, "Claude Code compatible agent.");
 
         const result = discoverAgents(tmpDir, "project");
-        expect(result.agents).toHaveLength(1);
-        expect(result.agents[0].name).toBe("claude-agent");
-        expect(result.agents[0].source).toBe("project");
+        const claudeAgent = result.agents.find(a => a.name === "claude-agent");
+        expect(claudeAgent).toBeDefined();
+        expect(claudeAgent!.source).toBe("project");
     });
 
     test(".pizzapi/agents/ takes precedence over .claude/agents/ for same name", () => {
@@ -196,8 +205,9 @@ describe("discoverAgents", () => {
 
         const result = discoverAgents(tmpDir, "project");
         // .pizzapi is checked first, so its agent wins for duplicate names
-        expect(result.agents).toHaveLength(1);
-        expect(result.agents[0].description).toBe("PizzaPi scout");
+        const scout = result.agents.find(a => a.name === "scout");
+        expect(scout).toBeDefined();
+        expect(scout!.description).toBe("PizzaPi scout");
     });
 
     test("merges agents from .pizzapi/agents/ and .claude/agents/ at same level", () => {
@@ -216,8 +226,9 @@ describe("discoverAgents", () => {
         });
 
         const result = discoverAgents(tmpDir, "project");
-        expect(result.agents).toHaveLength(2);
-        const names = result.agents.map(a => a.name).sort();
+        const nonBuiltin = result.agents.filter(a => a.filePath !== "(built-in)");
+        expect(nonBuiltin).toHaveLength(2);
+        const names = nonBuiltin.map(a => a.name).sort();
         expect(names).toEqual(["alpha", "beta"]);
     });
 
@@ -231,7 +242,9 @@ describe("discoverAgents", () => {
         });
 
         const result = discoverAgents(tmpDir, "project");
-        expect(result.agents[0].tools).toBeUndefined();
+        const general = result.agents.find(a => a.name === "general");
+        expect(general).toBeDefined();
+        expect(general!.tools).toBeUndefined();
     });
 
     test("scope 'user' does not discover project agents", () => {
@@ -248,8 +261,8 @@ describe("discoverAgents", () => {
     test("scope 'project' does not discover user agents", () => {
         // Project scope only looks in .pizzapi/agents/ relative to cwd, not in ~/.pizzapi/agents/
         const result = discoverAgents(tmpDir, "project");
-        // With no .pizzapi/agents/ dir, should be empty
-        expect(result.agents).toEqual([]);
+        // With no .pizzapi/agents/ dir, should only have built-in agents
+        expect(result.agents.every(a => a.filePath === "(built-in)")).toBe(true);
     });
 
     test("scope 'both' merges user and project agents with project winning", () => {
@@ -279,9 +292,70 @@ describe("discoverAgents", () => {
         createAgentFile(agentsDir, "gamma.md", { name: "gamma", description: "Agent C" });
 
         const result = discoverAgents(tmpDir, "project");
-        expect(result.agents).toHaveLength(3);
-        const names = result.agents.map(a => a.name).sort();
+        const nonBuiltin = result.agents.filter(a => a.filePath !== "(built-in)");
+        expect(nonBuiltin).toHaveLength(3);
+        const names = nonBuiltin.map(a => a.name).sort();
         expect(names).toEqual(["alpha", "beta", "gamma"]);
+    });
+});
+
+describe("built-in agents", () => {
+    let tmpDir: string;
+
+    beforeEach(() => {
+        tmpDir = mkdtempSync(join(tmpdir(), "subagent-builtin-"));
+    });
+
+    afterEach(() => {
+        try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+    });
+
+    test("BUILTIN_AGENTS includes a 'task' agent", () => {
+        const task = BUILTIN_AGENTS.find(a => a.name === "task");
+        expect(task).toBeDefined();
+        expect(task!.description).toBeTruthy();
+        expect(task!.systemPrompt).toBeTruthy();
+        expect(task!.filePath).toBe("(built-in)");
+    });
+
+    test("built-in task agent is always available in discovery", () => {
+        // No agent directories at all
+        const result = discoverAgents(tmpDir, "user");
+        const task = result.agents.find(a => a.name === "task");
+        expect(task).toBeDefined();
+        expect(task!.filePath).toBe("(built-in)");
+    });
+
+    test("built-in task agent is available in all scopes", () => {
+        for (const scope of ["user", "project", "both"] as const) {
+            const result = discoverAgents(tmpDir, scope);
+            const task = result.agents.find(a => a.name === "task");
+            expect(task).toBeDefined();
+        }
+    });
+
+    test("project agent overrides built-in agent with same name", () => {
+        const agentsDir = join(tmpDir, ".pizzapi", "agents");
+        mkdirSync(agentsDir, { recursive: true });
+
+        createAgentFile(agentsDir, "task.md", {
+            name: "task",
+            description: "Custom project task agent",
+        }, "Custom task prompt.");
+
+        const result = discoverAgents(tmpDir, "project");
+        const task = result.agents.find(a => a.name === "task");
+        expect(task).toBeDefined();
+        expect(task!.description).toBe("Custom project task agent");
+        expect(task!.source).toBe("project");
+        expect(task!.filePath).not.toBe("(built-in)");
+    });
+
+    test("built-in agents do not have restricted tools (full access)", () => {
+        const task = BUILTIN_AGENTS.find(a => a.name === "task");
+        expect(task).toBeDefined();
+        // No tools restriction — inherits all coding tools
+        expect(task!.tools).toBeUndefined();
     });
 });
 
