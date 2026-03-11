@@ -323,7 +323,7 @@ async function runSingleAgent(
         agent: agentName,
         agentSource: agent.source,
         task,
-        exitCode: 0,
+        exitCode: -1, // -1 = running; set to 0 on success, 1 on failure after prompt completes
         messages: [],
         stderr: "",
         usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
@@ -434,6 +434,8 @@ async function runSingleAgent(
         try {
             // Run the prompt
             await session.prompt(`Task: ${task}`);
+            // Mark as successfully completed
+            currentResult.exitCode = 0;
         } catch (err) {
             if (signal?.aborted) throw new Error("Subagent was aborted");
             currentResult.exitCode = 1;
