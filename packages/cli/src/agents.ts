@@ -141,12 +141,35 @@ export function readAgentContent(name: string, dir?: string): string | null {
     return null;
 }
 
+/** Default search directories for agent discovery (in priority order). */
+export function defaultAgentDirs(): string[] {
+    return [globalAgentsDir(), join(homedir(), ".claude", "agents")];
+}
+
+/**
+ * Find the directory where an agent currently lives.
+ * Searches the given directories (defaults to ~/.pizzapi/agents/ then ~/.claude/agents/).
+ * Returns null if the agent doesn't exist in any known directory.
+ */
+export function findAgentDir(name: string, searchDirs?: string[]): string | null {
+    const dirs = searchDirs ?? defaultAgentDirs();
+    for (const d of dirs) {
+        const filePath = join(d, `${name}.md`);
+        if (existsSync(filePath)) return d;
+    }
+    return null;
+}
+
 /**
  * Write (create or update) an agent.
  * Stores as <dir>/<name>.md
+ *
+ * When no dir is specified, writes to the agent's existing location if it
+ * already exists (preserving ~/.claude/agents/ sources), otherwise defaults
+ * to ~/.pizzapi/agents/ for new agents.
  */
 export async function writeAgent(name: string, content: string, dir?: string): Promise<void> {
-    const agentsDir = dir ?? globalAgentsDir();
+    const agentsDir = dir ?? findAgentDir(name) ?? globalAgentsDir();
     await mkdir(agentsDir, { recursive: true });
     writeFileSync(join(agentsDir, `${name}.md`), content, "utf-8");
 }

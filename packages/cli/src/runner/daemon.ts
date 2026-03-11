@@ -939,11 +939,14 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 return;
             }
 
-            if (!/^[a-z0-9][a-z0-9-]*[a-z0-9]$/.test(agentName) && !/^[a-z0-9]$/.test(agentName)) {
+            // Relaxed validation for updates: accept any name the scanner
+            // can discover (letters, digits, hyphens, underscores, dots)
+            // but reject path separators to prevent directory traversal.
+            if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(agentName)) {
                 socket.emit("agent_result", {
                     requestId,
                     ok: false,
-                    message: "Invalid agent name: must be lowercase letters, numbers, and hyphens only",
+                    message: "Invalid agent name: must start with a letter or digit and contain only letters, digits, hyphens, underscores, or dots",
                 });
                 return;
             }
