@@ -1,12 +1,12 @@
 {
-    "name": "@pizzapi/npm",
-    "version": "0.2.4",
-    "private": true,
-    "type": "module",
-    "scripts": {
-        "build": "bun build-npm.ts",
-        "build:skip-compile": "bun build-npm.ts --skip-compile",
-        "publish": "bun publish-npm.ts",
-        "publish:dry": "bun publish-npm.ts --dry-run"
-    }
+  "name": "@pizzapi/npm",
+  "version": "0.2.5",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bun build-npm.ts",
+    "build:skip-compile": "bun build-npm.ts --skip-compile",
+    "publish": "bun publish-npm.ts",
+    "publish:dry": "bun publish-npm.ts --dry-run"
+  }
 }
