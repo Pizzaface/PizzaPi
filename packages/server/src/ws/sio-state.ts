@@ -145,6 +145,8 @@ export interface RedisRunnerData {
     roots: string;
     /** JSON-stringified RunnerSkill[] */
     skills: string;
+    /** JSON-stringified RunnerAgent[] */
+    agents?: string;
     /** JSON-stringified PluginInfo[] — discovered Claude Code plugins */
     plugins?: string;
     /** Runner CLI version (e.g. "0.1.30") */
@@ -213,6 +215,7 @@ function parseRunnerFromHash(hash: Record<string, string>): RedisRunnerData | nu
         name: hash.name || null,
         roots: hash.roots || "[]",
         skills: hash.skills || "[]",
+        agents: hash.agents || "[]",
         plugins: hash.plugins || "[]",
         version: hash.version || null,
     };

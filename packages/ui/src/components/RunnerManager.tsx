@@ -15,6 +15,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { SkillsManager, type SkillInfo } from "@/components/SkillsManager";
+import { AgentsManager, type AgentInfo } from "@/components/AgentsManager";
 import { PluginsManager, type PluginInfo } from "@/components/PluginsManager";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ErrorAlert } from "@/components/ui/error-alert";
@@ -25,6 +26,7 @@ interface RunnerInfo {
     roots: string[];
     sessionCount: number;
     skills: SkillInfo[];
+    agents: AgentInfo[];
     plugins: PluginInfo[];
     version: string | null;
 }
@@ -76,6 +78,7 @@ export function RunnerManager({ onOpenSession }: RunnerManagerProps) {
                     roots: r.roots ?? [],
                     sessionCount: r.sessionCount ?? 0,
                     skills: Array.isArray(r.skills) ? r.skills : [],
+                    agents: Array.isArray(r.agents) ? r.agents : [],
                     plugins: Array.isArray(r.plugins) ? r.plugins : [],
                     version: r.version ?? null,
                 })));
@@ -337,6 +340,11 @@ export function RunnerManager({ onOpenSession }: RunnerManagerProps) {
                                             r.runnerId === runnerId ? { ...r, skills: updatedSkills } : r
                                         ));
                                     }}
+                                    onAgentsChange={(runnerId, updatedAgents) => {
+                                        setRunners((prev) => prev.map((r) =>
+                                            r.runnerId === runnerId ? { ...r, agents: updatedAgents } : r
+                                        ));
+                                    }}
                                 />
                             );
                         })}
@@ -466,13 +474,14 @@ interface RunnerCardProps {
     onNewSession: () => void;
     onOpenSession?: (sessionId: string) => void;
     onSkillsChange?: (runnerId: string, skills: SkillInfo[]) => void;
+    onAgentsChange?: (runnerId: string, agents: AgentInfo[]) => void;
 }
 
 function formatTime(iso: string): string {
     return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-function RunnerCard({ runner, sessions, latestVersion, isRestarting, isStopping, onRestart, onStop, onNewSession, onOpenSession, onSkillsChange }: RunnerCardProps) {
+function RunnerCard({ runner, sessions, latestVersion, isRestarting, isStopping, onRestart, onStop, onNewSession, onOpenSession, onSkillsChange, onAgentsChange }: RunnerCardProps) {
     const [sessionsOpen, setSessionsOpen] = React.useState(true);
     const isOutdated = !!(runner.version && latestVersion && semverLt(runner.version, latestVersion));
 
@@ -635,6 +644,13 @@ function RunnerCard({ runner, sessions, latestVersion, isRestarting, isStopping,
                     runnerId={runner.runnerId}
                     skills={runner.skills}
                     onSkillsChange={(updated) => onSkillsChange?.(runner.runnerId, updated)}
+                />
+
+                {/* Agents manager */}
+                <AgentsManager
+                    runnerId={runner.runnerId}
+                    agents={runner.agents}
+                    onAgentsChange={(updated) => onAgentsChange?.(runner.runnerId, updated)}
                 />
 
                 {/* Plugins manager (Claude Code plugin adapter) */}

@@ -605,7 +605,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
         .then((res) => res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))
         .then((data: any) => {
           if (dispatchSessionId !== sessionIdRef.current) return; // session changed, discard
-          const raw: Array<{ name: string; description?: string; commands?: Array<{ name: string; description?: string }>; hookEvents?: string[]; skills?: Array<{ name: string }>; rules?: Array<{ name: string }>; version?: string; hasMcp?: boolean; hasAgents?: boolean }> = Array.isArray(data?.plugins) ? data.plugins : [];
+          const raw: Array<{ name: string; description?: string; commands?: Array<{ name: string; description?: string }>; hookEvents?: string[]; skills?: Array<{ name: string }>; agents?: Array<{ name: string }>; rules?: Array<{ name: string }>; version?: string; hasMcp?: boolean; hasAgents?: boolean }> = Array.isArray(data?.plugins) ? data.plugins : [];
           onAppendSystemMessage?.({
             kind: "plugins",
             plugins: raw.map((p) => ({
@@ -615,6 +615,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
               commands: (p.commands ?? []).map((c) => ({ name: c.name, description: c.description })),
               hookCount: p.hookEvents?.length ?? 0,
               skillCount: p.skills?.length ?? 0,
+              agentCount: p.agents?.length ?? 0,
               ruleCount: p.rules?.length ?? 0,
               hasMcp: !!p.hasMcp,
               hasAgents: !!p.hasAgents,

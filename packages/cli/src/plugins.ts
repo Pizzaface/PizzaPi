@@ -135,6 +135,13 @@ export interface PluginSkillRef {
     skillMdPath: string;
 }
 
+export interface PluginAgentRef {
+    /** Agent name (filename without .md extension) */
+    name: string;
+    /** Absolute path to the agent .md file */
+    filePath: string;
+}
+
 export interface PluginRule {
     /** Rule name (filename without .md extension) */
     name: string;
@@ -159,11 +166,13 @@ export interface DiscoveredPlugin {
     hooks: HooksConfig | null;
     /** Skills directories (passed through to pi — already compatible format) */
     skills: PluginSkillRef[];
+    /** Agent definitions (markdown files in agents/ directory) */
+    agents: PluginAgentRef[];
     /** Rules — markdown guidelines injected into the system prompt */
     rules: PluginRule[];
     /** Whether the plugin has MCP configuration (informational — not adapted) */
     hasMcp: boolean;
-    /** Whether the plugin has agent definitions (informational — not adapted) */
+    /** Whether the plugin has agent definitions */
     hasAgents: boolean;
     /** Whether the plugin has LSP configuration (informational — not adapted) */
     hasLsp: boolean;
@@ -542,6 +551,50 @@ export function parsePluginSkills(pluginDir: string): PluginSkillRef[] {
 }
 
 /**
+ * Discover agent definitions within a plugin's agents/ directory.
+ * Agents are markdown files (*.md) with frontmatter — same format
+ * as user agents in ~/.pizzapi/agents/ or ~/.claude/agents/.
+ */
+export function parsePluginAgents(pluginDir: string): PluginAgentRef[] {
+    const agentsDir = join(pluginDir, "agents");
+    if (!existsSync(agentsDir)) return [];
+
+    // Reject if agents/ itself is a symlink
+    try {
+        if (lstatSync(agentsDir).isSymbolicLink()) return [];
+    } catch { return []; }
+
+    const agents: PluginAgentRef[] = [];
+
+    let entries: string[];
+    try {
+        entries = readdirSync(agentsDir).slice(0, MAX_ENTRIES_PER_DIR);
+    } catch {
+        return [];
+    }
+
+    for (const entry of entries) {
+        if (!entry.endsWith(".md")) continue;
+
+        const filePath = join(agentsDir, entry);
+        try {
+            // Use lstatSync: skip symlinks and non-regular files
+            const s = lstatSync(filePath);
+            if (s.isSymbolicLink() || !s.isFile()) continue;
+        } catch {
+            continue;
+        }
+
+        agents.push({
+            name: entry.slice(0, -3), // Strip .md
+            filePath,
+        });
+    }
+
+    return agents;
+}
+
+/**
  * Discover rules within a plugin's rules/ directory.
  * Rules are markdown files containing guidelines injected into the system prompt.
  */
@@ -609,6 +662,9 @@ export function isPluginDir(dir: string): boolean {
     // Skills-only dirs are valid plugins — their SKILL.md entries are
     // added to pi via getPluginSkillPaths() and need to be discovered here.
     if (existsSync(join(dir, "skills"))) return true;
+    // Agents-only dirs are valid plugins — their agent .md files are
+    // discovered via getPluginAgentPaths() for the subagent extension.
+    if (existsSync(join(dir, "agents"))) return true;
     return false;
 }
 
@@ -621,6 +677,7 @@ export function parsePlugin(pluginDir: string): DiscoveredPlugin {
     const commands = parseCommands(rootPath);
     const hooks = parseHooks(rootPath);
     const skills = parsePluginSkills(rootPath);
+    const agents = parsePluginAgents(rootPath);
     const rules = parseRules(rootPath);
 
     return {
@@ -631,9 +688,10 @@ export function parsePlugin(pluginDir: string): DiscoveredPlugin {
         commands,
         hooks,
         skills,
+        agents,
         rules,
         hasMcp: existsSync(join(rootPath, ".mcp.json")),
-        hasAgents: existsSync(join(rootPath, "agents")),
+        hasAgents: agents.length > 0,
         hasLsp: existsSync(join(rootPath, ".lsp.json")),
     };
 }
@@ -797,6 +855,7 @@ export interface PluginInfo {
     commands: { name: string; description?: string; argumentHint?: string }[];
     hookEvents: string[];
     skills: { name: string; dirPath: string }[];
+    agents: { name: string }[];
     rules: { name: string }[];
     hasMcp: boolean;
     hasAgents: boolean;
@@ -825,6 +884,7 @@ export function toPluginInfo(plugin: DiscoveredPlugin): PluginInfo {
         })),
         hookEvents: plugin.hooks ? Object.keys(plugin.hooks.hooks) : [],
         skills: plugin.skills.map(s => ({ name: s.name, dirPath: s.dirPath })),
+        agents: plugin.agents.map(a => ({ name: a.name })),
         rules: plugin.rules.map(r => ({ name: r.name })),
         hasMcp: plugin.hasMcp,
         hasAgents: plugin.hasAgents,

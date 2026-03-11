@@ -13,7 +13,7 @@ import {
     recordRunnerSession,
     registerTerminal,
 } from "../ws/sio-registry.js";
-import { sendSkillCommand, sendRunnerCommand } from "../ws/namespaces/runner.js";
+import { sendSkillCommand, sendAgentCommand, sendRunnerCommand } from "../ws/namespaces/runner.js";
 import { waitForSpawnAck } from "../ws/runner-control.js";
 import { requireSession, validateApiKey } from "../middleware.js";
 import { getRecentFolders, recordRecentFolder } from "../runner-recent-folders.js";
@@ -291,6 +291,89 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
             } catch (err) {
                 console.error(`[skills] DELETE ${skillName} failed:`, err);
                 return Response.json({ error: "Failed to delete skill" }, { status: 502 });
+            }
+        }
+
+        return undefined;
+    }
+
+    // ── Agents (agent definitions) ───────────────────────────────────
+    const agentsMatch = url.pathname.match(/^\/api\/runners\/([^/]+)\/agents(?:\/([^/]+))?$/);
+    if (agentsMatch) {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        const runnerId = decodeURIComponent(agentsMatch[1]);
+        const agentName = agentsMatch[2] ? decodeURIComponent(agentsMatch[2]) : undefined;
+
+        const runner = await getRunnerData(runnerId);
+        if (!runner) return Response.json({ error: "Runner not found" }, { status: 404 });
+        if (runner.userId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
+
+        // GET /api/runners/:id/agents — list agents (from Redis cache)
+        if (req.method === "GET" && !agentName) {
+            return Response.json({ agents: parseJsonArray(runner.agents) });
+        }
+
+        // GET /api/runners/:id/agents/:name — get full agent content
+        if (req.method === "GET" && agentName) {
+            if (!isValidSkillName(agentName)) return Response.json({ error: "Invalid agent name" }, { status: 400 });
+            try {
+                const result = await sendAgentCommand(runnerId, { type: "get_agent", name: agentName });
+                if (!result.ok) return Response.json({ error: result.message ?? "Agent not found" }, { status: 404 });
+                return Response.json({ name: result.name, content: result.content });
+            } catch (err) {
+                console.error(`[agents] GET ${agentName} failed:`, err);
+                return Response.json({ error: "Failed to retrieve agent" }, { status: 502 });
+            }
+        }
+
+        // POST /api/runners/:id/agents — create a new agent
+        if (req.method === "POST" && !agentName) {
+            let body: any = {};
+            try { body = await req.json(); } catch {}
+            const name = typeof body.name === "string" ? body.name.trim() : "";
+            const content = typeof body.content === "string" ? body.content : "";
+
+            if (!name) return Response.json({ error: "Missing agent name" }, { status: 400 });
+            if (!isValidSkillName(name)) return Response.json({ error: "Invalid agent name" }, { status: 400 });
+
+            try {
+                const result = await sendAgentCommand(runnerId, { type: "create_agent", name, content });
+                if (!result.ok) return Response.json({ error: result.message ?? "Failed to create agent" }, { status: 400 });
+                return Response.json({ ok: true, agents: result.agents ?? [] });
+            } catch (err) {
+                console.error(`[agents] POST ${name} failed:`, err);
+                return Response.json({ error: "Failed to create agent" }, { status: 502 });
+            }
+        }
+
+        // PUT /api/runners/:id/agents/:name — update an agent
+        if (req.method === "PUT" && agentName) {
+            if (!isValidSkillName(agentName)) return Response.json({ error: "Invalid agent name" }, { status: 400 });
+            let body: any = {};
+            try { body = await req.json(); } catch {}
+            const content = typeof body.content === "string" ? body.content : "";
+            try {
+                const result = await sendAgentCommand(runnerId, { type: "update_agent", name: agentName, content });
+                if (!result.ok) return Response.json({ error: result.message ?? "Failed to update agent" }, { status: 400 });
+                return Response.json({ ok: true, agents: result.agents ?? [] });
+            } catch (err) {
+                console.error(`[agents] PUT ${agentName} failed:`, err);
+                return Response.json({ error: "Failed to update agent" }, { status: 502 });
+            }
+        }
+
+        // DELETE /api/runners/:id/agents/:name — delete an agent
+        if (req.method === "DELETE" && agentName) {
+            if (!isValidSkillName(agentName)) return Response.json({ error: "Invalid agent name" }, { status: 400 });
+            try {
+                const result = await sendAgentCommand(runnerId, { type: "delete_agent", name: agentName });
+                if (!result.ok) return Response.json({ error: result.message ?? "Agent not found" }, { status: 404 });
+                return Response.json({ ok: true, agents: result.agents ?? [] });
+            } catch (err) {
+                console.error(`[agents] DELETE ${agentName} failed:`, err);
+                return Response.json({ error: "Failed to delete agent" }, { status: 502 });
             }
         }
 

@@ -57,7 +57,7 @@ import {
     touchRelaySession,
 } from "../sessions/store.js";
 import { appendRelayEventToCache } from "../sessions/redis.js";
-import type { ModelInfo, RunnerSkill, SessionInfo, RunnerInfo } from "@pizzapi/protocol";
+import type { ModelInfo, RunnerSkill, RunnerAgent, SessionInfo, RunnerInfo } from "@pizzapi/protocol";
 
 // ── Socket.IO server reference ──────────────────────────────────────────────
 
@@ -169,6 +169,18 @@ function normalizeSkills(raw: unknown): RunnerSkill[] {
             filePath: typeof s.filePath === "string" ? s.filePath : "",
         }))
         .filter((s) => s.name.length > 0);
+}
+
+function normalizeAgents(raw: unknown): RunnerAgent[] {
+    if (!Array.isArray(raw)) return [];
+    return raw
+        .filter((a): a is Record<string, unknown> => a !== null && typeof a === "object")
+        .map((a) => ({
+            name: typeof a.name === "string" ? a.name : "",
+            description: typeof a.description === "string" ? a.description : "",
+            filePath: typeof a.filePath === "string" ? a.filePath : "",
+        }))
+        .filter((a) => a.name.length > 0);
 }
 
 // ── Hub broadcasting ────────────────────────────────────────────────────────
@@ -760,6 +772,7 @@ export interface RegisterRunnerOpts {
     requestedRunnerId?: string;
     runnerSecret?: string;
     skills?: RunnerSkill[];
+    agents?: RunnerAgent[];
     plugins?: unknown[];
     userId?: string | null;
     userName?: string | null;
@@ -805,6 +818,7 @@ export async function registerRunner(
         .filter(Boolean);
 
     const skills = normalizeSkills(opts.skills);
+    const agents = normalizeAgents(opts.agents);
     const plugins = Array.isArray(opts.plugins)
         ? opts.plugins
             .filter((p): p is Record<string, unknown> => p !== null && typeof p === "object")
@@ -819,6 +833,7 @@ export async function registerRunner(
         name: opts.name?.trim() || null,
         roots: JSON.stringify(roots),
         skills: JSON.stringify(skills),
+        agents: JSON.stringify(agents),
         plugins: JSON.stringify(plugins),
         version: typeof opts.version === "string" ? opts.version : null,
     };
@@ -833,6 +848,12 @@ export async function registerRunner(
 export async function updateRunnerSkills(runnerId: string, skills: RunnerSkill[]): Promise<void> {
     const normalized = normalizeSkills(skills);
     await updateRunnerFields(runnerId, { skills: JSON.stringify(normalized) });
+}
+
+/** Update agents for an already-registered runner. */
+export async function updateRunnerAgents(runnerId: string, agents: RunnerAgent[]): Promise<void> {
+    const normalized = normalizeAgents(agents);
+    await updateRunnerFields(runnerId, { agents: JSON.stringify(normalized) });
 }
 
 /**
@@ -850,6 +871,7 @@ function normalizePlugin(raw: Record<string, unknown>): Record<string, unknown> 
         commands: Array.isArray(raw.commands) ? raw.commands.filter((c: unknown) => c && typeof c === "object") : [],
         hookEvents: Array.isArray(raw.hookEvents) ? raw.hookEvents.filter((e: unknown) => typeof e === "string") : [],
         skills: Array.isArray(raw.skills) ? raw.skills.filter((s: unknown) => s && typeof s === "object") : [],
+        agents: Array.isArray(raw.agents) ? raw.agents.filter((a: unknown) => a && typeof a === "object") : undefined,
         rules: Array.isArray(raw.rules)
             ? raw.rules.filter((r: unknown): r is { name: string } => r !== null && typeof r === "object" && typeof (r as any).name === "string")
             : undefined,
@@ -975,6 +997,7 @@ export async function getRunners(filterUserId?: string): Promise<RunnerInfo[]> {
             roots: safeJsonParse(r.roots) ?? [],
             sessionCount: sessionCounts.get(r.runnerId) ?? 0,
             skills: safeJsonParse(r.skills) ?? [],
+            agents: safeJsonParse(r.agents ?? "[]") ?? [],
             plugins: safeJsonParse(r.plugins ?? "[]") ?? [],
             version: r.version ?? null,
         });
