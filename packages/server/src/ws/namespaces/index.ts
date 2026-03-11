@@ -14,4 +14,4 @@ export function registerNamespaces(io: SocketIOServer): void {
 }
 
 // Re-export runner command functions for use by REST API routes
-export { sendSkillCommand, sendRunnerCommand } from "./runner.js";
+export { sendSkillCommand, sendAgentCommand, sendRunnerCommand } from "./runner.js";

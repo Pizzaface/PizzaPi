@@ -381,7 +381,7 @@ function PluginEntryRow({ plugin }: { plugin: PluginEntry }) {
               </span>
             )}
             {plugin.hasAgents && (
-              <span className="inline-flex items-center gap-0.5 text-[10px] text-amber-500/80">
+              <span className="inline-flex items-center gap-0.5 text-[10px] text-zinc-400">
                 <Bot className="size-2.5" />
                 Agents
               </span>

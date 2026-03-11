@@ -2,7 +2,7 @@
 // /runner namespace — Runner daemon ↔ Server
 // ============================================================================
 
-import type { RunnerSkill, RunnerPlugin } from "./shared.js";
+import type { RunnerSkill, RunnerAgent, RunnerPlugin } from "./shared.js";
 
 // ---------------------------------------------------------------------------
 // Client → Server (Runner daemon sends to server)
@@ -16,6 +16,7 @@ export interface RunnerClientToServerEvents {
     runnerId?: string;
     runnerSecret?: string;
     skills?: RunnerSkill[];
+    agents?: RunnerAgent[];
     plugins?: RunnerPlugin[];
     version?: string;
   }) => void;
@@ -35,6 +36,22 @@ export interface RunnerClientToServerEvents {
     message?: string;
     /** true when this was a per-cwd scoped scan (should not overwrite global cache) */
     scoped?: boolean;
+  }) => void;
+
+  /** Runner responds with its list of agents */
+  agents_list: (data: {
+    agents: RunnerAgent[];
+    requestId?: string;
+  }) => void;
+
+  /** Runner responds to an agent CRUD operation */
+  agent_result: (data: {
+    requestId?: string;
+    ok: boolean;
+    message?: string;
+    agents?: RunnerAgent[];
+    content?: string;
+    name?: string;
   }) => void;
 
   /** Runner responds to a skill CRUD operation */
@@ -185,6 +202,37 @@ export interface RunnerServerToClientEvents {
 
   /** Requests a list of active terminals */
   list_terminals: (data: Record<string, never>) => void;
+
+  /** Requests a list of agents */
+  list_agents: (data: {
+    requestId?: string;
+  }) => void;
+
+  /** Creates a new agent */
+  create_agent: (data: {
+    requestId?: string;
+    name: string;
+    content: string;
+  }) => void;
+
+  /** Updates an existing agent */
+  update_agent: (data: {
+    requestId?: string;
+    name: string;
+    content: string;
+  }) => void;
+
+  /** Deletes an agent */
+  delete_agent: (data: {
+    requestId?: string;
+    name: string;
+  }) => void;
+
+  /** Reads an agent's content */
+  get_agent: (data: {
+    requestId?: string;
+    name: string;
+  }) => void;
 
   /** Requests a list of skills */
   list_skills: (data: {

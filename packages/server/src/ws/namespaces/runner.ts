@@ -17,11 +17,13 @@ import type {
     RunnerInterServerEvents,
     RunnerSocketData,
     RunnerSkill,
+    RunnerAgent,
 } from "@pizzapi/protocol";
 import { apiKeyAuthMiddleware } from "./auth.js";
 import {
     registerRunner,
     updateRunnerSkills,
+    updateRunnerAgents,
     updateRunnerPlugins,
     publishSessionEvent,
     recordRunnerSession,
@@ -90,6 +92,58 @@ export async function sendSkillCommand(
         } catch (err) {
             clearTimeout(timer);
             pendingSkillRequests.delete(requestId);
+            reject(err);
+        }
+    });
+}
+
+// ── Agent request/response registry ──────────────────────────────────────────
+// Maps requestId → { resolve, timer }. Used to correlate agent command
+// responses (agent_result) from the runner back to the HTTP request handler.
+
+interface PendingAgentRequest {
+    resolve: (result: {
+        ok: boolean;
+        message?: string;
+        agents?: RunnerAgent[];
+        content?: string;
+        name?: string;
+    }) => void;
+    timer: ReturnType<typeof setTimeout>;
+}
+
+const pendingAgentRequests = new Map<string, PendingAgentRequest>();
+
+/**
+ * Send an agent command to a runner via Socket.IO and wait for the response.
+ * Returns the runner's agent_result payload or throws on timeout.
+ */
+export async function sendAgentCommand(
+    runnerId: string,
+    command: Record<string, unknown>,
+    timeoutMs = 10_000,
+): Promise<{ ok: boolean; message?: string; agents?: RunnerAgent[]; content?: string; name?: string }> {
+    const socket = getLocalRunnerSocket(runnerId);
+    if (!socket) throw new Error("Runner not found");
+
+    const requestId = Math.random().toString(36).slice(2) + Date.now().toString(36);
+    const eventName = typeof command.type === "string" ? command.type : "";
+    if (!eventName) throw new Error("Missing command type");
+
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+            pendingAgentRequests.delete(requestId);
+            reject(new Error("Agent command timed out"));
+        }, timeoutMs);
+
+        pendingAgentRequests.set(requestId, { resolve, timer });
+
+        try {
+            const { type: _type, ...rest } = command;
+            (socket as Socket).emit(eventName, { ...rest, requestId });
+        } catch (err) {
+            clearTimeout(timer);
+            pendingAgentRequests.delete(requestId);
             reject(err);
         }
     });
@@ -253,6 +307,51 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
             // If the runner also sent an updated skills list, persist it
             if (socket.data.runnerId && data.skills) {
                 await updateRunnerSkills(socket.data.runnerId, data.skills);
+            }
+        });
+
+        // ── agents_list — runner reports updated agents ──────────────────────
+        socket.on("agents_list", async (data) => {
+            const runnerId = socket.data.runnerId;
+            const agents = data.agents ?? [];
+
+            if (runnerId) {
+                await updateRunnerAgents(runnerId, agents);
+            }
+
+            // Resolve pending agent request if any
+            const requestId = data.requestId;
+            if (requestId) {
+                const pending = pendingAgentRequests.get(requestId);
+                if (pending) {
+                    clearTimeout(pending.timer);
+                    pendingAgentRequests.delete(requestId);
+                    pending.resolve({ ok: true, agents });
+                }
+            }
+        });
+
+        // ── agent_result — runner responds to agent CRUD ─────────────────────
+        socket.on("agent_result", async (data) => {
+            const requestId = data.requestId;
+            if (requestId) {
+                const pending = pendingAgentRequests.get(requestId);
+                if (pending) {
+                    clearTimeout(pending.timer);
+                    pendingAgentRequests.delete(requestId);
+                    pending.resolve({
+                        ok: data.ok,
+                        message: data.message,
+                        agents: data.agents,
+                        content: data.content,
+                        name: data.name,
+                    });
+                }
+            }
+
+            // If the runner also sent an updated agents list, persist it
+            if (socket.data.runnerId && data.agents) {
+                await updateRunnerAgents(socket.data.runnerId, data.agents);
             }
         });
 

@@ -35,6 +35,7 @@ export interface RunnerInfo {
   roots: string[];
   sessionCount: number;
   skills: RunnerSkill[];
+  agents: RunnerAgent[];
   plugins?: RunnerPlugin[];
   version: string | null;
 }
@@ -57,6 +58,13 @@ export interface RunnerPlugin {
 
 /** A skill available on a runner */
 export interface RunnerSkill {
+  name: string;
+  description: string;
+  filePath: string;
+}
+
+/** An agent definition available on a runner */
+export interface RunnerAgent {
   name: string;
   description: string;
   filePath: string;

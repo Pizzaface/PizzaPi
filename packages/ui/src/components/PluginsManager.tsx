@@ -104,8 +104,13 @@ function PluginRow({ plugin, onClick }: PluginRowProps) {
                         <PluginCapBadge icon={Zap} label={plugin.hookEvents.length === 1 ? "hook" : "hooks"} count={plugin.hookEvents.length} />
                         <PluginCapBadge icon={BookOpen} label={plugin.skills.length === 1 ? "skill" : "skills"} count={plugin.skills.length} />
                         <PluginCapBadge icon={FileText} label={(plugin.rules?.length ?? 0) === 1 ? "rule" : "rules"} count={plugin.rules?.length ?? 0} />
+                        {plugin.hasAgents && (
+                            <span className="inline-flex items-center gap-0.5 text-[10px] text-muted-foreground">
+                                <Bot className="h-2.5 w-2.5" />
+                                Agents
+                            </span>
+                        )}
                         {plugin.hasMcp && <UnsupportedBadge label="MCP" />}
-                        {plugin.hasAgents && <UnsupportedBadge label="Agents" />}
                     </div>
                 </div>
             </div>
@@ -263,7 +268,7 @@ function PluginDetailDialog({ plugin, onClose }: PluginDetailDialogProps) {
                     )}
 
                     {/* Unsupported features */}
-                    {(plugin.hasMcp || plugin.hasAgents || plugin.hasLsp) && (
+                    {(plugin.hasMcp || plugin.hasLsp) && (
                         <div className="rounded-md bg-amber-500/5 border border-amber-500/20 p-2.5">
                             <h4 className="text-[11px] font-medium text-amber-600 dark:text-amber-400 mb-1 flex items-center gap-1">
                                 <AlertTriangle className="h-3 w-3" />
@@ -274,12 +279,6 @@ function PluginDetailDialog({ plugin, onClose }: PluginDetailDialogProps) {
                                     <Badge variant="outline" className="text-[10px] border-amber-500/30 text-amber-600 dark:text-amber-400">
                                         <Server className="h-2.5 w-2.5 mr-1" />
                                         MCP Servers
-                                    </Badge>
-                                )}
-                                {plugin.hasAgents && (
-                                    <Badge variant="outline" className="text-[10px] border-amber-500/30 text-amber-600 dark:text-amber-400">
-                                        <Bot className="h-2.5 w-2.5 mr-1" />
-                                        Subagents
                                     </Badge>
                                 )}
                                 {plugin.hasLsp && (
