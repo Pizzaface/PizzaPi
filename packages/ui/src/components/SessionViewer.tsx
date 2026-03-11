@@ -67,6 +67,7 @@ import { dismissNotificationsForSession } from "@/lib/push";
 import { AlertTriangleIcon, ArrowDownIcon, BookOpen, CheckCircle2, ChevronsUpDown, Circle, CircleDashed, Loader2, MessageSquare, OctagonX, PaperclipIcon, Plus, Puzzle, ShieldAlert, Zap, Clock, X, Trash2, TerminalIcon, DownloadIcon, XCircle, FolderTree } from "lucide-react";
 import { AtMentionPopover } from "@/components/AtMentionPopover";
 import type { Entry as AtMentionEntry } from "@/hooks/useAtMentionFiles";
+import { McpToggleContext, type McpToggleHandler } from "@/components/session-viewer/McpToggleContext";
 
 export type { RelayMessage } from "@/components/session-viewer/types";
 
@@ -525,6 +526,18 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     "effort", "cycle_effort", "compact", "name", "copy", "stop", "restart",
     "remote",
   ]), []);
+
+  // MCP toggle handler — sends mcp_toggle_server remote exec to the runner
+  const handleMcpToggle = React.useCallback<McpToggleHandler>((serverName, disabled) => {
+    if (!onExec) return;
+    onExec({
+      type: "exec",
+      id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      command: "mcp_toggle_server",
+      serverName,
+      disabled,
+    });
+  }, [onExec]);
 
   // Split availableCommands (from the CLI) into groups by source.
   // Everything not already handled by the web UI is shown in the hotbar.
@@ -1126,6 +1139,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
 
   return (
     <SessionActionsProvider value={sessionActions}>
+    <McpToggleContext.Provider value={onExec ? handleMcpToggle : null}>
     <div className="flex flex-col flex-1 min-h-0">
       {/* Session info bar */}
       {sessionId && (
@@ -2088,6 +2102,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
         </DialogContent>
       </Dialog>
     </div>
+    </McpToggleContext.Provider>
     </SessionActionsProvider>
   );
 }
