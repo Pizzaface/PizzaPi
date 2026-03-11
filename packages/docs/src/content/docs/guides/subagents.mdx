@@ -12,7 +12,7 @@ Subagents let an agent delegate work to a **child agent with its own isolated co
 When the agent calls the `subagent` tool, PizzaPi:
 
 1. Discovers available agent definitions from multiple directories (see [Agent discovery paths](#agent-discovery-paths))
-2. Spawns a `pi` child process with `--mode json --no-session`
+2. Creates an in-process `AgentSession` via the pi SDK (no child process, zero overhead)
 3. Streams progress updates through the relay server for real-time Web UI display
 4. Returns the child's final output as the tool result
 
@@ -221,9 +221,9 @@ No additional configuration is needed — streaming works automatically when usi
 | Feature | `subagent` | `spawn_session` |
 |---------|-----------|----------------|
 | **Communication** | Tool call → result (synchronous) | `send_message` / `wait_for_message` |
-| **Context** | Isolated child process | Fully independent session |
+| **Context** | Isolated in-process session | Fully independent session |
 | **UI** | Inline in parent session | Separate session view |
-| **Overhead** | Low (child process) | Higher (relay round-trip, new PTY) |
+| **Overhead** | Near-zero (in-process SDK) | Higher (relay round-trip, new PTY) |
 | **Best for** | Quick delegation, research, review | Long-running parallel work, cross-runner tasks |
 | **Model selection** | Via agent definition or parameter | Via spawn parameter |
 | **Agent definitions** | File-based (`~/.pizzapi/agents/`) | Prompt-based (inline in spawn call) |
@@ -245,7 +245,7 @@ PizzaPi subagents are designed to be compatible with [Claude Code agent files](h
 
 | Feature | Claude Code (`Task`) | PizzaPi (`subagent`) |
 |---------|---------------------|---------------------|
-| **Execution** | In-process | Separate `pi` process (isolated context) |
+| **Execution** | In-process | In-process via pi SDK (isolated session) |
 | **Built-in agents** | `general-purpose`, `Explore`, `Plan` | None (define your own) |
 | **Skills** | `skills` frontmatter field | Not yet supported |
 | **MCP servers** | `mcpServers` frontmatter field | Not yet supported |

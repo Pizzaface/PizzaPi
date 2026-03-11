@@ -1,29 +1,44 @@
 /**
  * Subagent Tool — Delegate tasks to specialized agents with isolated context.
  *
- * Spawns a separate `pi` process for each subagent invocation, giving it an
- * isolated context window. Supports three modes:
+ * Creates an in-process AgentSession for each subagent invocation, giving it
+ * an isolated context window. Supports three modes:
  *
  *   - Single:   { agent: "name", task: "..." }
  *   - Parallel: { tasks: [{ agent: "name", task: "..." }, ...] }
  *   - Chain:    { chain: [{ agent: "name", task: "... {previous} ..." }, ...] }
  *
- * Uses `pi --mode json` to capture structured output from subagents.
+ * Uses the pi SDK in-process (createAgentSession + session.prompt) for
+ * zero-overhead execution — no child process, no JSON parsing, direct event
+ * access for streaming.
  *
  * Adapted from upstream pi subagent extension (examples/extensions/subagent/)
- * with PizzaPi-specific agent discovery paths (~/.pizzapi/agents/ and
- * .pizzapi/agents/) and structured `details` payloads for web UI consumption.
+ * with PizzaPi-specific agent discovery paths (~/.pizzapi/agents/,
+ * ~/.claude/agents/, .pizzapi/agents/, .claude/agents/) and structured
+ * `details` payloads for web UI consumption.
  */
 
-import { spawn } from "node:child_process";
-import * as fs from "node:fs";
 import * as os from "node:os";
-import * as path from "node:path";
 import type { AgentToolResult } from "@mariozechner/pi-coding-agent";
-import type { Message } from "@mariozechner/pi-ai";
-import { type ExtensionAPI, getMarkdownTheme } from "@mariozechner/pi-coding-agent";
+import type { AssistantMessage, Message } from "@mariozechner/pi-ai";
+import {
+    type ExtensionAPI,
+    getMarkdownTheme,
+    createAgentSession,
+    DefaultResourceLoader,
+    codingTools,
+    readOnlyTools,
+    bashTool,
+    readTool,
+    editTool,
+    writeTool,
+    grepTool,
+    findTool,
+    lsTool,
+} from "@mariozechner/pi-coding-agent";
 import { Container, Markdown, Spacer, Text } from "@mariozechner/pi-tui";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./subagent-agents.js";
+import { defaultAgentDir } from "../config.js";
 
 // ── Constants ──────────────────────────────────────────────────────────
 
@@ -218,17 +233,31 @@ async function mapWithConcurrencyLimit<TIn, TOut>(
     return results;
 }
 
-function writePromptToTempFile(agentName: string, prompt: string): { dir: string; filePath: string } {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-subagent-"));
-    const safeName = agentName.replace(/[^\w.-]+/g, "_");
-    const filePath = path.join(tmpDir, `prompt-${safeName}.md`);
-    fs.writeFileSync(filePath, prompt, { encoding: "utf-8", mode: 0o600 });
-    return { dir: tmpDir, filePath };
-}
-
 // ── Execution engine ───────────────────────────────────────────────────
 
 type OnUpdateCallback = (partial: AgentToolResult<SubagentDetails>) => void;
+
+/** Map of all built-in tool names → tool objects. */
+const BUILTIN_TOOLS: Record<string, (typeof codingTools)[number]> = {
+    bash: bashTool,
+    read: readTool,
+    edit: editTool,
+    write: writeTool,
+    grep: grepTool,
+    find: findTool,
+    ls: lsTool,
+};
+
+/**
+ * Resolve agent tool names to actual Tool objects from the built-in set.
+ */
+function resolveTools(toolNames: string[]): (typeof codingTools)[number][] {
+    const resolved: (typeof codingTools)[number][] = [];
+    for (const name of toolNames) {
+        if (BUILTIN_TOOLS[name]) resolved.push(BUILTIN_TOOLS[name]);
+    }
+    return resolved.length > 0 ? resolved : [...codingTools];
+}
 
 async function runSingleAgent(
     defaultCwd: string,
@@ -257,34 +286,17 @@ async function runSingleAgent(
         };
     }
 
-    const args: string[] = ["--mode", "json", "-p", "--no-session"];
-
-    // Model override — support Claude Code shorthand aliases
-    if (agent.model) {
-        const modelAlias = agent.model.toLowerCase();
-        if (modelAlias !== "inherit") {
-            args.push("--model", agent.model);
-        }
-    }
-
-    // Tool restrictions
+    // Resolve effective tools — apply disallowedTools filtering
+    let effectiveToolNames: string[] | undefined;
     if (agent.tools && agent.tools.length > 0) {
-        let effectiveTools = [...agent.tools];
-        // Apply disallowedTools — remove denied tools from the allowed list
+        effectiveToolNames = [...agent.tools];
         if (agent.disallowedTools && agent.disallowedTools.length > 0) {
             const denied = new Set(agent.disallowedTools);
-            effectiveTools = effectiveTools.filter(t => !denied.has(t));
-        }
-        if (effectiveTools.length > 0) {
-            args.push("--tools", effectiveTools.join(","));
+            effectiveToolNames = effectiveToolNames.filter(t => !denied.has(t));
         }
     }
 
-    // maxTurns is enforced by counting assistant messages and killing the process
     const maxTurns = agent.maxTurns && agent.maxTurns > 0 ? agent.maxTurns : 0;
-
-    let tmpPromptDir: string | null = null;
-    let tmpPromptPath: string | null = null;
 
     const currentResult: SingleResult = {
         agent: agentName,
@@ -308,107 +320,97 @@ async function runSingleAgent(
     };
 
     try {
-        if (agent.systemPrompt.trim()) {
-            const tmp = writePromptToTempFile(agent.name, agent.systemPrompt);
-            tmpPromptDir = tmp.dir;
-            tmpPromptPath = tmp.filePath;
-            args.push("--append-system-prompt", tmpPromptPath);
-        }
+        // Build session options
+        const tools = effectiveToolNames ? resolveTools(effectiveToolNames) : codingTools;
+        const sessionCwd = cwd ?? defaultCwd;
 
-        args.push(`Task: ${task}`);
-        let wasAborted = false;
+        // Use a lightweight resource loader — no extensions, skills, themes, etc.
+        // Just the system prompt from the agent definition.
+        const loader = new DefaultResourceLoader({
+            cwd: sessionCwd,
+            noExtensions: true,
+            noSkills: true,
+            noPromptTemplates: true,
+            noThemes: true,
+            ...(agent.systemPrompt.trim() && { appendSystemPrompt: agent.systemPrompt }),
+        });
+        await loader.reload();
 
-        const exitCode = await new Promise<number>((resolve) => {
-            const proc = spawn("pi", args, { cwd: cwd ?? defaultCwd, shell: false, stdio: ["ignore", "pipe", "pipe"] });
-            let buffer = "";
-            let maxTurnsReached = false;
+        const { session } = await createAgentSession({
+            cwd: sessionCwd,
+            agentDir: defaultAgentDir(),
+            tools,
+            resourceLoader: loader,
+        });
 
-            const processLine = (line: string) => {
-                if (!line.trim()) return;
-                let event: any;
-                try {
-                    event = JSON.parse(line);
-                } catch {
-                    return;
-                }
+        // Subscribe to events to track messages and usage
+        let abortController: AbortController | undefined;
 
-                if (event.type === "message_end" && event.message) {
-                    const msg = event.message as Message;
-                    currentResult.messages.push(msg);
+        session.subscribe((event) => {
+            if (event.type === "message_end" && "message" in event) {
+                const msg = event.message as Message;
+                currentResult.messages.push(msg);
 
-                    if (msg.role === "assistant") {
-                        currentResult.usage.turns++;
-                        const usage = msg.usage;
-                        if (usage) {
-                            currentResult.usage.input += usage.input || 0;
-                            currentResult.usage.output += usage.output || 0;
-                            currentResult.usage.cacheRead += usage.cacheRead || 0;
-                            currentResult.usage.cacheWrite += usage.cacheWrite || 0;
-                            currentResult.usage.cost += usage.cost?.total || 0;
-                            currentResult.usage.contextTokens = usage.totalTokens || 0;
-                        }
-                        if (!currentResult.model && msg.model) currentResult.model = msg.model;
-                        if (msg.stopReason) currentResult.stopReason = msg.stopReason;
-                        if (msg.errorMessage) currentResult.errorMessage = msg.errorMessage;
-
-                        // Enforce maxTurns — gracefully terminate when limit reached
-                        if (maxTurns > 0 && currentResult.usage.turns >= maxTurns) {
-                            maxTurnsReached = true;
-                            currentResult.stderr += `\n[subagent] maxTurns limit reached (${maxTurns}), terminating.`;
-                            proc.kill("SIGTERM");
-                            setTimeout(() => { if (!proc.killed) proc.kill("SIGKILL"); }, 3000);
-                        }
+                if (msg.role === "assistant") {
+                    currentResult.usage.turns++;
+                    const assistantMsg = msg as AssistantMessage;
+                    const usage = assistantMsg.usage;
+                    if (usage) {
+                        currentResult.usage.input += usage.input || 0;
+                        currentResult.usage.output += usage.output || 0;
+                        currentResult.usage.cacheRead += usage.cacheRead || 0;
+                        currentResult.usage.cacheWrite += usage.cacheWrite || 0;
+                        currentResult.usage.cost += (usage.cost as any)?.total || 0;
+                        currentResult.usage.contextTokens = usage.totalTokens || 0;
                     }
-                    emitUpdate();
+                    if (!currentResult.model && assistantMsg.model) currentResult.model = assistantMsg.model;
+                    if (assistantMsg.stopReason) currentResult.stopReason = assistantMsg.stopReason;
+                    if (assistantMsg.errorMessage) currentResult.errorMessage = assistantMsg.errorMessage;
+
+                    // Enforce maxTurns
+                    if (maxTurns > 0 && currentResult.usage.turns >= maxTurns) {
+                        currentResult.stderr += `\n[subagent] maxTurns limit reached (${maxTurns}), stopping.`;
+                        abortController?.abort();
+                    }
                 }
+                emitUpdate();
+            }
 
-                if (event.type === "tool_result_end" && event.message) {
-                    currentResult.messages.push(event.message as Message);
-                    emitUpdate();
+            // Capture tool results from turn_end events
+            if (event.type === "turn_end" && "toolResults" in event) {
+                const toolResults = (event as any).toolResults;
+                if (Array.isArray(toolResults)) {
+                    for (const tr of toolResults) {
+                        currentResult.messages.push(tr as Message);
+                    }
                 }
-            };
-
-            proc.stdout.on("data", (data) => {
-                buffer += data.toString();
-                const lines = buffer.split("\n");
-                buffer = lines.pop() || "";
-                for (const line of lines) processLine(line);
-            });
-
-            proc.stderr.on("data", (data) => {
-                currentResult.stderr += data.toString();
-            });
-
-            proc.on("close", (code) => {
-                if (buffer.trim()) processLine(buffer);
-                resolve(code ?? 0);
-            });
-
-            proc.on("error", () => {
-                resolve(1);
-            });
-
-            if (signal) {
-                const killProc = () => {
-                    wasAborted = true;
-                    proc.kill("SIGTERM");
-                    setTimeout(() => {
-                        if (!proc.killed) proc.kill("SIGKILL");
-                    }, 5000);
-                };
-                if (signal.aborted) killProc();
-                else signal.addEventListener("abort", killProc, { once: true });
+                emitUpdate();
             }
         });
 
-        currentResult.exitCode = exitCode;
-        if (wasAborted) throw new Error("Subagent was aborted");
+        // Handle external abort signal
+        if (signal?.aborted) throw new Error("Subagent was aborted");
+        const onAbort = () => abortController?.abort();
+        signal?.addEventListener("abort", onAbort, { once: true });
+
+        try {
+            // Run the prompt
+            abortController = new AbortController();
+            await session.prompt(`Task: ${task}`);
+        } catch (err) {
+            if (signal?.aborted) throw new Error("Subagent was aborted");
+            currentResult.exitCode = 1;
+            currentResult.stderr += `\n${err instanceof Error ? err.message : String(err)}`;
+        } finally {
+            signal?.removeEventListener("abort", onAbort);
+        }
+
         return currentResult;
-    } finally {
-        if (tmpPromptPath)
-            try { fs.unlinkSync(tmpPromptPath); } catch { /* ignore */ }
-        if (tmpPromptDir)
-            try { fs.rmdirSync(tmpPromptDir); } catch { /* ignore */ }
+    } catch (err) {
+        if (String(err).includes("aborted")) throw err;
+        currentResult.exitCode = 1;
+        currentResult.stderr += `\nFailed to create subagent session: ${err instanceof Error ? err.message : String(err)}`;
+        return currentResult;
     }
 }
 
