@@ -319,11 +319,18 @@ describe("built-in agents", () => {
     });
 
     test("built-in task agent is always available in discovery", () => {
-        // No agent directories at all
-        const result = discoverAgents(tmpDir, "user");
-        const task = result.agents.find(a => a.name === "task");
-        expect(task).toBeDefined();
-        expect(task!.filePath).toBe("(built-in)");
+        // Override HOME so getUserAgentsDirs() won't pick up real user agents
+        const origHome = process.env.HOME;
+        try {
+            process.env.HOME = tmpDir;
+            // No agent directories at all — built-in must surface
+            const result = discoverAgents(tmpDir, "user");
+            const task = result.agents.find(a => a.name === "task");
+            expect(task).toBeDefined();
+            expect(task!.filePath).toBe("(built-in)");
+        } finally {
+            process.env.HOME = origHome;
+        }
     });
 
     test("built-in task agent is available in all scopes", () => {
