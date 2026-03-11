@@ -284,10 +284,14 @@ export function loadConfig(cwd: string = process.cwd()): PizzaPiConfig {
     if (hooks) config.hooks = hooks;
     else delete config.hooks;
 
-    // Merge disabledMcpServers from both scopes (union)
+    // Merge disabledMcpServers from both scopes (union).
+    // Guard with Array.isArray — a malformed config value (e.g. a string or
+    // object) would throw or spread into characters without this check.
+    const globalDisabledRaw = Array.isArray(global.disabledMcpServers) ? global.disabledMcpServers : [];
+    const projectDisabledRaw = Array.isArray(project.disabledMcpServers) ? project.disabledMcpServers : [];
     const disabledMcpServers = [
-        ...(global.disabledMcpServers ?? []),
-        ...(project.disabledMcpServers ?? []),
+        ...globalDisabledRaw,
+        ...projectDisabledRaw,
     ].filter((s): s is string => typeof s === "string");
     if (disabledMcpServers.length > 0) {
         config.disabledMcpServers = [...new Set(disabledMcpServers)];
@@ -395,7 +399,8 @@ export function toggleMcpServer(
     const globalPath = join(globalConfigDir(), "config.json");
     const globalConfig = readJsonSafe(globalPath);
     const globalDisabled = new Set(
-        (globalConfig.disabledMcpServers ?? []).filter((s): s is string => typeof s === "string"),
+        (Array.isArray(globalConfig.disabledMcpServers) ? globalConfig.disabledMcpServers : [])
+            .filter((s): s is string => typeof s === "string"),
     );
 
     // If the server is already disabled globally, the project toggle is a no-op:
@@ -409,7 +414,8 @@ export function toggleMcpServer(
     const projectPath = join(cwd, ".pizzapi", "config.json");
     const projectConfig = readJsonSafe(projectPath);
     const current = new Set(
-        (projectConfig.disabledMcpServers ?? []).filter((s): s is string => typeof s === "string"),
+        (Array.isArray(projectConfig.disabledMcpServers) ? projectConfig.disabledMcpServers : [])
+            .filter((s): s is string => typeof s === "string"),
     );
 
     const hadIt = current.has(name);
