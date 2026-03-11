@@ -10,6 +10,7 @@ import { setSessionNameExtension } from "./set-session-name.js";
 import { spawnSessionExtension } from "./spawn-session.js";
 import { updateTodoExtension } from "./update-todo.js";
 import { createClaudePluginExtension } from "./claude-plugins.js";
+import { subagentExtension } from "./subagent.js";
 
 export interface BuildExtensionFactoriesOptions {
     cwd: string;
@@ -45,6 +46,7 @@ export function buildPizzaPiExtensionFactories(options: BuildExtensionFactoriesO
         updateTodoExtension,
         spawnSessionExtension,
         sessionMessagingExtension,
+        subagentExtension,
     );
 
     if (options.includeInitialPrompt) {

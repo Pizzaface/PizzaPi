@@ -12,6 +12,7 @@ import { sessionMessagingExtension } from "./session-messaging.js";
 import { setSessionNameExtension } from "./set-session-name.js";
 import { spawnSessionExtension } from "./spawn-session.js";
 import { updateTodoExtension } from "./update-todo.js";
+import { subagentExtension } from "./subagent.js";
 import { initialPromptExtension } from "./initial-prompt.js";
 
 const CORE_EXTENSIONS: ExtensionFactory[] = [
@@ -22,6 +23,7 @@ const CORE_EXTENSIONS: ExtensionFactory[] = [
     updateTodoExtension,
     spawnSessionExtension,
     sessionMessagingExtension,
+    subagentExtension,
 ];
 
 /**
