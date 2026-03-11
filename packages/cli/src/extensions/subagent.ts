@@ -703,11 +703,13 @@ export const subagentExtension = (pi: ExtensionAPI) => {
                     const preview = output.slice(0, 100) + (output.length > 100 ? "..." : "");
                     return `[${r.agent}] ${isFailed(r) ? "failed" : "completed"}: ${preview || "(no output)"}`;
                 });
+                const hasFailures = results.some(isFailed);
                 return {
                     content: [
                         { type: "text", text: `Parallel: ${successCount}/${results.length} succeeded\n\n${summaries.join("\n\n")}` },
                     ],
                     details: makeDetails("parallel")(results),
+                    ...(hasFailures && { isError: true }),
                 };
             }
 

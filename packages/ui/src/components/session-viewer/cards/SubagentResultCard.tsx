@@ -145,21 +145,27 @@ function getToolCallCount(messages: Array<{ role: string; content: unknown[] }>)
 // ── Parse details from top-level details prop ──────────────────────────
 
 function parseSubagentDetails(details: unknown): SubagentDetails | null {
-  if (details && typeof details === "object" && !Array.isArray(details)) {
-    const d = details as SubagentDetails;
-    if (d.mode && d.results) return d;
-  }
-  return null;
+  return isValidDetails(details) ? details : null;
 }
 
 // ── Parse details from tool result ─────────────────────────────────────
+
+/** Validate that a candidate object is a well-formed SubagentDetails */
+function isValidDetails(d: unknown): d is SubagentDetails {
+  if (!d || typeof d !== "object" || Array.isArray(d)) return false;
+  const obj = d as Record<string, unknown>;
+  return (
+    typeof obj.mode === "string" &&
+    Array.isArray(obj.results) &&
+    (obj.mode === "single" || obj.mode === "parallel" || obj.mode === "chain")
+  );
+}
 
 function parseDetails(content: unknown): SubagentDetails | null {
   if (content && typeof content === "object" && !Array.isArray(content)) {
     const obj = content as Record<string, unknown>;
     if (obj.details && typeof obj.details === "object") {
-      const d = obj.details as SubagentDetails;
-      if (d.mode && d.results) return d;
+      if (isValidDetails(obj.details)) return obj.details;
     }
   }
 
@@ -168,13 +174,12 @@ function parseDetails(content: unknown): SubagentDetails | null {
       if (block && typeof block === "object") {
         const b = block as Record<string, unknown>;
         if (b.details && typeof b.details === "object") {
-          const d = b.details as SubagentDetails;
-          if (d.mode && d.results) return d;
+          if (isValidDetails(b.details)) return b.details;
         }
         if (b.type === "text" && typeof b.text === "string") {
           try {
             const parsed = JSON.parse(b.text);
-            if (parsed.mode && parsed.results) return parsed;
+            if (isValidDetails(parsed)) return parsed;
           } catch {
             // not JSON
           }
@@ -322,9 +327,10 @@ export function SubagentResultCard({
   details?: unknown;
 }) {
   const inputArgs = parseToolInputArgs(toolInput);
-  // Try parsing details from content first (streaming path), then fall back
-  // to the top-level details prop (preserved from final tool result message).
-  const details = parseDetails(content) ?? parseSubagentDetails(detailsProp);
+  // Prefer the trusted top-level details prop (from final tool result message)
+  // over content-embedded details (streaming path). This avoids misinterpreting
+  // arbitrary agent output JSON that coincidentally matches the details shape.
+  const details = parseSubagentDetails(detailsProp) ?? parseDetails(content);
   const resultText = extractTextFromToolContent(content);
 
   const mode: "single" | "parallel" | "chain" =
