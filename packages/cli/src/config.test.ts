@@ -96,6 +96,29 @@ describe("toggleMcpServer", () => {
     expect(result.changed).toBe(false);
   });
 
+  test("disabling a globally disabled server is a no-op (no sticky local entry)", () => {
+    // Global config already disables "playwright"
+    writeFileSync(
+      join(globalDir, "config.json"),
+      JSON.stringify({ disabledMcpServers: ["playwright"] }),
+    );
+
+    const projectDir = join(tempDir, "project");
+    mkdirSync(join(projectDir, ".pizzapi"), { recursive: true });
+    writeFileSync(
+      join(projectDir, ".pizzapi", "config.json"),
+      JSON.stringify({}),
+    );
+
+    const result = toggleMcpServer("playwright", true, projectDir);
+    expect(result.changed).toBe(false);
+    expect(result.globallyDisabled).toBe(true);
+
+    // Project config must NOT have a redundant disabledMcpServers entry
+    const updated = JSON.parse(readFileSync(join(projectDir, ".pizzapi", "config.json"), "utf-8"));
+    expect(updated.disabledMcpServers).toBeUndefined();
+  });
+
   test("cannot enable a globally disabled server", () => {
     // Set the global config to disable "playwright"
     writeFileSync(

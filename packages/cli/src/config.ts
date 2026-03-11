@@ -398,8 +398,11 @@ export function toggleMcpServer(
         (globalConfig.disabledMcpServers ?? []).filter((s): s is string => typeof s === "string"),
     );
 
-    // If enabling, but server is disabled globally, project can't override
-    if (!disable && globalDisabled.has(name)) {
+    // If the server is already disabled globally, the project toggle is a no-op:
+    //  - enable: project can't override a global disable
+    //  - disable: already effective, writing a redundant local entry would
+    //    create a sticky disable that survives removal of the global entry
+    if (globalDisabled.has(name)) {
         return { changed: false, globallyDisabled: true };
     }
 
