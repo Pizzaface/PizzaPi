@@ -800,10 +800,15 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
 
   const supportedWebCommands = React.useMemo(() => {
     // Commands that we intercept/execute via exec.
+    // Commands with `subCommands` keep the popover open after typing a space
+    // so the user can pick from the available options.
     return [
       { name: "new", description: "Start a new conversation" },
       { name: "resume", description: "Resume the previous session" },
-      { name: "mcp", description: "MCP status (or /mcp reload)" },
+      { name: "mcp", description: "MCP server management", subCommands: [
+        { name: "status", description: "Show MCP server status" },
+        { name: "reload", description: "Reload MCP servers" },
+      ]},
       { name: "plugins", description: "Show loaded plugins" },
       { name: "skills", description: "Show available skills" },
       { name: "model", description: "Select model" },
@@ -815,7 +820,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
       { name: "copy", description: "Copy last assistant message" },
       { name: "stop", description: "Abort current generation" },
       { name: "restart", description: "Restart the CLI process" },
-    ];
+    ] as Array<{ name: string; description: string; subCommands?: Array<{ name: string; description: string }> }>;
   }, []);
 
   // Set of all known command/skill names for quick lookup (used to auto-close popover
@@ -829,9 +834,15 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     return names;
   }, [supportedWebCommands, extensionCommands, skillCommands, promptCommands]);
 
-  // Commands that use the popover for argument-mode UI (e.g. resume shows a
-  // session picker that the user searches/filters by typing after /resume).
-  const keepPopoverOpenNames = React.useMemo(() => new Set(["resume"]), []);
+  // Commands that keep the popover open after a space (for argument/sub-command UI).
+  // Derived from commands with subCommands, plus "resume" which has its own picker.
+  const keepPopoverOpenNames = React.useMemo(() => {
+    const names = new Set(["resume"]);
+    for (const c of supportedWebCommands) {
+      if (c.subCommands && c.subCommands.length > 0) names.add(c.name.toLowerCase());
+    }
+    return names;
+  }, [supportedWebCommands]);
 
   // Reset highlighted index when the query or mode changes
   React.useEffect(() => {
@@ -958,15 +969,40 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     });
   }, [resumeSessions, resumeQuery]);
 
+  // Sub-command mode: detect when the user has typed a command that has sub-commands
+  // e.g. "/mcp " or "/mcp rel" → show sub-command options
+  const subCommandMode = React.useMemo<{
+    active: boolean;
+    parentCommand: string;
+    subCommands: Array<{ name: string; description: string }>;
+    query: string;
+    filtered: Array<{ name: string; description: string }>;
+  }>(() => {
+    if (isResumeMode) return { active: false, parentCommand: "", subCommands: [], query: "", filtered: [] };
+    const match = trimmedInput.match(/^\/(\S+)(?:\s(.*))?$/i);
+    if (!match) return { active: false, parentCommand: "", subCommands: [], query: "", filtered: [] };
+    const cmdName = match[1]!.toLowerCase();
+    const argText = (match[2] ?? "").trim().toLowerCase();
+    const cmd = supportedWebCommands.find(c => c.name.toLowerCase() === cmdName && c.subCommands && c.subCommands.length > 0);
+    if (!cmd?.subCommands) return { active: false, parentCommand: "", subCommands: [], query: "", filtered: [] };
+    const filtered = argText
+      ? cmd.subCommands.filter(sc => sc.name.toLowerCase().includes(argText))
+      : cmd.subCommands;
+    return { active: true, parentCommand: cmd.name, subCommands: cmd.subCommands, query: argText, filtered };
+  }, [trimmedInput, isResumeMode, supportedWebCommands]);
+
   // Controlled value for cmdk Command (drives data-selected highlighting)
   const commandHighlightedValue = React.useMemo(() => {
     if (!commandOpen) return "";
     if (isResumeMode) {
       return resumeCandidates[commandHighlightedIndex]?.path ?? "";
     }
+    if (subCommandMode.active) {
+      return subCommandMode.filtered[commandHighlightedIndex]?.name ?? "";
+    }
     const combined = [...commandSuggestions, ...extensionSuggestions, ...promptSuggestions, ...skillSuggestions];
     return combined[commandHighlightedIndex]?.name ?? "";
-  }, [commandOpen, isResumeMode, resumeCandidates, commandSuggestions, extensionSuggestions, promptSuggestions, skillSuggestions, commandHighlightedIndex]);
+  }, [commandOpen, isResumeMode, subCommandMode, resumeCandidates, commandSuggestions, extensionSuggestions, promptSuggestions, skillSuggestions, commandHighlightedIndex]);
 
   const resumeRequestedRef = React.useRef<string | null>(null);
   const compactingRef = React.useRef(false);
@@ -1520,6 +1556,9 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                 if (isResumeMode) {
                   const idx = resumeCandidates.findIndex(s => s.path.toLowerCase() === v.toLowerCase());
                   if (idx !== -1) setCommandHighlightedIndex(idx);
+                } else if (subCommandMode.active) {
+                  const idx = subCommandMode.filtered.findIndex(sc => sc.name.toLowerCase() === v.toLowerCase());
+                  if (idx !== -1) setCommandHighlightedIndex(idx);
                 } else {
                   const combined = [...commandSuggestions, ...extensionSuggestions, ...promptSuggestions, ...skillSuggestions];
                   const idx = combined.findIndex(c => c.name.toLowerCase() === v.toLowerCase());
@@ -1530,7 +1569,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
               {/* Close button header */}
               <div className="flex items-center justify-between px-3 py-1.5 border-b border-border/50">
                 <span className="text-xs text-muted-foreground font-medium">
-                  {isResumeMode ? "Resume session" : "Commands"}
+                  {isResumeMode ? "Resume session" : subCommandMode.active ? `/${subCommandMode.parentCommand}` : "Commands"}
                 </span>
                 <button
                   type="button"
@@ -1580,6 +1619,26 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                       ))}
                     </CommandGroup>
                   </>
+                ) : subCommandMode.active ? (
+                  <>
+                    <CommandEmpty>No matching options</CommandEmpty>
+                    <CommandGroup heading={`/${subCommandMode.parentCommand} options`}>
+                      {subCommandMode.filtered.map((sc) => (
+                        <CommandItem
+                          key={sc.name}
+                          value={sc.name}
+                          onSelect={() => {
+                            executeSlashCommand(`/${subCommandMode.parentCommand} ${sc.name}`);
+                          }}
+                        >
+                          <div className="flex w-full items-center justify-between gap-2">
+                            <span className="font-mono text-sm">/{subCommandMode.parentCommand} {sc.name}</span>
+                            {sc.description && <span className="text-xs text-muted-foreground">{sc.description}</span>}
+                          </div>
+                        </CommandItem>
+                      ))}
+                    </CommandGroup>
+                  </>
                 ) : (
                   <>
                     <CommandEmpty>No commands or skills found</CommandEmpty>
@@ -1596,7 +1655,8 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                               }
                               setInput(`/${cmd.name} `);
                               setCommandQuery("");
-                              setCommandOpen(cmd.name === "resume");
+                              setCommandOpen(keepPopoverOpenNames.has(cmd.name.toLowerCase()));
+                              setCommandHighlightedIndex(0);
                             }}
                           >
                             <div className="flex w-full items-center justify-between gap-2">
@@ -1905,7 +1965,9 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                       event.preventDefault();
                       const totalItems = isResumeMode
                         ? resumeCandidates.length
-                        : commandSuggestions.length + extensionSuggestions.length + promptSuggestions.length + skillSuggestions.length;
+                        : subCommandMode.active
+                          ? subCommandMode.filtered.length
+                          : commandSuggestions.length + extensionSuggestions.length + promptSuggestions.length + skillSuggestions.length;
                       if (totalItems === 0) return;
                       setCommandHighlightedIndex(prev => {
                         if (event.key === "ArrowDown") {
@@ -1914,6 +1976,17 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                         return prev > 0 ? prev - 1 : totalItems - 1;
                       });
                       return;
+                    }
+
+                    // Desktop: Enter in sub-command mode executes the highlighted sub-command
+                    if (!isTouchDevice && event.key === "Enter" && !event.shiftKey && subCommandMode.active) {
+                      const highlighted = subCommandMode.filtered[commandHighlightedIndex];
+                      if (highlighted) {
+                        event.preventDefault();
+                        executeSlashCommand(`/${subCommandMode.parentCommand} ${highlighted.name}`);
+                        setCommandHighlightedIndex(0);
+                        return;
+                      }
                     }
 
                     // Desktop: Enter fills textbox with highlighted command (doesn't execute)
@@ -1936,7 +2009,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                           event.preventDefault();
                           setInput(`/${highlighted.name} `);
                           setCommandQuery("");
-                          setCommandOpen(highlighted.name === "resume");
+                          setCommandOpen(highlighted.name === "resume" || keepPopoverOpenNames.has(highlighted.name.toLowerCase()));
                           setCommandHighlightedIndex(0);
                           // Position cursor at end of filled text
                           requestAnimationFrame(() => {
@@ -1952,6 +2025,17 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                       // No highlighted match — fall through to execute the typed command
                     }
 
+                    // Tab in sub-command mode: autocomplete the highlighted sub-command and execute
+                    if (event.key === "Tab" && subCommandMode.active && subCommandMode.filtered.length > 0) {
+                      event.preventDefault();
+                      const highlighted = subCommandMode.filtered[commandHighlightedIndex] ?? subCommandMode.filtered[0];
+                      if (highlighted) {
+                        executeSlashCommand(`/${subCommandMode.parentCommand} ${highlighted.name}`);
+                        setCommandHighlightedIndex(0);
+                      }
+                      return;
+                    }
+
                     // Tab: autocomplete the highlighted command (or first match) and close the popover
                     if (event.key === "Tab" && (commandSuggestions.length > 0 || extensionSuggestions.length > 0 || promptSuggestions.length > 0 || skillSuggestions.length > 0)) {
                       event.preventDefault();
@@ -1960,7 +2044,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                       if (highlighted) {
                         setInput(`/${highlighted.name} `);
                         setCommandQuery("");
-                        setCommandOpen(highlighted.name === "resume");
+                        setCommandOpen(highlighted.name === "resume" || keepPopoverOpenNames.has(highlighted.name.toLowerCase()));
                         setCommandHighlightedIndex(0);
                       }
                       return;

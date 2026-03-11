@@ -500,4 +500,12 @@ describe("resolveCommandPopoverState", () => {
     test("keepOpen is case-insensitive", () => {
         expect(resolveCommandPopoverState("Resume my-session", known, keepOpen)).toEqual({ open: true, query: "Resume my-session" });
     });
+
+    test("keeps popover open for commands with sub-commands (e.g. /mcp)", () => {
+        const keepOpenWithMcp = new Set(["resume", "mcp"]);
+        const knownWithMcp = new Set([...known, "mcp"]);
+        expect(resolveCommandPopoverState("mcp ", knownWithMcp, keepOpenWithMcp)).toEqual({ open: true, query: "mcp " });
+        expect(resolveCommandPopoverState("mcp reload", knownWithMcp, keepOpenWithMcp)).toEqual({ open: true, query: "mcp reload" });
+        expect(resolveCommandPopoverState("mcp re", knownWithMcp, keepOpenWithMcp)).toEqual({ open: true, query: "mcp re" });
+    });
 });
