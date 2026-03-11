@@ -62,9 +62,10 @@ export async function serveStaticFile(pathname: string): Promise<Response | null
     // Don't serve API or socket.io paths
     if (pathname.startsWith("/api/") || pathname.startsWith("/socket.io/")) return null;
 
-    // Prevent path traversal
-    const safePath = pathname.replace(/\.\./g, "").replace(/\/+/g, "/");
-    let filePath = join(UI_DIR, safePath === "/" ? "index.html" : safePath);
+    // Prevent path traversal: resolve the real path and verify it stays within UI_DIR
+    const requested = pathname === "/" ? "index.html" : pathname.slice(1);
+    let filePath = resolve(UI_DIR, requested);
+    if (!filePath.startsWith(UI_DIR)) return null;
 
     // If file doesn't exist, serve index.html for SPA routing
     if (!existsSync(filePath)) {
