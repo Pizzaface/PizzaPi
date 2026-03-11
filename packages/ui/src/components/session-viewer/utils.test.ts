@@ -469,9 +469,9 @@ describe("resolveCommandPopoverState", () => {
         expect(resolveCommandPopoverState("skill:double-check ", known)).toEqual({ open: false, query: "" });
     });
 
-    test("keeps popover open for unrecognized command with arguments", () => {
+    test("closes popover for unrecognized command once a space is typed", () => {
         const result = resolveCommandPopoverState("unknown-thing some args", known);
-        expect(result).toEqual({ open: true, query: "unknown-thing some args" });
+        expect(result).toEqual({ open: false, query: "" });
     });
 
     test("is case-insensitive for command matching", () => {

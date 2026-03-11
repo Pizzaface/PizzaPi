@@ -229,6 +229,9 @@ export function resolveCommandPopoverState(
     // Recognised command with arguments — close the popover.
     return { open: false, query: "" };
   }
-  // Unrecognised — keep open so the user sees suggestions / "not found".
-  return { open: true, query: afterSlash };
+  // Unrecognised command with a space means the user has moved past the
+  // command name into arguments/body text — close the popover so it
+  // doesn't persist for the entire message (e.g. typing a file path
+  // like "/usr/bin/python" or a non-existent command).
+  return { open: false, query: "" };
 }
