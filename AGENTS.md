@@ -149,6 +149,14 @@ cd packages/cli && bun test src/patches.test.ts
 
 ---
 
+## Built-in System Prompt
+
+The CLI appends a built-in system prompt (`BUILTIN_SYSTEM_PROMPT` in `packages/cli/src/config.ts`) to every session automatically. It covers inter-agent communication, the subagent tool, and session completion guidance. User-configured `appendSystemPrompt` in `~/.pizzapi/config.json` is concatenated **after** the built-in, so custom additions stack on top.
+
+**When adding new tools or changing agent-facing behavior**, update `BUILTIN_SYSTEM_PROMPT` in `config.ts` — not config.json. This ensures all installs get the change without any setup step.
+
+---
+
 ## Spawning Sub-Agents
 
 When spawning agents, **always expect a response** and **ensure your sub-agents know how to respond.**
