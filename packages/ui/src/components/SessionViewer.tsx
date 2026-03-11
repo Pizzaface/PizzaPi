@@ -2025,13 +2025,23 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                       // No highlighted match — fall through to execute the typed command
                     }
 
-                    // Tab in sub-command mode: autocomplete the highlighted sub-command and execute
+                    // Tab in sub-command mode: autocomplete the highlighted sub-command into the text box
                     if (event.key === "Tab" && subCommandMode.active && subCommandMode.filtered.length > 0) {
                       event.preventDefault();
                       const highlighted = subCommandMode.filtered[commandHighlightedIndex] ?? subCommandMode.filtered[0];
                       if (highlighted) {
-                        executeSlashCommand(`/${subCommandMode.parentCommand} ${highlighted.name}`);
+                        setInput(`/${subCommandMode.parentCommand} ${highlighted.name}`);
+                        setCommandQuery("");
+                        setCommandOpen(false);
                         setCommandHighlightedIndex(0);
+                        requestAnimationFrame(() => {
+                          const textarea = document.querySelector<HTMLTextAreaElement>("[data-pp-prompt]");
+                          if (textarea) {
+                            const len = textarea.value.length;
+                            textarea.setSelectionRange(len, len);
+                            textarea.focus();
+                          }
+                        });
                       }
                       return;
                     }
