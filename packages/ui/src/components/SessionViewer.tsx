@@ -672,8 +672,17 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     if (!onExec) return false;
 
     if (rawCommand === "mcp") {
-      const action = args.trim().toLowerCase() === "reload" ? "reload" : "status";
-      onExec({ type: "exec", id, command: "mcp", action });
+      const argLower = args.trim().toLowerCase();
+      if (argLower.startsWith("disable ") || argLower.startsWith("enable ")) {
+        const isDisable = argLower.startsWith("disable ");
+        const serverName = args.trim().slice(isDisable ? 8 : 7).trim();
+        if (serverName) {
+          onExec({ type: "exec", id, command: "mcp_toggle_server", serverName, disabled: isDisable });
+        }
+      } else {
+        const action = argLower === "reload" ? "reload" : "status";
+        onExec({ type: "exec", id, command: "mcp", action });
+      }
       setInput("");
       setCommandOpen(false);
       setCommandQuery("");
@@ -808,6 +817,8 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
       { name: "mcp", description: "MCP server management", subCommands: [
         { name: "status", description: "Show MCP server status" },
         { name: "reload", description: "Reload MCP servers" },
+        { name: "disable", description: "Disable an MCP server" },
+        { name: "enable", description: "Enable a disabled MCP server" },
       ]},
       { name: "plugins", description: "Show loaded plugins" },
       { name: "skills", description: "Show available skills" },
