@@ -59,6 +59,7 @@ import {
   GetSessionIdCard,
 } from "@/components/session-viewer/cards/InterAgentCards";
 import { AskUserQuestionCard } from "@/components/session-viewer/cards/AskUserQuestionCard";
+import { SubagentResultCard } from "@/components/session-viewer/cards/SubagentResultCard";
 
 export function extToLang(path: string): BundledLanguage {
   const ext = path.split(".").pop()?.toLowerCase() ?? "";
@@ -478,7 +479,8 @@ export function renderGroupedToolExecution(
   isError: boolean | undefined,
   isStreaming: boolean,
   thinking?: string,
-  thinkingDuration?: number
+  thinkingDuration?: number,
+  details?: unknown,
 ) {
   const hasOutput = hasVisibleContent(content);
   // Streaming takes priority: a tool with partial output is still running.
@@ -723,6 +725,16 @@ export function renderGroupedToolExecution(
         </div>
       ) : null;
     }
+  } else if (norm === "subagent" || norm.endsWith(".subagent") || norm === "task" || norm.endsWith(".task")) {
+    card = (
+      <SubagentResultCard
+        toolInput={toolInput}
+        content={content}
+        isStreaming={isStreaming}
+        isError={isError}
+        details={details}
+      />
+    );
   } else if (norm === "askuserquestion" || norm.endsWith(".askuserquestion")) {
     const resultText = hasOutput ? extractTextFromToolContent(content) : null;
     card = (

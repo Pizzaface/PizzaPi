@@ -19,6 +19,8 @@ export interface RelayMessage {
   summary?: string;
   /** For compactionSummary messages: token count before compaction */
   tokensBefore?: number;
+  /** Structured details from tool results (e.g., subagent SubagentDetails) */
+  details?: unknown;
 }
 
 // ── Sub-agent conversation types ─────────────────────────────────────────────

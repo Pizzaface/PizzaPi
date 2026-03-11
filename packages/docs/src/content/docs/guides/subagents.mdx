@@ -1,0 +1,256 @@
+---
+title: Subagents
+description: Delegate tasks to specialized agents with isolated context windows
+---
+
+import { Aside, Tabs, TabItem } from "@astrojs/starlight/components";
+
+Subagents let an agent delegate work to a **child agent with its own isolated context window**. The child runs as a separate `pi` process — it gets its own token budget, executes with a scoped set of tools, and returns a distilled result to the parent. The parent's conversation stays clean and focused.
+
+## How it works
+
+When the agent calls the `subagent` tool, PizzaPi:
+
+1. Discovers available agent definitions from multiple directories (see [Agent discovery paths](#agent-discovery-paths))
+2. Creates an in-process `AgentSession` via the pi SDK (no child process, zero overhead)
+3. Streams progress updates through the relay server for real-time Web UI display
+4. Returns the child's final output as the tool result
+
+The key difference from [`spawn_session`](/PizzaPi/guides/cli-reference/#spawn_session) is that subagents run **inline** — they block like any other tool call and return their output directly. No cross-session messaging needed.
+
+## Quick start
+
+### 1. Create an agent definition
+
+Create `~/.pizzapi/agents/researcher.md`:
+
+```markdown
+---
+name: researcher
+description: Read-only codebase research
+tools: read,grep,find,ls
+---
+You are a research agent. Read files, trace dependencies,
+and summarize findings without modifying anything.
+```
+
+### 2. Use it in a session
+
+The agent can invoke the subagent tool like this:
+
+```json
+{
+  "agent": "researcher",
+  "task": "Summarize the authentication module and list all endpoints"
+}
+```
+
+The subagent runs in its own context, reads the relevant files, and returns a summary. Only the summary enters the parent's context window.
+
+## Agent definitions
+
+Agent definitions are markdown files with YAML frontmatter. PizzaPi is compatible with [Claude Code agent files](https://code.claude.com/docs/en/sub-agents).
+
+### Agent discovery paths
+
+Agents are discovered from multiple directories. Within each scope, `.pizzapi/` paths are checked first (higher precedence), then `.claude/` paths:
+
+- **User scope:** `~/.pizzapi/agents/*.md`, `~/.claude/agents/*.md` — available in all your sessions
+- **Project scope:** `.pizzapi/agents/*.md`, `.claude/agents/*.md` — repo-specific agents (walk-up search from cwd)
+
+When agents with the same name exist in multiple directories, the first-found wins (`.pizzapi` before `.claude`, project overrides user).
+
+### Frontmatter fields
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `name` | ✅ | Unique identifier for the agent |
+| `description` | ✅ | Brief description (shown in agent listings) |
+| `tools` | | Comma-separated list of allowed tools (e.g., `read,grep,find`) |
+| `disallowedTools` | | Comma-separated tools to deny (removed from inherited list) |
+| `model` | | Model override (e.g., `claude-haiku-3`; `inherit` to use parent model) |
+| `maxTurns` | | Maximum agentic turns before the subagent stops |
+| `permissionMode` | | Permission mode: `default`, `acceptEdits`, `dontAsk`, `bypassPermissions`, `plan` |
+| `background` | | If `true`, hints the agent should run as a background task |
+
+The markdown body after the frontmatter becomes the agent's **system prompt**.
+
+<Aside>
+  The `disallowedTools`, `maxTurns`, `permissionMode`, and `background` fields provide compatibility with Claude Code agent definitions. Agent files that work with Claude Code's `Task` tool will also work with PizzaPi's `subagent` tool.
+</Aside>
+
+### Example: Code reviewer
+
+```markdown
+---
+name: reviewer
+description: Code review for bugs and style
+tools: read,grep,find,ls
+---
+You are a code review agent. Identify bugs, security issues,
+and style inconsistencies. Rate findings P0-P3 by severity.
+Output "LGTM" if the code looks good.
+```
+
+## Built-in agents
+
+PizzaPi ships with three default agents in `packages/cli/agents/`. Copy them to `~/.pizzapi/agents/` to use them:
+
+| Agent | Tools | Purpose |
+|-------|-------|---------|
+| **researcher** | read, grep, find, ls | Read-only codebase analysis and research |
+| **reviewer** | read, grep, find, ls | Code review with severity-rated findings |
+| **refactorer** | read, write, edit, bash, grep, find, ls | Safe incremental code transformations |
+
+## Execution modes
+
+### Single mode
+
+Invoke one agent with one task:
+
+```json
+{
+  "agent": "researcher",
+  "task": "What authentication strategy does this project use?"
+}
+```
+
+### Parallel mode
+
+Run multiple agents concurrently (up to 4 at once, max 8 tasks):
+
+```json
+{
+  "tasks": [
+    { "agent": "reviewer", "task": "Review src/auth/login.ts" },
+    { "agent": "reviewer", "task": "Review src/auth/session.ts" },
+    { "agent": "researcher", "task": "Find all SQL queries in the project" }
+  ]
+}
+```
+
+### Chain mode
+
+Run agents sequentially, passing each step's output to the next via `{previous}`:
+
+```json
+{
+  "chain": [
+    { "agent": "researcher", "task": "Analyze the database schema and list all tables" },
+    { "agent": "reviewer", "task": "Review the schema design described here:\n\n{previous}" }
+  ]
+}
+```
+
+If any step fails, the chain stops and reports which step failed.
+
+## Multi-model routing
+
+Use the `model` field in agent definitions to route cheap tasks to fast models:
+
+```markdown
+---
+name: scout
+description: Quick file exploration
+tools: read,find,ls
+model: claude-haiku-3
+---
+Quickly scan files and report what you find. Be brief.
+```
+
+This saves money by using an inexpensive model for exploration while the parent session uses a more capable model for synthesis.
+
+## Agent scope and security
+
+### Scope parameter
+
+Control which agent directories are searched:
+
+| Scope | Searches |
+|-------|----------|
+| `"user"` (default) | `~/.pizzapi/agents/` and `~/.claude/agents/` |
+| `"project"` | `.pizzapi/agents/` and `.claude/agents/` |
+| `"both"` | All directories (project overrides user on name conflict) |
+
+### Project agent security
+
+Project-scope agents (`.pizzapi/agents/` and `.claude/agents/`) are loaded from the repository and could contain untrusted prompts. When `agentScope` includes project agents:
+
+- PizzaPi prompts for confirmation before running them (in TUI mode)
+- Set `confirmProjectAgents: false` to skip the prompt (only for trusted repos)
+
+<Aside type="caution">
+  Project-scope agents come from the repository's `.pizzapi/agents/` or `.claude/agents/` directory. Only use `agentScope: "both"` or `"project"` with repositories you trust.
+</Aside>
+
+## Creating custom agents
+
+1. Create a `.md` file in `~/.pizzapi/agents/`
+2. Add the required frontmatter (`name`, `description`)
+3. Optionally restrict tools and set a model
+4. Write a clear system prompt in the body
+
+### Tips for good agent prompts
+
+- **Be specific** about the agent's role and boundaries
+- **Define output format** so results are predictable
+- **Restrict tools** to the minimum needed (principle of least privilege)
+- **Keep prompts short** (< 500 words) — the agent's context should be spent on the task, not the prompt
+- **Use model routing** for simple tasks — Haiku/Flash for exploration, Sonnet/Opus for analysis
+
+## Real-time streaming
+
+Subagent progress is streamed through the relay server to the Web UI in real-time:
+
+- **While running:** The Web UI shows a streaming card with the subagent's current output, including which agent is active and its progress
+- **When complete:** The card collapses to show the final result with usage statistics (tokens, cost, turns)
+- **Parallel mode:** Multiple progress indicators update simultaneously as each task completes
+
+The streaming uses pi's built-in `tool_execution_update` event pipeline:
+
+1. The subagent tool calls `onUpdate()` with partial results including structured `details`
+2. Pi core fires a `tool_execution_update` event with the partial
+3. The remote extension forwards it over WebSocket to the relay server
+4. The relay broadcasts to all connected Web UI viewers
+5. The UI buffers partials via RAF-based debouncing and renders live updates
+
+No additional configuration is needed — streaming works automatically when using PizzaPi's Web UI.
+
+## Comparison with spawn_session
+
+| Feature | `subagent` | `spawn_session` |
+|---------|-----------|----------------|
+| **Communication** | Tool call → result (synchronous) | `send_message` / `wait_for_message` |
+| **Context** | Isolated in-process session | Fully independent session |
+| **UI** | Inline in parent session | Separate session view |
+| **Overhead** | Near-zero (in-process SDK) | Higher (relay round-trip, new PTY) |
+| **Best for** | Quick delegation, research, review | Long-running parallel work, cross-runner tasks |
+| **Model selection** | Via agent definition or parameter | Via spawn parameter |
+| **Agent definitions** | File-based (`~/.pizzapi/agents/`) | Prompt-based (inline in spawn call) |
+
+Use `subagent` for focused, quick tasks. Use `spawn_session` for independent, long-running work.
+
+## Claude Code compatibility
+
+PizzaPi subagents are designed to be compatible with [Claude Code agent files](https://code.claude.com/docs/en/sub-agents):
+
+### What works
+
+- **Agent definition files** — The same `.md` files with YAML frontmatter work in both systems
+- **Discovery paths** — PizzaPi searches `.claude/agents/` alongside `.pizzapi/agents/`
+- **Frontmatter fields** — `name`, `description`, `tools`, `disallowedTools`, `model`, `maxTurns`, `permissionMode`, `background`
+- **Tool name** — The Web UI renders both `subagent` and `Task` tool calls with the subagent card
+
+### Differences
+
+| Feature | Claude Code (`Task`) | PizzaPi (`subagent`) |
+|---------|---------------------|---------------------|
+| **Execution** | In-process | In-process via pi SDK (isolated session) |
+| **Built-in agents** | `general-purpose`, `Explore`, `Plan` | None (define your own) |
+| **Skills** | `skills` frontmatter field | Not yet supported |
+| **MCP servers** | `mcpServers` frontmatter field | Not yet supported |
+| **Hooks** | `hooks` frontmatter field | Not yet supported |
+| **Memory** | `memory` frontmatter field | Not yet supported |
+| **Modes** | Single only | Single, parallel, chain |
+
+To use Claude Code agents with PizzaPi, simply ensure the agent `.md` files are in a directory PizzaPi scans. If you already have agents in `.claude/agents/`, they'll be discovered automatically.

@@ -379,6 +379,37 @@ pizzapi --version
 
 ---
 
+## Agent Tools
+
+PizzaPi registers several tools that are available in every agent session:
+
+| Tool | Description |
+|------|-------------|
+| `spawn_session` | Spawn an independent agent session on the runner |
+| `list_models` | List available models and providers |
+| `send_message` | Send a message to another agent session |
+| `wait_for_message` | Wait for a message from another session |
+| `check_messages` | Non-blocking check for pending messages |
+| `get_session_id` | Get this session's ID |
+| `set_session_name` | Set the session display name |
+| `update_todo` | Update the session's todo list |
+| `subagent` | Delegate tasks to specialized subagents with isolated context |
+
+### `subagent`
+
+Delegate tasks to specialized subagent processes. Each subagent runs in its own isolated context window (separate `pi` process), keeping the parent session's token budget lean.
+
+**Modes:**
+- **Single**: `{ agent: "name", task: "..." }` — invoke one agent
+- **Parallel**: `{ tasks: [...] }` — run multiple agents concurrently (up to 4)
+- **Chain**: `{ chain: [...] }` — sequential execution with `{previous}` output substitution
+
+Agent definitions are loaded from `~/.pizzapi/agents/*.md` (user scope) and `.pizzapi/agents/*.md` (project scope).
+
+See the [Subagents guide](/PizzaPi/guides/subagents/) for full documentation.
+
+---
+
 ## Global Flags
 
 | Flag | Description |

@@ -363,6 +363,7 @@ const SessionMessageItem = React.memo(({ message, activeToolCalls, agentActive, 
           message.thinking,
           message.thinkingDuration,
           message.subAgentTurns,
+          message.details,
         )}
       </div>
     );
@@ -400,6 +401,8 @@ const SessionMessageItem = React.memo(({ message, activeToolCalls, agentActive, 
             agentActive && isLast && message.timestamp === undefined,
             message.thinking,
             message.thinkingDuration,
+            undefined, // subAgentTurns
+            message.details,
           )}
           {message.stopReason === "error" && message.errorMessage && (
             <div className="mt-2 flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">

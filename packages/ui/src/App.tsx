@@ -97,6 +97,9 @@ function toRelayMessage(raw: unknown, fallbackId: string): RelayMessage | null {
   const summary = typeof msg.summary === "string" ? msg.summary : undefined;
   const tokensBefore = typeof msg.tokensBefore === "number" ? msg.tokensBefore : undefined;
 
+  // Preserve structured details (e.g., subagent SubagentDetails) for tool results
+  const details = msg.details !== undefined && msg.details !== null ? msg.details : undefined;
+
   return {
     key,
     role,
@@ -109,6 +112,7 @@ function toRelayMessage(raw: unknown, fallbackId: string): RelayMessage | null {
     errorMessage,
     summary,
     tokensBefore,
+    details,
   };
 }
 
@@ -1868,11 +1872,18 @@ export function App() {
           // The RAF-based scheduleToolStreamFlush will upsert it into message
           // state (at most once per frame), so the grouping code merges it with
           // the pending-tool card and the UI renders live output.
+          //
+          // For tools that send structured details (e.g., subagent), wrap content
+          // with the details so the card component can render the full structure.
+          const details = partial?.details;
+          const syntheticContent = details
+            ? { content, details }
+            : content;
           pendingToolStreamRef.current.set(toolCallId, {
             role: "toolResult",
             toolCallId,
             toolName,
-            content,
+            content: syntheticContent,
             isError: false,
           });
           scheduleToolStreamFlush();

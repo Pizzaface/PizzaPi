@@ -98,6 +98,25 @@ export interface HooksConfig {
     ModelSelect?: HookEntry[];
 }
 
+/**
+ * Built-in system prompt additions — always appended by the CLI.
+ * User config `appendSystemPrompt` is concatenated after this.
+ */
+export const BUILTIN_SYSTEM_PROMPT = [
+    "## Inter-Agent Communication\n",
+    "If you were spawned as a sub-agent by a parent session, the parent's session ID will be included in your initial prompt.",
+    "When the parent asks you a question or expects a result, you MUST reply using `send_message` with the parent's session ID",
+    "— never assume the parent is watching your output directly.",
+    "Use `wait_for_message` to block for further instructions, `check_messages` to poll non-blockingly between work steps,",
+    "and `get_session_id` if you need to report your own ID back to the parent.\n",
+    "## Subagent Tool\n",
+    "Use the `subagent` tool to delegate tasks to specialized agents with isolated context.",
+    "Agents are defined as markdown files in `~/.pizzapi/agents/` or `~/.claude/agents/` (user scope)",
+    "and `.pizzapi/agents/` or `.claude/agents/` (project scope).",
+    "Modes: single (`agent` + `task`), parallel (`tasks` array), chain (`chain` array with `{previous}` placeholder).",
+    'Set `agentScope: "both"` to include project-local agents.',
+].join(" ");
+
 export interface PizzaPiConfig {
     /** Override the default system prompt */
     systemPrompt?: string;

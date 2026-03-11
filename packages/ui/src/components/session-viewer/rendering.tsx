@@ -92,7 +92,8 @@ export function renderContent(
   isThinkingActive?: boolean,
   thinking?: string,
   thinkingDuration?: number,
-  subAgentTurns?: SubAgentTurn[]
+  subAgentTurns?: SubAgentTurn[],
+  details?: unknown,
 ) {
   // Structured command result cards (MCP, plugins, skills)
   if (role === "system" && isCommandResult(content)) {
@@ -119,7 +120,8 @@ export function renderContent(
         isError,
         isStreaming,
         thinking,
-        thinkingDuration
+        thinkingDuration,
+        details,
       );
     }
     return renderToolResult(content, toolName, isError);

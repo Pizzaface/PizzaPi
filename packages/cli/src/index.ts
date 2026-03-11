@@ -10,7 +10,7 @@ import { existsSync } from "fs";
 import { readFile, readdir } from "fs/promises";
 import { join } from "path";
 import { homedir } from "os";
-import { defaultAgentDir, loadConfig } from "./config.js";
+import { BUILTIN_SYSTEM_PROMPT, defaultAgentDir, loadConfig } from "./config.js";
 import { buildInteractiveSkillPaths } from "./skills.js";
 import { buildPizzaPiExtensionFactories } from "./extensions/factories.js";
 import { runSetup } from "./setup.js";
@@ -442,9 +442,7 @@ Run \`pizza <command> --help\` for command-specific help.
         ...(config.systemPrompt !== undefined && {
             systemPromptOverride: () => config.systemPrompt,
         }),
-        ...(config.appendSystemPrompt !== undefined && {
-            appendSystemPrompt: config.appendSystemPrompt,
-        }),
+        appendSystemPrompt: [BUILTIN_SYSTEM_PROMPT, config.appendSystemPrompt].filter(Boolean).join("\n\n"),
         ...(agentFiles.length > 0 && {
             agentsFilesOverride: (base) => ({
                 agentsFiles: [...base.agentsFiles, ...agentFiles],
