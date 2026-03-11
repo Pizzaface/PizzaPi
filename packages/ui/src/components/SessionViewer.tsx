@@ -679,6 +679,10 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
         if (serverName) {
           onExec({ type: "exec", id, command: "mcp_toggle_server", serverName, disabled: isDisable });
         }
+      } else if (argLower === "disable" || argLower === "enable") {
+        // Bare disable/enable without a server name — show a hint instead of
+        // silently falling through to status.
+        onAppendSystemMessage?.(`Usage: \`/mcp ${argLower} <server-name>\``);
       } else {
         const action = argLower === "reload" ? "reload" : "status";
         onExec({ type: "exec", id, command: "mcp", action });
@@ -817,8 +821,8 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
       { name: "mcp", description: "MCP server management", subCommands: [
         { name: "status", description: "Show MCP server status" },
         { name: "reload", description: "Reload MCP servers" },
-        { name: "disable", description: "Disable an MCP server" },
-        { name: "enable", description: "Enable a disabled MCP server" },
+        { name: "disable", description: "Disable an MCP server", requiresArg: true },
+        { name: "enable", description: "Enable a disabled MCP server", requiresArg: true },
       ]},
       { name: "plugins", description: "Show loaded plugins" },
       { name: "skills", description: "Show available skills" },
@@ -831,7 +835,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
       { name: "copy", description: "Copy last assistant message" },
       { name: "stop", description: "Abort current generation" },
       { name: "restart", description: "Restart the CLI process" },
-    ] as Array<{ name: string; description: string; subCommands?: Array<{ name: string; description: string }> }>;
+    ] as Array<{ name: string; description: string; subCommands?: Array<{ name: string; description: string; requiresArg?: boolean }> }>;
   }, []);
 
   // Set of all known command/skill names for quick lookup (used to auto-close popover
@@ -985,9 +989,9 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
   const subCommandMode = React.useMemo<{
     active: boolean;
     parentCommand: string;
-    subCommands: Array<{ name: string; description: string }>;
+    subCommands: Array<{ name: string; description: string; requiresArg?: boolean }>;
     query: string;
-    filtered: Array<{ name: string; description: string }>;
+    filtered: Array<{ name: string; description: string; requiresArg?: boolean }>;
   }>(() => {
     if (isResumeMode) return { active: false, parentCommand: "", subCommands: [], query: "", filtered: [] };
     const match = trimmedInput.match(/^\/(\S+)(?:\s(.*))?$/i);
@@ -1639,6 +1643,23 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                           key={sc.name}
                           value={sc.name}
                           onSelect={() => {
+                            if (sc.requiresArg) {
+                              // Sub-command needs an argument (e.g. server name) — fill
+                              // the input instead of executing so the user can type it.
+                              setInput(`/${subCommandMode.parentCommand} ${sc.name} `);
+                              setCommandQuery("");
+                              setCommandOpen(false);
+                              setCommandHighlightedIndex(0);
+                              requestAnimationFrame(() => {
+                                const textarea = document.querySelector<HTMLTextAreaElement>("[data-pp-prompt]");
+                                if (textarea) {
+                                  const len = textarea.value.length;
+                                  textarea.setSelectionRange(len, len);
+                                  textarea.focus();
+                                }
+                              });
+                              return;
+                            }
                             executeSlashCommand(`/${subCommandMode.parentCommand} ${sc.name}`);
                           }}
                         >
@@ -1989,11 +2010,27 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                       return;
                     }
 
-                    // Desktop: Enter in sub-command mode executes the highlighted sub-command
+                    // Desktop: Enter in sub-command mode executes the highlighted sub-command,
+                    // or fills the input if the sub-command requires an argument (e.g. server name).
                     if (!isTouchDevice && event.key === "Enter" && !event.shiftKey && subCommandMode.active) {
                       const highlighted = subCommandMode.filtered[commandHighlightedIndex];
                       if (highlighted) {
                         event.preventDefault();
+                        if (highlighted.requiresArg) {
+                          setInput(`/${subCommandMode.parentCommand} ${highlighted.name} `);
+                          setCommandQuery("");
+                          setCommandOpen(false);
+                          setCommandHighlightedIndex(0);
+                          requestAnimationFrame(() => {
+                            const textarea = document.querySelector<HTMLTextAreaElement>("[data-pp-prompt]");
+                            if (textarea) {
+                              const len = textarea.value.length;
+                              textarea.setSelectionRange(len, len);
+                              textarea.focus();
+                            }
+                          });
+                          return;
+                        }
                         executeSlashCommand(`/${subCommandMode.parentCommand} ${highlighted.name}`);
                         setCommandHighlightedIndex(0);
                         return;
