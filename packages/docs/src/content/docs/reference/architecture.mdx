@@ -144,6 +144,38 @@ See the [Claude Code Plugins guide](/PizzaPi/guides/claude-plugins/) for full de
 
 ---
 
+## Subagent Execution
+
+The CLI includes a **subagent tool** that delegates tasks to child agent processes with isolated context windows:
+
+```
+Parent agent session
+    │
+    ▼  subagent tool call
+    │
+    ├──► Discover agents from ~/.pizzapi/agents/ and .pizzapi/agents/
+    │
+    ├──► Spawn `pi --mode json --no-session` child process
+    │        ├── Isolated context window (own token budget)
+    │        ├── Scoped tools (e.g., read-only for research agents)
+    │        └── Optional model override (e.g., Haiku for cheap tasks)
+    │
+    ├──► Stream progress updates to parent (onUpdate callback)
+    │        └── Relay forwards to web UI for inline rendering
+    │
+    └──► Return final output as tool result
+         └── Only the summary enters the parent's context
+```
+
+**Modes:**
+- **Single** — one agent, one task
+- **Parallel** — up to 4 concurrent agents (max 8 tasks)
+- **Chain** — sequential steps with `{previous}` output substitution
+
+See the [Subagents guide](/PizzaPi/guides/subagents/) for full details.
+
+---
+
 ## Development
 
 For a complete guide to setting up a local development environment, running tests, and contributing, see the [Development guide](/PizzaPi/guides/development/).

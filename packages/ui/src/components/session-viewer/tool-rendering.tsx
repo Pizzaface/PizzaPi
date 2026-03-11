@@ -59,6 +59,7 @@ import {
   GetSessionIdCard,
 } from "@/components/session-viewer/cards/InterAgentCards";
 import { AskUserQuestionCard } from "@/components/session-viewer/cards/AskUserQuestionCard";
+import { SubagentResultCard } from "@/components/session-viewer/cards/SubagentResultCard";
 
 export function extToLang(path: string): BundledLanguage {
   const ext = path.split(".").pop()?.toLowerCase() ?? "";
@@ -723,6 +724,15 @@ export function renderGroupedToolExecution(
         </div>
       ) : null;
     }
+  } else if (norm === "subagent" || norm.endsWith(".subagent")) {
+    card = (
+      <SubagentResultCard
+        toolInput={toolInput}
+        content={content}
+        isStreaming={isStreaming}
+        isError={isError}
+      />
+    );
   } else if (norm === "askuserquestion" || norm.endsWith(".askuserquestion")) {
     const resultText = hasOutput ? extractTextFromToolContent(content) : null;
     card = (
