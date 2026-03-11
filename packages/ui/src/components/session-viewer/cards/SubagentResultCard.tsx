@@ -150,15 +150,33 @@ function parseSubagentDetails(details: unknown): SubagentDetails | null {
 
 // ── Parse details from tool result ─────────────────────────────────────
 
+/** Validate that a single result entry has the minimum shape for safe rendering */
+function isValidResultEntry(r: unknown): r is SingleResult {
+  if (!r || typeof r !== "object" || Array.isArray(r)) return false;
+  const obj = r as Record<string, unknown>;
+  return (
+    typeof obj.agent === "string" &&
+    typeof obj.exitCode === "number" &&
+    typeof obj.task === "string" &&
+    Array.isArray(obj.messages) &&
+    obj.usage !== null &&
+    typeof obj.usage === "object"
+  );
+}
+
 /** Validate that a candidate object is a well-formed SubagentDetails */
 function isValidDetails(d: unknown): d is SubagentDetails {
   if (!d || typeof d !== "object" || Array.isArray(d)) return false;
   const obj = d as Record<string, unknown>;
-  return (
-    typeof obj.mode === "string" &&
-    Array.isArray(obj.results) &&
-    (obj.mode === "single" || obj.mode === "parallel" || obj.mode === "chain")
-  );
+  if (
+    typeof obj.mode !== "string" ||
+    !Array.isArray(obj.results) ||
+    (obj.mode !== "single" && obj.mode !== "parallel" && obj.mode !== "chain")
+  ) {
+    return false;
+  }
+  // Validate each result entry to prevent render crashes from malformed data
+  return obj.results.every(isValidResultEntry);
 }
 
 function parseDetails(content: unknown): SubagentDetails | null {

@@ -341,9 +341,18 @@ async function runSingleAgent(
     };
 
     try {
+        // Honor permissionMode from agent frontmatter.
+        // "plan" → read-only tools (no writes/edits/bash)
+        // "dontAsk" / "bypassPermissions" → default (all tools, no confirmation — already the case)
+        // "default" / "acceptEdits" / unset → default behavior
+        const isPlanMode = agent.permissionMode === "plan";
+
         // Build session options — resolve tools fail-closed
         let tools: (typeof codingTools)[number][];
-        if (effectiveToolNames) {
+        if (isPlanMode) {
+            // Plan mode: restrict to read-only tools regardless of agent config
+            tools = [...readOnlyTools];
+        } else if (effectiveToolNames) {
             const resolved = resolveTools(effectiveToolNames);
             if ("error" in resolved) {
                 return {
