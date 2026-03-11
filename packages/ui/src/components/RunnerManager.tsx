@@ -282,7 +282,7 @@ export function RunnerManager({ onOpenSession }: RunnerManagerProps) {
 
     return (
         <>
-            <div className="flex flex-col gap-6 p-4 sm:p-6 max-w-4xl mx-auto w-full">
+            <div className="flex flex-col gap-6 p-4 sm:p-6 max-w-4xl mx-auto w-full flex-1 overflow-y-auto">
                 {/* Header */}
                 <div className="flex items-start justify-between">
                     <div className="space-y-0.5">
