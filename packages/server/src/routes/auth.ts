@@ -7,7 +7,7 @@
  */
 
 import { getApiKeyRateLimitConfig, getAuth, getKysely, isSignupAllowed } from "../auth.js";
-import { RateLimiter, isValidEmail, isValidPassword } from "../security.js";
+import { RateLimiter, getClientIp, isValidEmail, isValidPassword } from "../security.js";
 import { PASSWORD_REQUIREMENTS_SUMMARY } from "@pizzapi/protocol";
 import type { RouteHandler } from "./types.js";
 
@@ -23,7 +23,7 @@ export const handleAuthRoute: RouteHandler = async (req, url) => {
 
     // ── Public endpoint: register (create user + generate CLI API key) ──
     if (url.pathname === "/api/register" && req.method === "POST") {
-        const clientIp = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+        const clientIp = getClientIp(req);
         if (!registerRateLimiter.check(clientIp)) {
             return Response.json(
                 { error: "Too many registration attempts. Please try again later." },

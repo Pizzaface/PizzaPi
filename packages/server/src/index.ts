@@ -33,11 +33,19 @@ function nodeReqToFetchRequest(req: IncomingMessage): Request {
     const headers = new Headers();
     for (const [key, value] of Object.entries(req.headers)) {
         if (value === undefined) continue;
+        // Strip incoming spoofed client IP headers
+        if (key.toLowerCase() === "x-pizzapi-client-ip") continue;
+
         if (Array.isArray(value)) {
             for (const v of value) headers.append(key, v);
         } else {
             headers.set(key, value);
         }
+    }
+
+    // Inject the real socket IP
+    if (req.socket.remoteAddress) {
+        headers.set("x-pizzapi-client-ip", req.socket.remoteAddress);
     }
 
     const method = (req.method ?? "GET").toUpperCase();

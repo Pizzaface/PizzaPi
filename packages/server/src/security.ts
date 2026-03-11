@@ -63,6 +63,10 @@ export function isValidEmail(email: string): boolean {
 // Re-export from the shared protocol package so existing imports keep working.
 export { isValidPassword } from "@pizzapi/protocol";
 
+export function getClientIp(req: Request): string {
+    return req.headers.get("x-pizzapi-client-ip") || "unknown";
+}
+
 export function normalizePath(value: string): string {
     const trimmed = value.trim().replace(/\\/g, "/");
     return trimmed.length > 1 ? trimmed.replace(/\/+$/, "") : trimmed;
