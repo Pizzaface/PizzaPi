@@ -1779,10 +1779,15 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                     return;
                   }
 
-                  // Find the last @ that is at a word boundary
+                  // Use cursor position (not end of string) to scope the search.
+                  // After a completed @mention like "@file.ts |", the cursor is past
+                  // the space, so the @ is no longer "active" from the cursor's perspective.
+                  const cursorPos = event.currentTarget.selectionStart ?? next.length;
+
+                  // Find the last @ before the cursor that is at a word boundary
                   // Word boundary: preceded by space, newline, or start of string
                   let lastAtIndex = -1;
-                  for (let i = next.length - 1; i >= 0; i--) {
+                  for (let i = cursorPos - 1; i >= 0; i--) {
                     if (next[i] === "@") {
                       // Check if at word boundary
                       if (i === 0 || next[i - 1] === " " || next[i - 1] === "\n" || next[i - 1] === "\t") {
@@ -1793,7 +1798,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                   }
 
                   if (lastAtIndex === -1) {
-                    // No valid @ trigger found
+                    // No valid @ trigger found before cursor
                     if (atMentionOpen) {
                       setAtMentionOpen(false);
                       setAtMentionQuery("");
@@ -1803,11 +1808,23 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                     return;
                   }
 
-                  // Extract query after @ (the portion user is typing)
-                  const query = next.slice(lastAtIndex + 1);
+                  // Extract the text between @ and the cursor (the active query)
+                  const query = next.slice(lastAtIndex + 1, cursorPos);
 
-                  // If there's a space after the query, user has finished typing
-                  // Don't close - let the popover decide when to close
+                  // If the query contains a space that is NOT immediately after a "/",
+                  // the mention is complete (e.g. "@file.ts " or "@src/file.ts more text").
+                  // A trailing "/" (directory drill) should keep the popover open.
+                  const spaceInQuery = query.search(/\s/);
+                  if (spaceInQuery !== -1) {
+                    // Space found — mention is finished, close the popover
+                    if (atMentionOpen) {
+                      setAtMentionOpen(false);
+                      setAtMentionQuery("");
+                      setAtMentionPath("");
+                      setAtMentionTriggerOffset(0);
+                    }
+                    return;
+                  }
                   
                   // Open popover and update state
                   setAtMentionOpen(true);
