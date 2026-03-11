@@ -1,8 +1,7 @@
 import type { ExtensionFactory } from "@mariozechner/pi-coding-agent";
 import { existsSync, readFileSync } from "fs";
-import { homedir } from "os";
 import { join } from "path";
-import { loadConfig, type PizzaPiConfig } from "../config.js";
+import { loadConfig, toggleMcpServer, globalConfigDir, type PizzaPiConfig } from "../config.js";
 import { registerMcpTools, type McpConfig, type McpServerInitResult, type McpRegistrationResult, getOAuthProviders } from "./mcp.js";
 import { setMcpBridge } from "./mcp-bridge.js";
 import type { RelayContext } from "./mcp-oauth.js";
@@ -36,6 +35,8 @@ type McpConfigInspection = {
   effectivePreferredSource: "global" | "project" | "none";
   effectiveCompatibilitySource: "global" | "project" | "none";
   effectiveServers: EffectiveMcpServer[];
+  /** Server names disabled via disabledMcpServers in global and/or project config. */
+  disabledServers: string[];
 };
 
 type McpSnapshot = {
@@ -167,7 +168,7 @@ function parseConfigFile(scope: "global" | "project", path: string): McpConfigFi
 }
 
 function inspectMcpConfig(cwd: string): McpConfigInspection {
-  const globalPath = join(homedir(), ".pizzapi", "config.json");
+  const globalPath = join(globalConfigDir(), "config.json");
   const projectPath = join(cwd, ".pizzapi", "config.json");
 
   const global = parseConfigFile("global", globalPath);
@@ -209,12 +210,17 @@ function inspectMcpConfig(cwd: string): McpConfigInspection {
     }
   }
 
+  // Collect disabled server names from merged config
+  const mergedConfig = loadConfig(cwd);
+  const disabledServers = mergedConfig.disabledMcpServers ?? [];
+
   return {
     global,
     project,
     effectivePreferredSource,
     effectiveCompatibilitySource,
     effectiveServers,
+    disabledServers,
   };
 }
 
@@ -255,12 +261,22 @@ function buildStatusLines(snapshot: McpSnapshot): string[] {
   if (snapshot.config.effectiveServers.length > 0) {
     lines.push("");
     lines.push("Effective server entries:");
+    const disabledSet = new Set(snapshot.config.disabledServers);
     for (const server of snapshot.config.effectiveServers) {
-      lines.push(`- ${server.name} [${server.transport}] from ${server.scope} (${server.sourcePath} :: ${server.keyPath})`);
+      const disabledTag = disabledSet.has(server.name) ? " [DISABLED]" : "";
+      lines.push(`- ${server.name} [${server.transport}]${disabledTag} from ${server.scope} (${server.sourcePath} :: ${server.keyPath})`);
     }
   } else {
     lines.push("");
     lines.push("No MCP server entries are currently configured.");
+  }
+
+  if (snapshot.config.disabledServers.length > 0) {
+    lines.push("");
+    lines.push("Disabled servers:");
+    for (const name of snapshot.config.disabledServers) {
+      lines.push(`- ${name} (skipped — /mcp enable ${name} to re-enable)`);
+    }
   }
 
   // Per-server timing breakdown
@@ -525,15 +541,41 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
   });
 
   pi.registerCommand?.("mcp", {
-    description: "Show MCP status, or: /mcp reload",
+    description: "MCP status/reload/disable/enable: /mcp [reload|disable <name>|enable <name>]",
     getArgumentCompletions: (prefix: string) => {
       const normalized = prefix.trim().toLowerCase();
-      return "reload".startsWith(normalized) ? [{ value: "reload", label: "reload" }] : null;
+
+      // Sub-command completion for "disable <name>" and "enable <name>"
+      if (normalized.startsWith("disable ") || normalized.startsWith("enable ")) {
+        const isDisable = normalized.startsWith("disable ");
+        const sub = isDisable ? normalized.slice(8) : normalized.slice(7);
+        const disabledSet = new Set(lastSnapshot.config.disabledServers);
+        const allServerNames = lastSnapshot.config.effectiveServers.map((s) => s.name);
+        // For "disable": show servers that are NOT already disabled
+        // For "enable": show servers that ARE disabled
+        const pool = isDisable
+          ? allServerNames.filter((n) => !disabledSet.has(n))
+          : [...disabledSet];
+        return pool
+          .filter((n) => n.toLowerCase().startsWith(sub))
+          .map((n) => ({
+            value: `${isDisable ? "disable" : "enable"} ${n}`,
+            label: n,
+          }));
+      }
+
+      // Top-level sub-command completion
+      const subcommands = ["reload", "disable", "enable"];
+      const matches = subcommands.filter((c) => c.startsWith(normalized));
+      return matches.length > 0
+        ? matches.map((c) => ({ value: c, label: c }))
+        : null;
     },
     handler: async (args: string, ctx: any) => {
-      const arg = (args ?? "").trim().toLowerCase();
+      const arg = (args ?? "").trim();
+      const argLower = arg.toLowerCase();
 
-      if (arg === "reload") {
+      if (argLower === "reload") {
         ctx?.ui?.notify?.("Reloading MCP tools…");
         try {
           // Use bridge.reload() instead of load() directly so that relay
@@ -547,6 +589,65 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
           if (report) pi.events?.emit?.("mcp:startup_report", report);
         } catch (err) {
           ctx?.ui?.notify?.(`MCP reload failed: ${err instanceof Error ? err.message : String(err)}`, "error");
+        }
+        return;
+      }
+
+      if (argLower.startsWith("disable ")) {
+        const serverName = arg.slice(8).trim();
+        if (!serverName) {
+          ctx?.ui?.notify?.("Usage: /mcp disable <server-name>", "warning");
+          return;
+        }
+        const result = toggleMcpServer(serverName, true, process.cwd());
+        if (!result.changed) {
+          ctx?.ui?.notify?.(`Server "${serverName}" is already disabled.`);
+          return;
+        }
+        ctx?.ui?.notify?.(`Disabled MCP server "${serverName}". Reloading…`);
+        try {
+          const snapshot = await bridge.reload();
+          ctx?.ui?.notify?.(
+            `✓ MCP server "${serverName}" disabled. ${snapshot.toolCount} tools loaded.\n` +
+            `Use /mcp enable ${serverName} to re-enable.`,
+          );
+          const report = buildStartupReport();
+          if (report) pi.events?.emit?.("mcp:startup_report", report);
+        } catch (err) {
+          ctx?.ui?.notify?.(`Config updated but MCP reload failed: ${err instanceof Error ? err.message : String(err)}`, "error");
+        }
+        return;
+      }
+
+      if (argLower.startsWith("enable ")) {
+        const serverName = arg.slice(7).trim();
+        if (!serverName) {
+          ctx?.ui?.notify?.("Usage: /mcp enable <server-name>", "warning");
+          return;
+        }
+        const result = toggleMcpServer(serverName, false, process.cwd());
+        if (result.globallyDisabled) {
+          ctx?.ui?.notify?.(
+            `Cannot enable "${serverName}" — it is disabled in the global config (~/.pizzapi/config.json).\n` +
+            `Remove it from disabledMcpServers in the global config to enable.`,
+            "warning",
+          );
+          return;
+        }
+        if (!result.changed) {
+          ctx?.ui?.notify?.(`Server "${serverName}" is already enabled.`);
+          return;
+        }
+        ctx?.ui?.notify?.(`Enabled MCP server "${serverName}". Reloading…`);
+        try {
+          const snapshot = await bridge.reload();
+          ctx?.ui?.notify?.(
+            `✓ MCP server "${serverName}" enabled. ${snapshot.toolCount} tools loaded.`,
+          );
+          const report = buildStartupReport();
+          if (report) pi.events?.emit?.("mcp:startup_report", report);
+        } catch (err) {
+          ctx?.ui?.notify?.(`Config updated but MCP reload failed: ${err instanceof Error ? err.message : String(err)}`, "error");
         }
         return;
       }

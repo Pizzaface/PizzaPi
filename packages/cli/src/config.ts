@@ -162,6 +162,13 @@ export interface PizzaPiConfig {
     trustedPlugins?: string[];
 
     /**
+     * MCP server names to skip during initialization.
+     * Servers listed here won't be started or have their tools registered.
+     * Both global and project lists are merged (union).
+     */
+    disabledMcpServers?: string[];
+
+    /**
      * Timeout (in milliseconds) for each MCP server's tools/list call during
      * startup. Servers that don't respond within this window are skipped with
      * an error. Default: 30000 (30 seconds).
@@ -184,6 +191,20 @@ function readJsonSafe(path: string): Partial<PizzaPiConfig> {
     } catch {
         return {};
     }
+}
+
+/**
+ * Returns the global PizzaPi config directory path.
+ * Tests can override this via _setGlobalConfigDir() since Bun caches os.homedir().
+ */
+let _globalConfigDirOverride: string | null = null;
+export function globalConfigDir(): string {
+    return _globalConfigDirOverride ?? join(homedir(), ".pizzapi");
+}
+
+/** Test-only: override the global config directory (Bun caches os.homedir()). */
+export function _setGlobalConfigDir(dir: string | null): void {
+    _globalConfigDirOverride = dir;
 }
 
 /** Deep-merge hooks: concatenate arrays from both sources for every hook type. */
@@ -242,7 +263,7 @@ export function isProjectHooksTrusted(globalConfig: Partial<PizzaPiConfig>): boo
  * PIZZAPI_ALLOW_PROJECT_HOOKS=1 env var.
  */
 export function loadConfig(cwd: string = process.cwd()): PizzaPiConfig {
-    const globalPath = join(homedir(), ".pizzapi", "config.json");
+    const globalPath = join(globalConfigDir(), "config.json");
     const projectPath = join(cwd, ".pizzapi", "config.json");
     const global = readJsonSafe(globalPath);
     const project = readJsonSafe(projectPath);
@@ -262,6 +283,22 @@ export function loadConfig(cwd: string = process.cwd()): PizzaPiConfig {
     const config = { ...global, ...project };
     if (hooks) config.hooks = hooks;
     else delete config.hooks;
+
+    // Merge disabledMcpServers from both scopes (union).
+    // Guard with Array.isArray — a malformed config value (e.g. a string or
+    // object) would throw or spread into characters without this check.
+    const globalDisabledRaw = Array.isArray(global.disabledMcpServers) ? global.disabledMcpServers : [];
+    const projectDisabledRaw = Array.isArray(project.disabledMcpServers) ? project.disabledMcpServers : [];
+    const disabledMcpServers = [
+        ...globalDisabledRaw,
+        ...projectDisabledRaw,
+    ].filter((s): s is string => typeof s === "string");
+    if (disabledMcpServers.length > 0) {
+        config.disabledMcpServers = [...new Set(disabledMcpServers)];
+    } else {
+        delete config.disabledMcpServers;
+    }
+
     return config;
 }
 
@@ -280,7 +317,7 @@ export function defaultAgentDir(): string {
  * Returns the normalized list of absolute plugin root paths.
  */
 export function getTrustedPlugins(): string[] {
-    const globalPath = join(homedir(), ".pizzapi", "config.json");
+    const globalPath = join(globalConfigDir(), "config.json");
     const global = readJsonSafe(globalPath);
     return Array.isArray(global.trustedPlugins) ? global.trustedPlugins.filter((p): p is string => typeof p === "string") : [];
 }
@@ -323,9 +360,88 @@ export function untrustPlugin(pluginRootPath: string): boolean {
  * Merge fields into ~/.pizzapi/config.json (global config).
  */
 export function saveGlobalConfig(fields: Partial<PizzaPiConfig>): void {
-    const dir = join(homedir(), ".pizzapi");
+    const dir = globalConfigDir();
     const path = join(dir, "config.json");
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
     const existing = readJsonSafe(path);
     writeFileSync(path, JSON.stringify({ ...existing, ...fields }, null, 2), "utf-8");
+}
+
+/**
+ * Merge fields into <cwd>/.pizzapi/config.json (project-local config).
+ */
+export function saveProjectConfig(fields: Partial<PizzaPiConfig>, cwd: string = process.cwd()): void {
+    const dir = join(cwd, ".pizzapi");
+    const path = join(dir, "config.json");
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    const existing = readJsonSafe(path);
+    writeFileSync(path, JSON.stringify({ ...existing, ...fields }, null, 2), "utf-8");
+}
+
+// ── MCP server disable/enable helpers ─────────────────────────────────────────
+
+/**
+ * Toggle an MCP server's disabled state in the project-local config.
+ *
+ * @param name - MCP server name to toggle
+ * @param disable - true to disable, false to enable
+ * @param cwd - project root directory
+ * @returns Object describing the result:
+ *   - `changed`: whether the config was actually modified
+ *   - `globallyDisabled`: true if the server is disabled in the global config
+ *     (project enable can't override)
+ */
+export function toggleMcpServer(
+    name: string,
+    disable: boolean,
+    cwd: string = process.cwd(),
+): { changed: boolean; globallyDisabled: boolean } {
+    const globalPath = join(globalConfigDir(), "config.json");
+    const globalConfig = readJsonSafe(globalPath);
+    const globalDisabled = new Set(
+        (Array.isArray(globalConfig.disabledMcpServers) ? globalConfig.disabledMcpServers : [])
+            .filter((s): s is string => typeof s === "string"),
+    );
+
+    // If the server is already disabled globally, the project toggle is a no-op:
+    //  - enable: project can't override a global disable
+    //  - disable: already effective, writing a redundant local entry would
+    //    create a sticky disable that survives removal of the global entry
+    if (globalDisabled.has(name)) {
+        return { changed: false, globallyDisabled: true };
+    }
+
+    const projectPath = join(cwd, ".pizzapi", "config.json");
+    const projectConfig = readJsonSafe(projectPath);
+    const current = new Set(
+        (Array.isArray(projectConfig.disabledMcpServers) ? projectConfig.disabledMcpServers : [])
+            .filter((s): s is string => typeof s === "string"),
+    );
+
+    const hadIt = current.has(name);
+    if (disable) {
+        current.add(name);
+    } else {
+        current.delete(name);
+    }
+
+    if (disable === hadIt) {
+        return { changed: false, globallyDisabled: false };
+    }
+
+    const updated: Partial<PizzaPiConfig> = {};
+    if (current.size > 0) {
+        updated.disabledMcpServers = [...current];
+    } else {
+        // Remove the key entirely when empty
+        const full = { ...projectConfig };
+        delete full.disabledMcpServers;
+        const dir = join(cwd, ".pizzapi");
+        if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, "config.json"), JSON.stringify(full, null, 2), "utf-8");
+        return { changed: true, globallyDisabled: false };
+    }
+
+    saveProjectConfig(updated, cwd);
+    return { changed: true, globallyDisabled: false };
 }

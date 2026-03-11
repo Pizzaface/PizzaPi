@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { AuthStorage, buildSessionContext, SessionManager, type ExtensionContext, type ExtensionFactory, type SessionInfo } from "@mariozechner/pi-coding-agent";
 import { getEnvApiKey } from "@mariozechner/pi-ai/dist/env-api-keys.js";
-import { loadConfig, defaultAgentDir } from "../config.js";
+import { loadConfig, defaultAgentDir, toggleMcpServer } from "../config.js";
 import { getMcpBridge } from "./mcp-bridge.js";
 import { getCurrentTodoList, setTodoUpdateCallback, type TodoItem } from "./update-todo.js";
 import type { RemoteExecRequest, RemoteExecResponse } from "./remote-commands.js";
@@ -910,6 +910,28 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 const action = req.action === "reload" ? "reload" : "status";
                 const result = action === "reload" ? await bridge.reload() : bridge.status();
                 replyOk({ ...result as object, action });
+                return;
+            }
+
+            if (req.command === "mcp_toggle_server") {
+                const bridge = getMcpBridge();
+                if (!bridge) {
+                    replyErr("MCP extension is not initialized yet");
+                    return;
+                }
+                const { serverName, disabled } = req;
+                if (!serverName || typeof serverName !== "string") {
+                    replyErr("Missing serverName");
+                    return;
+                }
+                const toggleResult = toggleMcpServer(serverName, disabled, process.cwd());
+                if (toggleResult.globallyDisabled) {
+                    replyErr(`Cannot enable "${serverName}" — it is disabled in the global config (~/.pizzapi/config.json)`);
+                    return;
+                }
+                // Reload MCP to apply the change
+                const snapshot = await bridge.reload();
+                replyOk({ ...snapshot as object, action: "reload", toggledServer: serverName, disabled });
                 return;
             }
 

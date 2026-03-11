@@ -17,7 +17,8 @@ export type RemoteExecCommand =
   | { command: "resume_session"; query?: string; sessionPath?: string }
   | { command: "new_session" }
   | { command: "restart" }
-  | { command: "end_session" };
+  | { command: "end_session" }
+  | { command: "mcp_toggle_server"; serverName: string; disabled: boolean };
 
 export type RemoteExecRequest = { type: "exec"; id: string } & RemoteExecCommand;
 

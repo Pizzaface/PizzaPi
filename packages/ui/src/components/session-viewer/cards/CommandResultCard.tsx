@@ -18,7 +18,10 @@ import {
   FileText,
   ChevronDown,
   RefreshCw,
+  Eye,
+  EyeOff,
 } from "lucide-react";
+import { useMcpToggle } from "@/components/session-viewer/McpToggleContext";
 
 // ── Shared types ──────────────────────────────────────────────────────────────
 
@@ -53,6 +56,8 @@ export interface McpResultData {
   servers: McpServerEntry[];
   errors: McpError[];
   loadedAt?: string;
+  /** Server names currently disabled via config */
+  disabledServers?: string[];
 }
 
 // ── Plugins ───────────────────────────────────────────────────────────────────
@@ -94,36 +99,68 @@ export interface SkillsResultData {
 // ── Card Renderers ────────────────────────────────────────────────────────────
 
 /** Collapsible per-server tool group */
-function ServerToolGroup({ serverName, tools, transport, scope, defaultOpen }: {
+function ServerToolGroup({ serverName, tools, transport, scope, defaultOpen, disabled, onToggle }: {
   serverName: string;
   tools: string[];
   transport?: string;
   scope?: string;
   defaultOpen: boolean;
+  /** Whether this server is currently disabled */
+  disabled?: boolean;
+  /** Callback to toggle enabled/disabled state */
+  onToggle?: (serverName: string, disabled: boolean) => void;
 }) {
-  const [open, setOpen] = React.useState(defaultOpen);
+  const [open, setOpen] = React.useState(defaultOpen && !disabled);
 
   return (
-    <div className="border-b border-zinc-800/60 last:border-b-0">
-      <button
-        type="button"
-        onClick={() => setOpen(!open)}
-        className="flex items-center gap-2 w-full px-4 py-2 hover:bg-zinc-900/50 transition-colors text-left"
-      >
-        <ChevronDown className={cn("size-3 shrink-0 text-zinc-500 transition-transform", open && "rotate-180")} />
-        <Server className="size-3 shrink-0 text-zinc-500" />
-        <span className="text-xs font-mono font-medium text-zinc-300 truncate">{serverName}</span>
-        {transport && (
-          <Badge variant="outline" className="h-3.5 px-1 text-[9px] font-mono border-zinc-700 text-zinc-500">
-            {transport}
-          </Badge>
+    <div className={cn("border-b border-zinc-800/60 last:border-b-0", disabled && "opacity-50")}>
+      <div className="flex items-center gap-0 w-full">
+        <button
+          type="button"
+          onClick={() => !disabled && setOpen(!open)}
+          className={cn(
+            "flex items-center gap-2 flex-1 min-w-0 px-4 py-2 text-left transition-colors",
+            !disabled && "hover:bg-zinc-900/50",
+            disabled && "cursor-default",
+          )}
+        >
+          {!disabled && (
+            <ChevronDown className={cn("size-3 shrink-0 text-zinc-500 transition-transform", open && "rotate-180")} />
+          )}
+          <Server className="size-3 shrink-0 text-zinc-500" />
+          <span className={cn("text-xs font-mono font-medium truncate", disabled ? "text-zinc-500 line-through decoration-zinc-600" : "text-zinc-300")}>
+            {serverName}
+          </span>
+          {transport && (
+            <Badge variant="outline" className="h-3.5 px-1 text-[9px] font-mono border-zinc-700 text-zinc-500">
+              {transport}
+            </Badge>
+          )}
+          {disabled ? (
+            <span className="text-[10px] text-zinc-600 tabular-nums ml-auto shrink-0">disabled</span>
+          ) : (
+            <span className="text-[10px] text-zinc-600 tabular-nums ml-auto shrink-0">
+              {tools.length} tool{tools.length !== 1 ? "s" : ""}
+              {scope && <span className="ml-1.5 text-zinc-600/70">{scope}</span>}
+            </span>
+          )}
+        </button>
+        {onToggle && (
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onToggle(serverName, !disabled); }}
+            className="flex-shrink-0 p-2 hover:bg-zinc-900/50 transition-colors rounded-r"
+            title={disabled ? `Enable ${serverName}` : `Disable ${serverName}`}
+          >
+            {disabled ? (
+              <EyeOff className="size-3.5 text-zinc-600 hover:text-zinc-400 transition-colors" />
+            ) : (
+              <Eye className="size-3.5 text-zinc-500 hover:text-zinc-300 transition-colors" />
+            )}
+          </button>
         )}
-        <span className="text-[10px] text-zinc-600 tabular-nums ml-auto shrink-0">
-          {tools.length} tool{tools.length !== 1 ? "s" : ""}
-          {scope && <span className="ml-1.5 text-zinc-600/70">{scope}</span>}
-        </span>
-      </button>
-      {open && (
+      </div>
+      {open && !disabled && tools.length > 0 && (
         <div className="px-4 pb-2.5 pt-0.5 flex flex-wrap gap-1">
           {tools.map((name) => (
             <span key={name} className="inline-block rounded bg-zinc-800/80 px-1.5 py-0.5 text-[10px] font-mono text-zinc-400">
@@ -139,6 +176,8 @@ function ServerToolGroup({ serverName, tools, transport, scope, defaultOpen }: {
 function McpCard({ data }: { data: McpResultData }) {
   const hasErrors = data.errors.length > 0;
   const hasServerTools = Object.keys(data.serverTools ?? {}).length > 0;
+  const disabledSet = React.useMemo(() => new Set(data.disabledServers ?? []), [data.disabledServers]);
+  const mcpToggle = useMcpToggle();
 
   // Build a lookup from server name → config entry for transport/scope info
   const serverConfigMap = React.useMemo(() => {
@@ -146,6 +185,13 @@ function McpCard({ data }: { data: McpResultData }) {
     for (const s of data.servers) map.set(s.name, s);
     return map;
   }, [data.servers]);
+
+  // Disabled servers that aren't already shown in serverTools (they were skipped)
+  const disabledOnlyServers = React.useMemo(() => {
+    return [...disabledSet].filter((name) => !data.serverTools[name]);
+  }, [disabledSet, data.serverTools]);
+
+  const disabledCount = disabledSet.size;
 
   return (
     <ToolCardShell>
@@ -163,6 +209,11 @@ function McpCard({ data }: { data: McpResultData }) {
           {hasErrors && (
             <StatusPill variant="error">
               {data.errors.length} error{data.errors.length > 1 ? "s" : ""}
+            </StatusPill>
+          )}
+          {disabledCount > 0 && (
+            <StatusPill variant="neutral">
+              {disabledCount} disabled
             </StatusPill>
           )}
           <StatusPill variant={data.toolCount > 0 ? "success" : "neutral"}>
@@ -189,7 +240,7 @@ function McpCard({ data }: { data: McpResultData }) {
         </div>
       )}
 
-      {/* Tools grouped by server */}
+      {/* Tools grouped by server (active servers) */}
       {hasServerTools && (
         Object.entries(data.serverTools).map(([serverName, tools]) => {
           const config = serverConfigMap.get(serverName);
@@ -201,10 +252,29 @@ function McpCard({ data }: { data: McpResultData }) {
               transport={config?.transport}
               scope={config?.scope}
               defaultOpen={Object.keys(data.serverTools).length <= 3}
+              disabled={disabledSet.has(serverName)}
+              onToggle={mcpToggle ?? undefined}
             />
           );
         })
       )}
+
+      {/* Disabled servers that weren't in serverTools (skipped during init) */}
+      {disabledOnlyServers.map((name) => {
+        const config = serverConfigMap.get(name);
+        return (
+          <ServerToolGroup
+            key={name}
+            serverName={name}
+            tools={[]}
+            transport={config?.transport}
+            scope={config?.scope}
+            defaultOpen={false}
+            disabled={true}
+            onToggle={mcpToggle ?? undefined}
+          />
+        );
+      })}
 
       {/* Fallback: flat tool list if no serverTools grouping available (old CLI) */}
       {!hasServerTools && data.toolNames.length > 0 && (
@@ -212,7 +282,7 @@ function McpCard({ data }: { data: McpResultData }) {
       )}
 
       {/* No servers configured */}
-      {data.servers.length === 0 && data.toolCount === 0 && !hasErrors && (
+      {data.servers.length === 0 && data.toolCount === 0 && !hasErrors && disabledCount === 0 && (
         <div className="px-4 py-3 text-xs text-zinc-500 text-center">
           No MCP servers configured.
         </div>

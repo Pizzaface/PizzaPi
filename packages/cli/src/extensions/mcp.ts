@@ -751,11 +751,14 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
   // to prevent unbounded growth and iteration over dead providers.
   activeOAuthProviders.length = 0;
 
+  const disabled = new Set(config.disabledMcpServers ?? []);
+
   const clients: McpClient[] = [];
 
   // Preferred format
   for (const s of config.mcp?.servers ?? []) {
     if (!s || typeof s !== "object") continue;
+    if (disabled.has(s.name)) continue; // skip disabled servers
     if (s.transport === "stdio") {
       clients.push(
         createStdioMcpClient({
@@ -791,6 +794,7 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
   const mcpServers = config.mcpServers ?? {};
   for (const [name, def] of Object.entries(mcpServers)) {
     if (!def || typeof def !== "object") continue;
+    if (disabled.has(name)) continue; // skip disabled servers
 
     if ("command" in def && typeof (def as any).command === "string") {
       const d = def as { command: string; args?: string[]; env?: Record<string, string> };

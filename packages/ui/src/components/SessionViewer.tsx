@@ -67,6 +67,7 @@ import { dismissNotificationsForSession } from "@/lib/push";
 import { AlertTriangleIcon, ArrowDownIcon, BookOpen, CheckCircle2, ChevronsUpDown, Circle, CircleDashed, Loader2, MessageSquare, OctagonX, PaperclipIcon, Plus, Puzzle, ShieldAlert, Zap, Clock, X, Trash2, TerminalIcon, DownloadIcon, XCircle, FolderTree } from "lucide-react";
 import { AtMentionPopover } from "@/components/AtMentionPopover";
 import type { Entry as AtMentionEntry } from "@/hooks/useAtMentionFiles";
+import { McpToggleContext, type McpToggleHandler } from "@/components/session-viewer/McpToggleContext";
 
 export type { RelayMessage } from "@/components/session-viewer/types";
 
@@ -526,6 +527,18 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     "remote",
   ]), []);
 
+  // MCP toggle handler — sends mcp_toggle_server remote exec to the runner
+  const handleMcpToggle = React.useCallback<McpToggleHandler>((serverName, disabled) => {
+    if (!onExec) return;
+    onExec({
+      type: "exec",
+      id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      command: "mcp_toggle_server",
+      serverName,
+      disabled,
+    });
+  }, [onExec]);
+
   // Split availableCommands (from the CLI) into groups by source.
   // Everything not already handled by the web UI is shown in the hotbar.
   type CmdEntry = { name: string; description?: string; source?: string };
@@ -659,8 +672,21 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     if (!onExec) return false;
 
     if (rawCommand === "mcp") {
-      const action = args.trim().toLowerCase() === "reload" ? "reload" : "status";
-      onExec({ type: "exec", id, command: "mcp", action });
+      const argLower = args.trim().toLowerCase();
+      if (argLower.startsWith("disable ") || argLower.startsWith("enable ")) {
+        const isDisable = argLower.startsWith("disable ");
+        const serverName = args.trim().slice(isDisable ? 8 : 7).trim();
+        if (serverName) {
+          onExec({ type: "exec", id, command: "mcp_toggle_server", serverName, disabled: isDisable });
+        }
+      } else if (argLower === "disable" || argLower === "enable") {
+        // Bare disable/enable without a server name — show a hint instead of
+        // silently falling through to status.
+        onAppendSystemMessage?.(`Usage: \`/mcp ${argLower} <server-name>\``);
+      } else {
+        const action = argLower === "reload" ? "reload" : "status";
+        onExec({ type: "exec", id, command: "mcp", action });
+      }
       setInput("");
       setCommandOpen(false);
       setCommandQuery("");
@@ -787,10 +813,17 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
 
   const supportedWebCommands = React.useMemo(() => {
     // Commands that we intercept/execute via exec.
+    // Commands with `subCommands` keep the popover open after typing a space
+    // so the user can pick from the available options.
     return [
       { name: "new", description: "Start a new conversation" },
       { name: "resume", description: "Resume the previous session" },
-      { name: "mcp", description: "MCP status (or /mcp reload)" },
+      { name: "mcp", description: "MCP server management", subCommands: [
+        { name: "status", description: "Show MCP server status" },
+        { name: "reload", description: "Reload MCP servers" },
+        { name: "disable", description: "Disable an MCP server", requiresArg: true },
+        { name: "enable", description: "Enable a disabled MCP server", requiresArg: true },
+      ]},
       { name: "plugins", description: "Show loaded plugins" },
       { name: "skills", description: "Show available skills" },
       { name: "model", description: "Select model" },
@@ -802,7 +835,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
       { name: "copy", description: "Copy last assistant message" },
       { name: "stop", description: "Abort current generation" },
       { name: "restart", description: "Restart the CLI process" },
-    ];
+    ] as Array<{ name: string; description: string; subCommands?: Array<{ name: string; description: string; requiresArg?: boolean }> }>;
   }, []);
 
   // Set of all known command/skill names for quick lookup (used to auto-close popover
@@ -816,9 +849,15 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     return names;
   }, [supportedWebCommands, extensionCommands, skillCommands, promptCommands]);
 
-  // Commands that use the popover for argument-mode UI (e.g. resume shows a
-  // session picker that the user searches/filters by typing after /resume).
-  const keepPopoverOpenNames = React.useMemo(() => new Set(["resume"]), []);
+  // Commands that keep the popover open after a space (for argument/sub-command UI).
+  // Derived from commands with subCommands, plus "resume" which has its own picker.
+  const keepPopoverOpenNames = React.useMemo(() => {
+    const names = new Set(["resume"]);
+    for (const c of supportedWebCommands) {
+      if (c.subCommands && c.subCommands.length > 0) names.add(c.name.toLowerCase());
+    }
+    return names;
+  }, [supportedWebCommands]);
 
   // Reset highlighted index when the query or mode changes
   React.useEffect(() => {
@@ -945,15 +984,40 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     });
   }, [resumeSessions, resumeQuery]);
 
+  // Sub-command mode: detect when the user has typed a command that has sub-commands
+  // e.g. "/mcp " or "/mcp rel" → show sub-command options
+  const subCommandMode = React.useMemo<{
+    active: boolean;
+    parentCommand: string;
+    subCommands: Array<{ name: string; description: string; requiresArg?: boolean }>;
+    query: string;
+    filtered: Array<{ name: string; description: string; requiresArg?: boolean }>;
+  }>(() => {
+    if (isResumeMode) return { active: false, parentCommand: "", subCommands: [], query: "", filtered: [] };
+    const match = trimmedInput.match(/^\/(\S+)(?:\s(.*))?$/i);
+    if (!match) return { active: false, parentCommand: "", subCommands: [], query: "", filtered: [] };
+    const cmdName = match[1]!.toLowerCase();
+    const argText = (match[2] ?? "").trim().toLowerCase();
+    const cmd = supportedWebCommands.find(c => c.name.toLowerCase() === cmdName && c.subCommands && c.subCommands.length > 0);
+    if (!cmd?.subCommands) return { active: false, parentCommand: "", subCommands: [], query: "", filtered: [] };
+    const filtered = argText
+      ? cmd.subCommands.filter(sc => sc.name.toLowerCase().includes(argText))
+      : cmd.subCommands;
+    return { active: true, parentCommand: cmd.name, subCommands: cmd.subCommands, query: argText, filtered };
+  }, [trimmedInput, isResumeMode, supportedWebCommands]);
+
   // Controlled value for cmdk Command (drives data-selected highlighting)
   const commandHighlightedValue = React.useMemo(() => {
     if (!commandOpen) return "";
     if (isResumeMode) {
       return resumeCandidates[commandHighlightedIndex]?.path ?? "";
     }
+    if (subCommandMode.active) {
+      return subCommandMode.filtered[commandHighlightedIndex]?.name ?? "";
+    }
     const combined = [...commandSuggestions, ...extensionSuggestions, ...promptSuggestions, ...skillSuggestions];
     return combined[commandHighlightedIndex]?.name ?? "";
-  }, [commandOpen, isResumeMode, resumeCandidates, commandSuggestions, extensionSuggestions, promptSuggestions, skillSuggestions, commandHighlightedIndex]);
+  }, [commandOpen, isResumeMode, subCommandMode, resumeCandidates, commandSuggestions, extensionSuggestions, promptSuggestions, skillSuggestions, commandHighlightedIndex]);
 
   const resumeRequestedRef = React.useRef<string | null>(null);
   const compactingRef = React.useRef(false);
@@ -1126,6 +1190,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
 
   return (
     <SessionActionsProvider value={sessionActions}>
+    <McpToggleContext.Provider value={onExec ? handleMcpToggle : null}>
     <div className="flex flex-col flex-1 min-h-0">
       {/* Session info bar */}
       {sessionId && (
@@ -1506,6 +1571,9 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                 if (isResumeMode) {
                   const idx = resumeCandidates.findIndex(s => s.path.toLowerCase() === v.toLowerCase());
                   if (idx !== -1) setCommandHighlightedIndex(idx);
+                } else if (subCommandMode.active) {
+                  const idx = subCommandMode.filtered.findIndex(sc => sc.name.toLowerCase() === v.toLowerCase());
+                  if (idx !== -1) setCommandHighlightedIndex(idx);
                 } else {
                   const combined = [...commandSuggestions, ...extensionSuggestions, ...promptSuggestions, ...skillSuggestions];
                   const idx = combined.findIndex(c => c.name.toLowerCase() === v.toLowerCase());
@@ -1516,7 +1584,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
               {/* Close button header */}
               <div className="flex items-center justify-between px-3 py-1.5 border-b border-border/50">
                 <span className="text-xs text-muted-foreground font-medium">
-                  {isResumeMode ? "Resume session" : "Commands"}
+                  {isResumeMode ? "Resume session" : subCommandMode.active ? `/${subCommandMode.parentCommand}` : "Commands"}
                 </span>
                 <button
                   type="button"
@@ -1566,6 +1634,43 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                       ))}
                     </CommandGroup>
                   </>
+                ) : subCommandMode.active ? (
+                  <>
+                    <CommandEmpty>No matching options</CommandEmpty>
+                    <CommandGroup heading={`/${subCommandMode.parentCommand} options`}>
+                      {subCommandMode.filtered.map((sc) => (
+                        <CommandItem
+                          key={sc.name}
+                          value={sc.name}
+                          onSelect={() => {
+                            if (sc.requiresArg) {
+                              // Sub-command needs an argument (e.g. server name) — fill
+                              // the input instead of executing so the user can type it.
+                              setInput(`/${subCommandMode.parentCommand} ${sc.name} `);
+                              setCommandQuery("");
+                              setCommandOpen(false);
+                              setCommandHighlightedIndex(0);
+                              requestAnimationFrame(() => {
+                                const textarea = document.querySelector<HTMLTextAreaElement>("[data-pp-prompt]");
+                                if (textarea) {
+                                  const len = textarea.value.length;
+                                  textarea.setSelectionRange(len, len);
+                                  textarea.focus();
+                                }
+                              });
+                              return;
+                            }
+                            executeSlashCommand(`/${subCommandMode.parentCommand} ${sc.name}`);
+                          }}
+                        >
+                          <div className="flex w-full items-center justify-between gap-2">
+                            <span className="font-mono text-sm">/{subCommandMode.parentCommand} {sc.name}</span>
+                            {sc.description && <span className="text-xs text-muted-foreground">{sc.description}</span>}
+                          </div>
+                        </CommandItem>
+                      ))}
+                    </CommandGroup>
+                  </>
                 ) : (
                   <>
                     <CommandEmpty>No commands or skills found</CommandEmpty>
@@ -1582,7 +1687,8 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                               }
                               setInput(`/${cmd.name} `);
                               setCommandQuery("");
-                              setCommandOpen(cmd.name === "resume");
+                              setCommandOpen(keepPopoverOpenNames.has(cmd.name.toLowerCase()));
+                              setCommandHighlightedIndex(0);
                             }}
                           >
                             <div className="flex w-full items-center justify-between gap-2">
@@ -1765,10 +1871,15 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                     return;
                   }
 
-                  // Find the last @ that is at a word boundary
+                  // Use cursor position (not end of string) to scope the search.
+                  // After a completed @mention like "@file.ts |", the cursor is past
+                  // the space, so the @ is no longer "active" from the cursor's perspective.
+                  const cursorPos = event.currentTarget.selectionStart ?? next.length;
+
+                  // Find the last @ before the cursor that is at a word boundary
                   // Word boundary: preceded by space, newline, or start of string
                   let lastAtIndex = -1;
-                  for (let i = next.length - 1; i >= 0; i--) {
+                  for (let i = cursorPos - 1; i >= 0; i--) {
                     if (next[i] === "@") {
                       // Check if at word boundary
                       if (i === 0 || next[i - 1] === " " || next[i - 1] === "\n" || next[i - 1] === "\t") {
@@ -1779,7 +1890,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                   }
 
                   if (lastAtIndex === -1) {
-                    // No valid @ trigger found
+                    // No valid @ trigger found before cursor
                     if (atMentionOpen) {
                       setAtMentionOpen(false);
                       setAtMentionQuery("");
@@ -1789,11 +1900,23 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                     return;
                   }
 
-                  // Extract query after @ (the portion user is typing)
-                  const query = next.slice(lastAtIndex + 1);
+                  // Extract the text between @ and the cursor (the active query)
+                  const query = next.slice(lastAtIndex + 1, cursorPos);
 
-                  // If there's a space after the query, user has finished typing
-                  // Don't close - let the popover decide when to close
+                  // If the query contains a space that is NOT immediately after a "/",
+                  // the mention is complete (e.g. "@file.ts " or "@src/file.ts more text").
+                  // A trailing "/" (directory drill) should keep the popover open.
+                  const spaceInQuery = query.search(/\s/);
+                  if (spaceInQuery !== -1) {
+                    // Space found — mention is finished, close the popover
+                    if (atMentionOpen) {
+                      setAtMentionOpen(false);
+                      setAtMentionQuery("");
+                      setAtMentionPath("");
+                      setAtMentionTriggerOffset(0);
+                    }
+                    return;
+                  }
                   
                   // Open popover and update state
                   setAtMentionOpen(true);
@@ -1874,7 +1997,9 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                       event.preventDefault();
                       const totalItems = isResumeMode
                         ? resumeCandidates.length
-                        : commandSuggestions.length + extensionSuggestions.length + promptSuggestions.length + skillSuggestions.length;
+                        : subCommandMode.active
+                          ? subCommandMode.filtered.length
+                          : commandSuggestions.length + extensionSuggestions.length + promptSuggestions.length + skillSuggestions.length;
                       if (totalItems === 0) return;
                       setCommandHighlightedIndex(prev => {
                         if (event.key === "ArrowDown") {
@@ -1883,6 +2008,33 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                         return prev > 0 ? prev - 1 : totalItems - 1;
                       });
                       return;
+                    }
+
+                    // Desktop: Enter in sub-command mode executes the highlighted sub-command,
+                    // or fills the input if the sub-command requires an argument (e.g. server name).
+                    if (!isTouchDevice && event.key === "Enter" && !event.shiftKey && subCommandMode.active) {
+                      const highlighted = subCommandMode.filtered[commandHighlightedIndex];
+                      if (highlighted) {
+                        event.preventDefault();
+                        if (highlighted.requiresArg) {
+                          setInput(`/${subCommandMode.parentCommand} ${highlighted.name} `);
+                          setCommandQuery("");
+                          setCommandOpen(false);
+                          setCommandHighlightedIndex(0);
+                          requestAnimationFrame(() => {
+                            const textarea = document.querySelector<HTMLTextAreaElement>("[data-pp-prompt]");
+                            if (textarea) {
+                              const len = textarea.value.length;
+                              textarea.setSelectionRange(len, len);
+                              textarea.focus();
+                            }
+                          });
+                          return;
+                        }
+                        executeSlashCommand(`/${subCommandMode.parentCommand} ${highlighted.name}`);
+                        setCommandHighlightedIndex(0);
+                        return;
+                      }
                     }
 
                     // Desktop: Enter fills textbox with highlighted command (doesn't execute)
@@ -1905,7 +2057,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                           event.preventDefault();
                           setInput(`/${highlighted.name} `);
                           setCommandQuery("");
-                          setCommandOpen(highlighted.name === "resume");
+                          setCommandOpen(highlighted.name === "resume" || keepPopoverOpenNames.has(highlighted.name.toLowerCase()));
                           setCommandHighlightedIndex(0);
                           // Position cursor at end of filled text
                           requestAnimationFrame(() => {
@@ -1921,6 +2073,27 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                       // No highlighted match — fall through to execute the typed command
                     }
 
+                    // Tab in sub-command mode: autocomplete the highlighted sub-command into the text box
+                    if (event.key === "Tab" && subCommandMode.active && subCommandMode.filtered.length > 0) {
+                      event.preventDefault();
+                      const highlighted = subCommandMode.filtered[commandHighlightedIndex] ?? subCommandMode.filtered[0];
+                      if (highlighted) {
+                        setInput(`/${subCommandMode.parentCommand} ${highlighted.name}`);
+                        setCommandQuery("");
+                        setCommandOpen(false);
+                        setCommandHighlightedIndex(0);
+                        requestAnimationFrame(() => {
+                          const textarea = document.querySelector<HTMLTextAreaElement>("[data-pp-prompt]");
+                          if (textarea) {
+                            const len = textarea.value.length;
+                            textarea.setSelectionRange(len, len);
+                            textarea.focus();
+                          }
+                        });
+                      }
+                      return;
+                    }
+
                     // Tab: autocomplete the highlighted command (or first match) and close the popover
                     if (event.key === "Tab" && (commandSuggestions.length > 0 || extensionSuggestions.length > 0 || promptSuggestions.length > 0 || skillSuggestions.length > 0)) {
                       event.preventDefault();
@@ -1929,7 +2102,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                       if (highlighted) {
                         setInput(`/${highlighted.name} `);
                         setCommandQuery("");
-                        setCommandOpen(highlighted.name === "resume");
+                        setCommandOpen(highlighted.name === "resume" || keepPopoverOpenNames.has(highlighted.name.toLowerCase()));
                         setCommandHighlightedIndex(0);
                       }
                       return;
@@ -2088,6 +2261,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
         </DialogContent>
       </Dialog>
     </div>
+    </McpToggleContext.Provider>
     </SessionActionsProvider>
   );
 }

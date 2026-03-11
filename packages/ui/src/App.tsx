@@ -1586,6 +1586,10 @@ export function App() {
           ? result.serverTools as Record<string, string[]>
           : {};
 
+        const disabledServersForMcp = Array.isArray(result?.config?.disabledServers)
+          ? result.config.disabledServers.filter((s: unknown): s is string => typeof s === "string")
+          : [];
+
         appendLocalSystemMessage({
           kind: "mcp",
           action,
@@ -1595,6 +1599,7 @@ export function App() {
           servers,
           errors,
           serverTools,
+          disabledServers: disabledServersForMcp,
           loadedAt: typeof result?.loadedAt === "string" ? result.loadedAt : undefined,
         });
 
@@ -1602,6 +1607,43 @@ export function App() {
           ? result.summary
           : `MCP tools loaded: ${toolCount}`;
         setViewerStatus(summary);
+        return;
+      }
+
+      if (command === "mcp_toggle_server") {
+        // Build the same structured card as /mcp status, showing updated state
+        const toolCount = typeof result?.toolCount === "number" ? result.toolCount : 0;
+        const toolNames = Array.isArray(result?.toolNames)
+          ? result.toolNames.filter((n: unknown): n is string => typeof n === "string")
+          : [];
+        const errors = Array.isArray(result?.errors) ? result.errors as Array<{ server: string; error: string }> : [];
+        const servers = Array.isArray(result?.config?.effectiveServers)
+          ? (result.config.effectiveServers as Array<{ name: string; transport: string; scope: string; sourcePath?: string }>)
+          : [];
+        const serverTools = result?.serverTools && typeof result.serverTools === "object" && !Array.isArray(result.serverTools)
+          ? result.serverTools as Record<string, string[]>
+          : {};
+        const disabledServers = Array.isArray(result?.config?.disabledServers)
+          ? result.config.disabledServers.filter((s: unknown): s is string => typeof s === "string")
+          : [];
+        const toggledServer = typeof result?.toggledServer === "string" ? result.toggledServer : "";
+        const disabled = result?.disabled === true;
+
+        appendLocalSystemMessage({
+          kind: "mcp",
+          action: "reload" as const,
+          toolCount,
+          toolNames,
+          serverCount: servers.length,
+          servers,
+          errors,
+          serverTools,
+          disabledServers,
+          loadedAt: typeof result?.loadedAt === "string" ? result.loadedAt : undefined,
+        });
+
+        const verb = disabled ? "Disabled" : "Enabled";
+        setViewerStatus(`${verb} MCP server "${toggledServer}". ${toolCount} tools loaded.`);
         return;
       }
 
