@@ -724,7 +724,7 @@ export function renderGroupedToolExecution(
         </div>
       ) : null;
     }
-  } else if (norm === "subagent" || norm.endsWith(".subagent")) {
+  } else if (norm === "subagent" || norm.endsWith(".subagent") || norm === "task" || norm.endsWith(".task")) {
     card = (
       <SubagentResultCard
         toolInput={toolInput}

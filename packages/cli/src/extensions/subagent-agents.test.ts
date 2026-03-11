@@ -2,7 +2,7 @@ import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { discoverAgents, formatAgentList, getUserAgentsDir, type AgentConfig } from "./subagent-agents.js";
+import { discoverAgents, formatAgentList, getUserAgentsDir, getUserAgentsDirs, type AgentConfig } from "./subagent-agents.js";
 
 /**
  * Tests for agent discovery in PizzaPi subagent system.
@@ -138,6 +138,89 @@ describe("discoverAgents", () => {
         expect(result.agents[0].model).toBe("claude-haiku-3");
     });
 
+    test("parses Claude Code frontmatter fields (disallowedTools, maxTurns, etc.)", () => {
+        const agentsDir = join(tmpDir, ".pizzapi", "agents");
+        mkdirSync(agentsDir, { recursive: true });
+
+        createAgentFile(agentsDir, "restricted.md", {
+            name: "restricted",
+            description: "Restricted agent",
+            tools: "read,write,bash,edit",
+            disallowedTools: "bash,write",
+            model: "haiku",
+            maxTurns: "10",
+            permissionMode: "dontAsk",
+            background: "true",
+        }, "Restricted agent prompt.");
+
+        const result = discoverAgents(tmpDir, "project");
+        expect(result.agents).toHaveLength(1);
+        const agent = result.agents[0];
+        expect(agent.tools).toEqual(["read", "write", "bash", "edit"]);
+        expect(agent.disallowedTools).toEqual(["bash", "write"]);
+        expect(agent.maxTurns).toBe(10);
+        expect(agent.permissionMode).toBe("dontAsk");
+        expect(agent.background).toBe(true);
+    });
+
+    test("discovers agents from .claude/agents/ (Claude Code compat)", () => {
+        const agentsDir = join(tmpDir, ".claude", "agents");
+        mkdirSync(agentsDir, { recursive: true });
+
+        createAgentFile(agentsDir, "claude-agent.md", {
+            name: "claude-agent",
+            description: "Agent from .claude/agents",
+        }, "Claude Code compatible agent.");
+
+        const result = discoverAgents(tmpDir, "project");
+        expect(result.agents).toHaveLength(1);
+        expect(result.agents[0].name).toBe("claude-agent");
+        expect(result.agents[0].source).toBe("project");
+    });
+
+    test(".pizzapi/agents/ takes precedence over .claude/agents/ for same name", () => {
+        // Create agent with same name in both dirs
+        const pizzapiDir = join(tmpDir, ".pizzapi", "agents");
+        const claudeDir = join(tmpDir, ".claude", "agents");
+        mkdirSync(pizzapiDir, { recursive: true });
+        mkdirSync(claudeDir, { recursive: true });
+
+        createAgentFile(pizzapiDir, "scout.md", {
+            name: "scout",
+            description: "PizzaPi scout",
+        });
+        createAgentFile(claudeDir, "scout.md", {
+            name: "scout",
+            description: "Claude scout",
+        });
+
+        const result = discoverAgents(tmpDir, "project");
+        // .pizzapi is checked first, so its agent wins for duplicate names
+        expect(result.agents).toHaveLength(1);
+        expect(result.agents[0].description).toBe("PizzaPi scout");
+    });
+
+    test("merges agents from .pizzapi/agents/ and .claude/agents/ at same level", () => {
+        const pizzapiDir = join(tmpDir, ".pizzapi", "agents");
+        const claudeDir = join(tmpDir, ".claude", "agents");
+        mkdirSync(pizzapiDir, { recursive: true });
+        mkdirSync(claudeDir, { recursive: true });
+
+        createAgentFile(pizzapiDir, "alpha.md", {
+            name: "alpha",
+            description: "PizzaPi alpha",
+        });
+        createAgentFile(claudeDir, "beta.md", {
+            name: "beta",
+            description: "Claude beta",
+        });
+
+        const result = discoverAgents(tmpDir, "project");
+        expect(result.agents).toHaveLength(2);
+        const names = result.agents.map(a => a.name).sort();
+        expect(names).toEqual(["alpha", "beta"]);
+    });
+
     test("agents without tools field have undefined tools", () => {
         const agentsDir = join(tmpDir, ".pizzapi", "agents");
         mkdirSync(agentsDir, { recursive: true });
@@ -238,5 +321,14 @@ describe("getUserAgentsDir", () => {
     test("returns path ending in .pizzapi/agents", () => {
         const dir = getUserAgentsDir();
         expect(dir).toMatch(/\.pizzapi[/\\]agents$/);
+    });
+});
+
+describe("getUserAgentsDirs", () => {
+    test("returns both .pizzapi/agents and .claude/agents paths", () => {
+        const dirs = getUserAgentsDirs();
+        expect(dirs).toHaveLength(2);
+        expect(dirs[0]).toMatch(/\.pizzapi[/\\]agents$/);
+        expect(dirs[1]).toMatch(/\.claude[/\\]agents$/);
     });
 });

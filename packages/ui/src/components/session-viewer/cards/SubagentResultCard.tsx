@@ -171,6 +171,8 @@ function formatToolCallOneLiner(tc: ToolCallItem): string {
 
 function parseDetails(content: unknown): SubagentDetails | null {
   // The details are embedded in the tool result — try multiple approaches
+
+  // 1. Direct object with .details property (streaming partial with details)
   if (content && typeof content === "object" && !Array.isArray(content)) {
     const obj = content as Record<string, unknown>;
     if (obj.details && typeof obj.details === "object") {
@@ -179,11 +181,16 @@ function parseDetails(content: unknown): SubagentDetails | null {
     }
   }
 
-  // Try extracting from array content blocks
+  // 2. Array of content blocks — look for the details in any text block
   if (Array.isArray(content)) {
     for (const block of content) {
       if (block && typeof block === "object") {
         const b = block as Record<string, unknown>;
+        // Check if block has details directly (from streaming)
+        if (b.details && typeof b.details === "object") {
+          const d = b.details as SubagentDetails;
+          if (d.mode && d.results) return d;
+        }
         // Check if block is a text block with JSON details
         if (b.type === "text" && typeof b.text === "string") {
           try {

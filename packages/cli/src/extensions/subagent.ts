@@ -258,8 +258,30 @@ async function runSingleAgent(
     }
 
     const args: string[] = ["--mode", "json", "-p", "--no-session"];
-    if (agent.model) args.push("--model", agent.model);
-    if (agent.tools && agent.tools.length > 0) args.push("--tools", agent.tools.join(","));
+
+    // Model override — support Claude Code shorthand aliases
+    if (agent.model) {
+        const modelAlias = agent.model.toLowerCase();
+        if (modelAlias !== "inherit") {
+            args.push("--model", agent.model);
+        }
+    }
+
+    // Tool restrictions
+    if (agent.tools && agent.tools.length > 0) {
+        let effectiveTools = [...agent.tools];
+        // Apply disallowedTools — remove denied tools from the allowed list
+        if (agent.disallowedTools && agent.disallowedTools.length > 0) {
+            const denied = new Set(agent.disallowedTools);
+            effectiveTools = effectiveTools.filter(t => !denied.has(t));
+        }
+        if (effectiveTools.length > 0) {
+            args.push("--tools", effectiveTools.join(","));
+        }
+    }
+
+    // maxTurns is enforced by counting assistant messages and killing the process
+    const maxTurns = agent.maxTurns && agent.maxTurns > 0 ? agent.maxTurns : 0;
 
     let tmpPromptDir: string | null = null;
     let tmpPromptPath: string | null = null;
@@ -299,6 +321,7 @@ async function runSingleAgent(
         const exitCode = await new Promise<number>((resolve) => {
             const proc = spawn("pi", args, { cwd: cwd ?? defaultCwd, shell: false, stdio: ["ignore", "pipe", "pipe"] });
             let buffer = "";
+            let maxTurnsReached = false;
 
             const processLine = (line: string) => {
                 if (!line.trim()) return;
@@ -327,6 +350,14 @@ async function runSingleAgent(
                         if (!currentResult.model && msg.model) currentResult.model = msg.model;
                         if (msg.stopReason) currentResult.stopReason = msg.stopReason;
                         if (msg.errorMessage) currentResult.errorMessage = msg.errorMessage;
+
+                        // Enforce maxTurns — gracefully terminate when limit reached
+                        if (maxTurns > 0 && currentResult.usage.turns >= maxTurns) {
+                            maxTurnsReached = true;
+                            currentResult.stderr += `\n[subagent] maxTurns limit reached (${maxTurns}), terminating.`;
+                            proc.kill("SIGTERM");
+                            setTimeout(() => { if (!proc.killed) proc.kill("SIGKILL"); }, 3000);
+                        }
                     }
                     emitUpdate();
                 }
@@ -442,8 +473,9 @@ export const subagentExtension = (pi: ExtensionAPI) => {
         description: [
             "Delegate tasks to specialized subagents with isolated context.",
             "Modes: single (agent + task), parallel (tasks array), chain (sequential with {previous} placeholder).",
-            'Default agent scope is "user" (from ~/.pizzapi/agents).',
-            'To enable project-local agents in .pizzapi/agents, set agentScope: "both" (or "project").',
+            'Default agent scope is "user" (from ~/.pizzapi/agents and ~/.claude/agents).',
+            'To enable project-local agents in .pizzapi/agents or .claude/agents, set agentScope: "both" (or "project").',
+            "Compatible with Claude Code agent definition files.",
         ].join(" "),
         parameters: SubagentParams as any,
 
