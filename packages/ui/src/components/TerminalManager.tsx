@@ -20,6 +20,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { TerminalIcon, Plus, ChevronLeft, X, GripHorizontal, PanelBottom, PanelRight, PanelLeft } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
 interface RunnerInfo {
@@ -322,14 +323,18 @@ export function TerminalManager({
         <div className="hidden md:flex items-center gap-px shrink-0 pr-1">
           {/* Drag-to-reposition grip — hidden when embedded */}
           {!embedded && onDragStart && (
-            <div
-              className="flex items-center justify-center size-7 rounded cursor-grab active:cursor-grabbing text-muted-foreground/60 hover:text-muted-foreground hover:bg-accent transition-colors touch-none select-none"
-              onPointerDown={onDragStart}
-              title="Drag to reposition panel"
-              aria-label="Drag to reposition panel"
-            >
-              <GripHorizontal size={13} />
-            </div>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <div
+                  className="flex items-center justify-center size-7 rounded cursor-grab active:cursor-grabbing text-muted-foreground/60 hover:text-muted-foreground hover:bg-accent transition-colors touch-none select-none"
+                  onPointerDown={onDragStart}
+                  aria-label="Drag to reposition panel"
+                >
+                  <GripHorizontal size={13} />
+                </div>
+              </TooltipTrigger>
+              <TooltipContent>Drag to reposition panel</TooltipContent>
+            </Tooltip>
           )}
 
           {/* Separator */}
@@ -344,28 +349,38 @@ export function TerminalManager({
           )}
 
           {/* Add tab */}
-          <button
-            onClick={handleAddTerminal}
-            disabled={spawning}
-            className="flex items-center justify-center size-7 rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors disabled:opacity-40"
-            aria-label="New terminal"
-            title={runnerId ? `New terminal in ${defaultCwd || "session directory"}` : "New terminal"}
-          >
-            <Plus size={13} />
-          </button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                onClick={handleAddTerminal}
+                disabled={spawning}
+                className="flex items-center justify-center size-7 rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors disabled:opacity-40"
+                aria-label="New terminal"
+              >
+                <Plus size={13} />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>
+              {runnerId ? `New terminal in ${defaultCwd || "session directory"}` : "New terminal"}
+            </TooltipContent>
+          </Tooltip>
 
           {/* Close panel */}
           {onClose && (
             <>
               <div className="w-px h-4 bg-border mx-1 shrink-0" />
-              <button
-                onClick={onClose}
-                className="flex items-center justify-center size-7 rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
-                aria-label="Close terminal panel"
-                title="Close terminal panel"
-              >
-                <X size={13} />
-              </button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    onClick={onClose}
+                    className="flex items-center justify-center size-7 rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+                    aria-label="Close terminal panel"
+                  >
+                    <X size={13} />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent>Close terminal panel</TooltipContent>
+              </Tooltip>
             </>
           )}
         </div>

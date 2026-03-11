@@ -6,6 +6,7 @@ import "@xterm/xterm/css/xterm.css";
 import { io, type Socket } from "socket.io-client";
 import type { TerminalServerToClientEvents, TerminalClientToServerEvents } from "@pizzapi/protocol";
 import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { TerminalIcon, X, Maximize2, Minimize2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -325,26 +326,36 @@ export function WebTerminal({ terminalId, onClose, className }: WebTerminalProps
           <span className={statusColor}>{statusLabel}</span>
         </div>
         <div className="flex items-center gap-0.5">
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-8 md:size-5 text-muted-foreground hover:text-foreground hover:bg-accent"
-            onClick={() => setIsMaximized((v) => !v)}
-            aria-label={isMaximized ? "Restore terminal size" : "Maximize terminal"}
-            title={isMaximized ? "Restore terminal size" : "Maximize terminal"}
-          >
-            {isMaximized ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-8 md:size-5 text-muted-foreground hover:text-red-500 hover:bg-accent"
-            onClick={handleClose}
-            aria-label="Close terminal"
-            title="Close terminal"
-          >
-            <X size={12} />
-          </Button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-8 md:size-5 text-muted-foreground hover:text-foreground hover:bg-accent"
+                onClick={() => setIsMaximized((v) => !v)}
+                aria-label={isMaximized ? "Restore terminal size" : "Maximize terminal"}
+              >
+                {isMaximized ? <Minimize2 size={12} /> : <Maximize2 size={12} />}
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>
+              {isMaximized ? "Restore terminal size" : "Maximize terminal"}
+            </TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-8 md:size-5 text-muted-foreground hover:text-red-500 hover:bg-accent"
+                onClick={handleClose}
+                aria-label="Close terminal"
+              >
+                <X size={12} />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Close terminal</TooltipContent>
+          </Tooltip>
         </div>
       </div>
       {/* Terminal container — needs an explicit min-height so FitAddon has
