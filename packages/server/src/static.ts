@@ -65,7 +65,7 @@ export async function serveStaticFile(pathname: string): Promise<Response | null
     // Prevent path traversal: resolve the real path and verify it stays within UI_DIR
     const requested = pathname === "/" ? "index.html" : pathname.slice(1);
     let filePath = resolve(UI_DIR, requested);
-    if (!filePath.startsWith(UI_DIR)) return null;
+    if (!filePath.startsWith(UI_DIR + "/")) return null;
 
     // If file doesn't exist, serve index.html for SPA routing
     if (!existsSync(filePath)) {
