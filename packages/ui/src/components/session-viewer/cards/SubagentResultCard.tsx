@@ -337,8 +337,10 @@ export function SubagentResultCard({
   // ── Determine header bits ────────────────────────────────────────
   const results = details?.results ?? [];
   const running = results.filter((r) => r.exitCode === -1).length;
-  const succeeded = results.filter((r) => r.exitCode === 0).length;
-  const failed = results.filter((r) => r.exitCode > 0).length;
+  const isFailed = (r: SingleResult) =>
+    r.exitCode !== 0 || r.stopReason === "error" || r.stopReason === "aborted";
+  const succeeded = results.filter((r) => r.exitCode !== -1 && !isFailed(r)).length;
+  const failed = results.filter((r) => r.exitCode !== -1 && isFailed(r)).length;
   const isRunning = running > 0 || isStreaming;
 
   const ModeIcon = mode === "chain" ? LinkIcon : mode === "parallel" ? ZapIcon : BotIcon;
