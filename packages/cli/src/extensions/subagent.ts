@@ -383,8 +383,7 @@ async function runSingleAgent(
         });
 
         // Subscribe to events to track messages and usage
-
-        session.subscribe((event) => {
+        const unsubscribe = session.subscribe((event) => {
             if (event.type === "message_end" && "message" in event) {
                 const msg = event.message as Message;
                 currentResult.messages.push(msg);
@@ -442,6 +441,9 @@ async function runSingleAgent(
             currentResult.stderr += `\n${err instanceof Error ? err.message : String(err)}`;
         } finally {
             signal?.removeEventListener("abort", onAbort);
+            // Clean up session resources to prevent leaks across repeated calls
+            unsubscribe();
+            session.dispose();
         }
 
         return currentResult;
