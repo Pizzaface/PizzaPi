@@ -38,6 +38,7 @@ import {
 } from "@mariozechner/pi-coding-agent";
 import { Container, Markdown, Spacer, Text } from "@mariozechner/pi-tui";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./subagent-agents.js";
+import { getPluginAgentPaths } from "./claude-plugins.js";
 import { defaultAgentDir } from "../config.js";
 
 // ── Constants ──────────────────────────────────────────────────────────
@@ -542,7 +543,8 @@ export const subagentExtension = (pi: ExtensionAPI) => {
                 cwd?: string;
             };
             const agentScope: AgentScope = params.agentScope ?? "user";
-            const discovery = discoverAgents(ctx.cwd, agentScope);
+            const pluginAgentDirs = getPluginAgentPaths(ctx.cwd);
+            const discovery = discoverAgents(ctx.cwd, agentScope, { extraUserDirs: pluginAgentDirs });
             const agents = discovery.agents;
             const confirmProjectAgents = params.confirmProjectAgents ?? true;
 

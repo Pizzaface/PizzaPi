@@ -219,8 +219,12 @@ export function getUserAgentsDir(): string {
  *
  * When scope is "both" and a project agent has the same name as a user agent,
  * the project agent takes precedence (override pattern).
+ *
+ * @param opts.extraUserDirs - Additional directories to treat as user-scope
+ *   (e.g. plugin agents/ dirs). Loaded after ~/.pizzapi and ~/.claude, so
+ *   user-owned agents always take precedence.
  */
-export function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryResult {
+export function discoverAgents(cwd: string, scope: AgentScope, opts?: { extraUserDirs?: string[] }): AgentDiscoveryResult {
     const userDirs = getUserAgentsDirs();
     const projectAgentsDirs = findNearestProjectAgentsDirs(cwd);
 
@@ -228,7 +232,8 @@ export function discoverAgents(cwd: string, scope: AgentScope): AgentDiscoveryRe
     let userAgents: AgentConfig[] = [];
     if (scope !== "project") {
         const seen = new Set<string>();
-        for (const dir of userDirs) {
+        const allUserDirs = [...userDirs, ...(opts?.extraUserDirs ?? [])];
+        for (const dir of allUserDirs) {
             for (const agent of loadAgentsFromDir(dir, "user")) {
                 if (!seen.has(agent.name)) {
                     seen.add(agent.name);

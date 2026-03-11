@@ -39,6 +39,7 @@ export interface PluginInfo {
     commands: PluginCommand[];
     hookEvents: string[];
     skills: { name: string; dirPath: string }[];
+    agents?: { name: string }[];
     rules: { name: string }[];
     hasMcp: boolean;
     hasAgents: boolean;
@@ -104,12 +105,7 @@ function PluginRow({ plugin, onClick }: PluginRowProps) {
                         <PluginCapBadge icon={Zap} label={plugin.hookEvents.length === 1 ? "hook" : "hooks"} count={plugin.hookEvents.length} />
                         <PluginCapBadge icon={BookOpen} label={plugin.skills.length === 1 ? "skill" : "skills"} count={plugin.skills.length} />
                         <PluginCapBadge icon={FileText} label={(plugin.rules?.length ?? 0) === 1 ? "rule" : "rules"} count={plugin.rules?.length ?? 0} />
-                        {plugin.hasAgents && (
-                            <span className="inline-flex items-center gap-0.5 text-[10px] text-muted-foreground">
-                                <Bot className="h-2.5 w-2.5" />
-                                Agents
-                            </span>
-                        )}
+                        <PluginCapBadge icon={Bot} label={(plugin.agents?.length ?? 0) === 1 ? "agent" : "agents"} count={plugin.agents?.length ?? 0} />
                         {plugin.hasMcp && <UnsupportedBadge label="MCP" />}
                     </div>
                 </div>
@@ -238,6 +234,29 @@ function PluginDetailDialog({ plugin, onClose }: PluginDetailDialogProps) {
                                         className="px-2.5 py-1.5 rounded-md bg-muted/30 border border-border/30"
                                     >
                                         <span className="text-[11px] font-mono text-foreground">{skill.name}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Agents */}
+                    {(plugin.agents?.length ?? 0) > 0 && (
+                        <div>
+                            <h4 className="text-xs font-medium text-foreground mb-1.5 flex items-center gap-1.5">
+                                <Bot className="h-3 w-3 text-muted-foreground" />
+                                Bundled Agents
+                                <Badge variant="secondary" className="h-4 px-1.5 text-[10px] font-mono rounded-sm">
+                                    {plugin.agents!.length}
+                                </Badge>
+                            </h4>
+                            <div className="space-y-1">
+                                {plugin.agents!.map((agent) => (
+                                    <div
+                                        key={agent.name}
+                                        className="px-2.5 py-1.5 rounded-md bg-muted/30 border border-border/30"
+                                    >
+                                        <span className="text-[11px] font-mono text-foreground">{agent.name}</span>
                                     </div>
                                 ))}
                             </div>

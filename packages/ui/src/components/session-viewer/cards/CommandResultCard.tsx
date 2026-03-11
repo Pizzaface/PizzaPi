@@ -74,6 +74,7 @@ export interface PluginEntry {
   commands: PluginCommandEntry[];
   hookCount: number;
   skillCount: number;
+  agentCount?: number;
   ruleCount: number;
   hasMcp?: boolean;
   hasAgents?: boolean;
@@ -380,10 +381,10 @@ function PluginEntryRow({ plugin }: { plugin: PluginEntry }) {
                 MCP
               </span>
             )}
-            {plugin.hasAgents && (
+            {(plugin.agentCount ?? 0) > 0 && (
               <span className="inline-flex items-center gap-0.5 text-[10px] text-zinc-400">
                 <Bot className="size-2.5" />
-                Agents
+                {plugin.agentCount} agent{plugin.agentCount! > 1 ? "s" : ""}
               </span>
             )}
           </div>

@@ -676,3 +676,39 @@ export function getPluginSkillPaths(cwd: string): string[] {
     }
     return paths;
 }
+
+/**
+ * Get the agent directory paths from all discovered Claude Code plugins.
+ * Includes global plugins and any project-local plugins that are
+ * already trusted (via `pizza plugins trust`).
+ * Used by the subagent extension to discover plugin-provided agents.
+ */
+export function getPluginAgentPaths(cwd: string): string[] {
+    // Start with global (auto-trusted) plugins
+    const globalPlugins = discoverPlugins(cwd);
+    const globalNames = new Set(globalPlugins.map(p => p.name));
+
+    // Same dedup logic as getPluginSkillPaths — prefer trusted candidates.
+    const localDirs = projectPluginDirs(cwd);
+    const localByName = new Map<string, DiscoveredPlugin>();
+    for (const dir of localDirs) {
+        for (const plugin of scanPluginsDir(dir)) {
+            if (globalNames.has(plugin.name)) continue;
+            const existing = localByName.get(plugin.name);
+            if (!existing) {
+                localByName.set(plugin.name, plugin);
+            } else if (!isPluginTrusted(existing.rootPath) && isPluginTrusted(plugin.rootPath)) {
+                localByName.set(plugin.name, plugin);
+            }
+        }
+    }
+    const trustedLocal = Array.from(localByName.values()).filter(p => isPluginTrusted(p.rootPath));
+
+    const paths: string[] = [];
+    for (const plugin of [...globalPlugins, ...trustedLocal]) {
+        if (plugin.agents.length > 0) {
+            paths.push(join(plugin.rootPath, "agents"));
+        }
+    }
+    return paths;
+}

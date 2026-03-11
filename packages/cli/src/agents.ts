@@ -98,23 +98,45 @@ export function scanAgentsDir(dir: string): AgentMeta[] {
     return agents;
 }
 
-/** Scan the global PizzaPi agents directory (~/.pizzapi/agents/). */
+/**
+ * Scan all global agent directories and return deduplicated metadata.
+ * Scans ~/.pizzapi/agents/ first (higher precedence), then ~/.claude/agents/
+ * for Claude Code compatibility. Agents with the same name in .pizzapi
+ * take priority over those in .claude.
+ */
 export function scanGlobalAgents(): AgentMeta[] {
-    return scanAgentsDir(globalAgentsDir());
+    const dirs = [
+        globalAgentsDir(),                              // ~/.pizzapi/agents/
+        join(homedir(), ".claude", "agents"),            // ~/.claude/agents/
+    ];
+    const seen = new Set<string>();
+    const agents: AgentMeta[] = [];
+    for (const dir of dirs) {
+        for (const agent of scanAgentsDir(dir)) {
+            if (!seen.has(agent.name)) {
+                seen.add(agent.name);
+                agents.push(agent);
+            }
+        }
+    }
+    return agents;
 }
 
 // ── CRUD operations ───────────────────────────────────────────────────────────
 
 /**
  * Read the full content of an agent file.
- * Checks <dir>/<name>.md.
+ * Checks <dir>/<name>.md. When no dir is specified, searches both
+ * ~/.pizzapi/agents/ and ~/.claude/agents/ (first match wins).
  * Returns null if not found.
  */
 export function readAgentContent(name: string, dir?: string): string | null {
-    const agentsDir = dir ?? globalAgentsDir();
-    const filePath = join(agentsDir, `${name}.md`);
-    if (existsSync(filePath)) {
-        try { return readFileSync(filePath, "utf-8"); } catch { return null; }
+    const dirs = dir ? [dir] : [globalAgentsDir(), join(homedir(), ".claude", "agents")];
+    for (const d of dirs) {
+        const filePath = join(d, `${name}.md`);
+        if (existsSync(filePath)) {
+            try { return readFileSync(filePath, "utf-8"); } catch { /* continue */ }
+        }
     }
     return null;
 }
@@ -131,17 +153,21 @@ export async function writeAgent(name: string, content: string, dir?: string): P
 
 /**
  * Delete an agent by name.
+ * When no dir is specified, searches both ~/.pizzapi/agents/ and
+ * ~/.claude/agents/ (deletes first match).
  * Returns true if an agent was deleted.
  */
 export function deleteAgent(name: string, dir?: string): boolean {
-    const agentsDir = dir ?? globalAgentsDir();
-    const filePath = join(agentsDir, `${name}.md`);
-    if (existsSync(filePath)) {
-        try {
-            rmSync(filePath);
-            return true;
-        } catch {
-            return false;
+    const dirs = dir ? [dir] : [globalAgentsDir(), join(homedir(), ".claude", "agents")];
+    for (const d of dirs) {
+        const filePath = join(d, `${name}.md`);
+        if (existsSync(filePath)) {
+            try {
+                rmSync(filePath);
+                return true;
+            } catch {
+                return false;
+            }
         }
     }
     return false;

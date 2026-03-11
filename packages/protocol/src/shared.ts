@@ -48,6 +48,7 @@ export interface RunnerPlugin {
   commands: { name: string; description?: string; argumentHint?: string }[];
   hookEvents: string[];
   skills: { name: string; dirPath: string }[];
+  agents?: { name: string }[];
   rules?: { name: string }[];
   hasMcp: boolean;
   hasAgents: boolean;
