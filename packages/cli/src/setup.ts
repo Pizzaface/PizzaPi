@@ -1,26 +1,7 @@
 import { createInterface } from "readline";
-import { existsSync, readFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import { saveGlobalConfig } from "./config.js";
-
-const DEFAULT_APPEND_SYSTEM_PROMPT = [
-    "## Inter-Agent Communication\n",
-    "If you were spawned as a sub-agent by a parent session, the parent's session ID will be included in your initial prompt.",
-    "When the parent asks you a question or expects a result, you MUST reply using `send_message` with the parent's session ID",
-    "— never assume the parent is watching your output directly.",
-    "Use `wait_for_message` to block for further instructions, `check_messages` to poll non-blockingly between work steps,",
-    "and `get_session_id` if you need to report your own ID back to the parent.\n",
-    "## Subagent Tool\n",
-    "Use the `subagent` tool to delegate tasks to specialized agents with isolated context.",
-    "Agents are defined as markdown files in `~/.pizzapi/agents/` or `~/.claude/agents/` (user scope)",
-    "and `.pizzapi/agents/` or `.claude/agents/` (project scope).",
-    "Modes: single (`agent` + `task`), parallel (`tasks` array), chain (`chain` array with `{previous}` placeholder).",
-    'Set `agentScope: "both"` to include project-local agents.\n',
-    "## Session Completion Checklist\n",
-    "Before marking work as complete (committing, pushing, or declaring done),",
-    "you MUST run `/skill:double-check` to verify your work. Never skip this step.",
-].join(" ");
 import { validatePassword, PASSWORD_REQUIREMENTS } from "@pizzapi/protocol";
 
 const RELAY_DEFAULT = "http://localhost:7492";
@@ -167,20 +148,8 @@ export async function runSetup(opts: { force?: boolean } = {}): Promise<boolean>
         // Derive ws:// URL for the relay config
         const wsRelayUrl = relayUrl.replace(/^http/, "ws");
 
-        // Save the server-issued API key + default system prompt for new installs
-        const existingConfig = (() => {
-            try {
-                const p = join(homedir(), ".pizzapi", "config.json");
-                return existsSync(p) ? JSON.parse(readFileSync(p, "utf-8")) : {};
-            } catch { return {}; }
-        })();
-        saveGlobalConfig({
-            apiKey: result.key,
-            // Only set the default prompt if the user hasn't configured one
-            ...(!existingConfig.appendSystemPrompt && {
-                appendSystemPrompt: DEFAULT_APPEND_SYSTEM_PROMPT,
-            }),
-        });
+        // Save the server-issued API key
+        saveGlobalConfig({ apiKey: result.key });
         process.env.PIZZAPI_API_KEY = result.key;
         process.env.PIZZAPI_RELAY_URL = wsRelayUrl;
 

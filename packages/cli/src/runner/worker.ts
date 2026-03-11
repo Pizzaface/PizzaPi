@@ -2,7 +2,7 @@ import { createAgentSession, DefaultResourceLoader } from "@mariozechner/pi-codi
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { defaultAgentDir, loadConfig } from "../config.js";
+import { BUILTIN_SYSTEM_PROMPT, defaultAgentDir, loadConfig } from "../config.js";
 import { buildWorkerSkillPaths } from "../skills.js";
 import { getPluginSkillPaths } from "../extensions/claude-plugins.js";
 
@@ -85,9 +85,7 @@ async function main(): Promise<void> {
         ...(config.systemPrompt !== undefined && {
             systemPromptOverride: () => config.systemPrompt,
         }),
-        ...(config.appendSystemPrompt !== undefined && {
-            appendSystemPrompt: config.appendSystemPrompt,
-        }),
+        appendSystemPrompt: [BUILTIN_SYSTEM_PROMPT, config.appendSystemPrompt].filter(Boolean).join("\n\n"),
         ...(agentFiles.length > 0 && {
             agentsFilesOverride: (base) => ({
                 agentsFiles: [...base.agentsFiles, ...agentFiles],
