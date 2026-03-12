@@ -14,7 +14,7 @@ import { BUILTIN_SYSTEM_PROMPT, defaultAgentDir, loadConfig, resolveSandboxConfi
 import { buildInteractiveSkillPaths } from "./skills.js";
 import { buildPizzaPiExtensionFactories } from "./extensions/factories.js";
 import { runSetup } from "./setup.js";
-import { initSandbox, cleanupSandbox } from "@pizzapi/tools";
+import { initSandbox, cleanupSandbox, isSandboxActive } from "@pizzapi/tools";
 
 async function main() {
     const args = process.argv.slice(2);
@@ -444,14 +444,17 @@ Run \`pizza <command> --help\` for command-specific help.
 
     try {
         await initSandbox(sandboxConfig);
-        if (sandboxConfig.enabled && sandboxConfig.mode !== "off") {
-            process.env.PIZZAPI_SANDBOX_ACTIVE = "1";
-            process.env.PIZZAPI_SANDBOX_MODE = sandboxConfig.mode;
-        }
     } catch (err) {
         console.warn(
             `pizzapi: sandbox init failed, continuing unsandboxed: ${err instanceof Error ? err.message : String(err)}`,
         );
+    }
+    // Only report active if sandbox actually initialized successfully
+    if (isSandboxActive()) {
+        process.env.PIZZAPI_SANDBOX_ACTIVE = "1";
+        process.env.PIZZAPI_SANDBOX_MODE = sandboxConfig.mode;
+    } else if (sandboxConfig.enabled && sandboxConfig.mode !== "off") {
+        console.warn("pizzapi: sandbox was requested but is not active (platform unsupported or init failed)");
     }
 
     // Load AGENTS.md from cwd (if present)

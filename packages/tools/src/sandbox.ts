@@ -158,10 +158,14 @@ export async function wrapCommand(cmd: string): Promise<string> {
     try {
         return await SandboxManager.wrapWithSandbox(cmd);
     } catch (err) {
-        console.error(
-            "[sandbox] Failed to wrap command, running unsandboxed:",
-            err instanceof Error ? err.message : String(err),
-        );
+        const msg = err instanceof Error ? err.message : String(err);
+        if (_config?.mode === "enforce") {
+            // Fail closed: do NOT run the command unsandboxed in enforce mode.
+            console.error(`[sandbox] Failed to wrap command in enforce mode, blocking: ${msg}`);
+            throw new Error(`Sandbox enforcement failed: ${msg}`);
+        }
+        // In audit mode, log but allow the command to proceed.
+        console.error(`[sandbox] Failed to wrap command, running unsandboxed: ${msg}`);
         return cmd;
     }
 }

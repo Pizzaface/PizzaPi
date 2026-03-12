@@ -588,21 +588,44 @@ describe("sandbox", () => {
         });
     });
 
-    describe("case-insensitive path matching", () => {
-        test("deny rules are case-insensitive", async () => {
-            await initSandbox(
-                makeConfig({
-                    filesystem: {
-                        denyRead: ["/Etc/Secrets"],
-                        allowWrite: ["/tmp"],
-                        denyWrite: [],
-                    },
-                }),
-            );
-            // Should match regardless of case
-            const result = validatePath("/etc/secrets/key", "read");
-            expect(result.allowed).toBe(false);
-        });
+    describe("case-sensitive path matching", () => {
+        const isCaseInsensitiveFS = process.platform === "darwin" || process.platform === "win32";
+
+        test.skipIf(!isCaseInsensitiveFS)(
+            "deny rules are case-insensitive on macOS/Windows",
+            async () => {
+                await initSandbox(
+                    makeConfig({
+                        filesystem: {
+                            denyRead: ["/Etc/Secrets"],
+                            allowWrite: ["/tmp"],
+                            denyWrite: [],
+                        },
+                    }),
+                );
+                // On case-insensitive FS, /etc/secrets matches /Etc/Secrets
+                const result = validatePath("/etc/secrets/key", "read");
+                expect(result.allowed).toBe(false);
+            },
+        );
+
+        test.skipIf(isCaseInsensitiveFS)(
+            "deny rules are case-sensitive on Linux",
+            async () => {
+                await initSandbox(
+                    makeConfig({
+                        filesystem: {
+                            denyRead: ["/Etc/Secrets"],
+                            allowWrite: ["/tmp"],
+                            denyWrite: [],
+                        },
+                    }),
+                );
+                // On case-sensitive FS, /etc/secrets does NOT match /Etc/Secrets
+                const result = validatePath("/etc/secrets/key", "read");
+                expect(result.allowed).toBe(true);
+            },
+        );
     });
 
     describe("clearViolations()", () => {

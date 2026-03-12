@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { BUILTIN_SYSTEM_PROMPT, defaultAgentDir, loadConfig, resolveSandboxConfig } from "../config.js";
 import { buildWorkerSkillPaths } from "../skills.js";
 import { getPluginSkillPaths } from "../extensions/claude-plugins.js";
-import { initSandbox, cleanupSandbox } from "@pizzapi/tools";
+import { initSandbox, cleanupSandbox, isSandboxActive } from "@pizzapi/tools";
 
 /**
  * Build additional prompt template paths for the headless worker.
@@ -81,15 +81,18 @@ async function main(): Promise<void> {
 
     try {
         await initSandbox(sandboxConfig);
-        if (sandboxConfig.enabled && sandboxConfig.mode !== "off") {
-            process.env.PIZZAPI_SANDBOX_ACTIVE = "1";
-            process.env.PIZZAPI_SANDBOX_MODE = sandboxConfig.mode;
-            console.log(`pizzapi worker: sandbox initialized (mode=${sandboxConfig.mode})`);
-        }
     } catch (err) {
         console.warn(
             `pizzapi worker: sandbox init failed, continuing unsandboxed: ${err instanceof Error ? err.message : String(err)}`,
         );
+    }
+    // Only report active if sandbox actually initialized successfully
+    if (isSandboxActive()) {
+        process.env.PIZZAPI_SANDBOX_ACTIVE = "1";
+        process.env.PIZZAPI_SANDBOX_MODE = sandboxConfig.mode;
+        console.log(`pizzapi worker: sandbox initialized (mode=${sandboxConfig.mode})`);
+    } else if (sandboxConfig.enabled && sandboxConfig.mode !== "off") {
+        console.warn("pizzapi worker: sandbox was requested but is not active (platform unsupported or init failed)");
     }
 
     // ── Agent session config ───────────────────────────────────────────────
