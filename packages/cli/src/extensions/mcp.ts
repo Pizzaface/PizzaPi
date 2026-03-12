@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
 import type { PizzaPiConfig } from "../config.js";
 import { PizzaPiOAuthProvider, type RelayContext } from "./mcp-oauth.js";
+import { getSandboxEnv, isSandboxActive } from "@pizzapi/tools";
 
 /**
  * Minimal MCP client transport + tool bridge.
@@ -139,9 +140,12 @@ function allocateProviderSafeToolName(serverName: string, mcpToolName: string, u
 // ─────────────────────────────────────────────────────────────────────────────
 
 function createStdioMcpClient(opts: { name: string; command: string; args?: string[]; env?: Record<string, string> }): McpClient {
+  // Sandbox: inject proxy env vars so sandboxed MCP servers route traffic
+  // through the sandbox network proxy. User-provided env takes precedence.
+  const sandboxEnv = isSandboxActive() ? getSandboxEnv() : {};
   const child: ChildProcessWithoutNullStreams = spawn(opts.command, opts.args ?? [], {
     stdio: "pipe",
-    env: { ...process.env, ...(opts.env ?? {}) },
+    env: { ...process.env, ...sandboxEnv, ...(opts.env ?? {}) },
   });
 
   let nextId = 1;

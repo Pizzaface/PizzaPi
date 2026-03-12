@@ -2,6 +2,7 @@ import { Type } from "@mariozechner/pi-ai";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { spawn } from "child_process";
 import { StringDecoder } from "string_decoder";
+import { validatePath, getSandboxMode } from "./sandbox.js";
 
 /** Maximum chars of stderr to retain in memory. */
 const MAX_STDERR_CHARS = 512;
@@ -186,6 +187,19 @@ export const searchTool: AgentTool = {
         const safePath = /^[.\/\\]/.test(rawPath) || /^[a-zA-Z]:/.test(rawPath)
             ? rawPath
             : `./${rawPath}`;
+
+        // Sandbox: validate read access to the search root
+        const validation = validatePath(safePath, "read");
+        if (!validation.allowed) {
+            const text = `❌ Sandbox blocked search of ${rawPath} — ${validation.reason}`;
+            return {
+                content: [{ type: "text" as const, text }],
+                details: { pattern, path: rawPath, type: type === "files" ? "files" : "content", sandboxBlocked: true },
+            };
+        }
+        if (validation.reason && getSandboxMode() === "audit") {
+            console.log(`⚠️ [sandbox:audit] Would block search: ${rawPath}`);
+        }
 
         // -e forces rg to treat pattern as a regex (not a flag); -- ends options before path.
         const [cmd, args, maxLines] =

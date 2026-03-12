@@ -63,12 +63,18 @@ export interface ViolationRecord {
     reason: string;
 }
 
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+/** Maximum number of violations to keep in the ring buffer. */
+const MAX_VIOLATIONS = 100;
+
 // ── Module-level state (singleton) ────────────────────────────────────────────
 
 let _config: ResolvedSandboxConfig | null = null;
 let _initialized = false;
 let _initFailed = false;
 let _violations: ViolationRecord[] = [];
+let _violationListeners: Array<(violation: ViolationRecord) => void> = [];
 let _sshAuthSock: string | null = null;
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -242,11 +248,36 @@ export function getSandboxMode(): "enforce" | "audit" | "off" {
 /**
  * Get all recorded violations (audit mode).
  *
- * Returns violations from both the local audit log and the upstream
- * `SandboxViolationStore`.
+ * Returns a copy of the ring buffer (capped at MAX_VIOLATIONS entries).
  */
 export function getViolations(): ViolationRecord[] {
     return [..._violations];
+}
+
+/**
+ * Clear the violation ring buffer.
+ */
+export function clearViolations(): void {
+    _violations = [];
+}
+
+/**
+ * Subscribe to violation events. Returns an unsubscribe function.
+ * Each listener is called synchronously when a new violation is recorded.
+ */
+export function onViolation(listener: (violation: ViolationRecord) => void): () => void {
+    _violationListeners.push(listener);
+    return () => {
+        _violationListeners = _violationListeners.filter((l) => l !== listener);
+    };
+}
+
+/**
+ * Get the current resolved sandbox config.
+ * Returns null if sandbox has not been initialized.
+ */
+export function getResolvedConfig(): ResolvedSandboxConfig | null {
+    return _config ? { ..._config } : null;
 }
 
 /**
@@ -271,6 +302,7 @@ export async function cleanupSandbox(): Promise<void> {
     _initialized = false;
     _initFailed = false;
     _violations = [];
+    _violationListeners = [];
     _sshAuthSock = null;
 }
 
@@ -400,17 +432,16 @@ function _validateReadPath(normalizedPath: string): ValidationResult {
 
     for (const denied of _config.filesystem.denyRead) {
         if (_pathMatchesDeny(normalizedPath, denied)) {
-            const result: ValidationResult = {
-                allowed: false,
-                reason: `Read denied: path "${normalizedPath}" matches deny rule "${denied}"`,
-            };
+            const reason = `Read denied: path "${normalizedPath}" matches deny rule "${denied}"`;
+
+            // Always record the violation (for both enforce and audit)
+            _recordViolation("filesystem", "read", normalizedPath, reason);
 
             if (_config.mode === "audit") {
-                _recordViolation("filesystem", "read", normalizedPath, result.reason!);
-                return { allowed: true, reason: result.reason };
+                return { allowed: true, reason };
             }
 
-            return result;
+            return { allowed: false, reason };
         }
     }
 
@@ -424,17 +455,15 @@ function _validateWritePath(normalizedPath: string): ValidationResult {
     // Check denyWrite first (takes precedence)
     for (const denied of _config.filesystem.denyWrite) {
         if (_pathMatchesDeny(normalizedPath, denied)) {
-            const result: ValidationResult = {
-                allowed: false,
-                reason: `Write denied: path "${normalizedPath}" matches deny rule "${denied}"`,
-            };
+            const reason = `Write denied: path "${normalizedPath}" matches deny rule "${denied}"`;
+
+            _recordViolation("filesystem", "write", normalizedPath, reason);
 
             if (_config.mode === "audit") {
-                _recordViolation("filesystem", "write", normalizedPath, result.reason!);
-                return { allowed: true, reason: result.reason };
+                return { allowed: true, reason };
             }
 
-            return result;
+            return { allowed: false, reason };
         }
     }
 
@@ -444,17 +473,15 @@ function _validateWritePath(normalizedPath: string): ValidationResult {
     );
 
     if (!isAllowed) {
-        const result: ValidationResult = {
-            allowed: false,
-            reason: `Write denied: path "${normalizedPath}" is not within any allowed write path`,
-        };
+        const reason = `Write denied: path "${normalizedPath}" is not within any allowed write path`;
+
+        _recordViolation("filesystem", "write", normalizedPath, reason);
 
         if (_config.mode === "audit") {
-            _recordViolation("filesystem", "write", normalizedPath, result.reason!);
-            return { allowed: true, reason: result.reason };
+            return { allowed: true, reason };
         }
 
-        return result;
+        return { allowed: false, reason };
     }
 
     return { allowed: true };
@@ -482,20 +509,36 @@ function _pathWithinAllow(normalizedPath: string, allowedPath: string): boolean 
     return lowerPath === lowerAllowed || lowerPath.startsWith(lowerAllowed + "/");
 }
 
-/** Record a violation for audit mode. */
+/** Record a violation for audit/enforce mode. Caps at MAX_VIOLATIONS entries. */
 function _recordViolation(
     tier: SandboxTier,
     operation: string,
     target: string,
     reason: string,
 ): void {
-    _violations.push({
+    const violation: ViolationRecord = {
         timestamp: new Date(),
         tier,
         operation,
         target,
         reason,
-    });
+    };
+
+    _violations.push(violation);
+
+    // Ring buffer: drop oldest when over cap
+    if (_violations.length > MAX_VIOLATIONS) {
+        _violations = _violations.slice(-MAX_VIOLATIONS);
+    }
+
+    // Notify listeners
+    for (const listener of _violationListeners) {
+        try {
+            listener(violation);
+        } catch {
+            // Listener errors must not crash the sandbox
+        }
+    }
 }
 
 // ── Test helpers ──────────────────────────────────────────────────────────────
@@ -509,5 +552,6 @@ export function _resetState(): void {
     _initialized = false;
     _initFailed = false;
     _violations = [];
+    _violationListeners = [];
     _sshAuthSock = null;
 }

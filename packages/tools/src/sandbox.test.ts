@@ -10,10 +10,14 @@ import {
     isSandboxActive,
     getSandboxMode,
     getViolations,
+    clearViolations,
+    onViolation,
+    getResolvedConfig,
     cleanupSandbox,
     buildRuntimeConfig,
     _resetState,
     type ResolvedSandboxConfig,
+    type ViolationRecord,
 } from "./sandbox.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -532,6 +536,105 @@ describe("sandbox", () => {
             // Should match regardless of case
             const result = validatePath("/etc/secrets/key", "read");
             expect(result.allowed).toBe(false);
+        });
+    });
+
+    describe("clearViolations()", () => {
+        test("clears all violations", async () => {
+            await initSandbox(makeConfig({ mode: "audit" }));
+            validatePath("/etc/secrets/a", "read");
+            validatePath("/etc/secrets/b", "read");
+            expect(getViolations().length).toBe(2);
+
+            clearViolations();
+            expect(getViolations().length).toBe(0);
+        });
+    });
+
+    describe("ring buffer cap", () => {
+        test("caps violations at 100 entries", async () => {
+            await initSandbox(makeConfig({ mode: "audit" }));
+            // Generate 120 violations
+            for (let i = 0; i < 120; i++) {
+                validatePath(`/etc/secrets/file${i}`, "read");
+            }
+            const violations = getViolations();
+            expect(violations.length).toBe(100);
+            // Oldest entries should have been dropped
+            expect(violations[0].target).toContain("file20");
+            expect(violations[99].target).toContain("file119");
+        });
+    });
+
+    describe("onViolation()", () => {
+        test("calls listener on new violations", async () => {
+            await initSandbox(makeConfig({ mode: "audit" }));
+            const received: ViolationRecord[] = [];
+            const unsub = onViolation((v) => received.push(v));
+
+            validatePath("/etc/secrets/test", "read");
+            expect(received.length).toBe(1);
+            expect(received[0].target).toBe("/etc/secrets/test");
+
+            unsub();
+        });
+
+        test("unsubscribe stops notifications", async () => {
+            await initSandbox(makeConfig({ mode: "audit" }));
+            const received: ViolationRecord[] = [];
+            const unsub = onViolation((v) => received.push(v));
+
+            validatePath("/etc/secrets/a", "read");
+            expect(received.length).toBe(1);
+
+            unsub();
+            validatePath("/etc/secrets/b", "read");
+            expect(received.length).toBe(1); // no new notifications
+        });
+
+        test("listener errors don't crash sandbox", async () => {
+            await initSandbox(makeConfig({ mode: "audit" }));
+            const unsub = onViolation(() => {
+                throw new Error("listener crash");
+            });
+
+            // Should not throw
+            validatePath("/etc/secrets/test", "read");
+            expect(getViolations().length).toBe(1);
+
+            unsub();
+        });
+    });
+
+    describe("getResolvedConfig()", () => {
+        test("returns null before initialization", () => {
+            expect(getResolvedConfig()).toBeNull();
+        });
+
+        test("returns config after initialization", async () => {
+            const config = makeConfig({ mode: "audit" });
+            await initSandbox(config);
+            const resolved = getResolvedConfig();
+            expect(resolved).not.toBeNull();
+            expect(resolved!.mode).toBe("audit");
+            expect(resolved!.enabled).toBe(true);
+        });
+
+        test("returns a copy, not the original", async () => {
+            await initSandbox(makeConfig());
+            const a = getResolvedConfig();
+            const b = getResolvedConfig();
+            expect(a).toEqual(b);
+            expect(a).not.toBe(b);
+        });
+    });
+
+    describe("enforce mode records violations too", () => {
+        test("violations are recorded in enforce mode", async () => {
+            await initSandbox(makeConfig({ mode: "enforce" }));
+            const result = validatePath("/etc/secrets/key", "read");
+            expect(result.allowed).toBe(false);
+            expect(getViolations().length).toBe(1);
         });
     });
 });
