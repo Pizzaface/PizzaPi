@@ -2193,7 +2193,11 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         description:
             "Submit a plan for user review before execution. The user can approve, edit, or cancel the plan. " +
             "Use this when you want to outline a multi-step approach and get user confirmation before proceeding. " +
-            "The tool blocks until the user responds.",
+            "The tool blocks until the user responds with one of: " +
+            "'Clear Context & Begin' (user wants a fresh start — proceed with the plan), " +
+            "'Begin' (proceed with current context), " +
+            "'Suggest Edit' (user provides feedback to revise the plan — resubmit an updated plan), " +
+            "or 'Cancel' (do not proceed).",
         parameters: {
             type: "object",
             properties: {
@@ -2303,9 +2307,18 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 cancel: "Cancel",
             }[result.action];
 
-            const responseText = result.action === "edit" && result.editSuggestion
-                ? `User chose: ${actionLabel}. Suggestion: ${result.editSuggestion}`
-                : `User chose: ${actionLabel}`;
+            let responseText: string;
+            if (result.action === "execute") {
+                responseText = `User chose: ${actionLabel}. The user wants to clear the conversation context and start fresh to execute this plan. Proceed by executing the plan steps.`;
+            } else if (result.action === "execute_keep_context") {
+                responseText = `User chose: ${actionLabel}. The user approved the plan. Proceed by executing the plan steps with the current context.`;
+            } else if (result.action === "edit" && result.editSuggestion) {
+                responseText = `User chose: ${actionLabel}. Suggestion: ${result.editSuggestion}`;
+            } else if (result.action === "cancel") {
+                responseText = `User chose: ${actionLabel}. The user rejected the plan. Do not proceed with execution.`;
+            } else {
+                responseText = `User chose: ${actionLabel}`;
+            }
 
             onUpdate?.({
                 content: [{ type: "text", text: responseText }],
@@ -2429,8 +2442,23 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                             finish({ action: "execute" });
                         } else if (answer === "2") {
                             finish({ action: "execute_keep_context" });
-                        } else if (answer === "3" || answer === "4") {
-                            finish({ action: answer === "3" ? "edit" : "cancel" });
+                        } else if (answer === "4") {
+                            finish({ action: "cancel" });
+                        } else if (answer === "3") {
+                            // Prompt for edit text in a second input step
+                            void ctx.ui
+                                .input("Describe your suggested changes:", undefined, { signal: localAbort.signal })
+                                .then((editValue) => {
+                                    const suggestion = editValue?.trim();
+                                    if (suggestion) {
+                                        finish({ action: "edit", editSuggestion: suggestion });
+                                    } else {
+                                        finish({ action: "edit", editSuggestion: "No details provided." });
+                                    }
+                                })
+                                .catch(() => {
+                                    finish({ action: "edit", editSuggestion: "No details provided." });
+                                });
                         } else {
                             // Treat as an edit suggestion
                             finish({ action: "edit", editSuggestion: answer });
