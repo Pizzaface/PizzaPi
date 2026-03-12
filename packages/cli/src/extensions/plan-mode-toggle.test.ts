@@ -296,6 +296,33 @@ describe("isSafeCommand", () => {
         expect(isSafeCommand("ls | make")).toBe(false);
         expect(isSafeCommand('rg "pattern" src/ | rm file')).toBe(false);
     });
+
+    // PR fix: curl --hsts / --alt-svc cache-file bypass
+    test("blocks curl with --hsts flag (cache file write)", () => {
+        expect(isSafeCommand("curl --hsts state.txt https://example.com")).toBe(false);
+        expect(isSafeCommand("curl --hsts=state.txt https://example.com")).toBe(false);
+    });
+
+    test("blocks curl with --alt-svc flag (cache file write)", () => {
+        expect(isSafeCommand("curl --alt-svc cache.txt https://example.com")).toBe(false);
+        expect(isSafeCommand("curl --alt-svc=cache.txt https://example.com")).toBe(false);
+    });
+
+    test("still allows stdout-only curl after hsts/alt-svc fix", () => {
+        expect(isSafeCommand("curl -s https://example.com")).toBe(true);
+        expect(isSafeCommand("curl -sL https://example.com/api")).toBe(true);
+    });
+
+    // Regex efficiency: git branch pattern must not cause exponential backtracking
+    test("git branch regex does not cause exponential backtracking on long inputs", () => {
+        // Craft an input that would trigger ReDoS on the old regex: `git branch -a -a -a ... X`
+        const manyFlags = Array(50).fill("-a").join(" ");
+        const start = performance.now();
+        expect(isSafeCommand(`git branch ${manyFlags} X`)).toBe(false);
+        const elapsed = performance.now() - start;
+        // With exponential backtracking this would take seconds/minutes; should complete in ms
+        expect(elapsed).toBeLessThan(100);
+    });
 });
 
 // ── splitShellSegments tests ─────────────────────────────────────────────────
