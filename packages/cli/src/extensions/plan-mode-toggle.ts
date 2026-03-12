@@ -235,12 +235,18 @@ export const planModeToggleExtension: ExtensionFactory = (pi) => {
         });
     }
 
+    /** True once the plan-mode context message has been injected for the current plan-mode session. */
+    let planModeContextSent = false;
+
     function setPlanMode(enabled: boolean) {
         if (planModeEnabled === enabled) return;
         planModeEnabled = enabled;
         executionMode = false;
         todoItems = [];
-        if (enabled) planSubmittedDuringSession = false;
+        if (enabled) {
+            planSubmittedDuringSession = false;
+            planModeContextSent = false; // Reset so the context message fires once on the next turn
+        }
         syncModuleState();
         _onPlanModeChange?.(planModeEnabled);
         persistState();
@@ -407,10 +413,14 @@ export const planModeToggleExtension: ExtensionFactory = (pi) => {
     // ── Inject plan/execution context before each turn ───────────────────────
     pi.on("before_agent_start", async () => {
         if (planModeEnabled) {
-            return {
-                message: {
-                    customType: "plan-mode-context",
-                    content: `[PLAN MODE ACTIVE]
+            // Only inject the plan-mode context message once per plan-mode session,
+            // not on every user message / agent turn.
+            if (!planModeContextSent) {
+                planModeContextSent = true;
+                return {
+                    message: {
+                        customType: "plan-mode-context",
+                        content: `[PLAN MODE ACTIVE]
 You are in plan mode — a read-only exploration mode for safe code analysis.
 
 Restrictions:
@@ -425,9 +435,11 @@ Expected workflow:
 4. After the user approves the plan, call toggle_plan_mode with enabled=false to exit and begin executing
 
 Do NOT exit plan mode without submitting a plan first. Always present your plan for review via plan_mode before calling toggle_plan_mode to exit.`,
-                    display: false,
-                },
-            };
+                        display: false,
+                    },
+                };
+            }
+            return; // Already sent — no message needed
         }
 
         if (executionMode && todoItems.length > 0) {
@@ -547,6 +559,8 @@ After completing a step, include a [DONE:n] tag in your response (e.g. [DONE:1])
             planModeEnabled = saved.data.enabled ?? false;
             todoItems = saved.data.todos ?? [];
             executionMode = saved.data.executing ?? false;
+            // On resume, the context message was already sent in the original session
+            planModeContextSent = planModeEnabled;
         }
 
         // On resume: re-scan messages to rebuild completion state
@@ -579,6 +593,7 @@ After completing a step, include a [DONE:n] tag in your response (e.g. [DONE:1])
         planModeEnabled = false;
         executionMode = false;
         todoItems = [];
+        planModeContextSent = false;
         syncModuleState();
     });
 };
