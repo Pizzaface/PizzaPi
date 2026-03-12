@@ -91,6 +91,24 @@ describe("isSafeCommand", () => {
         expect(isSafeCommand("wget --output-document file.txt https://example.com")).toBe(false);
     });
 
+    // PR fix: find -exec bypass
+    test("blocks find with -exec flag", () => {
+        expect(isSafeCommand("find . -exec rm {} \\;")).toBe(false);
+        expect(isSafeCommand("find . -execdir git clean -fd \\;")).toBe(false);
+    });
+
+    test("allows find without -exec", () => {
+        expect(isSafeCommand("find . -name '*.ts'")).toBe(true);
+        expect(isSafeCommand("find src -type f")).toBe(true);
+    });
+
+    // PR fix: curl -O / --remote-name bypass
+    test("blocks curl with -O/--remote-name flags (file write)", () => {
+        expect(isSafeCommand("curl -O https://example.com/file.bin")).toBe(false);
+        expect(isSafeCommand("curl --remote-name https://example.com/file.bin")).toBe(false);
+        expect(isSafeCommand("curl --remote-name-all https://example.com/file.bin")).toBe(false);
+    });
+
     // Chaining operators (pre-existing behavior, regression guard)
     test("blocks chained unsafe commands", () => {
         expect(isSafeCommand("ls && make")).toBe(false);
