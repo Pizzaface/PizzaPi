@@ -97,6 +97,15 @@ describe("isSafeCommand", () => {
         expect(isSafeCommand("find . -execdir git clean -fd \\;")).toBe(false);
     });
 
+    test("blocks find with -delete flag", () => {
+        expect(isSafeCommand("find . -name '*.tmp' -delete")).toBe(false);
+        expect(isSafeCommand("find /tmp -type f -delete")).toBe(false);
+    });
+
+    test("blocks find with -fprintf flag", () => {
+        expect(isSafeCommand("find . -fprintf /tmp/out.txt '%p\\n'")).toBe(false);
+    });
+
     test("allows find without -exec", () => {
         expect(isSafeCommand("find . -name '*.ts'")).toBe(true);
         expect(isSafeCommand("find src -type f")).toBe(true);

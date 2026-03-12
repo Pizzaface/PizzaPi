@@ -24,7 +24,7 @@ const DESTRUCTIVE_PATTERNS = [
     /\bservice\s+\S+\s+(start|stop|restart)/i,
     /\b(vim?|nano|emacs|code|subl)\b/i,
     /\bcurl\b.*\s(-o|--output|-O|--remote-name|--remote-name-all)\b/i, /\bwget\b.*\s(-O|--output-document)\b/i,
-    /\bfind\b.*\s-exec(dir)?\b/i,
+    /\bfind\b.*\s-exec(dir)?\b/i, /\bfind\b.*\s-delete\b/i, /\bfind\b.*\s-fprintf\b/i,
 ];
 
 const SAFE_PATTERNS = [
