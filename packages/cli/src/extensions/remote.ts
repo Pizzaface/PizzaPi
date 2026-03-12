@@ -8,6 +8,7 @@ import { getEnvApiKey } from "@mariozechner/pi-ai/dist/env-api-keys.js";
 import { loadConfig, defaultAgentDir, toggleMcpServer } from "../config.js";
 import { getMcpBridge } from "./mcp-bridge.js";
 import { getCurrentTodoList, setTodoUpdateCallback, type TodoItem } from "./update-todo.js";
+import { isPlanModeEnabled, isExecutionMode, getPlanTodoItems, setPlanModeChangeCallback, togglePlanModeFromRemote, setPlanModeFromRemote, requestContextClear } from "./plan-mode-toggle.js";
 import type { RemoteExecRequest, RemoteExecResponse } from "./remote-commands.js";
 import { messageBus } from "./session-message-bus.js";
 import { io, type Socket } from "socket.io-client";
@@ -58,6 +59,39 @@ interface PendingAskUserQuestion {
     resolve: (answer: string | null) => void;
 }
 
+// ── Plan Mode types ──────────────────────────────────────────────────────────
+
+interface PlanModeStep {
+    title: string;
+    description?: string;
+}
+
+interface PlanModeParams {
+    title: string;
+    description?: string;
+    steps?: PlanModeStep[];
+}
+
+/** User responses for plan mode: execute with/without context clear, edit, or cancel. */
+type PlanModeAction = "execute" | "execute_keep_context" | "edit" | "cancel";
+
+interface PlanModeDetails {
+    title: string;
+    description: string | null;
+    steps: PlanModeStep[];
+    action: PlanModeAction | null;
+    editSuggestion: string | null;
+    status?: "waiting" | "responded";
+}
+
+interface PendingPlanMode {
+    toolCallId: string;
+    title: string;
+    description: string | null;
+    steps: PlanModeStep[];
+    resolve: (response: { action: PlanModeAction; editSuggestion?: string } | null) => void;
+}
+
 interface RelayModelInfo {
     provider: string;
     id: string;
@@ -106,6 +140,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
     let shuttingDown = false;
     let latestCtx: ExtensionContext | null = null;
     let pendingAskUserQuestion: PendingAskUserQuestion | null = null;
+    let pendingPlanMode: PendingPlanMode | null = null;
     let relaySessionId: string = (process.env.PIZZAPI_SESSION_ID && process.env.PIZZAPI_SESSION_ID.trim().length > 0)
         ? process.env.PIZZAPI_SESSION_ID.trim()
         : randomUUID();
@@ -551,6 +586,11 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         forwardEvent({ type: "todo_update", todos: list, ts: Date.now() });
     });
 
+    setPlanModeChangeCallback((_enabled: boolean) => {
+        // Push an immediate heartbeat so the web UI updates the plan mode indicator.
+        forwardEvent(buildHeartbeat());
+    });
+
     function forwardEvent(event: unknown) {
         if (!relay || !sioSocket?.connected) return;
         const seq = ++relay.seq;
@@ -725,6 +765,14 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                       display: pendingAskUserQuestion.display,
                   }
                 : null,
+            pendingPlan: pendingPlanMode
+                ? {
+                      toolCallId: pendingPlanMode.toolCallId,
+                      title: pendingPlanMode.title,
+                      description: pendingPlanMode.description,
+                      steps: pendingPlanMode.steps,
+                  }
+                : null,
             retryState: lastRetryableError
                 ? {
                       errorMessage: lastRetryableError.errorMessage,
@@ -739,6 +787,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                   }
                 : null,
             mcpStartupReport: lastMcpStartupReport,
+            planModeEnabled: isPlanModeEnabled(),
         };
     }
 
@@ -1040,6 +1089,29 @@ export const remoteExtension: ExtensionFactory = (pi) => {
 
             if (req.command === "set_follow_up_mode") {
                 replyErr("set_follow_up_mode is not supported by the PizzaPi runner yet");
+                return;
+            }
+
+            if (req.command === "set_plan_mode") {
+                // If an explicit `enabled` value is provided, set to that value.
+                // Otherwise toggle (backwards-compatible with the /plan command).
+                const explicitEnabled = (req as any).enabled;
+                if (typeof explicitEnabled === "boolean") {
+                    const result = setPlanModeFromRemote(explicitEnabled);
+                    if (result === null) {
+                        replyErr("Plan mode extension not initialized");
+                        return;
+                    }
+                } else {
+                    const toggled = togglePlanModeFromRemote();
+                    if (!toggled) {
+                        replyErr("Plan mode extension not initialized");
+                        return;
+                    }
+                }
+                const enabled = isPlanModeEnabled();
+                replyOk({ planModeEnabled: enabled });
+                forwardEvent(buildHeartbeat());
                 return;
             }
 
@@ -1348,6 +1420,49 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         if (!pendingAskUserQuestion) return;
         const pending = pendingAskUserQuestion;
         pendingAskUserQuestion = null;
+        pending.resolve(null);
+        setRelayStatus(relay ? "Connected to Relay" : disconnectedStatusText());
+    }
+
+    function consumePendingPlanModeFromWeb(text: string): boolean {
+        if (!pendingPlanMode) return false;
+        const trimmed = text.trim();
+        if (!trimmed) return true;
+
+        // Parse the response: expect JSON { action, editSuggestion? }
+        let response: { action: PlanModeAction; editSuggestion?: string } | null = null;
+        try {
+            const parsed = JSON.parse(trimmed);
+            if (parsed && typeof parsed === "object" && typeof parsed.action === "string") {
+                const validActions: PlanModeAction[] = ["execute", "execute_keep_context", "edit", "cancel"];
+                if (validActions.includes(parsed.action)) {
+                    response = {
+                        action: parsed.action,
+                        editSuggestion: typeof parsed.editSuggestion === "string" ? parsed.editSuggestion : undefined,
+                    };
+                }
+            }
+        } catch {
+            // If not JSON, treat as a plain text edit suggestion
+            response = { action: "edit", editSuggestion: trimmed };
+        }
+
+        // If JSON parsed but didn't validate to a supported action, reject
+        // the payload without consuming the pending prompt so the user can
+        // retry with a valid action.
+        if (!response) return true;
+
+        const pending = pendingPlanMode;
+        pendingPlanMode = null;
+        pending.resolve(response);
+        setRelayStatus(relay ? "Connected to Relay" : disconnectedStatusText());
+        return true;
+    }
+
+    function cancelPendingPlanMode() {
+        if (!pendingPlanMode) return;
+        const pending = pendingPlanMode;
+        pendingPlanMode = null;
         pending.resolve(null);
         setRelayStatus(relay ? "Connected to Relay" : disconnectedStatusText());
     }
@@ -1772,6 +1887,9 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             if (consumePendingAskUserQuestionFromWeb(inputText)) {
                 return;
             }
+            if (consumePendingPlanModeFromWeb(inputText)) {
+                return;
+            }
 
             const attachments = normalizeRemoteInputAttachments(data.attachments);
             const deliverAs = data.deliverAs === "followUp" ? "followUp" as const
@@ -1832,6 +1950,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         sock.on("disconnect", (_reason) => {
             relay = null;
             cancelPendingAskUserQuestion();
+            cancelPendingPlanMode();
             setRelayStatus(disconnectedStatusText());
         });
 
@@ -1869,6 +1988,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
     function disconnect() {
         stopHeartbeat();
         cancelPendingAskUserQuestion();
+        cancelPendingPlanMode();
         messageBus.setSendFn(null);
         // Clear MCP OAuth relay context before tearing down the socket,
         // since removeAllListeners() would prevent the disconnect handler
@@ -2097,6 +2217,318 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             };
         },
     });
+
+    // ── plan_mode tool ────────────────────────────────────────────────────────
+
+    const PLAN_MODE_TOOL_NAME = "plan_mode";
+
+    pi.registerTool({
+        name: PLAN_MODE_TOOL_NAME,
+        label: "Plan Mode",
+        description:
+            "Submit a plan for user review before execution. The user can approve, edit, or cancel the plan. " +
+            "Use this when you want to outline a multi-step approach and get user confirmation before proceeding. " +
+            "The tool blocks until the user responds with one of: " +
+            "'Clear Context & Begin' (user wants a fresh start — proceed with the plan), " +
+            "'Begin' (proceed with current context), " +
+            "'Suggest Edit' (user provides feedback to revise the plan — resubmit an updated plan), " +
+            "or 'Cancel' (do not proceed).",
+        parameters: {
+            type: "object",
+            properties: {
+                title: {
+                    type: "string",
+                    description: "Short title summarizing the plan.",
+                },
+                description: {
+                    type: "string",
+                    description: "Optional detailed description of the plan in markdown format.",
+                },
+                steps: {
+                    type: "array",
+                    description: "Ordered list of steps in the plan.",
+                    items: {
+                        type: "object",
+                        properties: {
+                            title: {
+                                type: "string",
+                                description: "Short title for this step.",
+                            },
+                            description: {
+                                type: "string",
+                                description: "Optional longer description of what this step entails.",
+                            },
+                        },
+                        required: ["title"],
+                    },
+                },
+            },
+            required: ["title"],
+            additionalProperties: false,
+        } as any,
+        async execute(toolCallId, rawParams, signal, onUpdate, ctx) {
+            if (pendingPlanMode && pendingPlanMode.toolCallId !== toolCallId) {
+                return {
+                    content: [{ type: "text", text: "A different plan_mode prompt is already pending." }],
+                    details: {
+                        title: "",
+                        description: null,
+                        steps: [],
+                        action: null,
+                        editSuggestion: null,
+                    } satisfies PlanModeDetails,
+                };
+            }
+
+            const params = (rawParams ?? {}) as PlanModeParams;
+            const title = typeof params.title === "string" ? params.title.trim() : "";
+            const description = typeof params.description === "string" ? params.description.trim() || null : null;
+            const steps: PlanModeStep[] = Array.isArray(params.steps)
+                ? (params.steps as unknown[])
+                    .filter((s): s is Record<string, unknown> => s !== null && typeof s === "object")
+                    .map((s) => ({
+                        title: typeof s.title === "string" ? (s.title as string).trim() : "",
+                        description: typeof s.description === "string" && (s.description as string).trim()
+                            ? (s.description as string).trim()
+                            : undefined,
+                    }))
+                    .filter((s) => s.title.length > 0)
+                : [];
+
+            if (!title) {
+                return {
+                    content: [{ type: "text", text: "plan_mode requires a non-empty title." }],
+                    details: {
+                        title: "",
+                        description: null,
+                        steps: [],
+                        action: null,
+                        editSuggestion: null,
+                    } satisfies PlanModeDetails,
+                };
+            }
+
+            onUpdate?.({
+                content: [{ type: "text", text: `Waiting for plan review: ${title}` }],
+                details: {
+                    title,
+                    description,
+                    steps,
+                    action: null,
+                    editSuggestion: null,
+                    status: "waiting",
+                } satisfies PlanModeDetails,
+            });
+
+            const result = await askPlanMode(toolCallId, title, description, steps, signal, ctx);
+
+            if (!result) {
+                return {
+                    content: [{ type: "text", text: "Plan review was cancelled or no response received." }],
+                    details: {
+                        title,
+                        description,
+                        steps,
+                        action: "cancel",
+                        editSuggestion: null,
+                    } satisfies PlanModeDetails,
+                };
+            }
+
+            const actionLabel = {
+                execute: "Clear Context & Begin",
+                execute_keep_context: "Begin",
+                edit: "Suggest Edit",
+                cancel: "Cancel",
+            }[result.action];
+
+            // When the user approves the plan, automatically exit plan mode
+            // so the agent can proceed with full tool access immediately.
+            if (result.action === "execute" || result.action === "execute_keep_context") {
+                setPlanModeFromRemote(false);
+            }
+
+            // When the user picks "Clear Context & Begin", signal the plan-mode
+            // extension to strip all prior messages on the next context event so
+            // the agent starts fresh (keeping only the plan_mode exchange).
+            if (result.action === "execute") {
+                requestContextClear();
+            }
+
+            let responseText: string;
+            if (result.action === "execute") {
+                responseText = `User chose: ${actionLabel}. The user wants to clear the conversation context and start fresh to execute this plan. Proceed by executing the plan steps.`;
+            } else if (result.action === "execute_keep_context") {
+                responseText = `User chose: ${actionLabel}. The user approved the plan. Proceed by executing the plan steps with the current context.`;
+            } else if (result.action === "edit" && result.editSuggestion) {
+                responseText = `User chose: ${actionLabel}. Suggestion: ${result.editSuggestion}`;
+            } else if (result.action === "cancel") {
+                responseText = `User chose: ${actionLabel}. The user rejected the plan. Do not proceed with execution.`;
+            } else {
+                responseText = `User chose: ${actionLabel}`;
+            }
+
+            onUpdate?.({
+                content: [{ type: "text", text: responseText }],
+                details: {
+                    title,
+                    description,
+                    steps,
+                    action: result.action,
+                    editSuggestion: result.editSuggestion ?? null,
+                    status: "responded",
+                } satisfies PlanModeDetails,
+            });
+
+            return {
+                content: [{ type: "text", text: responseText }],
+                details: {
+                    title,
+                    description,
+                    steps,
+                    action: result.action,
+                    editSuggestion: result.editSuggestion ?? null,
+                } satisfies PlanModeDetails,
+            };
+        },
+    });
+
+    async function askPlanMode(
+        toolCallId: string,
+        title: string,
+        description: string | null,
+        steps: PlanModeStep[],
+        signal: AbortSignal | undefined,
+        ctx: ExtensionContext,
+    ): Promise<{ action: PlanModeAction; editSuggestion?: string } | null> {
+        const canAskViaWeb = !!relay && !!sioSocket?.connected;
+        const canAskViaTui = ctx.hasUI;
+
+        if (!canAskViaWeb && !canAskViaTui) {
+            return null;
+        }
+
+        const localAbort = new AbortController();
+
+        return await new Promise((resolve) => {
+            let finished = false;
+            let localDone = !canAskViaTui;
+            let webDone = !canAskViaWeb;
+
+            const onAbort = () => finish(null);
+
+            const maybeFinishCancelled = () => {
+                if (localDone && webDone) finish(null);
+            };
+
+            const finish = (response: { action: PlanModeAction; editSuggestion?: string } | null) => {
+                if (finished) return;
+                finished = true;
+
+                if (pendingPlanMode?.toolCallId === toolCallId) {
+                    pendingPlanMode = null;
+                }
+
+                localAbort.abort();
+                if (signal) signal.removeEventListener("abort", onAbort);
+                setRelayStatus(relay ? "Connected to Relay" : disconnectedStatusText());
+                resolve(response);
+            };
+
+            if (signal?.aborted) {
+                finish(null);
+                return;
+            }
+
+            if (signal) {
+                signal.addEventListener("abort", onAbort, { once: true });
+            }
+
+            if (canAskViaWeb) {
+                pendingPlanMode = {
+                    toolCallId,
+                    title,
+                    description,
+                    steps,
+                    resolve: (response) => {
+                        webDone = true;
+                        if (response) {
+                            finish(response);
+                        } else {
+                            maybeFinishCancelled();
+                        }
+                    },
+                };
+                setRelayStatus("Waiting for plan review");
+            }
+
+            if (canAskViaTui) {
+                // Format plan for TUI display
+                const displayParts: string[] = [`📋 Plan: ${title}`];
+                if (description) displayParts.push(description);
+                if (steps.length > 0) {
+                    displayParts.push("");
+                    steps.forEach((s, i) => {
+                        displayParts.push(`  ${i + 1}. ${s.title}`);
+                        if (s.description) displayParts.push(`     ${s.description}`);
+                    });
+                }
+                displayParts.push("");
+                displayParts.push("Options: (1) Clear Context & Begin, (2) Begin, (3) Suggest Edit, (4) Cancel");
+
+                void ctx.ui
+                    .input(displayParts.join("\n"), "Enter choice (1-4) or edit suggestion…", { signal: localAbort.signal })
+                    .then((value) => {
+                        const answer = value?.trim();
+                        if (!answer) {
+                            localDone = true;
+                            maybeFinishCancelled();
+                            return;
+                        }
+
+                        if (answer === "1") {
+                            localDone = true;
+                            finish({ action: "execute" });
+                        } else if (answer === "2") {
+                            localDone = true;
+                            finish({ action: "execute_keep_context" });
+                        } else if (answer === "4") {
+                            localDone = true;
+                            finish({ action: "cancel" });
+                        } else if (answer === "3") {
+                            // Don't set localDone yet — second prompt still pending.
+                            // This prevents a relay disconnect during the edit prompt
+                            // from cancelling the local input via maybeFinishCancelled().
+                            void ctx.ui
+                                .input("Describe your suggested changes:", undefined, { signal: localAbort.signal })
+                                .then((editValue) => {
+                                    localDone = true;
+                                    const suggestion = editValue?.trim();
+                                    if (suggestion) {
+                                        finish({ action: "edit", editSuggestion: suggestion });
+                                    } else {
+                                        finish({ action: "edit", editSuggestion: "No details provided." });
+                                    }
+                                })
+                                .catch(() => {
+                                    localDone = true;
+                                    finish({ action: "edit", editSuggestion: "No details provided." });
+                                });
+                        } else {
+                            localDone = true;
+                            // Treat as an edit suggestion
+                            finish({ action: "edit", editSuggestion: answer });
+                        }
+                    })
+                    .catch(() => {
+                        localDone = true;
+                        maybeFinishCancelled();
+                    });
+            }
+
+            maybeFinishCancelled();
+        });
+    }
 
     // ── /remote command ───────────────────────────────────────────────────────
 

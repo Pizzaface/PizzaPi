@@ -11,6 +11,7 @@ import { spawnSessionExtension } from "./spawn-session.js";
 import { updateTodoExtension } from "./update-todo.js";
 import { createClaudePluginExtension } from "./claude-plugins.js";
 import { subagentExtension } from "./subagent.js";
+import { planModeToggleExtension } from "./plan-mode-toggle.js";
 
 export interface BuildExtensionFactoriesOptions {
     cwd: string;
@@ -47,6 +48,7 @@ export function buildPizzaPiExtensionFactories(options: BuildExtensionFactoriesO
         spawnSessionExtension,
         sessionMessagingExtension,
         subagentExtension,
+        planModeToggleExtension,
     );
 
     if (options.includeInitialPrompt) {

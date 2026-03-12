@@ -59,6 +59,8 @@ import {
   GetSessionIdCard,
 } from "@/components/session-viewer/cards/InterAgentCards";
 import { AskUserQuestionCard } from "@/components/session-viewer/cards/AskUserQuestionCard";
+import { PlanModeCard } from "@/components/session-viewer/cards/PlanModeCard";
+import { TogglePlanModeCard } from "@/components/session-viewer/cards/TogglePlanModeCard";
 import { SubagentResultCard } from "@/components/session-viewer/cards/SubagentResultCard";
 
 export function extToLang(path: string): BundledLanguage {
@@ -744,6 +746,19 @@ export function renderGroupedToolExecution(
         isStreaming={isStreaming}
       />
     );
+  } else if (norm === "plan_mode" || norm.endsWith(".plan_mode")) {
+    const resultText = hasOutput ? extractTextFromToolContent(content) : null;
+    card = (
+      <PlanModeCard
+        toolInput={toolInput}
+        resultText={resultText}
+        isStreaming={isStreaming}
+      />
+    );
+  } else if (norm === "toggle_plan_mode" || norm.endsWith(".toggle_plan_mode")) {
+    const inputArgs = parseToolInputArgs(toolInput);
+    const enabled = inputArgs.enabled === true;
+    card = <TogglePlanModeCard enabled={enabled} />;
   } else {
     // Default / Generic tool card
     const outputText = hasOutput ? extractTextFromToolContent(content) : null;

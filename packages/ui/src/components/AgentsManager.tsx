@@ -19,6 +19,7 @@ import {
     Trash2,
     ChevronDown,
     Wand2,
+    RefreshCw,
 } from "lucide-react";
 import { ErrorAlert } from "@/components/ui/error-alert";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -401,6 +402,7 @@ function DeleteAgentDialog({ runnerId, agent, onClose, onDeleted }: DeleteAgentD
 export function AgentsManager({ runnerId, agents: initialAgents, onAgentsChange }: AgentsManagerProps) {
     const [agents, setAgents] = React.useState<AgentInfo[]>(initialAgents);
     const [open, setOpen] = React.useState(false);
+    const [refreshing, setRefreshing] = React.useState(false);
 
     // Editor dialog state
     const [editorOpen, setEditorOpen] = React.useState(false);
@@ -418,6 +420,24 @@ export function AgentsManager({ runnerId, agents: initialAgents, onAgentsChange 
     const handleAgentsChange = (updated: AgentInfo[]) => {
         setAgents(updated);
         onAgentsChange?.(updated);
+    };
+
+    const handleRefresh = async () => {
+        setRefreshing(true);
+        try {
+            const res = await fetch(`/api/runners/${encodeURIComponent(runnerId)}/agents/refresh`, {
+                method: "POST",
+                credentials: "include",
+            });
+            const data = await res.json().catch(() => null) as any;
+            if (res.ok && Array.isArray(data?.agents)) {
+                handleAgentsChange(data.agents);
+            }
+        } catch (err) {
+            console.error("Failed to refresh agents:", err);
+        } finally {
+            setRefreshing(false);
+        }
     };
 
     const handleEdit = (agent: AgentInfo) => {
@@ -457,15 +477,28 @@ export function AgentsManager({ runnerId, agents: initialAgents, onAgentsChange 
                         />
                     </CollapsibleTrigger>
 
-                    <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
-                        onClick={handleNewAgent}
-                    >
-                        <Plus className="h-3 w-3 mr-1" />
-                        New agent
-                    </Button>
+                    <div className="flex items-center gap-1">
+                        <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
+                            onClick={handleRefresh}
+                            disabled={refreshing}
+                            title="Re-scan agents from disk"
+                        >
+                            <RefreshCw className={cn("h-3 w-3 mr-1", refreshing && "animate-spin")} />
+                            Reload
+                        </Button>
+                        <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
+                            onClick={handleNewAgent}
+                        >
+                            <Plus className="h-3 w-3 mr-1" />
+                            New agent
+                        </Button>
+                    </div>
                 </div>
 
                 <CollapsibleContent>

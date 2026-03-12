@@ -219,6 +219,7 @@ interface SessionUiCacheEntry {
   agentActive: boolean;
   isCompacting: boolean;
   effortLevel: string | null;
+  planModeEnabled: boolean;
   authSource: string | null;
   tokenUsage: TokenUsageInfo | null;
   providerUsage: ProviderUsageMap | null;
@@ -615,6 +616,14 @@ export function App() {
 
   const [pendingQuestion, setPendingQuestion] = React.useState<{ toolCallId: string; questions: Array<{ question: string; options: string[] }>; display: QuestionDisplayMode } | null>(null);
 
+  /** Pending plan mode prompt from the worker — shown as a plan review panel in the viewer. */
+  const [pendingPlan, setPendingPlan] = React.useState<{
+    toolCallId: string;
+    title: string;
+    description: string | null;
+    steps: Array<{ title: string; description?: string }>;
+  } | null>(null);
+
   /** Pending plugin trust prompt from the worker — shown as a confirmation dialog in the viewer. */
   const [pluginTrustPrompt, setPluginTrustPrompt] = React.useState<{
     promptId: string;
@@ -656,6 +665,7 @@ export function App() {
   const [agentActive, setAgentActive] = React.useState(false);
   const [isCompacting, setIsCompacting] = React.useState(false);
   const [effortLevel, setEffortLevel] = React.useState<string | null>(null);
+  const [planModeEnabled, setPlanModeEnabled] = React.useState(false);
   const [tokenUsage, setTokenUsage] = React.useState<TokenUsageInfo | null>(null);
   const [lastHeartbeatAt, setLastHeartbeatAt] = React.useState<number | null>(null);
   const [providerUsage, setProviderUsage] = React.useState<ProviderUsageMap | null>(null);
@@ -882,6 +892,7 @@ export function App() {
       agentActive: prev?.agentActive ?? false,
       isCompacting: prev?.isCompacting ?? false,
       effortLevel: prev?.effortLevel ?? null,
+      planModeEnabled: prev?.planModeEnabled ?? false,
       authSource: prev?.authSource ?? null,
       tokenUsage: prev?.tokenUsage ?? null,
       providerUsage: prev?.providerUsage ?? null,
@@ -955,6 +966,7 @@ export function App() {
     setMessages([]);
     setViewerStatus("Idle");
     setPendingQuestion(null);
+    setPendingPlan(null);
     setPluginTrustPrompt(null);
     setRetryState(null);
     setActiveToolCalls(new Map());
@@ -1231,6 +1243,12 @@ export function App() {
         cachePatch.effortLevel = next;
       }
 
+      if ((hb as any).planModeEnabled !== undefined) {
+        const next = !!(hb as any).planModeEnabled;
+        setPlanModeEnabled(next);
+        cachePatch.planModeEnabled = next;
+      }
+
       if (hb.tokenUsage !== undefined) {
         const next = hb.tokenUsage ?? null;
         setTokenUsage(next);
@@ -1284,6 +1302,32 @@ export function App() {
         } else {
           // Heartbeat explicitly says no pending question; clear any stale state.
           setPendingQuestion(null);
+        }
+      }
+
+      // Restore pending plan mode state when reconnecting to a session.
+      if (Object.prototype.hasOwnProperty.call(hb, "pendingPlan")) {
+        const pp = (hb as any).pendingPlan as {
+          toolCallId: string;
+          title: string;
+          description?: string | null;
+          steps?: Array<{ title: string; description?: string }>;
+        } | null;
+        if (pp && typeof pp.toolCallId === "string" && typeof pp.title === "string" && pp.title.trim()) {
+          const steps = Array.isArray(pp.steps)
+            ? pp.steps.filter((s): s is { title: string; description?: string } =>
+                s !== null && typeof s === "object" && typeof s.title === "string" && s.title.trim().length > 0,
+              )
+            : [];
+          setPendingPlan({
+            toolCallId: pp.toolCallId,
+            title: pp.title.trim(),
+            description: typeof pp.description === "string" && pp.description.trim() ? pp.description.trim() : null,
+            steps,
+          });
+          setViewerStatus("Waiting for plan review…");
+        } else {
+          setPendingPlan(null);
         }
       }
 
@@ -1437,7 +1481,13 @@ export function App() {
         return "Connected";
       });
 
-      setPendingQuestion(null);
+      // Don't unconditionally clear pendingQuestion / pendingPlan here.
+      // session_active is also emitted for non-session-switch actions (model
+      // changes, thinking-level updates) and buildSessionState() doesn't carry
+      // these transient states.  The heartbeat already manages them; clearing
+      // here would cause the action buttons to disappear until the next HB.
+      // pendingQuestion and pendingPlan are cleared on session_switch / new_session
+      // through the heartbeat (which sets them to null when the runner has none).
       setPluginTrustPrompt(null);
       // Restore in-flight tool calls from the snapshot so reconnecting mid-command
       // keeps streaming indicators and Kill buttons visible. The snapshot payload
@@ -1476,6 +1526,7 @@ export function App() {
       setMessages(normalized);
       patchSessionCache({ messages: normalized });
       setPendingQuestion(null);
+      setPendingPlan(null);
       setRetryState(null);
       setActiveToolCalls(new Map());
       // Clear message queue — the agent processed any queued steer/followUp messages
@@ -1655,6 +1706,14 @@ export function App() {
         return;
       }
 
+      if (command === "set_plan_mode") {
+        const enabled = !!(result as any)?.planModeEnabled;
+        setPlanModeEnabled(enabled);
+        patchSessionCache({ planModeEnabled: enabled });
+        setViewerStatus(enabled ? "⏸ Plan mode ON" : "▶ Plan mode OFF");
+        return;
+      }
+
       if (command === "set_session_name") {
         const nextSessionName = normalizeSessionName(result?.sessionName);
         setSessionName(nextSessionName);
@@ -1686,6 +1745,7 @@ export function App() {
         cancelPendingDeltas();
         setMessages([]);
         setPendingQuestion(null);
+        setPendingPlan(null);
         setActiveToolCalls(new Map());
         setMessageQueue([]);
         setSessionName(null);
@@ -1905,8 +1965,8 @@ export function App() {
     if (type === "tool_execution_update") {
       const toolCallId = typeof evt.toolCallId === "string" ? evt.toolCallId : "";
       const toolName = typeof evt.toolName === "string" ? evt.toolName : "unknown";
-      // AskUserQuestion updates are handled separately below — skip here.
-      if (toolCallId && toolName !== "AskUserQuestion") {
+      // AskUserQuestion and plan_mode updates are handled separately below — skip here.
+      if (toolCallId && toolName !== "AskUserQuestion" && toolName !== "plan_mode") {
         const partial = evt.partialResult as Record<string, unknown> | undefined;
         const content = partial?.content;
         if (content !== undefined && content !== null) {
@@ -2016,6 +2076,64 @@ export function App() {
       return;
     }
 
+    // ── plan_mode events ────────────────────────────────────────────────────
+    if (type === "tool_execution_start" && evt.toolName === "plan_mode") {
+      const args = evt.args as Record<string, unknown> | undefined;
+      if (args && typeof args.title === "string" && args.title.trim()) {
+        const steps = Array.isArray(args.steps)
+          ? (args.steps as unknown[])
+              .filter((s): s is Record<string, unknown> => s !== null && typeof s === "object")
+              .map((s) => ({
+                title: typeof s.title === "string" ? (s.title as string).trim() : "",
+                description: typeof s.description === "string" && (s.description as string).trim()
+                  ? (s.description as string).trim()
+                  : undefined,
+              }))
+              .filter((s) => s.title.length > 0)
+          : [];
+        setPendingPlan({
+          toolCallId: typeof evt.toolCallId === "string" ? evt.toolCallId : `plan-${Date.now()}`,
+          title: args.title.trim(),
+          description: typeof args.description === "string" && args.description.trim() ? args.description.trim() : null,
+          steps,
+        });
+        setViewerStatus("Waiting for plan review…");
+      }
+      return;
+    }
+
+    if (type === "tool_execution_update" && evt.toolName === "plan_mode") {
+      const partial = evt.partialResult as Record<string, unknown> | undefined;
+      const details = partial?.details as Record<string, unknown> | undefined;
+      const source = details ?? partial;
+      if (source && typeof source.title === "string" && source.title.trim()) {
+        const steps = Array.isArray(source.steps)
+          ? (source.steps as unknown[])
+              .filter((s): s is Record<string, unknown> => s !== null && typeof s === "object")
+              .map((s) => ({
+                title: typeof s.title === "string" ? (s.title as string).trim() : "",
+                description: typeof s.description === "string" && (s.description as string).trim()
+                  ? (s.description as string).trim()
+                  : undefined,
+              }))
+              .filter((s) => s.title.length > 0)
+          : [];
+        setPendingPlan({
+          toolCallId: typeof evt.toolCallId === "string" ? evt.toolCallId : `plan-${Date.now()}`,
+          title: (source.title as string).trim(),
+          description: typeof source.description === "string" && (source.description as string).trim() ? (source.description as string).trim() : null,
+          steps,
+        });
+      }
+      return;
+    }
+
+    if (type === "tool_execution_end" && evt.toolName === "plan_mode") {
+      setPendingPlan(null);
+      setViewerStatus("Connected");
+      return;
+    }
+
     if (type === "agent_end") {
       cancelHaptic();
       setActiveToolCalls(new Map());
@@ -2104,6 +2222,7 @@ export function App() {
     setActiveSessionId(relaySessionId);
     setViewerStatus("Connecting…");
     setPendingQuestion(null);
+    setPendingPlan(null);
     setRetryState(null);
     setActiveToolCalls(new Map());
     setIsChangingModel(false);
@@ -2120,6 +2239,7 @@ export function App() {
     setAgentActive(cached?.agentActive ?? false);
     setIsCompacting(cached?.isCompacting ?? false);
     setEffortLevel(cached?.effortLevel ?? null);
+    setPlanModeEnabled(cached?.planModeEnabled ?? false);
     setAuthSource(cached?.authSource ?? null);
     setTokenUsage(cached?.tokenUsage ?? null);
     setProviderUsage(cached?.providerUsage ?? null);
@@ -2209,6 +2329,7 @@ export function App() {
         setViewerStatus(data.reason || "Disconnected");
       }
       setPendingQuestion(null);
+      setPendingPlan(null);
       setIsChangingModel(false);
     });
 
@@ -2236,6 +2357,7 @@ export function App() {
               : prev,
         );
         setPendingQuestion(null);
+        setPendingPlan(null);
         setIsChangingModel(false);
         // Reset the stale clock so we don't fire immediately on reconnect.
         lastViewerEventAtRef.current = Date.now();
@@ -3426,6 +3548,7 @@ export function App() {
                   activeModel={activeModel}
                   activeToolCalls={activeToolCalls}
                   pendingQuestion={pendingQuestion}
+                  pendingPlan={pendingPlan}
                   pluginTrustPrompt={pluginTrustPrompt}
                   onPluginTrustResponse={respondPluginTrust}
                   availableCommands={availableCommands}
@@ -3450,6 +3573,7 @@ export function App() {
                   onToggleFileExplorer={() => setShowFileExplorer((v) => !v)}
                   showFileExplorerButton={!!activeSessionInfo?.runnerId && !!activeSessionInfo?.cwd}
                   todoList={todoList}
+                  planModeEnabled={planModeEnabled}
                   runnerId={activeSessionInfo?.runnerId ?? undefined}
                   sessionCwd={activeSessionInfo?.cwd || undefined}
                   onAppendSystemMessage={appendLocalSystemMessage}

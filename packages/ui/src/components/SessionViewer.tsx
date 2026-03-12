@@ -10,6 +10,7 @@ import { groupToolExecutionMessages, groupSubAgentConversations } from "@/compon
 import { getComposerSubmitMode } from "@/components/session-viewer/composer-submit-state";
 import {
   hasVisibleContent,
+  normalizeToolName,
   resolveCommandPopoverState,
 } from "@/components/session-viewer/utils";
 import {
@@ -62,6 +63,7 @@ import { cn } from "@/lib/utils";
 import { formatPathTail } from "@/lib/path";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { MultipleChoiceQuestions } from "@/components/ai-elements/multiple-choice";
+import { PlanModePanel, type PlanModeAnswer } from "@/components/ai-elements/plan-mode";
 import { formatAnswersForAgent, type QuestionDisplayMode } from "@/lib/ask-user-questions";
 import { dismissNotificationsForSession } from "@/lib/push";
 import { AlertTriangleIcon, ArrowDownIcon, BookOpen, CheckCircle2, ChevronsUpDown, Circle, CircleDashed, Loader2, MessageSquare, OctagonX, PaperclipIcon, Plus, Puzzle, ShieldAlert, Zap, Clock, X, Trash2, TerminalIcon, DownloadIcon, XCircle, FolderTree } from "lucide-react";
@@ -108,6 +110,8 @@ export interface SessionViewerProps {
   activeModel?: { provider: string; id: string; name?: string; reasoning?: boolean } | null;
   activeToolCalls?: Map<string, string>;
   pendingQuestion?: { toolCallId: string; questions: Array<{ question: string; options: string[] }>; display: QuestionDisplayMode } | null;
+  /** Pending plan mode prompt — shown as a plan review panel */
+  pendingPlan?: { toolCallId: string; title: string; description: string | null; steps: Array<{ title: string; description?: string }> } | null;
   /** Plugin trust prompt from the worker — shown as a confirmation dialog */
   pluginTrustPrompt?: { promptId: string; pluginNames: string[]; pluginSummaries: string[] } | null;
   /** Respond to the plugin trust prompt */
@@ -150,6 +154,8 @@ export interface SessionViewerProps {
   showFileExplorerButton?: boolean;
   /** Current agent todo list */
   todoList?: TodoItem[];
+  /** Whether plan mode (read-only exploration) is currently active */
+  planModeEnabled?: boolean;
   /** Runner ID for the current session (used for runner files API) */
   runnerId?: string;
   /** Absolute working directory of the current session (used as base for @-mention file paths) */
@@ -347,6 +353,32 @@ const SessionMessageItem = React.memo(({ message, activeToolCalls, agentActive, 
     );
   }
 
+  // Chromeless tool cards — render as standalone inline elements without the
+  // outer "TOOL · NAME · timestamp" message wrapper.
+  if ((message.role === "toolResult" || message.role === "tool") && message.toolInput !== undefined) {
+    const norm = normalizeToolName(message.toolName);
+    if (norm === "toggle_plan_mode" || norm.endsWith(".toggle_plan_mode")) {
+      return (
+        <div className="w-full px-4 py-1.5 max-w-3xl mx-auto">
+          {renderContent(
+            message.content,
+            activeToolCalls,
+            message.role,
+            message.toolName,
+            message.isError,
+            message.toolInput,
+            message.toolCallId ?? message.key,
+            agentActive && isLast && message.timestamp === undefined,
+            message.thinking,
+            message.thinkingDuration,
+            undefined,
+            message.details,
+          )}
+        </div>
+      );
+    }
+  }
+
   // Sub-agent conversation cards render without the outer message wrapper
   // (they have their own full-width card styling)
   if (message.role === "subAgentConversation") {
@@ -455,7 +487,7 @@ function SessionSkeleton() {
   );
 }
 
-export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, pluginTrustPrompt, onPluginTrustResponse, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, isCompacting, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], runnerId, sessionCwd, onAppendSystemMessage }: SessionViewerProps) {
+export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, pendingPlan, pluginTrustPrompt, onPluginTrustResponse, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, isCompacting, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], planModeEnabled, runnerId, sessionCwd, onAppendSystemMessage }: SessionViewerProps) {
   const [input, setInput] = React.useState("");
   const [composerError, setComposerError] = React.useState<string | null>(null);
   const [showClearDialog, setShowClearDialog] = React.useState(false);
@@ -524,7 +556,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
   const webHandledCommands = React.useMemo(() => new Set([
     "new", "resume", "mcp", "plugins", "skills", "model", "cycle_model",
     "effort", "cycle_effort", "compact", "name", "copy", "stop", "restart",
-    "remote",
+    "remote", "plan",
   ]), []);
 
   // MCP toggle handler — sends mcp_toggle_server remote exec to the runner
@@ -775,6 +807,14 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
       return true;
     }
 
+    if (rawCommand === "plan") {
+      onExec({ type: "exec", id, command: "set_plan_mode" });
+      setInput("");
+      setCommandOpen(false);
+      setCommandQuery("");
+      return true;
+    }
+
     return false;
   }, [onExec, onSendInput, resumeSessions, runnerId, onAppendSystemMessage, skillCommands, sessionCwd, onShowModelSelector, isCompacting, sessionId]);
 
@@ -836,6 +876,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
       { name: "copy", description: "Copy last assistant message" },
       { name: "stop", description: "Abort current generation" },
       { name: "restart", description: "Restart the CLI process" },
+      { name: "plan", description: "Toggle plan mode (read-only exploration)" },
     ] as Array<{ name: string; description: string; subCommands?: Array<{ name: string; description: string; requiresArg?: boolean }> }>;
   }, []);
 
@@ -1256,6 +1297,21 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                 {effortLevel && effortLevel !== "off" ? effortLevel : "off"}
               </button>
             )}
+            {planModeEnabled && (
+              <button
+                className="rounded-full border border-yellow-500/40 bg-yellow-500/10 px-2 py-0.5 text-[0.65rem] font-medium text-yellow-600 dark:text-yellow-400 uppercase tracking-wide hover:bg-yellow-500/20 transition-colors cursor-pointer"
+                onClick={() => {
+                  if (onExec) {
+                    onExec({ type: "exec", id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, command: "set_plan_mode", enabled: false } as any);
+                  }
+                }}
+                title="Plan mode active — click to turn off"
+                aria-label="Turn off plan mode"
+                type="button"
+              >
+                ⏸ plan
+              </button>
+            )}
             {tokenUsage && (tokenUsage.input > 0 || tokenUsage.output > 0) && (
               <span
                 className="text-[0.7rem] text-muted-foreground tabular-nums hidden xs:inline"
@@ -1561,6 +1617,38 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
           />
         )}
 
+        {/* Plan mode review panel (shown above the input area) */}
+        {pendingPlan && sessionId && (
+          <PlanModePanel
+            plan={pendingPlan}
+            promptKey={pendingPlan.toolCallId}
+            className="mb-2"
+            onSubmit={(answer: PlanModeAnswer) => {
+              if (!onSendInput) return Promise.resolve(false);
+              setComposerError(null);
+              const payload = JSON.stringify({
+                action: answer.action,
+                ...(answer.editSuggestion ? { editSuggestion: answer.editSuggestion } : {}),
+              });
+              return Promise.resolve(onSendInput(payload))
+                .then((result) => {
+                  if (result !== false) {
+                    setComposerError(null);
+                    setInput("");
+                    if (sessionId) void dismissNotificationsForSession(sessionId);
+                    return true;
+                  }
+                  setComposerError("Failed to send plan response.");
+                  return false;
+                })
+                .catch(() => {
+                  setComposerError("Failed to send plan response.");
+                  return false;
+                });
+            }}
+          />
+        )}
+
         {sessionId && commandOpen && (
           <div className="mb-2 rounded-md border border-border bg-popover text-popover-foreground shadow-sm">
             <Command
@@ -1829,7 +1917,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
           onError={(err) => {
             setComposerError(err.message);
           }}
-          className={pendingQuestion && pendingQuestion.questions.length > 0 ? "hidden" : undefined}
+          className={(pendingQuestion && pendingQuestion.questions.length > 0) || pendingPlan ? "hidden" : undefined}
         >
           <ComposerAttachments />
           <PromptInputBody>

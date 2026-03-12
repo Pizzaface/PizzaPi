@@ -227,6 +227,18 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         if (!runner) return Response.json({ error: "Runner not found" }, { status: 404 });
         if (runner.userId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
 
+        // POST /api/runners/:id/skills/refresh — ask runner to re-scan skills from disk
+        if (req.method === "POST" && skillName === "refresh") {
+            try {
+                const result = await sendSkillCommand(runnerId, { type: "list_skills" });
+                if (!result.ok) return Response.json({ error: result.message ?? "Skill scan failed" }, { status: 500 });
+                return Response.json({ ok: true, skills: result.skills ?? [] });
+            } catch (err) {
+                console.error(`[skills] refresh failed:`, err);
+                return Response.json({ error: "Failed to refresh skills" }, { status: 502 });
+            }
+        }
+
         // GET /api/runners/:id/skills — list skills (from Redis cache)
         if (req.method === "GET" && !skillName) {
             return Response.json({ skills: parseJsonArray(runner.skills) });
@@ -309,6 +321,18 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         const runner = await getRunnerData(runnerId);
         if (!runner) return Response.json({ error: "Runner not found" }, { status: 404 });
         if (runner.userId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
+
+        // POST /api/runners/:id/agents/refresh — ask runner to re-scan agents from disk
+        if (req.method === "POST" && agentName === "refresh") {
+            try {
+                const result = await sendAgentCommand(runnerId, { type: "list_agents" });
+                if (!result.ok) return Response.json({ error: result.message ?? "Agent scan failed" }, { status: 500 });
+                return Response.json({ ok: true, agents: result.agents ?? [] });
+            } catch (err) {
+                console.error(`[agents] refresh failed:`, err);
+                return Response.json({ error: "Failed to refresh agents" }, { status: 502 });
+            }
+        }
 
         // GET /api/runners/:id/agents — list agents (from Redis cache)
         if (req.method === "GET" && !agentName) {
