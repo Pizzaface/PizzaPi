@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { isPlanModeEnabled, isExecutionMode, getPlanTodoItems, togglePlanModeFromRemote, setPlanModeFromRemote, isSafeCommand } from "./plan-mode-toggle.js";
+import { isPlanModeEnabled, isExecutionMode, getPlanTodoItems, togglePlanModeFromRemote, setPlanModeFromRemote, isSafeCommand, splitShellSegments } from "./plan-mode-toggle.js";
 
 // These tests verify the module-level state accessors and the remote toggle.
 // The extension itself requires a full pi runtime to test (registerCommand,
@@ -90,6 +90,20 @@ describe("isSafeCommand", () => {
         expect(isSafeCommand("curl --output=out.bin https://example.com")).toBe(false);
     });
 
+    test("blocks curl with -D/--dump-header (file write)", () => {
+        expect(isSafeCommand("curl -D out.txt https://example.com")).toBe(false);
+        expect(isSafeCommand("curl --dump-header h.txt https://example.com")).toBe(false);
+        expect(isSafeCommand("curl -Dout.txt https://example.com")).toBe(false);
+        expect(isSafeCommand("curl --dump-header=h.txt https://example.com")).toBe(false);
+    });
+
+    test("blocks curl with -c/--cookie-jar (file write)", () => {
+        expect(isSafeCommand("curl -c cookies.txt https://example.com")).toBe(false);
+        expect(isSafeCommand("curl --cookie-jar c.txt https://example.com")).toBe(false);
+        expect(isSafeCommand("curl -ccookies.txt https://example.com")).toBe(false);
+        expect(isSafeCommand("curl --cookie-jar=c.txt https://example.com")).toBe(false);
+    });
+
     test("allows curl without -o flag (stdout-only)", () => {
         expect(isSafeCommand("curl https://example.com")).toBe(true);
         expect(isSafeCommand("curl -s https://example.com")).toBe(true);
@@ -132,5 +146,47 @@ describe("isSafeCommand", () => {
         expect(isSafeCommand("ls && make")).toBe(false);
         expect(isSafeCommand("git status; python script.py")).toBe(false);
         expect(isSafeCommand("ls & make")).toBe(false);
+    });
+
+    // Quote-aware splitting — pipe inside quotes must not split
+    test("allows rg/grep with quoted alternation patterns", () => {
+        expect(isSafeCommand('rg "foo|bar" src/')).toBe(true);
+        expect(isSafeCommand("rg 'foo|bar' src/")).toBe(true);
+        expect(isSafeCommand("grep -E 'a|b' file.txt")).toBe(true);
+        expect(isSafeCommand('grep -E "a|b|c" src/')).toBe(true);
+    });
+
+    test("still splits on real pipes outside quotes", () => {
+        expect(isSafeCommand("ls | make")).toBe(false);
+        expect(isSafeCommand('rg "pattern" src/ | rm file')).toBe(false);
+    });
+});
+
+// ── splitShellSegments tests ─────────────────────────────────────────────────
+
+describe("splitShellSegments", () => {
+    test("splits on && and ||", () => {
+        expect(splitShellSegments("ls && pwd")).toEqual(["ls ", " pwd"]);
+        expect(splitShellSegments("ls || pwd")).toEqual(["ls ", " pwd"]);
+    });
+
+    test("splits on ; | &", () => {
+        expect(splitShellSegments("ls; pwd")).toEqual(["ls", " pwd"]);
+        expect(splitShellSegments("ls | cat")).toEqual(["ls ", " cat"]);
+    });
+
+    test("does not split inside double quotes", () => {
+        const result = splitShellSegments('rg "foo|bar&&baz" src/');
+        expect(result).toEqual(['rg "foo|bar&&baz" src/']);
+    });
+
+    test("does not split inside single quotes", () => {
+        const result = splitShellSegments("grep -E 'a|b;c&&d' file");
+        expect(result).toEqual(["grep -E 'a|b;c&&d' file"]);
+    });
+
+    test("handles mixed quotes", () => {
+        const result = splitShellSegments(`rg "a|b" src/ && grep 'c|d' file`);
+        expect(result).toEqual([`rg "a|b" src/ `, ` grep 'c|d' file`]);
     });
 });

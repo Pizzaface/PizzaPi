@@ -23,7 +23,7 @@ const DESTRUCTIVE_PATTERNS = [
     /\bsystemctl\s+(start|stop|restart|enable|disable)/i,
     /\bservice\s+\S+\s+(start|stop|restart)/i,
     /\b(vim?|nano|emacs|code|subl)\b/i,
-    /\bcurl\b.*\s(-o\S|-o\s|--output\b|--output=|-O\b|--remote-name\b|--remote-name-all\b)/i, /\bwget\b.*\s(-O\b|--output-document\b|--output-document=)/i,
+    /\bcurl\b.*\s(-o\S|-o\s|--output\b|--output=|-O\b|--remote-name\b|--remote-name-all\b|-D\s|-D\S|--dump-header\b|--dump-header=|-c\s|-c\S|--cookie-jar\b|--cookie-jar=)/i, /\bwget\b.*\s(-O\b|--output-document\b|--output-document=)/i,
     /\bfind\b.*\s-exec(dir)?\b/i, /\bfind\b.*\s-delete\b/i, /\bfind\b.*\s-fprintf\b/i,
 ];
 
@@ -52,15 +52,62 @@ const SAFE_PATTERNS = [
  * every subcommand independently passes the safe-command check.  This prevents
  * bypass via e.g. `ls && make` or `git status; python script.py`.
  */
+/**
+ * Split a shell command string on unquoted chaining operators (&&, ||, ;, |, &).
+ * Respects single and double quotes so that patterns like `rg "foo|bar"` are
+ * not incorrectly split on the `|` inside the quotes.
+ * @internal Exported for testing only.
+ */
+export function splitShellSegments(command: string): string[] {
+    const segments: string[] = [];
+    let current = "";
+    let inSingle = false;
+    let inDouble = false;
+
+    for (let i = 0; i < command.length; i++) {
+        const ch = command[i];
+
+        // Toggle quote state (no escaping inside single quotes, backslash
+        // escapes inside double quotes are intentionally ignored for simplicity
+        // since we only care about operator detection, not full shell semantics).
+        if (ch === "'" && !inDouble) { inSingle = !inSingle; current += ch; continue; }
+        if (ch === '"' && !inSingle) { inDouble = !inDouble; current += ch; continue; }
+
+        // Inside quotes — accumulate without checking for operators
+        if (inSingle || inDouble) { current += ch; continue; }
+
+        // Check for multi-char operators first: && and ||
+        if (i + 1 < command.length) {
+            const two = ch + command[i + 1];
+            if (two === "&&" || two === "||") {
+                segments.push(current);
+                current = "";
+                i++; // skip second char
+                continue;
+            }
+        }
+
+        // Single-char operators: ; | &
+        if (ch === ";" || ch === "|" || ch === "&") {
+            segments.push(current);
+            current = "";
+            continue;
+        }
+
+        current += ch;
+    }
+    segments.push(current);
+    return segments;
+}
+
 /** @internal Exported for testing only. */
 export function isSafeCommand(command: string): boolean {
     // Reject command substitution, backtick expansion, and multi-line payloads
     // that could smuggle non-allowlisted commands past the per-segment check.
     if (/\$\(|`|\n/.test(command)) return false;
 
-    // Split on shell chaining operators: &&, ||, ;, |, &
-    // (order matters — match && / || before single & / |)
-    const parts = command.split(/\s*(?:&&|\|\||[;&|])\s*/);
+    // Split on shell chaining operators, respecting quotes
+    const parts = splitShellSegments(command);
 
     for (const part of parts) {
         const trimmed = part.trim();
