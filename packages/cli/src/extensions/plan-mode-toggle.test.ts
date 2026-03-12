@@ -141,6 +141,44 @@ describe("isSafeCommand", () => {
         expect(isSafeCommand("curl --remote-name-all https://example.com/file.bin")).toBe(false);
     });
 
+    // PR fix: env command-execution bypass
+    test("blocks env used to execute arbitrary commands", () => {
+        expect(isSafeCommand("env bash -lc 'touch /tmp/pwned'")).toBe(false);
+        expect(isSafeCommand("env sh -c 'rm -rf /'")).toBe(false);
+    });
+
+    test("still allows printenv for reading env vars", () => {
+        expect(isSafeCommand("printenv PATH")).toBe(true);
+        expect(isSafeCommand("printenv")).toBe(true);
+    });
+
+    // PR fix: git diff --output file-write bypass
+    test("blocks git diff --output (file write)", () => {
+        expect(isSafeCommand("git diff --output=/tmp/patch.diff")).toBe(false);
+        expect(isSafeCommand("git diff --output /tmp/patch.diff")).toBe(false);
+    });
+
+    test("still allows git diff without --output", () => {
+        expect(isSafeCommand("git diff")).toBe(true);
+        expect(isSafeCommand("git diff HEAD~1")).toBe(true);
+        expect(isSafeCommand("git diff --stat")).toBe(true);
+    });
+
+    // PR fix: npm audit fix bypass
+    test("blocks npm audit fix (mutates project files)", () => {
+        expect(isSafeCommand("npm audit fix")).toBe(false);
+        expect(isSafeCommand("npm audit fix --force")).toBe(false);
+    });
+
+    test("blocks npm audit signatures (may perform network writes)", () => {
+        expect(isSafeCommand("npm audit signatures")).toBe(false);
+    });
+
+    test("still allows npm audit (read-only report)", () => {
+        expect(isSafeCommand("npm audit")).toBe(true);
+        expect(isSafeCommand("npm audit --json")).toBe(true);
+    });
+
     // PR fix: process substitution bypass
     test("blocks process substitution via <() and >()", () => {
         expect(isSafeCommand("cat <(touch /tmp/pwned)")).toBe(false);

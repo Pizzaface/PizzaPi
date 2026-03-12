@@ -38,6 +38,7 @@ const DESTRUCTIVE_FLAG_PATTERNS = [
     /\bcurl\b.*\s(-o\S|-o\s|--output\b|--output=|-O\b|--remote-name\b|--remote-name-all\b|-D\s|-D\S|--dump-header\b|--dump-header=|-c\s|-c\S|--cookie-jar\b|--cookie-jar=|--trace\b|--trace=|--trace-ascii\b|--trace-ascii=|--libcurl\b|--libcurl=|--stderr\b|--stderr=)/i,
     /\bwget\b.*\s(-O\b|--output-document\b|--output-document=)/i,
     /\bfind\b.*\s-exec(dir)?\b/i, /\bfind\b.*\s-ok(dir)?\b/i, /\bfind\b.*\s-delete\b/i, /\bfind\b.*\s-fprintf\b/i,
+    /\bgit\b.*\s--output[= ]/i,
 ];
 
 const SAFE_PATTERNS = [
@@ -46,12 +47,12 @@ const SAFE_PATTERNS = [
     /^\s*echo\b/, /^\s*printf\b/, /^\s*wc\b/, /^\s*sort\b/, /^\s*uniq\b/,
     /^\s*diff\b/, /^\s*file\b/, /^\s*stat\b/, /^\s*du\b/, /^\s*df\b/,
     /^\s*tree\b/, /^\s*which\b/, /^\s*whereis\b/, /^\s*type\b/,
-    /^\s*env\b/, /^\s*printenv\b/, /^\s*uname\b/, /^\s*whoami\b/,
+    /^\s*printenv\b/, /^\s*uname\b/, /^\s*whoami\b/,
     /^\s*id\b/, /^\s*date\b/, /^\s*cal\b/, /^\s*uptime\b/,
     /^\s*ps\b/, /^\s*top\b/, /^\s*htop\b/, /^\s*free\b/,
     /^\s*git\s+(status|log|diff|show|branch|remote|config\s+--get)/i,
     /^\s*git\s+ls-/i,
-    /^\s*npm\s+(list|ls|view|info|search|outdated|audit)/i,
+    /^\s*npm\s+(list|ls|view|info|search|outdated|audit(?!\s+(fix|signatures)))/i,
     /^\s*yarn\s+(list|info|why|audit)/i,
     /^\s*bun\s+(pm\s+ls|--version)/i,
     /^\s*node\s+--version/i, /^\s*python\s+--version/i,
