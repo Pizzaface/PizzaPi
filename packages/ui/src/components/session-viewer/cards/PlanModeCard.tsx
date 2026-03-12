@@ -132,11 +132,43 @@ export function PlanModeCard({
   const actionResult = parseActionFromResult(resultText);
   const isResponded = actionResult !== null;
 
-  // While waiting for a response, hide the tool card entirely —
+  // While streaming/waiting for a response, hide the tool card —
   // the interactive panel in the composer area handles the UX.
-  if (!isResponded && !isStreaming) return null;
-  // If streaming (waiting), don't show either
   if (isStreaming && !isResponded) return null;
+
+  // If the tool completed but we have no result text at all (still waiting), hide.
+  if (!resultText && !isStreaming) return null;
+
+  // If there's result text but we can't parse an action, show a fallback
+  // (e.g. error messages like "A different plan_mode prompt is already pending.")
+  if (resultText && !isResponded) {
+    return (
+      <ToolCardShell>
+        <ToolCardHeader className="py-2">
+          <ToolCardTitle
+            icon={
+              <div className="flex size-5 items-center justify-center rounded-full bg-blue-500/15">
+                <ClipboardList className="size-3 text-blue-400" />
+              </div>
+            }
+          >
+            <span className="text-sm font-medium text-blue-300">
+              Plan{plan ? `: ${plan.title}` : ""}
+            </span>
+          </ToolCardTitle>
+          <ToolCardActions>
+            <StatusPill variant="error">
+              <X className="size-3" />
+              Error
+            </StatusPill>
+          </ToolCardActions>
+        </ToolCardHeader>
+        <div className="px-4 py-2.5 text-sm text-zinc-300">
+          {resultText}
+        </div>
+      </ToolCardShell>
+    );
+  }
 
   if (!plan) return null;
 

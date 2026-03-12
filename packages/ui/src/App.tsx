@@ -963,6 +963,7 @@ export function App() {
     setMessages([]);
     setViewerStatus("Idle");
     setPendingQuestion(null);
+    setPendingPlan(null);
     setPluginTrustPrompt(null);
     setRetryState(null);
     setActiveToolCalls(new Map());
@@ -1472,6 +1473,7 @@ export function App() {
       });
 
       setPendingQuestion(null);
+      setPendingPlan(null);
       setPluginTrustPrompt(null);
       // Restore in-flight tool calls from the snapshot so reconnecting mid-command
       // keeps streaming indicators and Kill buttons visible. The snapshot payload
@@ -1510,6 +1512,7 @@ export function App() {
       setMessages(normalized);
       patchSessionCache({ messages: normalized });
       setPendingQuestion(null);
+      setPendingPlan(null);
       setRetryState(null);
       setActiveToolCalls(new Map());
       // Clear message queue — the agent processed any queued steer/followUp messages
@@ -1720,6 +1723,7 @@ export function App() {
         cancelPendingDeltas();
         setMessages([]);
         setPendingQuestion(null);
+        setPendingPlan(null);
         setActiveToolCalls(new Map());
         setMessageQueue([]);
         setSessionName(null);
@@ -2196,6 +2200,7 @@ export function App() {
     setActiveSessionId(relaySessionId);
     setViewerStatus("Connecting…");
     setPendingQuestion(null);
+    setPendingPlan(null);
     setRetryState(null);
     setActiveToolCalls(new Map());
     setIsChangingModel(false);
@@ -2301,6 +2306,7 @@ export function App() {
         setViewerStatus(data.reason || "Disconnected");
       }
       setPendingQuestion(null);
+      setPendingPlan(null);
       setIsChangingModel(false);
     });
 
@@ -2328,6 +2334,7 @@ export function App() {
               : prev,
         );
         setPendingQuestion(null);
+        setPendingPlan(null);
         setIsChangingModel(false);
         // Reset the stale clock so we don't fire immediately on reconnect.
         lastViewerEventAtRef.current = Date.now();
