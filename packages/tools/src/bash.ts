@@ -2,6 +2,7 @@ import { Type } from "@mariozechner/pi-ai";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { exec } from "child_process";
 import { promisify } from "util";
+import { wrapCommand, getSandboxEnv, isSandboxActive, getSandboxMode } from "./sandbox.js";
 
 const execAsync = promisify(exec);
 
@@ -15,7 +16,31 @@ export const bashTool: AgentTool = {
     }),
     async execute(_toolCallId, params: any) {
         const timeout = params.timeout ?? 30_000;
-        const { stdout, stderr } = await execAsync(params.command, { timeout });
+
+        let command: string = params.command;
+        let env: NodeJS.ProcessEnv = process.env;
+        const mode = getSandboxMode();
+
+        // Sandbox integration: wrap command and inject proxy env vars
+        if (isSandboxActive()) {
+            try {
+                command = await wrapCommand(params.command);
+                env = { ...process.env, ...getSandboxEnv() };
+            } catch (err) {
+                const reason = err instanceof Error ? err.message : String(err);
+                const text = `❌ Sandbox blocked: ${reason}. To allow, update sandbox config.`;
+                return {
+                    content: [{ type: "text" as const, text }],
+                    details: { command: params.command, stdout: "", stderr: text, sandboxBlocked: true },
+                };
+            }
+
+            if (mode === "audit") {
+                console.log(`⚠️ [sandbox:audit] Would sandbox: ${params.command}`);
+            }
+        }
+
+        const { stdout, stderr } = await execAsync(command, { timeout, env });
         return {
             content: [{ type: "text" as const, text: stdout + (stderr ? `\nstderr: ${stderr}` : "") }],
             details: { command: params.command, stdout, stderr },
