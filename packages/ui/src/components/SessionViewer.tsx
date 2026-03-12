@@ -66,7 +66,7 @@ import { MultipleChoiceQuestions } from "@/components/ai-elements/multiple-choic
 import { PlanModePanel, type PlanModeAnswer } from "@/components/ai-elements/plan-mode";
 import { formatAnswersForAgent, type QuestionDisplayMode } from "@/lib/ask-user-questions";
 import { dismissNotificationsForSession } from "@/lib/push";
-import { AlertTriangleIcon, ArrowDownIcon, BookOpen, CheckCircle2, ChevronsUpDown, Circle, CircleDashed, Loader2, MessageSquare, OctagonX, PaperclipIcon, Plus, Puzzle, ShieldAlert, Zap, Clock, X, Trash2, TerminalIcon, DownloadIcon, XCircle, FolderTree } from "lucide-react";
+import { AlertTriangleIcon, ArrowDownIcon, BookOpen, Bot, CheckCircle2, ChevronsUpDown, Circle, CircleDashed, Loader2, MessageSquare, OctagonX, PaperclipIcon, Plus, Puzzle, ShieldAlert, Zap, Clock, X, Trash2, TerminalIcon, DownloadIcon, XCircle, FolderTree } from "lucide-react";
 import { AtMentionPopover } from "@/components/AtMentionPopover";
 import type { Entry as AtMentionEntry } from "@/hooks/useAtMentionFiles";
 import { McpToggleContext, type McpToggleHandler } from "@/components/session-viewer/McpToggleContext";
@@ -162,6 +162,8 @@ export interface SessionViewerProps {
   sessionCwd?: string;
   /** Append a local system message to the conversation (string or structured data for card rendering) */
   onAppendSystemMessage?: (content: string | CommandResultData) => void;
+  /** Spawn a new session configured as a specific agent */
+  onSpawnAgentSession?: (agent: { name: string; description?: string; systemPrompt?: string; tools?: string; disallowedTools?: string }) => void;
 }
 
 function formatTokenCount(n: number): string {
@@ -487,7 +489,7 @@ function SessionSkeleton() {
   );
 }
 
-export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, pendingPlan, pluginTrustPrompt, onPluginTrustResponse, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, isCompacting, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], planModeEnabled, runnerId, sessionCwd, onAppendSystemMessage }: SessionViewerProps) {
+export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, pendingPlan, pluginTrustPrompt, onPluginTrustResponse, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, isCompacting, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], planModeEnabled, runnerId, sessionCwd, onAppendSystemMessage, onSpawnAgentSession }: SessionViewerProps) {
   const [input, setInput] = React.useState("");
   const [composerError, setComposerError] = React.useState<string | null>(null);
   const [showClearDialog, setShowClearDialog] = React.useState(false);
@@ -554,7 +556,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
   // Commands from the CLI that the web UI already handles via executeSlashCommand.
   // These are excluded from the "CLI Commands" group to avoid duplicates.
   const webHandledCommands = React.useMemo(() => new Set([
-    "new", "resume", "mcp", "plugins", "skills", "model", "cycle_model",
+    "new", "resume", "mcp", "plugins", "skills", "agents", "model", "cycle_model",
     "effort", "cycle_effort", "compact", "name", "copy", "stop", "restart",
     "remote", "plan",
   ]), []);
@@ -699,6 +701,37 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
           if (dispatchSessionId !== sessionIdRef.current) return;
           onAppendSystemMessage?.(`**Skills** — Failed to load: ${err.message}`);
         });
+      return true;
+    }
+
+    // /agents is handled via the dynamic agent picker (isAgentMode) in the
+    // command popover — selecting an agent from the list triggers onSpawnAgentSession.
+    // If the user types "/agents <name>" and hits Enter, we resolve it here.
+    if (rawCommand === "agents") {
+      if (args.trim()) {
+        // User typed "/agents researcher" — find and spawn that agent
+        const agentName = args.trim();
+        if (onSpawnAgentSession && runnerId) {
+          fetch(`/api/runners/${encodeURIComponent(runnerId)}/agents`, { credentials: "include" })
+            .then((res) => res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))
+            .then((data: any) => {
+              const agents: Array<{ name: string; description?: string; content?: string }> = Array.isArray(data?.agents) ? data.agents : [];
+              const match = agents.find(a => a.name.toLowerCase() === agentName.toLowerCase());
+              if (match) {
+                onSpawnAgentSession({ name: match.name, description: match.description, systemPrompt: match.content });
+              } else {
+                onAppendSystemMessage?.(`**Agents** — Agent "${agentName}" not found.`);
+              }
+            })
+            .catch((err: Error) => {
+              onAppendSystemMessage?.(`**Agents** — Failed to load: ${err.message}`);
+            });
+        }
+      }
+      // Without args, the popover handles it (isAgentMode)
+      setInput("");
+      setCommandOpen(false);
+      setCommandQuery("");
       return true;
     }
 
@@ -867,6 +900,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
       ]},
       { name: "plugins", description: "Show loaded plugins" },
       { name: "skills", description: "Show available skills" },
+      { name: "agents", description: "Start a new session as an agent" },
       { name: "model", description: "Select model" },
       { name: "cycle_model", description: "Select model" },
       { name: "effort", description: "Cycle reasoning effort level" },
@@ -894,7 +928,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
   // Commands that keep the popover open after a space (for argument/sub-command UI).
   // Derived from commands with subCommands, plus "resume" which has its own picker.
   const keepPopoverOpenNames = React.useMemo(() => {
-    const names = new Set(["resume"]);
+    const names = new Set(["resume", "agents"]);
     for (const c of supportedWebCommands) {
       if (c.subCommands && c.subCommands.length > 0) names.add(c.name.toLowerCase());
     }
@@ -1008,6 +1042,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
 
   const trimmedInput = input.trimStart();
   const isResumeMode = /^\/resume(?:\s|$)/i.test(trimmedInput);
+  const isAgentMode = /^\/agents(?:\s|$)/i.test(trimmedInput);
   const resumeQuery = isResumeMode ? trimmedInput.replace(/^\/resume\s*/i, "").trim().toLowerCase() : "";
   const resumeCandidates = React.useMemo(() => {
     const list = resumeSessions ?? [];
@@ -1026,6 +1061,47 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     });
   }, [resumeSessions, resumeQuery]);
 
+  // ── Agent mode state ────────────────────────────────────────────────────
+  const agentQuery = isAgentMode ? trimmedInput.replace(/^\/agents\s*/i, "").trim().toLowerCase() : "";
+  const [agentsList, setAgentsList] = React.useState<Array<{ name: string; description?: string; content?: string }>>([]);
+  const [agentsLoading, setAgentsLoading] = React.useState(false);
+  const agentsRequestedRef = React.useRef<string | null>(null);
+
+  const agentCandidates = React.useMemo(() => {
+    if (!agentQuery) return agentsList;
+    return agentsList.filter((a) => {
+      const name = a.name.toLowerCase();
+      const desc = (a.description ?? "").toLowerCase();
+      return name.includes(agentQuery) || desc.includes(agentQuery);
+    });
+  }, [agentsList, agentQuery]);
+
+  // Fetch agents when agent mode activates
+  React.useEffect(() => {
+    if (!sessionId || !commandOpen || !isAgentMode || !runnerId) return;
+    const requestKey = `${sessionId}-${runnerId}`;
+    if (agentsRequestedRef.current === requestKey) return;
+    agentsRequestedRef.current = requestKey;
+    setAgentsLoading(true);
+    fetch(`/api/runners/${encodeURIComponent(runnerId)}/agents`, { credentials: "include" })
+      .then((res) => res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))
+      .then((data: any) => {
+        const agents: Array<{ name: string; description?: string; content?: string }> = Array.isArray(data?.agents) ? data.agents : [];
+        setAgentsList(agents);
+      })
+      .catch(() => {
+        setAgentsList([]);
+      })
+      .finally(() => setAgentsLoading(false));
+  }, [sessionId, commandOpen, isAgentMode, runnerId]);
+
+  // Reset agent request ref when agent mode closes
+  React.useEffect(() => {
+    if (!commandOpen || !isAgentMode) {
+      agentsRequestedRef.current = null;
+    }
+  }, [commandOpen, isAgentMode]);
+
   // Sub-command mode: detect when the user has typed a command that has sub-commands
   // e.g. "/mcp " or "/mcp rel" → show sub-command options
   const subCommandMode = React.useMemo<{
@@ -1035,7 +1111,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     query: string;
     filtered: Array<{ name: string; description: string; requiresArg?: boolean }>;
   }>(() => {
-    if (isResumeMode) return { active: false, parentCommand: "", subCommands: [], query: "", filtered: [] };
+    if (isResumeMode || isAgentMode) return { active: false, parentCommand: "", subCommands: [], query: "", filtered: [] };
     const match = trimmedInput.match(/^\/(\S+)(?:\s(.*))?$/i);
     if (!match) return { active: false, parentCommand: "", subCommands: [], query: "", filtered: [] };
     const cmdName = match[1]!.toLowerCase();
@@ -1046,7 +1122,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
       ? cmd.subCommands.filter(sc => sc.name.toLowerCase().includes(argText))
       : cmd.subCommands;
     return { active: true, parentCommand: cmd.name, subCommands: cmd.subCommands, query: argText, filtered };
-  }, [trimmedInput, isResumeMode, supportedWebCommands]);
+  }, [trimmedInput, isResumeMode, isAgentMode, supportedWebCommands]);
 
   // Controlled value for cmdk Command (drives data-selected highlighting)
   const commandHighlightedValue = React.useMemo(() => {
@@ -1054,12 +1130,15 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     if (isResumeMode) {
       return resumeCandidates[commandHighlightedIndex]?.path ?? "";
     }
+    if (isAgentMode) {
+      return agentCandidates[commandHighlightedIndex]?.name ?? "";
+    }
     if (subCommandMode.active) {
       return subCommandMode.filtered[commandHighlightedIndex]?.name ?? "";
     }
     const combined = [...commandSuggestions, ...extensionSuggestions, ...promptSuggestions, ...skillSuggestions];
     return combined[commandHighlightedIndex]?.name ?? "";
-  }, [commandOpen, isResumeMode, subCommandMode, resumeCandidates, commandSuggestions, extensionSuggestions, promptSuggestions, skillSuggestions, commandHighlightedIndex]);
+  }, [commandOpen, isResumeMode, isAgentMode, subCommandMode, resumeCandidates, agentCandidates, commandSuggestions, extensionSuggestions, promptSuggestions, skillSuggestions, commandHighlightedIndex]);
 
   const resumeRequestedRef = React.useRef<string | null>(null);
   const compactingRef = React.useRef(false);
@@ -1660,6 +1739,9 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                 if (isResumeMode) {
                   const idx = resumeCandidates.findIndex(s => s.path.toLowerCase() === v.toLowerCase());
                   if (idx !== -1) setCommandHighlightedIndex(idx);
+                } else if (isAgentMode) {
+                  const idx = agentCandidates.findIndex(a => a.name.toLowerCase() === v.toLowerCase());
+                  if (idx !== -1) setCommandHighlightedIndex(idx);
                 } else if (subCommandMode.active) {
                   const idx = subCommandMode.filtered.findIndex(sc => sc.name.toLowerCase() === v.toLowerCase());
                   if (idx !== -1) setCommandHighlightedIndex(idx);
@@ -1673,7 +1755,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
               {/* Close button header */}
               <div className="flex items-center justify-between px-3 py-1.5 border-b border-border/50">
                 <span className="text-xs text-muted-foreground font-medium">
-                  {isResumeMode ? "Resume session" : subCommandMode.active ? `/${subCommandMode.parentCommand}` : "Commands"}
+                  {isResumeMode ? "Resume session" : isAgentMode ? "Start as agent" : subCommandMode.active ? `/${subCommandMode.parentCommand}` : "Commands"}
                 </span>
                 <button
                   type="button"
@@ -1718,6 +1800,42 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                             >
                               {formatPathTail(session.path, 2)}
                             </span>
+                          </div>
+                        </CommandItem>
+                      ))}
+                    </CommandGroup>
+                  </>
+                ) : isAgentMode ? (
+                  <>
+                    <CommandEmpty>{agentsLoading ? "Loading agents…" : "No agents found"}</CommandEmpty>
+                    <CommandGroup heading="Start new session as agent">
+                      {agentCandidates.map((agent) => (
+                        <CommandItem
+                          key={agent.name}
+                          value={agent.name}
+                          onSelect={() => {
+                            if (onSpawnAgentSession) {
+                              onSpawnAgentSession({
+                                name: agent.name,
+                                description: agent.description,
+                                systemPrompt: agent.content,
+                              });
+                            }
+                            setInput("");
+                            setCommandQuery("");
+                            setCommandOpen(false);
+                          }}
+                        >
+                          <div className="flex min-w-0 flex-col gap-0.5">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <Bot className="size-3.5 shrink-0 text-primary/60" />
+                              <span className="font-mono text-sm truncate">{agent.name}</span>
+                            </div>
+                            {agent.description && (
+                              <span className="text-[11px] text-muted-foreground truncate">
+                                {agent.description}
+                              </span>
+                            )}
                           </div>
                         </CommandItem>
                       ))}
@@ -2133,6 +2251,21 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                         if (highlighted && onExec) {
                           event.preventDefault();
                           onExec({ type: "exec", id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, command: "resume_session", sessionPath: highlighted.path });
+                          setInput("");
+                          setCommandQuery("");
+                          setCommandOpen(false);
+                          setCommandHighlightedIndex(0);
+                          return;
+                        }
+                      } else if (isAgentMode) {
+                        const highlighted = agentCandidates[commandHighlightedIndex];
+                        if (highlighted && onSpawnAgentSession) {
+                          event.preventDefault();
+                          onSpawnAgentSession({
+                            name: highlighted.name,
+                            description: highlighted.description,
+                            systemPrompt: highlighted.content,
+                          });
                           setInput("");
                           setCommandQuery("");
                           setCommandOpen(false);

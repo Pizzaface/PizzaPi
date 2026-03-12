@@ -1,26 +1,33 @@
 import type { ExtensionFactory } from "@mariozechner/pi-coding-agent";
 
 /**
- * InitialPrompt extension — handles one-time model selection and initial prompt
- * injection when a worker session is spawned with PIZZAPI_WORKER_INITIAL_PROMPT
- * and optional PIZZAPI_WORKER_INITIAL_MODEL_PROVIDER / PIZZAPI_WORKER_INITIAL_MODEL_ID
- * environment variables.
+ * InitialPrompt extension — handles one-time model selection, initial prompt
+ * injection, and agent session setup when a worker is spawned.
+ *
+ * Environment variables:
+ *   PIZZAPI_WORKER_INITIAL_PROMPT           — initial user message to send
+ *   PIZZAPI_WORKER_INITIAL_MODEL_PROVIDER   — model provider override
+ *   PIZZAPI_WORKER_INITIAL_MODEL_ID         — model ID override
+ *   PIZZAPI_WORKER_AGENT_NAME               — agent name (sets session name)
  *
  * This extension is designed for runner-spawned workers created via the
- * spawn_session tool. It:
+ * spawn_session tool or the /agents UI command. It:
  *   1. On session_start, sets the requested model (if specified)
- *   2. Sends the initial prompt as a user message
- *   3. Clears the env vars so restarts don't re-send the prompt
+ *   2. Sets the session name to the agent name (if spawned as an agent)
+ *   3. Sends the initial prompt as a user message (if specified)
+ *   4. Clears prompt/model env vars so restarts don't re-send
  */
 export const initialPromptExtension: ExtensionFactory = (pi) => {
     const initialPrompt = process.env.PIZZAPI_WORKER_INITIAL_PROMPT?.trim();
     const initialModelProvider = process.env.PIZZAPI_WORKER_INITIAL_MODEL_PROVIDER?.trim();
     const initialModelId = process.env.PIZZAPI_WORKER_INITIAL_MODEL_ID?.trim();
+    const agentName = process.env.PIZZAPI_WORKER_AGENT_NAME?.trim();
 
-    // Nothing to do if no initial prompt was set.
-    if (!initialPrompt) return;
+    // Nothing to do if no initial prompt and no agent was set.
+    if (!initialPrompt && !agentName) return;
 
-    // Clear env vars immediately so restarts don't re-trigger.
+    // Clear prompt/model env vars immediately so restarts don't re-trigger.
+    // Agent name is NOT cleared — it should persist across restarts.
     delete process.env.PIZZAPI_WORKER_INITIAL_PROMPT;
     delete process.env.PIZZAPI_WORKER_INITIAL_MODEL_PROVIDER;
     delete process.env.PIZZAPI_WORKER_INITIAL_MODEL_ID;
@@ -56,12 +63,26 @@ export const initialPromptExtension: ExtensionFactory = (pi) => {
             }
         }
 
+        // Set session name to agent name (if spawned as an agent).
+        if (agentName) {
+            try {
+                pi.setSessionName(`🤖 ${agentName}`);
+                console.log(`pizzapi worker: session name set to agent "${agentName}"`);
+            } catch (err) {
+                console.warn(
+                    `pizzapi worker: failed to set agent session name: ${err instanceof Error ? err.message : String(err)}`,
+                );
+            }
+        }
+
         // Send the initial prompt as a user message.
         // Use a small delay to ensure the relay connection is established and
         // the session is fully initialized before sending the prompt.
-        setTimeout(() => {
-            console.log(`pizzapi worker: sending initial prompt (${initialPrompt.length} chars)`);
-            pi.sendUserMessage(initialPrompt);
-        }, 1000);
+        if (initialPrompt) {
+            setTimeout(() => {
+                console.log(`pizzapi worker: sending initial prompt (${initialPrompt.length} chars)`);
+                pi.sendUserMessage(initialPrompt);
+            }, 1000);
+        }
     });
 };

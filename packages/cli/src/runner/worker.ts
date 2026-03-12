@@ -54,6 +54,12 @@ async function main(): Promise<void> {
     const agentDir = config.agentDir?.replace(/^~/, homedir()) ?? defaultAgentDir();
     const skipPlugins = process.env.PIZZAPI_NO_PLUGINS === "1";
 
+    // ── Agent session config ───────────────────────────────────────────────
+    // When spawned "as" an agent, these env vars carry the agent definition.
+    const agentName = process.env.PIZZAPI_WORKER_AGENT_NAME?.trim() || undefined;
+    const agentSystemPrompt = process.env.PIZZAPI_WORKER_AGENT_SYSTEM_PROMPT?.trim() || undefined;
+    // Don't clear — agent config should persist across restarts (exit code 43).
+
     // Load .agents/*.md files from cwd (same behavior as CLI)
     const dotAgentsDir = join(cwd, ".agents");
     const agentFiles: Array<{ path: string; content: string }> = [];
@@ -85,7 +91,7 @@ async function main(): Promise<void> {
         ...(config.systemPrompt !== undefined && {
             systemPromptOverride: () => config.systemPrompt,
         }),
-        appendSystemPrompt: [BUILTIN_SYSTEM_PROMPT, config.appendSystemPrompt].filter(Boolean).join("\n\n"),
+        appendSystemPrompt: [BUILTIN_SYSTEM_PROMPT, config.appendSystemPrompt, agentSystemPrompt].filter(Boolean).join("\n\n"),
         ...(agentFiles.length > 0 && {
             agentsFilesOverride: (base) => ({
                 agentsFiles: [...base.agentsFiles, ...agentFiles],
@@ -144,7 +150,7 @@ async function main(): Promise<void> {
     });
 
     const sessionId = process.env.PIZZAPI_SESSION_ID;
-    console.log(`pizzapi worker: started (cwd=${cwd}${sessionId ? `, sessionId=${sessionId}` : ""})`);
+    console.log(`pizzapi worker: started (cwd=${cwd}${sessionId ? `, sessionId=${sessionId}` : ""}${agentName ? `, agent=${agentName}` : ""})`);
 
     const shutdown = () => {
         try {
