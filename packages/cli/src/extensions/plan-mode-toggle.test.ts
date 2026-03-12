@@ -206,6 +206,51 @@ describe("isSafeCommand", () => {
         expect(isSafeCommand("ls \\'; touch /tmp/pwned")).toBe(false);
     });
 
+    // PR fix: git branch/remote mutating forms
+    test("blocks git branch create/rename/copy (mutating)", () => {
+        expect(isSafeCommand("git branch new-feature")).toBe(false);
+        expect(isSafeCommand("git branch -m old new")).toBe(false);
+        expect(isSafeCommand("git branch -M old new")).toBe(false);
+        expect(isSafeCommand("git branch -c old new")).toBe(false);
+        expect(isSafeCommand("git branch -C old new")).toBe(false);
+    });
+
+    test("still allows git branch listing (read-only)", () => {
+        expect(isSafeCommand("git branch")).toBe(true);
+        expect(isSafeCommand("git branch -a")).toBe(true);
+        expect(isSafeCommand("git branch -v")).toBe(true);
+        expect(isSafeCommand("git branch --list")).toBe(true);
+        expect(isSafeCommand("git branch -r")).toBe(true);
+        expect(isSafeCommand("git branch --merged")).toBe(true);
+    });
+
+    test("blocks git remote add/remove/set-url (mutating)", () => {
+        expect(isSafeCommand("git remote add origin https://example.com")).toBe(false);
+        expect(isSafeCommand("git remote remove origin")).toBe(false);
+        expect(isSafeCommand("git remote set-url origin https://new.com")).toBe(false);
+        expect(isSafeCommand("git remote rename origin upstream")).toBe(false);
+    });
+
+    test("still allows git remote listing (read-only)", () => {
+        expect(isSafeCommand("git remote")).toBe(true);
+        expect(isSafeCommand("git remote -v")).toBe(true);
+        expect(isSafeCommand("git remote show origin")).toBe(true);
+    });
+
+    // PR fix: sort -o/--output file-write bypass
+    test("blocks sort with -o/--output (file write)", () => {
+        expect(isSafeCommand("sort -o out.txt input.txt")).toBe(false);
+        expect(isSafeCommand("sort --output=sorted.txt input.txt")).toBe(false);
+        expect(isSafeCommand("sort --output sorted.txt input.txt")).toBe(false);
+        expect(isSafeCommand("sort -oout.txt input.txt")).toBe(false);
+    });
+
+    test("still allows sort without -o (stdout-only)", () => {
+        expect(isSafeCommand("sort file.txt")).toBe(true);
+        expect(isSafeCommand("sort -n file.txt")).toBe(true);
+        expect(isSafeCommand("sort -r -u file.txt")).toBe(true);
+    });
+
     // Chaining operators (pre-existing behavior, regression guard)
     test("blocks chained unsafe commands", () => {
         expect(isSafeCommand("ls && make")).toBe(false);

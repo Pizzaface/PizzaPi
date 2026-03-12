@@ -24,7 +24,8 @@ const DESTRUCTIVE_CMD_PATTERNS = [
     /^\s*pip\s+(install|uninstall)/i,
     /^\s*apt(-get)?\s+(install|remove|purge|update|upgrade)/i,
     /^\s*brew\s+(install|uninstall|upgrade)/i,
-    /^\s*git\s+(add|commit|push|pull|merge|rebase|reset|checkout|branch\s+-[dD]|stash|cherry-pick|revert|tag|init|clone)/i,
+    /^\s*git\s+(add|commit|push|pull|merge|rebase|reset|checkout|branch\s+-[dDmMcC]|stash|cherry-pick|revert|tag|init|clone)/i,
+    /^\s*git\s+remote\s+(add|remove|rm|rename|set-url|set-head|set-branches|prune|update)/i,
     /^\s*systemctl\s+(start|stop|restart|enable|disable)/i,
     /^\s*service\s+\S+\s+(start|stop|restart)/i,
 ];
@@ -39,6 +40,7 @@ const DESTRUCTIVE_FLAG_PATTERNS = [
     /\bwget\b.*\s(-O\b|--output-document\b|--output-document=)/i,
     /\bfind\b.*\s-exec(dir)?\b/i, /\bfind\b.*\s-ok(dir)?\b/i, /\bfind\b.*\s-delete\b/i, /\bfind\b.*\s-fprintf\b/i,
     /\bgit\b.*\s--output[= ]/i,
+    /\bsort\b.*\s(-o\s|-o\S|--output\b|--output=)/i,
 ];
 
 const SAFE_PATTERNS = [
@@ -50,7 +52,10 @@ const SAFE_PATTERNS = [
     /^\s*printenv\b/, /^\s*uname\b/, /^\s*whoami\b/,
     /^\s*id\b/, /^\s*date\b/, /^\s*cal\b/, /^\s*uptime\b/,
     /^\s*ps\b/, /^\s*top\b/, /^\s*htop\b/, /^\s*free\b/,
-    /^\s*git\s+(status|log|diff|show|branch|remote|config\s+--get)/i,
+    /^\s*git\s+(status|log|diff|show|config\s+--get)/i,
+    /^\s*git\s+branch(\s+(-[avvr]+|--list|--merged|--no-merged|--contains|--sort=\S+)\s*)*$/i,
+    /^\s*git\s+remote(\s+(-v|--verbose|show\b))/i,
+    /^\s*git\s+remote\s*$/i,
     /^\s*git\s+ls-/i,
     /^\s*npm\s+(list|ls|view|info|search|outdated|audit(?!\s+(fix|signatures)))/i,
     /^\s*yarn\s+(list|info|why|audit)/i,
