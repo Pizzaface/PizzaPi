@@ -136,7 +136,12 @@ export const BUILTIN_SYSTEM_PROMPT = [
     "**Expected workflow:** enter plan mode → explore → call `plan_mode` to present your plan for user review →",
     "plan mode exits automatically when the user approves the plan ('Clear Context & Begin' or 'Begin'),",
     "so you do NOT need to call `toggle_plan_mode` after approval — just proceed with execution.",
-    "Do not exit plan mode without first submitting a plan via `plan_mode` unless the task is trivial.",
+    "Do not exit plan mode without first submitting a plan via `plan_mode` unless the task is trivial.\n",
+    "## Sandbox\n",
+    "This session may run with OS-level sandbox restrictions that control which files you can read/write",
+    "and which network domains are accessible. If a tool call is blocked by the sandbox,",
+    "the error message will explain what was blocked and suggest updating the sandbox configuration.",
+    "Do not attempt to circumvent sandbox restrictions — they are enforced at the OS level.",
 ].join(" ");
 
 // ── Sandbox configuration ─────────────────────────────────────────────────────

@@ -61,12 +61,22 @@ async function main(): Promise<void> {
 
     // Respect environment variable overrides
     const sandboxEnvOverride = process.env.PIZZAPI_SANDBOX;
-    if (sandboxEnvOverride === "off") {
+    if (sandboxEnvOverride === "off" || process.env.PIZZAPI_NO_SANDBOX === "1") {
         sandboxConfig.mode = "off";
     } else if (sandboxEnvOverride === "audit") {
         sandboxConfig.mode = "audit";
     } else if (sandboxEnvOverride === "enforce") {
         sandboxConfig.mode = "enforce";
+    }
+
+    // Apply PIZZAPI_SANDBOX_NETWORK override
+    const sandboxNetOverride = process.env.PIZZAPI_SANDBOX_NETWORK;
+    if (sandboxNetOverride === "off") {
+        sandboxConfig.network.mode = "denylist";
+        sandboxConfig.network.deniedDomains = [];
+        sandboxConfig.network.allowedDomains = [];
+    } else if (sandboxNetOverride === "denylist" || sandboxNetOverride === "allowlist") {
+        sandboxConfig.network.mode = sandboxNetOverride;
     }
 
     try {

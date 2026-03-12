@@ -10,10 +10,11 @@ import { existsSync } from "fs";
 import { readFile, readdir } from "fs/promises";
 import { join } from "path";
 import { homedir } from "os";
-import { BUILTIN_SYSTEM_PROMPT, defaultAgentDir, loadConfig } from "./config.js";
+import { BUILTIN_SYSTEM_PROMPT, defaultAgentDir, loadConfig, resolveSandboxConfig } from "./config.js";
 import { buildInteractiveSkillPaths } from "./skills.js";
 import { buildPizzaPiExtensionFactories } from "./extensions/factories.js";
 import { runSetup } from "./setup.js";
+import { initSandbox, cleanupSandbox } from "@pizzapi/tools";
 
 async function main() {
     const args = process.argv.slice(2);
@@ -356,6 +357,7 @@ Usage:
 
 Flags:
   --cwd <path>    Set working directory
+  --sandbox <mode>  Set sandbox mode: enforce, audit, or off
   --safe-mode     Skip MCP, plugins, hooks, and relay (fast startup)
   --no-mcp        Skip MCP server connections
   --no-plugins    Skip Claude Code plugin loading
@@ -377,6 +379,28 @@ Run \`pizza <command> --help\` for command-specific help.
     const noHooks = safeMode || args.includes("--no-hooks") || process.env.PIZZAPI_NO_HOOKS === "1";
     const noRelay = safeMode || args.includes("--no-relay") || process.env.PIZZAPI_NO_RELAY === "1";
 
+    // ── Sandbox flag ─────────────────────────────────────────────────────────
+    // Parse --sandbox=<mode> or --sandbox <mode> from CLI args.
+    // Also support PIZZAPI_NO_SANDBOX=1 as shorthand for --sandbox=off.
+    let sandboxFlagValue: string | undefined;
+    const sandboxEqIdx = args.findIndex((a) => a.startsWith("--sandbox="));
+    if (sandboxEqIdx !== -1) {
+        sandboxFlagValue = args[sandboxEqIdx].split("=")[1];
+        args.splice(sandboxEqIdx, 1);
+    } else {
+        const sandboxIdx = args.indexOf("--sandbox");
+        if (sandboxIdx !== -1 && args[sandboxIdx + 1] && !args[sandboxIdx + 1].startsWith("--")) {
+            sandboxFlagValue = args[sandboxIdx + 1];
+            args.splice(sandboxIdx, 2);
+        }
+    }
+
+    if (sandboxFlagValue) {
+        process.env.PIZZAPI_SANDBOX = sandboxFlagValue;
+    } else if (process.env.PIZZAPI_NO_SANDBOX === "1") {
+        process.env.PIZZAPI_SANDBOX = "off";
+    }
+
     // Strip safe-mode flags so pi doesn't see them
     for (const flag of ["--safe-mode", "--no-mcp", "--no-plugins", "--no-hooks", "--no-relay"]) {
         const idx = args.indexOf(flag);
@@ -395,6 +419,39 @@ Run \`pizza <command> --help\` for command-specific help.
 
     if (safeMode) {
         console.log("\n⚡ Safe mode — MCP servers, plugins, hooks, and relay are disabled.\n");
+    }
+
+    // ── Sandbox initialization ─────────────────────────────────────────────
+    const sandboxConfig = resolveSandboxConfig(cwd, config);
+    const sandboxEnvOverride = process.env.PIZZAPI_SANDBOX;
+    if (sandboxEnvOverride === "off") {
+        sandboxConfig.mode = "off";
+    } else if (sandboxEnvOverride === "audit") {
+        sandboxConfig.mode = "audit";
+    } else if (sandboxEnvOverride === "enforce") {
+        sandboxConfig.mode = "enforce";
+    }
+
+    // Apply PIZZAPI_SANDBOX_NETWORK override
+    const sandboxNetOverride = process.env.PIZZAPI_SANDBOX_NETWORK;
+    if (sandboxNetOverride === "off") {
+        sandboxConfig.network.mode = "denylist";
+        sandboxConfig.network.deniedDomains = [];
+        sandboxConfig.network.allowedDomains = [];
+    } else if (sandboxNetOverride === "denylist" || sandboxNetOverride === "allowlist") {
+        sandboxConfig.network.mode = sandboxNetOverride;
+    }
+
+    try {
+        await initSandbox(sandboxConfig);
+        if (sandboxConfig.enabled && sandboxConfig.mode !== "off") {
+            process.env.PIZZAPI_SANDBOX_ACTIVE = "1";
+            process.env.PIZZAPI_SANDBOX_MODE = sandboxConfig.mode;
+        }
+    } catch (err) {
+        console.warn(
+            `pizzapi: sandbox init failed, continuing unsandboxed: ${err instanceof Error ? err.message : String(err)}`,
+        );
     }
 
     // Load AGENTS.md from cwd (if present)
@@ -460,7 +517,13 @@ Run \`pizza <command> --help\` for command-specific help.
     const mode = new InteractiveMode(session, {
         modelFallbackMessage,
     });
-    await mode.run();
+    try {
+        await mode.run();
+    } finally {
+        try {
+            await cleanupSandbox();
+        } catch {}
+    }
 }
 
 main().catch((err) => {

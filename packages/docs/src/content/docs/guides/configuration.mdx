@@ -66,7 +66,19 @@ You can also override any setting with **environment variables**.
 
   // Show warnings when startup is slow (default: true).
   // Set to false to suppress slow-startup notifications.
-  "slowStartupWarning": true
+  "slowStartupWarning": true,
+
+  // OS-level sandbox configuration.
+  // See the Sandbox guide for full details.
+  "sandbox": {
+    "enabled": true,
+    "mode": "enforce",
+    "filesystem": {
+      "denyRead": ["~/.ssh", "~/.aws"],
+      "allowWrite": [".", "/tmp"],
+      "denyWrite": [".env"]
+    }
+  }
 }
 ```
 
@@ -85,6 +97,12 @@ You can also override any setting with **environment variables**.
 | `allowProjectHooks` | `boolean` | `false` | Trust gate: allow project-local hooks to run. **Global config only.** |
 | `trustedPlugins` | `string[]` | `[]` | Trusted Claude Code plugin paths. **Global config only.** Managed via `pizza plugins trust`. |
 | `mcpTimeout` | `number` | `30000` | Timeout (ms) for each MCP server's `tools/list` call during startup. Set to `0` to disable. See [Safe Mode](/PizzaPi/guides/safe-mode/). |
+| `sandbox` | `object` | *(see below)* | OS-level sandbox config. See [Agent Sandbox](/PizzaPi/guides/sandbox/). |
+| `sandbox.enabled` | `boolean` | `true` | Enable sandbox enforcement. |
+| `sandbox.mode` | `string` | `"enforce"` | `"enforce"`, `"audit"`, or `"off"`. |
+| `sandbox.filesystem.denyRead` | `string[]` | *sensitive dirs* | Paths blocked from reading. |
+| `sandbox.filesystem.allowWrite` | `string[]` | `[".", "/tmp"]` | Paths allowed for writing. |
+| `sandbox.filesystem.denyWrite` | `string[]` | `[".env", "~/.ssh"]` | Paths blocked from writing. |
 | `slowStartupWarning` | `boolean` | `true` | Show warnings when startup takes longer than expected (slow MCP servers, etc.). See [Safe Mode](/PizzaPi/guides/safe-mode/). |
 
 ---
@@ -101,6 +119,9 @@ Every config option can also be set as an environment variable. Environment vari
 | `PIZZAPI_NO_PLUGINS` | — | Set to `1` to skip plugin loading ([Safe Mode](/PizzaPi/guides/safe-mode/)) |
 | `PIZZAPI_NO_HOOKS` | — | Set to `1` to skip hook execution ([Safe Mode](/PizzaPi/guides/safe-mode/)) |
 | `PIZZAPI_NO_RELAY` | — | Set to `1` to skip relay connection ([Safe Mode](/PizzaPi/guides/safe-mode/)) |
+| `PIZZAPI_SANDBOX` | `sandbox.mode` | Override sandbox mode: `enforce`, `audit`, or `off` ([Sandbox](/PizzaPi/guides/sandbox/)) |
+| `PIZZAPI_NO_SANDBOX` | — | Set to `1` to disable sandbox ([Sandbox](/PizzaPi/guides/sandbox/)) |
+| `PIZZAPI_SANDBOX_NETWORK` | `sandbox.network.mode` | Override network mode: `denylist`, `allowlist`, or `off` ([Sandbox](/PizzaPi/guides/sandbox/)) |
 
 **Example:**
 

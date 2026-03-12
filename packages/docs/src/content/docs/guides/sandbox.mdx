@@ -1,0 +1,282 @@
+---
+title: Agent Sandbox
+description: OS-level sandboxing for agent tool execution — filesystem, network, and socket restrictions.
+sidebar:
+  order: 11
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+PizzaPi can enforce OS-level sandboxing around every tool call the agent makes — bash commands, file reads/writes, and MCP server interactions. This prevents prompt injections or model hallucinations from accessing sensitive files, exfiltrating data, or damaging your system.
+
+The sandbox is powered by [Anthropic's `sandbox-runtime`](https://github.com/anthropic-experimental/sandbox-runtime), which uses **macOS `sandbox-exec`** and **Linux `bubblewrap` + seccomp** to enforce restrictions at the kernel level.
+
+---
+
+## Quick Start
+
+Sandboxing is **enabled by default** in `enforce` mode. No configuration is needed for the default protections:
+
+- ✅ Blocks reading `~/.ssh`, `~/.aws`, `~/.gnupg`, browser data
+- ✅ Blocks writing to `.env` files and `~/.ssh`
+- ✅ Blocks access to `/var/run/docker.sock`
+- ✅ Allows reading/writing within your project directory and `/tmp`
+- ✅ Auto-detects and allowlists your SSH agent socket
+
+To **disable** sandboxing temporarily:
+
+```bash
+pizza --sandbox off
+```
+
+To run in **audit mode** (log violations without blocking):
+
+```bash
+pizza --sandbox audit
+```
+
+---
+
+## Sandbox Modes
+
+| Mode | Behavior |
+|------|----------|
+| `enforce` | Blocks restricted operations at the OS level. Tool calls return error messages. **(default)** |
+| `audit` | Logs violations but allows all operations. Useful for testing your config. |
+| `off` | No sandbox restrictions. Same behavior as pre-sandbox PizzaPi. |
+
+---
+
+## Configuration
+
+Add a `sandbox` section to your `~/.pizzapi/config.json` (global) or `.pizzapi/config.json` (project-local):
+
+```jsonc
+{
+  "sandbox": {
+    "enabled": true,
+    "mode": "enforce",
+
+    "network": {
+      // "denylist" blocks listed domains; "allowlist" only allows listed domains
+      "mode": "denylist",
+      "deniedDomains": ["evil.example.com"],
+      "allowedDomains": []
+    },
+
+    "filesystem": {
+      // Paths the agent cannot read (in addition to defaults)
+      "denyRead": ["~/.kube", "~/.terraform"],
+
+      // Paths the agent may write to (defaults: "." and "/tmp")
+      "allowWrite": [".", "/tmp"],
+
+      // Paths the agent must never write to (in addition to defaults)
+      "denyWrite": [".env.production"]
+    },
+
+    "sockets": {
+      // Unix sockets the agent cannot access
+      "deny": ["/var/run/docker.sock"]
+    },
+
+    "mcp": {
+      // Domains MCP servers are allowed to contact
+      "allowedDomains": ["api.example.com"],
+      // Paths MCP servers may write to
+      "allowWrite": ["/tmp"]
+    }
+  }
+}
+```
+
+### Default Protections
+
+Even without any configuration, the sandbox blocks access to:
+
+| Category | Blocked by default |
+|----------|-------------------|
+| **Read** | `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config/gcloud`, `~/.docker/config.json`, browser data dirs |
+| **Write** | `.env`, `.env.local`, `~/.ssh` |
+| **Sockets** | `/var/run/docker.sock` |
+
+And allows:
+
+| Category | Allowed by default |
+|----------|-------------------|
+| **Write** | Current working directory (`.`), `/tmp` |
+
+### Merge Semantics
+
+When both global and project configs exist, they merge with **security-preserving semantics**:
+
+- **Deny lists** (denyRead, denyWrite, sockets.deny) → **union** — project configs can add restrictions but never remove global ones
+- **Allow lists** (allowWrite, mcp.allowWrite) → **intersection** — project configs can only narrow permissions, never widen them
+- **Mode** → strongest wins — a global `enforce` cannot be downgraded to `audit` by a project config
+- **Enabled** → global `true` cannot be disabled by a project config
+
+<Aside type="caution">
+  Project-local configs (`.pizzapi/config.json`) **cannot weaken** the global sandbox — they can only make it stricter. This prevents a malicious repo from disabling protections.
+</Aside>
+
+---
+
+## 3-Tier Sandbox Profiles
+
+Different tool types have different restriction levels:
+
+| Tier | Used by | Restrictions |
+|------|---------|-------------|
+| **bash** | Bash tool (shell commands) | Full sandbox: filesystem + network + sockets |
+| **filesystem** | Read, Write, Search tools | Path validation only (deny/allow lists) |
+| **mcp** | MCP server processes | Maximum restriction: limited network, `/tmp`-only writes |
+
+The MCP tier is the most restrictive because MCP servers are third-party code — they only get access to explicitly configured domains and write paths.
+
+---
+
+## CLI Flags & Environment Variables
+
+### CLI Flag
+
+```bash
+# Set sandbox mode for this session
+pizza --sandbox enforce
+pizza --sandbox audit
+pizza --sandbox off
+```
+
+The flag works in both interactive mode and runner mode:
+
+```bash
+pizza runner start --sandbox audit
+```
+
+### Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `PIZZAPI_SANDBOX` | Override sandbox mode: `enforce`, `audit`, or `off` | Config value |
+| `PIZZAPI_NO_SANDBOX` | Set to `1` to disable sandbox (shorthand for `PIZZAPI_SANDBOX=off`) | — |
+| `PIZZAPI_SANDBOX_NETWORK` | Override network mode: `denylist`, `allowlist`, or `off` | Config value |
+
+```bash
+# Disable sandbox for one session
+PIZZAPI_NO_SANDBOX=1 pizza
+
+# Force audit mode
+PIZZAPI_SANDBOX=audit pizza
+
+# Disable network restrictions
+PIZZAPI_SANDBOX_NETWORK=off pizza
+```
+
+### Priority Order
+
+1. CLI flag (`--sandbox`)
+2. Environment variable (`PIZZAPI_SANDBOX`)
+3. Project config (`.pizzapi/config.json`)
+4. Global config (`~/.pizzapi/config.json`)
+5. Built-in defaults (`enforce`)
+
+---
+
+## SSH Agent Detection
+
+The sandbox automatically detects your SSH agent socket via `$SSH_AUTH_SOCK` and adds it to the Unix socket allowlist. This means `git push`, `git pull`, and other SSH operations work transparently.
+
+If `$SSH_AUTH_SOCK` matches a denied socket (e.g., if your SSH agent socket happens to be `/var/run/docker.sock`), the deny rule takes precedence.
+
+---
+
+## Platform Support
+
+| Platform | Enforcement Method | Status |
+|----------|-------------------|--------|
+| **macOS** | `sandbox-exec` (built-in) | ✅ Fully supported |
+| **Linux** | `bubblewrap` + seccomp | ✅ Supported (bubblewrap must be installed) |
+| **Windows** | — | ⚠️ Graceful degradation (sandbox disabled, tools run normally) |
+
+On unsupported platforms, the sandbox initializes but `isSandboxActive()` returns `false` — all tools execute without restrictions. No configuration changes are needed.
+
+---
+
+## Violation Logging
+
+When the sandbox blocks an operation (enforce mode) or detects a would-be violation (audit mode), it records a **violation event** with:
+
+- Timestamp
+- Sandbox tier (bash/filesystem/mcp)
+- Operation (read/write/execute)
+- Target path or command
+- Reason for denial
+
+Violations are stored in a ring buffer (100 entries max). In sessions connected to the PizzaPi relay, violations are forwarded as `sandbox:violation` events visible in the web UI.
+
+Use the `/sandbox` slash command in a session to view current sandbox status and recent violations.
+
+---
+
+## Troubleshooting
+
+### "Sandbox blocked: Read denied"
+
+The agent tried to read a file in the `denyRead` list. To allow it:
+
+```jsonc
+{
+  "sandbox": {
+    "filesystem": {
+      // Remove the path from denyRead, or add a more specific allowance
+      "denyRead": [
+        // "~/.ssh"  ← remove this line to allow SSH key access
+      ]
+    }
+  }
+}
+```
+
+<Aside type="caution">
+  Think carefully before removing default deny rules — they protect your most sensitive files.
+</Aside>
+
+### "Sandbox blocked: Write denied — not within any allowed write path"
+
+The agent tried to write to a directory outside `allowWrite`. Add the path:
+
+```jsonc
+{
+  "sandbox": {
+    "filesystem": {
+      "allowWrite": [".", "/tmp", "/var/data/my-project"]
+    }
+  }
+}
+```
+
+### "Platform not supported for sandboxing"
+
+You're on a platform without sandbox support (usually Windows). The sandbox is automatically disabled — no action needed. If you need sandboxing, use macOS or Linux (with bubblewrap installed).
+
+### "Sandbox init failed, continuing unsandboxed"
+
+The sandbox runtime failed to initialize. Common causes:
+- Linux: `bubblewrap` not installed (`sudo apt install bubblewrap`)
+- Permission issues with the sandbox runtime
+- Incompatible OS version
+
+The session continues without sandbox protection. Check the error message for specifics.
+
+### MCP server can't reach its API
+
+MCP servers use the `mcp` tier, which blocks all network access by default. Add the API domain:
+
+```jsonc
+{
+  "sandbox": {
+    "mcp": {
+      "allowedDomains": ["api.openai.com", "api.github.com"]
+    }
+  }
+}
+```

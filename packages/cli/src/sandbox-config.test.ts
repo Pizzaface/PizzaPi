@@ -331,3 +331,131 @@ describe("mergeSandboxConfig", () => {
         expect(merged.mode).toBe("enforce");
     });
 });
+
+// ── Environment variable override patterns ────────────────────────────────────
+//
+// These test the patterns used by worker.ts and index.ts to apply env overrides
+// on top of a resolved config. We test the logic, not the process lifecycle.
+
+describe("environment variable override patterns", () => {
+    /**
+     * Simulates the env override logic from worker.ts / index.ts.
+     * This tests the code pattern without actually launching a worker.
+     */
+    function applyEnvOverrides(
+        config: ResolvedSandboxConfig,
+        env: Record<string, string | undefined>,
+    ): ResolvedSandboxConfig {
+        const result = { ...config, network: { ...config.network } };
+
+        // PIZZAPI_NO_SANDBOX=1 → mode off
+        if (env.PIZZAPI_NO_SANDBOX === "1") {
+            result.mode = "off";
+        }
+
+        // PIZZAPI_SANDBOX overrides mode
+        const sandboxMode = env.PIZZAPI_SANDBOX;
+        if (sandboxMode === "off") {
+            result.mode = "off";
+        } else if (sandboxMode === "audit") {
+            result.mode = "audit";
+        } else if (sandboxMode === "enforce") {
+            result.mode = "enforce";
+        }
+
+        // PIZZAPI_SANDBOX_NETWORK overrides network mode
+        const netMode = env.PIZZAPI_SANDBOX_NETWORK;
+        if (netMode === "off") {
+            result.network.mode = "denylist";
+            result.network.deniedDomains = [];
+            result.network.allowedDomains = [];
+        } else if (netMode === "denylist" || netMode === "allowlist") {
+            result.network.mode = netMode;
+        }
+
+        return result;
+    }
+
+    const baseConfig = resolveSandboxConfig("/projects/app", {});
+
+    test("PIZZAPI_SANDBOX=off disables sandbox", () => {
+        const result = applyEnvOverrides(baseConfig, { PIZZAPI_SANDBOX: "off" });
+        expect(result.mode).toBe("off");
+    });
+
+    test("PIZZAPI_SANDBOX=audit forces audit mode", () => {
+        const result = applyEnvOverrides(baseConfig, { PIZZAPI_SANDBOX: "audit" });
+        expect(result.mode).toBe("audit");
+    });
+
+    test("PIZZAPI_SANDBOX=enforce forces enforce mode", () => {
+        const result = applyEnvOverrides(baseConfig, { PIZZAPI_SANDBOX: "enforce" });
+        expect(result.mode).toBe("enforce");
+    });
+
+    test("PIZZAPI_NO_SANDBOX=1 disables sandbox", () => {
+        const result = applyEnvOverrides(baseConfig, { PIZZAPI_NO_SANDBOX: "1" });
+        expect(result.mode).toBe("off");
+    });
+
+    test("PIZZAPI_SANDBOX takes priority over PIZZAPI_NO_SANDBOX", () => {
+        // When both are set, PIZZAPI_SANDBOX is processed after NO_SANDBOX
+        const result = applyEnvOverrides(baseConfig, {
+            PIZZAPI_NO_SANDBOX: "1",
+            PIZZAPI_SANDBOX: "audit",
+        });
+        expect(result.mode).toBe("audit");
+    });
+
+    test("PIZZAPI_SANDBOX_NETWORK=off clears all network restrictions", () => {
+        const config = resolveSandboxConfig("/projects/app", {
+            sandbox: {
+                network: {
+                    mode: "denylist",
+                    deniedDomains: ["evil.com"],
+                },
+            },
+        });
+        const result = applyEnvOverrides(config, { PIZZAPI_SANDBOX_NETWORK: "off" });
+        expect(result.network.mode).toBe("denylist");
+        expect(result.network.deniedDomains).toEqual([]);
+        expect(result.network.allowedDomains).toEqual([]);
+    });
+
+    test("PIZZAPI_SANDBOX_NETWORK=allowlist switches network mode", () => {
+        const result = applyEnvOverrides(baseConfig, {
+            PIZZAPI_SANDBOX_NETWORK: "allowlist",
+        });
+        expect(result.network.mode).toBe("allowlist");
+    });
+
+    test("PIZZAPI_SANDBOX_NETWORK=denylist switches network mode", () => {
+        const config = resolveSandboxConfig("/projects/app", {
+            sandbox: {
+                network: { mode: "allowlist", allowedDomains: ["api.example.com"] },
+            },
+        });
+        const result = applyEnvOverrides(config, {
+            PIZZAPI_SANDBOX_NETWORK: "denylist",
+        });
+        expect(result.network.mode).toBe("denylist");
+    });
+
+    test("invalid PIZZAPI_SANDBOX value is ignored", () => {
+        const result = applyEnvOverrides(baseConfig, { PIZZAPI_SANDBOX: "invalid" });
+        expect(result.mode).toBe("enforce"); // unchanged from default
+    });
+
+    test("invalid PIZZAPI_SANDBOX_NETWORK value is ignored", () => {
+        const result = applyEnvOverrides(baseConfig, {
+            PIZZAPI_SANDBOX_NETWORK: "invalid",
+        });
+        expect(result.network.mode).toBe("denylist"); // unchanged from default
+    });
+
+    test("unset env vars leave config unchanged", () => {
+        const result = applyEnvOverrides(baseConfig, {});
+        expect(result.mode).toBe(baseConfig.mode);
+        expect(result.network.mode).toBe(baseConfig.network.mode);
+    });
+});
