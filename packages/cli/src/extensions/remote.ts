@@ -1417,6 +1417,11 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             response = { action: "edit", editSuggestion: trimmed };
         }
 
+        // If JSON parsed but didn't validate to a supported action, reject
+        // the payload without consuming the pending prompt so the user can
+        // retry with a valid action.
+        if (!response) return true;
+
         const pending = pendingPlanMode;
         pendingPlanMode = null;
         pending.resolve(response);
@@ -2431,24 +2436,30 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 void ctx.ui
                     .input(displayParts.join("\n"), "Enter choice (1-4) or edit suggestion…", { signal: localAbort.signal })
                     .then((value) => {
-                        localDone = true;
                         const answer = value?.trim();
                         if (!answer) {
+                            localDone = true;
                             maybeFinishCancelled();
                             return;
                         }
 
                         if (answer === "1") {
+                            localDone = true;
                             finish({ action: "execute" });
                         } else if (answer === "2") {
+                            localDone = true;
                             finish({ action: "execute_keep_context" });
                         } else if (answer === "4") {
+                            localDone = true;
                             finish({ action: "cancel" });
                         } else if (answer === "3") {
-                            // Prompt for edit text in a second input step
+                            // Don't set localDone yet — second prompt still pending.
+                            // This prevents a relay disconnect during the edit prompt
+                            // from cancelling the local input via maybeFinishCancelled().
                             void ctx.ui
                                 .input("Describe your suggested changes:", undefined, { signal: localAbort.signal })
                                 .then((editValue) => {
+                                    localDone = true;
                                     const suggestion = editValue?.trim();
                                     if (suggestion) {
                                         finish({ action: "edit", editSuggestion: suggestion });
@@ -2457,9 +2468,11 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                                     }
                                 })
                                 .catch(() => {
+                                    localDone = true;
                                     finish({ action: "edit", editSuggestion: "No details provided." });
                                 });
                         } else {
+                            localDone = true;
                             // Treat as an edit suggestion
                             finish({ action: "edit", editSuggestion: answer });
                         }

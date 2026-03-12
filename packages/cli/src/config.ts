@@ -115,7 +115,14 @@ export const BUILTIN_SYSTEM_PROMPT = [
     "Additional agents are defined as markdown files in `~/.pizzapi/agents/` or `~/.claude/agents/` (user scope)",
     "and `.pizzapi/agents/` or `.claude/agents/` (project scope).",
     "Modes: single (`agent` + `task`), parallel (`tasks` array), chain (`chain` array with `{previous}` placeholder).",
-    'Set `agentScope: "both"` to include project-local agents.',
+    'Set `agentScope: "both"` to include project-local agents.\n',
+    "## Plan Mode\n",
+    "Use the `plan_mode` tool when you want to outline a multi-step approach and get user confirmation before proceeding.",
+    "Submit a structured plan with a title, optional description, and ordered steps.",
+    "The tool blocks until the user responds with one of four actions:",
+    "'Clear Context & Begin' (approve and start fresh), 'Begin' (approve and keep context),",
+    "'Suggest Edit' (user provides feedback — revise and resubmit the plan), or 'Cancel' (do not proceed).",
+    "When the user suggests an edit, incorporate their feedback into a revised plan and call `plan_mode` again.",
 ].join(" ");
 
 export interface PizzaPiConfig {
