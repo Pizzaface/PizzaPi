@@ -45,10 +45,25 @@ const SAFE_PATTERNS = [
     /^\s*rg\b/, /^\s*fd\b/, /^\s*bat\b/, /^\s*exa\b/,
 ];
 
+/**
+ * Split a shell command on chaining operators (&&, ||, ;, |) and check that
+ * every subcommand independently passes the safe-command check.  This prevents
+ * bypass via e.g. `ls && make` or `git status; python script.py`.
+ */
 function isSafeCommand(command: string): boolean {
-    const isDestructive = DESTRUCTIVE_PATTERNS.some((p) => p.test(command));
-    const isSafe = SAFE_PATTERNS.some((p) => p.test(command));
-    return !isDestructive && isSafe;
+    // Split on shell chaining operators: &&, ||, ;, |
+    // (order matters — match && / || before single & / |)
+    const parts = command.split(/\s*(?:&&|\|\||[;|])\s*/);
+
+    for (const part of parts) {
+        const trimmed = part.trim();
+        if (!trimmed) continue; // empty segment (e.g. trailing semicolon)
+        const isDestructive = DESTRUCTIVE_PATTERNS.some((p) => p.test(trimmed));
+        const isSafe = SAFE_PATTERNS.some((p) => p.test(trimmed));
+        if (isDestructive || !isSafe) return false;
+    }
+
+    return parts.some((p) => p.trim().length > 0); // at least one non-empty subcommand
 }
 
 // ── Todo item types ──────────────────────────────────────────────────────────
@@ -124,13 +139,22 @@ function getTextContent(message: AssistantMessage): string {
 
 // ── Write-blocked tool names ─────────────────────────────────────────────────
 // These tools are blocked when plan mode is active.
-const BLOCKED_TOOLS = new Set(["edit", "write"]);
+// Includes both core pi tools ("edit", "write") and PizzaPi custom tools ("write_file").
+const BLOCKED_TOOLS = new Set(["edit", "write", "write_file"]);
 
 // ── Module-level state for remote extension to read ──────────────────────────
 
 let _planModeEnabled = false;
 let _executionMode = false;
 let _todoItems: PlanTodoItem[] = [];
+
+/**
+ * When the user picks "Clear Context & Begin" on a plan_mode prompt, the remote
+ * extension calls `requestContextClear()` to set this flag.  The next `context`
+ * event will strip all prior messages so the agent starts fresh, keeping only
+ * the plan_mode tool-call/result exchange so the agent knows what to execute.
+ */
+let _pendingContextClear = false;
 
 /** Returns true if plan mode (read-only exploration) is currently active. */
 export function isPlanModeEnabled(): boolean {
@@ -145,6 +169,14 @@ export function isExecutionMode(): boolean {
 /** Returns the current plan todo items (for heartbeats / web UI). */
 export function getPlanTodoItems(): PlanTodoItem[] {
     return _todoItems;
+}
+
+/**
+ * Signal that the next agent turn should start with a cleared context.
+ * Called by the remote extension when the user picks "Clear Context & Begin".
+ */
+export function requestContextClear(): void {
+    _pendingContextClear = true;
 }
 
 /** Callback for the remote extension to be notified when state changes. */
@@ -320,6 +352,36 @@ export const planModeToggleExtension: ExtensionFactory = (pi) => {
 
     // ── Filter out stale plan mode context when not in plan mode ─────────────
     pi.on("context", async (event) => {
+        // "Clear Context & Begin" — strip all messages except the trailing
+        // plan_mode tool-call/result pair so the agent starts fresh but still
+        // knows which plan the user approved.
+        if (_pendingContextClear) {
+            _pendingContextClear = false;
+
+            // Walk backwards and keep only the last assistant message that
+            // contains a plan_mode tool call plus the following tool-result.
+            const msgs = event.messages;
+            let keepFrom = msgs.length;
+
+            for (let i = msgs.length - 1; i >= 0; i--) {
+                const m = msgs[i] as any;
+                // Look for the assistant message containing the plan_mode tool call
+                if (m.role === "assistant" && Array.isArray(m.content)) {
+                    const hasPlanTool = m.content.some(
+                        (block: any) =>
+                            block.type === "tool_use" &&
+                            (block.name === "plan_mode" || block.name?.endsWith(".plan_mode")),
+                    );
+                    if (hasPlanTool) {
+                        keepFrom = i;
+                        break;
+                    }
+                }
+            }
+
+            return { messages: msgs.slice(keepFrom) };
+        }
+
         if (planModeEnabled) return;
 
         return {

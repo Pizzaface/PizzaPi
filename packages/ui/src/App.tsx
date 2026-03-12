@@ -1481,8 +1481,13 @@ export function App() {
         return "Connected";
       });
 
-      setPendingQuestion(null);
-      setPendingPlan(null);
+      // Don't unconditionally clear pendingQuestion / pendingPlan here.
+      // session_active is also emitted for non-session-switch actions (model
+      // changes, thinking-level updates) and buildSessionState() doesn't carry
+      // these transient states.  The heartbeat already manages them; clearing
+      // here would cause the action buttons to disappear until the next HB.
+      // pendingQuestion and pendingPlan are cleared on session_switch / new_session
+      // through the heartbeat (which sets them to null when the runner has none).
       setPluginTrustPrompt(null);
       // Restore in-flight tool calls from the snapshot so reconnecting mid-command
       // keeps streaming indicators and Kill buttons visible. The snapshot payload

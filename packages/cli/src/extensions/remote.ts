@@ -8,7 +8,7 @@ import { getEnvApiKey } from "@mariozechner/pi-ai/dist/env-api-keys.js";
 import { loadConfig, defaultAgentDir, toggleMcpServer } from "../config.js";
 import { getMcpBridge } from "./mcp-bridge.js";
 import { getCurrentTodoList, setTodoUpdateCallback, type TodoItem } from "./update-todo.js";
-import { isPlanModeEnabled, isExecutionMode, getPlanTodoItems, setPlanModeChangeCallback, togglePlanModeFromRemote, setPlanModeFromRemote } from "./plan-mode-toggle.js";
+import { isPlanModeEnabled, isExecutionMode, getPlanTodoItems, setPlanModeChangeCallback, togglePlanModeFromRemote, setPlanModeFromRemote, requestContextClear } from "./plan-mode-toggle.js";
 import type { RemoteExecRequest, RemoteExecResponse } from "./remote-commands.js";
 import { messageBus } from "./session-message-bus.js";
 import { io, type Socket } from "socket.io-client";
@@ -2341,6 +2341,13 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 edit: "Suggest Edit",
                 cancel: "Cancel",
             }[result.action];
+
+            // When the user picks "Clear Context & Begin", signal the plan-mode
+            // extension to strip all prior messages on the next context event so
+            // the agent starts fresh (keeping only the plan_mode exchange).
+            if (result.action === "execute") {
+                requestContextClear();
+            }
 
             let responseText: string;
             if (result.action === "execute") {
