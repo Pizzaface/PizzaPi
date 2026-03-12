@@ -2,6 +2,7 @@ import { describe, test, expect, beforeEach, afterEach, spyOn } from "bun:test";
 import { mkdtempSync, writeFileSync, mkdirSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
+import { which } from "bun";
 import { searchTool } from "./search.js";
 import {
     initSandbox,
@@ -10,6 +11,9 @@ import {
     _resetState,
     type ResolvedSandboxConfig,
 } from "./sandbox.js";
+
+/** Whether `rg` (ripgrep) is available — content search tests require it. */
+const hasRg = !!which("rg");
 
 function makeConfig(overrides?: Partial<ResolvedSandboxConfig>): ResolvedSandboxConfig {
     return {
@@ -48,13 +52,13 @@ describe("searchTool sandbox integration", () => {
         await cleanupSandbox();
     });
 
-    test("searches normally when sandbox is off", async () => {
+    test.skipIf(!hasRg)("searches normally when sandbox is off", async () => {
         await initSandbox(makeConfig({ mode: "off" }));
         const result = await execSearch("hello", tmpDir, "content");
         expect(result.content[0].text).toContain("hello");
     });
 
-    test("searches normally when sandbox is disabled", async () => {
+    test.skipIf(!hasRg)("searches normally when sandbox is disabled", async () => {
         await initSandbox(makeConfig({ enabled: false }));
         const result = await execSearch("hello", tmpDir, "content");
         expect(result.content[0].text).toContain("hello");
@@ -78,7 +82,7 @@ describe("searchTool sandbox integration", () => {
             expect(result.content[0].text).toContain("❌ Sandbox blocked search");
         });
 
-        test("allows search in non-denied paths", async () => {
+        test.skipIf(!hasRg)("allows search in non-denied paths", async () => {
             await initSandbox(makeConfig({
                 filesystem: { denyRead: ["/home/user/.ssh"], allowWrite: ["/tmp"], denyWrite: [] },
             }));
@@ -88,7 +92,7 @@ describe("searchTool sandbox integration", () => {
     });
 
     describe("audit mode", () => {
-        test("allows search in denied paths but records violation", async () => {
+        test.skipIf(!hasRg)("allows search in denied paths but records violation", async () => {
             await initSandbox(makeConfig({
                 mode: "audit",
                 filesystem: { denyRead: [tmpDir], allowWrite: ["/tmp"], denyWrite: [] },
@@ -100,7 +104,7 @@ describe("searchTool sandbox integration", () => {
             expect(getViolations()[0].operation).toBe("read");
         });
 
-        test("logs audit warning to console", async () => {
+        test.skipIf(!hasRg)("logs audit warning to console", async () => {
             const spy = spyOn(console, "log").mockImplementation(() => {});
             try {
                 await initSandbox(makeConfig({

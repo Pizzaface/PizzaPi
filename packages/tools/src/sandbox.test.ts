@@ -209,6 +209,33 @@ describe("sandbox", () => {
             });
         });
 
+        describe("path traversal prevention", () => {
+            test("blocks read via .. traversal out of allowed area", async () => {
+                await initSandbox(makeConfig({
+                    filesystem: { denyRead: ["/etc"], allowWrite: ["/tmp"], denyWrite: [] },
+                }));
+                // Attempting to traverse from /tmp into /etc using ..
+                const result = validatePath("/tmp/../etc/passwd", "read");
+                expect(result.allowed).toBe(false);
+                expect(result.reason).toContain("denied");
+            });
+
+            test("blocks write via .. traversal out of allowed paths", async () => {
+                await initSandbox(makeConfig());
+                // Attempting to escape allowWrite=/tmp using ..
+                const result = validatePath("/tmp/test/../../etc/shadow", "write");
+                expect(result.allowed).toBe(false);
+            });
+
+            test("resolves . and redundant slashes correctly", async () => {
+                await initSandbox(makeConfig({
+                    filesystem: { denyRead: ["/etc"], allowWrite: ["/tmp"], denyWrite: [] },
+                }));
+                const result = validatePath("/etc/./secrets/./key.pem", "read");
+                expect(result.allowed).toBe(false);
+            });
+        });
+
         describe("when sandbox is disabled", () => {
             test("allows all reads when disabled", async () => {
                 await initSandbox(makeConfig({ enabled: false }));

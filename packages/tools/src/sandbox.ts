@@ -8,6 +8,7 @@
  * @module
  */
 
+import { resolve as pathResolve, normalize as pathNormalize } from "node:path";
 import {
     SandboxManager,
     SandboxViolationStore,
@@ -412,18 +413,20 @@ function _isEnforceable(): boolean {
     return _initialized && !_initFailed && _config?.enabled === true && _config.mode === "enforce";
 }
 
-/** Normalize a file path for comparison against config paths. */
+/** Normalize a file path for comparison against config paths.
+ *  Resolves `.`, `..`, repeated slashes, and expands `~` so that
+ *  path-traversal tricks cannot bypass allow/deny rules.
+ */
 function _normalizePath(filePath: string): string {
-    // Resolve relative paths, expand ~
-    if (filePath.startsWith("~")) {
+    let expanded = filePath;
+    // Expand leading ~
+    if (expanded.startsWith("~")) {
         const home = process.env.HOME ?? process.env.USERPROFILE ?? "/";
-        return home + filePath.slice(1);
+        expanded = home + expanded.slice(1);
     }
-    // If not absolute, treat as relative to cwd
-    if (!filePath.startsWith("/")) {
-        return process.cwd() + "/" + filePath;
-    }
-    return filePath;
+    // pathResolve handles relative paths (resolves against cwd) and
+    // collapses `.` / `..` / duplicate slashes in a single pass.
+    return pathResolve(expanded);
 }
 
 /** Check if a path is denied for reading. */

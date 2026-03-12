@@ -535,6 +535,16 @@ export function loadConfig(cwd: string = process.cwd()): PizzaPiConfig {
     if (hooks) config.hooks = hooks;
     else delete config.hooks;
 
+    // Merge sandbox config securely — project cannot weaken global sandbox.
+    // mergeSandboxConfig ensures: deny lists union, allow lists intersect,
+    // mode/enabled cannot be relaxed by a project config.
+    if (global.sandbox || project.sandbox) {
+        config.sandbox = mergeSandboxConfig(
+            global.sandbox ?? {},
+            project.sandbox ?? {},
+        );
+    }
+
     // Merge disabledMcpServers from both scopes (union).
     // Guard with Array.isArray — a malformed config value (e.g. a string or
     // object) would throw or spread into characters without this check.

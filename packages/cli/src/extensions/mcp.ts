@@ -1,7 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
 import type { PizzaPiConfig } from "../config.js";
 import { PizzaPiOAuthProvider, type RelayContext } from "./mcp-oauth.js";
-import { getSandboxEnv, isSandboxActive } from "@pizzapi/tools";
+import { getSandboxEnv, isSandboxActive, getResolvedConfig } from "@pizzapi/tools";
 
 /**
  * Minimal MCP client transport + tool bridge.
@@ -750,6 +750,34 @@ export function getOAuthProviders(): PizzaPiOAuthProvider[] {
   return activeOAuthProviders;
 }
 
+/**
+ * Check whether an MCP server URL is allowed by the sandbox MCP domain policy.
+ * Returns true if the sandbox is inactive, the MCP policy has no allowedDomains,
+ * or the URL's hostname is in the allowlist.
+ */
+function isMcpDomainAllowed(url: string, serverName: string): boolean {
+  if (!isSandboxActive()) return true;
+  const sandboxCfg = getResolvedConfig();
+  if (!sandboxCfg) return true;
+
+  const allowedDomains = sandboxCfg.mcp.allowedDomains;
+  if (!allowedDomains || allowedDomains.length === 0) return true;
+
+  try {
+    const hostname = new URL(url).hostname;
+    if (allowedDomains.includes(hostname)) return true;
+
+    console.warn(
+      `[sandbox/mcp] Blocked MCP server "${serverName}": domain "${hostname}" ` +
+      `not in allowedDomains [${allowedDomains.join(", ")}]`,
+    );
+    return false;
+  } catch {
+    console.warn(`[sandbox/mcp] Blocked MCP server "${serverName}": invalid URL "${url}"`);
+    return false;
+  }
+}
+
 export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConfig): Promise<McpClient[]> {
   // Clear stale OAuth providers from previous loads (e.g. /mcp reload)
   // to prevent unbounded growth and iteration over dead providers.
@@ -773,6 +801,7 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
         }),
       );
     } else if (s.transport === "http") {
+      if (!isMcpDomainAllowed(s.url, s.name)) continue;
       clients.push(
         createHttpMcpClient({
           name: s.name,
@@ -781,6 +810,7 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
         }),
       );
     } else if (s.transport === "streamable") {
+      if (!isMcpDomainAllowed(s.url, s.name)) continue;
       const provider = new PizzaPiOAuthProvider({ serverUrl: s.url, serverName: s.name });
       activeOAuthProviders.push(provider);
       clients.push(
@@ -815,6 +845,9 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
 
     if ("url" in def && typeof (def as any).url === "string") {
       const d = def as { url: string; transport?: string; type?: string; headers?: Record<string, string> };
+
+      // Domain gating for URL-based MCP servers
+      if (!isMcpDomainAllowed(d.url, name)) continue;
 
       // Determine transport mode:
       //  - "transport" field (our format): "streamable" → streamable, else plain HTTP
