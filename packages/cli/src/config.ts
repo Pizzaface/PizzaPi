@@ -127,7 +127,10 @@ export const BUILTIN_SYSTEM_PROMPT = [
     "Use the `toggle_plan_mode` tool to enter or exit read-only plan mode.",
     "Call with `enabled: true` to enter plan mode — write/edit tools and destructive bash commands are blocked,",
     "letting you safely explore the codebase. Call with `enabled: false` to exit and restore full tool access.",
-    "Use this when you want to read and understand code before making changes.",
+    "Use this when you want to read and understand code before making changes.\n",
+    "**Expected workflow:** enter plan mode → explore → call `plan_mode` to present your plan for user review →",
+    "after approval, call `toggle_plan_mode` with `enabled: false` to exit and execute.",
+    "Do not exit plan mode without first submitting a plan via `plan_mode` unless the task is trivial.",
 ].join(" ");
 
 export interface PizzaPiConfig {

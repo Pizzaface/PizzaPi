@@ -186,6 +186,8 @@ export const planModeToggleExtension: ExtensionFactory = (pi) => {
     let todoItems: PlanTodoItem[] = [];
     let planModeEnabled = false;
     let executionMode = false;
+    /** True if the agent submitted a plan (via plan_mode tool) during the current plan mode session. */
+    let planSubmittedDuringSession = false;
 
     function syncModuleState() {
         _planModeEnabled = planModeEnabled;
@@ -206,6 +208,7 @@ export const planModeToggleExtension: ExtensionFactory = (pi) => {
         planModeEnabled = enabled;
         executionMode = false;
         todoItems = [];
+        if (enabled) planSubmittedDuringSession = false;
         syncModuleState();
         _onPlanModeChange?.(planModeEnabled);
         persistState();
@@ -258,16 +261,24 @@ export const planModeToggleExtension: ExtensionFactory = (pi) => {
             const enabled = typeof params.enabled === "boolean" ? params.enabled : !planModeEnabled;
 
             const wasEnabled = planModeEnabled;
+            const hadPlanSubmitted = planSubmittedDuringSession;
             setPlanMode(enabled);
 
             const stateLabel = planModeEnabled ? "ON (read-only)" : "OFF (full access)";
             const changed = wasEnabled !== planModeEnabled;
 
+            // Soft-nudge: if exiting plan mode without having submitted a plan
+            const exitedWithoutPlan = changed && wasEnabled && !enabled && !hadPlanSubmitted;
+            const nudge = exitedWithoutPlan
+                ? " Note: you exited plan mode without submitting a plan for user review. " +
+                  "Next time, use the plan_mode tool to present your plan before exiting."
+                : "";
+
             return {
                 content: [{
                     type: "text" as const,
                     text: changed
-                        ? `Plan mode is now ${stateLabel}.`
+                        ? `Plan mode is now ${stateLabel}.${nudge}`
                         : `Plan mode was already ${stateLabel}. No change.`,
                 }],
                 details: { enabled: planModeEnabled, changed },
@@ -277,6 +288,11 @@ export const planModeToggleExtension: ExtensionFactory = (pi) => {
 
     // ── Block write tools in plan mode ───────────────────────────────────────
     pi.on("tool_call", async (event) => {
+        // Track when the agent submits a plan during plan mode
+        if (planModeEnabled && (event.toolName === "plan_mode" || event.toolName.endsWith(".plan_mode"))) {
+            planSubmittedDuringSession = true;
+        }
+
         if (!planModeEnabled) return;
 
         // Always allow the agent to toggle plan mode off
@@ -340,12 +356,13 @@ Restrictions:
 - You CANNOT use: edit, write (file modifications are disabled)
 - Bash is restricted to read-only commands (destructive commands are blocked)
 
-Your task:
+Expected workflow:
 1. Explore the codebase using read-only tools
 2. Ask clarifying questions if needed
-3. Create a detailed plan for the work
+3. When ready, call the plan_mode tool to submit your plan for user review
+4. After the user approves the plan, call toggle_plan_mode with enabled=false to exit and begin executing
 
-To exit plan mode and begin executing, call toggle_plan_mode with enabled=false.`,
+Do NOT exit plan mode without submitting a plan first. Always present your plan for review via plan_mode before calling toggle_plan_mode to exit.`,
                     display: false,
                 },
             };
