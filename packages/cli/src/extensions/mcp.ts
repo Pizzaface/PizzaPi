@@ -1,7 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
 import type { PizzaPiConfig } from "../config.js";
 import { PizzaPiOAuthProvider, type RelayContext } from "./mcp-oauth.js";
-import { getSandboxEnv, isSandboxActive, getResolvedConfig } from "@pizzapi/tools";
+import { getSandboxEnv, isSandboxActive, getResolvedConfig, getSandboxMode } from "@pizzapi/tools";
 
 /**
  * Minimal MCP client transport + tool bridge.
@@ -754,6 +754,9 @@ export function getOAuthProviders(): PizzaPiOAuthProvider[] {
  * Check whether an MCP server URL is allowed by the sandbox MCP domain policy.
  * Returns true if the sandbox is inactive, the MCP policy has no allowedDomains,
  * or the URL's hostname is in the allowlist.
+ *
+ * In audit mode, logs a warning but allows the connection (consistent with
+ * how audit mode works for filesystem operations). In enforce mode, blocks.
  */
 function isMcpDomainAllowed(url: string, serverName: string): boolean {
   if (!isSandboxActive()) return true;
@@ -767,12 +770,26 @@ function isMcpDomainAllowed(url: string, serverName: string): boolean {
     const hostname = new URL(url).hostname;
     if (allowedDomains.includes(hostname)) return true;
 
+    const mode = getSandboxMode();
+    if (mode === "audit") {
+      console.warn(
+        `⚠️ [sandbox:audit] MCP server "${serverName}": domain "${hostname}" ` +
+        `not in allowedDomains [${allowedDomains.join(", ")}] — allowing (audit mode)`,
+      );
+      return true; // Audit: log but don't block
+    }
+
     console.warn(
       `[sandbox/mcp] Blocked MCP server "${serverName}": domain "${hostname}" ` +
       `not in allowedDomains [${allowedDomains.join(", ")}]`,
     );
     return false;
   } catch {
+    const mode = getSandboxMode();
+    if (mode === "audit") {
+      console.warn(`⚠️ [sandbox:audit] MCP server "${serverName}": invalid URL "${url}" — allowing (audit mode)`);
+      return true;
+    }
     console.warn(`[sandbox/mcp] Blocked MCP server "${serverName}": invalid URL "${url}"`);
     return false;
   }
