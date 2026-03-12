@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { isPlanModeEnabled, isExecutionMode, getPlanTodoItems, togglePlanModeFromRemote } from "./plan-mode-toggle.js";
+import { isPlanModeEnabled, isExecutionMode, getPlanTodoItems, togglePlanModeFromRemote, setPlanModeFromRemote } from "./plan-mode-toggle.js";
 
 // These tests verify the module-level state accessors and the remote toggle.
 // The extension itself requires a full pi runtime to test (registerCommand,
@@ -26,5 +26,14 @@ describe("plan-mode-toggle module state", () => {
         // either boolean — the key contract is it doesn't throw.
         const result = togglePlanModeFromRemote();
         expect(typeof result).toBe("boolean");
+    });
+
+    test("setPlanModeFromRemote returns null when extension not initialized", () => {
+        // Before the extension factory runs, _setFn is null.
+        // Note: if other tests have already initialised the extension (e.g. via
+        // factories.test.ts importing it), _setFn may be set.  We accept
+        // null or boolean — the key contract is it doesn't throw.
+        const result = setPlanModeFromRemote(true);
+        expect(result === null || typeof result === "boolean").toBe(true);
     });
 });

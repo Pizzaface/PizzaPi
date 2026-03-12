@@ -122,7 +122,12 @@ export const BUILTIN_SYSTEM_PROMPT = [
     "The tool blocks until the user responds with one of four actions:",
     "'Clear Context & Begin' (approve and start fresh), 'Begin' (approve and keep context),",
     "'Suggest Edit' (user provides feedback — revise and resubmit the plan), or 'Cancel' (do not proceed).",
-    "When the user suggests an edit, incorporate their feedback into a revised plan and call `plan_mode` again.",
+    "When the user suggests an edit, incorporate their feedback into a revised plan and call `plan_mode` again.\n",
+    "## Toggle Plan Mode\n",
+    "Use the `toggle_plan_mode` tool to enter or exit read-only plan mode.",
+    "Call with `enabled: true` to enter plan mode — write/edit tools and destructive bash commands are blocked,",
+    "letting you safely explore the codebase. Call with `enabled: false` to exit and restore full tool access.",
+    "Use this when you want to read and understand code before making changes.",
 ].join(" ");
 
 export interface PizzaPiConfig {

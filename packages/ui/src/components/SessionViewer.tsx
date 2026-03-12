@@ -1275,11 +1275,11 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                 className="rounded-full border border-yellow-500/40 bg-yellow-500/10 px-2 py-0.5 text-[0.65rem] font-medium text-yellow-600 dark:text-yellow-400 uppercase tracking-wide hover:bg-yellow-500/20 transition-colors cursor-pointer"
                 onClick={() => {
                   if (onExec) {
-                    onExec({ type: "exec", id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, command: "set_plan_mode" });
+                    onExec({ type: "exec", id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, command: "set_plan_mode", enabled: false } as any);
                   }
                 }}
-                title="Plan mode active — click to toggle off"
-                aria-label="Toggle plan mode off"
+                title="Plan mode active — click to turn off"
+                aria-label="Turn off plan mode"
                 type="button"
               >
                 ⏸ plan

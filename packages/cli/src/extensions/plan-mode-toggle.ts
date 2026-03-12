@@ -157,12 +157,27 @@ export function setPlanModeChangeCallback(cb: (enabled: boolean) => void): void 
 /** Toggle function exposed for the remote extension (/plan from web UI). */
 let _toggleFn: (() => void) | null = null;
 
+/** Set-to-value function exposed for the remote extension and agent tool. */
+let _setFn: ((enabled: boolean) => void) | null = null;
+
 export function togglePlanModeFromRemote(): boolean {
     if (_toggleFn) {
         _toggleFn();
         return true;
     }
     return false;
+}
+
+/**
+ * Set plan mode to a specific value (true = on, false = off).
+ * Returns the new state, or null if the extension is not initialized.
+ */
+export function setPlanModeFromRemote(enabled: boolean): boolean | null {
+    if (_setFn) {
+        _setFn(enabled);
+        return _planModeEnabled;
+    }
+    return null;
 }
 
 // ── Extension ────────────────────────────────────────────────────────────────
@@ -186,8 +201,9 @@ export const planModeToggleExtension: ExtensionFactory = (pi) => {
         });
     }
 
-    function togglePlanMode() {
-        planModeEnabled = !planModeEnabled;
+    function setPlanMode(enabled: boolean) {
+        if (planModeEnabled === enabled) return;
+        planModeEnabled = enabled;
         executionMode = false;
         todoItems = [];
         syncModuleState();
@@ -195,8 +211,13 @@ export const planModeToggleExtension: ExtensionFactory = (pi) => {
         persistState();
     }
 
-    // Expose toggle to the remote extension
+    function togglePlanMode() {
+        setPlanMode(!planModeEnabled);
+    }
+
+    // Expose toggle and set-to-value to the remote extension / agent tool
     _toggleFn = togglePlanMode;
+    _setFn = setPlanMode;
 
     // ── /plan command ────────────────────────────────────────────────────────
     pi.registerCommand("plan", {
@@ -211,15 +232,61 @@ export const planModeToggleExtension: ExtensionFactory = (pi) => {
         },
     });
 
+    // ── toggle_plan_mode tool — lets the agent enter/exit plan mode ─────────
+    const TOGGLE_PLAN_MODE_TOOL = "toggle_plan_mode";
+
+    pi.registerTool({
+        name: TOGGLE_PLAN_MODE_TOOL,
+        label: "Toggle Plan Mode",
+        description:
+            "Enter or exit plan mode. In plan mode, you can only read files and run safe commands — " +
+            "write/edit tools are blocked. Use this when you want to safely explore the codebase before making changes. " +
+            "Call with enabled=true to enter plan mode, enabled=false to exit.",
+        parameters: {
+            type: "object",
+            properties: {
+                enabled: {
+                    type: "boolean",
+                    description: "true to enter plan mode (read-only), false to exit plan mode (full access).",
+                },
+            },
+            required: ["enabled"],
+            additionalProperties: false,
+        } as any,
+        async execute(_toolCallId, rawParams) {
+            const params = (rawParams ?? {}) as { enabled?: boolean };
+            const enabled = typeof params.enabled === "boolean" ? params.enabled : !planModeEnabled;
+
+            const wasEnabled = planModeEnabled;
+            setPlanMode(enabled);
+
+            const stateLabel = planModeEnabled ? "ON (read-only)" : "OFF (full access)";
+            const changed = wasEnabled !== planModeEnabled;
+
+            return {
+                content: [{
+                    type: "text" as const,
+                    text: changed
+                        ? `Plan mode is now ${stateLabel}.`
+                        : `Plan mode was already ${stateLabel}. No change.`,
+                }],
+                details: { enabled: planModeEnabled, changed },
+            };
+        },
+    });
+
     // ── Block write tools in plan mode ───────────────────────────────────────
     pi.on("tool_call", async (event) => {
         if (!planModeEnabled) return;
+
+        // Always allow the agent to toggle plan mode off
+        if (event.toolName === TOGGLE_PLAN_MODE_TOOL) return;
 
         // Block edit/write tools entirely
         if (BLOCKED_TOOLS.has(event.toolName)) {
             return {
                 block: true,
-                reason: `Plan mode: "${event.toolName}" is blocked in read-only mode. Use /plan to exit plan mode first.`,
+                reason: `Plan mode: "${event.toolName}" is blocked in read-only mode. Use toggle_plan_mode to exit plan mode first.`,
             };
         }
 
@@ -229,7 +296,7 @@ export const planModeToggleExtension: ExtensionFactory = (pi) => {
             if (!isSafeCommand(command)) {
                 return {
                     block: true,
-                    reason: `Plan mode: command blocked (not in read-only allowlist). Use /plan to exit plan mode first.\nCommand: ${command}`,
+                    reason: `Plan mode: command blocked (not in read-only allowlist). Use toggle_plan_mode to exit plan mode first.\nCommand: ${command}`,
                 };
             }
         }
@@ -276,14 +343,9 @@ Restrictions:
 Your task:
 1. Explore the codebase using read-only tools
 2. Ask clarifying questions if needed
-3. Create a detailed numbered plan under a "Plan:" header:
+3. Create a detailed plan for the work
 
-Plan:
-1. First step description
-2. Second step description
-...
-
-Do NOT attempt to make changes — just describe what you would do.`,
+To exit plan mode and begin executing, call toggle_plan_mode with enabled=false.`,
                     display: false,
                 },
             };

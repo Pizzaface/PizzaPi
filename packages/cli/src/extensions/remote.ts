@@ -8,7 +8,7 @@ import { getEnvApiKey } from "@mariozechner/pi-ai/dist/env-api-keys.js";
 import { loadConfig, defaultAgentDir, toggleMcpServer } from "../config.js";
 import { getMcpBridge } from "./mcp-bridge.js";
 import { getCurrentTodoList, setTodoUpdateCallback, type TodoItem } from "./update-todo.js";
-import { isPlanModeEnabled, isExecutionMode, getPlanTodoItems, setPlanModeChangeCallback, togglePlanModeFromRemote } from "./plan-mode-toggle.js";
+import { isPlanModeEnabled, isExecutionMode, getPlanTodoItems, setPlanModeChangeCallback, togglePlanModeFromRemote, setPlanModeFromRemote } from "./plan-mode-toggle.js";
 import type { RemoteExecRequest, RemoteExecResponse } from "./remote-commands.js";
 import { messageBus } from "./session-message-bus.js";
 import { io, type Socket } from "socket.io-client";
@@ -1093,10 +1093,21 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             }
 
             if (req.command === "set_plan_mode") {
-                const toggled = togglePlanModeFromRemote();
-                if (!toggled) {
-                    replyErr("Plan mode extension not initialized");
-                    return;
+                // If an explicit `enabled` value is provided, set to that value.
+                // Otherwise toggle (backwards-compatible with the /plan command).
+                const explicitEnabled = (req as any).enabled;
+                if (typeof explicitEnabled === "boolean") {
+                    const result = setPlanModeFromRemote(explicitEnabled);
+                    if (result === null) {
+                        replyErr("Plan mode extension not initialized");
+                        return;
+                    }
+                } else {
+                    const toggled = togglePlanModeFromRemote();
+                    if (!toggled) {
+                        replyErr("Plan mode extension not initialized");
+                        return;
+                    }
                 }
                 const enabled = isPlanModeEnabled();
                 replyOk({ planModeEnabled: enabled });
