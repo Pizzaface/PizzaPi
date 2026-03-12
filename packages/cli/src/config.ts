@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { homedir } from "os";
-import { join } from "path";
+import { join, resolve } from "path";
 
 /** A single hook entry — a shell command to run at a lifecycle point. */
 export interface HookEntry {
@@ -139,6 +139,221 @@ export const BUILTIN_SYSTEM_PROMPT = [
     "Do not exit plan mode without first submitting a plan via `plan_mode` unless the task is trivial.",
 ].join(" ");
 
+// ── Sandbox configuration ─────────────────────────────────────────────────────
+
+/** User-facing sandbox config — all fields optional (merged with defaults). */
+export interface SandboxConfig {
+    /** Whether sandbox enforcement is active. Default: true. */
+    enabled?: boolean;
+    /** Enforcement mode. Default: "enforce". */
+    mode?: "enforce" | "audit" | "off";
+    /** Network access controls. */
+    network?: {
+        /** Whether the domain list is a denylist or an allowlist. Default: "denylist". */
+        mode?: "denylist" | "allowlist";
+        /** Domains permitted when mode is "allowlist". */
+        allowedDomains?: string[];
+        /** Domains blocked when mode is "denylist". */
+        deniedDomains?: string[];
+    };
+    /** Filesystem access controls. */
+    filesystem?: {
+        /** Paths the agent cannot read. Default: sensitive dotfile dirs. */
+        denyRead?: string[];
+        /** Paths the agent may write to. Default: [".", "/tmp"]. */
+        allowWrite?: string[];
+        /** Paths the agent must never write to. Default: [".env", "~/.ssh"]. */
+        denyWrite?: string[];
+    };
+    /** Unix socket access controls. */
+    sockets?: {
+        /** Sockets the agent cannot access. Default: ["/var/run/docker.sock"]. */
+        deny?: string[];
+    };
+    /** MCP tool sandbox constraints. */
+    mcp?: {
+        /** Domains MCP tools are allowed to contact. Default: []. */
+        allowedDomains?: string[];
+        /** Paths MCP tools may write to. Default: ["/tmp"]. */
+        allowWrite?: string[];
+    };
+}
+
+/** Fully-resolved sandbox config — every field is required with absolute paths. */
+export interface ResolvedSandboxConfig {
+    enabled: boolean;
+    mode: "enforce" | "audit" | "off";
+    network: {
+        mode: "denylist" | "allowlist";
+        allowedDomains: string[];
+        deniedDomains: string[];
+    };
+    filesystem: {
+        denyRead: string[];
+        allowWrite: string[];
+        denyWrite: string[];
+    };
+    sockets: {
+        deny: string[];
+    };
+    mcp: {
+        allowedDomains: string[];
+        allowWrite: string[];
+    };
+}
+
+/** Sensible default sandbox configuration. */
+export const DEFAULT_SANDBOX_CONFIG: ResolvedSandboxConfig = {
+    enabled: true,
+    mode: "enforce",
+    network: {
+        mode: "denylist",
+        allowedDomains: [],
+        deniedDomains: [],
+    },
+    filesystem: {
+        denyRead: [
+            "~/.ssh",
+            "~/.aws",
+            "~/.gnupg",
+            "~/.config/gcloud",
+            "~/.docker/config.json",
+            "~/Library/Application Support/Google/Chrome",
+            "~/Library/Application Support/Firefox",
+            "~/.mozilla/firefox",
+            "~/.config/google-chrome",
+            "~/.config/chromium",
+        ],
+        allowWrite: [".", "/tmp"],
+        denyWrite: [".env", ".env.local", "~/.ssh"],
+    },
+    sockets: {
+        deny: ["/var/run/docker.sock"],
+    },
+    mcp: {
+        allowedDomains: [],
+        allowWrite: ["/tmp"],
+    },
+};
+
+/**
+ * Expand `~` to `os.homedir()` and resolve `.` to the given `cwd`.
+ * Absolute paths are returned as-is (after ~ expansion).
+ */
+function resolveSandboxPath(p: string, cwd: string): string {
+    const expanded = p.startsWith("~") ? join(homedir(), p.slice(1)) : p;
+    if (expanded === ".") return resolve(cwd);
+    // Relative paths (not starting with /) are resolved against cwd
+    if (!expanded.startsWith("/")) return resolve(cwd, expanded);
+    return expanded;
+}
+
+/**
+ * Resolve a partial SandboxConfig into a fully-resolved ResolvedSandboxConfig.
+ * Expands `~` to `os.homedir()`, resolves `.` to `cwd`, and fills in defaults.
+ */
+export function resolveSandboxConfig(cwd: string, config: PizzaPiConfig): ResolvedSandboxConfig {
+    const s = config.sandbox ?? {};
+
+    const resolvePaths = (paths: string[]): string[] =>
+        paths.map((p) => resolveSandboxPath(p, cwd));
+
+    return {
+        enabled: s.enabled ?? DEFAULT_SANDBOX_CONFIG.enabled,
+        mode: s.mode ?? DEFAULT_SANDBOX_CONFIG.mode,
+        network: {
+            mode: s.network?.mode ?? DEFAULT_SANDBOX_CONFIG.network.mode,
+            allowedDomains: [...(s.network?.allowedDomains ?? DEFAULT_SANDBOX_CONFIG.network.allowedDomains)],
+            deniedDomains: [...(s.network?.deniedDomains ?? DEFAULT_SANDBOX_CONFIG.network.deniedDomains)],
+        },
+        filesystem: {
+            denyRead: resolvePaths(s.filesystem?.denyRead ?? DEFAULT_SANDBOX_CONFIG.filesystem.denyRead),
+            allowWrite: resolvePaths(s.filesystem?.allowWrite ?? DEFAULT_SANDBOX_CONFIG.filesystem.allowWrite),
+            denyWrite: resolvePaths(s.filesystem?.denyWrite ?? DEFAULT_SANDBOX_CONFIG.filesystem.denyWrite),
+        },
+        sockets: {
+            deny: resolvePaths(s.sockets?.deny ?? DEFAULT_SANDBOX_CONFIG.sockets.deny),
+        },
+        mcp: {
+            allowedDomains: [...(s.mcp?.allowedDomains ?? DEFAULT_SANDBOX_CONFIG.mcp.allowedDomains)],
+            allowWrite: resolvePaths(s.mcp?.allowWrite ?? DEFAULT_SANDBOX_CONFIG.mcp.allowWrite),
+        },
+    };
+}
+
+/**
+ * Merge a global SandboxConfig with a project-local SandboxConfig.
+ *
+ * Security invariant: the project config CANNOT weaken the global config.
+ *   - deny lists (denyRead, denyWrite, sockets.deny): union (project can add, not remove)
+ *   - allow lists (allowWrite, mcp.allowWrite, mcp.allowedDomains): intersection (project can only narrow)
+ *   - network.allowedDomains: intersection
+ *   - Scalars (enabled, mode, network.mode): global wins unless project is stricter
+ */
+export function mergeSandboxConfig(global: SandboxConfig, project: SandboxConfig): SandboxConfig {
+    // Helper: unique union of two string arrays
+    const union = (a: string[] | undefined, b: string[] | undefined): string[] | undefined => {
+        const combined = [...(a ?? []), ...(b ?? [])];
+        return combined.length > 0 ? [...new Set(combined)] : undefined;
+    };
+
+    // Helper: intersection of two string arrays (only items in both)
+    // If global is undefined/empty, result is empty (nothing is allowed).
+    // If project is undefined, global is unchanged (project didn't restrict).
+    const intersect = (
+        g: string[] | undefined,
+        p: string[] | undefined,
+    ): string[] | undefined => {
+        if (p === undefined) return g; // project didn't specify → keep global
+        if (!g || g.length === 0) return []; // global allows nothing → nothing
+        const pSet = new Set(p);
+        const result = g.filter((item) => pSet.has(item));
+        return result.length > 0 ? result : [];
+    };
+
+    // Scalars: project cannot weaken (enable → disable, enforce → audit/off)
+    const modeStrength: Record<string, number> = { enforce: 2, audit: 1, off: 0 };
+    const globalMode = global.mode ?? "enforce";
+    const projectMode = project.mode ?? globalMode;
+    const effectiveMode = modeStrength[projectMode] >= modeStrength[globalMode] ? projectMode : globalMode;
+
+    // enabled: project can only disable→enable (stricter) not enable→disable
+    const globalEnabled = global.enabled ?? true;
+    const projectEnabled = project.enabled ?? globalEnabled;
+    // If global says enabled, project can't disable. If global says disabled, project can enable (stricter).
+    const effectiveEnabled = globalEnabled ? true : projectEnabled;
+
+    // Network mode: project can make it stricter (denylist→allowlist is stricter)
+    const netModeStrength: Record<string, number> = { allowlist: 1, denylist: 0 };
+    const globalNetMode = global.network?.mode ?? "denylist";
+    const projectNetMode = project.network?.mode ?? globalNetMode;
+    const effectiveNetMode = netModeStrength[projectNetMode] >= netModeStrength[globalNetMode]
+        ? projectNetMode
+        : globalNetMode;
+
+    return {
+        enabled: effectiveEnabled,
+        mode: effectiveMode as "enforce" | "audit" | "off",
+        network: {
+            mode: effectiveNetMode as "denylist" | "allowlist",
+            allowedDomains: intersect(global.network?.allowedDomains, project.network?.allowedDomains),
+            deniedDomains: union(global.network?.deniedDomains, project.network?.deniedDomains),
+        },
+        filesystem: {
+            denyRead: union(global.filesystem?.denyRead, project.filesystem?.denyRead),
+            denyWrite: union(global.filesystem?.denyWrite, project.filesystem?.denyWrite),
+            allowWrite: intersect(global.filesystem?.allowWrite, project.filesystem?.allowWrite),
+        },
+        sockets: {
+            deny: union(global.sockets?.deny, project.sockets?.deny),
+        },
+        mcp: {
+            allowedDomains: intersect(global.mcp?.allowedDomains, project.mcp?.allowedDomains),
+            allowWrite: intersect(global.mcp?.allowWrite, project.mcp?.allowWrite),
+        },
+    };
+}
+
 export interface PizzaPiConfig {
     /** Override the default system prompt */
     systemPrompt?: string;
@@ -197,6 +412,15 @@ export interface PizzaPiConfig {
      * Set to 0 to disable the timeout entirely.
      */
     mcpTimeout?: number;
+
+    /**
+     * Sandbox configuration — controls filesystem, network, and socket access
+     * restrictions for agent tool execution.
+     *
+     * Global config sets the baseline; project-local config can only narrow
+     * permissions (add to deny lists, remove from allow lists), never widen them.
+     */
+    sandbox?: SandboxConfig;
 
     /**
      * Show a warning notification when startup takes longer than expected
