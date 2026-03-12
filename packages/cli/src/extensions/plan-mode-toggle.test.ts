@@ -148,6 +148,22 @@ describe("isSafeCommand", () => {
         expect(isSafeCommand("ls & make")).toBe(false);
     });
 
+    // False-positive guard: destructive keywords in arguments must not block
+    test("allows searching for destructive keywords in arguments", () => {
+        expect(isSafeCommand('grep -R "rm" src/')).toBe(true);
+        expect(isSafeCommand('rg "rm -rf" src/')).toBe(true);
+        expect(isSafeCommand("grep mv changelog.md")).toBe(true);
+        expect(isSafeCommand("find . -name rm")).toBe(true);
+        expect(isSafeCommand('rg kill src/')).toBe(true);
+    });
+
+    test("still blocks destructive commands as executables", () => {
+        expect(isSafeCommand("rm -rf /")).toBe(false);
+        expect(isSafeCommand("mv foo bar")).toBe(false);
+        expect(isSafeCommand("kill -9 1234")).toBe(false);
+        expect(isSafeCommand("sudo ls")).toBe(false);
+    });
+
     // Quote-aware splitting — pipe inside quotes must not split
     test("allows rg/grep with quoted alternation patterns", () => {
         expect(isSafeCommand('rg "foo|bar" src/')).toBe(true);

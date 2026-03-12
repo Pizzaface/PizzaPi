@@ -4,26 +4,39 @@ import type { ExtensionFactory } from "@mariozechner/pi-coding-agent";
 
 // ── Safe-command detection ───────────────────────────────────────────────────
 
-const DESTRUCTIVE_PATTERNS = [
-    /\brm\b/i, /\brmdir\b/i, /\bmv\b/i, /\bcp\b/i, /\bmkdir\b/i, /\btouch\b/i,
-    /\bchmod\b/i, /\bchown\b/i, /\bchgrp\b/i, /\bln\b/i, /\btee\b/i,
-    /\btruncate\b/i, /\bdd\b/i, /\bshred\b/i,
+/**
+ * DESTRUCTIVE_CMD_PATTERNS are checked against the first token (executable
+ * name) of a command segment.  This avoids false positives when destructive
+ * keywords appear as arguments, e.g. `grep "rm" src/`.
+ */
+const DESTRUCTIVE_CMD_PATTERNS = [
+    /^\s*rm\b/i, /^\s*rmdir\b/i, /^\s*mv\b/i, /^\s*cp\b/i, /^\s*mkdir\b/i, /^\s*touch\b/i,
+    /^\s*chmod\b/i, /^\s*chown\b/i, /^\s*chgrp\b/i, /^\s*ln\b/i, /^\s*tee\b/i,
+    /^\s*truncate\b/i, /^\s*dd\b/i, /^\s*shred\b/i,
+    /^\s*sudo\b/i, /^\s*su\b/i,
+    /^\s*kill\b/i, /^\s*pkill\b/i, /^\s*killall\b/i,
+    /^\s*reboot\b/i, /^\s*shutdown\b/i,
+    /^\s*(vim?|nano|emacs|code|subl)\b/i,
+    /^\s*npm\s+(install|uninstall|update|ci|link|publish)/i,
+    /^\s*yarn\s+(add|remove|install|publish)/i,
+    /^\s*pnpm\s+(add|remove|install|publish)/i,
+    /^\s*bun\s+(add|remove|install|link|publish)/i,
+    /^\s*pip\s+(install|uninstall)/i,
+    /^\s*apt(-get)?\s+(install|remove|purge|update|upgrade)/i,
+    /^\s*brew\s+(install|uninstall|upgrade)/i,
+    /^\s*git\s+(add|commit|push|pull|merge|rebase|reset|checkout|branch\s+-[dD]|stash|cherry-pick|revert|tag|init|clone)/i,
+    /^\s*systemctl\s+(start|stop|restart|enable|disable)/i,
+    /^\s*service\s+\S+\s+(start|stop|restart)/i,
+];
+
+/**
+ * DESTRUCTIVE_FLAG_PATTERNS are checked against the full command string.
+ * These detect operators/flags that cause writes regardless of command name.
+ */
+const DESTRUCTIVE_FLAG_PATTERNS = [
     /(^|[^<])>(?!>)/, />>/,
-    /\bnpm\s+(install|uninstall|update|ci|link|publish)/i,
-    /\byarn\s+(add|remove|install|publish)/i,
-    /\bpnpm\s+(add|remove|install|publish)/i,
-    /\bbun\s+(add|remove|install|link|publish)/i,
-    /\bpip\s+(install|uninstall)/i,
-    /\bapt(-get)?\s+(install|remove|purge|update|upgrade)/i,
-    /\bbrew\s+(install|uninstall|upgrade)/i,
-    /\bgit\s+(add|commit|push|pull|merge|rebase|reset|checkout|branch\s+-[dD]|stash|cherry-pick|revert|tag|init|clone)/i,
-    /\bsudo\b/i, /\bsu\b/i,
-    /\bkill\b/i, /\bpkill\b/i, /\bkillall\b/i,
-    /\breboot\b/i, /\bshutdown\b/i,
-    /\bsystemctl\s+(start|stop|restart|enable|disable)/i,
-    /\bservice\s+\S+\s+(start|stop|restart)/i,
-    /\b(vim?|nano|emacs|code|subl)\b/i,
-    /\bcurl\b.*\s(-o\S|-o\s|--output\b|--output=|-O\b|--remote-name\b|--remote-name-all\b|-D\s|-D\S|--dump-header\b|--dump-header=|-c\s|-c\S|--cookie-jar\b|--cookie-jar=)/i, /\bwget\b.*\s(-O\b|--output-document\b|--output-document=)/i,
+    /\bcurl\b.*\s(-o\S|-o\s|--output\b|--output=|-O\b|--remote-name\b|--remote-name-all\b|-D\s|-D\S|--dump-header\b|--dump-header=|-c\s|-c\S|--cookie-jar\b|--cookie-jar=)/i,
+    /\bwget\b.*\s(-O\b|--output-document\b|--output-document=)/i,
     /\bfind\b.*\s-exec(dir)?\b/i, /\bfind\b.*\s-delete\b/i, /\bfind\b.*\s-fprintf\b/i,
 ];
 
@@ -112,9 +125,10 @@ export function isSafeCommand(command: string): boolean {
     for (const part of parts) {
         const trimmed = part.trim();
         if (!trimmed) continue; // empty segment (e.g. trailing semicolon)
-        const isDestructive = DESTRUCTIVE_PATTERNS.some((p) => p.test(trimmed));
+        const isCmdDestructive = DESTRUCTIVE_CMD_PATTERNS.some((p) => p.test(trimmed));
+        const isFlagDestructive = DESTRUCTIVE_FLAG_PATTERNS.some((p) => p.test(trimmed));
         const isSafe = SAFE_PATTERNS.some((p) => p.test(trimmed));
-        if (isDestructive || !isSafe) return false;
+        if (isCmdDestructive || isFlagDestructive || !isSafe) return false;
     }
 
     return parts.some((p) => p.trim().length > 0); // at least one non-empty subcommand
