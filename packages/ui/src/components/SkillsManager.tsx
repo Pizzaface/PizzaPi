@@ -19,6 +19,7 @@ import {
     Trash2,
     ChevronDown,
     Wand2,
+    RefreshCw,
 } from "lucide-react";
 import { ErrorAlert } from "@/components/ui/error-alert";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -393,6 +394,7 @@ function DeleteSkillDialog({ runnerId, skill, onClose, onDeleted }: DeleteSkillD
 export function SkillsManager({ runnerId, skills: initialSkills, onSkillsChange }: SkillsManagerProps) {
     const [skills, setSkills] = React.useState<SkillInfo[]>(initialSkills);
     const [open, setOpen] = React.useState(false);
+    const [refreshing, setRefreshing] = React.useState(false);
 
     // Editor dialog state
     const [editorOpen, setEditorOpen] = React.useState(false);
@@ -410,6 +412,24 @@ export function SkillsManager({ runnerId, skills: initialSkills, onSkillsChange 
     const handleSkillsChange = (updated: SkillInfo[]) => {
         setSkills(updated);
         onSkillsChange?.(updated);
+    };
+
+    const handleRefresh = async () => {
+        setRefreshing(true);
+        try {
+            const res = await fetch(`/api/runners/${encodeURIComponent(runnerId)}/skills/refresh`, {
+                method: "POST",
+                credentials: "include",
+            });
+            const data = await res.json().catch(() => null) as any;
+            if (res.ok && Array.isArray(data?.skills)) {
+                handleSkillsChange(data.skills);
+            }
+        } catch (err) {
+            console.error("Failed to refresh skills:", err);
+        } finally {
+            setRefreshing(false);
+        }
     };
 
     const handleEdit = (skill: SkillInfo) => {
@@ -449,15 +469,28 @@ export function SkillsManager({ runnerId, skills: initialSkills, onSkillsChange 
                         />
                     </CollapsibleTrigger>
 
-                    <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
-                        onClick={handleNewSkill}
-                    >
-                        <Plus className="h-3 w-3 mr-1" />
-                        New skill
-                    </Button>
+                    <div className="flex items-center gap-1">
+                        <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
+                            onClick={handleRefresh}
+                            disabled={refreshing}
+                            title="Re-scan skills from disk"
+                        >
+                            <RefreshCw className={cn("h-3 w-3 mr-1", refreshing && "animate-spin")} />
+                            Reload
+                        </Button>
+                        <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
+                            onClick={handleNewSkill}
+                        >
+                            <Plus className="h-3 w-3 mr-1" />
+                            New skill
+                        </Button>
+                    </div>
                 </div>
 
                 <CollapsibleContent>
