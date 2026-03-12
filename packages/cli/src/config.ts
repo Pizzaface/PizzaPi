@@ -134,7 +134,8 @@ export const BUILTIN_SYSTEM_PROMPT = [
     "letting you safely explore the codebase. Call with `enabled: false` to exit and restore full tool access.",
     "Use this when you want to read and understand code before making changes.\n",
     "**Expected workflow:** enter plan mode → explore → call `plan_mode` to present your plan for user review →",
-    "after approval, call `toggle_plan_mode` with `enabled: false` to exit and execute.",
+    "plan mode exits automatically when the user approves the plan ('Clear Context & Begin' or 'Begin'),",
+    "so you do NOT need to call `toggle_plan_mode` after approval — just proceed with execution.",
     "Do not exit plan mode without first submitting a plan via `plan_mode` unless the task is trivial.",
 ].join(" ");
 

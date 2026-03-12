@@ -432,9 +432,9 @@ Expected workflow:
 1. Explore the codebase using read-only tools
 2. Ask clarifying questions if needed
 3. When ready, call the plan_mode tool to submit your plan for user review
-4. After the user approves the plan, call toggle_plan_mode with enabled=false to exit and begin executing
+4. If the user approves, plan mode exits automatically — just proceed with execution
 
-Do NOT exit plan mode without submitting a plan first. Always present your plan for review via plan_mode before calling toggle_plan_mode to exit.`,
+Do NOT exit plan mode without submitting a plan first. Always present your plan for review via plan_mode.`,
                         display: false,
                     },
                 };

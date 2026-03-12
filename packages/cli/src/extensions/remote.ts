@@ -2342,6 +2342,12 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 cancel: "Cancel",
             }[result.action];
 
+            // When the user approves the plan, automatically exit plan mode
+            // so the agent can proceed with full tool access immediately.
+            if (result.action === "execute" || result.action === "execute_keep_context") {
+                setPlanModeFromRemote(false);
+            }
+
             // When the user picks "Clear Context & Begin", signal the plan-mode
             // extension to strip all prior messages on the next context event so
             // the agent starts fresh (keeping only the plan_mode exchange).
