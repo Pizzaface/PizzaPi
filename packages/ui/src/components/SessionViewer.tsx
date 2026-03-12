@@ -10,6 +10,7 @@ import { groupToolExecutionMessages, groupSubAgentConversations } from "@/compon
 import { getComposerSubmitMode } from "@/components/session-viewer/composer-submit-state";
 import {
   hasVisibleContent,
+  normalizeToolName,
   resolveCommandPopoverState,
 } from "@/components/session-viewer/utils";
 import {
@@ -350,6 +351,32 @@ const SessionMessageItem = React.memo(({ message, activeToolCalls, agentActive, 
         />
       </div>
     );
+  }
+
+  // Chromeless tool cards — render as standalone inline elements without the
+  // outer "TOOL · NAME · timestamp" message wrapper.
+  if ((message.role === "toolResult" || message.role === "tool") && message.toolInput !== undefined) {
+    const norm = normalizeToolName(message.toolName);
+    if (norm === "toggle_plan_mode" || norm.endsWith(".toggle_plan_mode")) {
+      return (
+        <div className="w-full px-4 py-1.5 max-w-3xl mx-auto">
+          {renderContent(
+            message.content,
+            activeToolCalls,
+            message.role,
+            message.toolName,
+            message.isError,
+            message.toolInput,
+            message.toolCallId ?? message.key,
+            agentActive && isLast && message.timestamp === undefined,
+            message.thinking,
+            message.thinkingDuration,
+            undefined,
+            message.details,
+          )}
+        </div>
+      );
+    }
   }
 
   // Sub-agent conversation cards render without the outer message wrapper
