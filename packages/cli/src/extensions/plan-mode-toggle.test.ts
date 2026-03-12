@@ -157,6 +157,11 @@ describe("isSafeCommand", () => {
         expect(isSafeCommand('rg kill src/')).toBe(true);
     });
 
+    test("blocks awk (can execute arbitrary commands via system())", () => {
+        expect(isSafeCommand("awk '{print $1}' file.txt")).toBe(false);
+        expect(isSafeCommand("awk 'BEGIN{system(\"touch /tmp/pwned\")}'")).toBe(false);
+    });
+
     test("still blocks destructive commands as executables", () => {
         expect(isSafeCommand("rm -rf /")).toBe(false);
         expect(isSafeCommand("mv foo bar")).toBe(false);

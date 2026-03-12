@@ -56,7 +56,7 @@ const SAFE_PATTERNS = [
     /^\s*bun\s+(pm\s+ls|--version)/i,
     /^\s*node\s+--version/i, /^\s*python\s+--version/i,
     /^\s*curl\s/i, /^\s*wget\s+-O\s*-/i,
-    /^\s*jq\b/, /^\s*sed\s+-n/i, /^\s*awk\b/,
+    /^\s*jq\b/, /^\s*sed\s+-n/i,
     /^\s*rg\b/, /^\s*fd\b/, /^\s*bat\b/, /^\s*exa\b/,
 ];
 
@@ -288,6 +288,9 @@ export const planModeToggleExtension: ExtensionFactory = (pi) => {
     let executionMode = false;
     /** True if the agent submitted a plan (via plan_mode tool) during the current plan mode session. */
     let planSubmittedDuringSession = false;
+    /** True if a plan_mode tool was invoked during the current agent turn. Used to
+     *  suppress the legacy agent_end plan menu when plan_mode already handled UX. */
+    let planModeToolInvokedThisTurn = false;
 
     function syncModuleState() {
         _planModeEnabled = planModeEnabled;
@@ -397,6 +400,7 @@ export const planModeToggleExtension: ExtensionFactory = (pi) => {
         // Track when the agent submits a plan during plan mode
         if (planModeEnabled && (event.toolName === "plan_mode" || event.toolName.endsWith(".plan_mode"))) {
             planSubmittedDuringSession = true;
+            planModeToolInvokedThisTurn = true;
         }
 
         if (!planModeEnabled) return;
@@ -560,6 +564,14 @@ After completing a step, include a [DONE:n] tag in your response (e.g. [DONE:1])
         }
 
         if (!planModeEnabled || !ctx.hasUI) return;
+
+        // If the plan_mode tool was used this turn, it already handled user
+        // interaction (approve/cancel/edit).  Skip the legacy agent_end menu
+        // to avoid showing a second conflicting prompt.
+        if (planModeToolInvokedThisTurn) {
+            planModeToolInvokedThisTurn = false;
+            return;
+        }
 
         // Extract todos from last assistant message
         const lastAssistant = [...event.messages].reverse().find(isAssistantMessage);
