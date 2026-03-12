@@ -141,6 +141,33 @@ describe("isSafeCommand", () => {
         expect(isSafeCommand("curl --remote-name-all https://example.com/file.bin")).toBe(false);
     });
 
+    // PR fix: process substitution bypass
+    test("blocks process substitution via <() and >()", () => {
+        expect(isSafeCommand("cat <(touch /tmp/pwned)")).toBe(false);
+        expect(isSafeCommand("diff <(cat a.txt) <(cat b.txt)")).toBe(false);
+        expect(isSafeCommand("cat >(rm /tmp/file)")).toBe(false);
+    });
+
+    // PR fix: find -ok / -okdir bypass
+    test("blocks find with -ok and -okdir flags", () => {
+        expect(isSafeCommand("find . -ok rm {} \\;")).toBe(false);
+        expect(isSafeCommand("find . -okdir git clean -fd \\;")).toBe(false);
+    });
+
+    // PR fix: curl --trace / --trace-ascii / --libcurl / --stderr bypass
+    test("blocks curl with --trace and other file-writing flags", () => {
+        expect(isSafeCommand("curl --trace trace.log https://example.com")).toBe(false);
+        expect(isSafeCommand("curl --trace-ascii trace.txt https://example.com")).toBe(false);
+        expect(isSafeCommand("curl --libcurl code.c https://example.com")).toBe(false);
+        expect(isSafeCommand("curl --stderr err.log https://example.com")).toBe(false);
+    });
+
+    // PR fix: escaped quote bypass in shell-segment splitting
+    test("blocks escaped-quote bypass that hides chaining operators", () => {
+        expect(isSafeCommand('ls \\"; touch /tmp/pwned')).toBe(false);
+        expect(isSafeCommand("ls \\'; touch /tmp/pwned")).toBe(false);
+    });
+
     // Chaining operators (pre-existing behavior, regression guard)
     test("blocks chained unsafe commands", () => {
         expect(isSafeCommand("ls && make")).toBe(false);
@@ -214,5 +241,17 @@ describe("splitShellSegments", () => {
     test("handles mixed quotes", () => {
         const result = splitShellSegments(`rg "a|b" src/ && grep 'c|d' file`);
         expect(result).toEqual([`rg "a|b" src/ `, ` grep 'c|d' file`]);
+    });
+
+    test("handles backslash-escaped quotes — splits correctly on real operators", () => {
+        // A backslash-escaped quote should NOT toggle quote state,
+        // so the `;` after it should be treated as a real operator.
+        const result = splitShellSegments('ls \\"; touch /tmp/pwned');
+        expect(result.length).toBeGreaterThan(1);
+    });
+
+    test("backslash inside quotes does not break parsing", () => {
+        const result = splitShellSegments('grep "foo\\"bar" src/');
+        expect(result).toEqual(['grep "foo\\"bar" src/']);
     });
 });

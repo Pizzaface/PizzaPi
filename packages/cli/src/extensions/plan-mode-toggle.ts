@@ -35,9 +35,9 @@ const DESTRUCTIVE_CMD_PATTERNS = [
  */
 const DESTRUCTIVE_FLAG_PATTERNS = [
     /(^|[^<])>(?!>)/, />>/,
-    /\bcurl\b.*\s(-o\S|-o\s|--output\b|--output=|-O\b|--remote-name\b|--remote-name-all\b|-D\s|-D\S|--dump-header\b|--dump-header=|-c\s|-c\S|--cookie-jar\b|--cookie-jar=)/i,
+    /\bcurl\b.*\s(-o\S|-o\s|--output\b|--output=|-O\b|--remote-name\b|--remote-name-all\b|-D\s|-D\S|--dump-header\b|--dump-header=|-c\s|-c\S|--cookie-jar\b|--cookie-jar=|--trace\b|--trace=|--trace-ascii\b|--trace-ascii=|--libcurl\b|--libcurl=|--stderr\b|--stderr=)/i,
     /\bwget\b.*\s(-O\b|--output-document\b|--output-document=)/i,
-    /\bfind\b.*\s-exec(dir)?\b/i, /\bfind\b.*\s-delete\b/i, /\bfind\b.*\s-fprintf\b/i,
+    /\bfind\b.*\s-exec(dir)?\b/i, /\bfind\b.*\s-ok(dir)?\b/i, /\bfind\b.*\s-delete\b/i, /\bfind\b.*\s-fprintf\b/i,
 ];
 
 const SAFE_PATTERNS = [
@@ -80,9 +80,15 @@ export function splitShellSegments(command: string): string[] {
     for (let i = 0; i < command.length; i++) {
         const ch = command[i];
 
-        // Toggle quote state (no escaping inside single quotes, backslash
-        // escapes inside double quotes are intentionally ignored for simplicity
-        // since we only care about operator detection, not full shell semantics).
+        // Handle backslash escapes: a backslash before a quote (or any char)
+        // means the next character is literal and should not toggle quote state.
+        if (ch === "\\" && i + 1 < command.length) {
+            current += ch + command[i + 1];
+            i++; // skip the escaped character
+            continue;
+        }
+
+        // Toggle quote state on unescaped quotes.
         if (ch === "'" && !inDouble) { inSingle = !inSingle; current += ch; continue; }
         if (ch === '"' && !inSingle) { inDouble = !inDouble; current += ch; continue; }
 
@@ -115,9 +121,10 @@ export function splitShellSegments(command: string): string[] {
 
 /** @internal Exported for testing only. */
 export function isSafeCommand(command: string): boolean {
-    // Reject command substitution, backtick expansion, and multi-line payloads
-    // that could smuggle non-allowlisted commands past the per-segment check.
-    if (/\$\(|`|\n/.test(command)) return false;
+    // Reject command substitution, backtick expansion, process substitution,
+    // and multi-line payloads that could smuggle non-allowlisted commands past
+    // the per-segment check.
+    if (/\$\(|`|\n|<\(|>\(/.test(command)) return false;
 
     // Split on shell chaining operators, respecting quotes
     const parts = splitShellSegments(command);
