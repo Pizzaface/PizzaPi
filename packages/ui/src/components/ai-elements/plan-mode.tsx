@@ -71,11 +71,14 @@ export function PlanModePanel({
     if (isSubmitting) return;
     setIsSubmitting(true);
 
+    // Safety-valve timeout: if onSubmit never resolves AND the promptKey never
+    // changes, unlock after 30s so the UI isn't permanently stuck.  The
+    // promptKey-change effect above is the primary unlock path.
     if (submitTimeoutRef.current !== null) clearTimeout(submitTimeoutRef.current);
     submitTimeoutRef.current = setTimeout(() => {
       submitTimeoutRef.current = null;
       setIsSubmitting(false);
-    }, 10_000);
+    }, 30_000);
 
     const answer: PlanModeAnswer = { action, editSuggestion };
     Promise.resolve(onSubmit(answer))

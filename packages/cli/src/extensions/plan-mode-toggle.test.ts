@@ -162,6 +162,11 @@ describe("isSafeCommand", () => {
         expect(isSafeCommand("awk 'BEGIN{system(\"touch /tmp/pwned\")}'")).toBe(false);
     });
 
+    test("blocks sed (scripts can write files via w command)", () => {
+        expect(isSafeCommand("sed -n '1w /tmp/pwn' /etc/hosts")).toBe(false);
+        expect(isSafeCommand("sed -n 'p' file.txt")).toBe(false);
+    });
+
     test("still blocks destructive commands as executables", () => {
         expect(isSafeCommand("rm -rf /")).toBe(false);
         expect(isSafeCommand("mv foo bar")).toBe(false);

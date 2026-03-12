@@ -56,7 +56,7 @@ const SAFE_PATTERNS = [
     /^\s*bun\s+(pm\s+ls|--version)/i,
     /^\s*node\s+--version/i, /^\s*python\s+--version/i,
     /^\s*curl\s/i, /^\s*wget\s+-O\s*-/i,
-    /^\s*jq\b/, /^\s*sed\s+-n/i,
+    /^\s*jq\b/,
     /^\s*rg\b/, /^\s*fd\b/, /^\s*bat\b/, /^\s*exa\b/,
 ];
 
@@ -314,6 +314,7 @@ export const planModeToggleExtension: ExtensionFactory = (pi) => {
         planModeEnabled = enabled;
         executionMode = false;
         todoItems = [];
+        planModeToolInvokedThisTurn = false; // Always clear on state change
         if (enabled) {
             planSubmittedDuringSession = false;
             planModeContextSent = false; // Reset so the context message fires once on the next turn
