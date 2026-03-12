@@ -330,6 +330,17 @@ describe("mergeSandboxConfig", () => {
         expect(merged.enabled).toBe(true);
         expect(merged.mode).toBe("enforce");
     });
+
+    test("project-only allowlists pass through when global is empty", () => {
+        const merged = mergeSandboxConfig({}, {
+            filesystem: { allowWrite: ["/tmp", "."] },
+            mcp: { allowedDomains: ["api.example.com"], allowWrite: ["/tmp"] },
+        });
+        // Project values should pass through, not collapse to []
+        expect(merged.filesystem?.allowWrite).toEqual(["/tmp", "."]);
+        expect(merged.mcp?.allowedDomains).toEqual(["api.example.com"]);
+        expect(merged.mcp?.allowWrite).toEqual(["/tmp"]);
+    });
 });
 
 // ── Environment variable override patterns ────────────────────────────────────

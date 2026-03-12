@@ -8,7 +8,9 @@
  * @module
  */
 
-import { resolve as pathResolve, normalize as pathNormalize } from "node:path";
+import { resolve as pathResolve, dirname } from "node:path";
+import { realpathSync, existsSync } from "node:fs";
+import { platform } from "node:os";
 import {
     SandboxManager,
     SandboxViolationStore,
@@ -16,6 +18,9 @@ import {
     type SandboxViolationEvent,
     getDefaultWritePaths,
 } from "@anthropic-ai/sandbox-runtime";
+
+/** Whether the current platform is case-insensitive (macOS, Windows). */
+const _caseInsensitiveFS = platform() === "darwin" || platform() === "win32";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -414,8 +419,8 @@ function _isEnforceable(): boolean {
 }
 
 /** Normalize a file path for comparison against config paths.
- *  Resolves `.`, `..`, repeated slashes, and expands `~` so that
- *  path-traversal tricks cannot bypass allow/deny rules.
+ *  Resolves `.`, `..`, repeated slashes, expands `~`, and follows
+ *  symlinks so that traversal tricks cannot bypass allow/deny rules.
  */
 function _normalizePath(filePath: string): string {
     let expanded = filePath;
@@ -426,7 +431,67 @@ function _normalizePath(filePath: string): string {
     }
     // pathResolve handles relative paths (resolves against cwd) and
     // collapses `.` / `..` / duplicate slashes in a single pass.
-    return pathResolve(expanded);
+    const resolved = pathResolve(expanded);
+
+    // Follow symlinks to get the canonical path.
+    // For existing paths, use the target's real path.
+    // For non-existing paths (writes), resolve the nearest existing ancestor.
+    try {
+        if (existsSync(resolved)) {
+            return realpathSync(resolved);
+        }
+        // Walk up to the nearest existing ancestor and resolve it
+        let parent = dirname(resolved);
+        const tail: string[] = [resolved.slice(parent.length)];
+        while (parent !== "/" && !existsSync(parent)) {
+            const next = dirname(parent);
+            tail.unshift(parent.slice(next.length));
+            parent = next;
+        }
+        if (existsSync(parent)) {
+            return realpathSync(parent) + tail.join("");
+        }
+    } catch {
+        // realpath can throw on broken symlinks or permissions — fall through
+    }
+    return resolved;
+}
+
+/** Normalize a config rule path: expand ~, resolve .., strip trailing /,
+ *  and follow symlinks in existing ancestor components (same logic as
+ *  _normalizePath so rule paths and input paths are compared in the same
+ *  canonical form).
+ */
+function _normalizeRulePath(rulePath: string): string {
+    let expanded = rulePath;
+    if (expanded.startsWith("~")) {
+        const home = process.env.HOME ?? process.env.USERPROFILE ?? "/";
+        expanded = home + expanded.slice(1);
+    }
+    let resolved = pathResolve(expanded);
+    // Strip trailing slash (except root "/")
+    while (resolved.length > 1 && resolved.endsWith("/")) {
+        resolved = resolved.slice(0, -1);
+    }
+    // Resolve symlinks the same way as _normalizePath
+    try {
+        if (existsSync(resolved)) {
+            return realpathSync(resolved);
+        }
+        let parent = dirname(resolved);
+        const tail: string[] = [resolved.slice(parent.length)];
+        while (parent !== "/" && !existsSync(parent)) {
+            const next = dirname(parent);
+            tail.unshift(parent.slice(next.length));
+            parent = next;
+        }
+        if (existsSync(parent)) {
+            return realpathSync(parent) + tail.join("");
+        }
+    } catch {
+        // Fall through
+    }
+    return resolved;
 }
 
 /** Check if a path is denied for reading. */
@@ -491,25 +556,36 @@ function _validateWritePath(normalizedPath: string): ValidationResult {
 }
 
 /**
+ * Compare two path strings for equality/prefix, respecting platform case sensitivity.
+ * On case-insensitive filesystems (macOS, Windows), lowercases both sides.
+ */
+function _pathsEqual(a: string, b: string): boolean {
+    return _caseInsensitiveFS ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+function _pathStartsWith(path: string, prefix: string): boolean {
+    return _caseInsensitiveFS
+        ? path.toLowerCase().startsWith(prefix.toLowerCase())
+        : path.startsWith(prefix);
+}
+
+/**
  * Check if a normalized path matches a deny rule.
  * A deny rule matches if the path is equal to or is a child of the denied path.
+ * Rule paths are normalized to strip trailing separators.
  */
 function _pathMatchesDeny(normalizedPath: string, deniedPath: string): boolean {
-    const lowerPath = normalizedPath.toLowerCase();
-    const lowerDenied = deniedPath.toLowerCase();
-
-    return lowerPath === lowerDenied || lowerPath.startsWith(lowerDenied + "/");
+    const rule = _normalizeRulePath(deniedPath);
+    return _pathsEqual(normalizedPath, rule) || _pathStartsWith(normalizedPath, rule + "/");
 }
 
 /**
  * Check if a normalized path is within an allowed path.
  * The path must be equal to or a child of the allowed path.
+ * Rule paths are normalized to strip trailing separators.
  */
 function _pathWithinAllow(normalizedPath: string, allowedPath: string): boolean {
-    const lowerPath = normalizedPath.toLowerCase();
-    const lowerAllowed = allowedPath.toLowerCase();
-
-    return lowerPath === lowerAllowed || lowerPath.startsWith(lowerAllowed + "/");
+    const rule = _normalizeRulePath(allowedPath);
+    return _pathsEqual(normalizedPath, rule) || _pathStartsWith(normalizedPath, rule + "/");
 }
 
 /** Record a violation for audit/enforce mode. Caps at MAX_VIOLATIONS entries. */

@@ -303,14 +303,18 @@ export function mergeSandboxConfig(global: SandboxConfig, project: SandboxConfig
     };
 
     // Helper: intersection of two string arrays (only items in both)
-    // If global is undefined/empty, result is empty (nothing is allowed).
-    // If project is undefined, global is unchanged (project didn't restrict).
+    // Semantics:
+    //  - If either side is undefined, the other side passes through unchanged
+    //    (undefined = "not specified" ≠ "empty list").
+    //  - If both are specified, return the intersection. This means
+    //    project can only NARROW what global allows, never widen.
+    //  - Two empty arrays intersect to [].
     const intersect = (
         g: string[] | undefined,
         p: string[] | undefined,
     ): string[] | undefined => {
+        if (g === undefined) return p; // global didn't specify → keep project
         if (p === undefined) return g; // project didn't specify → keep global
-        if (!g || g.length === 0) return []; // global allows nothing → nothing
         const pSet = new Set(p);
         const result = g.filter((item) => pSet.has(item));
         return result.length > 0 ? result : [];

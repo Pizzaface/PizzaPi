@@ -234,6 +234,44 @@ describe("sandbox", () => {
                 const result = validatePath("/etc/./secrets/./key.pem", "read");
                 expect(result.allowed).toBe(false);
             });
+
+            test("handles trailing slashes in config rules", async () => {
+                await initSandbox(makeConfig({
+                    filesystem: { denyRead: ["/etc/"], allowWrite: ["/tmp/"], denyWrite: [] },
+                }));
+                // Trailing slash in deny rule should still match
+                const readResult = validatePath("/etc/passwd", "read");
+                expect(readResult.allowed).toBe(false);
+                // Trailing slash in allow rule should still allow
+                const writeResult = validatePath("/tmp/output.txt", "write");
+                expect(writeResult.allowed).toBe(true);
+            });
+
+            test("blocks symlink traversal out of allowed area", async () => {
+                const { mkdtempSync, symlinkSync, writeFileSync } = await import("fs");
+                const { tmpdir } = await import("os");
+                const { join } = await import("path");
+
+                const tmpDir = mkdtempSync(join(tmpdir(), "symlink-test-"));
+                const targetDir = mkdtempSync(join(tmpdir(), "symlink-target-"));
+                const linkPath = join(tmpDir, "escape");
+
+                // Create a symlink inside tmpDir pointing to targetDir
+                symlinkSync(targetDir, linkPath);
+
+                await initSandbox(makeConfig({
+                    filesystem: {
+                        denyRead: [targetDir],
+                        allowWrite: [tmpDir],
+                        denyWrite: [],
+                    },
+                }));
+
+                // Reading through the symlink should resolve to the real target
+                // and be blocked by denyRead
+                const result = validatePath(join(linkPath, "secret.txt"), "read");
+                expect(result.allowed).toBe(false);
+            });
         });
 
         describe("when sandbox is disabled", () => {
@@ -268,7 +306,8 @@ describe("sandbox", () => {
                 expect(violations.length).toBe(1);
                 expect(violations[0].tier).toBe("filesystem");
                 expect(violations[0].operation).toBe("read");
-                expect(violations[0].target).toBe("/etc/secrets/key.pem");
+                // Path may be canonicalized (e.g. /etc → /private/etc on macOS)
+                expect(violations[0].target).toContain("etc/secrets/key.pem");
             });
 
             test("allows writes but records violation", async () => {
@@ -601,7 +640,8 @@ describe("sandbox", () => {
 
             validatePath("/etc/secrets/test", "read");
             expect(received.length).toBe(1);
-            expect(received[0].target).toBe("/etc/secrets/test");
+            // Path may be canonicalized (e.g. /etc → /private/etc on macOS)
+            expect(received[0].target).toContain("etc/secrets/test");
 
             unsub();
         });
