@@ -53,7 +53,7 @@ const SAFE_PATTERNS = [
     /^\s*id\b/, /^\s*date\b/, /^\s*cal\b/, /^\s*uptime\b/,
     /^\s*ps\b/, /^\s*top\b/, /^\s*htop\b/, /^\s*free\b/,
     /^\s*git\s+(status|log|diff|show|config\s+--get)/i,
-    /^\s*git\s+branch(\s+(-[avvr]+|--list|--merged|--no-merged|--contains|--sort=\S+)\s*)*$/i,
+    /^\s*git\s+branch(?:\s+(-[avvr]+|--list|--merged|--no-merged|--contains|--sort=\S+))*\s*$/i,
     /^\s*git\s+remote(\s+(-v|--verbose|show\b))/i,
     /^\s*git\s+remote\s*$/i,
     /^\s*git\s+ls-/i,
