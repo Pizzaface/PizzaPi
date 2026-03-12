@@ -23,6 +23,7 @@ const DESTRUCTIVE_PATTERNS = [
     /\bsystemctl\s+(start|stop|restart|enable|disable)/i,
     /\bservice\s+\S+\s+(start|stop|restart)/i,
     /\b(vim?|nano|emacs|code|subl)\b/i,
+    /\bcurl\b.*\s(-o|--output)\b/i, /\bwget\b.*\s(-O|--output-document)\b/i,
 ];
 
 const SAFE_PATTERNS = [
@@ -50,7 +51,12 @@ const SAFE_PATTERNS = [
  * every subcommand independently passes the safe-command check.  This prevents
  * bypass via e.g. `ls && make` or `git status; python script.py`.
  */
-function isSafeCommand(command: string): boolean {
+/** @internal Exported for testing only. */
+export function isSafeCommand(command: string): boolean {
+    // Reject command substitution, backtick expansion, and multi-line payloads
+    // that could smuggle non-allowlisted commands past the per-segment check.
+    if (/\$\(|`|\n/.test(command)) return false;
+
     // Split on shell chaining operators: &&, ||, ;, |, &
     // (order matters — match && / || before single & / |)
     const parts = command.split(/\s*(?:&&|\|\||[;&|])\s*/);
@@ -590,10 +596,16 @@ After completing a step, include a [DONE:n] tag in your response (e.g. [DONE:1])
     });
 
     pi.on("session_switch", () => {
+        const wasEnabled = planModeEnabled;
         planModeEnabled = false;
         executionMode = false;
         todoItems = [];
         planModeContextSent = false;
+        _pendingContextClear = false;
         syncModuleState();
+        if (wasEnabled) {
+            _onPlanModeChange?.(false);
+        }
+        persistState();
     });
 };
