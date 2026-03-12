@@ -51,9 +51,9 @@ const SAFE_PATTERNS = [
  * bypass via e.g. `ls && make` or `git status; python script.py`.
  */
 function isSafeCommand(command: string): boolean {
-    // Split on shell chaining operators: &&, ||, ;, |
+    // Split on shell chaining operators: &&, ||, ;, |, &
     // (order matters — match && / || before single & / |)
-    const parts = command.split(/\s*(?:&&|\|\||[;|])\s*/);
+    const parts = command.split(/\s*(?:&&|\|\||[;&|])\s*/);
 
     for (const part of parts) {
         const trimmed = part.trim();
@@ -369,7 +369,7 @@ export const planModeToggleExtension: ExtensionFactory = (pi) => {
                 if (m.role === "assistant" && Array.isArray(m.content)) {
                     const hasPlanTool = m.content.some(
                         (block: any) =>
-                            block.type === "tool_use" &&
+                            (block.type === "toolCall" || block.type === "tool_use") &&
                             (block.name === "plan_mode" || block.name?.endsWith(".plan_mode")),
                     );
                     if (hasPlanTool) {
