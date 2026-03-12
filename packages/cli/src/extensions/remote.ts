@@ -58,6 +58,39 @@ interface PendingAskUserQuestion {
     resolve: (answer: string | null) => void;
 }
 
+// ── Plan Mode types ──────────────────────────────────────────────────────────
+
+interface PlanModeStep {
+    title: string;
+    description?: string;
+}
+
+interface PlanModeParams {
+    title: string;
+    description?: string;
+    steps?: PlanModeStep[];
+}
+
+/** User responses for plan mode: execute with/without context clear, edit, or cancel. */
+type PlanModeAction = "execute" | "execute_keep_context" | "edit" | "cancel";
+
+interface PlanModeDetails {
+    title: string;
+    description: string | null;
+    steps: PlanModeStep[];
+    action: PlanModeAction | null;
+    editSuggestion: string | null;
+    status?: "waiting" | "responded";
+}
+
+interface PendingPlanMode {
+    toolCallId: string;
+    title: string;
+    description: string | null;
+    steps: PlanModeStep[];
+    resolve: (response: { action: PlanModeAction; editSuggestion?: string } | null) => void;
+}
+
 interface RelayModelInfo {
     provider: string;
     id: string;
@@ -106,6 +139,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
     let shuttingDown = false;
     let latestCtx: ExtensionContext | null = null;
     let pendingAskUserQuestion: PendingAskUserQuestion | null = null;
+    let pendingPlanMode: PendingPlanMode | null = null;
     let relaySessionId: string = (process.env.PIZZAPI_SESSION_ID && process.env.PIZZAPI_SESSION_ID.trim().length > 0)
         ? process.env.PIZZAPI_SESSION_ID.trim()
         : randomUUID();
@@ -723,6 +757,14 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                       toolCallId: pendingAskUserQuestion.toolCallId,
                       questions: pendingAskUserQuestion.questions,
                       display: pendingAskUserQuestion.display,
+                  }
+                : null,
+            pendingPlan: pendingPlanMode
+                ? {
+                      toolCallId: pendingPlanMode.toolCallId,
+                      title: pendingPlanMode.title,
+                      description: pendingPlanMode.description,
+                      steps: pendingPlanMode.steps,
                   }
                 : null,
             retryState: lastRetryableError
@@ -1352,6 +1394,44 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         setRelayStatus(relay ? "Connected to Relay" : disconnectedStatusText());
     }
 
+    function consumePendingPlanModeFromWeb(text: string): boolean {
+        if (!pendingPlanMode) return false;
+        const trimmed = text.trim();
+        if (!trimmed) return true;
+
+        // Parse the response: expect JSON { action, editSuggestion? }
+        let response: { action: PlanModeAction; editSuggestion?: string } | null = null;
+        try {
+            const parsed = JSON.parse(trimmed);
+            if (parsed && typeof parsed === "object" && typeof parsed.action === "string") {
+                const validActions: PlanModeAction[] = ["execute", "execute_keep_context", "edit", "cancel"];
+                if (validActions.includes(parsed.action)) {
+                    response = {
+                        action: parsed.action,
+                        editSuggestion: typeof parsed.editSuggestion === "string" ? parsed.editSuggestion : undefined,
+                    };
+                }
+            }
+        } catch {
+            // If not JSON, treat as a plain text edit suggestion
+            response = { action: "edit", editSuggestion: trimmed };
+        }
+
+        const pending = pendingPlanMode;
+        pendingPlanMode = null;
+        pending.resolve(response);
+        setRelayStatus(relay ? "Connected to Relay" : disconnectedStatusText());
+        return true;
+    }
+
+    function cancelPendingPlanMode() {
+        if (!pendingPlanMode) return;
+        const pending = pendingPlanMode;
+        pendingPlanMode = null;
+        pending.resolve(null);
+        setRelayStatus(relay ? "Connected to Relay" : disconnectedStatusText());
+    }
+
     /** Defensively sanitize questions from params (supports new + legacy format). */
     function sanitizeQuestions(params: AskUserQuestionParams): AskUserQuestionItem[] {
         // New format: questions[]
@@ -1772,6 +1852,9 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             if (consumePendingAskUserQuestionFromWeb(inputText)) {
                 return;
             }
+            if (consumePendingPlanModeFromWeb(inputText)) {
+                return;
+            }
 
             const attachments = normalizeRemoteInputAttachments(data.attachments);
             const deliverAs = data.deliverAs === "followUp" ? "followUp" as const
@@ -1832,6 +1915,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         sock.on("disconnect", (_reason) => {
             relay = null;
             cancelPendingAskUserQuestion();
+            cancelPendingPlanMode();
             setRelayStatus(disconnectedStatusText());
         });
 
@@ -1869,6 +1953,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
     function disconnect() {
         stopHeartbeat();
         cancelPendingAskUserQuestion();
+        cancelPendingPlanMode();
         messageBus.setSendFn(null);
         // Clear MCP OAuth relay context before tearing down the socket,
         // since removeAllListeners() would prevent the disconnect handler
@@ -2097,6 +2182,269 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             };
         },
     });
+
+    // ── plan_mode tool ────────────────────────────────────────────────────────
+
+    const PLAN_MODE_TOOL_NAME = "plan_mode";
+
+    pi.registerTool({
+        name: PLAN_MODE_TOOL_NAME,
+        label: "Plan Mode",
+        description:
+            "Submit a plan for user review before execution. The user can approve, edit, or cancel the plan. " +
+            "Use this when you want to outline a multi-step approach and get user confirmation before proceeding. " +
+            "The tool blocks until the user responds.",
+        parameters: {
+            type: "object",
+            properties: {
+                title: {
+                    type: "string",
+                    description: "Short title summarizing the plan.",
+                },
+                description: {
+                    type: "string",
+                    description: "Optional detailed description of the plan in markdown format.",
+                },
+                steps: {
+                    type: "array",
+                    description: "Ordered list of steps in the plan.",
+                    items: {
+                        type: "object",
+                        properties: {
+                            title: {
+                                type: "string",
+                                description: "Short title for this step.",
+                            },
+                            description: {
+                                type: "string",
+                                description: "Optional longer description of what this step entails.",
+                            },
+                        },
+                        required: ["title"],
+                    },
+                },
+            },
+            required: ["title"],
+            additionalProperties: false,
+        } as any,
+        async execute(toolCallId, rawParams, signal, onUpdate, ctx) {
+            if (pendingPlanMode && pendingPlanMode.toolCallId !== toolCallId) {
+                return {
+                    content: [{ type: "text", text: "A different plan_mode prompt is already pending." }],
+                    details: {
+                        title: "",
+                        description: null,
+                        steps: [],
+                        action: null,
+                        editSuggestion: null,
+                    } satisfies PlanModeDetails,
+                };
+            }
+
+            const params = (rawParams ?? {}) as PlanModeParams;
+            const title = typeof params.title === "string" ? params.title.trim() : "";
+            const description = typeof params.description === "string" ? params.description.trim() || null : null;
+            const steps: PlanModeStep[] = Array.isArray(params.steps)
+                ? (params.steps as unknown[])
+                    .filter((s): s is Record<string, unknown> => s !== null && typeof s === "object")
+                    .map((s) => ({
+                        title: typeof s.title === "string" ? (s.title as string).trim() : "",
+                        description: typeof s.description === "string" && (s.description as string).trim()
+                            ? (s.description as string).trim()
+                            : undefined,
+                    }))
+                    .filter((s) => s.title.length > 0)
+                : [];
+
+            if (!title) {
+                return {
+                    content: [{ type: "text", text: "plan_mode requires a non-empty title." }],
+                    details: {
+                        title: "",
+                        description: null,
+                        steps: [],
+                        action: null,
+                        editSuggestion: null,
+                    } satisfies PlanModeDetails,
+                };
+            }
+
+            onUpdate?.({
+                content: [{ type: "text", text: `Waiting for plan review: ${title}` }],
+                details: {
+                    title,
+                    description,
+                    steps,
+                    action: null,
+                    editSuggestion: null,
+                    status: "waiting",
+                } satisfies PlanModeDetails,
+            });
+
+            const result = await askPlanMode(toolCallId, title, description, steps, signal, ctx);
+
+            if (!result) {
+                return {
+                    content: [{ type: "text", text: "Plan review was cancelled or no response received." }],
+                    details: {
+                        title,
+                        description,
+                        steps,
+                        action: "cancel",
+                        editSuggestion: null,
+                    } satisfies PlanModeDetails,
+                };
+            }
+
+            const actionLabel = {
+                execute: "Clear Context & Begin",
+                execute_keep_context: "Begin",
+                edit: "Suggest Edit",
+                cancel: "Cancel",
+            }[result.action];
+
+            const responseText = result.action === "edit" && result.editSuggestion
+                ? `User chose: ${actionLabel}. Suggestion: ${result.editSuggestion}`
+                : `User chose: ${actionLabel}`;
+
+            onUpdate?.({
+                content: [{ type: "text", text: responseText }],
+                details: {
+                    title,
+                    description,
+                    steps,
+                    action: result.action,
+                    editSuggestion: result.editSuggestion ?? null,
+                    status: "responded",
+                } satisfies PlanModeDetails,
+            });
+
+            return {
+                content: [{ type: "text", text: responseText }],
+                details: {
+                    title,
+                    description,
+                    steps,
+                    action: result.action,
+                    editSuggestion: result.editSuggestion ?? null,
+                } satisfies PlanModeDetails,
+            };
+        },
+    });
+
+    async function askPlanMode(
+        toolCallId: string,
+        title: string,
+        description: string | null,
+        steps: PlanModeStep[],
+        signal: AbortSignal | undefined,
+        ctx: ExtensionContext,
+    ): Promise<{ action: PlanModeAction; editSuggestion?: string } | null> {
+        const canAskViaWeb = !!relay && !!sioSocket?.connected;
+        const canAskViaTui = ctx.hasUI;
+
+        if (!canAskViaWeb && !canAskViaTui) {
+            return null;
+        }
+
+        const localAbort = new AbortController();
+
+        return await new Promise((resolve) => {
+            let finished = false;
+            let localDone = !canAskViaTui;
+            let webDone = !canAskViaWeb;
+
+            const onAbort = () => finish(null);
+
+            const maybeFinishCancelled = () => {
+                if (localDone && webDone) finish(null);
+            };
+
+            const finish = (response: { action: PlanModeAction; editSuggestion?: string } | null) => {
+                if (finished) return;
+                finished = true;
+
+                if (pendingPlanMode?.toolCallId === toolCallId) {
+                    pendingPlanMode = null;
+                }
+
+                localAbort.abort();
+                if (signal) signal.removeEventListener("abort", onAbort);
+                setRelayStatus(relay ? "Connected to Relay" : disconnectedStatusText());
+                resolve(response);
+            };
+
+            if (signal?.aborted) {
+                finish(null);
+                return;
+            }
+
+            if (signal) {
+                signal.addEventListener("abort", onAbort, { once: true });
+            }
+
+            if (canAskViaWeb) {
+                pendingPlanMode = {
+                    toolCallId,
+                    title,
+                    description,
+                    steps,
+                    resolve: (response) => {
+                        webDone = true;
+                        if (response) {
+                            finish(response);
+                        } else {
+                            maybeFinishCancelled();
+                        }
+                    },
+                };
+                setRelayStatus("Waiting for plan review");
+            }
+
+            if (canAskViaTui) {
+                // Format plan for TUI display
+                const displayParts: string[] = [`📋 Plan: ${title}`];
+                if (description) displayParts.push(description);
+                if (steps.length > 0) {
+                    displayParts.push("");
+                    steps.forEach((s, i) => {
+                        displayParts.push(`  ${i + 1}. ${s.title}`);
+                        if (s.description) displayParts.push(`     ${s.description}`);
+                    });
+                }
+                displayParts.push("");
+                displayParts.push("Options: (1) Clear Context & Begin, (2) Begin, (3) Suggest Edit, (4) Cancel");
+
+                void ctx.ui
+                    .input(displayParts.join("\n"), "Enter choice (1-4) or edit suggestion…", { signal: localAbort.signal })
+                    .then((value) => {
+                        localDone = true;
+                        const answer = value?.trim();
+                        if (!answer) {
+                            maybeFinishCancelled();
+                            return;
+                        }
+
+                        if (answer === "1") {
+                            finish({ action: "execute" });
+                        } else if (answer === "2") {
+                            finish({ action: "execute_keep_context" });
+                        } else if (answer === "3" || answer === "4") {
+                            finish({ action: answer === "3" ? "edit" : "cancel" });
+                        } else {
+                            // Treat as an edit suggestion
+                            finish({ action: "edit", editSuggestion: answer });
+                        }
+                    })
+                    .catch(() => {
+                        localDone = true;
+                        maybeFinishCancelled();
+                    });
+            }
+
+            maybeFinishCancelled();
+        });
+    }
 
     // ── /remote command ───────────────────────────────────────────────────────
 

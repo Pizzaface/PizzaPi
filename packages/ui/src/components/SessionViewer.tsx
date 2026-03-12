@@ -62,6 +62,7 @@ import { cn } from "@/lib/utils";
 import { formatPathTail } from "@/lib/path";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { MultipleChoiceQuestions } from "@/components/ai-elements/multiple-choice";
+import { PlanModePanel, type PlanModeAnswer } from "@/components/ai-elements/plan-mode";
 import { formatAnswersForAgent, type QuestionDisplayMode } from "@/lib/ask-user-questions";
 import { dismissNotificationsForSession } from "@/lib/push";
 import { AlertTriangleIcon, ArrowDownIcon, BookOpen, CheckCircle2, ChevronsUpDown, Circle, CircleDashed, Loader2, MessageSquare, OctagonX, PaperclipIcon, Plus, Puzzle, ShieldAlert, Zap, Clock, X, Trash2, TerminalIcon, DownloadIcon, XCircle, FolderTree } from "lucide-react";
@@ -108,6 +109,8 @@ export interface SessionViewerProps {
   activeModel?: { provider: string; id: string; name?: string; reasoning?: boolean } | null;
   activeToolCalls?: Map<string, string>;
   pendingQuestion?: { toolCallId: string; questions: Array<{ question: string; options: string[] }>; display: QuestionDisplayMode } | null;
+  /** Pending plan mode prompt — shown as a plan review panel */
+  pendingPlan?: { toolCallId: string; title: string; description: string | null; steps: Array<{ title: string; description?: string }> } | null;
   /** Plugin trust prompt from the worker — shown as a confirmation dialog */
   pluginTrustPrompt?: { promptId: string; pluginNames: string[]; pluginSummaries: string[] } | null;
   /** Respond to the plugin trust prompt */
@@ -455,7 +458,7 @@ function SessionSkeleton() {
   );
 }
 
-export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, pluginTrustPrompt, onPluginTrustResponse, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, isCompacting, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], runnerId, sessionCwd, onAppendSystemMessage }: SessionViewerProps) {
+export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, pendingPlan, pluginTrustPrompt, onPluginTrustResponse, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, isCompacting, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], runnerId, sessionCwd, onAppendSystemMessage }: SessionViewerProps) {
   const [input, setInput] = React.useState("");
   const [composerError, setComposerError] = React.useState<string | null>(null);
   const [showClearDialog, setShowClearDialog] = React.useState(false);
@@ -1561,6 +1564,38 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
           />
         )}
 
+        {/* Plan mode review panel (shown above the input area) */}
+        {pendingPlan && sessionId && (
+          <PlanModePanel
+            plan={pendingPlan}
+            promptKey={pendingPlan.toolCallId}
+            className="mb-2"
+            onSubmit={(answer: PlanModeAnswer) => {
+              if (!onSendInput) return Promise.resolve(false);
+              setComposerError(null);
+              const payload = JSON.stringify({
+                action: answer.action,
+                ...(answer.editSuggestion ? { editSuggestion: answer.editSuggestion } : {}),
+              });
+              return Promise.resolve(onSendInput(payload))
+                .then((result) => {
+                  if (result !== false) {
+                    setComposerError(null);
+                    setInput("");
+                    if (sessionId) void dismissNotificationsForSession(sessionId);
+                    return true;
+                  }
+                  setComposerError("Failed to send plan response.");
+                  return false;
+                })
+                .catch(() => {
+                  setComposerError("Failed to send plan response.");
+                  return false;
+                });
+            }}
+          />
+        )}
+
         {sessionId && commandOpen && (
           <div className="mb-2 rounded-md border border-border bg-popover text-popover-foreground shadow-sm">
             <Command
@@ -1829,7 +1864,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
           onError={(err) => {
             setComposerError(err.message);
           }}
-          className={pendingQuestion && pendingQuestion.questions.length > 0 ? "hidden" : undefined}
+          className={(pendingQuestion && pendingQuestion.questions.length > 0) || pendingPlan ? "hidden" : undefined}
         >
           <ComposerAttachments />
           <PromptInputBody>

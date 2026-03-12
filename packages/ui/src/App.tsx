@@ -615,6 +615,14 @@ export function App() {
 
   const [pendingQuestion, setPendingQuestion] = React.useState<{ toolCallId: string; questions: Array<{ question: string; options: string[] }>; display: QuestionDisplayMode } | null>(null);
 
+  /** Pending plan mode prompt from the worker — shown as a plan review panel in the viewer. */
+  const [pendingPlan, setPendingPlan] = React.useState<{
+    toolCallId: string;
+    title: string;
+    description: string | null;
+    steps: Array<{ title: string; description?: string }>;
+  } | null>(null);
+
   /** Pending plugin trust prompt from the worker — shown as a confirmation dialog in the viewer. */
   const [pluginTrustPrompt, setPluginTrustPrompt] = React.useState<{
     promptId: string;
@@ -1287,6 +1295,32 @@ export function App() {
         }
       }
 
+      // Restore pending plan mode state when reconnecting to a session.
+      if (Object.prototype.hasOwnProperty.call(hb, "pendingPlan")) {
+        const pp = (hb as any).pendingPlan as {
+          toolCallId: string;
+          title: string;
+          description?: string | null;
+          steps?: Array<{ title: string; description?: string }>;
+        } | null;
+        if (pp && typeof pp.toolCallId === "string" && typeof pp.title === "string" && pp.title.trim()) {
+          const steps = Array.isArray(pp.steps)
+            ? pp.steps.filter((s): s is { title: string; description?: string } =>
+                s !== null && typeof s === "object" && typeof s.title === "string" && s.title.trim().length > 0,
+              )
+            : [];
+          setPendingPlan({
+            toolCallId: pp.toolCallId,
+            title: pp.title.trim(),
+            description: typeof pp.description === "string" && pp.description.trim() ? pp.description.trim() : null,
+            steps,
+          });
+          setViewerStatus("Waiting for plan review…");
+        } else {
+          setPendingPlan(null);
+        }
+      }
+
       // Track auto-retry state from CLI so we can show a retry indicator.
       if (Object.prototype.hasOwnProperty.call(hb, "retryState")) {
         const rs = (hb as any).retryState as { errorMessage: string; detectedAt: number } | null;
@@ -1905,8 +1939,8 @@ export function App() {
     if (type === "tool_execution_update") {
       const toolCallId = typeof evt.toolCallId === "string" ? evt.toolCallId : "";
       const toolName = typeof evt.toolName === "string" ? evt.toolName : "unknown";
-      // AskUserQuestion updates are handled separately below — skip here.
-      if (toolCallId && toolName !== "AskUserQuestion") {
+      // AskUserQuestion and plan_mode updates are handled separately below — skip here.
+      if (toolCallId && toolName !== "AskUserQuestion" && toolName !== "plan_mode") {
         const partial = evt.partialResult as Record<string, unknown> | undefined;
         const content = partial?.content;
         if (content !== undefined && content !== null) {
@@ -2012,6 +2046,64 @@ export function App() {
 
     if (type === "tool_execution_end" && evt.toolName === "AskUserQuestion") {
       setPendingQuestion(null);
+      setViewerStatus("Connected");
+      return;
+    }
+
+    // ── plan_mode events ────────────────────────────────────────────────────
+    if (type === "tool_execution_start" && evt.toolName === "plan_mode") {
+      const args = evt.args as Record<string, unknown> | undefined;
+      if (args && typeof args.title === "string" && args.title.trim()) {
+        const steps = Array.isArray(args.steps)
+          ? (args.steps as unknown[])
+              .filter((s): s is Record<string, unknown> => s !== null && typeof s === "object")
+              .map((s) => ({
+                title: typeof s.title === "string" ? (s.title as string).trim() : "",
+                description: typeof s.description === "string" && (s.description as string).trim()
+                  ? (s.description as string).trim()
+                  : undefined,
+              }))
+              .filter((s) => s.title.length > 0)
+          : [];
+        setPendingPlan({
+          toolCallId: typeof evt.toolCallId === "string" ? evt.toolCallId : `plan-${Date.now()}`,
+          title: args.title.trim(),
+          description: typeof args.description === "string" && args.description.trim() ? args.description.trim() : null,
+          steps,
+        });
+        setViewerStatus("Waiting for plan review…");
+      }
+      return;
+    }
+
+    if (type === "tool_execution_update" && evt.toolName === "plan_mode") {
+      const partial = evt.partialResult as Record<string, unknown> | undefined;
+      const details = partial?.details as Record<string, unknown> | undefined;
+      const source = details ?? partial;
+      if (source && typeof source.title === "string" && source.title.trim()) {
+        const steps = Array.isArray(source.steps)
+          ? (source.steps as unknown[])
+              .filter((s): s is Record<string, unknown> => s !== null && typeof s === "object")
+              .map((s) => ({
+                title: typeof s.title === "string" ? (s.title as string).trim() : "",
+                description: typeof s.description === "string" && (s.description as string).trim()
+                  ? (s.description as string).trim()
+                  : undefined,
+              }))
+              .filter((s) => s.title.length > 0)
+          : [];
+        setPendingPlan({
+          toolCallId: typeof evt.toolCallId === "string" ? evt.toolCallId : `plan-${Date.now()}`,
+          title: (source.title as string).trim(),
+          description: typeof source.description === "string" && (source.description as string).trim() ? (source.description as string).trim() : null,
+          steps,
+        });
+      }
+      return;
+    }
+
+    if (type === "tool_execution_end" && evt.toolName === "plan_mode") {
+      setPendingPlan(null);
       setViewerStatus("Connected");
       return;
     }
@@ -3426,6 +3518,7 @@ export function App() {
                   activeModel={activeModel}
                   activeToolCalls={activeToolCalls}
                   pendingQuestion={pendingQuestion}
+                  pendingPlan={pendingPlan}
                   pluginTrustPrompt={pluginTrustPrompt}
                   onPluginTrustResponse={respondPluginTrust}
                   availableCommands={availableCommands}
