@@ -219,6 +219,7 @@ interface SessionUiCacheEntry {
   agentActive: boolean;
   isCompacting: boolean;
   effortLevel: string | null;
+  planModeEnabled: boolean;
   authSource: string | null;
   tokenUsage: TokenUsageInfo | null;
   providerUsage: ProviderUsageMap | null;
@@ -664,6 +665,7 @@ export function App() {
   const [agentActive, setAgentActive] = React.useState(false);
   const [isCompacting, setIsCompacting] = React.useState(false);
   const [effortLevel, setEffortLevel] = React.useState<string | null>(null);
+  const [planModeEnabled, setPlanModeEnabled] = React.useState(false);
   const [tokenUsage, setTokenUsage] = React.useState<TokenUsageInfo | null>(null);
   const [lastHeartbeatAt, setLastHeartbeatAt] = React.useState<number | null>(null);
   const [providerUsage, setProviderUsage] = React.useState<ProviderUsageMap | null>(null);
@@ -890,6 +892,7 @@ export function App() {
       agentActive: prev?.agentActive ?? false,
       isCompacting: prev?.isCompacting ?? false,
       effortLevel: prev?.effortLevel ?? null,
+      planModeEnabled: prev?.planModeEnabled ?? false,
       authSource: prev?.authSource ?? null,
       tokenUsage: prev?.tokenUsage ?? null,
       providerUsage: prev?.providerUsage ?? null,
@@ -1238,6 +1241,12 @@ export function App() {
         const next = hb.thinkingLevel ?? null;
         setEffortLevel(next);
         cachePatch.effortLevel = next;
+      }
+
+      if ((hb as any).planModeEnabled !== undefined) {
+        const next = !!(hb as any).planModeEnabled;
+        setPlanModeEnabled(next);
+        cachePatch.planModeEnabled = next;
       }
 
       if (hb.tokenUsage !== undefined) {
@@ -1689,6 +1698,14 @@ export function App() {
         setEffortLevel(newLevel);
         patchSessionCache({ effortLevel: newLevel });
         setViewerStatus(newLevel && newLevel !== "off" ? `Effort: ${newLevel}` : "Effort: off");
+        return;
+      }
+
+      if (command === "set_plan_mode") {
+        const enabled = !!(result as any)?.planModeEnabled;
+        setPlanModeEnabled(enabled);
+        patchSessionCache({ planModeEnabled: enabled });
+        setViewerStatus(enabled ? "⏸ Plan mode ON" : "▶ Plan mode OFF");
         return;
       }
 
@@ -2217,6 +2234,7 @@ export function App() {
     setAgentActive(cached?.agentActive ?? false);
     setIsCompacting(cached?.isCompacting ?? false);
     setEffortLevel(cached?.effortLevel ?? null);
+    setPlanModeEnabled(cached?.planModeEnabled ?? false);
     setAuthSource(cached?.authSource ?? null);
     setTokenUsage(cached?.tokenUsage ?? null);
     setProviderUsage(cached?.providerUsage ?? null);
@@ -3550,6 +3568,7 @@ export function App() {
                   onToggleFileExplorer={() => setShowFileExplorer((v) => !v)}
                   showFileExplorerButton={!!activeSessionInfo?.runnerId && !!activeSessionInfo?.cwd}
                   todoList={todoList}
+                  planModeEnabled={planModeEnabled}
                   runnerId={activeSessionInfo?.runnerId ?? undefined}
                   sessionCwd={activeSessionInfo?.cwd || undefined}
                   onAppendSystemMessage={appendLocalSystemMessage}

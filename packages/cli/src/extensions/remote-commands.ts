@@ -20,7 +20,8 @@ export type RemoteExecRequest =
     | { type: "exec"; id: string; command: "restart" }
     | { type: "exec"; id: string; command: "end_session" }
     | { type: "exec"; id: string; command: "plugin_trust_response"; promptId: string; trusted: boolean }
-    | { type: "exec"; id: string; command: "mcp_toggle_server"; serverName: string; disabled: boolean };
+    | { type: "exec"; id: string; command: "mcp_toggle_server"; serverName: string; disabled: boolean }
+    | { type: "exec"; id: string; command: "set_plan_mode"; enabled?: boolean };
 
 export type RemoteExecResponse =
     | { type: "exec_result"; id: string; ok: true; command: RemoteExecRequest["command"]; result?: unknown }

@@ -8,6 +8,7 @@ import { getEnvApiKey } from "@mariozechner/pi-ai/dist/env-api-keys.js";
 import { loadConfig, defaultAgentDir, toggleMcpServer } from "../config.js";
 import { getMcpBridge } from "./mcp-bridge.js";
 import { getCurrentTodoList, setTodoUpdateCallback, type TodoItem } from "./update-todo.js";
+import { isPlanModeEnabled, isExecutionMode, getPlanTodoItems, setPlanModeChangeCallback, togglePlanModeFromRemote } from "./plan-mode-toggle.js";
 import type { RemoteExecRequest, RemoteExecResponse } from "./remote-commands.js";
 import { messageBus } from "./session-message-bus.js";
 import { io, type Socket } from "socket.io-client";
@@ -585,6 +586,11 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         forwardEvent({ type: "todo_update", todos: list, ts: Date.now() });
     });
 
+    setPlanModeChangeCallback((_enabled: boolean) => {
+        // Push an immediate heartbeat so the web UI updates the plan mode indicator.
+        forwardEvent(buildHeartbeat());
+    });
+
     function forwardEvent(event: unknown) {
         if (!relay || !sioSocket?.connected) return;
         const seq = ++relay.seq;
@@ -781,6 +787,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                   }
                 : null,
             mcpStartupReport: lastMcpStartupReport,
+            planModeEnabled: isPlanModeEnabled(),
         };
     }
 
@@ -1082,6 +1089,18 @@ export const remoteExtension: ExtensionFactory = (pi) => {
 
             if (req.command === "set_follow_up_mode") {
                 replyErr("set_follow_up_mode is not supported by the PizzaPi runner yet");
+                return;
+            }
+
+            if (req.command === "set_plan_mode") {
+                const toggled = togglePlanModeFromRemote();
+                if (!toggled) {
+                    replyErr("Plan mode extension not initialized");
+                    return;
+                }
+                const enabled = isPlanModeEnabled();
+                replyOk({ planModeEnabled: enabled });
+                forwardEvent(buildHeartbeat());
                 return;
             }
 

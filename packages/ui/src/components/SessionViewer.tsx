@@ -153,6 +153,8 @@ export interface SessionViewerProps {
   showFileExplorerButton?: boolean;
   /** Current agent todo list */
   todoList?: TodoItem[];
+  /** Whether plan mode (read-only exploration) is currently active */
+  planModeEnabled?: boolean;
   /** Runner ID for the current session (used for runner files API) */
   runnerId?: string;
   /** Absolute working directory of the current session (used as base for @-mention file paths) */
@@ -458,7 +460,7 @@ function SessionSkeleton() {
   );
 }
 
-export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, pendingPlan, pluginTrustPrompt, onPluginTrustResponse, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, isCompacting, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], runnerId, sessionCwd, onAppendSystemMessage }: SessionViewerProps) {
+export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, pendingPlan, pluginTrustPrompt, onPluginTrustResponse, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, isCompacting, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], planModeEnabled, runnerId, sessionCwd, onAppendSystemMessage }: SessionViewerProps) {
   const [input, setInput] = React.useState("");
   const [composerError, setComposerError] = React.useState<string | null>(null);
   const [showClearDialog, setShowClearDialog] = React.useState(false);
@@ -527,7 +529,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
   const webHandledCommands = React.useMemo(() => new Set([
     "new", "resume", "mcp", "plugins", "skills", "model", "cycle_model",
     "effort", "cycle_effort", "compact", "name", "copy", "stop", "restart",
-    "remote",
+    "remote", "plan",
   ]), []);
 
   // MCP toggle handler — sends mcp_toggle_server remote exec to the runner
@@ -778,6 +780,14 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
       return true;
     }
 
+    if (rawCommand === "plan") {
+      onExec({ type: "exec", id, command: "set_plan_mode" });
+      setInput("");
+      setCommandOpen(false);
+      setCommandQuery("");
+      return true;
+    }
+
     return false;
   }, [onExec, onSendInput, resumeSessions, runnerId, onAppendSystemMessage, skillCommands, sessionCwd, onShowModelSelector, isCompacting, sessionId]);
 
@@ -839,6 +849,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
       { name: "copy", description: "Copy last assistant message" },
       { name: "stop", description: "Abort current generation" },
       { name: "restart", description: "Restart the CLI process" },
+      { name: "plan", description: "Toggle plan mode (read-only exploration)" },
     ] as Array<{ name: string; description: string; subCommands?: Array<{ name: string; description: string; requiresArg?: boolean }> }>;
   }, []);
 
@@ -1257,6 +1268,21 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                 type="button"
               >
                 {effortLevel && effortLevel !== "off" ? effortLevel : "off"}
+              </button>
+            )}
+            {planModeEnabled && (
+              <button
+                className="rounded-full border border-yellow-500/40 bg-yellow-500/10 px-2 py-0.5 text-[0.65rem] font-medium text-yellow-600 dark:text-yellow-400 uppercase tracking-wide hover:bg-yellow-500/20 transition-colors cursor-pointer"
+                onClick={() => {
+                  if (onExec) {
+                    onExec({ type: "exec", id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, command: "set_plan_mode" });
+                  }
+                }}
+                title="Plan mode active — click to toggle off"
+                aria-label="Toggle plan mode off"
+                type="button"
+              >
+                ⏸ plan
               </button>
             )}
             {tokenUsage && (tokenUsage.input > 0 || tokenUsage.output > 0) && (
