@@ -81,6 +81,15 @@ describe("isSafeCommand", () => {
         expect(isSafeCommand("curl --output file.txt https://example.com")).toBe(false);
     });
 
+    test("blocks curl with -o attached to filename (no space)", () => {
+        expect(isSafeCommand("curl -oout.bin https://example.com")).toBe(false);
+        expect(isSafeCommand("curl -ofile.txt https://example.com")).toBe(false);
+    });
+
+    test("blocks curl with --output=file (equals form)", () => {
+        expect(isSafeCommand("curl --output=out.bin https://example.com")).toBe(false);
+    });
+
     test("allows curl without -o flag (stdout-only)", () => {
         expect(isSafeCommand("curl https://example.com")).toBe(true);
         expect(isSafeCommand("curl -s https://example.com")).toBe(true);

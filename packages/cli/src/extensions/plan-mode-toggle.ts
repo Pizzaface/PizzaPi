@@ -23,7 +23,7 @@ const DESTRUCTIVE_PATTERNS = [
     /\bsystemctl\s+(start|stop|restart|enable|disable)/i,
     /\bservice\s+\S+\s+(start|stop|restart)/i,
     /\b(vim?|nano|emacs|code|subl)\b/i,
-    /\bcurl\b.*\s(-o|--output|-O|--remote-name|--remote-name-all)\b/i, /\bwget\b.*\s(-O|--output-document)\b/i,
+    /\bcurl\b.*\s(-o\S|-o\s|--output\b|--output=|-O\b|--remote-name\b|--remote-name-all\b)/i, /\bwget\b.*\s(-O\b|--output-document\b|--output-document=)/i,
     /\bfind\b.*\s-exec(dir)?\b/i, /\bfind\b.*\s-delete\b/i, /\bfind\b.*\s-fprintf\b/i,
 ];
 
