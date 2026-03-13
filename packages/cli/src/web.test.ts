@@ -32,7 +32,7 @@ services:
       - VAPID_PRIVATE_KEY={{VAPID_PRIVATE_KEY}}
       - VAPID_SUBJECT={{VAPID_SUBJECT}}
 {{EXTRA_ORIGINS_LINE}}    volumes:
-      - {{DATA_DIR}}:/app/data
+      - {{DATA_DIR}}:/app/data:Z
     depends_on:
       - redis
     restart: unless-stopped
@@ -82,7 +82,7 @@ describe("web.ts compose template", () => {
         expect(composed).toContain("VAPID_PRIVATE_KEY=TestPrivateKey456");
         expect(composed).toContain("VAPID_SUBJECT=mailto:admin@pizzapi.local");
         expect(composed).toContain("PIZZAPI_EXTRA_ORIGINS=https://example.com");
-        expect(composed).toContain("/home/user/.pizzapi/web/data:/app/data");
+        expect(composed).toContain("/home/user/.pizzapi/web/data:/app/data:Z");
     });
 
     test("template with no extra origins produces commented-out line", () => {
