@@ -1069,7 +1069,11 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 const entries = await readdir(dirPath, { withFileTypes: true });
                 const items = await Promise.all(
                     entries
-                        .filter((e) => !e.name.startsWith(".") || e.name === ".gitignore" || e.name === ".env")
+                        .filter((e) => {
+                            // Show all dotfiles/dotfolders except .git (too noisy)
+                            if (e.name === ".git") return false;
+                            return true;
+                        })
                         .map(async (e) => {
                             const fullPath = join(dirPath, e.name);
                             let size: number | undefined;
