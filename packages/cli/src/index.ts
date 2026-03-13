@@ -423,13 +423,19 @@ Run \`pizza <command> --help\` for command-specific help.
 
     // ── Sandbox initialization ─────────────────────────────────────────────
     const sandboxConfig = resolveSandboxConfig(cwd, config);
-    // PIZZAPI_SANDBOX env var can override the configured mode
-    const sandboxEnvOverride = process.env.PIZZAPI_SANDBOX;
-    if (sandboxEnvOverride === "none" || sandboxEnvOverride === "basic" || sandboxEnvOverride === "full") {
-        sandboxConfig.mode = sandboxEnvOverride;
-        if (sandboxEnvOverride === "none") {
-            sandboxConfig.srtConfig = null;
-        }
+    // PIZZAPI_SANDBOX env var can override the configured mode.
+    // "off" is a documented alias for "none".
+    const sandboxEnvRaw = process.env.PIZZAPI_SANDBOX;
+    const sandboxEnvOverride = sandboxEnvRaw === "off" ? "none" : sandboxEnvRaw;
+    if (sandboxEnvOverride === "none") {
+        sandboxConfig.mode = "none";
+        sandboxConfig.srtConfig = null;
+    } else if (sandboxEnvOverride === "basic" || sandboxEnvOverride === "full") {
+        // Re-resolve so srtConfig matches the overridden preset, not just the mode string.
+        const overrideConfig = { ...config, sandbox: { ...(config.sandbox ?? {}), mode: sandboxEnvOverride } };
+        const overridden = resolveSandboxConfig(cwd, overrideConfig);
+        sandboxConfig.mode = overridden.mode;
+        sandboxConfig.srtConfig = overridden.srtConfig;
     }
 
     try {

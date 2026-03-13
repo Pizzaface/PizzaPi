@@ -320,12 +320,19 @@ describe("mergeSandboxConfig — network", () => {
 });
 
 describe("mergeSandboxConfig — scalar fields propagated", () => {
-    test("allowUnixSockets is unioned (both global and project entries preserved)", () => {
+    test("allowUnixSockets: global wins (project cannot widen socket allowlist)", () => {
         const global: SandboxConfig = { network: { allowUnixSockets: ["/run/g.sock"] } };
         const project: SandboxConfig = { network: { allowUnixSockets: ["/run/p.sock"] } };
         const merged = mergeSandboxConfig(global, project);
-        expect(merged.network?.allowUnixSockets).toContain("/run/g.sock");
-        expect(merged.network?.allowUnixSockets).toContain("/run/p.sock");
+        expect(merged.network?.allowUnixSockets).toEqual(["/run/g.sock"]);
+        expect(merged.network?.allowUnixSockets).not.toContain("/run/p.sock");
+    });
+
+    test("allowUnixSockets: project used when global not set", () => {
+        const global: SandboxConfig = {};
+        const project: SandboxConfig = { network: { allowUnixSockets: ["/run/p.sock"] } };
+        const merged = mergeSandboxConfig(global, project);
+        expect(merged.network?.allowUnixSockets).toEqual(["/run/p.sock"]);
     });
 
     test("allowAllUnixSockets: global wins", () => {

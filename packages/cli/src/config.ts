@@ -484,7 +484,8 @@ export function mergeSandboxConfig(global: SandboxConfig, project: SandboxConfig
             deniedDomains: union(global.network?.deniedDomains, project.network?.deniedDomains),
             allowLocalBinding: globalWins(global.network?.allowLocalBinding, project.network?.allowLocalBinding),
             // Unix socket allowances: global wins
-            allowUnixSockets: union(global.network?.allowUnixSockets, project.network?.allowUnixSockets),
+            // Unix socket allowlist: global wins (project cannot widen this allowlist)
+            allowUnixSockets: globalWins(global.network?.allowUnixSockets, project.network?.allowUnixSockets),
             allowAllUnixSockets: globalWins(global.network?.allowAllUnixSockets, project.network?.allowAllUnixSockets),
             // Proxy ports: global wins
             httpProxyPort: globalWins(global.network?.httpProxyPort, project.network?.httpProxyPort),
