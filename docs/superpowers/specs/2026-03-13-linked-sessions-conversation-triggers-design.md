@@ -32,7 +32,7 @@ The parent interacts with children using the same Follow-Up/Steer model that hum
 
 **Same-runner fast path (99% case):** Child worker → Runner daemon → Parent worker. The daemon intercepts child triggers and delivers them directly to the parent's pi instance via the relay socket's `input` event mechanism. No network hop.
 
-**Cross-runner fallback:** Child → Runner → Relay server → Parent's Runner → Parent worker. The relay server detects the `parentSessionId` in Redis and routes the trigger to the correct runner.
+**Cross-runner (V2, deferred):** Child → Runner → Relay server → Parent's Runner → Parent worker. The relay server would detect the `parentSessionId` in Redis and route the trigger to the correct runner. This is deferred to V2 because the overwhelming majority of spawns are same-runner. In V1, if a spawn targets a different runner, the parent-child link is recorded in Redis (for UI display) but trigger routing is not active — the child operates independently.
 
 **UI visualization:** Redis stores `parentSessionId` so the web UI can render session trees without any runtime routing involvement.
 
@@ -135,22 +135,26 @@ interface TriggerRenderer {
 
 ### Trigger Registry
 
-A `TriggerRegistry` maintains known trigger types and their renderers. Located at the runner daemon level (for local routing) and optionally at the server level (for cross-runner).
-
-Extensions can register custom triggers:
+For V1, the trigger registry is a **hardcoded map** of built-in trigger types and their renderers, located at the runner daemon level. No extension API for custom trigger registration in V1 — this keeps the API surface minimal. A `pi.registerTrigger(...)` extension API can be added in V2 when there's concrete demand for custom triggers.
 
 ```typescript
-pi.registerTrigger({
-  type: "budget_threshold",
-  render(trigger) {
-    const { spent, limit } = trigger.payload as { spent: number; limit: number };
-    return `⚠️ Child "${trigger.sourceSessionName}" hit budget threshold: $${spent} of $${limit}. Continue? (yes/no)`;
-  },
-  parseResponse(text) {
-    return text.toLowerCase().includes("yes") || text.toLowerCase().includes("continue");
-  },
-});
+// V1: hardcoded registry in triggers.ts
+const TRIGGER_RENDERERS: Map<string, TriggerRenderer> = new Map([
+  ["ask_user_question", askUserQuestionRenderer],
+  ["plan_review", planReviewRenderer],
+  ["session_complete", sessionCompleteRenderer],
+  ["session_error", sessionErrorRenderer],
+  ["escalate", escalateRenderer],
+]);
 ```
+
+### Error Handling
+
+**Unregistered trigger type:** If the daemon receives a `session_trigger` with a `type` not in the registry, it logs a warning and sends a generic fallback message to the target: *"🔗 Child '{name}' sent an unknown trigger type '{type}'. Raw payload: {JSON}"*. The trigger is still delivered (not silently dropped) so the parent can at least see it.
+
+**Parentless trigger emission:** If a child fires a trigger but has no parent (`parentSessionId` is null — e.g., top-level session or parent already expired), the child receives a tool error: *"No parent session linked. This trigger was not delivered."* The trigger is not silently swallowed. If a human viewer is connected to the child's session, the trigger could optionally be shown in the child's UI as an undelivered notification.
+
+**Trigger timeout:** `expectsResponse` triggers time out after **5 minutes** (configurable per trigger type via a `timeoutMs` field on `ConversationTrigger`, default 300000). On timeout, the child receives a timeout notification as input: *"Trigger '{type}' timed out — no response from parent within 5 minutes."* The child can decide how to proceed (retry, fail, continue with defaults).
 
 ### Built-in Trigger Types
 
@@ -158,10 +162,23 @@ pi.registerTrigger({
 |------|---------|:---:|:---:|-------------|
 | `ask_user_question` | `{ question: string, options: string[] }` | ✅ | followUp | Child is asking a multiple-choice question |
 | `plan_review` | `{ title: string, steps: object[], description?: string }` | ✅ | followUp | Child submitted a plan for approval |
-| `turn_complete` | `{ summary: string }` | ❌ | followUp | Child finished a turn, informational |
 | `session_complete` | `{ summary: string, exitCode: number }` | ✅ | followUp | Child finished all work, needs ack |
 | `session_error` | `{ error: string, context?: string }` | ❌ | steer | Child errored out |
 | `escalate` | `{ reason: string, originalTrigger: ConversationTrigger }` | ✅ | steer | Parent escalates a child's question to the human |
+
+**Deferred:** `turn_complete` (informational, fires on every child turn — too noisy for V1). Can be added as opt-in in V2.
+
+**`session_complete` response examples:**
+
+The `parseResponse` for `session_complete` determines whether the parent is acknowledging or following up:
+
+| Parent response | Parsed as |
+|-----------------|-----------|
+| "Looks good" / "done" / "ack" / "acknowledged" | Acknowledgment → close link |
+| "Also fix the linting" / "Go back and add tests" | Follow-up → steer to child, child resumes |
+| (any substantive instruction) | Follow-up → steer to child |
+
+Heuristic: if the response is ≤ 3 words and matches common ack phrases, it's an acknowledgment. Otherwise, it's a follow-up instruction.
 
 ### Routing Flow
 
@@ -181,20 +198,46 @@ pi.registerTrigger({
 
 **Responding to a trigger (parent side):**
 
-1. Parent receives the rendered trigger as a user message in its conversation
-2. Parent agent reasons about it and produces a response
-3. The daemon identifies that the parent's response correlates to a pending trigger (by conversation position / message ordering)
-4. Daemon routes the response text back to the source child as an `input` event
-5. If trigger type has `parseResponse`, the response is parsed before delivery
-6. `pendingTriggers` entry is cleaned up
+1. Parent receives the rendered trigger as a user message in its conversation. The injected message includes a hidden metadata prefix: `<!-- trigger:abc-123 -->` where `abc-123` is the `triggerId`.
+2. Parent agent reasons about it and produces a response.
+3. To respond to a trigger, the parent calls the `respond_to_trigger` tool:
+
+```typescript
+{
+  name: "respond_to_trigger",
+  parameters: {
+    triggerId: { type: "string", description: "The trigger ID from the child's request" },
+    response: { type: "string", description: "Response text to send back to the child" },
+  },
+  required: ["triggerId", "response"],
+}
+```
+
+4. The daemon receives the response, looks up `triggerId` in `pendingTriggers`, and routes the response text to the source child as an `input` event.
+5. If the trigger type has `parseResponse`, the response is parsed before delivery to the child.
+6. `pendingTriggers` entry is cleaned up.
+
+**Trigger ID correlation:** Every trigger-injected message embeds its `triggerId` as an HTML comment at the top of the rendered text (`<!-- trigger:abc-123 -->`). The `respond_to_trigger` tool requires this ID, making correlation explicit and reliable even when multiple children fire triggers simultaneously. The agent extracts the trigger ID from the injected message it's responding to.
 
 **Escalation flow:**
 
-1. Parent responds to a child trigger with "escalate" (or equivalent)
-2. Daemon fires a new `escalate` trigger targeting the human viewer
-3. The `escalate` trigger includes the original trigger's payload for context
-4. Human viewer sees the question in the web UI and can respond directly
-5. Response routes back through the daemon to the original child
+1. Parent calls the `escalate_trigger` tool instead of `respond_to_trigger`:
+
+```typescript
+{
+  name: "escalate_trigger",
+  parameters: {
+    triggerId: { type: "string", description: "The trigger ID to escalate" },
+    context: { type: "string", description: "Additional context for the human" },
+  },
+  required: ["triggerId"],
+}
+```
+
+2. Daemon fires a new `escalate` trigger targeting the human viewer (delivered via the web UI's existing input mechanism).
+3. The `escalate` trigger includes the original trigger's payload plus the parent's added context.
+4. Human viewer sees the question in the web UI with an escalation card and can respond directly.
+5. Response routes back through the daemon to the original child.
 
 ---
 
@@ -272,6 +315,8 @@ Each child's triggers are tagged with `sourceSessionId` and `sourceSessionName`.
 | Tool | Description |
 |------|-------------|
 | `tell_child` | Send a message to a linked child session. Default: steer. Optional `deliverAs: "followUp"`. |
+| `respond_to_trigger` | Respond to a pending trigger from a child. Requires `triggerId` and `response` text. |
+| `escalate_trigger` | Escalate a child's trigger to the human viewer. Requires `triggerId`, optional `context`. |
 
 ### Modified Tools
 
@@ -279,24 +324,28 @@ Each child's triggers are tagged with `sourceSessionId` and `sourceSessionName`.
 |------|--------|
 | `spawn_session` | Automatically sets `parentSessionId` from calling session's own ID. No new agent-facing parameters. |
 
-### Deprecated Tools
+### Retained Tools (reduced role)
 
-| Tool | Replacement |
-|------|-------------|
-| `send_message` | Trigger responses (auto-routed) + `tell_child` |
-| `wait_for_message` | Triggers injected as user messages — no blocking |
-| `check_messages` | Triggers arrive as conversation flow |
-| `get_session_id` | Parent-child link is automatic |
+The following tools are **retained** for non-parent-child communication (sibling sessions, arbitrary session-to-session coordination) but are no longer the primary mechanism for parent↔child interaction:
+
+| Tool | New Role |
+|------|----------|
+| `send_message` | Sibling-to-sibling or arbitrary session communication only |
+| `wait_for_message` | Same — for non-linked session coordination |
+| `check_messages` | Same — polling for non-linked messages |
+| `get_session_id` | Still useful when coordinating with non-linked sessions |
+
+The system prompt will guide agents to use triggers + `tell_child` for parent-child flows, and messaging tools only for lateral communication between unlinked sessions.
 
 ### Extension Changes
 
 | File | Change |
 |------|--------|
 | `spawn-session.ts` | Include `parentSessionId` in spawn request |
-| `session-messaging.ts` | Deprecated — trigger system replaces |
-| **New: `triggers.ts`** | `TriggerRegistry`, built-in triggers, `tell_child` tool, trigger routing |
+| `session-messaging.ts` | Retained for non-linked communication; no changes |
+| **New: `triggers.ts`** | `TriggerRegistry`, built-in triggers, `tell_child` / `respond_to_trigger` / `escalate_trigger` tools, trigger routing |
 | `remote.ts` | Handle `session_trigger` events, convert to `sendUserMessage`, route responses |
-| `session-message-bus.ts` | Deprecated — triggers replace the bus |
+| `session-message-bus.ts` | Retained for non-linked messaging; no changes |
 
 ---
 
@@ -327,9 +376,9 @@ Trigger-injected messages render as distinct cards in the parent's conversation:
 
 The human viewer on a parent session can:
 
-- See all pending child triggers
-- Respond directly (bypassing the parent agent's reasoning)
-- Steer any child via existing input mechanism
+- See all pending child triggers in the trigger card UI
+- Respond directly via a "Respond" button on each trigger card, which sends the response through the same daemon routing path as the agent's `respond_to_trigger` tool. The daemon distinguishes human responses because they arrive via the viewer socket (not the TUI/agent socket).
+- Steer any child directly by navigating to the child session and using the normal input mechanism
 
 ---
 
@@ -348,10 +397,10 @@ The following docs pages need updates:
 
 Update `BUILTIN_SYSTEM_PROMPT` in `packages/cli/src/config.ts`:
 
-- Describe the linked session model: "When you spawn a session, it's automatically linked. Child events (questions, plans, completion) appear in your conversation."
-- Explain response expectations: "Respond naturally to child triggers. Say 'escalate' to pass to the human."
+- Describe the linked session model: "When you spawn a session, it's automatically linked. Child events (questions, plans, completion) appear in your conversation as injected messages."
+- Explain trigger response: "Use `respond_to_trigger(triggerId, response)` to answer child questions and approve/reject plans. Use `escalate_trigger(triggerId)` to pass a child's question to the human."
 - Document `tell_child`: "Use `tell_child` to proactively steer a child session."
-- Remove all references to `send_message`, `wait_for_message`, `check_messages`, `get_session_id`.
+- Reposition `send_message`/`wait_for_message`/`check_messages`/`get_session_id` as tools for non-parent-child coordination only.
 
 ### Agent Guide Updates
 
@@ -365,33 +414,38 @@ Update `AGENTS.md` spawning sub-agents section:
 
 ## Implementation Order
 
-1. **Data model** — Add `parentSessionId` to Redis schema, `RunnerSession`, spawn flow
-2. **Trigger system core** — `ConversationTrigger` interface, `TriggerRegistry`, built-in renderers
-3. **Daemon routing** — Same-runner trigger delivery and response correlation
-4. **CLI extension: `triggers.ts`** — `tell_child` tool, trigger emission from child-side
-5. **Wire up built-in triggers** — AskUserQuestion, plan_mode, session_complete interception
-6. **Server routing** — Cross-runner trigger delivery via relay
-7. **Web UI: session tree** — Parent-child visualization in sidebar and headers
-8. **Web UI: trigger cards** — Render triggers in parent conversation
-9. **Deprecate old tools** — Mark `send_message`/`wait_for_message`/`check_messages`/`get_session_id` as deprecated
-10. **Documentation** — Update all affected docs pages, system prompt, agent guide
-11. **Testing** — Unit tests for trigger routing, integration tests for parent-child flows
+1. **Data model** — Add `parentSessionId` to Redis schema, `RunnerSession`, spawn flow, env var plumbing
+2. **Trigger system core** — `ConversationTrigger` interface, hardcoded `TriggerRegistry`, built-in renderers
+3. **Daemon routing** — Same-runner trigger delivery, `pendingTriggers` map, response correlation via trigger IDs
+4. **CLI extension: `triggers.ts`** — `tell_child`, `respond_to_trigger`, `escalate_trigger` tools; trigger emission from child-side
+5. **Wire up built-in triggers** — Intercept AskUserQuestion, plan_mode, session_complete in child sessions and fire triggers
+6. **Web UI: session tree** — Parent-child visualization in sidebar and headers
+7. **Web UI: trigger cards** — Render trigger-injected messages in parent conversation, escalation cards
+8. **System prompt & docs** — Update BUILTIN_SYSTEM_PROMPT, AGENTS.md, docs site pages
+9. **Testing** — Unit tests for trigger routing, integration tests for parent-child flows
+
+**Deferred to V2:** Cross-runner trigger routing, custom trigger registration API (`pi.registerTrigger`), `turn_complete` trigger type.
 
 ---
 
-## Out of Scope
+## Out of Scope (V1)
 
 - **`subagent` tool changes** — stays as-is for in-process lightweight tasks
 - **Multi-level nesting** — grandparent chains work implicitly (child's parent is just another session that may itself have a parent), but we don't optimize for deep chains in V1
 - **Cross-user session linking** — parent and child must belong to the same user
 - **Trigger persistence** — triggers are ephemeral (in-memory at daemon level). Redis stores relationships, not trigger history
+- **Cross-runner trigger routing** — deferred to V2; V1 is same-runner only
+- **Custom trigger registration API** — deferred to V2; V1 uses hardcoded built-in triggers
+- **`turn_complete` trigger** — deferred to V2 as opt-in (too noisy for default in V1)
 
 ---
 
-## Open Questions
+## Resolved Questions
 
-1. **Response correlation accuracy:** How reliably can the daemon determine which of the parent's responses corresponds to which pending trigger, especially when multiple children fire triggers simultaneously? May need explicit trigger ID tagging in the injected message and a structured response format.
+1. **Response correlation:** ✅ Resolved — uses explicit trigger ID tagging. Injected messages include `<!-- trigger:{id} -->` metadata. Parent uses `respond_to_trigger(triggerId, response)` tool for explicit correlation. No ambiguity.
 
-2. **Trigger timeout defaults:** What's the right timeout for `expectsResponse` triggers before auto-escalating to the human? Proposed: 5 minutes, configurable per trigger type.
+2. **Trigger timeout:** ✅ Resolved — 5 minutes default, configurable per trigger type via `timeoutMs` field. On timeout, child receives a timeout notification.
 
-3. **Backwards compatibility window:** How long to keep deprecated messaging tools before removal? Proposed: 2 minor versions with deprecation warnings.
+3. **Messaging tool deprecation:** ✅ Resolved — messaging tools are **retained** for non-parent-child communication (sibling sessions, arbitrary coordination). Only the parent-child use case migrates to triggers.
+
+4. **Escalation detection:** ✅ Resolved — explicit `escalate_trigger` tool, not string matching. Parent calls the tool with `triggerId` and optional context.
