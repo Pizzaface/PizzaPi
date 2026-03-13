@@ -318,3 +318,69 @@ describe("mergeSandboxConfig — network", () => {
         expect(merged.network?.allowLocalBinding).toBe(true);
     });
 });
+
+describe("mergeSandboxConfig — scalar fields propagated", () => {
+    test("allowUnixSockets is unioned (both global and project entries preserved)", () => {
+        const global: SandboxConfig = { network: { allowUnixSockets: ["/run/g.sock"] } };
+        const project: SandboxConfig = { network: { allowUnixSockets: ["/run/p.sock"] } };
+        const merged = mergeSandboxConfig(global, project);
+        expect(merged.network?.allowUnixSockets).toContain("/run/g.sock");
+        expect(merged.network?.allowUnixSockets).toContain("/run/p.sock");
+    });
+
+    test("allowAllUnixSockets: global wins", () => {
+        const global: SandboxConfig = { network: { allowAllUnixSockets: false } };
+        const project: SandboxConfig = { network: { allowAllUnixSockets: true } };
+        const merged = mergeSandboxConfig(global, project);
+        expect(merged.network?.allowAllUnixSockets).toBe(false);
+    });
+
+    test("httpProxyPort: global wins", () => {
+        const global: SandboxConfig = { network: { httpProxyPort: 8080 } };
+        const project: SandboxConfig = { network: { httpProxyPort: 9090 } };
+        const merged = mergeSandboxConfig(global, project);
+        expect(merged.network?.httpProxyPort).toBe(8080);
+    });
+
+    test("socksProxyPort: project used when global not set", () => {
+        const global: SandboxConfig = {};
+        const project: SandboxConfig = { network: { socksProxyPort: 1080 } };
+        const merged = mergeSandboxConfig(global, project);
+        expect(merged.network?.socksProxyPort).toBe(1080);
+    });
+
+    test("allowGitConfig: global wins", () => {
+        const global: SandboxConfig = { filesystem: { allowGitConfig: false } };
+        const project: SandboxConfig = { filesystem: { allowGitConfig: true } };
+        const merged = mergeSandboxConfig(global, project);
+        expect(merged.filesystem?.allowGitConfig).toBe(false);
+    });
+
+    test("allowGitConfig: project used when global not set", () => {
+        const global: SandboxConfig = {};
+        const project: SandboxConfig = { filesystem: { allowGitConfig: true } };
+        const merged = mergeSandboxConfig(global, project);
+        expect(merged.filesystem?.allowGitConfig).toBe(true);
+    });
+
+    test("allowPty: global wins", () => {
+        const global: SandboxConfig = { allowPty: false };
+        const project: SandboxConfig = { allowPty: true };
+        const merged = mergeSandboxConfig(global, project);
+        expect(merged.allowPty).toBe(false);
+    });
+
+    test("enableWeakerNetworkIsolation: project used when global not set", () => {
+        const global: SandboxConfig = {};
+        const project: SandboxConfig = { enableWeakerNetworkIsolation: true };
+        const merged = mergeSandboxConfig(global, project);
+        expect(merged.enableWeakerNetworkIsolation).toBe(true);
+    });
+
+    test("mandatoryDenySearchDepth: global wins", () => {
+        const global: SandboxConfig = { mandatoryDenySearchDepth: 2 };
+        const project: SandboxConfig = { mandatoryDenySearchDepth: 5 };
+        const merged = mergeSandboxConfig(global, project);
+        expect(merged.mandatoryDenySearchDepth).toBe(2);
+    });
+});

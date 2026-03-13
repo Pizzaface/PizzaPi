@@ -472,23 +472,37 @@ export function mergeSandboxConfig(global: SandboxConfig, project: SandboxConfig
     const effectiveMode: SandboxMode =
         modeStrength[projectMode] >= modeStrength[globalMode] ? projectMode : globalMode;
 
+    // For scalar fields: global wins (security invariant — project cannot weaken).
+    // Helper: pick global value if defined, else project value.
+    const globalWins = <T>(g: T | undefined, p: T | undefined): T | undefined =>
+        g !== undefined ? g : p;
+
     return {
         mode: effectiveMode,
         network: {
             allowedDomains: intersect(global.network?.allowedDomains, project.network?.allowedDomains),
             deniedDomains: union(global.network?.deniedDomains, project.network?.deniedDomains),
-            // Other network scalars: global wins
-            ...(global.network?.allowLocalBinding !== undefined
-                ? { allowLocalBinding: global.network.allowLocalBinding }
-                : project.network?.allowLocalBinding !== undefined
-                    ? { allowLocalBinding: project.network.allowLocalBinding }
-                    : {}),
+            allowLocalBinding: globalWins(global.network?.allowLocalBinding, project.network?.allowLocalBinding),
+            // Unix socket allowances: global wins
+            allowUnixSockets: union(global.network?.allowUnixSockets, project.network?.allowUnixSockets),
+            allowAllUnixSockets: globalWins(global.network?.allowAllUnixSockets, project.network?.allowAllUnixSockets),
+            // Proxy ports: global wins
+            httpProxyPort: globalWins(global.network?.httpProxyPort, project.network?.httpProxyPort),
+            socksProxyPort: globalWins(global.network?.socksProxyPort, project.network?.socksProxyPort),
         },
         filesystem: {
             denyRead: union(global.filesystem?.denyRead, project.filesystem?.denyRead),
             denyWrite: union(global.filesystem?.denyWrite, project.filesystem?.denyWrite),
             allowWrite: intersect(global.filesystem?.allowWrite, project.filesystem?.allowWrite),
+            // allowGitConfig: global wins (false is stricter)
+            allowGitConfig: globalWins(global.filesystem?.allowGitConfig, project.filesystem?.allowGitConfig),
         },
+        // Top-level scalar fields: global wins
+        ignoreViolations: global.ignoreViolations ?? project.ignoreViolations,
+        enableWeakerNetworkIsolation: globalWins(global.enableWeakerNetworkIsolation, project.enableWeakerNetworkIsolation),
+        enableWeakerNestedSandbox: globalWins(global.enableWeakerNestedSandbox, project.enableWeakerNestedSandbox),
+        mandatoryDenySearchDepth: globalWins(global.mandatoryDenySearchDepth, project.mandatoryDenySearchDepth),
+        allowPty: globalWins(global.allowPty, project.allowPty),
     };
 }
 
