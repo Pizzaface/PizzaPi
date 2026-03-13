@@ -293,6 +293,23 @@ export async function updateSessionFields(
     await multi.exec();
 }
 
+/**
+ * Like updateSessionFields but creates the hash if it doesn't exist yet.
+ * Used when the session record may not have been registered by the TUI socket.
+ */
+export async function upsertSessionFields(
+    sessionId: string,
+    fields: Partial<RedisSessionData>,
+): Promise<void> {
+    const r = requireRedis();
+    const key = sessionKey(sessionId);
+    const hashFields = toHashFields(fields as unknown as Record<string, unknown>);
+    const multi = r.multi();
+    multi.hSet(key, hashFields);
+    multi.expire(key, SESSION_TTL_SECONDS);
+    await multi.exec();
+}
+
 export async function deleteSession(sessionId: string): Promise<void> {
     const r = requireRedis();
     const session = await getSession(sessionId);

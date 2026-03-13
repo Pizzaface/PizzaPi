@@ -13,7 +13,7 @@ import {
     recordRunnerSession,
     registerTerminal,
 } from "../ws/sio-registry.js";
-import { updateSessionFields, addChildSession } from "../ws/sio-state.js";
+import { upsertSessionFields, addChildSession } from "../ws/sio-state.js";
 import { sendSkillCommand, sendAgentCommand, sendRunnerCommand } from "../ws/namespaces/runner.js";
 import { waitForSpawnAck } from "../ws/runner-control.js";
 import { requireSession, validateApiKey } from "../middleware.js";
@@ -131,7 +131,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
 
         // Store parent-child relationship in Redis for the trigger system
         if (requestedParentSessionId) {
-            await updateSessionFields(sessionId, { parentSessionId: requestedParentSessionId } as any);
+            await upsertSessionFields(sessionId, { parentSessionId: requestedParentSessionId } as any);
             await addChildSession(requestedParentSessionId, sessionId);
         }
 

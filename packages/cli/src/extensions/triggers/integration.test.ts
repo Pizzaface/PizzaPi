@@ -66,19 +66,18 @@ describe("trigger routing flow", () => {
         it("tracks a received trigger for response routing", () => {
             trackReceivedTrigger("trigger-1", "child-1", "ask_user_question");
             expect(receivedTriggers.has("trigger-1")).toBe(true);
-            expect(receivedTriggers.get("trigger-1")).toEqual({
-                sourceSessionId: "child-1",
-                type: "ask_user_question",
-            });
+            const entry = receivedTriggers.get("trigger-1")!;
+            expect(entry.sourceSessionId).toBe("child-1");
+            expect(entry.type).toBe("ask_user_question");
+            expect(entry.trackedAt).toBeGreaterThan(0);
         });
 
         it("overwrites duplicate trigger IDs", () => {
             trackReceivedTrigger("trigger-1", "child-1", "ask_user_question");
             trackReceivedTrigger("trigger-1", "child-2", "plan_review");
-            expect(receivedTriggers.get("trigger-1")).toEqual({
-                sourceSessionId: "child-2",
-                type: "plan_review",
-            });
+            const entry = receivedTriggers.get("trigger-1")!;
+            expect(entry.sourceSessionId).toBe("child-2");
+            expect(entry.type).toBe("plan_review");
         });
 
         it("can delete a trigger after responding", () => {

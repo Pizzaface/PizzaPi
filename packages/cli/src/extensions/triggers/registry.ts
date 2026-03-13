@@ -72,18 +72,18 @@ const planReviewRenderer: TriggerRenderer = {
             }
         }
         lines.push("", respondLine(trigger.triggerId));
-        lines.push(`Use "Begin" to approve, "Cancel" to reject, or provide edit feedback.`);
+        lines.push(`Use respond_to_trigger with action: "approve" to accept, "cancel" to reject, or "edit" with feedback.`);
         return lines.join("\n");
     },
     parseResponse(responseText) {
         const lower = responseText.toLowerCase().trim();
-        const approvalWords = ["begin", "approve", "approved", "lgtm", "looks good", "go", "proceed"];
+        const approvalWords = ["begin", "approve", "approved", "lgtm", "looks good", "proceed"];
         const cancelWords = ["cancel", "stop", "reject", "no"];
 
-        if (approvalWords.some((w) => lower.includes(w))) {
+        if (approvalWords.some((w) => lower === w || lower.startsWith(w + " "))) {
             return { action: "approve" };
         }
-        if (cancelWords.some((w) => lower === w)) {
+        if (cancelWords.some((w) => lower === w || lower.startsWith(w + " "))) {
             return { action: "cancel" };
         }
         return { action: "edit", feedback: responseText };
@@ -106,9 +106,9 @@ const sessionCompleteRenderer: TriggerRenderer = {
         ].join("\n");
     },
     parseResponse(responseText) {
-        const lower = responseText.toLowerCase().trim();
+        const lower = responseText.toLowerCase().trim().replace(/[!.,]+$/, "");
         const ackWords = ["ok", "ack", "thanks", "noted", "lgtm", "acknowledged", "got it"];
-        if (ackWords.some((w) => lower.includes(w))) {
+        if (ackWords.some((w) => lower === w || lower.startsWith(w + " "))) {
             return { action: "ack" };
         }
         return { action: "followUp", message: responseText };

@@ -67,7 +67,7 @@ describe("renderTrigger", () => {
             expect(result).toContain("1. Extract middleware");
             expect(result).toContain("2. Add tests");
             expect(result).toContain("Unit and integration");
-            expect(result).toContain('"Begin" to approve');
+            expect(result).toContain('action: "approve"');
         });
 
         it("renders with description", () => {
@@ -189,6 +189,23 @@ describe("parseTriggerResponse", () => {
         it("classifies 'cancel' as cancel", () => {
             const trigger = makeTrigger({ type: "plan_review" });
             expect(parseTriggerResponse(trigger, "cancel")).toEqual({ action: "cancel" });
+        });
+
+        it("classifies 'Begin with context' as approve", () => {
+            const trigger = makeTrigger({ type: "plan_review" });
+            expect(parseTriggerResponse(trigger, "Begin with context")).toEqual({ action: "approve" });
+        });
+
+        it("does not false-positive on words containing approval substrings", () => {
+            const trigger = makeTrigger({ type: "plan_review" });
+            // "go" was removed — words like "algorithm" or "not good" should not match
+            const result = parseTriggerResponse(trigger, "the algorithm is wrong") as any;
+            expect(result.action).toBe("edit");
+        });
+
+        it("classifies 'cancel the plan' as cancel", () => {
+            const trigger = makeTrigger({ type: "plan_review" });
+            expect(parseTriggerResponse(trigger, "cancel the plan")).toEqual({ action: "cancel" });
         });
 
         it("classifies other text as edit feedback", () => {
