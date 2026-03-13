@@ -59,7 +59,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         const rawAgentName = body.agent && typeof body.agent === "object" && typeof (body.agent as any).name === "string"
             ? ((body.agent as any).name as string).trim()
             : undefined;
-        if (rawAgentName && !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(rawAgentName)) {
+        if (rawAgentName && !isValidSkillName(rawAgentName)) {
             return Response.json({ error: "Invalid agent name" }, { status: 400 });
         }
         const requestedAgent = rawAgentName

@@ -89,16 +89,37 @@ export const initialPromptExtension: ExtensionFactory = (pi) => {
                 const requested = agentTools.split(",").map(t => t.trim()).filter(Boolean);
                 // Resolve names case-insensitively against the set of all known tools
                 // so frontmatter values like "Read, Bash" map to "read", "bash".
+                // Also map Claude Code tool aliases (Glob→find, Grep→grep, etc.)
+                // so agent files written for Claude Code work correctly.
+                const claudeToPi: Record<string, string> = {
+                    Read: "read",
+                    Write: "write",
+                    Edit: "edit",
+                    MultiEdit: "edit",
+                    Bash: "bash",
+                    Glob: "find",
+                    Grep: "grep",
+                };
                 const allTools = pi.getAllTools();
                 const toolIndex = new Map(allTools.map(t => [t.name.toLowerCase(), t.name]));
                 const allowed = requested
-                    .map(r => toolIndex.get(r.toLowerCase()))
+                    .map(r => {
+                        // Try direct case-insensitive match first
+                        const direct = toolIndex.get(r.toLowerCase());
+                        if (direct) return direct;
+                        // Fall back to Claude alias mapping
+                        const mapped = claudeToPi[r];
+                        if (mapped) return toolIndex.get(mapped.toLowerCase());
+                        return undefined;
+                    })
                     .filter((t): t is string => t !== undefined);
+                // Deduplicate (e.g. Edit + MultiEdit both resolve to "edit")
+                const uniqueAllowed = [...new Set(allowed)];
                 // Fail-closed: if an allowlist was specified, apply it even if
                 // no tools resolved — an empty set is safer than full access.
-                pi.setActiveTools(allowed);
-                if (allowed.length > 0) {
-                    console.log(`pizzapi worker: agent tool allowlist applied: ${allowed.join(", ")}`);
+                pi.setActiveTools(uniqueAllowed);
+                if (uniqueAllowed.length > 0) {
+                    console.log(`pizzapi worker: agent tool allowlist applied: ${uniqueAllowed.join(", ")}`);
                 } else {
                     console.warn(`pizzapi worker: agent tool allowlist matched no known tools (requested: ${requested.join(", ")}). All tools disabled for safety.`);
                 }
@@ -110,7 +131,18 @@ export const initialPromptExtension: ExtensionFactory = (pi) => {
         }
         if (agentDisallowedTools) {
             try {
-                const denied = new Set(agentDisallowedTools.split(",").map(t => t.trim().toLowerCase()).filter(Boolean));
+                // Map Claude aliases to pi names for the denylist too
+                const claudeToPiDeny: Record<string, string> = {
+                    read: "read", write: "write", edit: "edit",
+                    multiedit: "edit", bash: "bash", glob: "find", grep: "grep",
+                };
+                const rawDenied = agentDisallowedTools.split(",").map(t => t.trim()).filter(Boolean);
+                const denied = new Set(rawDenied.flatMap(t => {
+                    const lower = t.toLowerCase();
+                    const mapped = claudeToPiDeny[lower];
+                    // Include both the original (lowercased) and the mapped name
+                    return mapped && mapped !== lower ? [lower, mapped] : [lower];
+                }));
                 const current = pi.getActiveTools();
                 const filtered = current.filter(t => !denied.has(t.toLowerCase()));
                 if (filtered.length < current.length) {
