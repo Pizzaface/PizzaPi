@@ -15,6 +15,7 @@ import { updateTodoExtension } from "./update-todo.js";
 import { subagentExtension } from "./subagent.js";
 import { planModeToggleExtension } from "./plan-mode-toggle.js";
 import { initialPromptExtension } from "./initial-prompt.js";
+import { modelDiscoveryExtension } from "./model-discovery.js";
 
 const CORE_EXTENSIONS: ExtensionFactory[] = [
     remoteExtension,
@@ -26,6 +27,7 @@ const CORE_EXTENSIONS: ExtensionFactory[] = [
     sessionMessagingExtension,
     subagentExtension,
     planModeToggleExtension,
+    modelDiscoveryExtension,
 ];
 
 /**
@@ -98,6 +100,12 @@ describe("buildPizzaPiExtensionFactories — safe mode", () => {
         expect(factories).toContain(mcpExtension);
     });
 
+    test("skipModelDiscovery excludes model discovery extension", () => {
+        const factories = buildPizzaPiExtensionFactories({ cwd: "/tmp/pizzapi-test", skipModelDiscovery: true });
+        expect(factories).not.toContain(modelDiscoveryExtension);
+        expect(factories).toContain(restartExtension);
+    });
+
     test("skipPlugins excludes plugin extension even when plugins exist", () => {
         const projectDir = mkdtempSync(join(tmpdir(), "pizzapi-factories-skip-"));
         try {
@@ -125,6 +133,7 @@ describe("buildPizzaPiExtensionFactories — safe mode", () => {
             skipMcp: true,
             skipRelay: true,
             skipPlugins: true,
+            skipModelDiscovery: true,
             // hooks are omitted by passing undefined (simulating --no-hooks behavior)
         });
 

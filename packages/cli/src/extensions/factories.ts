@@ -12,6 +12,7 @@ import { updateTodoExtension } from "./update-todo.js";
 import { createClaudePluginExtension } from "./claude-plugins.js";
 import { subagentExtension } from "./subagent.js";
 import { planModeToggleExtension } from "./plan-mode-toggle.js";
+import { modelDiscoveryExtension } from "./model-discovery.js";
 
 export interface BuildExtensionFactoriesOptions {
     cwd: string;
@@ -23,6 +24,8 @@ export interface BuildExtensionFactoriesOptions {
     skipPlugins?: boolean;
     /** Skip relay server connection (safe mode). */
     skipRelay?: boolean;
+    /** Skip dynamic model discovery from provider APIs. */
+    skipModelDiscovery?: boolean;
 }
 
 /**
@@ -50,6 +53,10 @@ export function buildPizzaPiExtensionFactories(options: BuildExtensionFactoriesO
         subagentExtension,
         planModeToggleExtension,
     );
+
+    if (!options.skipModelDiscovery) {
+        factories.push(modelDiscoveryExtension);
+    }
 
     if (options.includeInitialPrompt) {
         factories.push(initialPromptExtension);

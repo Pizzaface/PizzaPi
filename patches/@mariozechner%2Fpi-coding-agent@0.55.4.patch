@@ -1,3 +1,6 @@
+diff --git a/node_modules/@mariozechner/pi-coding-agent/.bun-tag-5bd14f22cbbdd36 b/.bun-tag-5bd14f22cbbdd36
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
 diff --git a/dist/core/extensions/loader.js b/dist/core/extensions/loader.js
 index a69a086d7492b99fc6e7d021e31e9561fd2b1a3a..3025ed381d2cf3e28c65459aa96d9c092c6bdf4c 100644
 --- a/dist/core/extensions/loader.js
@@ -49,6 +52,39 @@ index 6c32bd9438c02e12c40b4f98171b37ab622ed18c..be32027918d34daeb819d7b7a38330cb
      }
      setUIContext(uiContext) {
          this.uiContext = uiContext ?? noOpUIContext;
+diff --git a/dist/core/model-registry.js b/dist/core/model-registry.js
+index 9d3cff23eb720c589a007f771a89da953df1af04..c20b3e6cdb607ea91bce1e8068d7d0abfdadeb81 100644
+--- a/dist/core/model-registry.js
++++ b/dist/core/model-registry.js
+@@ -467,10 +467,16 @@ export class ModelRegistry {
+             this.customProviderApiKeys.set(providerName, config.apiKey);
+         }
+         if (config.models && config.models.length > 0) {
+-            // Full replacement: remove existing models for this provider
+-            this.models = this.models.filter((m) => m.provider !== providerName);
++            // PATCH(pizzapi): additive registration — only remove models whose IDs
++            // are being replaced, preserving any existing models not in this batch.
++            const incomingIds = new Set(config.models.map((m) => m.id));
++            this.models = this.models.filter((m) => m.provider !== providerName || !incomingIds.has(m.id));
++            // PATCH(pizzapi): fall back to an existing model's baseUrl when not specified,
++            // allowing additive registration without repeating the provider URL.
++            const existingBaseUrl = this.models.find((m) => m.provider === providerName)?.baseUrl;
++            const resolvedBaseUrl = config.baseUrl ?? existingBaseUrl;
+             // Validate required fields
+-            if (!config.baseUrl) {
++            if (!resolvedBaseUrl) {
+                 throw new Error(`Provider ${providerName}: "baseUrl" is required when defining models.`);
+             }
+             if (!config.apiKey && !config.oauth) {
+@@ -498,7 +504,7 @@ export class ModelRegistry {
+                     name: modelDef.name,
+                     api: api,
+                     provider: providerName,
+-                    baseUrl: config.baseUrl,
++                    baseUrl: resolvedBaseUrl,
+                     reasoning: modelDef.reasoning,
+                     input: modelDef.input,
+                     cost: modelDef.cost,
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
 index d257afa404987930ba4de685100f5215dcf05ef0..7cf11d7d65c3450f14b48330790dcc6e0445cabe 100644
 --- a/dist/modes/interactive/interactive-mode.js

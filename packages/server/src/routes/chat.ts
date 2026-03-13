@@ -2,12 +2,14 @@
  * Chat router — AI chat completion and model listing.
  */
 
-import { getModel, getProviders, getModels } from "@mariozechner/pi-ai";
+import { getModel } from "@mariozechner/pi-ai";
 import { Agent } from "@mariozechner/pi-agent-core";
 import type { AgentEvent } from "@mariozechner/pi-agent-core";
 import { createToolkit } from "@pizzapi/tools";
 import { requireSession } from "../middleware.js";
 import type { RouteHandler } from "./types.js";
+import { getAllModels } from "../custom-models.js";
+import { join } from "path";
 
 export const handleChatRoute: RouteHandler = async (req, url) => {
     if (url.pathname === "/api/chat" && req.method === "POST") {
@@ -64,10 +66,9 @@ export const handleChatRoute: RouteHandler = async (req, url) => {
     if (url.pathname === "/api/models" && req.method === "GET") {
         const identity = await requireSession(req);
         if (identity instanceof Response) return identity;
-        const providers = getProviders();
-        const models = providers.flatMap((p) =>
-            getModels(p).map((m) => ({ provider: p, id: m.id, name: m.name })),
-        );
+        const customModelsPath = process.env.PIZZAPI_CUSTOM_MODELS_PATH
+            ?? join(process.env.AUTH_DB_PATH ? join(process.env.AUTH_DB_PATH, "..") : "/app/data", "models.json");
+        const models = getAllModels(customModelsPath);
         return Response.json({ models });
     }
 
