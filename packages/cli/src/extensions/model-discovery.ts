@@ -138,10 +138,11 @@ export const modelDiscoveryExtension: ExtensionFactory = (pi) => {
             if (newModels.length === 0) continue;
 
             const fetcher = PROVIDER_FETCHERS[provider];
-            const syntheticName = `${provider}-discovered`;
 
-            pi.registerProvider(syntheticName, {
-                baseUrl,
+            // Use the real provider name — the patched ModelRegistry merges
+            // additively rather than replacing, and falls back to the existing
+            // model's baseUrl so we don't need to repeat it here.
+            pi.registerProvider(provider, {
                 apiKey,
                 api: fetcher.api,
                 models: buildModelDefs(newModels),
