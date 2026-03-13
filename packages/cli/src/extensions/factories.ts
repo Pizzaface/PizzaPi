@@ -12,6 +12,7 @@ import { updateTodoExtension } from "./update-todo.js";
 import { createClaudePluginExtension } from "./claude-plugins.js";
 import { subagentExtension } from "./subagent.js";
 import { planModeToggleExtension } from "./plan-mode-toggle.js";
+import { triggersExtension } from "./triggers/extension.js";
 
 export interface BuildExtensionFactoriesOptions {
     cwd: string;
@@ -49,6 +50,7 @@ export function buildPizzaPiExtensionFactories(options: BuildExtensionFactoriesO
         sessionMessagingExtension,
         subagentExtension,
         planModeToggleExtension,
+        triggersExtension,
     );
 
     if (options.includeInitialPrompt) {
