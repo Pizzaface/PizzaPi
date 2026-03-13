@@ -17,6 +17,8 @@ import {
     fetchOpenAIModels,
     fetchAnthropicModels,
     fetchOllamaModels,
+    fetchZAIModels,
+    zaiJwtToken,
     type DiscoveredModel,
 } from "./model-discovery-providers.js";
 
@@ -164,6 +166,35 @@ export const modelDiscoveryExtension: ExtensionFactory = (pi) => {
                     apiKey: "ollama",
                     api: "openai-completions",
                     models: buildModelDefs(ollamaModels),
+                });
+            }
+        }
+
+        // ── zAI / Zhipu AI (ZAI_API_KEY) ─────────────────────────────────────
+        // zAI requires JWT auth (HS256 signed from key "<id>.<secret>").
+        // We generate a 1-hour token at session start and pass it as a
+        // static Authorization header so the OpenAI-compatible layer works.
+        const zaiKey = process.env.ZAI_API_KEY;
+        if (zaiKey) {
+            const zaiBaseUrl = "https://open.bigmodel.cn/api/paas";
+            let zaiModels: DiscoveredModel[];
+            if (cache?.providers["zai"]) {
+                zaiModels = cache.providers["zai"];
+                newCache.providers["zai"] = zaiModels;
+            } else {
+                zaiModels = await fetchZAIModels(zaiBaseUrl, zaiKey);
+                newCache.providers["zai"] = zaiModels;
+            }
+
+            if (zaiModels.length > 0) {
+                const jwt = await zaiJwtToken(zaiKey);
+                pi.registerProvider("zai", {
+                    baseUrl: `${zaiBaseUrl}/v4`,
+                    apiKey: "ZAI_API_KEY",
+                    api: "openai-completions",
+                    headers: { Authorization: `Bearer ${jwt}` },
+                    authHeader: false,
+                    models: buildModelDefs(zaiModels),
                 });
             }
         }
