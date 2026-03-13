@@ -94,11 +94,13 @@ export const initialPromptExtension: ExtensionFactory = (pi) => {
                 const allowed = requested
                     .map(r => toolIndex.get(r.toLowerCase()))
                     .filter((t): t is string => t !== undefined);
+                // Fail-closed: if an allowlist was specified, apply it even if
+                // no tools resolved — an empty set is safer than full access.
+                pi.setActiveTools(allowed);
                 if (allowed.length > 0) {
-                    pi.setActiveTools(allowed);
                     console.log(`pizzapi worker: agent tool allowlist applied: ${allowed.join(", ")}`);
                 } else {
-                    console.warn(`pizzapi worker: agent tool allowlist matched no known tools (requested: ${requested.join(", ")})`);
+                    console.warn(`pizzapi worker: agent tool allowlist matched no known tools (requested: ${requested.join(", ")}). All tools disabled for safety.`);
                 }
             } catch (err) {
                 console.warn(
