@@ -417,6 +417,7 @@ export async function getSessions(filterUserId?: string): Promise<SessionInfo[]>
             model,
             runnerId: s.runnerId,
             runnerName: s.runnerName,
+            parentSessionId: s.parentSessionId,
         };
     });
 }
