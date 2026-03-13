@@ -589,7 +589,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
 
         socket.on("new_session", (data) => {
             if (isShuttingDown) return;
-            const { sessionId, cwd: requestedCwd, prompt: requestedPrompt, model: requestedModel, hiddenModels: requestedHiddenModels } = data;
+            const { sessionId, cwd: requestedCwd, prompt: requestedPrompt, model: requestedModel, hiddenModels: requestedHiddenModels, agent: requestedAgent } = data;
 
             if (!sessionId) {
                 socket.emit("session_error", { sessionId: sessionId ?? "", message: "Missing sessionId" });
@@ -602,6 +602,39 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 return;
             }
 
+            // Resolve agent definition from disk when only a name is provided.
+            // The UI sends { name: "researcher" } and the daemon resolves the
+            // full agent file content so the worker can apply it.
+            let resolvedAgent = requestedAgent;
+            if (resolvedAgent?.name && !resolvedAgent.systemPrompt) {
+                const content = readAgentContent(resolvedAgent.name);
+                if (content) {
+                    // Parse frontmatter to extract tools/disallowedTools, then use body as systemPrompt
+                    const fmEnd = content.startsWith("---") ? content.indexOf("\n---", 3) : -1;
+                    let body = content;
+                    let tools = resolvedAgent.tools;
+                    let disallowedTools = resolvedAgent.disallowedTools;
+                    if (fmEnd !== -1) {
+                        const fmBlock = content.slice(3, fmEnd);
+                        body = content.slice(fmEnd + 4).trim();
+                        // Extract tools from frontmatter if not explicitly provided
+                        if (!tools) {
+                            const toolsMatch = fmBlock.match(/^tools:\s*(.+)$/m);
+                            if (toolsMatch) tools = toolsMatch[1].trim().replace(/^["']|["']$/g, "");
+                        }
+                        if (!disallowedTools) {
+                            const dtMatch = fmBlock.match(/^disallowedTools:\s*(.+)$/m);
+                            if (dtMatch) disallowedTools = dtMatch[1].trim().replace(/^["']|["']$/g, "");
+                        }
+                    }
+                    resolvedAgent = { ...resolvedAgent, systemPrompt: body, tools, disallowedTools };
+                } else {
+                    console.warn(`pizzapi runner: agent "${resolvedAgent.name}" not found on disk`);
+                    socket.emit("session_error", { sessionId, message: `Agent "${resolvedAgent.name}" not found on this runner` });
+                    return;
+                }
+            }
+
             let isFirstSpawn = true;
             const doSpawn = () => {
                 try {
@@ -609,8 +642,8 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     // On restart (exit code 43), the session already has
                     // the prompt in its history — re-sending would duplicate it.
                     const spawnOpts = isFirstSpawn
-                        ? { prompt: requestedPrompt, model: requestedModel, hiddenModels: requestedHiddenModels }
-                        : { hiddenModels: requestedHiddenModels }; // Always pass hidden models on restart
+                        ? { prompt: requestedPrompt, model: requestedModel, hiddenModels: requestedHiddenModels, agent: resolvedAgent }
+                        : { hiddenModels: requestedHiddenModels, agent: resolvedAgent }; // Always pass agent + hidden models on restart
                     isFirstSpawn = false;
                     spawnSession(sessionId, apiKey!, requestedCwd, runningSessions, doSpawn, spawnOpts);
                     socket.emit("session_ready", { sessionId });
@@ -1036,7 +1069,11 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 const entries = await readdir(dirPath, { withFileTypes: true });
                 const items = await Promise.all(
                     entries
-                        .filter((e) => !e.name.startsWith(".") || e.name === ".gitignore" || e.name === ".env")
+                        .filter((e) => {
+                            // Show all dotfiles/dotfolders except .git (too noisy)
+                            if (e.name === ".git") return false;
+                            return true;
+                        })
                         .map(async (e) => {
                             const fullPath = join(dirPath, e.name);
                             let size: number | undefined;
@@ -1396,6 +1433,7 @@ function spawnSession(
         prompt?: string;
         model?: { provider: string; id: string };
         hiddenModels?: string[];
+        agent?: { name: string; systemPrompt?: string; tools?: string; disallowedTools?: string };
     },
 ): void {
     console.log(`pizzapi runner: spawning headless worker for session ${sessionId}…`);
@@ -1441,6 +1479,11 @@ function spawnSession(
         ...(options?.hiddenModels && options.hiddenModels.length > 0
             ? { PIZZAPI_HIDDEN_MODELS: JSON.stringify(options.hiddenModels) }
             : {}),
+        // Agent session config — spawn the worker "as" this agent.
+        ...(options?.agent?.name ? { PIZZAPI_WORKER_AGENT_NAME: options.agent.name } : {}),
+        ...(options?.agent?.systemPrompt ? { PIZZAPI_WORKER_AGENT_SYSTEM_PROMPT: options.agent.systemPrompt } : {}),
+        ...(options?.agent?.tools ? { PIZZAPI_WORKER_AGENT_TOOLS: options.agent.tools } : {}),
+        ...(options?.agent?.disallowedTools ? { PIZZAPI_WORKER_AGENT_DISALLOWED_TOOLS: options.agent.disallowedTools } : {}),
     };
 
     const child = spawn(process.execPath, workerArgs, {

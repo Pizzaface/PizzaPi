@@ -148,6 +148,13 @@ export interface RunnerServerToClientEvents {
     /** Model keys hidden by the user, format: "provider/modelId". The worker should
      *  filter these from list_models tool results. */
     hiddenModels?: string[];
+    /** Optional agent config — spawn the session "as" this agent. */
+    agent?: {
+      name: string;
+      systemPrompt?: string;
+      tools?: string;
+      disallowedTools?: string;
+    };
   }) => void;
 
   /** Instructs runner to kill a session */

@@ -2912,6 +2912,73 @@ export function App() {
     }
   }, [spawningSession, spawnRunnerId, spawnCwd, handleOpenSession, waitForSessionToGoLive]);
 
+  // ── Spawn a new session as a specific agent ─────────────────────────────
+  const handleSpawnAgentSession = React.useCallback(async (agent: {
+    name: string;
+    description?: string;
+    systemPrompt?: string;
+    tools?: string;
+    disallowedTools?: string;
+  }) => {
+    // Determine runner/cwd from the current active session
+    const sessionInfo = activeSessionId
+      ? liveSessions.find((s) => s.sessionId === activeSessionId)
+      : null;
+    const runnerId = sessionInfo?.runnerId;
+    const cwd = sessionInfo?.cwd;
+
+    if (!runnerId) {
+      setViewerStatus("No runner available — open a session first");
+      return;
+    }
+
+    setViewerStatus(`Spawning ${agent.name} agent session…`);
+
+    try {
+      const res = await fetch("/api/runners/spawn", {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          runnerId,
+          ...(cwd ? { cwd } : {}),
+          agent: {
+            name: agent.name,
+            ...(agent.systemPrompt ? { systemPrompt: agent.systemPrompt } : {}),
+            ...(agent.tools ? { tools: agent.tools } : {}),
+            ...(agent.disallowedTools ? { disallowedTools: agent.disallowedTools } : {}),
+          },
+        }),
+      });
+
+      const body = await res.json().catch(() => null) as any;
+      if (!res.ok) {
+        const msg = body && typeof body.error === "string" ? body.error : `Spawn failed (HTTP ${res.status})`;
+        setViewerStatus(msg);
+        return;
+      }
+
+      const sessionId = typeof body?.sessionId === "string" ? body.sessionId : null;
+      if (!sessionId) {
+        setViewerStatus("Spawn failed: missing sessionId");
+        return;
+      }
+
+      // Wait until the worker registers with the relay
+      const live = await waitForSessionToGoLive(sessionId, 30_000);
+      if (!live) {
+        setViewerStatus("Agent session is starting… (it will appear in the sidebar soon)");
+        return;
+      }
+
+      handleOpenSession(sessionId);
+      setViewerStatus("Connecting…");
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      setViewerStatus(`Agent spawn failed: ${detail}`);
+    }
+  }, [activeSessionId, liveSessions, handleOpenSession, waitForSessionToGoLive]);
+
   // Derive runner/cwd for the active session (used by File Explorer)
   const activeSessionInfo = React.useMemo(() => {
     if (!activeSessionId) return null;
@@ -3577,6 +3644,7 @@ export function App() {
                   runnerId={activeSessionInfo?.runnerId ?? undefined}
                   sessionCwd={activeSessionInfo?.cwd || undefined}
                   onAppendSystemMessage={appendLocalSystemMessage}
+                  onSpawnAgentSession={handleSpawnAgentSession}
                 />
               )}
             </div>

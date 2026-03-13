@@ -66,7 +66,7 @@ import { MultipleChoiceQuestions } from "@/components/ai-elements/multiple-choic
 import { PlanModePanel, type PlanModeAnswer } from "@/components/ai-elements/plan-mode";
 import { formatAnswersForAgent, type QuestionDisplayMode } from "@/lib/ask-user-questions";
 import { dismissNotificationsForSession } from "@/lib/push";
-import { AlertTriangleIcon, ArrowDownIcon, BookOpen, CheckCircle2, ChevronsUpDown, Circle, CircleDashed, Loader2, MessageSquare, OctagonX, PaperclipIcon, Plus, Puzzle, ShieldAlert, Zap, Clock, X, Trash2, TerminalIcon, DownloadIcon, XCircle, FolderTree } from "lucide-react";
+import { AlertTriangleIcon, ArrowDownIcon, BookOpen, Bot, CheckCircle2, ChevronsUpDown, Circle, CircleDashed, Loader2, MessageSquare, OctagonX, PaperclipIcon, Plus, Puzzle, ShieldAlert, Zap, Clock, X, Trash2, TerminalIcon, DownloadIcon, XCircle, FolderTree } from "lucide-react";
 import { AtMentionPopover } from "@/components/AtMentionPopover";
 import type { Entry as AtMentionEntry } from "@/hooks/useAtMentionFiles";
 import { McpToggleContext, type McpToggleHandler } from "@/components/session-viewer/McpToggleContext";
@@ -162,6 +162,8 @@ export interface SessionViewerProps {
   sessionCwd?: string;
   /** Append a local system message to the conversation (string or structured data for card rendering) */
   onAppendSystemMessage?: (content: string | CommandResultData) => void;
+  /** Spawn a new session configured as a specific agent */
+  onSpawnAgentSession?: (agent: { name: string; description?: string; systemPrompt?: string; tools?: string; disallowedTools?: string }) => void;
 }
 
 function formatTokenCount(n: number): string {
@@ -487,7 +489,7 @@ function SessionSkeleton() {
   );
 }
 
-export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, pendingPlan, pluginTrustPrompt, onPluginTrustResponse, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, isCompacting, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], planModeEnabled, runnerId, sessionCwd, onAppendSystemMessage }: SessionViewerProps) {
+export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, pendingPlan, pluginTrustPrompt, onPluginTrustResponse, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, isCompacting, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], planModeEnabled, runnerId, sessionCwd, onAppendSystemMessage, onSpawnAgentSession }: SessionViewerProps) {
   const [input, setInput] = React.useState("");
   const [composerError, setComposerError] = React.useState<string | null>(null);
   const [showClearDialog, setShowClearDialog] = React.useState(false);
@@ -522,6 +524,12 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
   const [atMentionHighlightedIndex, setAtMentionHighlightedIndex] = React.useState(0);
   const [atMentionHighlightedEntry, setAtMentionHighlightedEntry] = React.useState<AtMentionEntry | null>(null);
 
+  // @-mention agents — cached per runner so we don't re-fetch every time the popover opens
+  const [atMentionAgents, setAtMentionAgents] = React.useState<Array<{ name: string; description?: string }>>([]);
+  const atMentionAgentsFetchedForRef = React.useRef<string | null>(null);
+  // Track whether the highlighted @-mention item is an agent (entry will be null for agents)
+  const [atMentionHighlightedAgent, setAtMentionHighlightedAgent] = React.useState<string | null>(null);
+
   React.useEffect(() => {
     if (!sessionId) {
       setInput("");
@@ -554,7 +562,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
   // Commands from the CLI that the web UI already handles via executeSlashCommand.
   // These are excluded from the "CLI Commands" group to avoid duplicates.
   const webHandledCommands = React.useMemo(() => new Set([
-    "new", "resume", "mcp", "plugins", "skills", "model", "cycle_model",
+    "new", "resume", "mcp", "plugins", "skills", "agents", "model", "cycle_model",
     "effort", "cycle_effort", "compact", "name", "copy", "stop", "restart",
     "remote", "plan",
   ]), []);
@@ -702,6 +710,42 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
       return true;
     }
 
+    // /agents is handled via the dynamic agent picker (isAgentMode) in the
+    // command popover — selecting an agent from the list triggers onSpawnAgentSession.
+    // If the user types "/agents <name>" and hits Enter, we resolve it here.
+    if (rawCommand === "agents") {
+      if (args.trim()) {
+        // User typed "/agents researcher" — find and spawn that agent
+        const agentName = args.trim();
+        if (onSpawnAgentSession && runnerId) {
+          // Capture sessionId at dispatch time to discard stale responses
+          // when the user switches sessions while the fetch is in-flight.
+          const dispatchSessionId = sessionId;
+          fetch(`/api/runners/${encodeURIComponent(runnerId)}/agents`, { credentials: "include" })
+            .then((res) => res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))
+            .then((data: any) => {
+              if (dispatchSessionId !== sessionIdRef.current) return; // session changed, discard
+              const agents: Array<{ name: string; description?: string; content?: string }> = Array.isArray(data?.agents) ? data.agents : [];
+              const match = agents.find(a => a.name.toLowerCase() === agentName.toLowerCase());
+              if (match) {
+                onSpawnAgentSession({ name: match.name, description: match.description, systemPrompt: match.content });
+              } else {
+                onAppendSystemMessage?.(`**Agents** — Agent "${agentName}" not found.`);
+              }
+            })
+            .catch((err: Error) => {
+              if (dispatchSessionId !== sessionIdRef.current) return;
+              onAppendSystemMessage?.(`**Agents** — Failed to load: ${err.message}`);
+            });
+        }
+      }
+      // Without args, the popover handles it (isAgentMode)
+      setInput("");
+      setCommandOpen(false);
+      setCommandQuery("");
+      return true;
+    }
+
     if (!onExec) return false;
 
     if (rawCommand === "mcp") {
@@ -816,7 +860,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     }
 
     return false;
-  }, [onExec, onSendInput, resumeSessions, runnerId, onAppendSystemMessage, skillCommands, sessionCwd, onShowModelSelector, isCompacting, sessionId]);
+  }, [onExec, onSendInput, resumeSessions, runnerId, onAppendSystemMessage, skillCommands, sessionCwd, onShowModelSelector, isCompacting, sessionId, onSpawnAgentSession]);
 
   const handleSubmit = React.useCallback(
     (message: PromptInputMessage) => {
@@ -867,6 +911,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
       ]},
       { name: "plugins", description: "Show loaded plugins" },
       { name: "skills", description: "Show available skills" },
+      { name: "agents", description: "Start a new session as an agent" },
       { name: "model", description: "Select model" },
       { name: "cycle_model", description: "Select model" },
       { name: "effort", description: "Cycle reasoning effort level" },
@@ -894,7 +939,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
   // Commands that keep the popover open after a space (for argument/sub-command UI).
   // Derived from commands with subCommands, plus "resume" which has its own picker.
   const keepPopoverOpenNames = React.useMemo(() => {
-    const names = new Set(["resume"]);
+    const names = new Set(["resume", "agents"]);
     for (const c of supportedWebCommands) {
       if (c.subCommands && c.subCommands.length > 0) names.add(c.name.toLowerCase());
     }
@@ -1004,10 +1049,64 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     setAtMentionTriggerOffset(0);
     setAtMentionHighlightedIndex(0);
     setAtMentionHighlightedEntry(null);
+    setAtMentionHighlightedAgent(null);
   }, []);
+
+  // @-mention agent selection: insert @agent_name into text at trigger position
+  const handleAtMentionSelectAgent = React.useCallback((agentName: string) => {
+    const textarea = document.querySelector<HTMLTextAreaElement>("[data-pp-prompt]");
+    if (!textarea) return;
+
+    const cursorPosition = textarea.selectionStart;
+    const value = input;
+
+    // Replace from trigger offset to cursor position with @agent_name (trailing space)
+    const newValue = value.slice(0, atMentionTriggerOffset) + "@" + agentName + " " + value.slice(cursorPosition);
+    setInput(newValue);
+
+    // Position cursor after the inserted text
+    const newCursorPosition = atMentionTriggerOffset + 1 + agentName.length + 1; // @ + name + space
+    requestAnimationFrame(() => {
+      textarea.setSelectionRange(newCursorPosition, newCursorPosition);
+      textarea.focus();
+    });
+
+    // Reset @-mention state
+    setAtMentionOpen(false);
+    setAtMentionQuery("");
+    setAtMentionPath("");
+    setAtMentionTriggerOffset(0);
+    setAtMentionHighlightedIndex(0);
+  }, [input, atMentionTriggerOffset]);
+
+  // Fetch agents when the @-mention popover opens (cached per runner)
+  React.useEffect(() => {
+    if (!atMentionOpen || !runnerId) return;
+    if (atMentionAgentsFetchedForRef.current === runnerId) return;
+    atMentionAgentsFetchedForRef.current = runnerId;
+    let stale = false;
+    fetch(`/api/runners/${encodeURIComponent(runnerId)}/agents`, { credentials: "include" })
+      .then((res) => res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))
+      .then((data: any) => {
+        if (stale) return;
+        const agents: Array<{ name: string; description?: string }> = Array.isArray(data?.agents)
+          ? data.agents.map((a: any) => ({ name: a.name, description: a.description }))
+          : [];
+        setAtMentionAgents(agents);
+      })
+      .catch(() => {
+        if (!stale) {
+          // Clear the fetched marker so a subsequent popover open will retry
+          atMentionAgentsFetchedForRef.current = null;
+          setAtMentionAgents([]);
+        }
+      });
+    return () => { stale = true; };
+  }, [atMentionOpen, runnerId]);
 
   const trimmedInput = input.trimStart();
   const isResumeMode = /^\/resume(?:\s|$)/i.test(trimmedInput);
+  const isAgentMode = /^\/agents(?:\s|$)/i.test(trimmedInput);
   const resumeQuery = isResumeMode ? trimmedInput.replace(/^\/resume\s*/i, "").trim().toLowerCase() : "";
   const resumeCandidates = React.useMemo(() => {
     const list = resumeSessions ?? [];
@@ -1026,6 +1125,51 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     });
   }, [resumeSessions, resumeQuery]);
 
+  // ── Agent mode state ────────────────────────────────────────────────────
+  const agentQuery = isAgentMode ? trimmedInput.replace(/^\/agents\s*/i, "").trim().toLowerCase() : "";
+  const [agentsList, setAgentsList] = React.useState<Array<{ name: string; description?: string; content?: string }>>([]);
+  const [agentsLoading, setAgentsLoading] = React.useState(false);
+  const agentsRequestedRef = React.useRef<string | null>(null);
+
+  const agentCandidates = React.useMemo(() => {
+    if (!agentQuery) return agentsList;
+    return agentsList.filter((a) => {
+      const name = a.name.toLowerCase();
+      const desc = (a.description ?? "").toLowerCase();
+      return name.includes(agentQuery) || desc.includes(agentQuery);
+    });
+  }, [agentsList, agentQuery]);
+
+  // Fetch agents when agent mode activates
+  React.useEffect(() => {
+    if (!sessionId || !commandOpen || !isAgentMode || !runnerId) return;
+    const requestKey = `${sessionId}-${runnerId}`;
+    if (agentsRequestedRef.current === requestKey) return;
+    agentsRequestedRef.current = requestKey;
+    let stale = false;
+    setAgentsLoading(true);
+    fetch(`/api/runners/${encodeURIComponent(runnerId)}/agents`, { credentials: "include" })
+      .then((res) => res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))
+      .then((data: any) => {
+        if (stale) return; // session/runner changed while fetch was in-flight
+        const agents: Array<{ name: string; description?: string; content?: string }> = Array.isArray(data?.agents) ? data.agents : [];
+        setAgentsList(agents);
+      })
+      .catch(() => {
+        if (stale) return;
+        setAgentsList([]);
+      })
+      .finally(() => { if (!stale) setAgentsLoading(false); });
+    return () => { stale = true; };
+  }, [sessionId, commandOpen, isAgentMode, runnerId]);
+
+  // Reset agent request ref when agent mode closes
+  React.useEffect(() => {
+    if (!commandOpen || !isAgentMode) {
+      agentsRequestedRef.current = null;
+    }
+  }, [commandOpen, isAgentMode]);
+
   // Sub-command mode: detect when the user has typed a command that has sub-commands
   // e.g. "/mcp " or "/mcp rel" → show sub-command options
   const subCommandMode = React.useMemo<{
@@ -1035,7 +1179,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     query: string;
     filtered: Array<{ name: string; description: string; requiresArg?: boolean }>;
   }>(() => {
-    if (isResumeMode) return { active: false, parentCommand: "", subCommands: [], query: "", filtered: [] };
+    if (isResumeMode || isAgentMode) return { active: false, parentCommand: "", subCommands: [], query: "", filtered: [] };
     const match = trimmedInput.match(/^\/(\S+)(?:\s(.*))?$/i);
     if (!match) return { active: false, parentCommand: "", subCommands: [], query: "", filtered: [] };
     const cmdName = match[1]!.toLowerCase();
@@ -1046,7 +1190,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
       ? cmd.subCommands.filter(sc => sc.name.toLowerCase().includes(argText))
       : cmd.subCommands;
     return { active: true, parentCommand: cmd.name, subCommands: cmd.subCommands, query: argText, filtered };
-  }, [trimmedInput, isResumeMode, supportedWebCommands]);
+  }, [trimmedInput, isResumeMode, isAgentMode, supportedWebCommands]);
 
   // Controlled value for cmdk Command (drives data-selected highlighting)
   const commandHighlightedValue = React.useMemo(() => {
@@ -1054,12 +1198,15 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     if (isResumeMode) {
       return resumeCandidates[commandHighlightedIndex]?.path ?? "";
     }
+    if (isAgentMode) {
+      return agentCandidates[commandHighlightedIndex]?.name ?? "";
+    }
     if (subCommandMode.active) {
       return subCommandMode.filtered[commandHighlightedIndex]?.name ?? "";
     }
     const combined = [...commandSuggestions, ...extensionSuggestions, ...promptSuggestions, ...skillSuggestions];
     return combined[commandHighlightedIndex]?.name ?? "";
-  }, [commandOpen, isResumeMode, subCommandMode, resumeCandidates, commandSuggestions, extensionSuggestions, promptSuggestions, skillSuggestions, commandHighlightedIndex]);
+  }, [commandOpen, isResumeMode, isAgentMode, subCommandMode, resumeCandidates, agentCandidates, commandSuggestions, extensionSuggestions, promptSuggestions, skillSuggestions, commandHighlightedIndex]);
 
   const resumeRequestedRef = React.useRef<string | null>(null);
   const compactingRef = React.useRef(false);
@@ -1660,6 +1807,9 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                 if (isResumeMode) {
                   const idx = resumeCandidates.findIndex(s => s.path.toLowerCase() === v.toLowerCase());
                   if (idx !== -1) setCommandHighlightedIndex(idx);
+                } else if (isAgentMode) {
+                  const idx = agentCandidates.findIndex(a => a.name.toLowerCase() === v.toLowerCase());
+                  if (idx !== -1) setCommandHighlightedIndex(idx);
                 } else if (subCommandMode.active) {
                   const idx = subCommandMode.filtered.findIndex(sc => sc.name.toLowerCase() === v.toLowerCase());
                   if (idx !== -1) setCommandHighlightedIndex(idx);
@@ -1673,7 +1823,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
               {/* Close button header */}
               <div className="flex items-center justify-between px-3 py-1.5 border-b border-border/50">
                 <span className="text-xs text-muted-foreground font-medium">
-                  {isResumeMode ? "Resume session" : subCommandMode.active ? `/${subCommandMode.parentCommand}` : "Commands"}
+                  {isResumeMode ? "Resume session" : isAgentMode ? "Start as agent" : subCommandMode.active ? `/${subCommandMode.parentCommand}` : "Commands"}
                 </span>
                 <button
                   type="button"
@@ -1718,6 +1868,42 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                             >
                               {formatPathTail(session.path, 2)}
                             </span>
+                          </div>
+                        </CommandItem>
+                      ))}
+                    </CommandGroup>
+                  </>
+                ) : isAgentMode ? (
+                  <>
+                    <CommandEmpty>{agentsLoading ? "Loading agents…" : "No agents found"}</CommandEmpty>
+                    <CommandGroup heading="Start new session as agent">
+                      {agentCandidates.map((agent) => (
+                        <CommandItem
+                          key={agent.name}
+                          value={agent.name}
+                          onSelect={() => {
+                            if (onSpawnAgentSession) {
+                              onSpawnAgentSession({
+                                name: agent.name,
+                                description: agent.description,
+                                systemPrompt: agent.content,
+                              });
+                            }
+                            setInput("");
+                            setCommandQuery("");
+                            setCommandOpen(false);
+                          }}
+                        >
+                          <div className="flex min-w-0 flex-col gap-0.5">
+                            <div className="flex items-center gap-2 min-w-0">
+                              <Bot className="size-3.5 shrink-0 text-primary/60" />
+                              <span className="font-mono text-sm truncate">{agent.name}</span>
+                            </div>
+                            {agent.description && (
+                              <span className="text-[11px] text-muted-foreground truncate">
+                                {agent.description}
+                              </span>
+                            )}
                           </div>
                         </CommandItem>
                       ))}
@@ -1876,7 +2062,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
           </div>
         )}
 
-        {/* @-mention file autocomplete popover */}
+        {/* @-mention autocomplete popover (agents + files) */}
         {sessionId && runnerId && atMentionOpen && (
           <div className="mb-2">
             <AtMentionPopover
@@ -1892,6 +2078,9 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
               highlightedIndex={atMentionHighlightedIndex}
               onHighlightedIndexChange={setAtMentionHighlightedIndex}
               onHighlightedEntryChange={setAtMentionHighlightedEntry}
+              agents={atMentionAgents}
+              onSelectAgent={handleAtMentionSelectAgent}
+              onHighlightedAgentChange={setAtMentionHighlightedAgent}
             />
           </div>
         )}
@@ -2036,12 +2225,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                   if (atMentionOpen && event.key === "Escape") {
                     event.preventDefault();
                     event.stopPropagation();
-                    setAtMentionOpen(false);
-                    setAtMentionQuery("");
-                    setAtMentionPath("");
-                    setAtMentionTriggerOffset(0);
-                    setAtMentionHighlightedIndex(0);
-                    setAtMentionHighlightedEntry(null);
+                    handleAtMentionClose();
                     return;
                   }
 
@@ -2054,18 +2238,28 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                     return;
                   }
 
-                  // Enter selects highlighted file when @-mention is open
-                  if (atMentionOpen && event.key === "Enter" && !event.shiftKey && atMentionHighlightedEntry) {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    if (atMentionHighlightedEntry.isDirectory) {
-                      const newPath = atMentionPath ? `${atMentionPath}${atMentionHighlightedEntry.name}/` : `${atMentionHighlightedEntry.name}/`;
-                      handleAtMentionDrillInto(newPath);
-                    } else {
-                      const relativePath = atMentionPath ? `${atMentionPath}${atMentionHighlightedEntry.name}` : atMentionHighlightedEntry.name;
-                      handleAtMentionSelectFile(relativePath);
+                  // Enter selects highlighted item when @-mention is open
+                  if (atMentionOpen && event.key === "Enter" && !event.shiftKey) {
+                    // Agent highlighted
+                    if (atMentionHighlightedAgent) {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      handleAtMentionSelectAgent(atMentionHighlightedAgent);
+                      return;
                     }
-                    return;
+                    // File/folder highlighted
+                    if (atMentionHighlightedEntry) {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      if (atMentionHighlightedEntry.isDirectory) {
+                        const newPath = atMentionPath ? `${atMentionPath}${atMentionHighlightedEntry.name}/` : `${atMentionHighlightedEntry.name}/`;
+                        handleAtMentionDrillInto(newPath);
+                      } else {
+                        const relativePath = atMentionPath ? `${atMentionPath}${atMentionHighlightedEntry.name}` : atMentionHighlightedEntry.name;
+                        handleAtMentionSelectFile(relativePath);
+                      }
+                      return;
+                    }
                   }
 
 
@@ -2086,9 +2280,11 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                       event.preventDefault();
                       const totalItems = isResumeMode
                         ? resumeCandidates.length
-                        : subCommandMode.active
-                          ? subCommandMode.filtered.length
-                          : commandSuggestions.length + extensionSuggestions.length + promptSuggestions.length + skillSuggestions.length;
+                        : isAgentMode
+                          ? agentCandidates.length
+                          : subCommandMode.active
+                            ? subCommandMode.filtered.length
+                            : commandSuggestions.length + extensionSuggestions.length + promptSuggestions.length + skillSuggestions.length;
                       if (totalItems === 0) return;
                       setCommandHighlightedIndex(prev => {
                         if (event.key === "ArrowDown") {
@@ -2139,6 +2335,21 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                           setCommandHighlightedIndex(0);
                           return;
                         }
+                      } else if (isAgentMode) {
+                        const highlighted = agentCandidates[commandHighlightedIndex];
+                        if (highlighted && onSpawnAgentSession) {
+                          event.preventDefault();
+                          onSpawnAgentSession({
+                            name: highlighted.name,
+                            description: highlighted.description,
+                            systemPrompt: highlighted.content,
+                          });
+                          setInput("");
+                          setCommandQuery("");
+                          setCommandOpen(false);
+                          setCommandHighlightedIndex(0);
+                          return;
+                        }
                       } else {
                         const combined = [...commandSuggestions, ...extensionSuggestions, ...promptSuggestions, ...skillSuggestions];
                         const highlighted = combined[commandHighlightedIndex];
@@ -2160,6 +2371,26 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                         }
                       }
                       // No highlighted match — fall through to execute the typed command
+                    }
+
+                    // Tab in agent mode: autocomplete the highlighted agent name into the text box
+                    if (event.key === "Tab" && isAgentMode && agentCandidates.length > 0) {
+                      event.preventDefault();
+                      const highlighted = agentCandidates[commandHighlightedIndex] ?? agentCandidates[0];
+                      if (highlighted) {
+                        setInput(`/agents ${highlighted.name}`);
+                        setCommandQuery("");
+                        setCommandHighlightedIndex(0);
+                        requestAnimationFrame(() => {
+                          const textarea = document.querySelector<HTMLTextAreaElement>("[data-pp-prompt]");
+                          if (textarea) {
+                            const len = textarea.value.length;
+                            textarea.setSelectionRange(len, len);
+                            textarea.focus();
+                          }
+                        });
+                      }
+                      return;
                     }
 
                     // Tab in sub-command mode: autocomplete the highlighted sub-command into the text box
