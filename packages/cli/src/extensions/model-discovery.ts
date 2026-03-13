@@ -176,7 +176,7 @@ export const modelDiscoveryExtension: ExtensionFactory = (pi) => {
         // static Authorization header so the OpenAI-compatible layer works.
         const zaiKey = process.env.ZAI_API_KEY;
         if (zaiKey) {
-            const zaiBaseUrl = "https://open.bigmodel.cn/api/paas";
+            const zaiBaseUrl = "https://api.z.ai/api/paas";
             let zaiModels: DiscoveredModel[];
             if (cache?.providers["zai"]) {
                 zaiModels = cache.providers["zai"];

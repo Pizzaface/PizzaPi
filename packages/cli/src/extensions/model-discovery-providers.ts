@@ -58,6 +58,7 @@ export async function fetchZAIModels(baseUrl: string, apiKey: string): Promise<D
     try {
         const token = await zaiJwtToken(apiKey);
         const url = baseUrl.endsWith("/v4") ? `${baseUrl}/models` : `${baseUrl}/v4/models`;
+        // z.ai uses same JWT auth and endpoint structure as Zhipu
         const res = await fetch(url, {
             headers: { Authorization: `Bearer ${token}` },
             signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
