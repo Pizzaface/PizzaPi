@@ -14,6 +14,7 @@ import { spawnSessionExtension } from "./spawn-session.js";
 import { updateTodoExtension } from "./update-todo.js";
 import { subagentExtension } from "./subagent.js";
 import { planModeToggleExtension } from "./plan-mode-toggle.js";
+import { sandboxEventsExtension } from "./sandbox-events.js";
 import { initialPromptExtension } from "./initial-prompt.js";
 
 const CORE_EXTENSIONS: ExtensionFactory[] = [
@@ -26,6 +27,7 @@ const CORE_EXTENSIONS: ExtensionFactory[] = [
     sessionMessagingExtension,
     subagentExtension,
     planModeToggleExtension,
+    sandboxEventsExtension,
 ];
 
 /**
