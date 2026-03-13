@@ -1094,7 +1094,13 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
           : [];
         setAtMentionAgents(agents);
       })
-      .catch(() => { if (!stale) setAtMentionAgents([]); });
+      .catch(() => {
+        if (!stale) {
+          // Clear the fetched marker so a subsequent popover open will retry
+          atMentionAgentsFetchedForRef.current = null;
+          setAtMentionAgents([]);
+        }
+      });
     return () => { stale = true; };
   }, [atMentionOpen, runnerId]);
 
