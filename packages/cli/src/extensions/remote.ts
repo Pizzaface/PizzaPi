@@ -11,6 +11,8 @@ import { getCurrentTodoList, setTodoUpdateCallback, type TodoItem } from "./upda
 import { isPlanModeEnabled, isExecutionMode, getPlanTodoItems, setPlanModeChangeCallback, togglePlanModeFromRemote, setPlanModeFromRemote, requestContextClear } from "./plan-mode-toggle.js";
 import type { RemoteExecRequest, RemoteExecResponse } from "./remote-commands.js";
 import { messageBus } from "./session-message-bus.js";
+import { renderTrigger } from "./triggers/registry.js";
+import { trackReceivedTrigger } from "./triggers/extension.js";
 import { io, type Socket } from "socket.io-client";
 import type { RelayClientToServerEvents, RelayServerToClientEvents } from "@pizzapi/protocol";
 
@@ -114,6 +116,15 @@ export function forwardCliError(message: string, source?: string): void {
     _cliErrorForwarder?.(message, source);
 }
 
+// ── Relay socket access for trigger system ────────────────────────────────────
+let _relaySocket: Socket<RelayServerToClientEvents, RelayClientToServerEvents> | null = null;
+let _relayToken: string | null = null;
+
+/** Get the active relay socket and token, or null if not connected. */
+export function getRelaySocket(): { socket: Socket<RelayServerToClientEvents, RelayClientToServerEvents>; token: string } | null {
+    return _relaySocket?.connected ? { socket: _relaySocket, token: _relayToken ?? "" } : null;
+}
+
 /**
  * PizzaPi Remote extension.
  *
@@ -144,6 +155,10 @@ export const remoteExtension: ExtensionFactory = (pi) => {
     let relaySessionId: string = (process.env.PIZZAPI_SESSION_ID && process.env.PIZZAPI_SESSION_ID.trim().length > 0)
         ? process.env.PIZZAPI_SESSION_ID.trim()
         : randomUUID();
+
+    // ── Child session detection for trigger system ────────────────────────
+    const parentSessionId = process.env.PIZZAPI_WORKER_PARENT_SESSION_ID ?? null;
+    const isChildSession = parentSessionId !== null;
 
     // ── Direct relay status text ──────────────────────────────────────────────
     // Maintained alongside ctx.ui.setStatus() so the custom footer can read it
@@ -1842,6 +1857,9 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 seq: 0,
                 ackedSeq: 0,
             };
+            // Expose relay socket for the trigger system
+            _relaySocket = sock;
+            _relayToken = data.token;
             connectFailureNotified = false;
             setRelayStatus("Connected to Relay");
 
@@ -1917,6 +1935,20 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 message: data.message,
                 ts: typeof data.ts === "string" ? data.ts : new Date().toISOString(),
             });
+        });
+
+        // ── session_trigger — receive triggers from child sessions ─────────
+        sock.on("session_trigger" as any, (data: { trigger: import("./triggers/types.js").ConversationTrigger }) => {
+            const trigger = data?.trigger;
+            if (!trigger) return;
+
+            // Track the trigger for response routing (used by respond_to_trigger tool)
+            trackReceivedTrigger(trigger.triggerId, trigger.sourceSessionId, trigger.type);
+
+            // Render trigger to text with trigger ID metadata prefix
+            const rendered = renderTrigger(trigger);
+            const deliverAs = trigger.deliverAs === "followUp" ? "followUp" as const : "steer" as const;
+            pi.sendUserMessage(rendered, { deliverAs });
         });
 
         sock.on("session_expired", (data) => {
@@ -2135,6 +2167,64 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                         answer: null,
                         source: null,
                         cancelled: true,
+                    } satisfies AskUserQuestionDetails,
+                };
+            }
+
+            // ── Child session: fire trigger to parent instead of waiting for web/TUI ──
+            if (isChildSession && parentSessionId && sioSocket?.connected) {
+                const triggerId = randomUUID();
+                const trigger: import("./triggers/types.js").ConversationTrigger = {
+                    type: "ask_user_question",
+                    sourceSessionId: relaySessionId,
+                    sourceSessionName: latestCtx?.sessionManager.getSessionName() ?? relaySessionId.slice(0, 8),
+                    targetSessionId: parentSessionId,
+                    payload: {
+                        question: questions.map(q => q.question).join("; "),
+                        options: questions.flatMap(q => q.options),
+                        questions,
+                    },
+                    deliverAs: "followUp",
+                    expectsResponse: true,
+                    triggerId,
+                    timeoutMs: 300_000,
+                    ts: new Date().toISOString(),
+                };
+
+                sioSocket.emit("session_trigger", { token: relay!.token, trigger });
+
+                // Wait for trigger_response with matching triggerId
+                const response = await new Promise<string>((resolve, reject) => {
+                    const timeout = setTimeout(() => {
+                        cleanup();
+                        resolve("Trigger timed out — no response from parent within 5 minutes.");
+                    }, trigger.timeoutMs ?? 300_000);
+
+                    const handler = (data: { triggerId: string; response: string }) => {
+                        if (data.triggerId === triggerId) {
+                            cleanup();
+                            resolve(data.response);
+                        }
+                    };
+
+                    const cleanup = () => {
+                        clearTimeout(timeout);
+                        sioSocket?.off("trigger_response" as any, handler);
+                    };
+
+                    sioSocket!.on("trigger_response" as any, handler);
+                    signal?.addEventListener("abort", () => { cleanup(); reject(new Error("Aborted")); });
+                });
+
+                return {
+                    content: [{ type: "text", text: response }],
+                    details: {
+                        questions,
+                        display,
+                        answers: null,
+                        answer: response,
+                        source: "parent_trigger" as any,
+                        cancelled: false,
                     } satisfies AskUserQuestionDetails,
                 };
             }
