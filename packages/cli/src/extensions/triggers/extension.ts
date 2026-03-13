@@ -25,6 +25,29 @@ export const triggersExtension: ExtensionFactory = (pi) => {
     const parentSessionId = process.env.PIZZAPI_WORKER_PARENT_SESSION_ID ?? null;
     const ownSessionId = process.env.PIZZAPI_SESSION_ID ?? null;
 
+    // ── Fire session_complete trigger on child exit ────────────────────────
+    if (parentSessionId) {
+        pi.on("session_shutdown", () => {
+            const conn = getRelaySocket();
+            if (!conn) return;
+            conn.socket.emit("session_trigger" as any, {
+                token: conn.token,
+                trigger: {
+                    type: "session_complete",
+                    sourceSessionId: ownSessionId ?? "",
+                    sourceSessionName: undefined,
+                    targetSessionId: parentSessionId,
+                    payload: { summary: "Session completed", exitCode: 0 },
+                    deliverAs: "followUp" as const,
+                    expectsResponse: true,
+                    triggerId: crypto.randomUUID(),
+                    timeoutMs: 300_000,
+                    ts: new Date().toISOString(),
+                },
+            });
+        });
+    }
+
     // ── tell_child ────────────────────────────────────────────────────────
     pi.registerTool({
         name: "tell_child",
