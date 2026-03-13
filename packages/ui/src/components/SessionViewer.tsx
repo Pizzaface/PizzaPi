@@ -854,7 +854,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     }
 
     return false;
-  }, [onExec, onSendInput, resumeSessions, runnerId, onAppendSystemMessage, skillCommands, sessionCwd, onShowModelSelector, isCompacting, sessionId]);
+  }, [onExec, onSendInput, resumeSessions, runnerId, onAppendSystemMessage, skillCommands, sessionCwd, onShowModelSelector, isCompacting, sessionId, onSpawnAgentSession]);
 
   const handleSubmit = React.useCallback(
     (message: PromptInputMessage) => {

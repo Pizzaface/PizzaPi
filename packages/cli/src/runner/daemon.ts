@@ -630,6 +630,8 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     resolvedAgent = { ...resolvedAgent, systemPrompt: body, tools, disallowedTools };
                 } else {
                     console.warn(`pizzapi runner: agent "${resolvedAgent.name}" not found on disk`);
+                    socket.emit("session_error", { sessionId, message: `Agent "${resolvedAgent.name}" not found on this runner` });
+                    return;
                 }
             }
 
