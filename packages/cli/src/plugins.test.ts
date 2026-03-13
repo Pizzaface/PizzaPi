@@ -775,6 +775,28 @@ describe("scanPluginsDir", () => {
         const missingDir = join(fixtureDir, "definitely-does-not-exist-" + Date.now());
         expect(scanPluginsDir(missingDir)).toEqual([]);
     });
+
+    test("a malformed plugin does not break discovery of other plugins", () => {
+        const scanDir = join(fixtureDir, "malformed-test");
+        mkdirSync(scanDir, { recursive: true });
+
+        // Create a good plugin
+        const goodDir = join(scanDir, "good-plugin");
+        mkdirSync(join(goodDir, "commands"), { recursive: true });
+        writeFileSync(join(goodDir, "commands", "hello.md"), "---\ndescription: Hello\n---\nHi", "utf-8");
+
+        // Create a broken plugin with invalid JSON manifest
+        const brokenDir = join(scanDir, "broken-plugin");
+        mkdirSync(join(brokenDir, "commands"), { recursive: true });
+        writeFileSync(join(brokenDir, "plugin.json"), "NOT VALID JSON {{{", "utf-8");
+        writeFileSync(join(brokenDir, "commands", "cmd.md"), "---\ndescription: Cmd\n---\nBody", "utf-8");
+
+        const plugins = scanPluginsDir(scanDir);
+        // Both should load — broken JSON is caught per-file, plugin still parses
+        const good = plugins.find(p => p.name === "good-plugin");
+        expect(good).toBeDefined();
+        expect(good!.commands).toHaveLength(1);
+    });
 });
 
 // ── toPluginInfo ──────────────────────────────────────────────────────────────

@@ -401,8 +401,12 @@ Run \`pizza <command> --help\` for command-specific help.
     const agentFiles: Array<{ path: string; content: string }> = [];
     const agentsMdPath = join(cwd, "AGENTS.md");
     if (existsSync(agentsMdPath)) {
-        const content = await readFile(agentsMdPath, "utf-8");
-        agentFiles.push({ path: agentsMdPath, content });
+        try {
+            const content = await readFile(agentsMdPath, "utf-8");
+            agentFiles.push({ path: agentsMdPath, content });
+        } catch (err) {
+            console.warn(`Warning: skipping unreadable ${agentsMdPath}: ${err instanceof Error ? err.message : String(err)}`);
+        }
     }
 
     // Load .agents/*.md files from cwd
@@ -410,13 +414,18 @@ Run \`pizza <command> --help\` for command-specific help.
     if (existsSync(dotAgentsDir)) {
         const files = await readdir(dotAgentsDir);
         const mdFiles = files.filter((file) => file.endsWith(".md"));
-        const loadedAgents = await Promise.all(
+        const loadedAgents = (await Promise.all(
             mdFiles.map(async (file) => {
                 const filePath = join(dotAgentsDir, file);
-                const content = await readFile(filePath, "utf-8");
-                return { path: filePath, content };
+                try {
+                    const content = await readFile(filePath, "utf-8");
+                    return { path: filePath, content };
+                } catch (err) {
+                    console.warn(`Warning: skipping unreadable agent file ${filePath}: ${err instanceof Error ? err.message : String(err)}`);
+                    return null;
+                }
             })
-        );
+        )).filter((f): f is { path: string; content: string } => f !== null);
         agentFiles.push(...loadedAgents);
     }
 

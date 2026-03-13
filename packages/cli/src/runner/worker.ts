@@ -67,7 +67,11 @@ async function main(): Promise<void> {
         for (const file of readdirSync(dotAgentsDir)) {
             if (file.endsWith(".md")) {
                 const filePath = join(dotAgentsDir, file);
-                agentFiles.push({ path: filePath, content: readFileSync(filePath, "utf-8") });
+                try {
+                    agentFiles.push({ path: filePath, content: readFileSync(filePath, "utf-8") });
+                } catch (err) {
+                    console.warn(`pizzapi worker: skipping unreadable agent file ${filePath}: ${err instanceof Error ? err.message : String(err)}`);
+                }
             }
         }
     }
