@@ -317,6 +317,7 @@ export async function registerTuiSession(
         runnerId,
         runnerName,
         seq: 0,
+        parentSessionId: null,
     };
 
     await setSession(sessionId, sessionData);
