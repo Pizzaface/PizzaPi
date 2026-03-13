@@ -178,7 +178,7 @@ The `parseResponse` for `session_complete` determines whether the parent is ackn
 | "Also fix the linting" / "Go back and add tests" | Follow-up → steer to child, child resumes |
 | (any substantive instruction) | Follow-up → steer to child |
 
-Heuristic: if the response is ≤ 3 words and matches common ack phrases, it's an acknowledgment. Otherwise, it's a follow-up instruction.
+Heuristic: if the response is ≤ 3 words and matches common ack phrases (`looks good`, `done`, `ack`, `acknowledged`, `lgtm`, `ok`, `approved`, `ship it`), it's an acknowledgment. Otherwise, it's a follow-up instruction. This is intentionally simple and may misparse edge cases — recoverable since a mis-acknowledged child just closes early (can be re-spawned) and a mis-followed-up child just gets an extra instruction.
 
 ### Routing Flow
 
@@ -234,10 +234,10 @@ Heuristic: if the response is ≤ 3 words and matches common ack phrases, it's a
 }
 ```
 
-2. Daemon fires a new `escalate` trigger targeting the human viewer (delivered via the web UI's existing input mechanism).
+2. Daemon fires a new `escalate` trigger targeting the human viewer (delivered via the web UI's existing input mechanism). The escalation trigger **inherits the original `triggerId`** so the daemon can correlate the human's response back to the original child.
 3. The `escalate` trigger includes the original trigger's payload plus the parent's added context.
 4. Human viewer sees the question in the web UI with an escalation card and can respond directly.
-5. Response routes back through the daemon to the original child.
+5. Response routes back through the daemon to the original child using the inherited `triggerId` for correlation.
 
 ---
 
@@ -377,7 +377,7 @@ Trigger-injected messages render as distinct cards in the parent's conversation:
 The human viewer on a parent session can:
 
 - See all pending child triggers in the trigger card UI
-- Respond directly via a "Respond" button on each trigger card, which sends the response through the same daemon routing path as the agent's `respond_to_trigger` tool. The daemon distinguishes human responses because they arrive via the viewer socket (not the TUI/agent socket).
+- Respond directly via a "Respond" button on each trigger card, which sends the response through the same daemon routing path as the agent's `respond_to_trigger` tool. The daemon distinguishes human responses because they arrive via the viewer socket (not the TUI/agent socket). When the human responds first, the `pendingTriggers` entry is consumed — if the parent agent later calls `respond_to_trigger` with the same `triggerId`, it receives an error: *"Trigger already responded to (by human)."*
 - Steer any child directly by navigating to the child session and using the normal input mechanism
 
 ---
@@ -433,7 +433,7 @@ Update `AGENTS.md` spawning sub-agents section:
 - **`subagent` tool changes** — stays as-is for in-process lightweight tasks
 - **Multi-level nesting** — grandparent chains work implicitly (child's parent is just another session that may itself have a parent), but we don't optimize for deep chains in V1
 - **Cross-user session linking** — parent and child must belong to the same user
-- **Trigger persistence** — triggers are ephemeral (in-memory at daemon level). Redis stores relationships, not trigger history
+- **Trigger persistence** — triggers are ephemeral (in-memory at daemon level). Redis stores relationships, not trigger history. Daemon restart = all pending triggers lost; children with pending `expectsResponse` triggers will receive timeout notifications when their timeout expires.
 - **Cross-runner trigger routing** — deferred to V2; V1 is same-runner only
 - **Custom trigger registration API** — deferred to V2; V1 uses hardcoded built-in triggers
 - **`turn_complete` trigger** — deferred to V2 as opt-in (too noisy for default in V1)
