@@ -86,10 +86,19 @@ export const initialPromptExtension: ExtensionFactory = (pi) => {
         // Both can be specified: allowlist is applied first, then denylist filters the result.
         if (agentTools) {
             try {
-                const allowed = agentTools.split(",").map(t => t.trim()).filter(Boolean);
+                const requested = agentTools.split(",").map(t => t.trim()).filter(Boolean);
+                // Resolve names case-insensitively against the set of all known tools
+                // so frontmatter values like "Read, Bash" map to "read", "bash".
+                const allTools = pi.getAllTools();
+                const toolIndex = new Map(allTools.map(t => [t.name.toLowerCase(), t.name]));
+                const allowed = requested
+                    .map(r => toolIndex.get(r.toLowerCase()))
+                    .filter((t): t is string => t !== undefined);
                 if (allowed.length > 0) {
                     pi.setActiveTools(allowed);
                     console.log(`pizzapi worker: agent tool allowlist applied: ${allowed.join(", ")}`);
+                } else {
+                    console.warn(`pizzapi worker: agent tool allowlist matched no known tools (requested: ${requested.join(", ")})`);
                 }
             } catch (err) {
                 console.warn(

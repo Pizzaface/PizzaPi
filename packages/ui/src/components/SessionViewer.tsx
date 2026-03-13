@@ -1087,17 +1087,21 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     const requestKey = `${sessionId}-${runnerId}`;
     if (agentsRequestedRef.current === requestKey) return;
     agentsRequestedRef.current = requestKey;
+    let stale = false;
     setAgentsLoading(true);
     fetch(`/api/runners/${encodeURIComponent(runnerId)}/agents`, { credentials: "include" })
       .then((res) => res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))
       .then((data: any) => {
+        if (stale) return; // session/runner changed while fetch was in-flight
         const agents: Array<{ name: string; description?: string; content?: string }> = Array.isArray(data?.agents) ? data.agents : [];
         setAgentsList(agents);
       })
       .catch(() => {
+        if (stale) return;
         setAgentsList([]);
       })
-      .finally(() => setAgentsLoading(false));
+      .finally(() => { if (!stale) setAgentsLoading(false); });
+    return () => { stale = true; };
   }, [sessionId, commandOpen, isAgentMode, runnerId]);
 
   // Reset agent request ref when agent mode closes
