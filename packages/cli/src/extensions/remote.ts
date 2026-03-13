@@ -2410,6 +2410,81 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 } satisfies PlanModeDetails,
             });
 
+            // ── Child session: fire trigger to parent instead of waiting for web/TUI ──
+            if (isChildSession && parentSessionId && sioSocket?.connected) {
+                const triggerId = randomUUID();
+                const trigger: import("./triggers/types.js").ConversationTrigger = {
+                    type: "plan_review",
+                    sourceSessionId: relaySessionId,
+                    sourceSessionName: latestCtx?.sessionManager.getSessionName() ?? relaySessionId.slice(0, 8),
+                    targetSessionId: parentSessionId,
+                    payload: {
+                        title,
+                        steps,
+                        description: description ?? undefined,
+                    },
+                    deliverAs: "followUp",
+                    expectsResponse: true,
+                    triggerId,
+                    timeoutMs: 300_000,
+                    ts: new Date().toISOString(),
+                };
+
+                sioSocket.emit("session_trigger", { token: relay!.token, trigger });
+
+                const response = await new Promise<string>((resolve) => {
+                    const timeout = setTimeout(() => {
+                        cleanup();
+                        resolve("Cancel"); // Default to cancel on timeout
+                    }, trigger.timeoutMs ?? 300_000);
+
+                    const handler = (data: { triggerId: string; response: string }) => {
+                        if (data.triggerId === triggerId) {
+                            cleanup();
+                            resolve(data.response);
+                        }
+                    };
+
+                    const cleanup = () => {
+                        clearTimeout(timeout);
+                        sioSocket?.off("trigger_response" as any, handler);
+                    };
+
+                    sioSocket!.on("trigger_response" as any, handler);
+                    signal?.addEventListener("abort", () => { cleanup(); resolve("Cancel"); });
+                });
+
+                // Map parent response to plan_mode actions
+                const lower = response.toLowerCase().trim();
+                const isApproval = ["begin", "approve", "approved", "lgtm", "looks good", "go", "proceed"].some(p => lower.includes(p));
+                const isCancel = ["cancel", "stop", "no", "reject"].some(p => lower === p);
+
+                let responseText: string;
+                let action: PlanModeAction;
+                if (isApproval) {
+                    responseText = "Plan approved by parent. Proceeding.";
+                    action = "execute_keep_context";
+                    setPlanModeFromRemote(false);
+                } else if (isCancel) {
+                    responseText = "Plan cancelled by parent.";
+                    action = "cancel";
+                } else {
+                    responseText = `Parent suggests edit: ${response}`;
+                    action = "edit";
+                }
+
+                return {
+                    content: [{ type: "text", text: responseText }],
+                    details: {
+                        title,
+                        description,
+                        steps,
+                        action,
+                        editSuggestion: action === "edit" ? response : null,
+                    } satisfies PlanModeDetails,
+                };
+            }
+
             const result = await askPlanMode(toolCallId, title, description, steps, signal, ctx);
 
             if (!result) {
