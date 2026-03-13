@@ -165,13 +165,17 @@ function _buildDenyExclusions(searchRoot: string): { rg: string[]; find: string[
     for (const denied of config.srtConfig.filesystem.denyRead) {
         const resolvedDenied = pathResolve(denied);
 
-        // Only add exclusion if denied path is under (or equal to) the search root
-        if (!resolvedDenied.startsWith(resolvedRoot + "/") && resolvedDenied !== resolvedRoot) {
+        // Only add exclusion if denied path is under (or equal to) the search root.
+        // Use a trailing slash only when resolvedRoot is not already "/", to avoid
+        // producing the invalid prefix "//" when searching from the filesystem root.
+        const rootPrefix = resolvedRoot === "/" ? "/" : resolvedRoot + "/";
+        if (!resolvedDenied.startsWith(rootPrefix) && resolvedDenied !== resolvedRoot) {
             continue;
         }
 
         // rg: --glob '!relativePath/**'
-        const relPath = resolvedDenied.slice(resolvedRoot.length + 1);
+        // When root is "/", the relative path is everything after the leading slash.
+        const relPath = resolvedRoot === "/" ? resolvedDenied.slice(1) : resolvedDenied.slice(resolvedRoot.length + 1);
         if (relPath) {
             rgArgs.push("--glob", `!${relPath}`, "--glob", `!${relPath}/**`);
         }

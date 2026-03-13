@@ -61,7 +61,7 @@ async function main(): Promise<void> {
 
     // PIZZAPI_SANDBOX / PIZZAPI_NO_SANDBOX env var overrides
     const sandboxEnvOverride = process.env.PIZZAPI_SANDBOX;
-    if (process.env.PIZZAPI_NO_SANDBOX === "1" || sandboxEnvOverride === "none") {
+    if (process.env.PIZZAPI_NO_SANDBOX === "1" || sandboxEnvOverride === "none" || sandboxEnvOverride === "off") {
         sandboxConfig.mode = "none";
         sandboxConfig.srtConfig = null;
     } else if (sandboxEnvOverride === "basic" || sandboxEnvOverride === "full") {

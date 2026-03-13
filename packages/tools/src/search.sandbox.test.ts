@@ -68,6 +68,26 @@ describe("searchTool sandbox integration", () => {
         expect(result.content[0].text).toContain("❌ Sandbox blocked search");
     });
 
+    test("deny exclusions work when denied path is a direct child of the search root", async () => {
+        // Regression test for the `//` prefix bug:
+        // When searchRoot is a single-segment path (or any path where
+        // resolvedRoot + "/" would produce a double-slash), deny-path exclusions
+        // must still be applied correctly.
+        const deniedSubDir = mkdtempSync(join(tmpDir, "secret-"));
+        writeFileSync(join(deniedSubDir, "secret.ts"), "const password = 'hunter2';");
+        writeFileSync(join(tmpDir, "allowed.ts"), "const x = 1;");
+
+        await initSandbox(makeConfig({ denyRead: [deniedSubDir] }));
+
+        // The denied sub-directory should be blocked
+        const blockedResult = await execSearch("*.ts", deniedSubDir, "files");
+        expect(blockedResult.details.sandboxBlocked).toBe(true);
+
+        // The parent (tmpDir) search should work – denied child is excluded via glob/find
+        const allowedResult = await execSearch("*.ts", tmpDir, "files");
+        expect(allowedResult.details.sandboxBlocked).not.toBe(true);
+    });
+
     test("works normally when mode is none", async () => {
         writeFileSync(join(tmpDir, "test.ts"), "export const x = 1;");
         await initSandbox({ mode: "none", srtConfig: null });
