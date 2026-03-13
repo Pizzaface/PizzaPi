@@ -524,6 +524,12 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
   const [atMentionHighlightedIndex, setAtMentionHighlightedIndex] = React.useState(0);
   const [atMentionHighlightedEntry, setAtMentionHighlightedEntry] = React.useState<AtMentionEntry | null>(null);
 
+  // @-mention agents — cached per runner so we don't re-fetch every time the popover opens
+  const [atMentionAgents, setAtMentionAgents] = React.useState<Array<{ name: string; description?: string }>>([]);
+  const atMentionAgentsFetchedForRef = React.useRef<string | null>(null);
+  // Track whether the highlighted @-mention item is an agent (entry will be null for agents)
+  const [atMentionHighlightedAgent, setAtMentionHighlightedAgent] = React.useState<string | null>(null);
+
   React.useEffect(() => {
     if (!sessionId) {
       setInput("");
@@ -1043,7 +1049,54 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     setAtMentionTriggerOffset(0);
     setAtMentionHighlightedIndex(0);
     setAtMentionHighlightedEntry(null);
+    setAtMentionHighlightedAgent(null);
   }, []);
+
+  // @-mention agent selection: insert @agent_name into text at trigger position
+  const handleAtMentionSelectAgent = React.useCallback((agentName: string) => {
+    const textarea = document.querySelector<HTMLTextAreaElement>("[data-pp-prompt]");
+    if (!textarea) return;
+
+    const cursorPosition = textarea.selectionStart;
+    const value = input;
+
+    // Replace from trigger offset to cursor position with @agent_name (trailing space)
+    const newValue = value.slice(0, atMentionTriggerOffset) + "@" + agentName + " " + value.slice(cursorPosition);
+    setInput(newValue);
+
+    // Position cursor after the inserted text
+    const newCursorPosition = atMentionTriggerOffset + 1 + agentName.length + 1; // @ + name + space
+    requestAnimationFrame(() => {
+      textarea.setSelectionRange(newCursorPosition, newCursorPosition);
+      textarea.focus();
+    });
+
+    // Reset @-mention state
+    setAtMentionOpen(false);
+    setAtMentionQuery("");
+    setAtMentionPath("");
+    setAtMentionTriggerOffset(0);
+    setAtMentionHighlightedIndex(0);
+  }, [input, atMentionTriggerOffset]);
+
+  // Fetch agents when the @-mention popover opens (cached per runner)
+  React.useEffect(() => {
+    if (!atMentionOpen || !runnerId) return;
+    if (atMentionAgentsFetchedForRef.current === runnerId) return;
+    atMentionAgentsFetchedForRef.current = runnerId;
+    let stale = false;
+    fetch(`/api/runners/${encodeURIComponent(runnerId)}/agents`, { credentials: "include" })
+      .then((res) => res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))
+      .then((data: any) => {
+        if (stale) return;
+        const agents: Array<{ name: string; description?: string }> = Array.isArray(data?.agents)
+          ? data.agents.map((a: any) => ({ name: a.name, description: a.description }))
+          : [];
+        setAtMentionAgents(agents);
+      })
+      .catch(() => { if (!stale) setAtMentionAgents([]); });
+    return () => { stale = true; };
+  }, [atMentionOpen, runnerId]);
 
   const trimmedInput = input.trimStart();
   const isResumeMode = /^\/resume(?:\s|$)/i.test(trimmedInput);
@@ -2003,7 +2056,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
           </div>
         )}
 
-        {/* @-mention file autocomplete popover */}
+        {/* @-mention autocomplete popover (agents + files) */}
         {sessionId && runnerId && atMentionOpen && (
           <div className="mb-2">
             <AtMentionPopover
@@ -2019,6 +2072,9 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
               highlightedIndex={atMentionHighlightedIndex}
               onHighlightedIndexChange={setAtMentionHighlightedIndex}
               onHighlightedEntryChange={setAtMentionHighlightedEntry}
+              agents={atMentionAgents}
+              onSelectAgent={handleAtMentionSelectAgent}
+              onHighlightedAgentChange={setAtMentionHighlightedAgent}
             />
           </div>
         )}
@@ -2163,12 +2219,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                   if (atMentionOpen && event.key === "Escape") {
                     event.preventDefault();
                     event.stopPropagation();
-                    setAtMentionOpen(false);
-                    setAtMentionQuery("");
-                    setAtMentionPath("");
-                    setAtMentionTriggerOffset(0);
-                    setAtMentionHighlightedIndex(0);
-                    setAtMentionHighlightedEntry(null);
+                    handleAtMentionClose();
                     return;
                   }
 
@@ -2181,18 +2232,28 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                     return;
                   }
 
-                  // Enter selects highlighted file when @-mention is open
-                  if (atMentionOpen && event.key === "Enter" && !event.shiftKey && atMentionHighlightedEntry) {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    if (atMentionHighlightedEntry.isDirectory) {
-                      const newPath = atMentionPath ? `${atMentionPath}${atMentionHighlightedEntry.name}/` : `${atMentionHighlightedEntry.name}/`;
-                      handleAtMentionDrillInto(newPath);
-                    } else {
-                      const relativePath = atMentionPath ? `${atMentionPath}${atMentionHighlightedEntry.name}` : atMentionHighlightedEntry.name;
-                      handleAtMentionSelectFile(relativePath);
+                  // Enter selects highlighted item when @-mention is open
+                  if (atMentionOpen && event.key === "Enter" && !event.shiftKey) {
+                    // Agent highlighted
+                    if (atMentionHighlightedAgent) {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      handleAtMentionSelectAgent(atMentionHighlightedAgent);
+                      return;
                     }
-                    return;
+                    // File/folder highlighted
+                    if (atMentionHighlightedEntry) {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      if (atMentionHighlightedEntry.isDirectory) {
+                        const newPath = atMentionPath ? `${atMentionPath}${atMentionHighlightedEntry.name}/` : `${atMentionHighlightedEntry.name}/`;
+                        handleAtMentionDrillInto(newPath);
+                      } else {
+                        const relativePath = atMentionPath ? `${atMentionPath}${atMentionHighlightedEntry.name}` : atMentionHighlightedEntry.name;
+                        handleAtMentionSelectFile(relativePath);
+                      }
+                      return;
+                    }
                   }
 
 
