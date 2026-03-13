@@ -369,6 +369,10 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
   async function load(): Promise<McpSnapshot> {
     const mergedConfig = loadConfig(process.cwd()) as PizzaPiConfig & McpConfig;
     const inspection = inspectMcpConfig(process.cwd());
+
+    // Remember previous MCP tool names so we can update active tools after reload.
+    const previousMcpToolNames = new Set(lastSnapshot.toolNames);
+
     // Pass current relay context so that freshly created OAuth providers have
     // it *before* initialization begins.  During /mcp reload the relay is
     // already connected — without this, providers fall back to local OAuth.
@@ -385,6 +389,35 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
     }
     activeClients = Array.isArray(res.clients) ? res.clients : [];
     lastRegistrationResult = res;
+
+    // ── Reconcile active tools ──────────────────────────────────────────
+    // pi.registerTool() auto-activates genuinely *new* tools via refreshTools(),
+    // but two cases aren't handled by that mechanism:
+    //
+    //  1. Disabled/removed servers: their tools stay active as zombies because
+    //     refreshTools() preserves previousActiveToolNames and nothing removes
+    //     tools that disappeared from the registry.
+    //
+    //  2. Re-enabled servers: their tools overwrite zombie definitions in
+    //     extension.tools (same name), so refreshTools() sees them as existing
+    //     registry entries and does NOT auto-activate them.
+    //
+    // Fix: after all registerTool() calls, explicitly set active tools —
+    // removing stale MCP tools and ensuring new/re-enabled ones are included.
+    const newMcpToolNames = new Set(res.toolNames);
+    const currentActive = new Set(pi.getActiveTools() as string[]);
+
+    // Remove tools from disabled/removed servers
+    for (const old of previousMcpToolNames) {
+      if (!newMcpToolNames.has(old)) {
+        currentActive.delete(old);
+      }
+    }
+    // Ensure all current MCP tools are active (handles re-enable after disable)
+    for (const name of newMcpToolNames) {
+      currentActive.add(name);
+    }
+    pi.setActiveTools([...currentActive]);
 
     const loadedAt = new Date().toISOString();
 
