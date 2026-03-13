@@ -432,7 +432,7 @@ Run \`pizza <command> --help\` for command-specific help.
         sandboxConfig.srtConfig = null;
     } else if (sandboxEnvOverride === "basic" || sandboxEnvOverride === "full") {
         // Re-resolve so srtConfig matches the overridden preset, not just the mode string.
-        const overrideConfig = { ...config, sandbox: { ...(config.sandbox ?? {}), mode: sandboxEnvOverride } };
+        const overrideConfig = { ...config, sandbox: { ...(config.sandbox ?? {}), mode: sandboxEnvOverride as import("./config.js").SandboxMode } };
         const overridden = resolveSandboxConfig(cwd, overrideConfig);
         sandboxConfig.mode = overridden.mode;
         sandboxConfig.srtConfig = overridden.srtConfig;

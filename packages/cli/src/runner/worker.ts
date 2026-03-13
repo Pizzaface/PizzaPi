@@ -67,7 +67,7 @@ async function main(): Promise<void> {
     } else if (sandboxEnvOverride === "basic" || sandboxEnvOverride === "full") {
         // Re-resolve with the overridden mode so srtConfig matches the new preset,
         // not just the mode string.
-        const overrideConfig = { ...config, sandbox: { ...(config.sandbox ?? {}), mode: sandboxEnvOverride } };
+        const overrideConfig = { ...config, sandbox: { ...(config.sandbox ?? {}), mode: sandboxEnvOverride as import("../config.js").SandboxMode } };
         const overridden = resolveSandboxConfig(cwd, overrideConfig);
         sandboxConfig.mode = overridden.mode;
         sandboxConfig.srtConfig = overridden.srtConfig;
