@@ -20,7 +20,7 @@ services:
       - VAPID_PRIVATE_KEY={{VAPID_PRIVATE_KEY}}
       - VAPID_SUBJECT={{VAPID_SUBJECT}}
 {{EXTRA_ORIGINS_LINE}}    volumes:
-      - {{DATA_DIR}}:/app/data
+      - {{DATA_DIR}}:/app/data:Z
     depends_on:
       - redis
     restart: unless-stopped
