@@ -426,7 +426,10 @@ Run \`pizza <command> --help\` for command-specific help.
     // PIZZAPI_SANDBOX env var can override the configured mode.
     // "off" is a documented alias for "none".
     const sandboxEnvRaw = process.env.PIZZAPI_SANDBOX;
-    const sandboxEnvOverride = sandboxEnvRaw === "off" ? "none" : sandboxEnvRaw;
+    // Normalise user-facing aliases to internal SandboxMode values.
+    // CLI help exposes: enforce (→ full), audit (→ basic), off (→ none).
+    const sandboxAliasMap: Record<string, string> = { enforce: "full", audit: "basic", off: "none" };
+    const sandboxEnvOverride = sandboxAliasMap[sandboxEnvRaw ?? ""] ?? sandboxEnvRaw;
     if (sandboxEnvOverride === "none") {
         sandboxConfig.mode = "none";
         sandboxConfig.srtConfig = null;

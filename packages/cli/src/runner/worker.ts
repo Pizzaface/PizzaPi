@@ -60,8 +60,12 @@ async function main(): Promise<void> {
     const sandboxConfig = resolveSandboxConfig(cwd, config);
 
     // PIZZAPI_SANDBOX / PIZZAPI_NO_SANDBOX env var overrides
-    const sandboxEnvOverride = process.env.PIZZAPI_SANDBOX;
-    if (process.env.PIZZAPI_NO_SANDBOX === "1" || sandboxEnvOverride === "none" || sandboxEnvOverride === "off") {
+    // Normalise user-facing aliases to internal SandboxMode values.
+    // CLI exposes: enforce (→ full), audit (→ basic), off (→ none).
+    const sandboxAliasMap: Record<string, string> = { enforce: "full", audit: "basic", off: "none" };
+    const sandboxEnvRaw = process.env.PIZZAPI_SANDBOX;
+    const sandboxEnvOverride = sandboxAliasMap[sandboxEnvRaw ?? ""] ?? sandboxEnvRaw;
+    if (process.env.PIZZAPI_NO_SANDBOX === "1" || sandboxEnvOverride === "none") {
         sandboxConfig.mode = "none";
         sandboxConfig.srtConfig = null;
     } else if (sandboxEnvOverride === "basic" || sandboxEnvOverride === "full") {
