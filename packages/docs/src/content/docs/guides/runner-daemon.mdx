@@ -177,3 +177,37 @@ pizzapi runner stop
 ```
 
 This sends a graceful shutdown signal. Active session workers are allowed to finish before the daemon exits.
+
+---
+
+## Session Linking & Triggers
+
+When sessions are spawned via `spawn_session`, the runner daemon automatically **links them as parent-child**. This enables the conversation trigger system:
+
+### How It Works
+
+1. The `spawn_session` tool includes the current session's ID as `parentSessionId` in the spawn request
+2. The server stores the parent-child relationship in Redis
+3. The runner daemon passes `PIZZAPI_WORKER_PARENT_SESSION_ID` to the child worker process
+4. The child's trigger system detects it's a child session and routes events to the parent
+
+### Automatic Triggers
+
+Child sessions fire triggers through the relay server when they need input:
+
+| Event | Trigger Type | Behavior |
+|---|---|---|
+| `AskUserQuestion` called | `ask_user_question` | Question and options sent to parent; parent responds with `respond_to_trigger` |
+| `plan_mode` called | `plan_review` | Plan sent to parent for approval; parent approves, rejects, or suggests edits |
+| Session exits | `session_complete` | Completion summary sent to parent |
+| Error occurs | `session_error` | Error details sent to parent |
+
+### Parent Tools
+
+The parent session has three tools for interacting with child triggers:
+
+- **`respond_to_trigger(triggerId, response)`** — Respond to a pending trigger
+- **`escalate_trigger(triggerId)`** — Pass a trigger to the human viewer
+- **`tell_child(sessionId, message)`** — Proactively send a message to a child
+
+All trigger routing goes through the relay server via Socket.IO events (`session_trigger` and `trigger_response`).
