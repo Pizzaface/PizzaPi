@@ -33,6 +33,7 @@ interface HubSession {
     runnerId?: string | null;
     runnerName?: string | null;
     isPinned?: boolean;
+    parentSessionId?: string | null;
 }
 
 interface PinnedSession {
@@ -1087,6 +1088,9 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                         <div className="flex-1 min-w-0">
                                                             <div className="flex items-baseline justify-between gap-1 min-w-0">
                                                                 <span className="truncate text-[0.8rem] font-medium leading-tight">
+                                                                    {s.parentSessionId && (
+                                                                        <span className="text-[0.6rem] text-blue-400/70 mr-1" title="Child session">↳</span>
+                                                                    )}
                                                                     {s.sessionName?.trim() || `Session ${s.sessionId.slice(0, 8)}…`}
                                                                 </span>
                                                                 <span className="text-[0.65rem] text-sidebar-foreground/45 flex-shrink-0">

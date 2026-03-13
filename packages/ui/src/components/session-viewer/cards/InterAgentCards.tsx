@@ -23,6 +23,22 @@ export function truncateSessionId(id: string): string {
   return id.length > 12 ? `${id.slice(0, 8)}…` : id;
 }
 
+// ── Trigger message utilities ────────────────────────────────────────────────
+
+const TRIGGER_PREFIX_RE = /^<!--\s*trigger:([a-f0-9-]+)\s*-->\n?/;
+
+/** Check if a message is a trigger-injected message and extract the trigger ID. */
+export function parseTriggerMessage(text: string): { triggerId: string; body: string } | null {
+  const match = text.match(TRIGGER_PREFIX_RE);
+  if (!match) return null;
+  return { triggerId: match[1], body: text.slice(match[0].length) };
+}
+
+/** Returns true if the text is a trigger-injected message. */
+export function isTriggerMessage(text: string): boolean {
+  return TRIGGER_PREFIX_RE.test(text);
+}
+
 /**
  * Parse the text result of spawn_session to extract structured details.
  */
