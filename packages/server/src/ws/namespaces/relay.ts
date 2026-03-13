@@ -387,6 +387,83 @@ export function registerRelayNamespace(io: SocketIOServer): void {
             }
         });
 
+        // ── session_trigger — child-to-parent trigger routing ────────────────
+        socket.on("session_trigger", async (data) => {
+            const trigger = data?.trigger;
+            if (!trigger?.targetSessionId || !trigger?.triggerId) {
+                socket.emit("error", { message: "session_trigger requires trigger with targetSessionId and triggerId" });
+                return;
+            }
+
+            const targetSessionId = trigger.targetSessionId;
+
+            // Find the target session's relay socket (same pattern as session_message)
+            const targetSession = await getSharedSession(targetSessionId);
+            if (!targetSession) {
+                socket.emit("session_message_error", {
+                    targetSessionId,
+                    error: `Target session ${targetSessionId} is not connected`,
+                });
+                return;
+            }
+
+            const targetSocket = getLocalTuiSocket(targetSessionId);
+            if (!targetSocket) {
+                socket.emit("session_message_error", {
+                    targetSessionId,
+                    error: `Target session ${targetSessionId} is not connected`,
+                });
+                return;
+            }
+
+            try {
+                targetSocket.emit("session_trigger" as any, { trigger });
+            } catch {
+                socket.emit("session_message_error", {
+                    targetSessionId,
+                    error: "Failed to deliver trigger to target session",
+                });
+            }
+        });
+
+        // ── trigger_response — parent-to-child response routing ────────────
+        socket.on("trigger_response" as any, async (data: {
+            token: string;
+            triggerId: string;
+            response: string;
+            targetSessionId: string;
+        }) => {
+            const { triggerId, response, targetSessionId } = data ?? {};
+            if (!triggerId || !response || !targetSessionId) {
+                socket.emit("error", { message: "trigger_response requires triggerId, response, and targetSessionId" });
+                return;
+            }
+
+            // Validate sender is authenticated
+            if (!socket.data.token) {
+                socket.emit("error", { message: "Not authenticated" });
+                return;
+            }
+
+            const targetSocket = getLocalTuiSocket(targetSessionId);
+            if (!targetSocket) {
+                socket.emit("session_message_error", {
+                    targetSessionId,
+                    error: `Target session ${targetSessionId} is not connected`,
+                });
+                return;
+            }
+
+            try {
+                targetSocket.emit("trigger_response" as any, { triggerId, response });
+            } catch {
+                socket.emit("session_message_error", {
+                    targetSessionId,
+                    error: "Failed to deliver trigger response to target session",
+                });
+            }
+        });
+
         // ── disconnect ───────────────────────────────────────────────────────
         socket.on("disconnect", async (reason) => {
             console.log(`[sio/relay] disconnected: ${socket.id} (${reason})`);
