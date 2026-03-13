@@ -15,10 +15,21 @@ export const bashTool: AgentTool = {
     }),
     async execute(_toolCallId, params: any) {
         const timeout = params.timeout ?? 30_000;
-        const { stdout, stderr } = await execAsync(params.command, { timeout });
-        return {
-            content: [{ type: "text" as const, text: stdout + (stderr ? `\nstderr: ${stderr}` : "") }],
-            details: { command: params.command, stdout, stderr },
-        };
+        try {
+            const { stdout, stderr } = await execAsync(params.command, { timeout });
+            return {
+                content: [{ type: "text" as const, text: stdout + (stderr ? `\nstderr: ${stderr}` : "") }],
+                details: { command: params.command, stdout, stderr },
+            };
+        } catch (error: any) {
+            // execAsync throws on non-zero exit code.
+            // Return stdout/stderr rather than crashing the tool call.
+            const stdout = error.stdout || "";
+            const stderr = error.stderr || error.message || String(error);
+            return {
+                content: [{ type: "text" as const, text: stdout + (stderr ? `\nstderr: ${stderr}` : "") }],
+                details: { command: params.command, stdout, stderr, exitCode: error.code },
+            };
+        }
     },
 };
