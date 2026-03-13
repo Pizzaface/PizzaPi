@@ -142,8 +142,7 @@ export function AtMentionPopover({
     // In search mode, entries are already filtered by the server
     if (isSearchMode) return entries;
 
-    // Filter out dot-files/folders
-    let filtered = entries.filter((entry) => !entry.name.startsWith("."));
+    let filtered = [...entries];
 
     // Filter by query (case-insensitive)
     if (query) {
