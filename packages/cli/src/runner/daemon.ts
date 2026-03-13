@@ -620,11 +620,11 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                         // Extract tools from frontmatter if not explicitly provided
                         if (!tools) {
                             const toolsMatch = fmBlock.match(/^tools:\s*(.+)$/m);
-                            if (toolsMatch) tools = toolsMatch[1].trim();
+                            if (toolsMatch) tools = toolsMatch[1].trim().replace(/^["']|["']$/g, "");
                         }
                         if (!disallowedTools) {
                             const dtMatch = fmBlock.match(/^disallowedTools:\s*(.+)$/m);
-                            if (dtMatch) disallowedTools = dtMatch[1].trim();
+                            if (dtMatch) disallowedTools = dtMatch[1].trim().replace(/^["']|["']$/g, "");
                         }
                     }
                     resolvedAgent = { ...resolvedAgent, systemPrompt: body, tools, disallowedTools };

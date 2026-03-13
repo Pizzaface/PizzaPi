@@ -92,13 +92,13 @@ export const initialPromptExtension: ExtensionFactory = (pi) => {
                 // Also map Claude Code tool aliases (Glob→find, Grep→grep, etc.)
                 // so agent files written for Claude Code work correctly.
                 const claudeToPi: Record<string, string> = {
-                    Read: "read",
-                    Write: "write",
-                    Edit: "edit",
-                    MultiEdit: "edit",
-                    Bash: "bash",
-                    Glob: "find",
-                    Grep: "grep",
+                    read: "read",
+                    write: "write",
+                    edit: "edit",
+                    multiedit: "edit",
+                    bash: "bash",
+                    glob: "find",
+                    grep: "grep",
                 };
                 const allTools = pi.getAllTools();
                 const toolIndex = new Map(allTools.map(t => [t.name.toLowerCase(), t.name]));
@@ -107,8 +107,8 @@ export const initialPromptExtension: ExtensionFactory = (pi) => {
                         // Try direct case-insensitive match first
                         const direct = toolIndex.get(r.toLowerCase());
                         if (direct) return direct;
-                        // Fall back to Claude alias mapping
-                        const mapped = claudeToPi[r];
+                        // Fall back to Claude alias mapping (case-insensitive)
+                        const mapped = claudeToPi[r.toLowerCase()];
                         if (mapped) return toolIndex.get(mapped.toLowerCase());
                         return undefined;
                     })
