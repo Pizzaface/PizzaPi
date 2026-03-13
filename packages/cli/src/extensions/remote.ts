@@ -2194,16 +2194,16 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 sioSocket.emit("session_trigger", { token: relay.token, trigger });
 
                 // Wait for trigger_response with matching triggerId
-                const response = await new Promise<string>((resolve, reject) => {
+                const triggerResult = await new Promise<{ response: string; cancelled: boolean }>((resolve) => {
                     const timeout = setTimeout(() => {
                         cleanup();
-                        resolve("Trigger timed out — no response from parent within 5 minutes.");
+                        resolve({ response: "Trigger timed out — no response from parent within 5 minutes.", cancelled: true });
                     }, trigger.timeoutMs ?? 300_000);
 
                     const handler = (data: { triggerId: string; response: string }) => {
                         if (data.triggerId === triggerId) {
                             cleanup();
-                            resolve(data.response);
+                            resolve({ response: data.response, cancelled: false });
                         }
                     };
 
@@ -2213,18 +2213,18 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                     };
 
                     sioSocket!.on("trigger_response" as any, handler);
-                    signal?.addEventListener("abort", () => { cleanup(); resolve("Aborted"); });
+                    signal?.addEventListener("abort", () => { cleanup(); resolve({ response: "Aborted", cancelled: true }); });
                 });
 
                 return {
-                    content: [{ type: "text", text: response }],
+                    content: [{ type: "text", text: triggerResult.response }],
                     details: {
                         questions,
                         display,
                         answers: null,
-                        answer: response,
+                        answer: triggerResult.cancelled ? null : triggerResult.response,
                         source: "parent_trigger" as any,
-                        cancelled: false,
+                        cancelled: triggerResult.cancelled,
                     } satisfies AskUserQuestionDetails,
                 };
             }

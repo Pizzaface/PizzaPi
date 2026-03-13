@@ -298,6 +298,10 @@ export async function registerTuiSession(
         }
     }
 
+    // Preserve parentSessionId if it was pre-seeded by the spawn endpoint
+    // (upsertSessionFields runs before the worker connects and registers)
+    const existingSession = await getSession(sessionId);
+
     const sessionData: RedisSessionData = {
         sessionId,
         token,
@@ -317,7 +321,7 @@ export async function registerTuiSession(
         runnerId,
         runnerName,
         seq: 0,
-        parentSessionId: null,
+        parentSessionId: existingSession?.parentSessionId ?? null,
     };
 
     await setSession(sessionId, sessionData);
