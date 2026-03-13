@@ -48,7 +48,7 @@ describe("searchTool sandbox integration", () => {
 
     test("blocks search in denied directories", async () => {
         await initSandbox(makeConfig({ denyRead: [tmpDir] }));
-        const result = await execSearch("*.ts", tmpDir, "file");
+        const result = await execSearch("*.ts", tmpDir, "files");
         expect(result.content[0].text).toContain("❌ Sandbox blocked search");
         expect(result.details.sandboxBlocked).toBe(true);
     });
@@ -56,7 +56,7 @@ describe("searchTool sandbox integration", () => {
     test("allows search in permitted directories", async () => {
         writeFileSync(join(tmpDir, "hello.ts"), "const x = 1;");
         await initSandbox(makeConfig({ denyRead: [] }));
-        const result = await execSearch("*.ts", tmpDir, "file");
+        const result = await execSearch("*.ts", tmpDir, "files");
         expect(result.content[0].text).not.toContain("Sandbox blocked");
     });
 
@@ -71,7 +71,7 @@ describe("searchTool sandbox integration", () => {
     test("works normally when mode is none", async () => {
         writeFileSync(join(tmpDir, "test.ts"), "export const x = 1;");
         await initSandbox({ mode: "none", srtConfig: null });
-        const result = await execSearch("*.ts", tmpDir, "file");
+        const result = await execSearch("*.ts", tmpDir, "files");
         expect(result.content[0].text).not.toContain("Sandbox blocked");
     });
 });
