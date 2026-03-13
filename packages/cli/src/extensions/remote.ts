@@ -2172,7 +2172,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             }
 
             // ── Child session: fire trigger to parent instead of waiting for web/TUI ──
-            if (isChildSession && parentSessionId && sioSocket?.connected) {
+            if (isChildSession && parentSessionId && relay && sioSocket?.connected) {
                 const triggerId = randomUUID();
                 const trigger: import("./triggers/types.js").ConversationTrigger = {
                     type: "ask_user_question",
@@ -2191,7 +2191,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                     ts: new Date().toISOString(),
                 };
 
-                sioSocket.emit("session_trigger", { token: relay!.token, trigger });
+                sioSocket.emit("session_trigger", { token: relay.token, trigger });
 
                 // Wait for trigger_response with matching triggerId
                 const response = await new Promise<string>((resolve, reject) => {
@@ -2213,7 +2213,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                     };
 
                     sioSocket!.on("trigger_response" as any, handler);
-                    signal?.addEventListener("abort", () => { cleanup(); reject(new Error("Aborted")); });
+                    signal?.addEventListener("abort", () => { cleanup(); resolve("Aborted"); });
                 });
 
                 return {
@@ -2411,7 +2411,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             });
 
             // ── Child session: fire trigger to parent instead of waiting for web/TUI ──
-            if (isChildSession && parentSessionId && sioSocket?.connected) {
+            if (isChildSession && parentSessionId && relay && sioSocket?.connected) {
                 const triggerId = randomUUID();
                 const trigger: import("./triggers/types.js").ConversationTrigger = {
                     type: "plan_review",
@@ -2430,18 +2430,18 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                     ts: new Date().toISOString(),
                 };
 
-                sioSocket.emit("session_trigger", { token: relay!.token, trigger });
+                sioSocket.emit("session_trigger", { token: relay.token, trigger });
 
-                const response = await new Promise<string>((resolve) => {
+                const triggerResult = await new Promise<{ response: string; action?: string }>((resolve) => {
                     const timeout = setTimeout(() => {
                         cleanup();
-                        resolve("Cancel"); // Default to cancel on timeout
+                        resolve({ response: "Cancel", action: "cancel" }); // Default to cancel on timeout
                     }, trigger.timeoutMs ?? 300_000);
 
-                    const handler = (data: { triggerId: string; response: string }) => {
+                    const handler = (data: { triggerId: string; response: string; action?: string }) => {
                         if (data.triggerId === triggerId) {
                             cleanup();
-                            resolve(data.response);
+                            resolve({ response: data.response, action: data.action });
                         }
                     };
 
@@ -2451,13 +2451,22 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                     };
 
                     sioSocket!.on("trigger_response" as any, handler);
-                    signal?.addEventListener("abort", () => { cleanup(); resolve("Cancel"); });
+                    signal?.addEventListener("abort", () => { cleanup(); resolve({ response: "Cancel", action: "cancel" }); });
                 });
 
-                // Map parent response to plan_mode actions
-                const lower = response.toLowerCase().trim();
-                const isApproval = ["begin", "approve", "approved", "lgtm", "looks good", "go", "proceed"].some(p => lower.includes(p));
-                const isCancel = ["cancel", "stop", "no", "reject"].some(p => lower === p);
+                const response = triggerResult.response;
+
+                // Use structured action if provided; fall back to text matching for backward compat
+                let isApproval: boolean;
+                let isCancel: boolean;
+                if (triggerResult.action) {
+                    isApproval = triggerResult.action === "approve";
+                    isCancel = triggerResult.action === "cancel";
+                } else {
+                    const lower = response.toLowerCase().trim();
+                    isApproval = ["begin", "approve", "approved", "lgtm", "looks good", "proceed"].some(p => lower === p || lower.startsWith(p + " "));
+                    isCancel = ["cancel", "stop", "no", "reject"].some(p => lower === p || lower.startsWith(p + " "));
+                }
 
                 let responseText: string;
                 let action: PlanModeAction;

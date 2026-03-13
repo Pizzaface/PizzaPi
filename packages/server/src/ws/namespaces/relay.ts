@@ -389,6 +389,12 @@ export function registerRelayNamespace(io: SocketIOServer): void {
 
         // ── session_trigger — child-to-parent trigger routing ────────────────
         socket.on("session_trigger", async (data) => {
+            const sessionId = socket.data.sessionId;
+            if (!sessionId || data?.token !== socket.data.token) {
+                socket.emit("error", { message: "Invalid token" });
+                return;
+            }
+
             const trigger = data?.trigger;
             if (!trigger?.targetSessionId || !trigger?.triggerId) {
                 socket.emit("error", { message: "session_trigger requires trigger with targetSessionId and triggerId" });
@@ -417,6 +423,8 @@ export function registerRelayNamespace(io: SocketIOServer): void {
             }
 
             try {
+                // Enforce server-side identity — don't trust client-supplied sourceSessionId
+                trigger.sourceSessionId = sessionId;
                 targetSocket.emit("session_trigger" as any, { trigger });
             } catch {
                 socket.emit("session_message_error", {
@@ -431,17 +439,18 @@ export function registerRelayNamespace(io: SocketIOServer): void {
             token: string;
             triggerId: string;
             response: string;
+            action?: string;
             targetSessionId: string;
         }) => {
-            const { triggerId, response, targetSessionId } = data ?? {};
+            const { triggerId, response, action, targetSessionId } = data ?? {};
             if (!triggerId || !response || !targetSessionId) {
                 socket.emit("error", { message: "trigger_response requires triggerId, response, and targetSessionId" });
                 return;
             }
 
-            // Validate sender is authenticated
-            if (!socket.data.token) {
-                socket.emit("error", { message: "Not authenticated" });
+            // Validate sender is authenticated and token matches
+            if (!socket.data.sessionId || data?.token !== socket.data.token) {
+                socket.emit("error", { message: "Invalid token" });
                 return;
             }
 
@@ -455,7 +464,7 @@ export function registerRelayNamespace(io: SocketIOServer): void {
             }
 
             try {
-                targetSocket.emit("trigger_response" as any, { triggerId, response });
+                targetSocket.emit("trigger_response" as any, { triggerId, response, ...(action ? { action } : {}) });
             } catch {
                 socket.emit("session_message_error", {
                     targetSessionId,

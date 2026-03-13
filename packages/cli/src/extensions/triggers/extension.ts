@@ -14,11 +14,18 @@ import { getRelaySocket } from "../remote.js";
 const silent = { render: (_w: number): string[] => [], invalidate: () => {} };
 
 /** Tracks triggers this session has received (as parent) for response routing. */
-export const receivedTriggers = new Map<string, { sourceSessionId: string; type: string }>();
+export const receivedTriggers = new Map<string, { sourceSessionId: string; type: string; trackedAt: number }>();
+
+const TRIGGER_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
 /** Register a received trigger for response routing. Called by remote.ts on trigger receipt. */
 export function trackReceivedTrigger(triggerId: string, sourceSessionId: string, type: string): void {
-    receivedTriggers.set(triggerId, { sourceSessionId, type });
+    receivedTriggers.set(triggerId, { sourceSessionId, type, trackedAt: Date.now() });
+    // Prune stale entries to prevent unbounded growth
+    const now = Date.now();
+    for (const [id, entry] of receivedTriggers) {
+        if (now - entry.trackedAt > TRIGGER_TTL_MS) receivedTriggers.delete(id);
+    }
 }
 
 export const triggersExtension: ExtensionFactory = (pi) => {
@@ -58,16 +65,11 @@ export const triggersExtension: ExtensionFactory = (pi) => {
             properties: {
                 sessionId: { type: "string", description: "Child session ID" },
                 message: { type: "string", description: "Message to send" },
-                deliverAs: {
-                    type: "string",
-                    enum: ["steer", "followUp"],
-                    description: "Steer interrupts immediately (default). Follow-up waits until child's turn ends.",
-                },
             },
             required: ["sessionId", "message"],
         } as any,
         async execute(_toolCallId, rawParams) {
-            const params = rawParams as { sessionId: string; message: string; deliverAs?: string };
+            const params = rawParams as { sessionId: string; message: string };
             const conn = getRelaySocket();
             if (!conn) {
                 return { content: [{ type: "text" as const, text: "Error: Not connected to relay. Cannot send message to child." }], details: null as any };
@@ -88,17 +90,22 @@ export const triggersExtension: ExtensionFactory = (pi) => {
     pi.registerTool({
         name: "respond_to_trigger",
         label: "Respond to Trigger",
-        description: "Respond to a pending trigger from a child session.",
+        description: "Respond to a pending trigger from a child session. Use 'action' to declare your intent explicitly.",
         parameters: {
             type: "object",
             properties: {
                 triggerId: { type: "string", description: "The trigger ID from the child's request" },
                 response: { type: "string", description: "Response text to send back to the child" },
+                action: {
+                    type: "string",
+                    enum: ["approve", "cancel", "ack", "followUp", "edit"],
+                    description: "Structured action: approve (accept plan), cancel (reject), ack (acknowledge completion), followUp (request more work), edit (suggest changes). Required for plan_review and session_complete triggers.",
+                },
             },
             required: ["triggerId", "response"],
         } as any,
         async execute(_toolCallId, rawParams) {
-            const params = rawParams as { triggerId: string; response: string };
+            const params = rawParams as { triggerId: string; response: string; action?: string };
             const conn = getRelaySocket();
             if (!conn) {
                 return { content: [{ type: "text" as const, text: "Error: Not connected to relay." }], details: null as any };
@@ -111,6 +118,7 @@ export const triggersExtension: ExtensionFactory = (pi) => {
                 token: conn.token,
                 triggerId: params.triggerId,
                 response: params.response,
+                ...(params.action ? { action: params.action } : {}),
                 targetSessionId: pending.sourceSessionId,
             });
             receivedTriggers.delete(params.triggerId);
@@ -143,13 +151,14 @@ export const triggersExtension: ExtensionFactory = (pi) => {
             if (!pending) {
                 return { content: [{ type: "text" as const, text: `Error: No pending trigger with ID ${params.triggerId}.` }], details: null as any };
             }
-            // Fire an escalate trigger — the web UI can surface this to the human
+            // Fire an escalate trigger to the parent's own session so the web UI
+            // surfaces it to the human viewer (not back to the child).
             conn.socket.emit("session_trigger" as any, {
                 token: conn.token,
                 trigger: {
                     type: "escalate",
-                    sourceSessionId: ownSessionId ?? "",
-                    targetSessionId: pending.sourceSessionId,
+                    sourceSessionId: pending.sourceSessionId,
+                    targetSessionId: ownSessionId ?? "",
                     payload: { reason: params.context ?? "Parent escalated", originalTriggerId: params.triggerId },
                     deliverAs: "steer" as const,
                     expectsResponse: true,
