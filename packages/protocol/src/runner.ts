@@ -155,6 +155,8 @@ export interface RunnerServerToClientEvents {
       tools?: string;
       disallowedTools?: string;
     };
+    /** ID of the parent session that spawned this one. */
+    parentSessionId?: string;
   }) => void;
 
   /** Instructs runner to kill a session */
