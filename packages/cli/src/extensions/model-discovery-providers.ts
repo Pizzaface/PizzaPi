@@ -16,7 +16,8 @@ const FETCH_TIMEOUT_MS = 10_000;
 /** Fetch available models from an OpenAI-compatible `/v1/models` endpoint. */
 export async function fetchOpenAIModels(baseUrl: string, apiKey: string): Promise<DiscoveredModel[]> {
     try {
-        const res = await fetch(`${baseUrl}/v1/models`, {
+        const url = baseUrl.endsWith("/v1") ? `${baseUrl}/models` : `${baseUrl}/v1/models`;
+        const res = await fetch(url, {
             headers: { Authorization: `Bearer ${apiKey}` },
             signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
         });
@@ -39,7 +40,8 @@ export async function fetchOpenAIModels(baseUrl: string, apiKey: string): Promis
 /** Fetch available models from the Anthropic `/v1/models` endpoint. */
 export async function fetchAnthropicModels(baseUrl: string, apiKey: string): Promise<DiscoveredModel[]> {
     try {
-        const res = await fetch(`${baseUrl}/v1/models`, {
+        const anthropicUrl = baseUrl.endsWith("/v1") ? `${baseUrl}/models` : `${baseUrl}/v1/models`;
+        const res = await fetch(anthropicUrl, {
             headers: {
                 "x-api-key": apiKey,
                 "anthropic-version": "2023-06-01",
