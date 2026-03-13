@@ -161,8 +161,9 @@ export const modelDiscoveryExtension: ExtensionFactory = (pi) => {
             }
 
             if (ollamaModels.length > 0) {
+                const ollamaBaseUrl = ollamaUrl.endsWith("/v1") ? ollamaUrl : `${ollamaUrl}/v1`;
                 pi.registerProvider("ollama", {
-                    baseUrl: ollamaUrl,
+                    baseUrl: ollamaBaseUrl,
                     apiKey: "ollama",
                     api: "openai-completions",
                     models: buildModelDefs(ollamaModels),
