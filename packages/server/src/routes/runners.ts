@@ -13,6 +13,7 @@ import {
     recordRunnerSession,
     registerTerminal,
 } from "../ws/sio-registry.js";
+import { updateSessionFields, addChildSession } from "../ws/sio-state.js";
 import { sendSkillCommand, sendAgentCommand, sendRunnerCommand } from "../ws/namespaces/runner.js";
 import { waitForSpawnAck } from "../ws/runner-control.js";
 import { requireSession, validateApiKey } from "../middleware.js";
@@ -71,6 +72,8 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
                 }
                 : undefined;
 
+        const requestedParentSessionId = typeof body.parentSessionId === "string" ? body.parentSessionId : undefined;
+
         if (!requestedRunnerId) {
             return Response.json({ error: "Missing runnerId" }, { status: 400 });
         }
@@ -112,6 +115,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
                 ...(requestedModel ? { model: requestedModel } : {}),
                 ...(hiddenModels.length > 0 ? { hiddenModels } : {}),
                 ...(requestedAgent ? { agent: requestedAgent } : {}),
+                ...(requestedParentSessionId ? { parentSessionId: requestedParentSessionId } : {}),
             });
         } catch {
             return Response.json({ error: "Failed to send spawn request to runner" }, { status: 502 });
@@ -124,6 +128,12 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
 
         await recordRunnerSession(runnerId, sessionId);
         await linkSessionToRunner(runnerId, sessionId);
+
+        // Store parent-child relationship in Redis for the trigger system
+        if (requestedParentSessionId) {
+            await updateSessionFields(sessionId, { parentSessionId: requestedParentSessionId } as any);
+            await addChildSession(requestedParentSessionId, sessionId);
+        }
 
         if (requestedCwd) {
             void recordRecentFolder(identity.userId, runnerId, requestedCwd).catch(() => {});

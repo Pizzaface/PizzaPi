@@ -142,6 +142,12 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
                 prompt,
             };
 
+            // Automatically link parent→child sessions for the trigger system
+            const ownSessionId = process.env.PIZZAPI_SESSION_ID;
+            if (ownSessionId) {
+                body.parentSessionId = ownSessionId;
+            }
+
             if (params.model) {
                 body.model = {
                     provider: params.model.provider,
