@@ -180,11 +180,24 @@ function _buildDenyExclusions(searchRoot: string): { rg: string[]; find: string[
             rgArgs.push("--glob", `!${relPath}`, "--glob", `!${relPath}/**`);
         }
 
-        // find: -not -path 'absPath' -not -path 'absPath/*'
-        findArgs.push("-not", "-path", resolvedDenied, "-not", "-path", `${resolvedDenied}/*`);
+        // Collect denied paths for prune clause (built below).
+        findArgs.push(resolvedDenied);
     }
 
-    return { rg: rgArgs, find: findArgs };
+    // Build find prune clause: ( -path d1 -o -path d2 ) -prune -o
+    // This stops traversal into denied directories entirely (much cheaper than
+    // -not -path which still walks the subtree but filters output).
+    const findPruneArgs: string[] = [];
+    if (findArgs.length > 0) {
+        findPruneArgs.push("(");
+        for (let i = 0; i < findArgs.length; i++) {
+            if (i > 0) findPruneArgs.push("-o");
+            findPruneArgs.push("-path", findArgs[i]);
+        }
+        findPruneArgs.push(")", "-prune", "-o");
+    }
+
+    return { rg: rgArgs, find: findPruneArgs };
 }
 
 export const searchTool: AgentTool = {
@@ -243,7 +256,7 @@ export const searchTool: AgentTool = {
         // -e forces rg to treat pattern as a regex (not a flag); -- ends options before path.
         const [cmd, args, maxLines] =
             type === "files"
-                ? (["find", [safePath, ...denyExclusions.find, "-name", pattern, "-type", "f"], 50] as const)
+                ? (["find", [safePath, ...denyExclusions.find, "-name", pattern, "-type", "f", "-print"], 50] as const)
                 : (["rg", ["--no-heading", "-n", ...denyExclusions.rg, "-e", pattern, "--", safePath], 100] as const);
 
         let result: SpawnResult;

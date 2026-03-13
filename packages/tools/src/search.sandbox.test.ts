@@ -88,6 +88,22 @@ describe("searchTool sandbox integration", () => {
         expect(allowedResult.details.sandboxBlocked).not.toBe(true);
     });
 
+    test("denied subdirectory files do not appear in parent search results (prune semantics)", async () => {
+        // Arrange: parent dir with allowed.ts and a denied subdir containing secret.ts
+        const deniedSubDir = join(tmpDir, "secret-subdir");
+        mkdirSync(deniedSubDir);
+        writeFileSync(join(deniedSubDir, "secret.ts"), "const password = 'hunter2';");
+        writeFileSync(join(tmpDir, "allowed.ts"), "const x = 1;");
+
+        await initSandbox(makeConfig({ denyRead: [deniedSubDir] }));
+
+        // Search parent — secret.ts in denied subdir must NOT appear
+        const result = await execSearch("*.ts", tmpDir, "files");
+        expect(result.details.sandboxBlocked).not.toBe(true);
+        expect(result.content[0].text).not.toContain("secret.ts");
+        expect(result.content[0].text).toContain("allowed.ts");
+    });
+
     test("works normally when mode is none", async () => {
         writeFileSync(join(tmpDir, "test.ts"), "export const x = 1;");
         await initSandbox({ mode: "none", srtConfig: null });
