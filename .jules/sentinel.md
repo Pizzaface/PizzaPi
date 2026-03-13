@@ -1,0 +1,4 @@
+## 2025-03-13 - [MEDIUM] Fix unhandled exceptions exposing stack traces in tools
+**Vulnerability:** The `bash` tool (and potentially others) in `packages/tools/src/bash.ts` utilized `child_process.exec` asynchronously, which throws an exception if the command exits with a non-zero code. This exception was unhandled, which could crash the host process or expose internal stack traces to the caller/logs.
+**Learning:** `child_process.exec` (promisified) natively rejects the promise on non-zero exit codes. Failing to catch this inside tool execution paths creates an application-crashing Denial of Service risk or exposes internal trace data instead of returning a proper error message payload.
+**Prevention:** Always wrap asynchronous shell executions in a `try...catch` block. Ensure the catch block safely extracts `error.stdout` and `error.stderr` and returns them as predictable tool output rather than bubbling an unhandled promise rejection.

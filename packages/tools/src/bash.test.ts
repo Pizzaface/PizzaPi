@@ -137,5 +137,10 @@ describe("bashTool", () => {
         test("has command parameter", () => {
             expect(bashTool.parameters).toBeDefined();
         });
+
+        test("executes a failing command and returns error output", async () => {
+            const result = await bashTool.execute("test-err", { command: "ls /nonexistent_xyz_abc" });
+            expect(result.content[0].text).toContain("No such file or directory");
+        });
     });
 });

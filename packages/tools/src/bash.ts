@@ -35,10 +35,20 @@ export const bashTool: AgentTool = {
             }
         }
 
-        const { stdout, stderr } = await execAsync(command, { timeout, env });
-        return {
-            content: [{ type: "text" as const, text: stdout + (stderr ? `\nstderr: ${stderr}` : "") }],
-            details: { command: params.command, stdout, stderr },
-        };
+        try {
+            const { stdout, stderr } = await execAsync(command, { timeout, env });
+            return {
+                content: [{ type: "text" as const, text: stdout + (stderr ? `\nstderr: ${stderr}` : "") }],
+                details: { command: params.command, stdout, stderr },
+            };
+        } catch (error: any) {
+            // execAsync throws on non-zero exit code.
+            const stdout = error.stdout || "";
+            const stderr = error.stderr || error.message || String(error);
+            return {
+                content: [{ type: "text" as const, text: stdout + (stderr ? `\nstderr: ${stderr}` : "") }],
+                details: { command: params.command, stdout, stderr, exitCode: error.code },
+            };
+        }
     },
 };
