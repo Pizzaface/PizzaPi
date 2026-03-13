@@ -115,7 +115,7 @@ Location: `~/.pizzapi/services/<name>/service.json`
 
 - Runner daemon discovers services in `~/.pizzapi/services/` on startup.
 - Spawns each service's entrypoint as a child process.
-- Health monitoring: restart on crash with exponential backoff (max 3 retries, then mark as failed).
+- Health monitoring: restart on crash with exponential backoff (base delay 1s, doubling each retry, max 3 retries, then mark as failed). Retry counter resets after 60s of healthy uptime.
 - Streaming is demand-driven: only starts when the server reports active subscribers (`ext_subscribe`). Idle services stay spawned but don't produce stream data.
 - Services register with the server via the existing `/runner` namespace.
 
@@ -217,9 +217,18 @@ window.parent.postMessage({
 
 ### SDK (Optional Helper)
 
-A small `pizzapi-ext.js` library that extensions can include for convenience:
+A small `pizzapi-ext.js` library that extensions can include for convenience. Available as a `<script>` tag (exposes `window.PizzaPiExt` global — the zero-build-step path agents use) or as an ES module import for extensions with a build step:
+
+```html
+<!-- Script tag (no build step) -->
+<script src="/api/extensions/sdk/pizzapi-ext.js"></script>
+<script>
+  const { subscribe, query, onTheme } = PizzaPiExt;
+</script>
+```
 
 ```js
+// ES module import (with build step)
 import { subscribe, query, onTheme } from 'pizzapi-ext';
 
 subscribe('system-monitor', 'metrics', (data) => {
@@ -271,7 +280,7 @@ Tool Service process → (stdin/stdout JSON-lines) → Runner daemon
 |------|--------|----------|
 | `user` | `~/.pizzapi/extensions/` | Auto-loads on startup |
 | `agent` | Created via agent API mid-session | Requires one-time user approval; trusted for future sessions once approved |
-| `verified` | Future: signed/reviewed | Auto-loads, extended capabilities (TBD) |
+| `verified` | Future: signed/reviewed | Auto-loads, extended capabilities (deferred — see V1 Scope Boundary) |
 
 ### Residual Risks
 
@@ -334,7 +343,7 @@ All new Socket.IO events are prefixed with `ext_` to avoid collision.
 
 REST endpoint: `GET /api/extensions/:runnerId/:extensionName/*`
 
-Proxies to the runner to fetch extension files. The iframe `src` points here with a `?v=<version>` cache-busting parameter.
+Proxies to the runner to fetch extension files. The server requests file content via a Socket.IO `ext_get_file` event on the `/runner` namespace; the runner responds with the file content as a base64-encoded payload. The server caches the response keyed by `extensionName + path + version` to avoid repeated round-trips. The iframe `src` points here with a `?v=<version>` cache-busting parameter.
 
 ### Smart Subscription Fan-out
 
@@ -360,7 +369,7 @@ Extensions render as additional tabs alongside Terminal and File Explorer.
 3. Server sends `ext_approval_request` to connected viewers.
 4. Web UI shows toast: "Agent created extension 'System Monitor'. Enable it?" with Accept/Reject.
 5. Accept → `ext_approve` → server marks trusted → tab becomes active.
-6. Extension auto-loads on future sessions (now in trusted registry).
+6. Extension auto-loads on future sessions (now in trusted registry). Trust state is persisted server-side in the extension metadata registry (same DB as auth/sessions) keyed by extension name + runner ID. The runner also retains the files on disk, but the server is the source of truth for trust decisions.
 
 ### New Components
 
