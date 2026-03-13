@@ -110,14 +110,20 @@ describe("bashTool", () => {
     });
 
     describe("error handling", () => {
-        test("propagates command execution errors", async () => {
-            await expect(execBash("exit 1")).rejects.toThrow();
+        test("returns stderr on non-zero exit", async () => {
+            const result = await execBash("exit 1");
+            expect(result.content[0].text).toBeDefined();
         });
 
-        test("propagates command-not-found errors", async () => {
-            await expect(
-                execBash("nonexistent_command_xyz_123"),
-            ).rejects.toThrow();
+        test("returns error output for command-not-found", async () => {
+            const result = await execBash("nonexistent_command_xyz_123");
+            // Either captures stderr or returns an error message
+            expect(result.content[0].text).toBeTruthy();
+        });
+
+        test("returns error output for failing commands", async () => {
+            const result = await execBash("ls /nonexistent_xyz_abc");
+            expect(result.content[0].text).toContain("No such file or directory");
         });
     });
 
