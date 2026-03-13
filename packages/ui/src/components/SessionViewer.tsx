@@ -2204,9 +2204,11 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                       event.preventDefault();
                       const totalItems = isResumeMode
                         ? resumeCandidates.length
-                        : subCommandMode.active
-                          ? subCommandMode.filtered.length
-                          : commandSuggestions.length + extensionSuggestions.length + promptSuggestions.length + skillSuggestions.length;
+                        : isAgentMode
+                          ? agentCandidates.length
+                          : subCommandMode.active
+                            ? subCommandMode.filtered.length
+                            : commandSuggestions.length + extensionSuggestions.length + promptSuggestions.length + skillSuggestions.length;
                       if (totalItems === 0) return;
                       setCommandHighlightedIndex(prev => {
                         if (event.key === "ArrowDown") {
@@ -2293,6 +2295,26 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                         }
                       }
                       // No highlighted match — fall through to execute the typed command
+                    }
+
+                    // Tab in agent mode: autocomplete the highlighted agent name into the text box
+                    if (event.key === "Tab" && isAgentMode && agentCandidates.length > 0) {
+                      event.preventDefault();
+                      const highlighted = agentCandidates[commandHighlightedIndex] ?? agentCandidates[0];
+                      if (highlighted) {
+                        setInput(`/agents ${highlighted.name}`);
+                        setCommandQuery("");
+                        setCommandHighlightedIndex(0);
+                        requestAnimationFrame(() => {
+                          const textarea = document.querySelector<HTMLTextAreaElement>("[data-pp-prompt]");
+                          if (textarea) {
+                            const len = textarea.value.length;
+                            textarea.setSelectionRange(len, len);
+                            textarea.focus();
+                          }
+                        });
+                      }
+                      return;
                     }
 
                     // Tab in sub-command mode: autocomplete the highlighted sub-command into the text box
