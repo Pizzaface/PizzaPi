@@ -1027,6 +1027,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                     replyErr("No active session");
                     return;
                 }
+                latestCtx.modelRegistry.refresh();
                 replyOk({ models: getConfiguredModels(latestCtx) });
                 return;
             }
