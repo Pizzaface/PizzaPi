@@ -40,7 +40,7 @@ services:
     depends_on:
       - redis
     volumes:
-      - ..:/app
+      - ..:/app:Z
       - /app/node_modules
     profiles:
       - dev
