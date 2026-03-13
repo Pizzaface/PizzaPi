@@ -105,7 +105,21 @@ session_trigger: (data: {
 }) => void;
 ```
 
-- [ ] **Step 2: Add `session_trigger` and `trigger_response` to `RelayServerToClientEvents`**
+- [ ] **Step 2: Add `trigger_response` to `RelayClientToServerEvents`**
+
+Add after `session_trigger` (which was just added in Step 1):
+
+```typescript
+/** Parent sends a trigger response back to the child */
+trigger_response: (data: {
+    token: string;
+    triggerId: string;
+    response: string;
+    targetSessionId: string;
+}) => void;
+```
+
+- [ ] **Step 3: Add `session_trigger` and `trigger_response` to `RelayServerToClientEvents`**
 
 Add after `session_message_error`:
 
@@ -133,7 +147,7 @@ trigger_response: (data: {
 }) => void;
 ```
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add packages/protocol/src/relay.ts
@@ -525,14 +539,14 @@ git commit -m "feat: add session_trigger and trigger_response routing to relay s
 **Files:**
 - Create: `packages/cli/src/extensions/triggers/extension.ts`
 
-- [ ] **Step 1: Create the extension factory**
+- [ ] **Step 1: Create the extension factory with stub tool implementations**
 
-Register three tools: `tell_child`, `respond_to_trigger`, `escalate_trigger`.
+Register three tools as **stubs** — they validate params and return success messages but don't actually emit to the relay socket yet. Task 12 wires them up to `getRelaySocket()`.
 
 ```typescript
 import type { ExtensionFactory } from "@mariozechner/pi-coding-agent";
-import { renderTrigger, parseTriggerResponse, TRIGGER_RENDERERS } from "./registry.js";
 import type { ConversationTrigger, PendingTrigger } from "./types.js";
+import { getRelaySocket } from "../remote.js";  // Available after Task 10b
 
 const silent = { render: (_w: number): string[] => [], invalidate: () => {} };
 
@@ -540,10 +554,7 @@ export const triggersExtension: ExtensionFactory = (pi) => {
     const parentSessionId = process.env.PIZZAPI_WORKER_PARENT_SESSION_ID ?? null;
     const ownSessionId = process.env.PIZZAPI_SESSION_ID ?? null;
 
-    // Pending triggers map — tracks triggers this session fired that expect a response
-    const pendingTriggers = new Map<string, PendingTrigger>();
-
-    // ── tell_child ────────────────────────────────────────────────────
+    // ── tell_child (STUB — wired in Task 12) ─────────────────────────
     pi.registerTool({
         name: "tell_child",
         label: "Tell Child",
@@ -562,18 +573,15 @@ export const triggersExtension: ExtensionFactory = (pi) => {
             required: ["sessionId", "message"],
         } as any,
         async execute(_toolCallId, rawParams) {
-            // Emit an input event to the child session via relay
             const params = rawParams as { sessionId: string; message: string; deliverAs?: string };
-            // Use the relay socket to send an input to the child session
-            // (Implemented via session_message with a special flag, or via a new relay event)
-            // For V1: reuse existing send mechanism
-            return { content: [{ type: "text" as const, text: `Message sent to child ${params.sessionId}` }] };
+            // TODO(Task 12): Wire to relay socket
+            return { content: [{ type: "text" as const, text: `[STUB] Message sent to child ${params.sessionId}` }] };
         },
         renderCall: () => silent,
         renderResult: () => silent,
     });
 
-    // ── respond_to_trigger ────────────────────────────────────────────
+    // ── respond_to_trigger (STUB — wired in Task 12) ─────────────────
     pi.registerTool({
         name: "respond_to_trigger",
         label: "Respond to Trigger",
@@ -588,14 +596,14 @@ export const triggersExtension: ExtensionFactory = (pi) => {
         } as any,
         async execute(_toolCallId, rawParams) {
             const params = rawParams as { triggerId: string; response: string };
-            // Route response back to child via relay trigger_response event
-            return { content: [{ type: "text" as const, text: `Response sent for trigger ${params.triggerId}` }] };
+            // TODO(Task 12): Wire to relay trigger_response event
+            return { content: [{ type: "text" as const, text: `[STUB] Response sent for trigger ${params.triggerId}` }] };
         },
         renderCall: () => silent,
         renderResult: () => silent,
     });
 
-    // ── escalate_trigger ──────────────────────────────────────────────
+    // ── escalate_trigger (STUB — wired in Task 12) ───────────────────
     pi.registerTool({
         name: "escalate_trigger",
         label: "Escalate Trigger",
@@ -610,8 +618,8 @@ export const triggersExtension: ExtensionFactory = (pi) => {
         } as any,
         async execute(_toolCallId, rawParams) {
             const params = rawParams as { triggerId: string; context?: string };
-            // Fire escalate trigger targeting the human viewer
-            return { content: [{ type: "text" as const, text: `Trigger ${params.triggerId} escalated to human` }] };
+            // TODO(Task 12): Wire to relay escalate trigger
+            return { content: [{ type: "text" as const, text: `[STUB] Trigger ${params.triggerId} escalated to human` }] };
         },
         renderCall: () => silent,
         renderResult: () => silent,
@@ -651,24 +659,56 @@ git commit -m "feat: add triggers extension with tell_child, respond_to_trigger,
 
 ---
 
-### Task 11: Wire up trigger emission in remote.ts
+### Task 10b: Export relay socket getter from remote.ts
 
 **Files:**
 - Modify: `packages/cli/src/extensions/remote.ts`
 
-- [ ] **Step 1: Add `session_trigger` emission function**
+This must happen before Task 12 (which needs relay socket access from `triggers/extension.ts`).
 
-Export a function that child-side code can call to fire triggers via the relay socket:
+- [ ] **Step 1: Add relay socket export**
+
+Near the top of `remote.ts`, after the `_cliErrorForwarder` section (~line 114), add module-level exports:
 
 ```typescript
-export function emitTrigger(trigger: ConversationTrigger): boolean {
-    if (!relay || !sioSocket?.connected) return false;
-    sioSocket.emit("session_trigger", {
-        token: relay.token,
-        trigger,
-    });
-    return true;
+// ── Relay socket access for trigger system ────────────────────────────────────
+let _relaySocket: Socket<RelayServerToClientEvents, RelayClientToServerEvents> | null = null;
+let _relayToken: string | null = null;
+
+/** Get the active relay socket and token, or null if not connected. */
+export function getRelaySocket(): { socket: Socket<RelayServerToClientEvents, RelayClientToServerEvents>; token: string } | null {
+    return _relaySocket?.connected ? { socket: _relaySocket, token: _relayToken ?? "" } : null;
 }
+```
+
+Inside the `registered` handler (~line 1845), after `relay = { ... }`, set:
+
+```typescript
+_relaySocket = sioSocket;
+_relayToken = data.token;
+```
+
+- [ ] **Step 2: Commit**
+
+```bash
+git add packages/cli/src/extensions/remote.ts
+git commit -m "feat: export getRelaySocket from remote.ts for trigger system"
+```
+
+---
+
+### Task 11: Wire up trigger reception in remote.ts
+
+**Files:**
+- Modify: `packages/cli/src/extensions/remote.ts`
+
+- [ ] **Step 1: Add trigger types import**
+
+At the top of `remote.ts`:
+
+```typescript
+import { renderTrigger } from "./triggers/registry.js";
+import type { ConversationTrigger } from "./triggers/types.js";
 ```
 
 - [ ] **Step 2: Add `session_trigger` listener for receiving triggers as a parent**
@@ -703,37 +743,110 @@ git commit -m "feat: wire up trigger emission and reception in remote extension"
 
 ---
 
-### Task 12: Connect trigger tools to relay emission
+### Task 12: Wire trigger tool stubs to relay socket
 
 **Files:**
 - Modify: `packages/cli/src/extensions/triggers/extension.ts`
 
-- [ ] **Step 1: Wire `tell_child` to emit input via relay**
+**Prerequisite:** Task 10b (`getRelaySocket` export) must be complete.
 
-The `tell_child` tool needs to route a message to a child session. Use the relay socket's existing `session_message` or add a new emit for direct input injection.
+- [ ] **Step 1: Wire `tell_child` to emit `session_message` via relay**
 
-For V1, send via the relay server which re-emits as an `input` event to the target session.
+Replace the stub in `tell_child`'s `execute` with:
+
+```typescript
+async execute(_toolCallId, rawParams) {
+    const params = rawParams as { sessionId: string; message: string; deliverAs?: string };
+    const conn = getRelaySocket();
+    if (!conn) {
+        return { content: [{ type: "text" as const, text: "Error: Not connected to relay. Cannot send message to child." }] };
+    }
+    // Reuse existing session_message mechanism to send input to the child
+    conn.socket.emit("session_message", {
+        token: conn.token,
+        targetSessionId: params.sessionId,
+        message: params.message,
+    });
+    return { content: [{ type: "text" as const, text: `Message sent to child ${params.sessionId} (deliverAs: ${params.deliverAs ?? "steer"})` }] };
+},
+```
+
+Note: `session_message` delivers to the child's relay connection. The child receives it via `sock.on("session_message", ...)` in remote.ts and it's handled by the message bus. For `tell_child`, we may want to route via the relay's `input` event instead so it acts like a user message with `deliverAs`. This requires a new relay event or extending `session_message` with a `deliverAs` field. **For V1, use `session_message` and document the limitation.**
 
 - [ ] **Step 2: Wire `respond_to_trigger` to emit `trigger_response` via relay**
 
+Replace the stub with:
+
 ```typescript
-sioSocket.emit("trigger_response", {
-    token: relay.token,
-    triggerId: params.triggerId,
-    response: params.response,
-    targetSessionId: /* look up from pending trigger */,
-});
+async execute(_toolCallId, rawParams) {
+    const params = rawParams as { triggerId: string; response: string };
+    const conn = getRelaySocket();
+    if (!conn) {
+        return { content: [{ type: "text" as const, text: "Error: Not connected to relay." }] };
+    }
+    // The triggerId maps to a pending trigger — we need to know the target child session ID.
+    // The parent tracks received triggers in a local map populated by the session_trigger listener.
+    const pending = receivedTriggers.get(params.triggerId);
+    if (!pending) {
+        return { content: [{ type: "text" as const, text: `Error: No pending trigger with ID ${params.triggerId}. It may have already been responded to or timed out.` }] };
+    }
+    conn.socket.emit("trigger_response" as any, {
+        token: conn.token,
+        triggerId: params.triggerId,
+        response: params.response,
+        targetSessionId: pending.sourceSessionId,
+    });
+    receivedTriggers.delete(params.triggerId);
+    return { content: [{ type: "text" as const, text: `Response sent for trigger ${params.triggerId}` }] };
+},
 ```
+
+Add a `receivedTriggers` map at the top of the extension:
+
+```typescript
+// Tracks triggers this session has received (as parent) for response routing
+const receivedTriggers = new Map<string, { sourceSessionId: string; type: string }>();
+```
+
+This map is populated by the `session_trigger` listener added in Task 11 — the listener should call a setter exported from this extension or the triggers module.
 
 - [ ] **Step 3: Wire `escalate_trigger` to fire an escalate trigger**
 
-Construct an `escalate` type `ConversationTrigger` with the original trigger's payload and emit it.
+```typescript
+async execute(_toolCallId, rawParams) {
+    const params = rawParams as { triggerId: string; context?: string };
+    const conn = getRelaySocket();
+    if (!conn) {
+        return { content: [{ type: "text" as const, text: "Error: Not connected to relay." }] };
+    }
+    const pending = receivedTriggers.get(params.triggerId);
+    if (!pending) {
+        return { content: [{ type: "text" as const, text: `Error: No pending trigger with ID ${params.triggerId}.` }] };
+    }
+    // Fire an escalate trigger to the human viewer (no specific target — the web UI handles it)
+    conn.socket.emit("session_trigger" as any, {
+        token: conn.token,
+        trigger: {
+            type: "escalate",
+            sourceSessionId: ownSessionId ?? "",
+            targetSessionId: pending.sourceSessionId,  // Uses inherited triggerId per spec
+            payload: { reason: params.context ?? "Parent escalated", originalTriggerId: params.triggerId },
+            deliverAs: "steer" as const,
+            expectsResponse: true,
+            triggerId: params.triggerId,  // Inherit original triggerId per spec
+            ts: new Date().toISOString(),
+        },
+    });
+    receivedTriggers.delete(params.triggerId);
+    return { content: [{ type: "text" as const, text: `Trigger ${params.triggerId} escalated to human` }] };
+},
+```
 
 - [ ] **Step 4: Commit**
 
 ```bash
 git add packages/cli/src/extensions/triggers/extension.ts
-git commit -m "feat: connect trigger tools to relay socket emission"
+git commit -m "feat: wire trigger tools to relay socket via getRelaySocket"
 ```
 
 ---
@@ -767,7 +880,7 @@ import type { ConversationTrigger } from "./triggers/types.js";
 
 - [ ] **Step 3: Add early return in AskUserQuestion execute for child sessions**
 
-In the `AskUserQuestion` tool's `execute` function (~line 2110, after param validation and sanitization), add before the `askUserQuestion()` call:
+In the `AskUserQuestion` tool's `execute` function (~line 2110, after param validation and sanitization), add before the `askUserQuestion()` call. Note: `signal` is already available as the 3rd parameter of `execute(toolCallId, rawParams, signal, onUpdate, ctx)`:
 
 ```typescript
 // ── Child session: fire trigger to parent instead of waiting for web UI ──
@@ -843,23 +956,110 @@ git commit -m "feat: AskUserQuestion fires trigger to parent in child sessions"
 **Files:**
 - Modify: `packages/cli/src/extensions/plan-mode-toggle.ts`
 
-**Mechanism:** The `plan_mode` tool is registered in `packages/cli/src/extensions/plan-mode-toggle.ts`. Similar to AskUserQuestion, in child sessions it should fire a `plan_review` trigger to the parent instead of waiting for web UI approval.
+**Mechanism:** The `plan_mode` tool is registered in `packages/cli/src/extensions/plan-mode-toggle.ts`. The tool's `execute` function stores a pending plan in module state and waits for web UI approval (via an exec handler). For child sessions, we add an early return that fires a `plan_review` trigger and waits for the parent's response.
 
-- [ ] **Step 1: Add child-session detection and trigger emission**
+- [ ] **Step 1: Read `plan-mode-toggle.ts` to understand the approval flow**
 
-In `plan-mode-toggle.ts`, in the `plan_mode` tool's `execute` function, add an early return for child sessions that fires a `plan_review` trigger with the plan data as payload:
+Before modifying, read the full file to understand:
+- How the tool stores pending plan state
+- How `consumePendingPlanModeFromWeb` works
+- What response format the tool expects
+
+```bash
+cat packages/cli/src/extensions/plan-mode-toggle.ts
+```
+
+- [ ] **Step 2: Add imports and child-session detection**
+
+At the top of `plan-mode-toggle.ts`:
 
 ```typescript
-if (process.env.PIZZAPI_WORKER_PARENT_SESSION_ID) {
-    // Fire plan_review trigger to parent
-    // Wait for trigger_response
-    // Map response to plan_mode result (Begin/Cancel/Suggest Edit)
+import { getRelaySocket } from "./remote.js";
+import type { ConversationTrigger } from "./triggers/types.js";
+```
+
+Inside the extension factory, add:
+
+```typescript
+const parentSessionId = process.env.PIZZAPI_WORKER_PARENT_SESSION_ID ?? null;
+const isChildSession = parentSessionId !== null;
+const ownSessionId = process.env.PIZZAPI_SESSION_ID ?? null;
+```
+
+- [ ] **Step 3: Add early return in `plan_mode` execute for child sessions**
+
+In the `plan_mode` tool's `execute` function, after parameter validation, add:
+
+```typescript
+if (isChildSession && parentSessionId) {
+    const conn = getRelaySocket();
+    if (!conn) {
+        return { content: [{ type: "text" as const, text: "Error: Not connected to relay. Cannot send plan to parent." }] };
+    }
+
+    const triggerId = crypto.randomUUID();
+    const trigger: ConversationTrigger = {
+        type: "plan_review",
+        sourceSessionId: ownSessionId ?? "",
+        sourceSessionName: pi.getSessionName?.() ?? undefined,
+        targetSessionId: parentSessionId,
+        payload: {
+            title: params.title ?? "Plan Review",
+            steps: params.steps ?? [],
+            description: params.description ?? undefined,
+        },
+        deliverAs: "followUp",
+        expectsResponse: true,
+        triggerId,
+        timeoutMs: 300_000,
+        ts: new Date().toISOString(),
+    };
+
+    conn.socket.emit("session_trigger" as any, { token: conn.token, trigger });
+
+    // Wait for parent's response
+    const response = await new Promise<string>((resolve) => {
+        const timeout = setTimeout(() => {
+            cleanup();
+            resolve("Cancel");  // Default to cancel on timeout
+        }, trigger.timeoutMs ?? 300_000);
+
+        const handler = (data: { triggerId: string; response: string }) => {
+            if (data.triggerId === triggerId) {
+                cleanup();
+                resolve(data.response);
+            }
+        };
+
+        const cleanup = () => {
+            clearTimeout(timeout);
+            conn.socket.off("trigger_response" as any, handler);
+        };
+
+        conn.socket.on("trigger_response" as any, handler);
+        signal?.addEventListener("abort", () => { cleanup(); resolve("Cancel"); });
+    });
+
+    // Map parent response to plan_mode actions:
+    // "Begin" / "approve" / "lgtm" → proceed
+    // "Cancel" → cancel
+    // Anything else → treat as "Suggest Edit" feedback
+    const lower = response.toLowerCase().trim();
+    const isApproval = ["begin", "approve", "approved", "lgtm", "looks good", "go", "proceed"].some(p => lower.includes(p));
+    const isCancel = ["cancel", "stop", "no", "reject"].some(p => lower === p);
+
+    if (isApproval) {
+        return { content: [{ type: "text" as const, text: "Plan approved by parent. Proceeding." }] };
+    } else if (isCancel) {
+        return { content: [{ type: "text" as const, text: "Plan cancelled by parent." }] };
+    } else {
+        // Treat as edit suggestion
+        return { content: [{ type: "text" as const, text: `Parent suggests edit: ${response}` }] };
+    }
 }
 ```
 
-Follow the same pattern as Task 13 Step 3.
-
-- [ ] **Step 2: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add packages/cli/src/extensions/plan-mode-toggle.ts
