@@ -105,7 +105,7 @@ describe("E2E: signup → API key → authenticated requests", () => {
             name: "Bad Email",
             email: "not-an-email",
             password: "SecurePass123",
-        }, { "x-forwarded-for": "10.0.0.99" });
+        }, { "x-pizzapi-client-ip": "10.0.0.99" });
         expect(res.status).toBe(400);
     });
 
@@ -154,7 +154,7 @@ describe("E2E: key rotation", () => {
 
     test("old API key is invalidated after re-register", async () => {
         // Register and get first key
-        const res1 = await req("POST", "/api/register", rotUser, { "x-forwarded-for": "10.0.1.1" });
+        const res1 = await req("POST", "/api/register", rotUser, { "x-pizzapi-client-ip": "10.0.1.1" });
         expect(res1.status).toBe(200);
         const { key: firstKey } = await res1.json();
 
@@ -164,7 +164,7 @@ describe("E2E: key rotation", () => {
         expect(check1.valid).toBe(true);
 
         // Re-register (re-login) to get a new key
-        const res2 = await req("POST", "/api/register", rotUser, { "x-forwarded-for": "10.0.1.2" });
+        const res2 = await req("POST", "/api/register", rotUser, { "x-pizzapi-client-ip": "10.0.1.2" });
         expect(res2.status).toBe(200);
         const { key: secondKey } = await res2.json();
         expect(secondKey).not.toBe(firstKey);
@@ -189,7 +189,7 @@ describe("E2E: API key authenticates HTTP requests", () => {
             name: "HTTP Auth User",
             email: "httpauth@example.com",
             password: "HttpAuth123",
-        }, { "x-forwarded-for": "10.0.2.1" });
+        }, { "x-pizzapi-client-ip": "10.0.2.1" });
         const data = await res.json();
         apiKey = data.key;
     });
@@ -240,7 +240,7 @@ describe("E2E: signup gating (disable after first user)", () => {
                 name: "First User",
                 email: "first@example.com",
                 password: "FirstPass123",
-            }, { "x-forwarded-for": "10.0.3.1" });
+            }, { "x-pizzapi-client-ip": "10.0.3.1" });
             expect(res1.status).toBe(200);
             const data1 = await res1.json();
             expect(data1.ok).toBe(true);
@@ -250,7 +250,7 @@ describe("E2E: signup gating (disable after first user)", () => {
                 name: "Second User",
                 email: "second@example.com",
                 password: "SecondPass123",
-            }, { "x-forwarded-for": "10.0.3.2" });
+            }, { "x-pizzapi-client-ip": "10.0.3.2" });
             expect(res2.status).toBe(403);
             const data2 = await res2.json();
             expect(data2.error).toContain("disabled");
@@ -284,7 +284,7 @@ describe("E2E: change-password enforces password policy", () => {
 
     beforeAll(async () => {
         // Register user
-        const regRes = await req("POST", "/api/register", cpUser, { "x-forwarded-for": "10.0.4.1" });
+        const regRes = await req("POST", "/api/register", cpUser, { "x-pizzapi-client-ip": "10.0.4.1" });
         expect(regRes.status).toBe(200);
 
         // Sign in to get a session cookie
