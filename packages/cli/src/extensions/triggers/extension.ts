@@ -47,7 +47,7 @@ export const triggersExtension: ExtensionFactory = (pi) => {
             const params = rawParams as { sessionId: string; message: string; deliverAs?: string };
             const conn = getRelaySocket();
             if (!conn) {
-                return { content: [{ type: "text" as const, text: "Error: Not connected to relay. Cannot send message to child." }] };
+                return { content: [{ type: "text" as const, text: "Error: Not connected to relay. Cannot send message to child." }], details: null as any };
             }
             // Reuse existing session_message mechanism to send input to the child
             conn.socket.emit("session_message", {
@@ -55,7 +55,7 @@ export const triggersExtension: ExtensionFactory = (pi) => {
                 targetSessionId: params.sessionId,
                 message: params.message,
             });
-            return { content: [{ type: "text" as const, text: `Message sent to child ${params.sessionId}` }] };
+            return { content: [{ type: "text" as const, text: `Message sent to child ${params.sessionId}` }], details: null as any };
         },
         renderCall: () => silent,
         renderResult: () => silent,
@@ -78,11 +78,11 @@ export const triggersExtension: ExtensionFactory = (pi) => {
             const params = rawParams as { triggerId: string; response: string };
             const conn = getRelaySocket();
             if (!conn) {
-                return { content: [{ type: "text" as const, text: "Error: Not connected to relay." }] };
+                return { content: [{ type: "text" as const, text: "Error: Not connected to relay." }], details: null as any };
             }
             const pending = receivedTriggers.get(params.triggerId);
             if (!pending) {
-                return { content: [{ type: "text" as const, text: `Error: No pending trigger with ID ${params.triggerId}. It may have already been responded to or timed out.` }] };
+                return { content: [{ type: "text" as const, text: `Error: No pending trigger with ID ${params.triggerId}. It may have already been responded to or timed out.` }], details: null as any };
             }
             conn.socket.emit("trigger_response" as any, {
                 token: conn.token,
@@ -91,7 +91,7 @@ export const triggersExtension: ExtensionFactory = (pi) => {
                 targetSessionId: pending.sourceSessionId,
             });
             receivedTriggers.delete(params.triggerId);
-            return { content: [{ type: "text" as const, text: `Response sent for trigger ${params.triggerId}` }] };
+            return { content: [{ type: "text" as const, text: `Response sent for trigger ${params.triggerId}` }], details: null as any };
         },
         renderCall: () => silent,
         renderResult: () => silent,
@@ -114,11 +114,11 @@ export const triggersExtension: ExtensionFactory = (pi) => {
             const params = rawParams as { triggerId: string; context?: string };
             const conn = getRelaySocket();
             if (!conn) {
-                return { content: [{ type: "text" as const, text: "Error: Not connected to relay." }] };
+                return { content: [{ type: "text" as const, text: "Error: Not connected to relay." }], details: null as any };
             }
             const pending = receivedTriggers.get(params.triggerId);
             if (!pending) {
-                return { content: [{ type: "text" as const, text: `Error: No pending trigger with ID ${params.triggerId}.` }] };
+                return { content: [{ type: "text" as const, text: `Error: No pending trigger with ID ${params.triggerId}.` }], details: null as any };
             }
             // Fire an escalate trigger — the web UI can surface this to the human
             conn.socket.emit("session_trigger" as any, {
@@ -135,7 +135,7 @@ export const triggersExtension: ExtensionFactory = (pi) => {
                 },
             });
             receivedTriggers.delete(params.triggerId);
-            return { content: [{ type: "text" as const, text: `Trigger ${params.triggerId} escalated to human` }] };
+            return { content: [{ type: "text" as const, text: `Trigger ${params.triggerId} escalated to human` }], details: null as any };
         },
         renderCall: () => silent,
         renderResult: () => silent,
