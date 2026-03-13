@@ -2,8 +2,11 @@
  * Model Discovery Extension — fetches available models from provider APIs
  * and registers any that are missing from the built-in registry.
  *
- * Discovered models are registered under synthetic provider names
- * (e.g., "openai-discovered") to avoid replacing curated built-in models.
+ * Built-in providers (openai, anthropic) are scanned for new models and
+ * registered additively under their real provider name.
+ *
+ * External providers are configured via env vars:
+ *   PIZZAPI_OLLAMA_URL  — e.g. http://192.168.42.145:11434
  */
 import type { ExtensionFactory } from "@mariozechner/pi-coding-agent";
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs";
@@ -13,6 +16,7 @@ import { homedir } from "os";
 import {
     fetchOpenAIModels,
     fetchAnthropicModels,
+    fetchOllamaModels,
     type DiscoveredModel,
 } from "./model-discovery-providers.js";
 
@@ -109,7 +113,7 @@ export const modelDiscoveryExtension: ExtensionFactory = (pi) => {
         const existingIds = new Set(allModels.map((m) => m.id));
         const newCache: DiscoveryCache = { timestamp: Date.now(), providers: {} };
 
-        // Collect unique providers that have a known fetcher
+        // ── Built-in providers (openai, anthropic, etc.) ──────────────────────
         const providerBaseUrls = new Map<string, string>();
         for (const model of allModels) {
             if (PROVIDER_FETCHERS[model.provider] && !providerBaseUrls.has(model.provider)) {
@@ -125,28 +129,43 @@ export const modelDiscoveryExtension: ExtensionFactory = (pi) => {
 
             let newModels: DiscoveredModel[];
             if (cache?.providers[provider]) {
-                // Use cached discovery, still filter against current registry
                 newModels = cache.providers[provider].filter((m) => !existingIds.has(m.id));
                 newCache.providers[provider] = cache.providers[provider];
             } else {
                 newModels = await discoverNewModels({ provider, baseUrl, apiKey, existingModelIds: existingIds });
-                // Store ALL fetched models in cache (before filtering)
                 const allFetched = await PROVIDER_FETCHERS[provider].fetch(baseUrl, apiKey);
                 newCache.providers[provider] = allFetched;
             }
 
             if (newModels.length === 0) continue;
 
-            const fetcher = PROVIDER_FETCHERS[provider];
-
-            // Use the real provider name — the patched ModelRegistry merges
-            // additively rather than replacing, and falls back to the existing
-            // model's baseUrl so we don't need to repeat it here.
             pi.registerProvider(provider, {
                 apiKey,
-                api: fetcher.api,
+                api: PROVIDER_FETCHERS[provider].api,
                 models: buildModelDefs(newModels),
             });
+        }
+
+        // ── Ollama (PIZZAPI_OLLAMA_URL) ───────────────────────────────────────
+        const ollamaUrl = process.env.PIZZAPI_OLLAMA_URL;
+        if (ollamaUrl) {
+            let ollamaModels: DiscoveredModel[];
+            if (cache?.providers["ollama"]) {
+                ollamaModels = cache.providers["ollama"];
+                newCache.providers["ollama"] = ollamaModels;
+            } else {
+                ollamaModels = await fetchOllamaModels(ollamaUrl);
+                newCache.providers["ollama"] = ollamaModels;
+            }
+
+            if (ollamaModels.length > 0) {
+                pi.registerProvider("ollama", {
+                    baseUrl: ollamaUrl,
+                    apiKey: "ollama",
+                    api: "openai-completions",
+                    models: buildModelDefs(ollamaModels),
+                });
+            }
         }
 
         writeCache(cachePath, newCache);

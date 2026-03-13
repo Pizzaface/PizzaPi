@@ -37,6 +37,24 @@ export async function fetchOpenAIModels(baseUrl: string, apiKey: string): Promis
     }
 }
 
+/** Fetch all models from an Ollama server's OpenAI-compatible `/v1/models` endpoint. */
+export async function fetchOllamaModels(baseUrl: string): Promise<DiscoveredModel[]> {
+    try {
+        const url = baseUrl.endsWith("/v1") ? `${baseUrl}/models` : `${baseUrl}/v1/models`;
+        const res = await fetch(url, {
+            signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+        });
+        if (!res.ok) return [];
+
+        const body = await res.json() as { data?: Array<{ id: string }> };
+        if (!Array.isArray(body?.data)) return [];
+
+        return body.data.map((m) => ({ id: m.id, name: m.id }));
+    } catch {
+        return [];
+    }
+}
+
 /** Fetch available models from the Anthropic `/v1/models` endpoint. */
 export async function fetchAnthropicModels(baseUrl: string, apiKey: string): Promise<DiscoveredModel[]> {
     try {
