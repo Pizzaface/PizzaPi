@@ -33,11 +33,17 @@ function nodeReqToFetchRequest(req: IncomingMessage): Request {
     const headers = new Headers();
     for (const [key, value] of Object.entries(req.headers)) {
         if (value === undefined) continue;
+        if (key.toLowerCase() === "x-pizzapi-client-ip") continue; // Prevent spoofing
         if (Array.isArray(value)) {
             for (const v of value) headers.append(key, v);
         } else {
             headers.set(key, value);
         }
+    }
+
+    // Pass the actual network connection IP downstream
+    if (req.socket.remoteAddress) {
+        headers.set("x-pizzapi-client-ip", req.socket.remoteAddress);
     }
 
     const method = (req.method ?? "GET").toUpperCase();

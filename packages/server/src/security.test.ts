@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeAll, afterAll } from "bun:test";
-import { RateLimiter, isValidEmail, isValidPassword, cwdMatchesRoots } from "./security";
+import { RateLimiter, isValidEmail, isValidPassword, cwdMatchesRoots, getClientIp } from "./security";
 
 describe("RateLimiter", () => {
     test("allows requests within limit", () => {
@@ -180,5 +180,89 @@ describe("isValidPassword", () => {
         expect(cwdMatchesRoots([root], "/home/user/project/")).toBe(true);
         expect(cwdMatchesRoots(["/home/user/project/"], "/home/user/project")).toBe(true);
         expect(cwdMatchesRoots(["/home/user/project/"], "/home/user/project/src")).toBe(true);
+    });
+});
+
+describe("getClientIp", () => {
+    test("extracts direct IP when no proxy", () => {
+        const req = new Request("http://localhost", {
+            headers: { "x-pizzapi-client-ip": "192.168.1.10" }
+        });
+        expect(getClientIp(req)).toBe("192.168.1.10");
+    });
+
+    test("defaults to unknown when no header", () => {
+        const req = new Request("http://localhost");
+        expect(getClientIp(req)).toBe("unknown");
+    });
+
+    test("respects X-Forwarded-For if direct IP is IPv4-mapped IPv6 private network", () => {
+        const req = new Request("http://localhost", {
+            headers: {
+                "x-pizzapi-client-ip": "::ffff:172.18.0.22",
+                "x-forwarded-for": "198.51.100.3"
+            }
+        });
+        expect(getClientIp(req)).toBe("198.51.100.3");
+    });
+
+    test("respects X-Forwarded-For if direct IP is local loopback", () => {
+        const req = new Request("http://localhost", {
+            headers: {
+                "x-pizzapi-client-ip": "127.0.0.1",
+                "x-forwarded-for": "203.0.113.5, 198.51.100.2"
+            }
+        });
+        expect(getClientIp(req)).toBe("203.0.113.5");
+    });
+
+    test("respects X-Forwarded-For if direct IP is private network (10.x)", () => {
+        const req = new Request("http://localhost", {
+            headers: {
+                "x-pizzapi-client-ip": "10.42.0.5",
+                "x-forwarded-for": "198.51.100.3"
+            }
+        });
+        expect(getClientIp(req)).toBe("198.51.100.3");
+    });
+
+    test("respects X-Forwarded-For if direct IP is private network (172.16-31.x)", () => {
+        const req = new Request("http://localhost", {
+            headers: {
+                "x-pizzapi-client-ip": "172.18.0.22",
+                "x-forwarded-for": "198.51.100.3"
+            }
+        });
+        expect(getClientIp(req)).toBe("198.51.100.3");
+    });
+
+    test("respects X-Forwarded-For if direct IP is private network (192.168.x)", () => {
+        const req = new Request("http://localhost", {
+            headers: {
+                "x-pizzapi-client-ip": "192.168.1.100",
+                "x-forwarded-for": "198.51.100.3"
+            }
+        });
+        expect(getClientIp(req)).toBe("198.51.100.3");
+    });
+
+    test("ignores X-Forwarded-For if direct IP is not trusted", () => {
+        const req = new Request("http://localhost", {
+            headers: {
+                "x-pizzapi-client-ip": "198.51.100.99",
+                "x-forwarded-for": "203.0.113.5"
+            }
+        });
+        expect(getClientIp(req)).toBe("198.51.100.99");
+    });
+
+    test("handles IPv6 loopback", () => {
+        const req = new Request("http://localhost", {
+            headers: {
+                "x-pizzapi-client-ip": "::1",
+                "x-forwarded-for": "10.0.0.5"
+            }
+        });
+        expect(getClientIp(req)).toBe("10.0.0.5");
     });
 });

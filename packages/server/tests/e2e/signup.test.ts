@@ -19,10 +19,13 @@ const dbPath = join(tmpDir, "test.db");
 const BASE = "http://localhost:7777";
 
 /** Helper to make requests through the handler */
+let mockIpCounter = 1;
+
 async function req(method: string, path: string, body?: any, headers?: Record<string, string>): Promise<Response> {
+    const mockIp = `127.0.0.${mockIpCounter++}`;
     const init: RequestInit = {
         method,
-        headers: { "content-type": "application/json", ...headers },
+        headers: { "content-type": "application/json", "x-pizzapi-client-ip": mockIp, ...headers },
     };
     if (body) init.body = JSON.stringify(body);
     return handleFetch(new Request(`${BASE}${path}`, init));

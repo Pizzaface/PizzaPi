@@ -105,3 +105,39 @@ export function cwdMatchesRoots(roots: string[], cwd: string): boolean {
         return rc.startsWith(rr + "/");
     });
 }
+
+/**
+ * Safely extracts the client IP from a Request object.
+ * It uses the x-pizzapi-client-ip header (set by our http server) which represents the
+ * direct network connection.
+ * If the connection comes from a trusted local proxy (e.g. 127.0.0.1, ::1, or private ranges),
+ * it optionally respects the X-Forwarded-For header if present.
+ */
+export function getClientIp(req: Request): string {
+    let directIp = req.headers.get("x-pizzapi-client-ip") || "unknown";
+
+    // Strip IPv4-mapped IPv6 prefix so our regex/prefix matching works natively
+    if (directIp.startsWith("::ffff:")) {
+        directIp = directIp.slice(7);
+    }
+
+    // We trust local loopbacks and private network ranges (RFC 1918 IPv4 and ULA IPv6).
+    // This allows reverse proxies on Docker bridges (e.g. 172.x) to pass X-Forwarded-For properly.
+    const isTrustedProxy =
+        directIp === "127.0.0.1" ||
+        directIp === "::1" ||
+        directIp.startsWith("10.") ||
+        directIp.startsWith("192.168.") ||
+        /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(directIp) ||
+        directIp.toLowerCase().startsWith("fc") ||
+        directIp.toLowerCase().startsWith("fd");
+
+    if (isTrustedProxy) {
+        const xff = req.headers.get("x-forwarded-for");
+        if (xff) {
+            return xff.split(",")[0].trim();
+        }
+    }
+
+    return directIp;
+}
