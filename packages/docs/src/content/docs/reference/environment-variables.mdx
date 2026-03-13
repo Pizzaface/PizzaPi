@@ -28,6 +28,17 @@ These are read by the PizzaPi CLI runner process (`pizzapi` / daemon).
 | `PIZZAPI_RUNNER_STATE_PATH` | Path to the runner state JSON file. | `~/.pizzapi/runner.json` |
 | `PIZZAPI_WORKSPACE_ROOTS` | Comma-separated list of workspace root directories. `PIZZAPI_WORKSPACE_ROOT` (single) and `PIZZAPI_RUNNER_ROOTS` (legacy) are also accepted. | — |
 
+### Worker Session Variables
+
+These are set automatically by the runner daemon on spawned worker sessions.
+
+| Variable | Description | Default |
+|---|---|---|
+| `PIZZAPI_SESSION_ID` | Session ID assigned to this worker. Set by the daemon on spawn. | — |
+| `PIZZAPI_WORKER_PARENT_SESSION_ID` | ID of the parent session that spawned this one. Used by the trigger system for automatic parent-child communication (AskUserQuestion, plan_mode, session completion). Do not set manually. | — |
+| `PIZZAPI_WORKER_CWD` | Working directory for the worker session. | — |
+| `PIZZAPI_WORKER_INITIAL_PROMPT` | Initial prompt to inject into the session. | — |
+
 ### Worker Safe-Mode Variables
 
 These variables control which subsystems are loaded by runner-spawned worker sessions. They're equivalent to the CLI's `--no-*` flags. See [Safe Mode & Startup Performance](/PizzaPi/guides/safe-mode/) for details.
