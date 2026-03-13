@@ -25,7 +25,7 @@ export function truncateSessionId(id: string): string {
 
 // ── Trigger message utilities ────────────────────────────────────────────────
 
-const TRIGGER_PREFIX_RE = /^<!--\s*trigger:([a-f0-9-]+)\s*-->\n?/;
+const TRIGGER_PREFIX_RE = /^<!--\s*trigger:([\w-]+)\s*-->\n?/;
 
 /** Check if a message is a trigger-injected message and extract the trigger ID. */
 export function parseTriggerMessage(text: string): { triggerId: string; body: string } | null {
