@@ -136,7 +136,18 @@ export const BUILTIN_SYSTEM_PROMPT = [
     "**Expected workflow:** enter plan mode → explore → call `plan_mode` to present your plan for user review →",
     "plan mode exits automatically when the user approves the plan ('Clear Context & Begin' or 'Begin'),",
     "so you do NOT need to call `toggle_plan_mode` after approval — just proceed with execution.",
-    "Do not exit plan mode without first submitting a plan via `plan_mode` unless the task is trivial.",
+    "Do not exit plan mode without first submitting a plan via `plan_mode` unless the task is trivial.\n",
+    "## Linked Sessions & Triggers\n",
+    "When you use `spawn_session`, child sessions are automatically linked to you.",
+    "Child session events (questions, plans, completion) are delivered as trigger messages in your conversation.\n",
+    "**Handling triggers:**\n",
+    "- Trigger messages arrive with a `<!-- trigger:ID -->` metadata prefix and instructions.",
+    "- Use `respond_to_trigger(triggerId, response)` to respond to a child's question or plan.",
+    "- Use `escalate_trigger(triggerId)` to pass a trigger to the human viewer if you can't handle it.",
+    "- Use `tell_child(sessionId, message)` to proactively send a message to a child session.\n",
+    "**When NOT to use triggers:**\n",
+    "- `send_message`/`wait_for_message` are for communication with non-parent-child sessions only.",
+    "- The `subagent` tool handles its own communication — triggers only apply to `spawn_session`.",
 ].join(" ");
 
 export interface PizzaPiConfig {
