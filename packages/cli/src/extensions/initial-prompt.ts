@@ -83,6 +83,7 @@ export const initialPromptExtension: ExtensionFactory = (pi) => {
         // Apply tool restrictions from agent definition (if specified).
         // `tools` is an allowlist — only the listed tools are enabled.
         // `disallowedTools` is a denylist — listed tools are removed from the active set.
+        // Both can be specified: allowlist is applied first, then denylist filters the result.
         if (agentTools) {
             try {
                 const allowed = agentTools.split(",").map(t => t.trim()).filter(Boolean);
@@ -95,7 +96,8 @@ export const initialPromptExtension: ExtensionFactory = (pi) => {
                     `pizzapi worker: failed to apply agent tool allowlist: ${err instanceof Error ? err.message : String(err)}`,
                 );
             }
-        } else if (agentDisallowedTools) {
+        }
+        if (agentDisallowedTools) {
             try {
                 const denied = new Set(agentDisallowedTools.split(",").map(t => t.trim().toLowerCase()).filter(Boolean));
                 const current = pi.getActiveTools();

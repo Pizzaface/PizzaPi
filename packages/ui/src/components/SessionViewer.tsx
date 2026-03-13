@@ -712,9 +712,13 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
         // User typed "/agents researcher" — find and spawn that agent
         const agentName = args.trim();
         if (onSpawnAgentSession && runnerId) {
+          // Capture sessionId at dispatch time to discard stale responses
+          // when the user switches sessions while the fetch is in-flight.
+          const dispatchSessionId = sessionId;
           fetch(`/api/runners/${encodeURIComponent(runnerId)}/agents`, { credentials: "include" })
             .then((res) => res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))
             .then((data: any) => {
+              if (dispatchSessionId !== sessionIdRef.current) return; // session changed, discard
               const agents: Array<{ name: string; description?: string; content?: string }> = Array.isArray(data?.agents) ? data.agents : [];
               const match = agents.find(a => a.name.toLowerCase() === agentName.toLowerCase());
               if (match) {
@@ -724,6 +728,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
               }
             })
             .catch((err: Error) => {
+              if (dispatchSessionId !== sessionIdRef.current) return;
               onAppendSystemMessage?.(`**Agents** — Failed to load: ${err.message}`);
             });
         }
