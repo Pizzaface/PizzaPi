@@ -9,19 +9,24 @@ import type { ExtensionFactory } from "@mariozechner/pi-coding-agent";
  *   PIZZAPI_WORKER_INITIAL_MODEL_PROVIDER   — model provider override
  *   PIZZAPI_WORKER_INITIAL_MODEL_ID         — model ID override
  *   PIZZAPI_WORKER_AGENT_NAME               — agent name (sets session name)
+ *   PIZZAPI_WORKER_AGENT_TOOLS              — comma-separated allowlist of tools
+ *   PIZZAPI_WORKER_AGENT_DISALLOWED_TOOLS   — comma-separated denylist of tools
  *
  * This extension is designed for runner-spawned workers created via the
  * spawn_session tool or the /agents UI command. It:
  *   1. On session_start, sets the requested model (if specified)
  *   2. Sets the session name to the agent name (if spawned as an agent)
- *   3. Sends the initial prompt as a user message (if specified)
- *   4. Clears prompt/model env vars so restarts don't re-send
+ *   3. Applies tool restrictions from agent definition (if specified)
+ *   4. Sends the initial prompt as a user message (if specified)
+ *   5. Clears prompt/model env vars so restarts don't re-send
  */
 export const initialPromptExtension: ExtensionFactory = (pi) => {
     const initialPrompt = process.env.PIZZAPI_WORKER_INITIAL_PROMPT?.trim();
     const initialModelProvider = process.env.PIZZAPI_WORKER_INITIAL_MODEL_PROVIDER?.trim();
     const initialModelId = process.env.PIZZAPI_WORKER_INITIAL_MODEL_ID?.trim();
     const agentName = process.env.PIZZAPI_WORKER_AGENT_NAME?.trim();
+    const agentTools = process.env.PIZZAPI_WORKER_AGENT_TOOLS?.trim();
+    const agentDisallowedTools = process.env.PIZZAPI_WORKER_AGENT_DISALLOWED_TOOLS?.trim();
 
     // Nothing to do if no initial prompt and no agent was set.
     if (!initialPrompt && !agentName) return;
@@ -71,6 +76,37 @@ export const initialPromptExtension: ExtensionFactory = (pi) => {
             } catch (err) {
                 console.warn(
                     `pizzapi worker: failed to set agent session name: ${err instanceof Error ? err.message : String(err)}`,
+                );
+            }
+        }
+
+        // Apply tool restrictions from agent definition (if specified).
+        // `tools` is an allowlist — only the listed tools are enabled.
+        // `disallowedTools` is a denylist — listed tools are removed from the active set.
+        if (agentTools) {
+            try {
+                const allowed = agentTools.split(",").map(t => t.trim()).filter(Boolean);
+                if (allowed.length > 0) {
+                    pi.setActiveTools(allowed);
+                    console.log(`pizzapi worker: agent tool allowlist applied: ${allowed.join(", ")}`);
+                }
+            } catch (err) {
+                console.warn(
+                    `pizzapi worker: failed to apply agent tool allowlist: ${err instanceof Error ? err.message : String(err)}`,
+                );
+            }
+        } else if (agentDisallowedTools) {
+            try {
+                const denied = new Set(agentDisallowedTools.split(",").map(t => t.trim().toLowerCase()).filter(Boolean));
+                const current = pi.getActiveTools();
+                const filtered = current.filter(t => !denied.has(t.toLowerCase()));
+                if (filtered.length < current.length) {
+                    pi.setActiveTools(filtered);
+                    console.log(`pizzapi worker: agent tool denylist applied, removed: ${[...denied].join(", ")}`);
+                }
+            } catch (err) {
+                console.warn(
+                    `pizzapi worker: failed to apply agent tool denylist: ${err instanceof Error ? err.message : String(err)}`,
                 );
             }
         }

@@ -52,11 +52,19 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
                 ? { provider: (body.model as any).provider as string, id: (body.model as any).id as string }
                 : undefined;
 
-        // Optional agent config — spawn the session "as" this agent
-        const requestedAgent =
-            body.agent && typeof body.agent === "object" && typeof (body.agent as any).name === "string"
+        // Optional agent config — spawn the session "as" this agent.
+        // Validate the agent name to prevent path traversal — only allow names
+        // that match the pattern used by agent file discovery (letters, digits,
+        // hyphens, underscores, dots — no path separators).
+        const rawAgentName = body.agent && typeof body.agent === "object" && typeof (body.agent as any).name === "string"
+            ? ((body.agent as any).name as string).trim()
+            : undefined;
+        if (rawAgentName && !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(rawAgentName)) {
+            return Response.json({ error: "Invalid agent name" }, { status: 400 });
+        }
+        const requestedAgent = rawAgentName
                 ? {
-                    name: (body.agent as any).name as string,
+                    name: rawAgentName,
                     systemPrompt: typeof (body.agent as any).systemPrompt === "string" ? (body.agent as any).systemPrompt as string : undefined,
                     tools: typeof (body.agent as any).tools === "string" ? (body.agent as any).tools as string : undefined,
                     disallowedTools: typeof (body.agent as any).disallowedTools === "string" ? (body.agent as any).disallowedTools as string : undefined,
