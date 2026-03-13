@@ -2,7 +2,7 @@ import { Type } from "@mariozechner/pi-ai";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { spawn } from "child_process";
 import { StringDecoder } from "string_decoder";
-import { validatePath, getSandboxMode, getResolvedConfig } from "./sandbox.js";
+import { validatePath, getResolvedConfig } from "./sandbox.js";
 
 /** Maximum chars of stderr to retain in memory. */
 const MAX_STDERR_CHARS = 512;
@@ -155,17 +155,14 @@ import { resolve as pathResolve } from "node:path";
  * into directories that the sandbox denyRead list forbids.
  */
 function _buildDenyExclusions(searchRoot: string): { rg: string[]; find: string[] } {
-    const mode = getSandboxMode();
-    if (mode === "off") return { rg: [], find: [] };
-
     const config = getResolvedConfig();
-    if (!config) return { rg: [], find: [] };
+    if (!config || config.mode === "none" || !config.srtConfig) return { rg: [], find: [] };
 
     const rgArgs: string[] = [];
     const findArgs: string[] = [];
     const resolvedRoot = pathResolve(searchRoot);
 
-    for (const denied of config.filesystem.denyRead) {
+    for (const denied of config.srtConfig.filesystem.denyRead) {
         const resolvedDenied = pathResolve(denied);
 
         // Only add exclusion if denied path is under (or equal to) the search root
@@ -236,14 +233,7 @@ export const searchTool: AgentTool = {
                 details: { pattern, path: rawPath, type: type === "files" ? "files" : "content", sandboxBlocked: true },
             };
         }
-        if (validation.reason && getSandboxMode() === "audit") {
-            console.log(`⚠️ [sandbox:audit] Would block search: ${rawPath}`);
-        }
-
-        // Build deny-path exclusions so search doesn't leak denied content.
-        // In enforce mode we exclude denied read paths from the search command;
-        // in audit mode the root-level check above already logged, and we let
-        // results through for visibility.
+        // Build deny-path exclusions so search doesn't traverse denied paths.
         const denyExclusions = _buildDenyExclusions(safePath);
 
         // -e forces rg to treat pattern as a regex (not a flag); -- ends options before path.

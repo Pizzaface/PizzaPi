@@ -1,17 +1,16 @@
 /**
- * Tests for SandboxConfig schema, defaults, resolution, and merge semantics.
+ * Tests for SandboxConfig schema, preset resolution, and merge semantics.
  *
  * Covers:
- *   - DEFAULT_SANDBOX_CONFIG correctness
- *   - resolveSandboxConfig() path expansion (~ and .)
- *   - mergeSandboxConfig() security invariants (deny=union, allow=intersection)
+ *   - resolveSandboxConfig() preset expansion and path resolution
+ *   - resolveSandboxConfig() user overrides merged on top of presets
+ *   - mergeSandboxConfig() security invariants (deny=union, allow=intersection, mode escalation only)
  */
 import { describe, test, expect } from "bun:test";
 import { homedir } from "os";
 import { resolve } from "path";
 
 import {
-    DEFAULT_SANDBOX_CONFIG,
     resolveSandboxConfig,
     mergeSandboxConfig,
     type SandboxConfig,
@@ -19,454 +18,303 @@ import {
     type PizzaPiConfig,
 } from "./config";
 
-// ── DEFAULT_SANDBOX_CONFIG ────────────────────────────────────────────────────
+const CWD = "/projects/app";
+const HOME = homedir();
 
-describe("DEFAULT_SANDBOX_CONFIG", () => {
-    test("has sandbox enabled in enforce mode", () => {
-        expect(DEFAULT_SANDBOX_CONFIG.enabled).toBe(true);
-        expect(DEFAULT_SANDBOX_CONFIG.mode).toBe("enforce");
+function cfg(sandbox?: SandboxConfig): PizzaPiConfig {
+    return sandbox ? { sandbox } : {};
+}
+
+// ── resolveSandboxConfig — mode: none ─────────────────────────────────────────
+
+describe("resolveSandboxConfig — none mode", () => {
+    test("returns mode:none and srtConfig:null", () => {
+        const r = resolveSandboxConfig(CWD, cfg({ mode: "none" }));
+        expect(r.mode).toBe("none");
+        expect(r.srtConfig).toBeNull();
     });
 
-    test("uses denylist network mode with empty domain lists", () => {
-        expect(DEFAULT_SANDBOX_CONFIG.network.mode).toBe("denylist");
-        expect(DEFAULT_SANDBOX_CONFIG.network.allowedDomains).toEqual([]);
-        expect(DEFAULT_SANDBOX_CONFIG.network.deniedDomains).toEqual([]);
-    });
-
-    test("denies reading sensitive dotfile directories", () => {
-        const dr = DEFAULT_SANDBOX_CONFIG.filesystem.denyRead;
-        expect(dr).toContain("~/.ssh");
-        expect(dr).toContain("~/.aws");
-        expect(dr).toContain("~/.gnupg");
-        expect(dr).toContain("~/.config/gcloud");
-        expect(dr).toContain("~/.docker/config.json");
-    });
-
-    test("allows writing to cwd and /tmp by default", () => {
-        expect(DEFAULT_SANDBOX_CONFIG.filesystem.allowWrite).toContain(".");
-        expect(DEFAULT_SANDBOX_CONFIG.filesystem.allowWrite).toContain("/tmp");
-    });
-
-    test("denies writing to .env files and ~/.ssh", () => {
-        const dw = DEFAULT_SANDBOX_CONFIG.filesystem.denyWrite;
-        expect(dw).toContain(".env");
-        expect(dw).toContain(".env.local");
-        expect(dw).toContain("~/.ssh");
-    });
-
-    test("denies docker socket access", () => {
-        expect(DEFAULT_SANDBOX_CONFIG.sockets.deny).toContain("/var/run/docker.sock");
-    });
-
-    test("MCP defaults to empty allowed domains and /tmp write", () => {
-        expect(DEFAULT_SANDBOX_CONFIG.mcp.allowedDomains).toEqual([]);
-        expect(DEFAULT_SANDBOX_CONFIG.mcp.allowWrite).toEqual(["/tmp"]);
+    test("overrides are ignored in none mode", () => {
+        const r = resolveSandboxConfig(CWD, cfg({
+            mode: "none",
+            filesystem: { allowWrite: ["/custom"] },
+        }));
+        expect(r.srtConfig).toBeNull();
     });
 });
 
-// ── resolveSandboxConfig ──────────────────────────────────────────────────────
+// ── resolveSandboxConfig — mode: basic ────────────────────────────────────────
 
-describe("resolveSandboxConfig", () => {
-    const cwd = "/projects/my-app";
-    const home = homedir();
-
-    test("returns defaults when no sandbox config is provided", () => {
-        const resolved = resolveSandboxConfig(cwd, {});
-        expect(resolved.enabled).toBe(true);
-        expect(resolved.mode).toBe("enforce");
-        expect(resolved.network.mode).toBe("denylist");
+describe("resolveSandboxConfig — basic mode (default)", () => {
+    test("defaults to basic when no mode specified", () => {
+        const r = resolveSandboxConfig(CWD, {});
+        expect(r.mode).toBe("basic");
     });
 
-    test("expands ~ to homedir in filesystem.denyRead", () => {
-        const resolved = resolveSandboxConfig(cwd, {});
-        // Default denyRead includes ~/.ssh → should expand
-        expect(resolved.filesystem.denyRead).toContain(`${home}/.ssh`);
-        expect(resolved.filesystem.denyRead).toContain(`${home}/.aws`);
-        expect(resolved.filesystem.denyRead).toContain(`${home}/.gnupg`);
+    test("basic has no network key (no network sandboxing)", () => {
+        const r = resolveSandboxConfig(CWD, cfg({ mode: "basic" }));
+        expect(r.srtConfig).not.toBeNull();
+        expect(r.srtConfig!.network).toBeUndefined();
     });
 
-    test("expands ~ to homedir in filesystem.denyWrite", () => {
-        const resolved = resolveSandboxConfig(cwd, {});
-        expect(resolved.filesystem.denyWrite).toContain(`${home}/.ssh`);
+    test("basic denies sensitive dotfile reads", () => {
+        const r = resolveSandboxConfig(CWD, cfg({ mode: "basic" }));
+        const denyRead = r.srtConfig!.filesystem.denyRead;
+        expect(denyRead).toContain(`${HOME}/.ssh`);
+        expect(denyRead).toContain(`${HOME}/.aws`);
+        expect(denyRead).toContain(`${HOME}/.gnupg`);
+        expect(denyRead).toContain(`${HOME}/.config/gcloud`);
     });
 
-    test("resolves . to cwd in filesystem.allowWrite", () => {
-        const resolved = resolveSandboxConfig(cwd, {});
-        expect(resolved.filesystem.allowWrite).toContain(resolve(cwd));
-        expect(resolved.filesystem.allowWrite).toContain("/tmp");
+    test("basic allows write to cwd and /tmp by default", () => {
+        const r = resolveSandboxConfig(CWD, cfg({ mode: "basic" }));
+        expect(r.srtConfig!.filesystem.allowWrite).toContain(CWD);
+        expect(r.srtConfig!.filesystem.allowWrite).toContain("/tmp");
     });
 
-    test("expands ~ in user-provided paths", () => {
-        const config: PizzaPiConfig = {
-            sandbox: {
-                filesystem: {
-                    denyRead: ["~/.kube", "~/.terraform"],
-                },
-            },
-        };
-        const resolved = resolveSandboxConfig(cwd, config);
-        expect(resolved.filesystem.denyRead).toContain(`${home}/.kube`);
-        expect(resolved.filesystem.denyRead).toContain(`${home}/.terraform`);
+    test("basic denies writes to .env files", () => {
+        const r = resolveSandboxConfig(CWD, cfg({ mode: "basic" }));
+        const denyWrite = r.srtConfig!.filesystem.denyWrite;
+        expect(denyWrite.some(p => p.endsWith(".env"))).toBe(true);
+        expect(denyWrite.some(p => p.endsWith(".env.local"))).toBe(true);
+    });
+});
+
+// ── resolveSandboxConfig — mode: full ─────────────────────────────────────────
+
+describe("resolveSandboxConfig — full mode", () => {
+    test("full has network key with allowedDomains:[] (deny-all by default)", () => {
+        const r = resolveSandboxConfig(CWD, cfg({ mode: "full" }));
+        expect(r.srtConfig!.network).toBeDefined();
+        expect(r.srtConfig!.network!.allowedDomains).toEqual([]);
+        expect(r.srtConfig!.network!.deniedDomains).toEqual([]);
+    });
+
+    test("full allows local binding by default", () => {
+        const r = resolveSandboxConfig(CWD, cfg({ mode: "full" }));
+        expect(r.srtConfig!.network!.allowLocalBinding).toBe(true);
+    });
+
+    test("full has same filesystem protections as basic", () => {
+        const basic = resolveSandboxConfig(CWD, cfg({ mode: "basic" }));
+        const full = resolveSandboxConfig(CWD, cfg({ mode: "full" }));
+        expect(full.srtConfig!.filesystem.denyRead).toEqual(basic.srtConfig!.filesystem.denyRead);
+        expect(full.srtConfig!.filesystem.allowWrite).toEqual(basic.srtConfig!.filesystem.allowWrite);
+        expect(full.srtConfig!.filesystem.denyWrite).toEqual(basic.srtConfig!.filesystem.denyWrite);
+    });
+});
+
+// ── resolveSandboxConfig — path expansion ─────────────────────────────────────
+
+describe("resolveSandboxConfig — path expansion", () => {
+    test("expands ~ to homedir in denyRead", () => {
+        const r = resolveSandboxConfig(CWD, cfg({
+            mode: "basic",
+            filesystem: { denyRead: ["~/.custom-secrets"] },
+        }));
+        expect(r.srtConfig!.filesystem.denyRead).toContain(`${HOME}/.custom-secrets`);
+    });
+
+    test("expands . to cwd in allowWrite", () => {
+        const r = resolveSandboxConfig(CWD, cfg({
+            mode: "basic",
+            filesystem: { allowWrite: [".", "/tmp"] },
+        }));
+        expect(r.srtConfig!.filesystem.allowWrite).toContain(CWD);
+        expect(r.srtConfig!.filesystem.allowWrite).toContain("/tmp");
     });
 
     test("resolves relative paths against cwd", () => {
-        const config: PizzaPiConfig = {
-            sandbox: {
-                filesystem: {
-                    denyRead: ["secrets/keys"],
-                },
-            },
-        };
-        const resolved = resolveSandboxConfig(cwd, config);
-        expect(resolved.filesystem.denyRead).toContain(resolve(cwd, "secrets/keys"));
+        const r = resolveSandboxConfig(CWD, cfg({
+            mode: "basic",
+            filesystem: { allowWrite: ["subdir/output"] },
+        }));
+        expect(r.srtConfig!.filesystem.allowWrite).toContain(resolve(CWD, "subdir/output"));
+    });
+});
+
+// ── resolveSandboxConfig — overrides ─────────────────────────────────────────
+
+describe("resolveSandboxConfig — overrides", () => {
+    test("filesystem.denyRead override is unioned with preset", () => {
+        const r = resolveSandboxConfig(CWD, cfg({
+            mode: "basic",
+            filesystem: { denyRead: ["~/.extra-secrets"] },
+        }));
+        // Contains both preset and user-added paths
+        expect(r.srtConfig!.filesystem.denyRead).toContain(`${HOME}/.ssh`);
+        expect(r.srtConfig!.filesystem.denyRead).toContain(`${HOME}/.extra-secrets`);
     });
 
-    test("preserves absolute paths unchanged", () => {
-        const config: PizzaPiConfig = {
-            sandbox: {
-                filesystem: {
-                    denyRead: ["/etc/shadow"],
-                },
-            },
-        };
-        const resolved = resolveSandboxConfig(cwd, config);
-        expect(resolved.filesystem.denyRead).toContain("/etc/shadow");
+    test("filesystem.denyWrite override is unioned with preset", () => {
+        const r = resolveSandboxConfig(CWD, cfg({
+            mode: "basic",
+            filesystem: { denyWrite: ["~/.bashrc"] },
+        }));
+        expect(r.srtConfig!.filesystem.denyWrite.some(p => p.endsWith(".env"))).toBe(true);
+        expect(r.srtConfig!.filesystem.denyWrite).toContain(`${HOME}/.bashrc`);
     });
 
-    test("user-provided scalars override defaults", () => {
-        const config: PizzaPiConfig = {
-            sandbox: {
-                enabled: false,
-                mode: "audit",
-            },
-        };
-        const resolved = resolveSandboxConfig(cwd, config);
-        expect(resolved.enabled).toBe(false);
-        expect(resolved.mode).toBe("audit");
+    test("filesystem.allowWrite override replaces preset", () => {
+        const r = resolveSandboxConfig(CWD, cfg({
+            mode: "basic",
+            filesystem: { allowWrite: ["/custom/output"] },
+        }));
+        expect(r.srtConfig!.filesystem.allowWrite).toContain("/custom/output");
+        // Preset CWD/tmp are gone (user replaced)
+        expect(r.srtConfig!.filesystem.allowWrite).not.toContain(CWD);
     });
 
-    test("user-provided network config overrides defaults", () => {
-        const config: PizzaPiConfig = {
-            sandbox: {
-                network: {
-                    mode: "allowlist",
-                    allowedDomains: ["api.example.com"],
-                },
-            },
-        };
-        const resolved = resolveSandboxConfig(cwd, config);
-        expect(resolved.network.mode).toBe("allowlist");
-        expect(resolved.network.allowedDomains).toEqual(["api.example.com"]);
-        // deniedDomains defaults to empty when not specified
-        expect(resolved.network.deniedDomains).toEqual([]);
+    test("network.allowedDomains override activates network sandboxing in basic mode", () => {
+        const r = resolveSandboxConfig(CWD, cfg({
+            mode: "basic",
+            network: { allowedDomains: ["*.github.com"] },
+        }));
+        expect(r.srtConfig!.network).toBeDefined();
+        expect(r.srtConfig!.network!.allowedDomains).toEqual(["*.github.com"]);
     });
 
-    test("resolves mcp.allowWrite paths", () => {
-        const config: PizzaPiConfig = {
-            sandbox: {
-                mcp: {
-                    allowWrite: [".", "/tmp/mcp"],
-                },
-            },
-        };
-        const resolved = resolveSandboxConfig(cwd, config);
-        expect(resolved.mcp.allowWrite).toContain(resolve(cwd));
-        expect(resolved.mcp.allowWrite).toContain("/tmp/mcp");
+    test("network.allowedDomains override replaces full-preset empty list", () => {
+        const r = resolveSandboxConfig(CWD, cfg({
+            mode: "full",
+            network: { allowedDomains: ["api.example.com", "*.github.com"] },
+        }));
+        expect(r.srtConfig!.network!.allowedDomains).toEqual(["api.example.com", "*.github.com"]);
+    });
+
+    test("network.deniedDomains override is unioned with preset in full mode", () => {
+        const r = resolveSandboxConfig(CWD, cfg({
+            mode: "full",
+            network: { deniedDomains: ["evil.example.com"] },
+        }));
+        expect(r.srtConfig!.network!.deniedDomains).toContain("evil.example.com");
+    });
+
+    test("pass-through options are forwarded", () => {
+        const r = resolveSandboxConfig(CWD, cfg({
+            mode: "basic",
+            mandatoryDenySearchDepth: 5,
+            allowPty: true,
+            enableWeakerNetworkIsolation: true,
+        }));
+        expect(r.srtConfig!.mandatoryDenySearchDepth).toBe(5);
+        expect(r.srtConfig!.allowPty).toBe(true);
+        expect(r.srtConfig!.enableWeakerNetworkIsolation).toBe(true);
     });
 });
 
 // ── mergeSandboxConfig ────────────────────────────────────────────────────────
 
-describe("mergeSandboxConfig", () => {
-    test("unions denyRead lists (project can add, not remove)", () => {
-        const global: SandboxConfig = {
-            filesystem: { denyRead: ["~/.ssh", "~/.aws"] },
-        };
-        const project: SandboxConfig = {
-            filesystem: { denyRead: ["~/.kube", "~/.ssh"] },
-        };
-        const merged = mergeSandboxConfig(global, project);
-        expect(merged.filesystem?.denyRead).toContain("~/.ssh");
-        expect(merged.filesystem?.denyRead).toContain("~/.aws");
-        expect(merged.filesystem?.denyRead).toContain("~/.kube");
-        // No duplicates
-        expect(merged.filesystem?.denyRead?.filter((x) => x === "~/.ssh")).toHaveLength(1);
+describe("mergeSandboxConfig — mode escalation", () => {
+    test("project can escalate mode (basic → full)", () => {
+        const merged = mergeSandboxConfig({ mode: "basic" }, { mode: "full" });
+        expect(merged.mode).toBe("full");
     });
 
-    test("unions denyWrite lists", () => {
-        const global: SandboxConfig = {
-            filesystem: { denyWrite: [".env", "~/.ssh"] },
-        };
-        const project: SandboxConfig = {
-            filesystem: { denyWrite: [".env.production"] },
-        };
-        const merged = mergeSandboxConfig(global, project);
-        expect(merged.filesystem?.denyWrite).toContain(".env");
-        expect(merged.filesystem?.denyWrite).toContain("~/.ssh");
-        expect(merged.filesystem?.denyWrite).toContain(".env.production");
+    test("project cannot weaken mode (full → basic)", () => {
+        const merged = mergeSandboxConfig({ mode: "full" }, { mode: "basic" });
+        expect(merged.mode).toBe("full");
     });
 
-    test("intersects allowWrite lists (project can only narrow)", () => {
-        const global: SandboxConfig = {
-            filesystem: { allowWrite: [".", "/tmp", "/var/data"] },
-        };
-        const project: SandboxConfig = {
-            filesystem: { allowWrite: [".", "/tmp"] },
-        };
-        const merged = mergeSandboxConfig(global, project);
-        expect(merged.filesystem?.allowWrite).toContain(".");
-        expect(merged.filesystem?.allowWrite).toContain("/tmp");
-        expect(merged.filesystem?.allowWrite).not.toContain("/var/data");
+    test("project cannot weaken mode (full → none)", () => {
+        const merged = mergeSandboxConfig({ mode: "full" }, { mode: "none" });
+        expect(merged.mode).toBe("full");
     });
 
-    test("project cannot add new entries to allowWrite", () => {
-        const global: SandboxConfig = {
-            filesystem: { allowWrite: [".", "/tmp"] },
-        };
-        const project: SandboxConfig = {
-            filesystem: { allowWrite: [".", "/tmp", "/etc"] },
-        };
-        const merged = mergeSandboxConfig(global, project);
-        expect(merged.filesystem?.allowWrite).toContain(".");
-        expect(merged.filesystem?.allowWrite).toContain("/tmp");
-        expect(merged.filesystem?.allowWrite).not.toContain("/etc");
+    test("project cannot weaken mode (basic → none)", () => {
+        const merged = mergeSandboxConfig({ mode: "basic" }, { mode: "none" });
+        expect(merged.mode).toBe("basic");
     });
 
-    test("project cannot remove global denyRead entries", () => {
-        const global: SandboxConfig = {
-            filesystem: { denyRead: ["~/.ssh", "~/.aws", "~/.gnupg"] },
-        };
-        // Project tries to specify only a subset — but union means global entries persist
-        const project: SandboxConfig = {
-            filesystem: { denyRead: ["~/.kube"] },
-        };
-        const merged = mergeSandboxConfig(global, project);
-        expect(merged.filesystem?.denyRead).toContain("~/.ssh");
-        expect(merged.filesystem?.denyRead).toContain("~/.aws");
-        expect(merged.filesystem?.denyRead).toContain("~/.gnupg");
-        expect(merged.filesystem?.denyRead).toContain("~/.kube");
+    test("missing project mode inherits global", () => {
+        const merged = mergeSandboxConfig({ mode: "full" }, {});
+        expect(merged.mode).toBe("full");
     });
 
-    test("unions sockets.deny lists", () => {
-        const global: SandboxConfig = {
-            sockets: { deny: ["/var/run/docker.sock"] },
-        };
-        const project: SandboxConfig = {
-            sockets: { deny: ["/var/run/containerd.sock"] },
-        };
-        const merged = mergeSandboxConfig(global, project);
-        expect(merged.sockets?.deny).toContain("/var/run/docker.sock");
-        expect(merged.sockets?.deny).toContain("/var/run/containerd.sock");
-    });
-
-    test("intersects mcp.allowedDomains", () => {
-        const global: SandboxConfig = {
-            mcp: { allowedDomains: ["api.example.com", "cdn.example.com"] },
-        };
-        const project: SandboxConfig = {
-            mcp: { allowedDomains: ["api.example.com"] },
-        };
-        const merged = mergeSandboxConfig(global, project);
-        expect(merged.mcp?.allowedDomains).toContain("api.example.com");
-        expect(merged.mcp?.allowedDomains).not.toContain("cdn.example.com");
-    });
-
-    test("intersects mcp.allowWrite", () => {
-        const global: SandboxConfig = {
-            mcp: { allowWrite: ["/tmp", "/var/mcp"] },
-        };
-        const project: SandboxConfig = {
-            mcp: { allowWrite: ["/tmp"] },
-        };
-        const merged = mergeSandboxConfig(global, project);
-        expect(merged.mcp?.allowWrite).toContain("/tmp");
-        expect(merged.mcp?.allowWrite).not.toContain("/var/mcp");
-    });
-
-    test("project cannot weaken enabled (global enabled stays enabled)", () => {
-        const global: SandboxConfig = { enabled: true };
-        const project: SandboxConfig = { enabled: false };
-        const merged = mergeSandboxConfig(global, project);
-        expect(merged.enabled).toBe(true);
-    });
-
-    test("project cannot weaken mode (enforce > audit > off)", () => {
-        const global: SandboxConfig = { mode: "enforce" };
-        const project: SandboxConfig = { mode: "audit" };
-        const merged = mergeSandboxConfig(global, project);
-        expect(merged.mode).toBe("enforce");
-    });
-
-    test("project can strengthen mode (audit → enforce)", () => {
-        const global: SandboxConfig = { mode: "audit" };
-        const project: SandboxConfig = { mode: "enforce" };
-        const merged = mergeSandboxConfig(global, project);
-        expect(merged.mode).toBe("enforce");
-    });
-
-    test("empty project config leaves global unchanged", () => {
-        const global: SandboxConfig = {
-            enabled: true,
-            mode: "enforce",
-            filesystem: {
-                denyRead: ["~/.ssh"],
-                allowWrite: [".", "/tmp"],
-                denyWrite: [".env"],
-            },
-            sockets: { deny: ["/var/run/docker.sock"] },
-        };
-        const merged = mergeSandboxConfig(global, {});
-        expect(merged.enabled).toBe(true);
-        expect(merged.mode).toBe("enforce");
-        expect(merged.filesystem?.denyRead).toEqual(["~/.ssh"]);
-        expect(merged.filesystem?.allowWrite).toEqual([".", "/tmp"]);
-        expect(merged.filesystem?.denyWrite).toEqual([".env"]);
-        expect(merged.sockets?.deny).toEqual(["/var/run/docker.sock"]);
-    });
-
-    test("both empty configs produce undefined arrays", () => {
-        const merged = mergeSandboxConfig({}, {});
-        // Scalars get defaults
-        expect(merged.enabled).toBe(true);
-        expect(merged.mode).toBe("enforce");
-    });
-
-    test("project-only allowlists pass through when global is empty", () => {
-        const merged = mergeSandboxConfig({}, {
-            filesystem: { allowWrite: ["/tmp", "."] },
-            mcp: { allowedDomains: ["api.example.com"], allowWrite: ["/tmp"] },
-        });
-        // Project values should pass through, not collapse to []
-        expect(merged.filesystem?.allowWrite).toEqual(["/tmp", "."]);
-        expect(merged.mcp?.allowedDomains).toEqual(["api.example.com"]);
-        expect(merged.mcp?.allowWrite).toEqual(["/tmp"]);
+    test("missing global mode defaults to basic", () => {
+        const merged = mergeSandboxConfig({}, { mode: "basic" });
+        expect(merged.mode).toBe("basic");
     });
 });
 
-// ── Environment variable override patterns ────────────────────────────────────
-//
-// These test the patterns used by worker.ts and index.ts to apply env overrides
-// on top of a resolved config. We test the logic, not the process lifecycle.
-
-describe("environment variable override patterns", () => {
-    /**
-     * Simulates the env override logic from worker.ts / index.ts.
-     * This tests the code pattern without actually launching a worker.
-     */
-    function applyEnvOverrides(
-        config: ResolvedSandboxConfig,
-        env: Record<string, string | undefined>,
-    ): ResolvedSandboxConfig {
-        const result = { ...config, network: { ...config.network } };
-
-        // PIZZAPI_NO_SANDBOX=1 → mode off
-        if (env.PIZZAPI_NO_SANDBOX === "1") {
-            result.mode = "off";
-        }
-
-        // PIZZAPI_SANDBOX overrides mode
-        const sandboxMode = env.PIZZAPI_SANDBOX;
-        if (sandboxMode === "off") {
-            result.mode = "off";
-        } else if (sandboxMode === "audit") {
-            result.mode = "audit";
-        } else if (sandboxMode === "enforce") {
-            result.mode = "enforce";
-        }
-
-        // PIZZAPI_SANDBOX_NETWORK overrides network mode
-        const netMode = env.PIZZAPI_SANDBOX_NETWORK;
-        if (netMode === "off") {
-            result.network.mode = "denylist";
-            result.network.deniedDomains = [];
-            result.network.allowedDomains = [];
-        } else if (netMode === "denylist" || netMode === "allowlist") {
-            result.network.mode = netMode;
-        }
-
-        return result;
-    }
-
-    const baseConfig = resolveSandboxConfig("/projects/app", {});
-
-    test("PIZZAPI_SANDBOX=off disables sandbox", () => {
-        const result = applyEnvOverrides(baseConfig, { PIZZAPI_SANDBOX: "off" });
-        expect(result.mode).toBe("off");
+describe("mergeSandboxConfig — filesystem deny lists (union)", () => {
+    test("denyRead is union of global + project", () => {
+        const global: SandboxConfig = { filesystem: { denyRead: ["~/.ssh"] } };
+        const project: SandboxConfig = { filesystem: { denyRead: ["~/.aws"] } };
+        const merged = mergeSandboxConfig(global, project);
+        expect(merged.filesystem?.denyRead).toContain("~/.ssh");
+        expect(merged.filesystem?.denyRead).toContain("~/.aws");
     });
 
-    test("PIZZAPI_SANDBOX=audit forces audit mode", () => {
-        const result = applyEnvOverrides(baseConfig, { PIZZAPI_SANDBOX: "audit" });
-        expect(result.mode).toBe("audit");
+    test("denyWrite is union of global + project", () => {
+        const global: SandboxConfig = { filesystem: { denyWrite: [".env"] } };
+        const project: SandboxConfig = { filesystem: { denyWrite: [".env.local"] } };
+        const merged = mergeSandboxConfig(global, project);
+        expect(merged.filesystem?.denyWrite).toContain(".env");
+        expect(merged.filesystem?.denyWrite).toContain(".env.local");
     });
 
-    test("PIZZAPI_SANDBOX=enforce forces enforce mode", () => {
-        const result = applyEnvOverrides(baseConfig, { PIZZAPI_SANDBOX: "enforce" });
-        expect(result.mode).toBe("enforce");
+    test("union deduplicates", () => {
+        const global: SandboxConfig = { filesystem: { denyRead: ["~/.ssh"] } };
+        const project: SandboxConfig = { filesystem: { denyRead: ["~/.ssh"] } };
+        const merged = mergeSandboxConfig(global, project);
+        expect(merged.filesystem?.denyRead?.filter(p => p === "~/.ssh")).toHaveLength(1);
+    });
+});
+
+describe("mergeSandboxConfig — filesystem allowWrite (intersection)", () => {
+    test("project can narrow allowWrite", () => {
+        const global: SandboxConfig = { filesystem: { allowWrite: [".", "/tmp", "/extra"] } };
+        const project: SandboxConfig = { filesystem: { allowWrite: [".", "/tmp"] } };
+        const merged = mergeSandboxConfig(global, project);
+        expect(merged.filesystem?.allowWrite).toContain(".");
+        expect(merged.filesystem?.allowWrite).toContain("/tmp");
+        expect(merged.filesystem?.allowWrite).not.toContain("/extra");
     });
 
-    test("PIZZAPI_NO_SANDBOX=1 disables sandbox", () => {
-        const result = applyEnvOverrides(baseConfig, { PIZZAPI_NO_SANDBOX: "1" });
-        expect(result.mode).toBe("off");
+    test("project cannot widen allowWrite", () => {
+        const global: SandboxConfig = { filesystem: { allowWrite: ["."] } };
+        const project: SandboxConfig = { filesystem: { allowWrite: [".", "/extra"] } };
+        const merged = mergeSandboxConfig(global, project);
+        expect(merged.filesystem?.allowWrite).toContain(".");
+        expect(merged.filesystem?.allowWrite).not.toContain("/extra");
     });
 
-    test("PIZZAPI_SANDBOX takes priority over PIZZAPI_NO_SANDBOX", () => {
-        // When both are set, PIZZAPI_SANDBOX is processed after NO_SANDBOX
-        const result = applyEnvOverrides(baseConfig, {
-            PIZZAPI_NO_SANDBOX: "1",
-            PIZZAPI_SANDBOX: "audit",
-        });
-        expect(result.mode).toBe("audit");
+    test("unspecified global allowWrite passes project through", () => {
+        const global: SandboxConfig = {};
+        const project: SandboxConfig = { filesystem: { allowWrite: ["."] } };
+        const merged = mergeSandboxConfig(global, project);
+        expect(merged.filesystem?.allowWrite).toContain(".");
+    });
+});
+
+describe("mergeSandboxConfig — network", () => {
+    test("allowedDomains intersection: project can only narrow", () => {
+        const global: SandboxConfig = { network: { allowedDomains: ["a.com", "b.com"] } };
+        const project: SandboxConfig = { network: { allowedDomains: ["a.com", "c.com"] } };
+        const merged = mergeSandboxConfig(global, project);
+        expect(merged.network?.allowedDomains).toEqual(["a.com"]);
     });
 
-    test("PIZZAPI_SANDBOX_NETWORK=off clears all network restrictions", () => {
-        const config = resolveSandboxConfig("/projects/app", {
-            sandbox: {
-                network: {
-                    mode: "denylist",
-                    deniedDomains: ["evil.com"],
-                },
-            },
-        });
-        const result = applyEnvOverrides(config, { PIZZAPI_SANDBOX_NETWORK: "off" });
-        expect(result.network.mode).toBe("denylist");
-        expect(result.network.deniedDomains).toEqual([]);
-        expect(result.network.allowedDomains).toEqual([]);
+    test("deniedDomains union: project can add more denials", () => {
+        const global: SandboxConfig = { network: { deniedDomains: ["bad.com"] } };
+        const project: SandboxConfig = { network: { deniedDomains: ["evil.com"] } };
+        const merged = mergeSandboxConfig(global, project);
+        expect(merged.network?.deniedDomains).toContain("bad.com");
+        expect(merged.network?.deniedDomains).toContain("evil.com");
     });
 
-    test("PIZZAPI_SANDBOX_NETWORK=allowlist switches network mode", () => {
-        const result = applyEnvOverrides(baseConfig, {
-            PIZZAPI_SANDBOX_NETWORK: "allowlist",
-        });
-        expect(result.network.mode).toBe("allowlist");
+    test("global allowLocalBinding wins", () => {
+        const global: SandboxConfig = { network: { allowLocalBinding: false } };
+        const project: SandboxConfig = { network: { allowLocalBinding: true } };
+        const merged = mergeSandboxConfig(global, project);
+        expect(merged.network?.allowLocalBinding).toBe(false);
     });
 
-    test("PIZZAPI_SANDBOX_NETWORK=denylist switches network mode", () => {
-        const config = resolveSandboxConfig("/projects/app", {
-            sandbox: {
-                network: { mode: "allowlist", allowedDomains: ["api.example.com"] },
-            },
-        });
-        const result = applyEnvOverrides(config, {
-            PIZZAPI_SANDBOX_NETWORK: "denylist",
-        });
-        expect(result.network.mode).toBe("denylist");
-    });
-
-    test("invalid PIZZAPI_SANDBOX value is ignored", () => {
-        const result = applyEnvOverrides(baseConfig, { PIZZAPI_SANDBOX: "invalid" });
-        expect(result.mode).toBe("enforce"); // unchanged from default
-    });
-
-    test("invalid PIZZAPI_SANDBOX_NETWORK value is ignored", () => {
-        const result = applyEnvOverrides(baseConfig, {
-            PIZZAPI_SANDBOX_NETWORK: "invalid",
-        });
-        expect(result.network.mode).toBe("denylist"); // unchanged from default
-    });
-
-    test("unset env vars leave config unchanged", () => {
-        const result = applyEnvOverrides(baseConfig, {});
-        expect(result.mode).toBe(baseConfig.mode);
-        expect(result.network.mode).toBe(baseConfig.network.mode);
+    test("project allowLocalBinding used when global not set", () => {
+        const global: SandboxConfig = {};
+        const project: SandboxConfig = { network: { allowLocalBinding: true } };
+        const merged = mergeSandboxConfig(global, project);
+        expect(merged.network?.allowLocalBinding).toBe(true);
     });
 });

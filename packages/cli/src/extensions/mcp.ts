@@ -755,41 +755,38 @@ export function getOAuthProviders(): PizzaPiOAuthProvider[] {
  * Returns true if the sandbox is inactive, the MCP policy has no allowedDomains,
  * or the URL's hostname is in the allowlist.
  *
- * In audit mode, logs a warning but allows the connection (consistent with
- * how audit mode works for filesystem operations). In enforce mode, blocks.
+ * Network-level domain filtering for MCP is enforced by srt's proxy when sandbox
+ * is active in "full" mode (allowedDomains in the srt config). This function
+ * provides an early application-level check using the same network.allowedDomains
+ * list, so blocked connections fail fast with a helpful error rather than a
+ * generic proxy timeout.
  */
 function isMcpDomainAllowed(url: string, serverName: string): boolean {
   if (!isSandboxActive()) return true;
   const sandboxCfg = getResolvedConfig();
-  if (!sandboxCfg) return true;
+  if (!sandboxCfg || !sandboxCfg.srtConfig?.network) return true;
 
-  const allowedDomains = sandboxCfg.mcp.allowedDomains;
-  if (!allowedDomains || allowedDomains.length === 0) return true;
+  const allowedDomains = sandboxCfg.srtConfig.network.allowedDomains;
+  // Empty allowedDomains in full mode means deny-all network
+  if (allowedDomains.length === 0) {
+    console.warn(
+      `[sandbox/mcp] Blocked MCP server "${serverName}": no domains in allowedDomains (full mode). ` +
+      `Add the domain to sandbox.network.allowedDomains in config.`,
+    );
+    return false;
+  }
 
   try {
     const hostname = new URL(url).hostname;
-    if (allowedDomains.includes(hostname)) return true;
-
-    const mode = getSandboxMode();
-    if (mode === "audit") {
-      console.warn(
-        `⚠️ [sandbox:audit] MCP server "${serverName}": domain "${hostname}" ` +
-        `not in allowedDomains [${allowedDomains.join(", ")}] — allowing (audit mode)`,
-      );
-      return true; // Audit: log but don't block
+    if (allowedDomains.some(d => hostname === d || hostname.endsWith(`.${d.replace(/^\*\./, "")}`))) {
+      return true;
     }
-
     console.warn(
       `[sandbox/mcp] Blocked MCP server "${serverName}": domain "${hostname}" ` +
       `not in allowedDomains [${allowedDomains.join(", ")}]`,
     );
     return false;
   } catch {
-    const mode = getSandboxMode();
-    if (mode === "audit") {
-      console.warn(`⚠️ [sandbox:audit] MCP server "${serverName}": invalid URL "${url}" — allowing (audit mode)`);
-      return true;
-    }
     console.warn(`[sandbox/mcp] Blocked MCP server "${serverName}": invalid URL "${url}"`);
     return false;
   }

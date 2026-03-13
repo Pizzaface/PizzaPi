@@ -15,9 +15,7 @@ export {
     onViolation,
     getResolvedConfig,
     cleanupSandbox,
-    buildRuntimeConfig,
     type ResolvedSandboxConfig,
-    type SandboxTier,
     type ValidationResult,
     type ViolationRecord,
 } from "./sandbox.js";

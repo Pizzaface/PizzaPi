@@ -423,23 +423,13 @@ Run \`pizza <command> --help\` for command-specific help.
 
     // ── Sandbox initialization ─────────────────────────────────────────────
     const sandboxConfig = resolveSandboxConfig(cwd, config);
+    // PIZZAPI_SANDBOX env var can override the configured mode
     const sandboxEnvOverride = process.env.PIZZAPI_SANDBOX;
-    if (sandboxEnvOverride === "off") {
-        sandboxConfig.mode = "off";
-    } else if (sandboxEnvOverride === "audit") {
-        sandboxConfig.mode = "audit";
-    } else if (sandboxEnvOverride === "enforce") {
-        sandboxConfig.mode = "enforce";
-    }
-
-    // Apply PIZZAPI_SANDBOX_NETWORK override
-    const sandboxNetOverride = process.env.PIZZAPI_SANDBOX_NETWORK;
-    if (sandboxNetOverride === "off") {
-        sandboxConfig.network.mode = "denylist";
-        sandboxConfig.network.deniedDomains = [];
-        sandboxConfig.network.allowedDomains = [];
-    } else if (sandboxNetOverride === "denylist" || sandboxNetOverride === "allowlist") {
-        sandboxConfig.network.mode = sandboxNetOverride;
+    if (sandboxEnvOverride === "none" || sandboxEnvOverride === "basic" || sandboxEnvOverride === "full") {
+        sandboxConfig.mode = sandboxEnvOverride;
+        if (sandboxEnvOverride === "none") {
+            sandboxConfig.srtConfig = null;
+        }
     }
 
     try {
@@ -449,11 +439,10 @@ Run \`pizza <command> --help\` for command-specific help.
             `pizzapi: sandbox init failed, continuing unsandboxed: ${err instanceof Error ? err.message : String(err)}`,
         );
     }
-    // Only report active if sandbox actually initialized successfully
     if (isSandboxActive()) {
         process.env.PIZZAPI_SANDBOX_ACTIVE = "1";
         process.env.PIZZAPI_SANDBOX_MODE = sandboxConfig.mode;
-    } else if (sandboxConfig.enabled && sandboxConfig.mode !== "off") {
+    } else if (sandboxConfig.mode !== "none") {
         console.warn("pizzapi: sandbox was requested but is not active (platform unsupported or init failed)");
     }
 

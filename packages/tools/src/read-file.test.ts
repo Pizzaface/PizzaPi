@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach, spyOn } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -11,19 +11,19 @@ import {
     type ResolvedSandboxConfig,
 } from "./sandbox.js";
 
-function makeConfig(overrides?: Partial<ResolvedSandboxConfig>): ResolvedSandboxConfig {
+function makeConfig(overrides?: {
+    denyRead?: string[];
+    allowWrite?: string[];
+}): ResolvedSandboxConfig {
     return {
-        enabled: true,
-        mode: "enforce",
-        network: { mode: "denylist", allowedDomains: [], deniedDomains: [] },
-        filesystem: {
-            denyRead: ["/etc/secrets", "/home/user/.ssh"],
-            allowWrite: ["/tmp"],
-            denyWrite: [],
+        mode: "basic",
+        srtConfig: {
+            filesystem: {
+                denyRead: overrides?.denyRead ?? ["/etc/secrets", "/home/user/.ssh"],
+                allowWrite: overrides?.allowWrite ?? ["/tmp"],
+                denyWrite: [],
+            },
         },
-        sockets: { deny: [] },
-        mcp: { allowedDomains: [], allowWrite: ["/tmp"] },
-        ...overrides,
     };
 }
 
@@ -52,19 +52,13 @@ describe("readFileTool", () => {
         expect(result.details.size).toBe(11);
     });
 
-    test("works normally when sandbox is off", async () => {
-        await initSandbox(makeConfig({ mode: "off" }));
+    test("works normally when mode is none", async () => {
+        await initSandbox({ mode: "none", srtConfig: null });
         const result = await execRead(testFile);
         expect(result.content[0].text).toBe("hello world");
     });
 
-    test("works normally when sandbox is disabled", async () => {
-        await initSandbox(makeConfig({ enabled: false }));
-        const result = await execRead(testFile);
-        expect(result.content[0].text).toBe("hello world");
-    });
-
-    describe("enforce mode", () => {
+    describe("sandbox active", () => {
         test("blocks reads to denied paths", async () => {
             await initSandbox(makeConfig());
             const result = await execRead("/etc/secrets/key.pem");
@@ -83,47 +77,18 @@ describe("readFileTool", () => {
             const result = await execRead(testFile);
             expect(result.content[0].text).toBe("hello world");
         });
-    });
 
-    describe("audit mode", () => {
-        test("allows reads to denied paths but records violation", async () => {
-            // Create a file in a "denied" path for the test
+        test("records violation when path is denied", async () => {
+            // Create a file in a path we will deny
             const deniedDir = mkdtempSync(join(tmpdir(), "denied-"));
             const deniedFile = join(deniedDir, "secret.txt");
-            writeFileSync(deniedFile, "secret data");
+            writeFileSync(deniedFile, "secret");
 
-            await initSandbox(makeConfig({
-                mode: "audit",
-                filesystem: { denyRead: [deniedDir], allowWrite: ["/tmp"], denyWrite: [] },
-            }));
-
+            await initSandbox(makeConfig({ denyRead: [deniedDir] }));
             const result = await execRead(deniedFile);
-            expect(result.content[0].text).toBe("secret data"); // allowed in audit
+            expect(result.content[0].text).toContain("❌ Sandbox blocked read");
             expect(getViolations().length).toBe(1);
             expect(getViolations()[0].operation).toBe("read");
-        });
-
-        test("logs audit warning to console", async () => {
-            const deniedDir = mkdtempSync(join(tmpdir(), "denied-"));
-            const deniedFile = join(deniedDir, "secret.txt");
-            writeFileSync(deniedFile, "data");
-
-            const spy = spyOn(console, "log").mockImplementation(() => {});
-            try {
-                await initSandbox(makeConfig({
-                    mode: "audit",
-                    filesystem: { denyRead: [deniedDir], allowWrite: ["/tmp"], denyWrite: [] },
-                }));
-                await execRead(deniedFile);
-
-                const auditCalls = spy.mock.calls.filter(
-                    (c) => typeof c[0] === "string" && c[0].includes("[sandbox:audit]"),
-                );
-                expect(auditCalls.length).toBe(1);
-                expect(auditCalls[0][0]).toContain("Would block read");
-            } finally {
-                spy.mockRestore();
-            }
         });
     });
 

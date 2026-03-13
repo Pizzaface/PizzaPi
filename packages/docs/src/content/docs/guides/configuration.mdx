@@ -69,14 +69,17 @@ You can also override any setting with **environment variables**.
   "slowStartupWarning": true,
 
   // OS-level sandbox configuration.
-  // See the Sandbox guide for full details.
+  // mode: "none" | "basic" (default) | "full"
+  // All other fields are srt-native overrides merged on top of the preset.
   "sandbox": {
-    "enabled": true,
-    "mode": "enforce",
+    "mode": "full",
+    "network": {
+      "allowedDomains": ["*.github.com", "api.anthropic.com"]
+    },
     "filesystem": {
-      "denyRead": ["~/.ssh", "~/.aws"],
+      "denyRead": ["~/.kube"],
       "allowWrite": [".", "/tmp"],
-      "denyWrite": [".env"]
+      "denyWrite": [".env.production"]
     }
   }
 }
@@ -98,11 +101,12 @@ You can also override any setting with **environment variables**.
 | `trustedPlugins` | `string[]` | `[]` | Trusted Claude Code plugin paths. **Global config only.** Managed via `pizza plugins trust`. |
 | `mcpTimeout` | `number` | `30000` | Timeout (ms) for each MCP server's `tools/list` call during startup. Set to `0` to disable. See [Safe Mode](/PizzaPi/guides/safe-mode/). |
 | `sandbox` | `object` | *(see below)* | OS-level sandbox config. See [Agent Sandbox](/PizzaPi/guides/sandbox/). |
-| `sandbox.enabled` | `boolean` | `true` | Enable sandbox enforcement. |
-| `sandbox.mode` | `string` | `"enforce"` | `"enforce"`, `"audit"`, or `"off"`. |
-| `sandbox.filesystem.denyRead` | `string[]` | *sensitive dirs* | Paths blocked from reading. |
-| `sandbox.filesystem.allowWrite` | `string[]` | `[".", "/tmp"]` | Paths allowed for writing. |
-| `sandbox.filesystem.denyWrite` | `string[]` | `[".env", "~/.ssh"]` | Paths blocked from writing. |
+| `sandbox.mode` | `string` | `"basic"` | Preset: `"none"`, `"basic"`, or `"full"`. |
+| `sandbox.network.allowedDomains` | `string[]` | `[]` (full) / unset (basic) | Domains the agent may reach. Required for outbound access in `full` mode. |
+| `sandbox.network.deniedDomains` | `string[]` | `[]` | Domains explicitly blocked. |
+| `sandbox.filesystem.denyRead` | `string[]` | *merged with preset* | Additional paths blocked from reading. |
+| `sandbox.filesystem.allowWrite` | `string[]` | `[".", "/tmp"]` | Paths allowed for writing (replaces preset when set). |
+| `sandbox.filesystem.denyWrite` | `string[]` | *merged with preset* | Additional paths blocked from writing. |
 | `slowStartupWarning` | `boolean` | `true` | Show warnings when startup takes longer than expected (slow MCP servers, etc.). See [Safe Mode](/PizzaPi/guides/safe-mode/). |
 
 ---
@@ -119,9 +123,8 @@ Every config option can also be set as an environment variable. Environment vari
 | `PIZZAPI_NO_PLUGINS` | — | Set to `1` to skip plugin loading ([Safe Mode](/PizzaPi/guides/safe-mode/)) |
 | `PIZZAPI_NO_HOOKS` | — | Set to `1` to skip hook execution ([Safe Mode](/PizzaPi/guides/safe-mode/)) |
 | `PIZZAPI_NO_RELAY` | — | Set to `1` to skip relay connection ([Safe Mode](/PizzaPi/guides/safe-mode/)) |
-| `PIZZAPI_SANDBOX` | `sandbox.mode` | Override sandbox mode: `enforce`, `audit`, or `off` ([Sandbox](/PizzaPi/guides/sandbox/)) |
-| `PIZZAPI_NO_SANDBOX` | — | Set to `1` to disable sandbox ([Sandbox](/PizzaPi/guides/sandbox/)) |
-| `PIZZAPI_SANDBOX_NETWORK` | `sandbox.network.mode` | Override network mode: `denylist`, `allowlist`, or `off` ([Sandbox](/PizzaPi/guides/sandbox/)) |
+| `PIZZAPI_SANDBOX` | `sandbox.mode` | Override sandbox mode: `none`, `basic`, or `full` ([Sandbox](/PizzaPi/guides/sandbox/)) |
+| `PIZZAPI_NO_SANDBOX` | — | Set to `1` to disable sandbox (shorthand for `none`) ([Sandbox](/PizzaPi/guides/sandbox/)) |
 
 **Example:**
 

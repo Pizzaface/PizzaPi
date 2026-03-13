@@ -11,19 +11,20 @@ import {
     type ResolvedSandboxConfig,
 } from "./sandbox.js";
 
-function makeConfig(overrides?: Partial<ResolvedSandboxConfig>): ResolvedSandboxConfig {
+function makeConfig(overrides?: {
+    allowWrite?: string[];
+    denyWrite?: string[];
+    denyRead?: string[];
+}): ResolvedSandboxConfig {
     return {
-        enabled: true,
-        mode: "enforce",
-        network: { mode: "denylist", allowedDomains: [], deniedDomains: [] },
-        filesystem: {
-            denyRead: [],
-            allowWrite: ["/tmp"],
-            denyWrite: ["/tmp/.env"],
+        mode: "basic",
+        srtConfig: {
+            filesystem: {
+                denyRead: overrides?.denyRead ?? [],
+                allowWrite: overrides?.allowWrite ?? ["/tmp"],
+                denyWrite: overrides?.denyWrite ?? ["/tmp/.env"],
+            },
         },
-        sockets: { deny: [] },
-        mcp: { allowedDomains: [], allowWrite: ["/tmp"] },
-        ...overrides,
     };
 }
 
@@ -56,18 +57,16 @@ describe("writeFileTool", () => {
         expect(readFileSync(filePath, "utf-8")).toBe("nested");
     });
 
-    test("works normally when sandbox is off", async () => {
-        await initSandbox(makeConfig({ mode: "off" }));
+    test("works normally when mode is none", async () => {
+        await initSandbox({ mode: "none", srtConfig: null });
         const filePath = join(tmpDir, "off.txt");
         await execWrite(filePath, "off mode");
         expect(readFileSync(filePath, "utf-8")).toBe("off mode");
     });
 
-    describe("enforce mode", () => {
+    describe("sandbox active (basic/full mode)", () => {
         test("blocks writes outside allowWrite paths", async () => {
-            await initSandbox(makeConfig({
-                filesystem: { denyRead: [], allowWrite: ["/tmp/allowed-only"], denyWrite: [] },
-            }));
+            await initSandbox(makeConfig({ allowWrite: ["/tmp/allowed-only"] }));
             const filePath = join(tmpDir, "blocked.txt");
             const result = await execWrite(filePath, "should fail");
             expect(result.content[0].text).toContain("❌ Sandbox blocked write");
@@ -84,48 +83,11 @@ describe("writeFileTool", () => {
         });
 
         test("allows writes to permitted paths", async () => {
-            await initSandbox(makeConfig({
-                filesystem: { denyRead: [], allowWrite: [tmpDir], denyWrite: [] },
-            }));
+            await initSandbox(makeConfig({ allowWrite: [tmpDir], denyWrite: [] }));
             const filePath = join(tmpDir, "allowed.txt");
             const result = await execWrite(filePath, "allowed");
             expect(result.content[0].text).toContain("Wrote 7 bytes");
             expect(readFileSync(filePath, "utf-8")).toBe("allowed");
-        });
-    });
-
-    describe("audit mode", () => {
-        test("allows writes but records violation", async () => {
-            await initSandbox(makeConfig({
-                mode: "audit",
-                filesystem: { denyRead: [], allowWrite: ["/tmp/nowhere"], denyWrite: [] },
-            }));
-            const filePath = join(tmpDir, "audit.txt");
-            const result = await execWrite(filePath, "audit data");
-            expect(result.content[0].text).toContain("Wrote 10 bytes"); // allowed
-            expect(readFileSync(filePath, "utf-8")).toBe("audit data");
-            expect(getViolations().length).toBe(1);
-            expect(getViolations()[0].operation).toBe("write");
-        });
-
-        test("logs audit warning to console", async () => {
-            const spy = spyOn(console, "log").mockImplementation(() => {});
-            try {
-                await initSandbox(makeConfig({
-                    mode: "audit",
-                    filesystem: { denyRead: [], allowWrite: ["/tmp/nowhere"], denyWrite: [] },
-                }));
-                const filePath = join(tmpDir, "audit-warn.txt");
-                await execWrite(filePath, "data");
-
-                const auditCalls = spy.mock.calls.filter(
-                    (c) => typeof c[0] === "string" && c[0].includes("[sandbox:audit]"),
-                );
-                expect(auditCalls.length).toBe(1);
-                expect(auditCalls[0][0]).toContain("Would block write");
-            } finally {
-                spy.mockRestore();
-            }
         });
     });
 

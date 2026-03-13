@@ -59,24 +59,13 @@ async function main(): Promise<void> {
     // Must happen before any tools execute (including MCP init via extensions).
     const sandboxConfig = resolveSandboxConfig(cwd, config);
 
-    // Respect environment variable overrides
+    // PIZZAPI_SANDBOX / PIZZAPI_NO_SANDBOX env var overrides
     const sandboxEnvOverride = process.env.PIZZAPI_SANDBOX;
-    if (sandboxEnvOverride === "off" || process.env.PIZZAPI_NO_SANDBOX === "1") {
-        sandboxConfig.mode = "off";
-    } else if (sandboxEnvOverride === "audit") {
-        sandboxConfig.mode = "audit";
-    } else if (sandboxEnvOverride === "enforce") {
-        sandboxConfig.mode = "enforce";
-    }
-
-    // Apply PIZZAPI_SANDBOX_NETWORK override
-    const sandboxNetOverride = process.env.PIZZAPI_SANDBOX_NETWORK;
-    if (sandboxNetOverride === "off") {
-        sandboxConfig.network.mode = "denylist";
-        sandboxConfig.network.deniedDomains = [];
-        sandboxConfig.network.allowedDomains = [];
-    } else if (sandboxNetOverride === "denylist" || sandboxNetOverride === "allowlist") {
-        sandboxConfig.network.mode = sandboxNetOverride;
+    if (process.env.PIZZAPI_NO_SANDBOX === "1" || sandboxEnvOverride === "none") {
+        sandboxConfig.mode = "none";
+        sandboxConfig.srtConfig = null;
+    } else if (sandboxEnvOverride === "basic" || sandboxEnvOverride === "full") {
+        sandboxConfig.mode = sandboxEnvOverride;
     }
 
     try {
@@ -86,12 +75,11 @@ async function main(): Promise<void> {
             `pizzapi worker: sandbox init failed, continuing unsandboxed: ${err instanceof Error ? err.message : String(err)}`,
         );
     }
-    // Only report active if sandbox actually initialized successfully
     if (isSandboxActive()) {
         process.env.PIZZAPI_SANDBOX_ACTIVE = "1";
         process.env.PIZZAPI_SANDBOX_MODE = sandboxConfig.mode;
         console.log(`pizzapi worker: sandbox initialized (mode=${sandboxConfig.mode})`);
-    } else if (sandboxConfig.enabled && sandboxConfig.mode !== "off") {
+    } else if (sandboxConfig.mode !== "none") {
         console.warn("pizzapi worker: sandbox was requested but is not active (platform unsupported or init failed)");
     }
 

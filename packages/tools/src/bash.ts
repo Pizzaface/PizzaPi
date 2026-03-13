@@ -2,7 +2,7 @@ import { Type } from "@mariozechner/pi-ai";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { exec } from "child_process";
 import { promisify } from "util";
-import { wrapCommand, getSandboxEnv, isSandboxActive, getSandboxMode } from "./sandbox.js";
+import { wrapCommand, getSandboxEnv, isSandboxActive } from "./sandbox.js";
 
 const execAsync = promisify(exec);
 
@@ -19,7 +19,6 @@ export const bashTool: AgentTool = {
 
         let command: string = params.command;
         let env: NodeJS.ProcessEnv = process.env;
-        const mode = getSandboxMode();
 
         // Sandbox integration: wrap command and inject proxy env vars
         if (isSandboxActive()) {
@@ -33,10 +32,6 @@ export const bashTool: AgentTool = {
                     content: [{ type: "text" as const, text }],
                     details: { command: params.command, stdout: "", stderr: text, sandboxBlocked: true },
                 };
-            }
-
-            if (mode === "audit") {
-                console.log(`⚠️ [sandbox:audit] Would sandbox: ${params.command}`);
             }
         }
 

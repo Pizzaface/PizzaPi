@@ -21,23 +21,21 @@ export const sandboxEventsExtension: ExtensionFactory = (pi) => {
     const unsubscribe = onViolation((violation: ViolationRecord) => {
         pi.events?.emit?.("sandbox:violation", {
             timestamp: violation.timestamp.toISOString(),
-            tier: violation.tier,
             operation: violation.operation,
             target: violation.target,
             reason: violation.reason,
             mode: getSandboxMode(),
-            blocked: getSandboxMode() === "enforce",
         });
     });
 
     // ── Session start: emit status report ─────────────────────────────────
     pi.on("session_start", () => {
         const mode = getSandboxMode();
-        if (mode === "off") return;
+        if (mode === "none") return;
 
         pi.events?.emit?.("sandbox:status_report", {
             type: "sandbox_status",
-            mode,
+            mode,          // "none" | "basic" | "full"
             active: isSandboxActive(),
             platform: process.platform,
             violations: getViolations().length,
@@ -91,7 +89,7 @@ function formatStatus(): string {
         lines.push("", "### Recent Violations", "");
         for (const v of last5) {
             const icon = v.operation === "read" ? "📖" : v.operation === "write" ? "✏️" : "⚡";
-            lines.push(`- ${icon} \`${v.tier}:${v.operation}\` → \`${v.target}\` — ${v.reason}`);
+            lines.push(`- ${icon} \`${v.operation}\` → \`${v.target}\` — ${v.reason}`);
         }
     }
 
@@ -113,7 +111,7 @@ function formatViolations(): string {
     for (const v of violations) {
         const ts = v.timestamp.toISOString();
         lines.push(
-            `- **${ts}** | \`${v.tier}:${v.operation}\` | \`${v.target}\` | ${v.reason}`,
+            `- **${ts}** | \`${v.operation}\` | \`${v.target}\` | ${v.reason}`,
         );
     }
 

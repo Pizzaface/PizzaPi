@@ -1,9 +1,8 @@
 /**
  * Sandbox Manager Wrapper Module
  *
- * Thin wrapper around @anthropic-ai/sandbox-runtime's SandboxManager that
- * provides a clean API for all PizzaPi integration points. This is the
- * central sandbox module — all other tasks import from here.
+ * Thin wrapper around @anthropic-ai/sandbox-runtime's SandboxManager.
+ * Provides a clean API for all PizzaPi integration points.
  *
  * @module
  */
@@ -13,9 +12,7 @@ import { realpathSync, existsSync } from "node:fs";
 import { platform } from "node:os";
 import {
     SandboxManager,
-    SandboxViolationStore,
     type SandboxRuntimeConfig,
-    type SandboxViolationEvent,
     getDefaultWritePaths,
 } from "@anthropic-ai/sandbox-runtime";
 
@@ -30,29 +27,35 @@ const _caseInsensitiveFS = platform() === "darwin" || platform() === "win32";
  * The worker session passes this in at init time.
  */
 export interface ResolvedSandboxConfig {
-    enabled: boolean;
-    mode: "enforce" | "audit" | "off";
-    network: {
-        mode: "denylist" | "allowlist";
-        allowedDomains: string[];
-        deniedDomains: string[];
-    };
-    filesystem: {
-        denyRead: string[];
-        allowWrite: string[];
-        denyWrite: string[];
-    };
-    sockets: {
-        deny: string[];
-    };
-    mcp: {
-        allowedDomains: string[];
-        allowWrite: string[];
-    };
+    /** Sandbox mode preset. */
+    mode: "none" | "basic" | "full";
+    /**
+     * Fully-resolved srt config to pass to SandboxManager.initialize().
+     * Null when mode is "none".
+     */
+    srtConfig: {
+        network?: {
+            allowedDomains: string[];
+            deniedDomains: string[];
+            allowLocalBinding?: boolean;
+            allowUnixSockets?: string[];
+            allowAllUnixSockets?: boolean;
+            httpProxyPort?: number;
+            socksProxyPort?: number;
+        };
+        filesystem: {
+            denyRead: string[];
+            allowWrite: string[];
+            denyWrite: string[];
+            allowGitConfig?: boolean;
+        };
+        ignoreViolations?: Record<string, string[]>;
+        enableWeakerNetworkIsolation?: boolean;
+        enableWeakerNestedSandbox?: boolean;
+        mandatoryDenySearchDepth?: number;
+        allowPty?: boolean;
+    } | null;
 }
-
-/** 3-tier sandbox profiles for different tool types. */
-export type SandboxTier = "bash" | "filesystem" | "mcp";
 
 /** Result of a path validation check. */
 export interface ValidationResult {
@@ -60,10 +63,9 @@ export interface ValidationResult {
     reason?: string;
 }
 
-/** A record of a sandbox violation (for audit mode). */
+/** A record of a sandbox violation. */
 export interface ViolationRecord {
     timestamp: Date;
-    tier: SandboxTier;
     operation: string;
     target: string;
     reason: string;
@@ -88,12 +90,13 @@ let _sshAuthSock: string | null = null;
 /**
  * Initialize the sandbox. Call once per worker session.
  *
- * Translates `ResolvedSandboxConfig` into the `SandboxRuntimeConfig` expected
- * by the upstream `SandboxManager` and calls `SandboxManager.initialize()`.
+ * Translates `ResolvedSandboxConfig.srtConfig` into the `SandboxRuntimeConfig`
+ * expected by `SandboxManager` and calls `SandboxManager.initialize()`.
  *
  * Graceful degradation:
- * - On unsupported platforms (Windows), logs a warning and returns.
- * - If `SandboxManager.initialize()` throws, logs the error and continues
+ * - Mode `"none"` or null srtConfig: skips initialization entirely.
+ * - Unsupported platforms (Windows): logs a warning and continues unsandboxed.
+ * - If `SandboxManager.initialize()` throws: logs the error and continues
  *   unsandboxed. Never crashes the worker.
  */
 export async function initSandbox(config: ResolvedSandboxConfig): Promise<void> {
@@ -101,8 +104,8 @@ export async function initSandbox(config: ResolvedSandboxConfig): Promise<void> 
     _violations = [];
     _initFailed = false;
 
-    // If sandbox is disabled or mode is "off", skip initialization
-    if (!config.enabled || config.mode === "off") {
+    // Mode "none" or no srtConfig → no sandbox
+    if (config.mode === "none" || config.srtConfig === null) {
         _initialized = true;
         return;
     }
@@ -123,8 +126,8 @@ export async function initSandbox(config: ResolvedSandboxConfig): Promise<void> 
         return;
     }
 
-    // Build the SandboxRuntimeConfig from our ResolvedSandboxConfig
-    const runtimeConfig = buildRuntimeConfig(config, "bash");
+    // Build the SandboxRuntimeConfig to pass to srt
+    const runtimeConfig = _buildSrtConfig(config);
 
     try {
         await SandboxManager.initialize(runtimeConfig);
@@ -141,17 +144,13 @@ export async function initSandbox(config: ResolvedSandboxConfig): Promise<void> 
 }
 
 /**
- * Wrap a shell command with sandbox restrictions (bash tier).
+ * Wrap a shell command with sandbox restrictions.
  *
- * In enforce mode, returns the command wrapped with OS-level sandboxing.
- * In audit mode, returns the original command but logs what would be blocked.
- * When sandbox is off/failed, returns the original command unchanged.
+ * Returns the srt-wrapped command when sandboxing is active.
+ * Returns the original command when sandbox is off or init failed.
  */
 export async function wrapCommand(cmd: string): Promise<string> {
-    if (!_isEnforceable()) {
-        if (_config?.mode === "audit") {
-            _recordViolation("bash", "execute", cmd, "Audit: command would be sandboxed");
-        }
+    if (!_isActive()) {
         return cmd;
     }
 
@@ -159,53 +158,42 @@ export async function wrapCommand(cmd: string): Promise<string> {
         return await SandboxManager.wrapWithSandbox(cmd);
     } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        if (_config?.mode === "enforce") {
-            // Fail closed: do NOT run the command unsandboxed in enforce mode.
-            console.error(`[sandbox] Failed to wrap command in enforce mode, blocking: ${msg}`);
-            throw new Error(`Sandbox enforcement failed: ${msg}`);
-        }
-        // In audit mode, log but allow the command to proceed.
-        console.error(`[sandbox] Failed to wrap command, running unsandboxed: ${msg}`);
-        return cmd;
+        // Fail closed: block the command rather than run it unsandboxed.
+        console.error(`[sandbox] Failed to wrap command, blocking: ${msg}`);
+        throw new Error(`Sandbox enforcement failed: ${msg}`);
     }
 }
 
 /**
- * Validate a path for read or write operations (filesystem tier).
+ * Validate a path for read or write operations.
  *
- * Uses the configured deny/allow lists to check whether the path is permitted.
- * In audit mode, returns `{ allowed: false, reason }` but the caller should
- * NOT block the operation — only log it.
+ * Uses the resolved filesystem deny/allow lists for pre-call validation.
+ * This provides a fast, user-friendly error before the OS-level enforcement
+ * fires (which would produce a less informative EPERM).
  */
 export function validatePath(
     filePath: string,
     op: "read" | "write",
 ): ValidationResult {
-    if (!_config) {
-        return { allowed: true };
-    }
-
-    if (!_config.enabled || _config.mode === "off") {
+    if (!_config || _config.mode === "none" || !_config.srtConfig) {
         return { allowed: true };
     }
 
     const normalizedPath = _normalizePath(filePath);
 
-    if (op === "read") {
-        return _validateReadPath(normalizedPath);
-    } else {
-        return _validateWritePath(normalizedPath);
-    }
+    return op === "read"
+        ? _validateReadPath(normalizedPath)
+        : _validateWritePath(normalizedPath);
 }
 
 /**
- * Get environment variables for sandboxed child processes.
+ * Get proxy environment variables for sandboxed child processes.
  *
- * Returns proxy env vars if the sandbox network proxy is active,
- * otherwise returns an empty object.
+ * Returns HTTP_PROXY / HTTPS_PROXY / ALL_PROXY when the srt network proxy
+ * is active; otherwise returns an empty object.
  */
 export function getSandboxEnv(): Record<string, string> {
-    if (!_isEnforceable()) {
+    if (!_isActive()) {
         return {};
     }
 
@@ -233,31 +221,20 @@ export function getSandboxEnv(): Record<string, string> {
 
 /**
  * Check if the sandbox is active and enforcing restrictions.
- *
- * Returns `true` if:
- * - `initSandbox()` has been called successfully
- * - Config is enabled and mode is not "off"
- * - The platform is supported and init didn't fail
  */
 export function isSandboxActive(): boolean {
-    if (!_initialized || !_config) return false;
-    if (!_config.enabled || _config.mode === "off") return false;
-    if (_initFailed) return false;
-    return true;
+    return _isActive();
 }
 
 /**
- * Get the current sandbox mode.
- *
- * Returns the configured mode, or "off" if sandbox was never initialized.
+ * Get the current sandbox mode, or `"none"` if not initialized.
  */
-export function getSandboxMode(): "enforce" | "audit" | "off" {
-    return _config?.mode ?? "off";
+export function getSandboxMode(): "none" | "basic" | "full" {
+    return _config?.mode ?? "none";
 }
 
 /**
- * Get all recorded violations (audit mode).
- *
+ * Get all recorded violations.
  * Returns a copy of the ring buffer (capped at MAX_VIOLATIONS entries).
  */
 export function getViolations(): ViolationRecord[] {
@@ -273,7 +250,6 @@ export function clearViolations(): void {
 
 /**
  * Subscribe to violation events. Returns an unsubscribe function.
- * Each listener is called synchronously when a new violation is recorded.
  */
 export function onViolation(listener: (violation: ViolationRecord) => void): () => void {
     _violationListeners.push(listener);
@@ -291,13 +267,10 @@ export function getResolvedConfig(): ResolvedSandboxConfig | null {
 }
 
 /**
- * Cleanup sandbox resources.
- *
- * Resets the `SandboxManager` and clears module state.
- * Safe to call even if sandbox was never initialized.
+ * Cleanup sandbox resources. Safe to call even if never initialized.
  */
 export async function cleanupSandbox(): Promise<void> {
-    if (_initialized && !_initFailed && _config?.enabled && _config.mode !== "off") {
+    if (_initialized && !_initFailed && _config?.mode !== "none" && _config?.srtConfig !== null) {
         try {
             await SandboxManager.reset();
         } catch (err) {
@@ -316,135 +289,86 @@ export async function cleanupSandbox(): Promise<void> {
     _sshAuthSock = null;
 }
 
-// ── Profile builders (3-tier system) ──────────────────────────────────────────
-
-/**
- * Build a `SandboxRuntimeConfig` for a specific tier from a `ResolvedSandboxConfig`.
- *
- * Tiers:
- * - `bash`: Full sandbox — filesystem + network restrictions
- * - `filesystem`: Path validation only — for read_file, write_file, search
- * - `mcp`: Maximum restriction — no network, /tmp-only writes, no sockets
- */
-export function buildRuntimeConfig(
-    config: ResolvedSandboxConfig,
-    tier: SandboxTier,
-): SandboxRuntimeConfig {
-    switch (tier) {
-        case "bash":
-            return _buildBashConfig(config);
-        case "filesystem":
-            return _buildFilesystemConfig(config);
-        case "mcp":
-            return _buildMcpConfig(config);
-    }
-}
-
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
-function _buildBashConfig(config: ResolvedSandboxConfig): SandboxRuntimeConfig {
-    const allowUnixSockets = _buildSocketAllowlist(config);
+/** Build the SandboxRuntimeConfig to pass to srt from our resolved config. */
+function _buildSrtConfig(config: ResolvedSandboxConfig): SandboxRuntimeConfig {
+    const srt = config.srtConfig!;
 
-    return {
-        network: {
-            allowedDomains: config.network.mode === "allowlist"
-                ? config.network.allowedDomains
-                : [],
-            deniedDomains: config.network.mode === "denylist"
-                ? config.network.deniedDomains
-                : [],
-            allowUnixSockets: allowUnixSockets.length > 0 ? allowUnixSockets : undefined,
-            allowLocalBinding: true,
-        },
-        filesystem: {
-            denyRead: config.filesystem.denyRead,
-            allowWrite: [
-                ...getDefaultWritePaths(),
-                ...config.filesystem.allowWrite,
-            ],
-            denyWrite: config.filesystem.denyWrite,
-        },
-    };
-}
-
-function _buildFilesystemConfig(config: ResolvedSandboxConfig): SandboxRuntimeConfig {
-    return {
-        network: {
-            // Filesystem tier doesn't restrict network
-            allowedDomains: [],
-            deniedDomains: [],
-        },
-        filesystem: {
-            denyRead: config.filesystem.denyRead,
-            allowWrite: [
-                ...getDefaultWritePaths(),
-                ...config.filesystem.allowWrite,
-            ],
-            denyWrite: config.filesystem.denyWrite,
-        },
-    };
-}
-
-function _buildMcpConfig(config: ResolvedSandboxConfig): SandboxRuntimeConfig {
-    return {
-        network: {
-            // MCP tier: only allow explicitly configured domains
-            allowedDomains: config.mcp.allowedDomains,
-            deniedDomains: [],
-        },
-        filesystem: {
-            denyRead: config.filesystem.denyRead,
-            allowWrite: config.mcp.allowWrite,
-            denyWrite: config.filesystem.denyWrite,
-        },
-    };
-}
-
-/**
- * Build the Unix socket allowlist.
- * Includes SSH_AUTH_SOCK if detected, minus any denied sockets.
- */
-function _buildSocketAllowlist(config: ResolvedSandboxConfig): string[] {
-    const sockets: string[] = [];
-
-    // Auto-detect SSH agent socket
-    if (_sshAuthSock) {
-        sockets.push(_sshAuthSock);
+    // Merge SSH agent socket into allowUnixSockets if detected
+    let allowUnixSockets = srt.network?.allowUnixSockets;
+    if (_sshAuthSock && srt.network) {
+        const existing = allowUnixSockets ?? [];
+        if (!existing.includes(_sshAuthSock)) {
+            allowUnixSockets = [...existing, _sshAuthSock];
+        }
     }
 
-    // Filter out denied sockets
-    const denySet = new Set(config.sockets.deny);
-    return sockets.filter((s) => !denySet.has(s));
+    return {
+        filesystem: {
+            denyRead: srt.filesystem.denyRead,
+            allowWrite: [
+                ...getDefaultWritePaths(),
+                ...srt.filesystem.allowWrite,
+            ],
+            denyWrite: srt.filesystem.denyWrite,
+            ...(srt.filesystem.allowGitConfig !== undefined
+                ? { allowGitConfig: srt.filesystem.allowGitConfig }
+                : {}),
+        },
+        ...(srt.network !== undefined
+            ? {
+                network: {
+                    allowedDomains: srt.network.allowedDomains,
+                    deniedDomains: srt.network.deniedDomains,
+                    allowLocalBinding: srt.network.allowLocalBinding,
+                    ...(allowUnixSockets !== undefined ? { allowUnixSockets } : {}),
+                    ...(srt.network.allowAllUnixSockets !== undefined
+                        ? { allowAllUnixSockets: srt.network.allowAllUnixSockets }
+                        : {}),
+                    ...(srt.network.httpProxyPort !== undefined
+                        ? { httpProxyPort: srt.network.httpProxyPort }
+                        : {}),
+                    ...(srt.network.socksProxyPort !== undefined
+                        ? { socksProxyPort: srt.network.socksProxyPort }
+                        : {}),
+                },
+            }
+            : {}),
+        ...(srt.ignoreViolations !== undefined
+            ? { ignoreViolations: srt.ignoreViolations }
+            : {}),
+        ...(srt.enableWeakerNetworkIsolation !== undefined
+            ? { enableWeakerNetworkIsolation: srt.enableWeakerNetworkIsolation }
+            : {}),
+        ...(srt.enableWeakerNestedSandbox !== undefined
+            ? { enableWeakerNestedSandbox: srt.enableWeakerNestedSandbox }
+            : {}),
+        ...(srt.mandatoryDenySearchDepth !== undefined
+            ? { mandatoryDenySearchDepth: srt.mandatoryDenySearchDepth }
+            : {}),
+        ...(srt.allowPty !== undefined ? { allowPty: srt.allowPty } : {}),
+    } as SandboxRuntimeConfig;
 }
 
-/** Check if the sandbox is in a state where it can enforce restrictions. */
-function _isEnforceable(): boolean {
-    return _initialized && !_initFailed && _config?.enabled === true && _config.mode === "enforce";
+/** Returns true when the sandbox is initialized and active (not none/failed). */
+function _isActive(): boolean {
+    return _initialized && !_initFailed && _config?.mode !== "none" && _config?.srtConfig !== null;
 }
 
-/** Normalize a file path for comparison against config paths.
- *  Resolves `.`, `..`, repeated slashes, expands `~`, and follows
- *  symlinks so that traversal tricks cannot bypass allow/deny rules.
- */
+/** Normalize a file path for comparison against config paths. */
 function _normalizePath(filePath: string): string {
     let expanded = filePath;
-    // Expand leading ~
     if (expanded.startsWith("~")) {
         const home = process.env.HOME ?? process.env.USERPROFILE ?? "/";
         expanded = home + expanded.slice(1);
     }
-    // pathResolve handles relative paths (resolves against cwd) and
-    // collapses `.` / `..` / duplicate slashes in a single pass.
     const resolved = pathResolve(expanded);
 
-    // Follow symlinks to get the canonical path.
-    // For existing paths, use the target's real path.
-    // For non-existing paths (writes), resolve the nearest existing ancestor.
     try {
         if (existsSync(resolved)) {
             return realpathSync(resolved);
         }
-        // Walk up to the nearest existing ancestor and resolve it
         let parent = dirname(resolved);
         const tail: string[] = [resolved.slice(parent.length)];
         while (parent !== "/" && !existsSync(parent)) {
@@ -461,11 +385,7 @@ function _normalizePath(filePath: string): string {
     return resolved;
 }
 
-/** Normalize a config rule path: expand ~, resolve .., strip trailing /,
- *  and follow symlinks in existing ancestor components (same logic as
- *  _normalizePath so rule paths and input paths are compared in the same
- *  canonical form).
- */
+/** Normalize a config rule path (same logic as _normalizePath). */
 function _normalizeRulePath(rulePath: string): string {
     let expanded = rulePath;
     if (expanded.startsWith("~")) {
@@ -473,11 +393,9 @@ function _normalizeRulePath(rulePath: string): string {
         expanded = home + expanded.slice(1);
     }
     let resolved = pathResolve(expanded);
-    // Strip trailing slash (except root "/")
     while (resolved.length > 1 && resolved.endsWith("/")) {
         resolved = resolved.slice(0, -1);
     }
-    // Resolve symlinks the same way as _normalizePath
     try {
         if (existsSync(resolved)) {
             return realpathSync(resolved);
@@ -498,21 +416,15 @@ function _normalizeRulePath(rulePath: string): string {
     return resolved;
 }
 
-/** Check if a path is denied for reading. */
+/** Check if a normalized path is denied for reading. */
 function _validateReadPath(normalizedPath: string): ValidationResult {
-    if (!_config) return { allowed: true };
+    const fs = _config?.srtConfig?.filesystem;
+    if (!fs) return { allowed: true };
 
-    for (const denied of _config.filesystem.denyRead) {
+    for (const denied of fs.denyRead) {
         if (_pathMatchesDeny(normalizedPath, denied)) {
             const reason = `Read denied: path "${normalizedPath}" matches deny rule "${denied}"`;
-
-            // Always record the violation (for both enforce and audit)
-            _recordViolation("filesystem", "read", normalizedPath, reason);
-
-            if (_config.mode === "audit") {
-                return { allowed: true, reason };
-            }
-
+            _recordViolation("read", normalizedPath, reason);
             return { allowed: false, reason };
         }
     }
@@ -520,101 +432,68 @@ function _validateReadPath(normalizedPath: string): ValidationResult {
     return { allowed: true };
 }
 
-/** Check if a path is permitted for writing. */
+/** Check if a normalized path is permitted for writing. */
 function _validateWritePath(normalizedPath: string): ValidationResult {
-    if (!_config) return { allowed: true };
+    const fs = _config?.srtConfig?.filesystem;
+    if (!fs) return { allowed: true };
 
-    // Check denyWrite first (takes precedence)
-    for (const denied of _config.filesystem.denyWrite) {
+    // denyWrite takes precedence
+    for (const denied of fs.denyWrite) {
         if (_pathMatchesDeny(normalizedPath, denied)) {
             const reason = `Write denied: path "${normalizedPath}" matches deny rule "${denied}"`;
-
-            _recordViolation("filesystem", "write", normalizedPath, reason);
-
-            if (_config.mode === "audit") {
-                return { allowed: true, reason };
-            }
-
+            _recordViolation("write", normalizedPath, reason);
             return { allowed: false, reason };
         }
     }
 
-    // Check if path is within any allowWrite path
-    const isAllowed = _config.filesystem.allowWrite.some((allowed) =>
+    // Must be within an allowWrite path
+    const isAllowed = fs.allowWrite.some((allowed) =>
         _pathWithinAllow(normalizedPath, allowed),
     );
 
     if (!isAllowed) {
         const reason = `Write denied: path "${normalizedPath}" is not within any allowed write path`;
-
-        _recordViolation("filesystem", "write", normalizedPath, reason);
-
-        if (_config.mode === "audit") {
-            return { allowed: true, reason };
-        }
-
+        _recordViolation("write", normalizedPath, reason);
         return { allowed: false, reason };
     }
 
     return { allowed: true };
 }
 
-/**
- * Compare two path strings for equality/prefix, respecting platform case sensitivity.
- * On case-insensitive filesystems (macOS, Windows), lowercases both sides.
- */
 function _pathsEqual(a: string, b: string): boolean {
     return _caseInsensitiveFS ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
+
 function _pathStartsWith(path: string, prefix: string): boolean {
     return _caseInsensitiveFS
         ? path.toLowerCase().startsWith(prefix.toLowerCase())
         : path.startsWith(prefix);
 }
 
-/**
- * Check if a normalized path matches a deny rule.
- * A deny rule matches if the path is equal to or is a child of the denied path.
- * Rule paths are normalized to strip trailing separators.
- */
 function _pathMatchesDeny(normalizedPath: string, deniedPath: string): boolean {
     const rule = _normalizeRulePath(deniedPath);
     return _pathsEqual(normalizedPath, rule) || _pathStartsWith(normalizedPath, rule + "/");
 }
 
-/**
- * Check if a normalized path is within an allowed path.
- * The path must be equal to or a child of the allowed path.
- * Rule paths are normalized to strip trailing separators.
- */
 function _pathWithinAllow(normalizedPath: string, allowedPath: string): boolean {
     const rule = _normalizeRulePath(allowedPath);
     return _pathsEqual(normalizedPath, rule) || _pathStartsWith(normalizedPath, rule + "/");
 }
 
-/** Record a violation for audit/enforce mode. Caps at MAX_VIOLATIONS entries. */
-function _recordViolation(
-    tier: SandboxTier,
-    operation: string,
-    target: string,
-    reason: string,
-): void {
+/** Record a violation. Caps at MAX_VIOLATIONS entries. */
+function _recordViolation(operation: string, target: string, reason: string): void {
     const violation: ViolationRecord = {
         timestamp: new Date(),
-        tier,
         operation,
         target,
         reason,
     };
 
     _violations.push(violation);
-
-    // Ring buffer: drop oldest when over cap
     if (_violations.length > MAX_VIOLATIONS) {
         _violations = _violations.slice(-MAX_VIOLATIONS);
     }
 
-    // Notify listeners
     for (const listener of _violationListeners) {
         try {
             listener(violation);

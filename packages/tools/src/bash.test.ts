@@ -1,37 +1,27 @@
-import { describe, test, expect, beforeEach, afterEach, mock, spyOn } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach, spyOn } from "bun:test";
 import { bashTool } from "./bash.js";
 import {
     initSandbox,
     cleanupSandbox,
-    getViolations,
     _resetState,
     type ResolvedSandboxConfig,
 } from "./sandbox.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function makeConfig(overrides?: Partial<ResolvedSandboxConfig>): ResolvedSandboxConfig {
+function makeConfig(mode: ResolvedSandboxConfig["mode"] = "none"): ResolvedSandboxConfig {
+    if (mode === "none") {
+        return { mode: "none", srtConfig: null };
+    }
     return {
-        enabled: true,
-        mode: "enforce",
-        network: {
-            mode: "denylist",
-            allowedDomains: [],
-            deniedDomains: [],
+        mode,
+        srtConfig: {
+            filesystem: {
+                denyRead: [],
+                allowWrite: ["/tmp"],
+                denyWrite: [],
+            },
         },
-        filesystem: {
-            denyRead: [],
-            allowWrite: ["/tmp"],
-            denyWrite: [],
-        },
-        sockets: {
-            deny: [],
-        },
-        mcp: {
-            allowedDomains: [],
-            allowWrite: ["/tmp"],
-        },
-        ...overrides,
     };
 }
 
@@ -70,7 +60,6 @@ describe("bashTool", () => {
         });
 
         test("uses default 30s timeout", async () => {
-            // Just verifying a fast command works without explicit timeout
             const result = await execBash("echo fast");
             expect(result.content[0].text).toContain("fast");
         });
@@ -81,90 +70,41 @@ describe("bashTool", () => {
         });
     });
 
-    describe("sandbox disabled", () => {
-        test("executes normally when sandbox is disabled", async () => {
-            await initSandbox(makeConfig({ enabled: false }));
+    describe("sandbox mode: none", () => {
+        test("executes normally when mode is none", async () => {
+            await initSandbox(makeConfig("none"));
             const result = await execBash("echo no-sandbox");
             expect(result.content[0].text).toContain("no-sandbox");
         });
 
-        test("executes normally when mode is off", async () => {
-            await initSandbox(makeConfig({ mode: "off" }));
-            const result = await execBash("echo off-mode");
-            expect(result.content[0].text).toContain("off-mode");
-        });
-
-        test("no sandbox env vars when disabled", async () => {
-            await initSandbox(makeConfig({ enabled: false }));
-            // This command prints an env var that would be set by sandbox
+        test("no sandbox env vars when mode is none", async () => {
+            await initSandbox(makeConfig("none"));
             const result = await execBash("echo ${HTTP_PROXY:-none}");
             expect(result.content[0].text).toContain("none");
         });
     });
 
-    describe("sandbox audit mode", () => {
-        test("executes command without blocking in audit mode", async () => {
-            await initSandbox(makeConfig({ mode: "audit" }));
-            const result = await execBash("echo audit-test");
-            expect(result.content[0].text).toContain("audit-test");
-        });
+    describe("sandbox mode: basic / full (graceful degradation)", () => {
+        // Note: actual OS-level sandboxing requires macOS/Linux with the sandbox
+        // runtime. On CI or unsupported platforms, initSandbox degrades gracefully
+        // and isSandboxActive() returns false. These tests verify the integration
+        // plumbing works without relying on OS-level enforcement.
 
-        test("records violation in audit mode", async () => {
-            await initSandbox(makeConfig({ mode: "audit" }));
-            await execBash("echo audit-logged");
-
-            const violations = getViolations();
-            expect(violations.length).toBe(1);
-            expect(violations[0].tier).toBe("bash");
-            expect(violations[0].operation).toBe("execute");
-        });
-
-        test("logs audit warning to console", async () => {
-            const consoleSpy = spyOn(console, "log").mockImplementation(() => {});
-            try {
-                await initSandbox(makeConfig({ mode: "audit" }));
-                await execBash("echo audit-warn");
-
-                // Find the audit log call
-                const auditCalls = consoleSpy.mock.calls.filter(
-                    (call) => typeof call[0] === "string" && call[0].includes("[sandbox:audit]"),
-                );
-                expect(auditCalls.length).toBe(1);
-                expect(auditCalls[0][0]).toContain("Would sandbox");
-                expect(auditCalls[0][0]).toContain("echo audit-warn");
-            } finally {
-                consoleSpy.mockRestore();
-            }
-        });
-
-        test("accumulates violations across multiple commands", async () => {
-            await initSandbox(makeConfig({ mode: "audit" }));
-            await execBash("echo cmd1");
-            await execBash("echo cmd2");
-            await execBash("echo cmd3");
-
-            const violations = getViolations();
-            expect(violations.length).toBe(3);
-        });
-    });
-
-    describe("sandbox enforce mode", () => {
-        // Note: actual sandboxing via SandboxManager.wrapWithSandbox() requires
-        // macOS/Linux with the actual sandbox runtime. On CI or unsupported
-        // platforms, initSandbox degrades gracefully and isSandboxActive() returns
-        // false, so these tests verify the integration plumbing works.
-
-        test("still executes commands after sandbox init (graceful degradation)", async () => {
-            // On platforms where sandbox isn't supported, this should still work
-            await initSandbox(makeConfig({ mode: "enforce" }));
+        test("still executes commands after sandbox init in basic mode", async () => {
+            await initSandbox(makeConfig("basic"));
             const result = await execBash("echo sandboxed");
             expect(result.content[0].text).toContain("sandboxed");
         });
 
+        test("still executes commands after sandbox init in full mode", async () => {
+            await initSandbox(makeConfig("full"));
+            const result = await execBash("echo full-mode");
+            expect(result.content[0].text).toContain("full-mode");
+        });
+
         test("details always contain original command", async () => {
-            await initSandbox(makeConfig({ mode: "enforce" }));
+            await initSandbox(makeConfig("basic"));
             const result = await execBash("echo original");
-            // details.command should always be the original, not the wrapped version
             expect(result.details.command).toBe("echo original");
         });
     });

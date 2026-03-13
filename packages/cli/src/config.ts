@@ -146,98 +146,169 @@ export const BUILTIN_SYSTEM_PROMPT = [
 
 // ── Sandbox configuration ─────────────────────────────────────────────────────
 
-/** User-facing sandbox config — all fields optional (merged with defaults). */
+/**
+ * Sandbox preset modes.
+ *
+ * - `none`  — Sandbox disabled. All tool calls run directly on the host with no restrictions.
+ * - `basic` — Filesystem-only protection. Sensitive dotfiles are blocked from reads/writes;
+ *             writes are restricted to the project and /tmp. Network is unrestricted.
+ * - `full`  — Full OS-level enforcement. Same filesystem rules as `basic`, plus network is
+ *             deny-all by default (use `network.allowedDomains` overrides to permit domains).
+ *
+ * Default: `"basic"`.
+ */
+export type SandboxMode = "none" | "basic" | "full";
+
+/**
+ * User-facing sandbox config in `~/.pizzapi/config.json`.
+ *
+ * `mode` selects a preset. All other fields are srt-native overrides that are
+ * deep-merged on top of the preset. They mirror the `~/.srt-settings.json`
+ * format from `@anthropic-ai/sandbox-runtime` exactly.
+ *
+ * Overrides are ignored when `mode` is `"none"`.
+ */
 export interface SandboxConfig {
-    /** Whether sandbox enforcement is active. Default: true. */
-    enabled?: boolean;
-    /** Enforcement mode. Default: "enforce". */
-    mode?: "enforce" | "audit" | "off";
-    /** Network access controls. */
+    /** Sandbox enforcement preset. Default: `"basic"`. */
+    mode?: SandboxMode;
+    /** Network access overrides (srt-native). Ignored in `none` mode. */
     network?: {
-        /** Whether the domain list is a denylist or an allowlist. Default: "denylist". */
-        mode?: "denylist" | "allowlist";
-        /** Domains permitted when mode is "allowlist". */
+        /**
+         * Domains the agent is allowed to reach (allow-only pattern).
+         * Setting this switches network sandboxing on even in `basic` mode.
+         * An empty array (`[]`) blocks all network access.
+         */
         allowedDomains?: string[];
-        /** Domains blocked when mode is "denylist". */
+        /** Domains explicitly blocked (deny pattern). */
         deniedDomains?: string[];
+        /** Allow the process to bind to local ports. Default: true. */
+        allowLocalBinding?: boolean;
+        /** Unix socket paths the process may access. */
+        allowUnixSockets?: string[];
+        /** Allow all Unix sockets (disables seccomp AF_UNIX blocking on Linux). */
+        allowAllUnixSockets?: boolean;
+        /** Override the HTTP proxy port. */
+        httpProxyPort?: number;
+        /** Override the SOCKS proxy port. */
+        socksProxyPort?: number;
     };
-    /** Filesystem access controls. */
+    /** Filesystem access overrides (srt-native). Ignored in `none` mode. */
     filesystem?: {
-        /** Paths the agent cannot read. Default: sensitive dotfile dirs. */
+        /** Additional paths the agent cannot read. Merged with preset denyRead. */
         denyRead?: string[];
-        /** Paths the agent may write to. Default: [".", "/tmp"]. */
+        /**
+         * Paths the agent may write to.
+         * Replaces the preset allowWrite when specified.
+         * Default preset value: `[".", "/tmp"]`.
+         */
         allowWrite?: string[];
-        /** Paths the agent must never write to. Default: [".env", "~/.ssh"]. */
+        /** Additional paths the agent must never write to. Merged with preset denyWrite. */
         denyWrite?: string[];
+        /** Allow the process to write to .gitconfig. Default: false. */
+        allowGitConfig?: boolean;
     };
-    /** Unix socket access controls. */
-    sockets?: {
-        /** Sockets the agent cannot access. Default: ["/var/run/docker.sock"]. */
-        deny?: string[];
-    };
-    /** MCP tool sandbox constraints. */
-    mcp?: {
-        /** Domains MCP tools are allowed to contact. Default: []. */
-        allowedDomains?: string[];
-        /** Paths MCP tools may write to. Default: ["/tmp"]. */
-        allowWrite?: string[];
-    };
+    /** Pass-through srt options. Ignored in `none` mode. */
+    ignoreViolations?: Record<string, string[]>;
+    /** Disable network namespace removal on Linux (weaker isolation). */
+    enableWeakerNetworkIsolation?: boolean;
+    /** Allow nested sandbox-exec / bubblewrap with weaker profile. */
+    enableWeakerNestedSandbox?: boolean;
+    /** Depth limit for mandatory-deny path scanning on Linux. Default: 3. */
+    mandatoryDenySearchDepth?: number;
+    /** Allow pseudo-terminal allocation inside the sandbox. */
+    allowPty?: boolean;
 }
 
-/** Fully-resolved sandbox config — every field is required with absolute paths. */
+/**
+ * Fully-resolved sandbox config passed to `@pizzapi/tools` `initSandbox()`.
+ *
+ * `mode` tells the tools layer whether to skip sandboxing entirely (`none`).
+ * `srtConfig` is the srt `SandboxRuntimeConfig` to pass to `SandboxManager.initialize()`;
+ * it is `null` when `mode` is `"none"`.
+ */
 export interface ResolvedSandboxConfig {
-    enabled: boolean;
-    mode: "enforce" | "audit" | "off";
-    network: {
-        mode: "denylist" | "allowlist";
+    mode: SandboxMode;
+    /** Fully-resolved srt config, or null when sandbox is disabled. */
+    srtConfig: SrtConfig | null;
+}
+
+/**
+ * The subset of `SandboxRuntimeConfig` we populate.
+ * Declared inline to avoid importing srt types into the CLI config module.
+ */
+export interface SrtConfig {
+    network?: {
         allowedDomains: string[];
         deniedDomains: string[];
+        allowLocalBinding?: boolean;
+        allowUnixSockets?: string[];
+        allowAllUnixSockets?: boolean;
+        httpProxyPort?: number;
+        socksProxyPort?: number;
     };
     filesystem: {
         denyRead: string[];
         allowWrite: string[];
         denyWrite: string[];
+        allowGitConfig?: boolean;
     };
-    sockets: {
-        deny: string[];
-    };
-    mcp: {
-        allowedDomains: string[];
-        allowWrite: string[];
-    };
+    ignoreViolations?: Record<string, string[]>;
+    enableWeakerNetworkIsolation?: boolean;
+    enableWeakerNestedSandbox?: boolean;
+    mandatoryDenySearchDepth?: number;
+    allowPty?: boolean;
 }
 
-/** Sensible default sandbox configuration. */
-export const DEFAULT_SANDBOX_CONFIG: ResolvedSandboxConfig = {
-    enabled: true,
-    mode: "enforce",
+// ── Sensitive paths blocked by all non-none presets ───────────────────────────
+
+const SENSITIVE_DENY_READ: string[] = [
+    "~/.ssh",
+    "~/.aws",
+    "~/.gnupg",
+    "~/.config/gcloud",
+    "~/.docker/config.json",
+    "~/Library/Application Support/Google/Chrome",
+    "~/Library/Application Support/Firefox",
+    "~/.mozilla/firefox",
+    "~/.config/google-chrome",
+    "~/.config/chromium",
+];
+
+const SENSITIVE_DENY_WRITE: string[] = [
+    ".env",
+    ".env.local",
+    "~/.ssh",
+];
+
+// ── Preset base configs (before path resolution) ──────────────────────────────
+
+/**
+ * `basic` preset: filesystem protection, unrestricted network.
+ * No `network` key → srt does not activate network sandboxing.
+ */
+const PRESET_BASIC: Omit<SrtConfig, "network"> = {
+    filesystem: {
+        denyRead: SENSITIVE_DENY_READ,
+        allowWrite: [".", "/tmp"],
+        denyWrite: SENSITIVE_DENY_WRITE,
+    },
+};
+
+/**
+ * `full` preset: filesystem protection + network deny-all by default.
+ * `network.allowedDomains: []` tells srt to block all outbound network.
+ * Users add domain overrides to open specific holes.
+ */
+const PRESET_FULL: SrtConfig = {
     network: {
-        mode: "denylist",
         allowedDomains: [],
         deniedDomains: [],
+        allowLocalBinding: true,
     },
     filesystem: {
-        denyRead: [
-            "~/.ssh",
-            "~/.aws",
-            "~/.gnupg",
-            "~/.config/gcloud",
-            "~/.docker/config.json",
-            "~/Library/Application Support/Google/Chrome",
-            "~/Library/Application Support/Firefox",
-            "~/.mozilla/firefox",
-            "~/.config/google-chrome",
-            "~/.config/chromium",
-        ],
+        denyRead: SENSITIVE_DENY_READ,
         allowWrite: [".", "/tmp"],
-        denyWrite: [".env", ".env.local", "~/.ssh"],
-    },
-    sockets: {
-        deny: ["/var/run/docker.sock"],
-    },
-    mcp: {
-        allowedDomains: [],
-        allowWrite: ["/tmp"],
+        denyWrite: SENSITIVE_DENY_WRITE,
     },
 };
 
@@ -254,111 +325,169 @@ function resolveSandboxPath(p: string, cwd: string): string {
 }
 
 /**
- * Resolve a partial SandboxConfig into a fully-resolved ResolvedSandboxConfig.
- * Expands `~` to `os.homedir()`, resolves `.` to `cwd`, and fills in defaults.
+ * Resolve a partial SandboxConfig into a ResolvedSandboxConfig.
+ *
+ * 1. Pick the base SrtConfig from the preset (`basic` or `full`).
+ * 2. Deep-merge user overrides on top (deny lists union, allow lists replace).
+ * 3. Expand all paths (`~` → homedir, `.` → cwd).
+ * 4. Return `{ mode: "none", srtConfig: null }` when mode is `"none"`.
  */
 export function resolveSandboxConfig(cwd: string, config: PizzaPiConfig): ResolvedSandboxConfig {
     const s = config.sandbox ?? {};
+    const mode: SandboxMode = s.mode ?? "basic";
+
+    if (mode === "none") {
+        return { mode: "none", srtConfig: null };
+    }
 
     const resolvePaths = (paths: string[]): string[] =>
         paths.map((p) => resolveSandboxPath(p, cwd));
 
-    return {
-        enabled: s.enabled ?? DEFAULT_SANDBOX_CONFIG.enabled,
-        mode: s.mode ?? DEFAULT_SANDBOX_CONFIG.mode,
-        network: {
-            mode: s.network?.mode ?? DEFAULT_SANDBOX_CONFIG.network.mode,
-            allowedDomains: [...(s.network?.allowedDomains ?? DEFAULT_SANDBOX_CONFIG.network.allowedDomains)],
-            deniedDomains: [...(s.network?.deniedDomains ?? DEFAULT_SANDBOX_CONFIG.network.deniedDomains)],
-        },
-        filesystem: {
-            denyRead: resolvePaths(s.filesystem?.denyRead ?? DEFAULT_SANDBOX_CONFIG.filesystem.denyRead),
-            allowWrite: resolvePaths(s.filesystem?.allowWrite ?? DEFAULT_SANDBOX_CONFIG.filesystem.allowWrite),
-            denyWrite: resolvePaths(s.filesystem?.denyWrite ?? DEFAULT_SANDBOX_CONFIG.filesystem.denyWrite),
-        },
-        sockets: {
-            deny: resolvePaths(s.sockets?.deny ?? DEFAULT_SANDBOX_CONFIG.sockets.deny),
-        },
-        mcp: {
-            allowedDomains: [...(s.mcp?.allowedDomains ?? DEFAULT_SANDBOX_CONFIG.mcp.allowedDomains)],
-            allowWrite: resolvePaths(s.mcp?.allowWrite ?? DEFAULT_SANDBOX_CONFIG.mcp.allowWrite),
-        },
+    // Start from the preset
+    const preset: SrtConfig = mode === "full"
+        ? { ...PRESET_FULL, filesystem: { ...PRESET_FULL.filesystem }, network: { ...PRESET_FULL.network! } }
+        : { ...PRESET_BASIC, filesystem: { ...PRESET_BASIC.filesystem } };
+
+    // ── Filesystem overrides ──────────────────────────────────────────────────
+    // denyRead/denyWrite: union (user can add more denied paths)
+    const denyRead = [
+        ...preset.filesystem.denyRead,
+        ...(s.filesystem?.denyRead ?? []),
+    ];
+    const denyWrite = [
+        ...preset.filesystem.denyWrite,
+        ...(s.filesystem?.denyWrite ?? []),
+    ];
+    // allowWrite: user value replaces preset when specified (opt-in narrowing or widening)
+    const allowWrite = s.filesystem?.allowWrite ?? preset.filesystem.allowWrite;
+
+    const filesystem: SrtConfig["filesystem"] = {
+        denyRead: resolvePaths([...new Set(denyRead)]),
+        allowWrite: resolvePaths(allowWrite),
+        denyWrite: resolvePaths([...new Set(denyWrite)]),
+        ...(s.filesystem?.allowGitConfig !== undefined
+            ? { allowGitConfig: s.filesystem.allowGitConfig }
+            : {}),
     };
+
+    // ── Network overrides ─────────────────────────────────────────────────────
+    // Presence of network.allowedDomains in the override activates srt network
+    // sandboxing even in `basic` mode (user opted in explicitly).
+    let network: SrtConfig["network"];
+
+    if (preset.network) {
+        // `full` preset: start from preset, apply overrides
+        network = {
+            allowedDomains: s.network?.allowedDomains ?? preset.network.allowedDomains,
+            deniedDomains: [
+                ...preset.network.deniedDomains,
+                ...(s.network?.deniedDomains ?? []),
+            ],
+            allowLocalBinding: s.network?.allowLocalBinding ?? preset.network.allowLocalBinding,
+            ...(s.network?.allowUnixSockets !== undefined
+                ? { allowUnixSockets: s.network.allowUnixSockets }
+                : {}),
+            ...(s.network?.allowAllUnixSockets !== undefined
+                ? { allowAllUnixSockets: s.network.allowAllUnixSockets }
+                : {}),
+            ...(s.network?.httpProxyPort !== undefined
+                ? { httpProxyPort: s.network.httpProxyPort }
+                : {}),
+            ...(s.network?.socksProxyPort !== undefined
+                ? { socksProxyPort: s.network.socksProxyPort }
+                : {}),
+        };
+    } else if (s.network?.allowedDomains !== undefined) {
+        // `basic` preset but user explicitly set allowedDomains → opt-in network sandboxing
+        network = {
+            allowedDomains: s.network.allowedDomains,
+            deniedDomains: s.network.deniedDomains ?? [],
+            allowLocalBinding: s.network.allowLocalBinding ?? true,
+            ...(s.network.allowUnixSockets !== undefined
+                ? { allowUnixSockets: s.network.allowUnixSockets }
+                : {}),
+            ...(s.network.allowAllUnixSockets !== undefined
+                ? { allowAllUnixSockets: s.network.allowAllUnixSockets }
+                : {}),
+            ...(s.network.httpProxyPort !== undefined
+                ? { httpProxyPort: s.network.httpProxyPort }
+                : {}),
+            ...(s.network.socksProxyPort !== undefined
+                ? { socksProxyPort: s.network.socksProxyPort }
+                : {}),
+        };
+    }
+    // else: basic mode with no allowedDomains override → no network key → no network sandboxing
+
+    const srtConfig: SrtConfig = {
+        filesystem,
+        ...(network !== undefined ? { network } : {}),
+        ...(s.ignoreViolations !== undefined ? { ignoreViolations: s.ignoreViolations } : {}),
+        ...(s.enableWeakerNetworkIsolation !== undefined
+            ? { enableWeakerNetworkIsolation: s.enableWeakerNetworkIsolation }
+            : {}),
+        ...(s.enableWeakerNestedSandbox !== undefined
+            ? { enableWeakerNestedSandbox: s.enableWeakerNestedSandbox }
+            : {}),
+        ...(s.mandatoryDenySearchDepth !== undefined
+            ? { mandatoryDenySearchDepth: s.mandatoryDenySearchDepth }
+            : {}),
+        ...(s.allowPty !== undefined ? { allowPty: s.allowPty } : {}),
+    };
+
+    return { mode, srtConfig };
 }
 
 /**
  * Merge a global SandboxConfig with a project-local SandboxConfig.
  *
  * Security invariant: the project config CANNOT weaken the global config.
- *   - deny lists (denyRead, denyWrite, sockets.deny): union (project can add, not remove)
- *   - allow lists (allowWrite, mcp.allowWrite, mcp.allowedDomains): intersection (project can only narrow)
- *   - network.allowedDomains: intersection
- *   - Scalars (enabled, mode, network.mode): global wins unless project is stricter
+ *   - `mode`: ordered `none < basic < full`; project can only move to a stricter mode, not weaker.
+ *   - `filesystem.denyRead` / `denyWrite`: union (project can add more denials, not remove).
+ *   - `filesystem.allowWrite`: intersection when both are specified (project can only narrow).
+ *   - `network.allowedDomains`: intersection when both are specified (project can only narrow).
+ *   - `network.deniedDomains`: union (project can add more denials, not remove).
  */
 export function mergeSandboxConfig(global: SandboxConfig, project: SandboxConfig): SandboxConfig {
-    // Helper: unique union of two string arrays
     const union = (a: string[] | undefined, b: string[] | undefined): string[] | undefined => {
         const combined = [...(a ?? []), ...(b ?? [])];
         return combined.length > 0 ? [...new Set(combined)] : undefined;
     };
 
-    // Helper: intersection of two string arrays (only items in both)
-    // Semantics:
-    //  - If either side is undefined, the other side passes through unchanged
-    //    (undefined = "not specified" ≠ "empty list").
-    //  - If both are specified, return the intersection. This means
-    //    project can only NARROW what global allows, never widen.
-    //  - Two empty arrays intersect to [].
     const intersect = (
         g: string[] | undefined,
         p: string[] | undefined,
     ): string[] | undefined => {
-        if (g === undefined) return p; // global didn't specify → keep project
-        if (p === undefined) return g; // project didn't specify → keep global
+        if (g === undefined) return p;
+        if (p === undefined) return g;
         const pSet = new Set(p);
         const result = g.filter((item) => pSet.has(item));
         return result.length > 0 ? result : [];
     };
 
-    // Scalars: project cannot weaken (enable → disable, enforce → audit/off)
-    const modeStrength: Record<string, number> = { enforce: 2, audit: 1, off: 0 };
-    const globalMode = global.mode ?? "enforce";
-    const projectMode = project.mode ?? globalMode;
-    const effectiveMode = modeStrength[projectMode] >= modeStrength[globalMode] ? projectMode : globalMode;
-
-    // enabled: project can only disable→enable (stricter) not enable→disable
-    const globalEnabled = global.enabled ?? true;
-    const projectEnabled = project.enabled ?? globalEnabled;
-    // If global says enabled, project can't disable. If global says disabled, project can enable (stricter).
-    const effectiveEnabled = globalEnabled ? true : projectEnabled;
-
-    // Network mode: project can make it stricter (denylist→allowlist is stricter)
-    const netModeStrength: Record<string, number> = { allowlist: 1, denylist: 0 };
-    const globalNetMode = global.network?.mode ?? "denylist";
-    const projectNetMode = project.network?.mode ?? globalNetMode;
-    const effectiveNetMode = netModeStrength[projectNetMode] >= netModeStrength[globalNetMode]
-        ? projectNetMode
-        : globalNetMode;
+    // Mode: project can only escalate (none → basic → full)
+    const modeStrength: Record<SandboxMode, number> = { none: 0, basic: 1, full: 2 };
+    const globalMode: SandboxMode = global.mode ?? "basic";
+    const projectMode: SandboxMode = project.mode ?? globalMode;
+    const effectiveMode: SandboxMode =
+        modeStrength[projectMode] >= modeStrength[globalMode] ? projectMode : globalMode;
 
     return {
-        enabled: effectiveEnabled,
-        mode: effectiveMode as "enforce" | "audit" | "off",
+        mode: effectiveMode,
         network: {
-            mode: effectiveNetMode as "denylist" | "allowlist",
             allowedDomains: intersect(global.network?.allowedDomains, project.network?.allowedDomains),
             deniedDomains: union(global.network?.deniedDomains, project.network?.deniedDomains),
+            // Other network scalars: global wins
+            ...(global.network?.allowLocalBinding !== undefined
+                ? { allowLocalBinding: global.network.allowLocalBinding }
+                : project.network?.allowLocalBinding !== undefined
+                    ? { allowLocalBinding: project.network.allowLocalBinding }
+                    : {}),
         },
         filesystem: {
             denyRead: union(global.filesystem?.denyRead, project.filesystem?.denyRead),
             denyWrite: union(global.filesystem?.denyWrite, project.filesystem?.denyWrite),
             allowWrite: intersect(global.filesystem?.allowWrite, project.filesystem?.allowWrite),
-        },
-        sockets: {
-            deny: union(global.sockets?.deny, project.sockets?.deny),
-        },
-        mcp: {
-            allowedDomains: intersect(global.mcp?.allowedDomains, project.mcp?.allowedDomains),
-            allowWrite: intersect(global.mcp?.allowWrite, project.mcp?.allowWrite),
         },
     };
 }
