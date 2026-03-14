@@ -77,6 +77,14 @@ export interface ViewerClientToServerEvents {
     command: string;
     [key: string]: unknown;
   }) => void;
+
+  /** Human viewer responds to a pending trigger from a child session */
+  trigger_response: (data: {
+    triggerId: string;
+    response: string;
+    action?: string;
+    targetSessionId: string;
+  }) => void;
 }
 
 // ---------------------------------------------------------------------------
