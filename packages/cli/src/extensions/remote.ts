@@ -10,7 +10,7 @@ import { getMcpBridge } from "./mcp-bridge.js";
 import { getCurrentTodoList, setTodoUpdateCallback, type TodoItem } from "./update-todo.js";
 import { isPlanModeEnabled, isExecutionMode, getPlanTodoItems, setPlanModeChangeCallback, togglePlanModeFromRemote, setPlanModeFromRemote, requestContextClear } from "./plan-mode-toggle.js";
 import type { RemoteExecRequest, RemoteExecResponse } from "./remote-commands.js";
-import { messageBus } from "./session-message-bus.js";
+
 import { renderTrigger } from "./triggers/registry.js";
 import { trackReceivedTrigger, receivedTriggers } from "./triggers/extension.js";
 import { io, type Socket } from "socket.io-client";
@@ -1878,18 +1878,6 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 console.log(`pizzapi: linked as child of parent session ${data.parentSessionId}`);
             }
 
-            // Wire up the inter-session message bus now that we have a relay connection.
-            messageBus.setOwnSessionId(relaySessionId);
-            messageBus.setSendFn((targetSessionId: string, message: string) => {
-                if (!relay || !sioSocket?.connected) return false;
-                sioSocket.emit("session_message", {
-                    token: relay.token,
-                    targetSessionId,
-                    message,
-                });
-                return true;
-            });
-
             forwardEvent({ type: "session_active", state: buildSessionState() });
             void refreshAllUsage();
             startHeartbeat();
@@ -1942,14 +1930,6 @@ export const remoteExtension: ExtensionFactory = (pi) => {
 
         sock.on("model_set", (data) => {
             void setModelFromWeb(data.provider, data.modelId);
-        });
-
-        sock.on("session_message", (data) => {
-            messageBus.receive({
-                fromSessionId: data.fromSessionId,
-                message: data.message,
-                ts: typeof data.ts === "string" ? data.ts : new Date().toISOString(),
-            });
         });
 
         // ── session_trigger — receive triggers from child sessions ─────────
@@ -2059,7 +2039,6 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         stopHeartbeat();
         cancelPendingAskUserQuestion();
         cancelPendingPlanMode();
-        messageBus.setSendFn(null);
         // Clear MCP OAuth relay context before tearing down the socket,
         // since removeAllListeners() would prevent the disconnect handler
         // from clearing it automatically.
@@ -2119,7 +2098,12 @@ export const remoteExtension: ExtensionFactory = (pi) => {
 
     let sessionCompleteFired = false;
 
-    /** Emit session_complete trigger to parent (idempotent). */
+    // Reset completion latch when a new turn starts (e.g. parent sent follow-up via tell_child)
+    pi.on("turn_start", () => {
+        sessionCompleteFired = false;
+    });
+
+    /** Emit session_complete trigger to parent (idempotent per turn). */
     function fireSessionComplete(summary?: string) {
         if (sessionCompleteFired) return;
         if (!isChildSession || !parentSessionId || !relay || !sioSocket?.connected) return;

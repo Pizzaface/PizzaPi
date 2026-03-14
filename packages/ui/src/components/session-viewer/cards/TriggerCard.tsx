@@ -80,11 +80,14 @@ function parsePlanReview(body: string): ReturnType<typeof parseTriggerBody> {
   const titleMatch = body.match(/## (.+)/);
   const planTitle = titleMatch?.[1];
 
+  // Strip trailing trigger instructions before parsing steps
+  const stepsBody = body.replace(/\n\n(?:Respond with|Use respond_to_trigger)[\s\S]*$/, "");
+
   // Parse steps (numbered lines)
   const steps: Array<{ title: string; description?: string }> = [];
   const stepRegex = /(\d+)\. (.+?)(?:\n   (.+?))?(?=\n\d+\.|$)/gs;
   let match;
-  while ((match = stepRegex.exec(body))) {
+  while ((match = stepRegex.exec(stepsBody))) {
     steps.push({
       title: match[2],
       description: match[3]?.trim(),
@@ -140,6 +143,8 @@ function AskUserQuestionCard({
   isResponding?: boolean;
 }) {
   const [selectedOption, setSelectedOption] = React.useState<string>("");
+  const [freeText, setFreeText] = React.useState<string>("");
+  const hasOptions = options && options.length > 0;
 
   return (
     <ToolCardShell>
@@ -159,7 +164,7 @@ function AskUserQuestionCard({
         </ToolCardSection>
       )}
 
-      {options && options.length > 0 && (
+      {hasOptions && (
         <ToolCardSection>
           <div className="space-y-2">
             {options.map((option, i) => (
@@ -181,6 +186,42 @@ function AskUserQuestionCard({
                 {option}
               </button>
             ))}
+          </div>
+        </ToolCardSection>
+      )}
+
+      {/* Free-text input for open-ended questions (no options) */}
+      {!hasOptions && (
+        <ToolCardSection>
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={freeText}
+              onChange={(e) => setFreeText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && freeText.trim()) {
+                  onRespond?.(triggerId, freeText.trim());
+                }
+              }}
+              disabled={isResponding}
+              placeholder="Type your response…"
+              className={cn(
+                "flex-1 px-3 py-2 rounded-md border text-sm bg-zinc-800/40 text-zinc-200",
+                "border-zinc-700 placeholder:text-zinc-500 focus:outline-none focus:border-blue-500",
+                isResponding && "opacity-50 cursor-not-allowed"
+              )}
+            />
+            <Button
+              size="sm"
+              variant="default"
+              onClick={() => {
+                if (freeText.trim()) onRespond?.(triggerId, freeText.trim());
+              }}
+              disabled={isResponding || !freeText.trim()}
+              className="bg-blue-600 hover:bg-blue-700"
+            >
+              <Send className="size-3.5" />
+            </Button>
           </div>
         </ToolCardSection>
       )}

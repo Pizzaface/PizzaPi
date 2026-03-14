@@ -298,6 +298,10 @@ export function registerViewerNamespace(io: SocketIOServer): void {
             const { triggerId, response, action, targetSessionId } = data ?? {};
             if (!triggerId || !response) return;
 
+            // Require collab mode — same gate as input/exec/model_set
+            const currentSession = await getSharedSession(sessionId);
+            if (!currentSession?.collabMode) return;
+
             // If targetSessionId is explicitly provided, route to that child.
             // Validate ownership: the target session must belong to the same user.
             if (targetSessionId) {

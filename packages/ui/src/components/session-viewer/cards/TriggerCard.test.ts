@@ -54,11 +54,14 @@ function parsePlanReview(body: string): ReturnType<typeof parseTriggerBody> {
   const titleMatch = body.match(/## (.+)/);
   const planTitle = titleMatch?.[1];
 
+  // Strip trailing trigger instructions before parsing steps
+  const stepsBody = body.replace(/\n\n(?:Respond with|Use respond_to_trigger)[\s\S]*$/, "");
+
   // Parse steps (numbered lines)
   const steps: Array<{ title: string; description?: string }> = [];
   const stepRegex = /(\d+)\. (.+?)(?:\n   (.+?))?(?=\n\d+\.|$)/gs;
   let match;
-  while ((match = stepRegex.exec(body))) {
+  while ((match = stepRegex.exec(stepsBody))) {
     steps.push({
       title: match[2],
       description: match[3]?.trim(),
@@ -202,6 +205,25 @@ Consolidate three databases into one for easier management.
       expect(parsed.type).toBe("plan_review");
       expect(parsed.planTitle).toBe("Refactor Database");
       expect(parsed.planSteps).toHaveLength(2);
+    });
+
+    test("plan_review strips trailing trigger instructions from steps", () => {
+      const body = `🔗 Child "planner" submitted a plan for review:
+## Deploy Service
+
+1. Build Docker image
+   Run docker build with production config
+2. Push to registry
+
+Respond with \`respond_to_trigger\` using trigger ID \`plan123\`.
+Use respond_to_trigger with action: "approve" to accept, "cancel" to reject, or "edit" with feedback.`;
+
+      const parsed = parseTriggerBody(body);
+      expect(parsed.type).toBe("plan_review");
+      expect(parsed.planSteps).toHaveLength(2);
+      expect(parsed.planSteps?.[1].title).toBe("Push to registry");
+      // Ensure instructions are NOT absorbed into last step
+      expect(parsed.planSteps?.[1].description).toBeUndefined();
     });
   });
 });
