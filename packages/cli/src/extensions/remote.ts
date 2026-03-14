@@ -2120,7 +2120,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
     let sessionCompleteFired = false;
 
     /** Emit session_complete trigger to parent (idempotent). */
-    function fireSessionComplete() {
+    function fireSessionComplete(summary?: string) {
         if (sessionCompleteFired) return;
         if (!isChildSession || !parentSessionId || !relay || !sioSocket?.connected) return;
         sessionCompleteFired = true;
@@ -2131,7 +2131,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 sourceSessionId: relay.sessionId,
                 sourceSessionName: undefined,
                 targetSessionId: parentSessionId,
-                payload: { summary: "Session completed", exitCode: 0 },
+                payload: { summary: summary ?? "Session completed", exitCode: 0 },
                 deliverAs: "followUp" as const,
                 expectsResponse: false,
                 triggerId: crypto.randomUUID(),
@@ -2960,8 +2960,25 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         forwardEvent(buildHeartbeat());
 
         // Fire session_complete when child finishes with no queued follow-ups.
+        // Extract the last assistant message as the summary so the parent knows what happened.
         if (!ctx.hasPendingMessages()) {
-            fireSessionComplete();
+            let summary = "Session completed";
+            const messages = (event as any).messages;
+            if (Array.isArray(messages)) {
+                for (let i = messages.length - 1; i >= 0; i--) {
+                    const msg = messages[i];
+                    if (msg?.role === "assistant" && Array.isArray(msg.content)) {
+                        const textParts = msg.content
+                            .filter((c: any) => c.type === "text" && c.text)
+                            .map((c: any) => c.text);
+                        if (textParts.length > 0) {
+                            summary = textParts.join("\n").slice(0, 2000); // cap at 2k chars
+                            break;
+                        }
+                    }
+                }
+            }
+            fireSessionComplete(summary);
         }
     });
     pi.on("turn_start", (event) => forwardEvent(event));
