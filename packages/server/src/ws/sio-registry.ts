@@ -374,6 +374,7 @@ export async function registerTuiSession(
             model: null,
             runnerId,
             runnerName,
+            parentSessionId: resolvedParentSessionId,
         } satisfies SessionInfo,
         userId ?? undefined,
     );
