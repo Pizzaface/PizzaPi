@@ -97,8 +97,8 @@ function parsePlanReview(body: string): ReturnType<typeof parseTriggerBody> {
 function parseSessionComplete(body: string): ReturnType<typeof parseTriggerBody> {
   const childMatch = body.match(/Child "([^"]+)" completed:/);
   const childName = childMatch?.[1];
-  // Everything after "completed:" is the summary
-  const summaryMatch = body.match(/completed:\n(.+?)(?=\n\nAcknowledge|$)/s);
+  // Everything after "completed:\n" up to the first blank line or respond_to_trigger instruction
+  const summaryMatch = body.match(/completed:\n(.+?)(?=\n\n(?:Respond with|Use respond_to_trigger|Acknowledge)|$)/s);
   const message = summaryMatch?.[1]?.trim();
 
   return { type: "session_complete", childName, message };
