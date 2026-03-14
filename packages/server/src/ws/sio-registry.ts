@@ -48,6 +48,7 @@ import {
     deleteRunnerAssociation,
     refreshRunnerAssociationTTL,
     scanExpiredSessions,
+    addChildSession,
 } from "./sio-state.js";
 import {
     getEphemeralTtlMs,
@@ -236,6 +237,8 @@ export interface RegisterTuiSessionOpts {
     sessionName?: string | null;
     userId?: string;
     userName?: string;
+    /** Parent session ID — set when registering a child session. */
+    parentSessionId?: string | null;
 }
 
 /**
@@ -252,7 +255,7 @@ export async function registerTuiSession(
     socket: Socket,
     cwd: string = "",
     opts: RegisterTuiSessionOpts = {},
-): Promise<{ sessionId: string; token: string; shareUrl: string }> {
+): Promise<{ sessionId: string; token: string; shareUrl: string; parentSessionId: string | null }> {
     const requestedSessionId = typeof opts.sessionId === "string" ? opts.sessionId.trim() : "";
     const sessionId = requestedSessionId.length > 0 ? requestedSessionId : randomUUID();
     const token = randomBytes(32).toString("hex");
@@ -298,9 +301,12 @@ export async function registerTuiSession(
         }
     }
 
-    // Preserve parentSessionId if it was pre-seeded by the spawn endpoint
-    // (upsertSessionFields runs before the worker connects and registers)
-    const existingSession = await getSession(sessionId);
+    // Resolve parentSessionId: prefer the value from registration opts (sent
+    // by the CLI), fall back to any pre-seeded value in Redis (legacy path).
+    const resolvedParentSessionId =
+        opts.parentSessionId ??
+        existing?.parentSessionId ??
+        null;
 
     const sessionData: RedisSessionData = {
         sessionId,
@@ -321,10 +327,16 @@ export async function registerTuiSession(
         runnerId,
         runnerName,
         seq: 0,
-        parentSessionId: existingSession?.parentSessionId ?? null,
+        parentSessionId: resolvedParentSessionId,
     };
 
     await setSession(sessionId, sessionData);
+
+    // Register parent→child relationship in Redis for the trigger system.
+    // This is the authoritative place for linking — no more racy pre-seeding.
+    if (resolvedParentSessionId) {
+        await addChildSession(resolvedParentSessionId, sessionId);
+    }
 
     // Store local socket reference
     localTuiSockets.set(sessionId, socket);
@@ -366,7 +378,7 @@ export async function registerTuiSession(
         userId ?? undefined,
     );
 
-    return { sessionId, token, shareUrl };
+    return { sessionId, token, shareUrl, parentSessionId: resolvedParentSessionId };
 }
 
 /**

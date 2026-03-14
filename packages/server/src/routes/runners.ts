@@ -13,7 +13,7 @@ import {
     recordRunnerSession,
     registerTerminal,
 } from "../ws/sio-registry.js";
-import { upsertSessionFields, addChildSession, getSession } from "../ws/sio-state.js";
+import { getSession } from "../ws/sio-state.js";
 import { sendSkillCommand, sendAgentCommand, sendRunnerCommand } from "../ws/namespaces/runner.js";
 import { waitForSpawnAck } from "../ws/runner-control.js";
 import { requireSession, validateApiKey } from "../middleware.js";
@@ -140,11 +140,10 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         await recordRunnerSession(runnerId, sessionId);
         await linkSessionToRunner(runnerId, sessionId);
 
-        // Store parent-child relationship in Redis for the trigger system
-        if (validatedParentSessionId) {
-            await upsertSessionFields(sessionId, { sessionId, parentSessionId: validatedParentSessionId } as any);
-            await addChildSession(validatedParentSessionId, sessionId);
-        }
+        // Parent-child linking is now handled at registration time:
+        // the worker sends parentSessionId in its relay `register` event,
+        // and registerTuiSession stores the relationship + calls addChildSession.
+        // No pre-seeding needed — eliminates the race condition.
 
         if (requestedCwd) {
             void recordRecentFolder(identity.userId, runnerId, requestedCwd).catch(() => {});

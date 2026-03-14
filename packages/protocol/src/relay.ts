@@ -16,6 +16,8 @@ export interface RelayClientToServerEvents {
     ephemeral?: boolean;
     collabMode?: boolean;
     sessionName?: string | null;
+    /** Parent session ID for child→parent linking (trigger system). */
+    parentSessionId?: string | null;
   }) => void;
 
   /** TUI forwards an agent event (heartbeat, message_update, etc.) */
@@ -70,6 +72,7 @@ export interface RelayClientToServerEvents {
     token: string;
     triggerId: string;
     response: string;
+    action?: string;
     targetSessionId: string;
   }) => void;
 }
@@ -86,6 +89,8 @@ export interface RelayServerToClientEvents {
     shareUrl: string;
     isEphemeral: boolean;
     collabMode: boolean;
+    /** Confirmed parent session ID (null if not a child session). */
+    parentSessionId?: string | null;
   }) => void;
 
   /** Acknowledges receipt of an event with its sequence number */
