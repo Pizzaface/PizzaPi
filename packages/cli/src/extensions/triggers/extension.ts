@@ -133,14 +133,32 @@ export const triggersExtension: ExtensionFactory = (pi) => {
                 receivedTriggers.delete(params.triggerId);
                 const action = params.action ?? "ack";
                 if (action === "followUp") {
-                    // Deliver as agent input so it starts a new turn in the child
-                    conn.socket.emit("session_message", {
-                        token: conn.token,
-                        targetSessionId: pending.sourceSessionId,
-                        message: params.response,
-                        deliverAs: "input",
+                    // Deliver as agent input so it starts a new turn in the child.
+                    // Wait for session_message_error to detect delivery failures.
+                    const childId = pending.sourceSessionId;
+                    const result = await new Promise<string>((resolve) => {
+                        const timeout = setTimeout(() => {
+                            conn.socket.off("session_message_error", onError);
+                            resolve(`Follow-up sent to child ${childId}`);
+                        }, 3000);
+
+                        const onError = (err: { targetSessionId: string; error: string }) => {
+                            if (err.targetSessionId === childId) {
+                                clearTimeout(timeout);
+                                conn.socket.off("session_message_error", onError);
+                                resolve(`Error sending follow-up to child ${childId}: ${err.error}`);
+                            }
+                        };
+                        conn.socket.on("session_message_error", onError);
+
+                        conn.socket.emit("session_message", {
+                            token: conn.token,
+                            targetSessionId: childId,
+                            message: params.response,
+                            deliverAs: "input",
+                        });
                     });
-                    return { content: [{ type: "text" as const, text: `Follow-up sent to child ${pending.sourceSessionId}` }], details: null as any };
+                    return { content: [{ type: "text" as const, text: result }], details: null as any };
                 }
                 // ack or any other action — just acknowledge, no message to child
                 return { content: [{ type: "text" as const, text: `Acknowledged session completion from ${pending.sourceSessionId}` }], details: null as any };
