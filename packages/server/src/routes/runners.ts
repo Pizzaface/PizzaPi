@@ -107,6 +107,17 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         let hiddenModels: string[] = [];
         try { hiddenModels = await getHiddenModels(identity.userId); } catch {}
 
+        // Validate parentSessionId ownership BEFORE forwarding to the runner.
+        // The worker activates child trigger mode from the parent ID it receives,
+        // so we must never send an unverified/cross-user parent ID.
+        let validatedParentSessionId: string | undefined;
+        if (requestedParentSessionId) {
+            const parentSession = await getSession(requestedParentSessionId);
+            if (parentSession && parentSession.userId === identity.userId) {
+                validatedParentSessionId = requestedParentSessionId;
+            }
+        }
+
         try {
             runnerSocket.emit("new_session", {
                 sessionId,
@@ -115,7 +126,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
                 ...(requestedModel ? { model: requestedModel } : {}),
                 ...(hiddenModels.length > 0 ? { hiddenModels } : {}),
                 ...(requestedAgent ? { agent: requestedAgent } : {}),
-                ...(requestedParentSessionId ? { parentSessionId: requestedParentSessionId } : {}),
+                ...(validatedParentSessionId ? { parentSessionId: validatedParentSessionId } : {}),
             });
         } catch {
             return Response.json({ error: "Failed to send spawn request to runner" }, { status: 502 });
@@ -129,16 +140,10 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         await recordRunnerSession(runnerId, sessionId);
         await linkSessionToRunner(runnerId, sessionId);
 
-        // Store parent-child relationship in Redis for the trigger system.
-        // Validate that the parent session belongs to the same user to prevent
-        // cross-user trigger injection via crafted parentSessionId.
-        if (requestedParentSessionId) {
-            const parentSession = await getSession(requestedParentSessionId);
-            if (parentSession && parentSession.userId === identity.userId) {
-                await upsertSessionFields(sessionId, { sessionId, parentSessionId: requestedParentSessionId } as any);
-                await addChildSession(requestedParentSessionId, sessionId);
-            }
-            // Silently skip linking if parent doesn't exist or belongs to another user
+        // Store parent-child relationship in Redis for the trigger system
+        if (validatedParentSessionId) {
+            await upsertSessionFields(sessionId, { sessionId, parentSessionId: validatedParentSessionId } as any);
+            await addChildSession(validatedParentSessionId, sessionId);
         }
 
         if (requestedCwd) {

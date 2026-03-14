@@ -18,6 +18,7 @@ import { triggersExtension } from "./triggers/extension.js";
 import { initialPromptExtension } from "./initial-prompt.js";
 
 const CORE_EXTENSIONS: ExtensionFactory[] = [
+    triggersExtension,  // Must be before remoteExtension (shutdown ordering)
     remoteExtension,
     mcpExtension,
     restartExtension,
@@ -27,7 +28,6 @@ const CORE_EXTENSIONS: ExtensionFactory[] = [
     sessionMessagingExtension,
     subagentExtension,
     planModeToggleExtension,
-    triggersExtension,
 ];
 
 /**
