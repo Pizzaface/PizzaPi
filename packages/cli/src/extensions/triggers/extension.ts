@@ -37,27 +37,9 @@ export const triggersExtension: ExtensionFactory = (pi) => {
     // (PIZZAPI_SESSION_ID) and standalone CLI sessions (relay-assigned ID).
     const getOwnSessionId = () => getRelaySessionId();
 
-    // ── Fire session_complete trigger on child exit ────────────────────────
-    if (parentSessionId) {
-        pi.on("session_shutdown", () => {
-            const conn = getRelaySocket();
-            if (!conn) return;
-            conn.socket.emit("session_trigger" as any, {
-                token: conn.token,
-                trigger: {
-                    type: "session_complete",
-                    sourceSessionId: getOwnSessionId() ?? "",
-                    sourceSessionName: undefined,
-                    targetSessionId: parentSessionId,
-                    payload: { summary: "Session completed", exitCode: 0 },
-                    deliverAs: "followUp" as const,
-                    expectsResponse: false,  // child is shutting down — can't wait for response
-                    triggerId: crypto.randomUUID(),
-                    ts: new Date().toISOString(),
-                },
-            });
-        });
-    }
+    // NOTE: session_complete trigger is fired from remote.ts's session_shutdown
+    // handler, directly before disconnect(), to guarantee the socket is still
+    // connected when the emit happens.
 
     // ── tell_child ────────────────────────────────────────────────────────
     pi.registerTool({
