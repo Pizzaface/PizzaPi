@@ -299,8 +299,13 @@ export function registerViewerNamespace(io: SocketIOServer): void {
             if (!triggerId || !response) return;
 
             // If targetSessionId is explicitly provided, route to that child.
-            // Otherwise, fall back to forwarding through the parent TUI socket.
+            // Validate ownership: the target session must belong to the same user.
             if (targetSessionId) {
+                const targetSession = await getSharedSession(targetSessionId);
+                if (!targetSession || targetSession.userId !== viewerUserId) {
+                    // Target session doesn't exist or belongs to a different user — ignore.
+                    return;
+                }
                 const childSocket = getLocalTuiSocket(targetSessionId);
                 if (childSocket) {
                     childSocket.emit("trigger_response" as string, {
