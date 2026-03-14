@@ -405,13 +405,20 @@ export function registerRelayNamespace(io: SocketIOServer): void {
 
             const targetSessionId = trigger.targetSessionId;
 
-            // Find the target session's relay socket (same pattern as session_message)
+            // Find the target session's relay socket and validate ownership
             const targetSession = await getSharedSession(targetSessionId);
             if (!targetSession) {
                 socket.emit("session_message_error", {
                     targetSessionId,
                     error: `Target session ${targetSessionId} is not connected`,
                 });
+                return;
+            }
+
+            // Validate that the target session belongs to the same user
+            const senderSession = await getSharedSession(sessionId);
+            if (!senderSession?.userId || senderSession.userId !== targetSession.userId) {
+                socket.emit("error", { message: "Target session belongs to a different user" });
                 return;
             }
 
@@ -453,6 +460,14 @@ export function registerRelayNamespace(io: SocketIOServer): void {
             // Validate sender is authenticated and token matches
             if (!socket.data.sessionId || data?.token !== socket.data.token) {
                 socket.emit("error", { message: "Invalid token" });
+                return;
+            }
+
+            // Validate that the target session belongs to the same user
+            const senderSession = await getSharedSession(socket.data.sessionId);
+            const targetSession = await getSharedSession(targetSessionId);
+            if (!senderSession?.userId || !targetSession?.userId || senderSession.userId !== targetSession.userId) {
+                socket.emit("error", { message: "Target session belongs to a different user" });
                 return;
             }
 
