@@ -70,6 +70,8 @@ import { AlertTriangleIcon, ArrowDownIcon, BookOpen, Bot, CheckCircle2, Chevrons
 import { AtMentionPopover } from "@/components/AtMentionPopover";
 import type { Entry as AtMentionEntry } from "@/hooks/useAtMentionFiles";
 import { McpToggleContext, type McpToggleHandler } from "@/components/session-viewer/McpToggleContext";
+import { isTriggerMessage, renderTriggerCard } from "@/components/session-viewer/cards/InterAgentCards";
+
 
 export type { RelayMessage } from "@/components/session-viewer/types";
 
@@ -405,6 +407,15 @@ const SessionMessageItem = React.memo(({ message, activeToolCalls, agentActive, 
           message.details,
           onTriggerResponse,
         )}
+      </div>
+    );
+  }
+
+  // Trigger-injected user messages — render as a TriggerCard instead of a blue bubble
+  if (message.role === "user" && typeof message.content === "string" && isTriggerMessage(message.content)) {
+    return (
+      <div className="w-full max-w-3xl mx-auto px-4 py-1.5">
+        {renderTriggerCard(message.content, onTriggerResponse)}
       </div>
     );
   }
