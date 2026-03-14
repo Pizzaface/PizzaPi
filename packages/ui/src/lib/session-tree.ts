@@ -137,11 +137,13 @@ export function getDescendantSessionIds(
   sessions: HubSession[],
 ): string[] {
   const result: string[] = [];
+  const visited = new Set<string>([sessionId]);
   const queue = [sessionId];
   while (queue.length > 0) {
     const parentId = queue.shift()!;
     for (const s of sessions) {
-      if (s.parentSessionId === parentId) {
+      if (s.parentSessionId === parentId && !visited.has(s.sessionId)) {
+        visited.add(s.sessionId);
         result.push(s.sessionId);
         queue.push(s.sessionId);
       }

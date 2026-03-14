@@ -224,5 +224,30 @@ describe("session-tree", () => {
       const sessions = [createSession("parent")];
       expect(getDescendantSessionIds("non-existent", sessions)).toEqual([]);
     });
+
+    test("handles cyclic parent chains without infinite loop", () => {
+      // Simulate corrupted data: A -> B -> C -> A (cycle)
+      const sessions: HubSession[] = [
+        { ...createSession("a", "c") },
+        { ...createSession("b", "a") },
+        { ...createSession("c", "b") },
+      ];
+      // Should terminate and return reachable descendants without looping forever
+      const ids = getDescendantSessionIds("a", sessions);
+      expect(ids).toContain("b");
+      expect(ids).toContain("c");
+      expect(ids).toHaveLength(2);
+    });
+
+    test("handles self-referencing parentSessionId", () => {
+      const sessions: HubSession[] = [
+        { ...createSession("self"), parentSessionId: "self" },
+        { ...createSession("child", "self") },
+      ];
+      const ids = getDescendantSessionIds("self", sessions);
+      expect(ids).toContain("child");
+      // Should not include "self" itself and should not loop
+      expect(ids).not.toContain("self");
+    });
   });
 });
