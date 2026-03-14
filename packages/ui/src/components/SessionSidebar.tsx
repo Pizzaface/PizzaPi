@@ -15,7 +15,7 @@ import type { HubServerToClientEvents, HubClientToServerEvents } from "@pizzapi/
 import { formatPathTail } from "@/lib/path";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { PanelLeftClose, PanelLeftOpen, Plus, X, HardDrive, FolderOpen, CheckSquare, Square, CheckCheck, Trash2, Pin, PinOff, ChevronDown, ChevronRight } from "lucide-react";
-import { buildSessionTree, flattenSessionTree, getSessionIndent } from "@/lib/session-tree";
+import { buildSessionTree, flattenSessionTree, getSessionIndent, getDescendantSessionIds } from "@/lib/session-tree";
 
 interface HubSession {
     sessionId: string;
@@ -670,6 +670,13 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     const confirmSessionLabel = confirmSession?.sessionName?.trim()
         || (confirmEndSessionId ? `Session ${confirmEndSessionId.slice(0, 8)}…` : "");
 
+    // Check if the session being ended has child sessions
+    const confirmDescendantIds = React.useMemo(
+        () => confirmEndSessionId ? getDescendantSessionIds(confirmEndSessionId, liveSessions) : [],
+        [confirmEndSessionId, liveSessions],
+    );
+    const hasDescendants = confirmDescendantIds.length > 0;
+
     const sidebarContent = (
         <aside
             className={cn(
@@ -684,12 +691,33 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                         <DialogDescription>
                             End <span className="font-medium text-foreground">{confirmSessionLabel}</span>? The agent process
                             will be stopped and the session will be closed.
+                            {hasDescendants && (
+                                <span className="block mt-1">
+                                    This session has {confirmDescendantIds.length} child session{confirmDescendantIds.length !== 1 ? "s" : ""}.
+                                </span>
+                            )}
                         </DialogDescription>
                     </DialogHeader>
                     <DialogFooter>
                         <Button variant="outline" onClick={() => setConfirmEndSessionId(null)}>
                             Cancel
                         </Button>
+                        {hasDescendants && (
+                            <Button
+                                variant="destructive"
+                                onClick={() => {
+                                    if (confirmEndSessionId && onEndSession) {
+                                        onEndSession(confirmEndSessionId);
+                                        for (const id of confirmDescendantIds) {
+                                            onEndSession(id);
+                                        }
+                                    }
+                                    setConfirmEndSessionId(null);
+                                }}
+                            >
+                                End Session Group
+                            </Button>
+                        )}
                         <Button
                             variant="destructive"
                             onClick={() => {
