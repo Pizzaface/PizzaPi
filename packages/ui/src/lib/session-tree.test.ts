@@ -3,6 +3,7 @@ import {
   buildSessionTree,
   flattenSessionTree,
   getSessionIndent,
+  getDescendantSessionIds,
   type HubSession,
 } from "./session-tree";
 
@@ -173,6 +174,55 @@ describe("session-tree", () => {
 
     test("handles large depth values", () => {
       expect(getSessionIndent(10)).toBe(160);
+    });
+  });
+
+  describe("getDescendantSessionIds", () => {
+    test("returns empty array for session with no children", () => {
+      const sessions = [createSession("parent")];
+      expect(getDescendantSessionIds("parent", sessions)).toEqual([]);
+    });
+
+    test("returns direct children", () => {
+      const sessions = [
+        createSession("parent"),
+        createSession("child-1", "parent"),
+        createSession("child-2", "parent"),
+      ];
+      const ids = getDescendantSessionIds("parent", sessions);
+      expect(ids).toHaveLength(2);
+      expect(ids).toContain("child-1");
+      expect(ids).toContain("child-2");
+    });
+
+    test("returns all descendants recursively", () => {
+      const sessions = [
+        createSession("root"),
+        createSession("child", "root"),
+        createSession("grandchild", "child"),
+        createSession("great-grandchild", "grandchild"),
+      ];
+      const ids = getDescendantSessionIds("root", sessions);
+      expect(ids).toHaveLength(3);
+      expect(ids).toContain("child");
+      expect(ids).toContain("grandchild");
+      expect(ids).toContain("great-grandchild");
+    });
+
+    test("does not include unrelated sessions", () => {
+      const sessions = [
+        createSession("parent-a"),
+        createSession("child-a", "parent-a"),
+        createSession("parent-b"),
+        createSession("child-b", "parent-b"),
+      ];
+      const ids = getDescendantSessionIds("parent-a", sessions);
+      expect(ids).toEqual(["child-a"]);
+    });
+
+    test("returns empty array for non-existent session", () => {
+      const sessions = [createSession("parent")];
+      expect(getDescendantSessionIds("non-existent", sessions)).toEqual([]);
     });
   });
 });

@@ -127,3 +127,25 @@ export function getSessionIndent(depth: number): number {
   // Each child adds 16px (similar to tree indentation)
   return depth > 0 ? depth * 16 : 0;
 }
+
+/**
+ * Get all descendant session IDs for a given session (children, grandchildren, etc.).
+ * Searches through the flat sessions list by following parentSessionId references.
+ */
+export function getDescendantSessionIds(
+  sessionId: string,
+  sessions: HubSession[],
+): string[] {
+  const result: string[] = [];
+  const queue = [sessionId];
+  while (queue.length > 0) {
+    const parentId = queue.shift()!;
+    for (const s of sessions) {
+      if (s.parentSessionId === parentId) {
+        result.push(s.sessionId);
+        queue.push(s.sessionId);
+      }
+    }
+  }
+  return result;
+}
