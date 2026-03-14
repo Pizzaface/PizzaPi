@@ -1,0 +1,179 @@
+<h2>Where do extensions live in the layout?</h2>
+<p class="subtitle">Extensions are peers to Terminal & File Explorer — but where exactly do they sit?</p>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Extend the CombinedPanel</h3>
+      <p>Extensions become additional tabs alongside Terminal and File Explorer in the existing right panel. Simple, familiar, no layout changes needed.</p>
+      <div class="mockup" style="margin-top: 12px;">
+        <div class="mockup-header">Layout A — Extensions as CombinedPanel tabs</div>
+        <div class="mockup-body" style="display: flex; height: 280px; gap: 0; font-size: 11px;">
+          <!-- Sidebar -->
+          <div style="width: 48px; background: var(--surface-1); border-right: 1px solid var(--border); display: flex; flex-direction: column; align-items: center; padding-top: 12px; gap: 8px;">
+            <div style="width: 28px; height: 28px; border-radius: 6px; background: var(--accent); opacity: 0.8;"></div>
+            <div style="width: 28px; height: 28px; border-radius: 6px; background: var(--surface-2);"></div>
+            <div style="width: 28px; height: 28px; border-radius: 6px; background: var(--surface-2);"></div>
+          </div>
+          <!-- Session list -->
+          <div style="width: 140px; background: var(--surface-1); border-right: 1px solid var(--border); padding: 10px; opacity: 0.6;">
+            <div style="font-size: 10px; text-transform: uppercase; color: var(--text-muted); margin-bottom: 8px;">Sessions</div>
+            <div style="padding: 6px 8px; background: var(--surface-2); border-radius: 4px; margin-bottom: 4px; font-size: 10px;">Session 1</div>
+            <div style="padding: 6px 8px; border-radius: 4px; margin-bottom: 4px; font-size: 10px; color: var(--text-muted);">Session 2</div>
+          </div>
+          <!-- Session viewer -->
+          <div style="flex: 1; background: var(--bg); padding: 12px; display: flex; flex-direction: column;">
+            <div style="font-size: 10px; color: var(--text-muted); margin-bottom: 8px;">Session Viewer</div>
+            <div style="flex: 1; background: var(--surface-1); border-radius: 6px; padding: 10px;">
+              <div style="background: var(--surface-2); border-radius: 4px; padding: 8px; margin-bottom: 6px; font-size: 10px;">Agent message...</div>
+              <div style="background: var(--accent); opacity: 0.15; border-radius: 4px; padding: 8px; font-size: 10px;">User message...</div>
+            </div>
+          </div>
+          <!-- Combined Panel with extension tabs -->
+          <div style="width: 220px; background: var(--surface-1); border-left: 1px solid var(--border); display: flex; flex-direction: column;">
+            <div style="display: flex; border-bottom: 1px solid var(--border); font-size: 10px;">
+              <div style="padding: 8px 10px; color: var(--text-muted); border-bottom: 1px solid transparent;">Terminal</div>
+              <div style="padding: 8px 10px; color: var(--text-muted); border-bottom: 1px solid transparent;">Files</div>
+              <div style="padding: 8px 10px; color: var(--accent); border-bottom: 2px solid var(--accent); font-weight: 600;">📊 SysMon</div>
+              <div style="padding: 8px 10px; color: var(--text-muted);">🔌 Svcs</div>
+            </div>
+            <div style="flex: 1; padding: 10px; font-size: 10px;">
+              <div style="color: var(--accent); font-weight: 600; margin-bottom: 8px;">System Monitor</div>
+              <div style="background: var(--surface-2); border-radius: 4px; padding: 8px; margin-bottom: 6px;">
+                CPU: <span style="color: var(--accent);">42%</span> ████░░░░
+              </div>
+              <div style="background: var(--surface-2); border-radius: 4px; padding: 8px; margin-bottom: 6px;">
+                RAM: <span style="color: var(--accent);">67%</span> ██████░░
+              </div>
+              <div style="background: var(--surface-2); border-radius: 4px; padding: 8px;">
+                Disk: <span style="color: var(--accent);">23%</span> ██░░░░░░
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Separate Extension Panel</h3>
+      <p>Extensions get their own resizable panel below (or beside) the CombinedPanel. Terminal/Files stay where they are; extensions have dedicated real estate.</p>
+      <div class="mockup" style="margin-top: 12px;">
+        <div class="mockup-header">Layout B — Dedicated extension panel</div>
+        <div class="mockup-body" style="display: flex; height: 340px; gap: 0; font-size: 11px;">
+          <!-- Sidebar -->
+          <div style="width: 48px; background: var(--surface-1); border-right: 1px solid var(--border); display: flex; flex-direction: column; align-items: center; padding-top: 12px; gap: 8px;">
+            <div style="width: 28px; height: 28px; border-radius: 6px; background: var(--accent); opacity: 0.8;"></div>
+            <div style="width: 28px; height: 28px; border-radius: 6px; background: var(--surface-2);"></div>
+            <div style="width: 28px; height: 28px; border-radius: 6px; background: var(--surface-2);"></div>
+          </div>
+          <!-- Session list -->
+          <div style="width: 120px; background: var(--surface-1); border-right: 1px solid var(--border); padding: 10px; opacity: 0.6;">
+            <div style="font-size: 10px; text-transform: uppercase; color: var(--text-muted); margin-bottom: 8px;">Sessions</div>
+            <div style="padding: 5px 7px; background: var(--surface-2); border-radius: 4px; margin-bottom: 3px; font-size: 10px;">Session 1</div>
+            <div style="padding: 5px 7px; border-radius: 4px; margin-bottom: 3px; font-size: 10px; color: var(--text-muted);">Session 2</div>
+          </div>
+          <!-- Session viewer -->
+          <div style="flex: 1; background: var(--bg); padding: 10px; display: flex; flex-direction: column;">
+            <div style="font-size: 10px; color: var(--text-muted); margin-bottom: 6px;">Session Viewer</div>
+            <div style="flex: 1; background: var(--surface-1); border-radius: 6px; padding: 8px;">
+              <div style="background: var(--surface-2); border-radius: 4px; padding: 6px; margin-bottom: 4px; font-size: 10px;">Agent message...</div>
+            </div>
+          </div>
+          <!-- Right side: CombinedPanel + Extension Panel stacked -->
+          <div style="width: 220px; display: flex; flex-direction: column; border-left: 1px solid var(--border);">
+            <!-- CombinedPanel (top) -->
+            <div style="height: 45%; background: var(--surface-1); display: flex; flex-direction: column;">
+              <div style="display: flex; border-bottom: 1px solid var(--border); font-size: 10px;">
+                <div style="padding: 6px 10px; color: var(--accent); border-bottom: 2px solid var(--accent); font-weight: 600;">Terminal</div>
+                <div style="padding: 6px 10px; color: var(--text-muted);">Files</div>
+              </div>
+              <div style="flex: 1; padding: 8px; font-family: monospace; font-size: 9px; color: var(--text-muted);">
+                $ bun test<br>✓ 42 passed<br>$&nbsp;<span style="opacity: 0.5;">█</span>
+              </div>
+            </div>
+            <!-- Resize handle -->
+            <div style="height: 4px; background: var(--border); cursor: row-resize; display: flex; align-items: center; justify-content: center;">
+              <div style="width: 24px; height: 2px; background: var(--text-muted); border-radius: 1px; opacity: 0.4;"></div>
+            </div>
+            <!-- Extension Panel (bottom) -->
+            <div style="flex: 1; background: var(--surface-1); display: flex; flex-direction: column;">
+              <div style="display: flex; border-bottom: 1px solid var(--border); font-size: 10px;">
+                <div style="padding: 6px 10px; color: var(--accent); border-bottom: 2px solid var(--accent); font-weight: 600;">📊 SysMon</div>
+                <div style="padding: 6px 10px; color: var(--text-muted);">🔌 Services</div>
+              </div>
+              <div style="flex: 1; padding: 8px; font-size: 10px;">
+                <div style="background: var(--surface-2); border-radius: 4px; padding: 6px; margin-bottom: 4px;">
+                  CPU: <span style="color: var(--accent);">42%</span>
+                </div>
+                <div style="background: var(--surface-2); border-radius: 4px; padding: 6px;">
+                  RAM: <span style="color: var(--accent);">67%</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>Generalized Tab System</h3>
+      <p>Terminal and File Explorer become "built-in extensions" themselves. Everything — built-in and user-added — lives in one unified tab system. Extensions are just more tabs.</p>
+      <div class="mockup" style="margin-top: 12px;">
+        <div class="mockup-header">Layout C — Unified extension tab bar</div>
+        <div class="mockup-body" style="display: flex; height: 280px; gap: 0; font-size: 11px;">
+          <!-- Sidebar -->
+          <div style="width: 48px; background: var(--surface-1); border-right: 1px solid var(--border); display: flex; flex-direction: column; align-items: center; padding-top: 12px; gap: 8px;">
+            <div style="width: 28px; height: 28px; border-radius: 6px; background: var(--accent); opacity: 0.8;"></div>
+            <div style="width: 28px; height: 28px; border-radius: 6px; background: var(--surface-2);"></div>
+            <div style="width: 28px; height: 28px; border-radius: 6px; background: var(--surface-2);"></div>
+          </div>
+          <!-- Session list -->
+          <div style="width: 120px; background: var(--surface-1); border-right: 1px solid var(--border); padding: 10px; opacity: 0.6;">
+            <div style="font-size: 10px; text-transform: uppercase; color: var(--text-muted); margin-bottom: 8px;">Sessions</div>
+            <div style="padding: 5px 7px; background: var(--surface-2); border-radius: 4px; margin-bottom: 3px; font-size: 10px;">Session 1</div>
+          </div>
+          <!-- Session viewer -->
+          <div style="flex: 1; background: var(--bg); padding: 10px;">
+            <div style="font-size: 10px; color: var(--text-muted); margin-bottom: 6px;">Session Viewer</div>
+            <div style="flex: 1; background: var(--surface-1); border-radius: 6px; padding: 8px; height: calc(100% - 20px);">
+              <div style="background: var(--surface-2); border-radius: 4px; padding: 6px; margin-bottom: 4px; font-size: 10px;">Agent message...</div>
+            </div>
+          </div>
+          <!-- Unified panel -->
+          <div style="width: 230px; background: var(--surface-1); border-left: 1px solid var(--border); display: flex; flex-direction: column;">
+            <div style="display: flex; border-bottom: 1px solid var(--border); font-size: 10px; flex-wrap: wrap;">
+              <div style="padding: 6px 8px; color: var(--text-muted);">⬛ Terminal</div>
+              <div style="padding: 6px 8px; color: var(--text-muted);">📁 Files</div>
+              <div style="padding: 6px 8px; color: var(--accent); border-bottom: 2px solid var(--accent); font-weight: 600;">📊 SysMon</div>
+              <div style="padding: 6px 8px; color: var(--text-muted);">🔌 Svcs</div>
+              <div style="padding: 6px 8px; color: var(--text-muted);">📈 Perf</div>
+              <div style="padding: 6px 8px; color: var(--text-muted); opacity: 0.6;">+</div>
+            </div>
+            <div style="flex: 1; padding: 10px; font-size: 10px;">
+              <div style="color: var(--accent); font-weight: 600; margin-bottom: 8px;">System Monitor</div>
+              <div style="background: var(--surface-2); border-radius: 4px; padding: 6px; margin-bottom: 5px;">
+                CPU: <span style="color: var(--accent);">42%</span> ████░░░░░░
+              </div>
+              <div style="background: var(--surface-2); border-radius: 4px; padding: 6px; margin-bottom: 5px;">
+                RAM: <span style="color: var(--accent);">67%</span> ██████░░░░
+              </div>
+              <div style="background: var(--surface-2); border-radius: 4px; padding: 6px; margin-bottom: 5px;">
+                Disk: <span style="color: var(--accent);">23%</span> ██░░░░░░░░
+              </div>
+              <div style="background: var(--surface-2); border-radius: 4px; padding: 6px;">
+                Net: <span style="color: var(--accent);">↑2.1 ↓14.3</span> MB/s
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

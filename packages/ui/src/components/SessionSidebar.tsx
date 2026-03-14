@@ -14,7 +14,8 @@ import { io } from "socket.io-client";
 import type { HubServerToClientEvents, HubClientToServerEvents } from "@pizzapi/protocol";
 import { formatPathTail } from "@/lib/path";
 import { ProviderIcon } from "@/components/ProviderIcon";
-import { PanelLeftClose, PanelLeftOpen, Plus, X, HardDrive, FolderOpen, CheckSquare, Square, CheckCheck, Trash2, Pin, PinOff } from "lucide-react";
+import { PanelLeftClose, PanelLeftOpen, Plus, X, HardDrive, FolderOpen, CheckSquare, Square, CheckCheck, Trash2, Pin, PinOff, ChevronDown, ChevronRight } from "lucide-react";
+import { buildSessionTree, flattenSessionTree, getSessionIndent } from "@/lib/session-tree";
 
 interface HubSession {
     sessionId: string;
@@ -392,6 +393,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     const [pinnedSessionIds, setPinnedSessionIds] = React.useState<Set<string>>(new Set());
     const [pinPendingSessionIds, setPinPendingSessionIds] = React.useState<Set<string>>(new Set());
     const [pinError, setPinError] = React.useState<string | null>(null);
+    const [expandedNodeIds, setExpandedNodeIds] = React.useState<Set<string>>(new Set());
     const pinPendingRef = React.useRef<Set<string>>(new Set());
 
     // Fetch pinned sessions from the API
@@ -904,8 +906,23 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                             </div>
                                         )}
 
-                                        {/* Session cards */}
-                                        {project.sessions.map((s) => {
+                                        {/* Session cards — organized in tree structure */}
+                                        {(() => {
+                                            const sessionTree = buildSessionTree(project.sessions);
+                                            const flatSessions = flattenSessionTree(sessionTree, expandedNodeIds);
+                                            
+                                            // Build a map of sessionId -> children count for the collapse toggle
+                                            const childrenByParent = new Map<string, number>();
+                                            for (const child of project.sessions) {
+                                              if (child.parentSessionId) {
+                                                childrenByParent.set(
+                                                  child.parentSessionId,
+                                                  (childrenByParent.get(child.parentSessionId) ?? 0) + 1
+                                                );
+                                              }
+                                            }
+                                            
+                                            return flatSessions.map(({ session: s, depth, isExpanded }) => {
                                             // Hide cwd on individual cards when the runner is already
                                             // split into project sub-groups (avoids redundant display).
                                             const showCwd = runnerGroup.projects.length === 1;
@@ -1022,8 +1039,41 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                         style={{
                                                             transform: !selectMode && hasOffset ? `translateX(${swipeOffset}px)` : undefined,
                                                             touchAction: selectMode ? undefined : "pan-y",
+                                                            marginLeft: `${getSessionIndent(depth)}px`,
                                                         }}
                                                     >
+                                                        {/* Expand/collapse toggle for parent sessions */}
+                                                        {(() => {
+                                                            const childCount = childrenByParent.get(s.sessionId) ?? 0;
+                                                            if (childCount > 0) {
+                                                              return (
+                                                                <button
+                                                                  onClick={(e) => {
+                                                                    e.stopPropagation();
+                                                                    setExpandedNodeIds(prev => {
+                                                                      const next = new Set(prev);
+                                                                      if (next.has(s.sessionId)) {
+                                                                        next.delete(s.sessionId);
+                                                                      } else {
+                                                                        next.add(s.sessionId);
+                                                                      }
+                                                                      return next;
+                                                                    });
+                                                                  }}
+                                                                  className="flex-shrink-0 text-sidebar-foreground/50 hover:text-sidebar-foreground/70 transition-colors"
+                                                                  aria-label={isExpanded ? "Collapse" : "Expand"}
+                                                                >
+                                                                  {isExpanded ? (
+                                                                    <ChevronDown className="h-4 w-4" />
+                                                                  ) : (
+                                                                    <ChevronRight className="h-4 w-4" />
+                                                                  )}
+                                                                </button>
+                                                              );
+                                                            }
+                                                            return null;
+                                                        })()}
+
                                                         {/* Select mode checkbox */}
                                                         {selectMode && (
                                                             <div className="flex-shrink-0 flex items-center justify-center w-5 h-5">
@@ -1118,7 +1168,8 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                     </button>
                                                 </div>
                                             );
-                                        })}
+                                            });
+                                            })()}
                                     </div>
                                 ))}
                             </div>

@@ -18,6 +18,7 @@ import {
   ToolCardSection,
   StatusPill,
 } from "@/components/ui/tool-card";
+import { TriggerCard } from "./TriggerCard";
 
 export function truncateSessionId(id: string): string {
   return id.length > 12 ? `${id.slice(0, 8)}…` : id;
@@ -37,6 +38,29 @@ export function parseTriggerMessage(text: string): { triggerId: string; body: st
 /** Returns true if the text is a trigger-injected message. */
 export function isTriggerMessage(text: string): boolean {
   return TRIGGER_PREFIX_RE.test(text);
+}
+
+/**
+ * Render a trigger message as a TriggerCard, or return null if not a trigger message.
+ * The onRespond callback should emit trigger_response via the relay socket.
+ */
+export function renderTriggerCard(
+  text: string,
+  onRespond?: (triggerId: string, response: string, action?: string) => void,
+  isResponding?: boolean
+): React.ReactElement | null {
+  const parsed = parseTriggerMessage(text);
+  if (!parsed) return null;
+  
+  return (
+    <TriggerCard
+      key={parsed.triggerId}
+      triggerId={parsed.triggerId}
+      body={parsed.body}
+      onRespond={onRespond}
+      isResponding={isResponding}
+    />
+  );
 }
 
 /**
