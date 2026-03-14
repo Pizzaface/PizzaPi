@@ -72,12 +72,14 @@ describe("trigger routing flow", () => {
             expect(entry.trackedAt).toBeGreaterThan(0);
         });
 
-        it("overwrites duplicate trigger IDs", () => {
+        it("preserves original source when same triggerId is re-tracked (escalation)", () => {
             trackReceivedTrigger("trigger-1", "child-1", "ask_user_question");
-            trackReceivedTrigger("trigger-1", "child-2", "plan_review");
+            // Escalation re-delivers the same triggerId with the parent's session ID
+            // (server overwrites sourceSessionId). The original child source must be kept.
+            trackReceivedTrigger("trigger-1", "parent-1", "escalate");
             const entry = receivedTriggers.get("trigger-1")!;
-            expect(entry.sourceSessionId).toBe("child-2");
-            expect(entry.type).toBe("plan_review");
+            expect(entry.sourceSessionId).toBe("child-1");
+            expect(entry.type).toBe("ask_user_question");
         });
 
         it("can delete a trigger after responding", () => {

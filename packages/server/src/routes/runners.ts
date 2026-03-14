@@ -131,7 +131,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
 
         // Store parent-child relationship in Redis for the trigger system
         if (requestedParentSessionId) {
-            await upsertSessionFields(sessionId, { parentSessionId: requestedParentSessionId } as any);
+            await upsertSessionFields(sessionId, { sessionId, parentSessionId: requestedParentSessionId } as any);
             await addChildSession(requestedParentSessionId, sessionId);
         }
 
