@@ -9,7 +9,7 @@ import {
   CodeBlockHeader,
   CodeBlockTitle,
 } from "@/components/ai-elements/code-block";
-import { RocketIcon, SendIcon, InboxIcon, ClockIcon, HashIcon, ExternalLinkIcon, MessageSquareIcon, Loader2Icon, XCircleIcon as XCircleIcon2, CheckCircle2Icon } from "lucide-react";
+import { RocketIcon, SendIcon, InboxIcon, ClockIcon, HashIcon, ExternalLinkIcon, MessageSquareIcon, MessageCircleIcon, Loader2Icon, XCircleIcon as XCircleIcon2, CheckCircle2Icon, CornerDownLeftIcon, ArrowUpCircleIcon } from "lucide-react";
 import {
   ToolCardShell,
   ToolCardHeader,
@@ -443,5 +443,170 @@ export function CopyableCodeBlock({
         </CodeBlockActions>
       </CodeBlockHeader>
     </CodeBlock>
+  );
+}
+
+// ── Respond to Trigger Card ──────────────────────────────────────────────────
+
+export function RespondToTriggerCard({
+  triggerId,
+  response,
+  action,
+  resultText,
+  isStreaming,
+}: {
+  triggerId: string;
+  response: string;
+  action?: string;
+  resultText: string | null;
+  isStreaming: boolean;
+}) {
+  const isError = resultText?.startsWith("Error") ?? false;
+
+  return (
+    <ToolCardShell>
+      <ToolCardHeader className="py-2.5">
+        <ToolCardTitle icon={<CornerDownLeftIcon className="size-3.5 shrink-0 text-violet-400" />}>
+          <span className="text-sm font-medium text-zinc-300">Respond to Trigger</span>
+          <span className="rounded bg-zinc-800 px-1.5 py-0.5 font-mono text-[10px] text-zinc-500">
+            {truncateSessionId(triggerId)}
+          </span>
+        </ToolCardTitle>
+        <ToolCardActions>
+          {isStreaming ? (
+            <StatusPill variant="streaming">Sending…</StatusPill>
+          ) : isError ? (
+            <StatusPill variant="error">Failed</StatusPill>
+          ) : action ? (
+            <StatusPill variant="success">{action}</StatusPill>
+          ) : resultText ? (
+            <StatusPill variant="success">Responded</StatusPill>
+          ) : null}
+        </ToolCardActions>
+      </ToolCardHeader>
+
+      {/* Response body */}
+      <ToolCardSection>
+        <p className="whitespace-pre-wrap break-words text-zinc-200 leading-relaxed">
+          {response}
+        </p>
+      </ToolCardSection>
+
+      {/* Error */}
+      {isError && resultText && (
+        <div className="border-t border-red-800/30 bg-red-950/20 px-4 py-2 text-red-400">
+          {resultText}
+        </div>
+      )}
+    </ToolCardShell>
+  );
+}
+
+// ── Tell Child Card ──────────────────────────────────────────────────────────
+
+export function TellChildCard({
+  sessionId,
+  message,
+  resultText,
+  isStreaming,
+}: {
+  sessionId: string;
+  message: string;
+  resultText: string | null;
+  isStreaming: boolean;
+}) {
+  const isError = resultText?.startsWith("Error") ?? false;
+
+  return (
+    <ToolCardShell>
+      <ToolCardHeader className="py-2.5">
+        <ToolCardTitle icon={<MessageCircleIcon className="size-3.5 shrink-0 text-blue-400" />}>
+          <span className="text-sm font-medium text-zinc-300">Tell Child</span>
+          <span className="rounded bg-zinc-800 px-1.5 py-0.5 font-mono text-[10px] text-zinc-500">
+            → {truncateSessionId(sessionId)}
+          </span>
+        </ToolCardTitle>
+        <ToolCardActions>
+          {isStreaming ? (
+            <StatusPill variant="streaming">Sending…</StatusPill>
+          ) : isError ? (
+            <StatusPill variant="error">Failed</StatusPill>
+          ) : resultText ? (
+            <StatusPill variant="success">Sent</StatusPill>
+          ) : null}
+        </ToolCardActions>
+      </ToolCardHeader>
+
+      {/* Message body */}
+      <div className="px-4 py-3">
+        <div className="rounded-lg rounded-br-sm bg-blue-600/15 border border-blue-500/20 px-3 py-2">
+          <p className="whitespace-pre-wrap break-words text-zinc-200 leading-relaxed">
+            {message}
+          </p>
+        </div>
+      </div>
+
+      {/* Error */}
+      {isError && resultText && (
+        <div className="border-t border-red-800/30 bg-red-950/20 px-4 py-2 text-red-400">
+          {resultText}
+        </div>
+      )}
+    </ToolCardShell>
+  );
+}
+
+// ── Escalate Trigger Card ────────────────────────────────────────────────────
+
+export function EscalateTriggerCard({
+  triggerId,
+  context,
+  resultText,
+  isStreaming,
+}: {
+  triggerId: string;
+  context?: string;
+  resultText: string | null;
+  isStreaming: boolean;
+}) {
+  const isError = resultText?.startsWith("Error") ?? false;
+
+  return (
+    <ToolCardShell>
+      <ToolCardHeader className="py-2.5">
+        <ToolCardTitle icon={<ArrowUpCircleIcon className="size-3.5 shrink-0 text-amber-400" />}>
+          <span className="text-sm font-medium text-zinc-300">Escalate Trigger</span>
+          <span className="rounded bg-zinc-800 px-1.5 py-0.5 font-mono text-[10px] text-zinc-500">
+            {truncateSessionId(triggerId)}
+          </span>
+        </ToolCardTitle>
+        <ToolCardActions>
+          {isStreaming ? (
+            <StatusPill variant="streaming">Escalating…</StatusPill>
+          ) : isError ? (
+            <StatusPill variant="error">Failed</StatusPill>
+          ) : resultText ? (
+            <StatusPill variant="neutral">Escalated</StatusPill>
+          ) : null}
+        </ToolCardActions>
+      </ToolCardHeader>
+
+      {/* Context */}
+      {context && (
+        <ToolCardSection>
+          <div className="mb-1 text-[10px] font-medium uppercase tracking-wider text-zinc-600">Context</div>
+          <p className="whitespace-pre-wrap break-words text-zinc-200 leading-relaxed">
+            {context}
+          </p>
+        </ToolCardSection>
+      )}
+
+      {/* Error */}
+      {isError && resultText && (
+        <div className="border-t border-red-800/30 bg-red-950/20 px-4 py-2 text-red-400">
+          {resultText}
+        </div>
+      )}
+    </ToolCardShell>
   );
 }
