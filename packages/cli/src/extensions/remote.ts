@@ -2122,6 +2122,25 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         stopHeartbeat();
         stopSessionNameSync();
         _cliErrorForwarder = null;
+
+        // Fire session_complete trigger to parent BEFORE disconnecting
+        if (isChildSession && parentSessionId && relay && sioSocket?.connected) {
+            sioSocket.emit("session_trigger" as any, {
+                token: relay.token,
+                trigger: {
+                    type: "session_complete",
+                    sourceSessionId: relay.sessionId,
+                    sourceSessionName: undefined,
+                    targetSessionId: parentSessionId,
+                    payload: { summary: "Session completed", exitCode: 0 },
+                    deliverAs: "followUp" as const,
+                    expectsResponse: false,
+                    triggerId: crypto.randomUUID(),
+                    ts: new Date().toISOString(),
+                },
+            });
+        }
+
         disconnect();
     });
 

@@ -34,9 +34,8 @@ export interface BuildExtensionFactoriesOptions {
 export function buildPizzaPiExtensionFactories(options: BuildExtensionFactoriesOptions): ExtensionFactory[] {
     const factories: ExtensionFactory[] = [];
 
-    // triggersExtension MUST be registered before remoteExtension so its
-    // session_shutdown handler fires first — sending the session_complete
-    // trigger while the relay socket is still connected.
+    // triggersExtension provides tell_child, respond_to_trigger, escalate_trigger tools.
+    // session_complete is fired from remoteExtension's shutdown handler (before disconnect).
     factories.push(triggersExtension);
 
     if (!options.skipRelay) {
