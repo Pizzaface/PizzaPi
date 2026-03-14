@@ -290,6 +290,19 @@ export function registerViewerNamespace(io: SocketIOServer): void {
             tuiSocket.emit("exec" as string, data);
         });
 
+        // ── trigger_response — human viewer responds to child trigger ────────
+        socket.on("trigger_response", async (data) => {
+            const tuiSocket = getLocalTuiSocket(sessionId);
+            if (!tuiSocket) return;
+
+            tuiSocket.emit("trigger_response" as string, {
+                triggerId: data.triggerId,
+                response: data.response,
+                ...(data.action ? { action: data.action } : {}),
+                targetSessionId: data.targetSessionId,
+            });
+        });
+
         // ── disconnect ───────────────────────────────────────────────────────
         socket.on("disconnect", async (reason) => {
             console.log(`[sio/viewer] disconnected: ${socket.id} sessionId=${sessionId} (${reason})`);
