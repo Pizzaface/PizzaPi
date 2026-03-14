@@ -101,6 +101,9 @@ const sessionCompleteRenderer: TriggerRenderer = {
         return [
             `🔗 Child "${name}" completed:`,
             summary,
+            "",
+            respondLine(trigger.triggerId),
+            `Use respond_to_trigger with action: "ack" to acknowledge, or action: "followUp" with instructions to resume the child.`,
         ].join("\n");
     },
     parseResponse(responseText) {

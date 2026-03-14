@@ -93,8 +93,10 @@ describe("renderTrigger", () => {
             const result = renderTrigger(trigger);
             expect(result).toContain('Child "my-child" completed:');
             expect(result).toContain("All tests pass. Feature deployed.");
-            // session_complete is fire-and-forget — no response instructions
-            expect(result).not.toContain("respond_to_trigger");
+            // session_complete supports ack/followUp responses
+            expect(result).toContain("respond_to_trigger");
+            expect(result).toContain("ack");
+            expect(result).toContain("followUp");
         });
     });
 
