@@ -2117,29 +2117,37 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         forwardEvent(buildHeartbeat());
     });
 
+    let sessionCompleteFired = false;
+
+    /** Emit session_complete trigger to parent (idempotent). */
+    function fireSessionComplete() {
+        if (sessionCompleteFired) return;
+        if (!isChildSession || !parentSessionId || !relay || !sioSocket?.connected) return;
+        sessionCompleteFired = true;
+        sioSocket.emit("session_trigger" as any, {
+            token: relay.token,
+            trigger: {
+                type: "session_complete",
+                sourceSessionId: relay.sessionId,
+                sourceSessionName: undefined,
+                targetSessionId: parentSessionId,
+                payload: { summary: "Session completed", exitCode: 0 },
+                deliverAs: "followUp" as const,
+                expectsResponse: false,
+                triggerId: crypto.randomUUID(),
+                ts: new Date().toISOString(),
+            },
+        });
+    }
+
     pi.on("session_shutdown", () => {
         shuttingDown = true;
         stopHeartbeat();
         stopSessionNameSync();
         _cliErrorForwarder = null;
 
-        // Fire session_complete trigger to parent BEFORE disconnecting
-        if (isChildSession && parentSessionId && relay && sioSocket?.connected) {
-            sioSocket.emit("session_trigger" as any, {
-                token: relay.token,
-                trigger: {
-                    type: "session_complete",
-                    sourceSessionId: relay.sessionId,
-                    sourceSessionName: undefined,
-                    targetSessionId: parentSessionId,
-                    payload: { summary: "Session completed", exitCode: 0 },
-                    deliverAs: "followUp" as const,
-                    expectsResponse: false,
-                    triggerId: crypto.randomUUID(),
-                    ts: new Date().toISOString(),
-                },
-            });
-        }
+        // Last chance to fire session_complete before socket goes away
+        fireSessionComplete();
 
         disconnect();
     });
@@ -2943,13 +2951,18 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         // Push an immediate heartbeat so viewers see "active" without waiting 10s.
         forwardEvent(buildHeartbeat());
     });
-    pi.on("agent_end", (event) => {
+    pi.on("agent_end", (event, ctx) => {
         isAgentActive = false;
         // Clear retry state on agent end — retries are done (succeeded or exhausted).
         lastRetryableError = null;
         forwardEvent(event);
         // Push a heartbeat immediately so viewers see "idle" after the turn.
         forwardEvent(buildHeartbeat());
+
+        // Fire session_complete when child finishes with no queued follow-ups.
+        if (!ctx.hasPendingMessages()) {
+            fireSessionComplete();
+        }
     });
     pi.on("turn_start", (event) => forwardEvent(event));
     pi.on("turn_end", (event) => forwardEvent(event));
