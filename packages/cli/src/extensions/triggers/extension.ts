@@ -60,13 +60,33 @@ export const triggersExtension: ExtensionFactory = (pi) => {
             if (!conn) {
                 return { content: [{ type: "text" as const, text: "Error: Not connected to relay. Cannot send message to child." }], details: null as any };
             }
-            // Reuse existing session_message mechanism to send input to the child
-            conn.socket.emit("session_message", {
-                token: conn.token,
-                targetSessionId: params.sessionId,
-                message: params.message,
+
+            // Deliver as agent input so it starts a new turn in the child session
+            // (not into the passive message bus which requires wait_for_message).
+            const result = await new Promise<string>((resolve) => {
+                const timeout = setTimeout(() => {
+                    conn.socket.off("session_message_error", onError);
+                    resolve(`Message sent to child ${params.sessionId}`);
+                }, 3000);
+
+                const onError = (err: { targetSessionId: string; error: string }) => {
+                    if (err.targetSessionId === params.sessionId) {
+                        clearTimeout(timeout);
+                        conn.socket.off("session_message_error", onError);
+                        resolve(`Error: ${err.error}`);
+                    }
+                };
+                conn.socket.on("session_message_error", onError);
+
+                conn.socket.emit("session_message", {
+                    token: conn.token,
+                    targetSessionId: params.sessionId,
+                    message: params.message,
+                    deliverAs: "input",
+                });
             });
-            return { content: [{ type: "text" as const, text: `Message sent to child ${params.sessionId}` }], details: null as any };
+
+            return { content: [{ type: "text" as const, text: result }], details: null as any };
         },
         renderCall: () => silent,
         renderResult: () => silent,

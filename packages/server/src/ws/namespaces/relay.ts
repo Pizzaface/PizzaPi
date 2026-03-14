@@ -376,11 +376,23 @@ export function registerRelayNamespace(io: SocketIOServer): void {
             }
 
             try {
-                targetSocket.emit("session_message" as string, {
-                    fromSessionId: sessionId,
-                    message: messageText,
-                    ts: new Date().toISOString(),
-                });
+                if (data.deliverAs === "input") {
+                    // Deliver as agent input — starts a new turn (used by tell_child).
+                    // Mirrors the viewer namespace "input" handler behavior.
+                    targetSocket.emit("input" as string, {
+                        text: messageText,
+                        attachments: [],
+                        client: "agent",
+                        deliverAs: "followUp",
+                    });
+                } else {
+                    // Deliver to message bus (used by send_message / wait_for_message).
+                    targetSocket.emit("session_message" as string, {
+                        fromSessionId: sessionId,
+                        message: messageText,
+                        ts: new Date().toISOString(),
+                    });
+                }
             } catch {
                 socket.emit("session_message_error", {
                     targetSessionId,
