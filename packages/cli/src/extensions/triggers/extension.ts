@@ -9,7 +9,7 @@
 
 import type { ExtensionFactory } from "@mariozechner/pi-coding-agent";
 import type { ConversationTrigger } from "./types.js";
-import { getRelaySocket } from "../remote.js";
+import { getRelaySocket, getRelaySessionId } from "../remote.js";
 
 const silent = { render: (_w: number): string[] => [], invalidate: () => {} };
 
@@ -33,7 +33,9 @@ export function trackReceivedTrigger(triggerId: string, sourceSessionId: string,
 
 export const triggersExtension: ExtensionFactory = (pi) => {
     const parentSessionId = process.env.PIZZAPI_WORKER_PARENT_SESSION_ID ?? null;
-    const ownSessionId = process.env.PIZZAPI_SESSION_ID ?? null;
+    // Use getRelaySessionId() which works for both runner-spawned workers
+    // (PIZZAPI_SESSION_ID) and standalone CLI sessions (relay-assigned ID).
+    const getOwnSessionId = () => getRelaySessionId();
 
     // ── Fire session_complete trigger on child exit ────────────────────────
     if (parentSessionId) {
@@ -44,14 +46,13 @@ export const triggersExtension: ExtensionFactory = (pi) => {
                 token: conn.token,
                 trigger: {
                     type: "session_complete",
-                    sourceSessionId: ownSessionId ?? "",
+                    sourceSessionId: getOwnSessionId() ?? "",
                     sourceSessionName: undefined,
                     targetSessionId: parentSessionId,
                     payload: { summary: "Session completed", exitCode: 0 },
                     deliverAs: "followUp" as const,
-                    expectsResponse: true,
+                    expectsResponse: false,  // child is shutting down — can't wait for response
                     triggerId: crypto.randomUUID(),
-                    timeoutMs: 300_000,
                     ts: new Date().toISOString(),
                 },
             });
@@ -161,7 +162,7 @@ export const triggersExtension: ExtensionFactory = (pi) => {
                 trigger: {
                     type: "escalate",
                     sourceSessionId: pending.sourceSessionId,
-                    targetSessionId: ownSessionId ?? "",
+                    targetSessionId: getOwnSessionId() ?? "",
                     payload: { reason: params.context ?? "Parent escalated", originalTriggerId: params.triggerId },
                     deliverAs: "steer" as const,
                     expectsResponse: true,
