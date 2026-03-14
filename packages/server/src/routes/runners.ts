@@ -13,7 +13,7 @@ import {
     recordRunnerSession,
     registerTerminal,
 } from "../ws/sio-registry.js";
-import { upsertSessionFields, addChildSession } from "../ws/sio-state.js";
+import { upsertSessionFields, addChildSession, getSession } from "../ws/sio-state.js";
 import { sendSkillCommand, sendAgentCommand, sendRunnerCommand } from "../ws/namespaces/runner.js";
 import { waitForSpawnAck } from "../ws/runner-control.js";
 import { requireSession, validateApiKey } from "../middleware.js";
@@ -129,10 +129,16 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         await recordRunnerSession(runnerId, sessionId);
         await linkSessionToRunner(runnerId, sessionId);
 
-        // Store parent-child relationship in Redis for the trigger system
+        // Store parent-child relationship in Redis for the trigger system.
+        // Validate that the parent session belongs to the same user to prevent
+        // cross-user trigger injection via crafted parentSessionId.
         if (requestedParentSessionId) {
-            await upsertSessionFields(sessionId, { sessionId, parentSessionId: requestedParentSessionId } as any);
-            await addChildSession(requestedParentSessionId, sessionId);
+            const parentSession = await getSession(requestedParentSessionId);
+            if (parentSession && parentSession.userId === identity.userId) {
+                await upsertSessionFields(sessionId, { sessionId, parentSessionId: requestedParentSessionId } as any);
+                await addChildSession(requestedParentSessionId, sessionId);
+            }
+            // Silently skip linking if parent doesn't exist or belongs to another user
         }
 
         if (requestedCwd) {
