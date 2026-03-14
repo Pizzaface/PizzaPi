@@ -1851,6 +1851,9 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 ephemeral: true,
                 collabMode: true,
                 sessionName: getCurrentSessionName(latestCtx) ?? undefined,
+                // Send parent session ID so the relay can link child→parent
+                // at registration time (no more racy pre-seeding).
+                ...(parentSessionId ? { parentSessionId } : {}),
             });
         });
 
@@ -1869,6 +1872,11 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             _relaySessionId = data.sessionId;
             connectFailureNotified = false;
             setRelayStatus("Connected to Relay");
+
+            // Log parent-child link confirmation from server
+            if (data.parentSessionId) {
+                console.log(`pizzapi: linked as child of parent session ${data.parentSessionId}`);
+            }
 
             // Wire up the inter-session message bus now that we have a relay connection.
             messageBus.setOwnSessionId(relaySessionId);

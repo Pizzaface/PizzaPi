@@ -231,13 +231,14 @@ export function registerRelayNamespace(io: SocketIOServer): void {
             const isEphemeral = data.ephemeral !== false;
             const collabMode = data.collabMode !== false;
 
-            const { sessionId, token, shareUrl } = await registerTuiSession(socket, cwd, {
+            const { sessionId, token, shareUrl, parentSessionId } = await registerTuiSession(socket, cwd, {
                 sessionId: data.sessionId,
                 isEphemeral,
                 collabMode,
                 sessionName: data.sessionName,
                 userId: socket.data.userId,
                 userName: (socket.data as RelaySocketData & { userName?: string }).userName,
+                parentSessionId: data.parentSessionId ?? undefined,
             });
 
             socket.data.sessionId = sessionId;
@@ -251,6 +252,7 @@ export function registerRelayNamespace(io: SocketIOServer): void {
                 shareUrl,
                 isEphemeral,
                 collabMode,
+                parentSessionId,
             });
         });
 

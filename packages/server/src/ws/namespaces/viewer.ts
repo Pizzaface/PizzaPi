@@ -291,15 +291,36 @@ export function registerViewerNamespace(io: SocketIOServer): void {
         });
 
         // ── trigger_response — human viewer responds to child trigger ────────
+        // Route directly to the child session via its relay socket,
+        // bypassing the parent CLI. This avoids depending on an in-memory
+        // handler in the parent to forward the response.
         socket.on("trigger_response", async (data) => {
+            const { triggerId, response, action, targetSessionId } = data ?? {};
+            if (!triggerId || !response) return;
+
+            // If targetSessionId is explicitly provided, route to that child.
+            // Otherwise, fall back to forwarding through the parent TUI socket.
+            if (targetSessionId) {
+                const childSocket = getLocalTuiSocket(targetSessionId);
+                if (childSocket) {
+                    childSocket.emit("trigger_response" as string, {
+                        triggerId,
+                        response,
+                        ...(action ? { action } : {}),
+                    });
+                    return;
+                }
+            }
+
+            // Fallback: forward to the parent session's TUI socket
             const tuiSocket = getLocalTuiSocket(sessionId);
             if (!tuiSocket) return;
 
             tuiSocket.emit("trigger_response" as string, {
-                triggerId: data.triggerId,
-                response: data.response,
-                ...(data.action ? { action: data.action } : {}),
-                targetSessionId: data.targetSessionId,
+                triggerId,
+                response,
+                ...(action ? { action } : {}),
+                targetSessionId,
             });
         });
 

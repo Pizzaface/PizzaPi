@@ -87,6 +87,19 @@ describe("trigger routing flow", () => {
             receivedTriggers.delete("trigger-1");
             expect(receivedTriggers.has("trigger-1")).toBe(false);
         });
+
+        it("prunes stale entries when tracking new triggers", () => {
+            // Manually insert a stale entry (older than TTL)
+            receivedTriggers.set("stale-trigger", {
+                sourceSessionId: "old-child",
+                type: "ask_user_question",
+                trackedAt: Date.now() - 15 * 60 * 1000, // 15 minutes ago (TTL is 10 min)
+            });
+            // Tracking a new trigger should prune the stale one
+            trackReceivedTrigger("fresh-trigger", "new-child", "plan_review");
+            expect(receivedTriggers.has("stale-trigger")).toBe(false);
+            expect(receivedTriggers.has("fresh-trigger")).toBe(true);
+        });
     });
 
     describe("all renderer types produce valid output", () => {
