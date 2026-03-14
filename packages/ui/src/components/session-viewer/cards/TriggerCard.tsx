@@ -37,7 +37,8 @@ function parseTriggerBody(body: string): {
   reason?: string;
 } {
   // Detect trigger type from content patterns
-  if (body.includes("asks:") && body.includes("Options:")) {
+  // ask_user_question: may or may not have Options line (open-ended questions omit it)
+  if (body.includes('" asks:')) {
     return parsAskUserQuestion(body);
   }
   if (body.includes("submitted a plan for review")) {
@@ -115,7 +116,7 @@ function parseSessionError(body: string): ReturnType<typeof parseTriggerBody> {
 function parseEscalateTrigger(body: string): ReturnType<typeof parseTriggerBody> {
   const childMatch = body.match(/from child "([^"]+)"/);
   const childName = childMatch?.[1];
-  const reasonMatch = body.match(/escalated from child "[^"]+"\n(.+?)(?=\n\n|$)/s);
+  const reasonMatch = body.match(/escalated from child "[^"]+"[:\s]*\n(.+?)(?=\n\n|$)/s);
   const reason = reasonMatch?.[1]?.trim();
 
   return { type: "escalate", childName, reason };
@@ -277,17 +278,11 @@ function PlanReviewCard({
 // ── Session Complete Card ──────────────────────────────────────────────────
 
 function SessionCompleteCard({
-  triggerId,
   childName,
   message,
-  onRespond,
-  isResponding,
 }: {
-  triggerId: string;
   childName?: string;
   message?: string;
-  onRespond?: (triggerId: string, response: string, action: string) => void;
-  isResponding?: boolean;
 }) {
   return (
     <ToolCardShell>
@@ -306,32 +301,6 @@ function SessionCompleteCard({
           <p className="text-sm text-zinc-200 whitespace-pre-wrap">{message}</p>
         </ToolCardSection>
       )}
-
-      <div className="flex gap-2 px-4 py-3 border-t border-zinc-800 bg-zinc-900/50">
-        <Button
-          size="sm"
-          variant="default"
-          onClick={() => onRespond?.(triggerId, "Acknowledged", "ack")}
-          disabled={isResponding}
-          className="text-xs"
-        >
-          Acknowledge
-        </Button>
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={() => {
-            const followUp = prompt("Follow-up instructions:");
-            if (followUp) {
-              onRespond?.(triggerId, followUp, "followUp");
-            }
-          }}
-          disabled={isResponding}
-          className="text-xs"
-        >
-          Follow Up
-        </Button>
-      </div>
     </ToolCardShell>
   );
 }
@@ -438,11 +407,8 @@ export function TriggerCard({
     case "session_complete":
       return (
         <SessionCompleteCard
-          triggerId={triggerId}
           childName={parsed.childName}
           message={parsed.message}
-          onRespond={onRespond}
-          isResponding={isResponding}
         />
       );
     case "session_error":

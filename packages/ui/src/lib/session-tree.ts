@@ -65,10 +65,10 @@ export function buildSessionTree(sessions: HubSession[]): SessionTreeNode[] {
     });
   }
 
-  // Return only root sessions
+  // Return root sessions: those with no parent, or whose parent is not in this subset
   const roots: SessionTreeNode[] = [];
   for (const session of sessions) {
-    if (!session.parentSessionId) {
+    if (!session.parentSessionId || !nodeMap.has(session.parentSessionId)) {
       const node = nodeMap.get(session.sessionId);
       if (node) roots.push(node);
     }

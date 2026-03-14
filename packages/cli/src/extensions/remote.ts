@@ -12,7 +12,7 @@ import { isPlanModeEnabled, isExecutionMode, getPlanTodoItems, setPlanModeChange
 import type { RemoteExecRequest, RemoteExecResponse } from "./remote-commands.js";
 import { messageBus } from "./session-message-bus.js";
 import { renderTrigger } from "./triggers/registry.js";
-import { trackReceivedTrigger } from "./triggers/extension.js";
+import { trackReceivedTrigger, receivedTriggers } from "./triggers/extension.js";
 import { io, type Socket } from "socket.io-client";
 import type { RelayClientToServerEvents, RelayServerToClientEvents } from "@pizzapi/protocol";
 
@@ -1960,6 +1960,25 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             const rendered = renderTrigger(trigger);
             const deliverAs = trigger.deliverAs === "followUp" ? "followUp" as const : "steer" as const;
             pi.sendUserMessage(rendered, { deliverAs });
+        });
+
+        // ── trigger_response from viewer — forward to child via relay ──────
+        // When a human viewer responds to a child trigger via the web UI,
+        // the server forwards trigger_response to this parent's relay socket.
+        // We look up the trigger in receivedTriggers and re-emit to the child.
+        sock.on("trigger_response" as any, (data: { triggerId: string; response: string; action?: string; targetSessionId?: string }) => {
+            if (!data?.triggerId) return;
+            const pending = receivedTriggers.get(data.triggerId);
+            if (!pending || !relay || !sioSocket?.connected) return;
+            // Forward to the child session via relay
+            sioSocket.emit("trigger_response" as any, {
+                token: relay.token,
+                triggerId: data.triggerId,
+                response: data.response,
+                ...(data.action ? { action: data.action } : {}),
+                targetSessionId: pending.sourceSessionId,
+            });
+            receivedTriggers.delete(data.triggerId);
         });
 
         sock.on("session_expired", (data) => {

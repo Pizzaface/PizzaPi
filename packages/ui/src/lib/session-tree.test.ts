@@ -48,8 +48,10 @@ describe("session-tree", () => {
       ];
 
       const tree = buildSessionTree(sessions);
-      expect(tree).toHaveLength(1);
-      expect(tree[0].session.sessionId).toBe("parent-1");
+      // Orphan with missing parent should be treated as a root (not hidden)
+      expect(tree).toHaveLength(2);
+      expect(tree.map(n => n.session.sessionId)).toContain("parent-1");
+      expect(tree.map(n => n.session.sessionId)).toContain("orphan");
     });
 
     test("sorts roots by creation time (newest first)", () => {

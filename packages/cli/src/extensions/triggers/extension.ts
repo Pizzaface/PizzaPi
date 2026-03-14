@@ -118,6 +118,11 @@ export const triggersExtension: ExtensionFactory = (pi) => {
             if (!pending) {
                 return { content: [{ type: "text" as const, text: `Error: No pending trigger with ID ${params.triggerId}. It may have already been responded to or timed out.` }], details: null as any };
             }
+            // Enforce TTL — reject if the trigger has expired (child likely already timed out)
+            if (Date.now() - pending.trackedAt > TRIGGER_TTL_MS) {
+                receivedTriggers.delete(params.triggerId);
+                return { content: [{ type: "text" as const, text: `Error: Trigger ${params.triggerId} has expired (older than ${TRIGGER_TTL_MS / 60_000} minutes). The child session likely already timed out.` }], details: null as any };
+            }
             conn.socket.emit("trigger_response" as any, {
                 token: conn.token,
                 triggerId: params.triggerId,
