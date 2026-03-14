@@ -125,6 +125,27 @@ export const triggersExtension: ExtensionFactory = (pi) => {
                 receivedTriggers.delete(params.triggerId);
                 return { content: [{ type: "text" as const, text: `Error: Trigger ${params.triggerId} has expired (older than ${TRIGGER_TTL_MS / 60_000} minutes). The child session likely already timed out.` }], details: null as any };
             }
+
+            // session_complete is respondable but handled differently:
+            // - "ack": just acknowledge, no message to child
+            // - "followUp": deliver as input message to resume the child (like tell_child)
+            if (pending.type === "session_complete") {
+                receivedTriggers.delete(params.triggerId);
+                const action = params.action ?? "ack";
+                if (action === "followUp") {
+                    // Deliver as agent input so it starts a new turn in the child
+                    conn.socket.emit("session_message", {
+                        token: conn.token,
+                        targetSessionId: pending.sourceSessionId,
+                        message: params.response,
+                        deliverAs: "input",
+                    });
+                    return { content: [{ type: "text" as const, text: `Follow-up sent to child ${pending.sourceSessionId}` }], details: null as any };
+                }
+                // ack or any other action — just acknowledge, no message to child
+                return { content: [{ type: "text" as const, text: `Acknowledged session completion from ${pending.sourceSessionId}` }], details: null as any };
+            }
+
             conn.socket.emit("trigger_response" as any, {
                 token: conn.token,
                 triggerId: params.triggerId,

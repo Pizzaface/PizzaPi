@@ -116,7 +116,7 @@ export const BUILTIN_SYSTEM_PROMPT = [
     "- When a child calls `AskUserQuestion` or `plan_mode`, a trigger appears for you to respond to.",
     "- Use `respond_to_trigger(triggerId, response)` to answer a child's question or approve/reject a plan.",
     "  For `plan_review` triggers, also pass `action`: `\"approve\"` to accept, `\"cancel\"` to reject, or `\"edit\"` with feedback in `response`.",
-    "  For `session_complete` triggers, acknowledge with `action: \"ack\"`. To send follow-up work, use `tell_child(sessionId, message)` instead — session_complete is fire-and-forget and cannot be responded to via `respond_to_trigger`.",
+    "  For `session_complete` triggers, use `action: \"ack\"` to acknowledge, or `action: \"followUp\"` with instructions in `response` to send the child more work.",
     "- Use `escalate_trigger(triggerId)` to pass a trigger to the human viewer if you can't handle it.",
     "- Use `tell_child(sessionId, message)` to proactively send a message or instruction to a child session.\n",
 

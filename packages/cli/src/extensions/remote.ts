@@ -1958,12 +1958,10 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             const trigger = data?.trigger;
             if (!trigger) return;
 
-            // Only track triggers that expect a response (used by respond_to_trigger tool).
-            // Fire-and-forget triggers (e.g. session_complete) should not be tracked
-            // since the child has already exited and cannot consume responses.
-            if (trigger.expectsResponse !== false) {
-                trackReceivedTrigger(trigger.triggerId, trigger.sourceSessionId, trigger.type);
-            }
+            // Track all triggers so respond_to_trigger can route responses back.
+            // session_complete triggers are respondable: "ack" is a no-op,
+            // "followUp" delivers a new input message to resume the child.
+            trackReceivedTrigger(trigger.triggerId, trigger.sourceSessionId, trigger.type);
 
             // Render trigger to text with trigger ID metadata prefix
             const rendered = renderTrigger(trigger);
@@ -2143,7 +2141,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                     ...(fullOutputPath ? { fullOutputPath } : {}),
                 },
                 deliverAs: "followUp" as const,
-                expectsResponse: false,
+                expectsResponse: true,
                 triggerId: crypto.randomUUID(),
                 ts: new Date().toISOString(),
             },

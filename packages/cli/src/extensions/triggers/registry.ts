@@ -112,7 +112,7 @@ const sessionCompleteRenderer: TriggerRenderer = {
         lines.push(
             "",
             respondLine(trigger.triggerId),
-            `Use respond_to_trigger with action: "ack" to acknowledge, or action: "followUp" with instructions to resume the child.`,
+            `Use respond_to_trigger with action: "ack" to acknowledge completion, or action: "followUp" with instructions to send the child more work.`,
         );
         return lines.join("\n");
     },
