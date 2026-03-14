@@ -1949,8 +1949,12 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             const trigger = data?.trigger;
             if (!trigger) return;
 
-            // Track the trigger for response routing (used by respond_to_trigger tool)
-            trackReceivedTrigger(trigger.triggerId, trigger.sourceSessionId, trigger.type);
+            // Only track triggers that expect a response (used by respond_to_trigger tool).
+            // Fire-and-forget triggers (e.g. session_complete) should not be tracked
+            // since the child has already exited and cannot consume responses.
+            if (trigger.expectsResponse !== false) {
+                trackReceivedTrigger(trigger.triggerId, trigger.sourceSessionId, trigger.type);
+            }
 
             // Render trigger to text with trigger ID metadata prefix
             const rendered = renderTrigger(trigger);
