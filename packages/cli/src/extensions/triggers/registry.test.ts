@@ -98,6 +98,27 @@ describe("renderTrigger", () => {
             expect(result).toContain("ack");
             expect(result).toContain("followUp");
         });
+
+        it("includes full output path when provided", () => {
+            const trigger = makeTrigger({
+                type: "session_complete",
+                payload: { summary: "Truncated summary...", fullOutputPath: "/tmp/pizzapi-session-abc12345-output.md" },
+            });
+            const result = renderTrigger(trigger);
+            expect(result).toContain("Truncated summary...");
+            expect(result).toContain("/tmp/pizzapi-session-abc12345-output.md");
+            expect(result).toContain("Full output saved to");
+            expect(result).toContain("Read tool");
+        });
+
+        it("omits file path when not truncated", () => {
+            const trigger = makeTrigger({
+                type: "session_complete",
+                payload: { summary: "Short result" },
+            });
+            const result = renderTrigger(trigger);
+            expect(result).not.toContain("Full output saved to");
+        });
     });
 
     describe("session_error", () => {

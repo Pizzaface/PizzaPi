@@ -97,14 +97,24 @@ const sessionCompleteRenderer: TriggerRenderer = {
         const summary = typeof trigger.payload.summary === "string"
             ? trigger.payload.summary
             : "No summary provided.";
+        const fullOutputPath = typeof trigger.payload.fullOutputPath === "string"
+            ? trigger.payload.fullOutputPath
+            : null;
 
-        return [
+        const lines = [
             `🔗 Child "${name}" completed:`,
+            `---`,
             summary,
+        ];
+        if (fullOutputPath) {
+            lines.push("", `📄 Full output saved to: ${fullOutputPath}`, `(Use the Read tool to access the complete output if the above is insufficient.)`);
+        }
+        lines.push(
             "",
             respondLine(trigger.triggerId),
             `Use respond_to_trigger with action: "ack" to acknowledge, or action: "followUp" with instructions to resume the child.`,
-        ].join("\n");
+        );
+        return lines.join("\n");
     },
     parseResponse(responseText) {
         const lower = responseText.toLowerCase().trim().replace(/[!.,]+$/, "");

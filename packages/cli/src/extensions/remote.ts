@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { AuthStorage, buildSessionContext, SessionManager, type ExtensionContext, type ExtensionFactory, type SessionInfo } from "@mariozechner/pi-coding-agent";
 import { getEnvApiKey } from "@mariozechner/pi-ai/dist/env-api-keys.js";
@@ -2126,7 +2126,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
     });
 
     /** Emit session_complete trigger to parent (idempotent per turn). */
-    function fireSessionComplete(summary?: string) {
+    function fireSessionComplete(summary?: string, fullOutputPath?: string) {
         if (sessionCompleteFired) return;
         if (!isChildSession || !parentSessionId || !relay || !sioSocket?.connected) return;
         sessionCompleteFired = true;
@@ -2137,7 +2137,11 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 sourceSessionId: relay.sessionId,
                 sourceSessionName: undefined,
                 targetSessionId: parentSessionId,
-                payload: { summary: summary ?? "Session completed", exitCode: 0 },
+                payload: {
+                    summary: summary ?? "Session completed",
+                    exitCode: 0,
+                    ...(fullOutputPath ? { fullOutputPath } : {}),
+                },
                 deliverAs: "followUp" as const,
                 expectsResponse: false,
                 triggerId: crypto.randomUUID(),
@@ -2969,6 +2973,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         // Extract the last assistant message as the summary so the parent knows what happened.
         if (!ctx.hasPendingMessages()) {
             let summary = "Session completed";
+            let fullOutputPath: string | undefined;
             const messages = (event as any).messages;
             if (Array.isArray(messages)) {
                 for (let i = messages.length - 1; i >= 0; i--) {
@@ -2979,16 +2984,25 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                             .map((c: any) => c.text);
                         if (textParts.length > 0) {
                             const full = textParts.join("\n");
-                            const MAX_SUMMARY = 16_000;
-                            summary = full.length > MAX_SUMMARY
-                                ? full.slice(0, MAX_SUMMARY) + `\n\n[summary truncated — original was ${full.length} chars]`
-                                : full;
+                            const INLINE_MAX = 4_000;
+                            if (full.length > INLINE_MAX) {
+                                // Save full output to a file the parent can read on demand
+                                try {
+                                    const sessionSlug = relay?.sessionId?.slice(0, 8) ?? "unknown";
+                                    const tmpPath = join(tmpdir(), `pizzapi-session-${sessionSlug}-output.md`);
+                                    writeFileSync(tmpPath, full, "utf-8");
+                                    fullOutputPath = tmpPath;
+                                } catch { /* best-effort */ }
+                                summary = full.slice(0, INLINE_MAX);
+                            } else {
+                                summary = full;
+                            }
                             break;
                         }
                     }
                 }
             }
-            fireSessionComplete(summary);
+            fireSessionComplete(summary, fullOutputPath);
         }
     });
     pi.on("turn_start", (event) => forwardEvent(event));
