@@ -29,6 +29,9 @@ export { SessionNameCard } from "@/components/session-viewer/cards/SessionNameCa
 export {
   truncateSessionId,
   parseSpawnResult,
+  parseTriggerMessage,
+  isTriggerMessage,
+  renderTriggerCard,
   SpawnSessionCard,
   SendMessageCard,
   WaitForMessageCard,
@@ -59,6 +62,7 @@ export { CompactionSummaryCard } from "@/components/session-viewer/cards/Compact
 export { CommandResultCard, type CommandResultData } from "@/components/session-viewer/cards/CommandResultCard";
 
 import { CommandResultCard, type CommandResultData } from "@/components/session-viewer/cards/CommandResultCard";
+import { TriggerCard } from "@/components/session-viewer/cards/TriggerCard";
 
 /** Type guard: is the content a structured command result? */
 export function isCommandResult(content: unknown): content is CommandResultData {
@@ -94,6 +98,7 @@ export function renderContent(
   thinkingDuration?: number,
   subAgentTurns?: SubAgentTurn[],
   details?: unknown,
+  onTriggerResponse?: (triggerId: string, response: string, action?: string) => void,
 ) {
   // Structured command result cards (MCP, plugins, skills)
   if (role === "system" && isCommandResult(content)) {
@@ -128,6 +133,19 @@ export function renderContent(
   }
 
   if (typeof content === "string") {
+    // Check if this is a trigger-injected message
+    const triggerMatch = content.match(/^<!--\s*trigger:([\w-]+)\s*-->\n?/);
+    if (triggerMatch) {
+      const triggerId = triggerMatch[1];
+      const body = content.slice(triggerMatch[0].length);
+      return (
+        <TriggerCard
+          triggerId={triggerId}
+          body={body}
+          onRespond={onTriggerResponse}
+        />
+      );
+    }
     return <MessageResponse>{content}</MessageResponse>;
   }
 
