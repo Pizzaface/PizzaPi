@@ -125,6 +125,12 @@ export function getRelaySocket(): { socket: Socket<RelayServerToClientEvents, Re
     return _relaySocket?.connected ? { socket: _relaySocket, token: _relayToken ?? "" } : null;
 }
 
+let _relaySessionId: string | null = null;
+/** Get the active relay session ID, if connected. Falls back to PIZZAPI_SESSION_ID env var. */
+export function getRelaySessionId(): string | null {
+    return _relaySessionId ?? process.env.PIZZAPI_SESSION_ID ?? null;
+}
+
 /**
  * PizzaPi Remote extension.
  *
@@ -1857,9 +1863,10 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 seq: 0,
                 ackedSeq: 0,
             };
-            // Expose relay socket for the trigger system
+            // Expose relay socket and session ID for the trigger system / spawn
             _relaySocket = sock;
             _relayToken = data.token;
+            _relaySessionId = data.sessionId;
             connectFailureNotified = false;
             setRelayStatus("Connected to Relay");
 

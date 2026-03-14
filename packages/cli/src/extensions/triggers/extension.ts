@@ -18,8 +18,11 @@ export const receivedTriggers = new Map<string, { sourceSessionId: string; type:
 
 const TRIGGER_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
-/** Register a received trigger for response routing. Called by remote.ts on trigger receipt. */
+/** Register a received trigger for response routing. Called by remote.ts on trigger receipt.
+ *  If the triggerId is already tracked (e.g. after escalation re-delivers the same trigger),
+ *  the original sourceSessionId is preserved so responses route back to the real child. */
 export function trackReceivedTrigger(triggerId: string, sourceSessionId: string, type: string): void {
+    if (receivedTriggers.has(triggerId)) return; // preserve original source on re-delivery
     receivedTriggers.set(triggerId, { sourceSessionId, type, trackedAt: Date.now() });
     // Prune stale entries to prevent unbounded growth
     const now = Date.now();
@@ -166,7 +169,9 @@ export const triggersExtension: ExtensionFactory = (pi) => {
                     ts: new Date().toISOString(),
                 },
             });
-            receivedTriggers.delete(params.triggerId);
+            // Don't delete from receivedTriggers — the trigger is still pending
+            // and respond_to_trigger needs the original sourceSessionId to route
+            // the response back to the child (not the parent).
             return { content: [{ type: "text" as const, text: `Trigger ${params.triggerId} escalated to human` }], details: null as any };
         },
         renderCall: () => silent,

@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionFactory } from "@mariozechner/pi-coding-agent";
 import { loadConfig } from "../config.js";
+import { getRelaySessionId } from "./remote.js";
 
 /** Minimal Component that renders nothing — keeps the tool call invisible in the TUI. */
 const silent = { render: (_width: number): string[] => [], invalidate: () => {} };
@@ -142,8 +143,11 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
                 prompt,
             };
 
-            // Automatically link parent→child sessions for the trigger system
-            const ownSessionId = process.env.PIZZAPI_SESSION_ID;
+            // Automatically link parent→child sessions for the trigger system.
+            // Prefer the relay session ID (available for both runner-spawned and
+            // standalone CLI sessions) over the env var, which is only set for
+            // runner-spawned workers.
+            const ownSessionId = getRelaySessionId();
             if (ownSessionId) {
                 body.parentSessionId = ownSessionId;
             }
