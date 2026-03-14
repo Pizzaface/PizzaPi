@@ -446,8 +446,15 @@ export function registerRelayNamespace(io: SocketIOServer): void {
             }
 
             try {
-                // Enforce server-side identity — don't trust client-supplied sourceSessionId
-                trigger.sourceSessionId = sessionId;
+                // For escalations targeting the sender's own session, preserve the
+                // original child sourceSessionId so the viewer can attribute the
+                // escalation to the correct child. For all other triggers, enforce
+                // server-side identity to prevent spoofing.
+                if (trigger.type === "escalate" && targetSessionId === sessionId) {
+                    // Escalation to self — keep original sourceSessionId for viewer attribution
+                } else {
+                    trigger.sourceSessionId = sessionId;
+                }
                 targetSocket.emit("session_trigger" as any, { trigger });
             } catch {
                 socket.emit("session_message_error", {
