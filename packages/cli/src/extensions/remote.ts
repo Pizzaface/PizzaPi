@@ -13,6 +13,7 @@ import type { RemoteExecRequest, RemoteExecResponse } from "./remote-commands.js
 
 import { renderTrigger } from "./triggers/registry.js";
 import { trackReceivedTrigger, receivedTriggers } from "./triggers/extension.js";
+import { messageBus } from "./session-message-bus.js";
 import { io, type Socket } from "socket.io-client";
 import type { RelayClientToServerEvents, RelayServerToClientEvents } from "@pizzapi/protocol";
 
@@ -1873,6 +1874,18 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             connectFailureNotified = false;
             setRelayStatus("Connected to Relay");
 
+            // Wire up the inter-session message bus now that we have a relay connection.
+            messageBus.setOwnSessionId(relaySessionId);
+            messageBus.setSendFn((targetSessionId: string, message: string) => {
+                if (!relay || !sioSocket?.connected) return false;
+                sioSocket.emit("session_message", {
+                    token: relay.token,
+                    targetSessionId,
+                    message,
+                });
+                return true;
+            });
+
             // Log parent-child link confirmation from server
             if (data.parentSessionId) {
                 console.log(`pizzapi: linked as child of parent session ${data.parentSessionId}`);
@@ -1930,6 +1943,14 @@ export const remoteExtension: ExtensionFactory = (pi) => {
 
         sock.on("model_set", (data) => {
             void setModelFromWeb(data.provider, data.modelId);
+        });
+
+        sock.on("session_message", (data) => {
+            messageBus.receive({
+                fromSessionId: data.fromSessionId,
+                message: data.message,
+                ts: typeof data.ts === "string" ? data.ts : new Date().toISOString(),
+            });
         });
 
         // ── session_trigger — receive triggers from child sessions ─────────
@@ -2039,6 +2060,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         stopHeartbeat();
         cancelPendingAskUserQuestion();
         cancelPendingPlanMode();
+        messageBus.setSendFn(null);
         // Clear MCP OAuth relay context before tearing down the socket,
         // since removeAllListeners() would prevent the disconnect handler
         // from clearing it automatically.

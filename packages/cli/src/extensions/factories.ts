@@ -5,6 +5,7 @@ import { initialPromptExtension } from "./initial-prompt.js";
 import { mcpExtension } from "./mcp-extension.js";
 import { remoteExtension } from "./remote.js";
 import { restartExtension } from "./restart.js";
+
 import { sessionMessagingExtension } from "./session-messaging.js";
 import { setSessionNameExtension } from "./set-session-name.js";
 import { spawnSessionExtension } from "./spawn-session.js";
