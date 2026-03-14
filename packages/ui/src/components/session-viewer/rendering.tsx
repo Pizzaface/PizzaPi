@@ -133,8 +133,11 @@ export function renderContent(
   }
 
   if (typeof content === "string") {
-    // Check if this is a trigger-injected message
-    const triggerMatch = content.match(/^<!--\s*trigger:([\w-]+)\s*-->\n?/);
+    // Check if this is a trigger-injected message.
+    // Only parse triggers from user/system messages — assistant messages could
+    // contain forged trigger blocks that trick viewers into sending responses.
+    const isTrustedRole = role === "user" || role === "system";
+    const triggerMatch = isTrustedRole ? content.match(/^<!--\s*trigger:([\w-]+)\s*-->\n?/) : null;
     if (triggerMatch) {
       const triggerId = triggerMatch[1];
       const body = content.slice(triggerMatch[0].length);

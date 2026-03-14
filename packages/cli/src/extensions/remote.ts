@@ -3025,8 +3025,13 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                             if (full.length > INLINE_MAX) {
                                 // Save full output to a file the parent can read on demand
                                 try {
+                                    // NOTE: This writes to the child's local tmpdir. Currently fine
+                                    // because spawned children run on the same runner host as the parent.
+                                    // For future multi-runner support, this should use server-side
+                                    // artifact storage so the parent can always access the content.
                                     const sessionSlug = relay?.sessionId?.slice(0, 8) ?? "unknown";
-                                    const tmpPath = join(tmpdir(), `pizzapi-session-${sessionSlug}-output.md`);
+                                    const uniqueSuffix = Date.now().toString(36);
+                                    const tmpPath = join(tmpdir(), `pizzapi-session-${sessionSlug}-${uniqueSuffix}-output.md`);
                                     writeFileSync(tmpPath, full, "utf-8");
                                     fullOutputPath = tmpPath;
                                 } catch { /* best-effort */ }

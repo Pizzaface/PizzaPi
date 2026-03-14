@@ -1075,7 +1075,9 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                             const childCount = childrenByParent.get(s.sessionId) ?? 0;
                                                             if (childCount > 0) {
                                                               return (
-                                                                <button
+                                                                <span
+                                                                  role="button"
+                                                                  tabIndex={-1}
                                                                   onClick={(e) => {
                                                                     e.stopPropagation();
                                                                     setExpandedNodeIds(prev => {
@@ -1088,7 +1090,22 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                                       return next;
                                                                     });
                                                                   }}
-                                                                  className="flex-shrink-0 text-sidebar-foreground/50 hover:text-sidebar-foreground/70 transition-colors"
+                                                                  onKeyDown={(e) => {
+                                                                    if (e.key === "Enter" || e.key === " ") {
+                                                                      e.preventDefault();
+                                                                      e.stopPropagation();
+                                                                      setExpandedNodeIds(prev => {
+                                                                        const next = new Set(prev);
+                                                                        if (next.has(s.sessionId)) {
+                                                                          next.delete(s.sessionId);
+                                                                        } else {
+                                                                          next.add(s.sessionId);
+                                                                        }
+                                                                        return next;
+                                                                      });
+                                                                    }
+                                                                  }}
+                                                                  className="flex-shrink-0 text-sidebar-foreground/50 hover:text-sidebar-foreground/70 transition-colors cursor-pointer"
                                                                   aria-label={isExpanded ? "Collapse" : "Expand"}
                                                                 >
                                                                   {isExpanded ? (
@@ -1096,7 +1113,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                                   ) : (
                                                                     <ChevronRight className="h-4 w-4" />
                                                                   )}
-                                                                </button>
+                                                                </span>
                                                               );
                                                             }
                                                             return null;

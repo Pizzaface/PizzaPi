@@ -468,7 +468,13 @@ export function TriggerCard({
         />
       );
     default:
-      // Unknown trigger type — render as plain message
-      return null;
+      // Unknown trigger type — render as plain text fallback so
+      // the message is still visible in the UI
+      return (
+        <div className="rounded-lg border p-4 bg-muted/30">
+          <p className="text-xs text-muted-foreground mb-2">Unknown trigger type: {parsed.type ?? "unknown"}</p>
+          <pre className="text-sm whitespace-pre-wrap break-words">{body}</pre>
+        </div>
+      );
   }
 }

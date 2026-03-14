@@ -17,6 +17,7 @@ import {
     registerTuiSession,
     getSharedSession,
     getLocalTuiSocket,
+    emitToRelaySession,
     updateSessionState,
     updateSessionHeartbeat,
     touchSessionActivity,
@@ -29,6 +30,7 @@ import {
     setPushPendingQuestion,
     clearPushPendingQuestion,
     deleteRunnerAssociation,
+    getChildSessions,
 } from "../sio-state.js";
 import {
     notifyAgentFinished,
@@ -483,21 +485,37 @@ export function registerRelayNamespace(io: SocketIOServer): void {
                 return;
             }
 
+            // Enforce parent-child linkage: the sender must be the target's parent,
+            // or the target must be a child of the sender. This prevents any relay
+            // client under the same account from injecting trigger responses into
+            // unrelated child sessions.
+            const isParentOfTarget = targetSession.parentSessionId === socket.data.sessionId;
+            const isChildOfSender = senderSession.parentSessionId === targetSessionId;
+            if (!isParentOfTarget && !isChildOfSender) {
+                // Also check the Redis children set as a fallback
+                const children = await getChildSessions(socket.data.sessionId);
+                if (!children.includes(targetSessionId)) {
+                    socket.emit("error", { message: "Sender is not linked to target session" });
+                    return;
+                }
+            }
+
+            const triggerPayload = { triggerId, response, ...(action ? { action } : {}) };
+            // Try local socket first, fall back to relay room for cross-node delivery
             const targetSocket = getLocalTuiSocket(targetSessionId);
-            if (!targetSocket) {
+            if (targetSocket) {
+                try {
+                    targetSocket.emit("trigger_response" as any, triggerPayload);
+                } catch {
+                    socket.emit("session_message_error", {
+                        targetSessionId,
+                        error: "Failed to deliver trigger response to target session",
+                    });
+                }
+            } else if (!emitToRelaySession(targetSessionId, "trigger_response", triggerPayload)) {
                 socket.emit("session_message_error", {
                     targetSessionId,
                     error: `Target session ${targetSessionId} is not connected`,
-                });
-                return;
-            }
-
-            try {
-                targetSocket.emit("trigger_response" as any, { triggerId, response, ...(action ? { action } : {}) });
-            } catch {
-                socket.emit("session_message_error", {
-                    targetSessionId,
-                    error: "Failed to deliver trigger response to target session",
                 });
             }
         });

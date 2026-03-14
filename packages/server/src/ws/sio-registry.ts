@@ -303,10 +303,20 @@ export async function registerTuiSession(
 
     // Resolve parentSessionId: prefer the value from registration opts (sent
     // by the CLI), fall back to any pre-seeded value in Redis (legacy path).
-    const resolvedParentSessionId =
+    let resolvedParentSessionId =
         opts.parentSessionId ??
         existing?.parentSessionId ??
         null;
+
+    // Validate parent session exists and belongs to the same user.
+    // If the parent disconnected or the ID is stale, clear it to avoid
+    // dangling trigger flows that would time out.
+    if (resolvedParentSessionId) {
+        const parentSession = await getSession(resolvedParentSessionId);
+        if (!parentSession || parentSession.userId !== userId) {
+            resolvedParentSessionId = null;
+        }
+    }
 
     const sessionData: RedisSessionData = {
         sessionId,

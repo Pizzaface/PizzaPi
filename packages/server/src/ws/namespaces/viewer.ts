@@ -21,6 +21,7 @@ import {
     getSessionSeq,
     sendSnapshotToViewer,
     getLocalTuiSocket,
+    emitToRelaySession,
 } from "../sio-registry.js";
 import { getPersistedRelaySessionSnapshot } from "../../sessions/store.js";
 import { getCachedRelayEvents } from "../../sessions/redis.js";
@@ -310,27 +311,34 @@ export function registerViewerNamespace(io: SocketIOServer): void {
                     // Target session doesn't exist or belongs to a different user — ignore.
                     return;
                 }
+                const triggerPayload = {
+                    triggerId,
+                    response,
+                    ...(action ? { action } : {}),
+                };
+                // Try local socket first, fall back to relay room for cross-node delivery
                 const childSocket = getLocalTuiSocket(targetSessionId);
                 if (childSocket) {
-                    childSocket.emit("trigger_response" as string, {
-                        triggerId,
-                        response,
-                        ...(action ? { action } : {}),
-                    });
-                    return;
+                    childSocket.emit("trigger_response" as string, triggerPayload);
+                } else {
+                    emitToRelaySession(targetSessionId, "trigger_response", triggerPayload);
                 }
+                return;
             }
 
-            // Fallback: forward to the parent session's TUI socket
-            const tuiSocket = getLocalTuiSocket(sessionId);
-            if (!tuiSocket) return;
-
-            tuiSocket.emit("trigger_response" as string, {
+            // Fallback: forward to the parent session's TUI socket (or relay room)
+            const triggerPayloadForParent = {
                 triggerId,
                 response,
                 ...(action ? { action } : {}),
                 targetSessionId,
-            });
+            };
+            const tuiSocket = getLocalTuiSocket(sessionId);
+            if (tuiSocket) {
+                tuiSocket.emit("trigger_response" as string, triggerPayloadForParent);
+            } else {
+                emitToRelaySession(sessionId, "trigger_response", triggerPayloadForParent);
+            }
         });
 
         // ── disconnect ───────────────────────────────────────────────────────
