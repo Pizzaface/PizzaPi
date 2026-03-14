@@ -241,13 +241,14 @@ export function registerRelayNamespace(io: SocketIOServer): void {
             const isEphemeral = data.ephemeral !== false;
             const collabMode = data.collabMode !== false;
 
-            const { sessionId, token, shareUrl } = await registerTuiSession(socket, cwd, {
+            const { sessionId, token, shareUrl, parentSessionId } = await registerTuiSession(socket, cwd, {
                 sessionId: data.sessionId,
                 isEphemeral,
                 collabMode,
                 sessionName: data.sessionName,
                 userId: socket.data.userId,
                 userName: (socket.data as RelaySocketData & { userName?: string }).userName,
+                parentSessionId: data.parentSessionId ?? undefined,
             });
 
             socket.data.sessionId = sessionId;
@@ -261,6 +262,7 @@ export function registerRelayNamespace(io: SocketIOServer): void {
                 shareUrl,
                 isEphemeral,
                 collabMode,
+                parentSessionId,
             });
         });
 
@@ -383,6 +385,92 @@ export function registerRelayNamespace(io: SocketIOServer): void {
                 socket.emit("session_message_error", {
                     targetSessionId,
                     error: "Failed to deliver message to target session",
+                });
+            }
+        });
+
+        // ── session_trigger — child-to-parent trigger routing ────────────────
+        socket.on("session_trigger", async (data) => {
+            const sessionId = socket.data.sessionId;
+            if (!sessionId || data?.token !== socket.data.token) {
+                socket.emit("error", { message: "Invalid token" });
+                return;
+            }
+
+            const trigger = data?.trigger;
+            if (!trigger?.targetSessionId || !trigger?.triggerId) {
+                socket.emit("error", { message: "session_trigger requires trigger with targetSessionId and triggerId" });
+                return;
+            }
+
+            const targetSessionId = trigger.targetSessionId;
+
+            // Find the target session's relay socket (same pattern as session_message)
+            const targetSession = await getSharedSession(targetSessionId);
+            if (!targetSession) {
+                socket.emit("session_message_error", {
+                    targetSessionId,
+                    error: `Target session ${targetSessionId} is not connected`,
+                });
+                return;
+            }
+
+            const targetSocket = getLocalTuiSocket(targetSessionId);
+            if (!targetSocket) {
+                socket.emit("session_message_error", {
+                    targetSessionId,
+                    error: `Target session ${targetSessionId} is not connected`,
+                });
+                return;
+            }
+
+            try {
+                // Enforce server-side identity — don't trust client-supplied sourceSessionId
+                trigger.sourceSessionId = sessionId;
+                targetSocket.emit("session_trigger" as any, { trigger });
+            } catch {
+                socket.emit("session_message_error", {
+                    targetSessionId,
+                    error: "Failed to deliver trigger to target session",
+                });
+            }
+        });
+
+        // ── trigger_response — parent-to-child response routing ────────────
+        socket.on("trigger_response" as any, async (data: {
+            token: string;
+            triggerId: string;
+            response: string;
+            action?: string;
+            targetSessionId: string;
+        }) => {
+            const { triggerId, response, action, targetSessionId } = data ?? {};
+            if (!triggerId || !response || !targetSessionId) {
+                socket.emit("error", { message: "trigger_response requires triggerId, response, and targetSessionId" });
+                return;
+            }
+
+            // Validate sender is authenticated and token matches
+            if (!socket.data.sessionId || data?.token !== socket.data.token) {
+                socket.emit("error", { message: "Invalid token" });
+                return;
+            }
+
+            const targetSocket = getLocalTuiSocket(targetSessionId);
+            if (!targetSocket) {
+                socket.emit("session_message_error", {
+                    targetSessionId,
+                    error: `Target session ${targetSessionId} is not connected`,
+                });
+                return;
+            }
+
+            try {
+                targetSocket.emit("trigger_response" as any, { triggerId, response, ...(action ? { action } : {}) });
+            } catch {
+                socket.emit("session_message_error", {
+                    targetSessionId,
+                    error: "Failed to deliver trigger response to target session",
                 });
             }
         });

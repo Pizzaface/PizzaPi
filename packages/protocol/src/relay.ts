@@ -16,6 +16,8 @@ export interface RelayClientToServerEvents {
     ephemeral?: boolean;
     collabMode?: boolean;
     sessionName?: string | null;
+    /** Parent session ID for child→parent linking (trigger system). */
+    parentSessionId?: string | null;
   }) => void;
 
   /** TUI forwards an agent event (heartbeat, message_update, etc.) */
@@ -47,6 +49,32 @@ export interface RelayClientToServerEvents {
     targetSessionId: string;
     message: string;
   }) => void;
+
+  /** Child session fires a trigger destined for its parent */
+  session_trigger: (data: {
+    token: string;
+    trigger: {
+      type: string;
+      sourceSessionId: string;
+      sourceSessionName?: string;
+      targetSessionId: string;
+      payload: Record<string, unknown>;
+      deliverAs: "steer" | "followUp";
+      expectsResponse: boolean;
+      triggerId: string;
+      timeoutMs?: number;
+      ts: string;
+    };
+  }) => void;
+
+  /** Parent sends a trigger response back to the child */
+  trigger_response: (data: {
+    token: string;
+    triggerId: string;
+    response: string;
+    action?: string;
+    targetSessionId: string;
+  }) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -61,6 +89,8 @@ export interface RelayServerToClientEvents {
     shareUrl: string;
     isEphemeral: boolean;
     collabMode: boolean;
+    /** Confirmed parent session ID (null if not a child session). */
+    parentSessionId?: string | null;
   }) => void;
 
   /** Acknowledges receipt of an event with its sequence number */
@@ -104,6 +134,28 @@ export interface RelayServerToClientEvents {
   session_message_error: (data: {
     targetSessionId: string;
     error: string;
+  }) => void;
+
+  /** Delivers a trigger from a child to the target session */
+  session_trigger: (data: {
+    trigger: {
+      type: string;
+      sourceSessionId: string;
+      sourceSessionName?: string;
+      targetSessionId: string;
+      payload: Record<string, unknown>;
+      deliverAs: "steer" | "followUp";
+      expectsResponse: boolean;
+      triggerId: string;
+      timeoutMs?: number;
+      ts: string;
+    };
+  }) => void;
+
+  /** Delivers a trigger response back to the source child */
+  trigger_response: (data: {
+    triggerId: string;
+    response: string;
   }) => void;
 
   /** Notifies that a session has expired */

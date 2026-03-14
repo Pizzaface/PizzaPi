@@ -117,6 +117,41 @@ describe("scanAgentsDir", () => {
         writeFileSync(join(dir, "notes.txt"), "not an agent", "utf-8");
         expect(scanAgentsDir(dir)).toEqual([]);
     });
+
+    test("skips broken symlinks without crashing other agents", () => {
+        writeAgentFile(dir, "good-agent", AGENT_WITH_DESCRIPTION);
+        const brokenLink = join(dir, "broken.md");
+        try {
+            require("node:fs").symlinkSync("/nonexistent/path/file.md", brokenLink);
+        } catch {
+            // Skip if symlinks not supported
+            return;
+        }
+        const result = scanAgentsDir(dir);
+        expect(result).toHaveLength(1);
+        expect(result[0].name).toBe("good-agent");
+    });
+
+    test("handles binary content in .md files gracefully", () => {
+        writeAgentFile(dir, "valid", AGENT_WITH_DESCRIPTION);
+        // Write binary garbage as a .md file
+        const binaryPath = join(dir, "binary.md");
+        require("node:fs").writeFileSync(binaryPath, Buffer.from([0x00, 0x01, 0x02, 0xFF, 0xFE]));
+        const result = scanAgentsDir(dir);
+        expect(result).toHaveLength(2);
+        // Both should load — binary one just won't have a description
+        const valid = result.find(a => a.name === "valid");
+        expect(valid?.description).toBe("A helpful agent for testing.");
+    });
+
+    test("handles malformed frontmatter without crashing", () => {
+        writeAgentFile(dir, "good", AGENT_WITH_DESCRIPTION);
+        writeAgentFile(dir, "bad-frontmatter", "---\nthis is not: [valid: yaml: {{{\n---\n# Bad");
+        const result = scanAgentsDir(dir);
+        expect(result).toHaveLength(2);
+        const good = result.find(a => a.name === "good");
+        expect(good?.description).toBe("A helpful agent for testing.");
+    });
 });
 
 // ── findAgentDir ──────────────────────────────────────────────────────────────

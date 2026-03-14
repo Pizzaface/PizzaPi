@@ -13,6 +13,7 @@ import {
     recordRunnerSession,
     registerTerminal,
 } from "../ws/sio-registry.js";
+import { getSession } from "../ws/sio-state.js";
 import { sendSkillCommand, sendAgentCommand, sendRunnerCommand } from "../ws/namespaces/runner.js";
 import { waitForSpawnAck } from "../ws/runner-control.js";
 import { requireSession, validateApiKey } from "../middleware.js";
@@ -71,6 +72,8 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
                 }
                 : undefined;
 
+        const requestedParentSessionId = typeof body.parentSessionId === "string" ? body.parentSessionId : undefined;
+
         if (!requestedRunnerId) {
             return Response.json({ error: "Missing runnerId" }, { status: 400 });
         }
@@ -104,6 +107,17 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         let hiddenModels: string[] = [];
         try { hiddenModels = await getHiddenModels(identity.userId); } catch {}
 
+        // Validate parentSessionId ownership BEFORE forwarding to the runner.
+        // The worker activates child trigger mode from the parent ID it receives,
+        // so we must never send an unverified/cross-user parent ID.
+        let validatedParentSessionId: string | undefined;
+        if (requestedParentSessionId) {
+            const parentSession = await getSession(requestedParentSessionId);
+            if (parentSession && parentSession.userId === identity.userId) {
+                validatedParentSessionId = requestedParentSessionId;
+            }
+        }
+
         try {
             runnerSocket.emit("new_session", {
                 sessionId,
@@ -112,6 +126,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
                 ...(requestedModel ? { model: requestedModel } : {}),
                 ...(hiddenModels.length > 0 ? { hiddenModels } : {}),
                 ...(requestedAgent ? { agent: requestedAgent } : {}),
+                ...(validatedParentSessionId ? { parentSessionId: validatedParentSessionId } : {}),
             });
         } catch {
             return Response.json({ error: "Failed to send spawn request to runner" }, { status: 502 });
@@ -124,6 +139,11 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
 
         await recordRunnerSession(runnerId, sessionId);
         await linkSessionToRunner(runnerId, sessionId);
+
+        // Parent-child linking is now handled at registration time:
+        // the worker sends parentSessionId in its relay `register` event,
+        // and registerTuiSession stores the relationship + calls addChildSession.
+        // No pre-seeding needed — eliminates the race condition.
 
         if (requestedCwd) {
             void recordRecentFolder(identity.userId, runnerId, requestedCwd).catch(() => {});

@@ -1,6 +1,6 @@
 ---
 name: adr-architect
-description: Use this agent when you need to create Architecture Decision Records (ADRs) for new system components, integrations, or significant technical decisions. This agent researches the codebase, analyzes existing ADRs for patterns, uses requirements generation for deep technical research, and produces a coherent set of ADRs that align with existing architecture.
+description: "Create Architecture Decision Records (ADRs) — researches the codebase, analyzes existing ADRs, and produces coherent records for new components and technical decisions."
 ---
 
 <example>

@@ -159,23 +159,28 @@ The CLI appends a built-in system prompt (`BUILTIN_SYSTEM_PROMPT` in `packages/c
 
 ## Spawning Sub-Agents
 
-When spawning agents, **always expect a response** and **ensure your sub-agents know how to respond.**
+Spawned sessions are **automatically linked** — child events (questions, plans, completion) surface as trigger messages in the parent's conversation. No manual session ID plumbing needed.
 
-- Always include your session ID in the sub-agent's prompt so it can `send_message` back to you.
-- Use `wait_for_message` (or `check_messages` for polling) to receive the sub-agent's result.
-- The sub-agent's prompt must be **self-contained** — it has no context from the parent session.
-- Explicitly instruct sub-agents to report their results back via `send_message` when done.
+**Handling child triggers:**
+- Trigger messages arrive with a `<!-- trigger:ID -->` prefix and instructions.
+- Use `respond_to_trigger(triggerId, response)` to answer a child's question or approve a plan.
+- Use `escalate_trigger(triggerId)` to pass a trigger to the human viewer.
+- Use `tell_child(sessionId, message)` to proactively message a child session.
 
 **Example pattern:**
 ```
-1. Get your own session ID with `get_session_id`
-2. Include it in the spawn prompt: "When done, send results to session <ID> using send_message."
-3. After spawning, call `wait_for_message` to block until the sub-agent replies.
+1. Spawn a session with `spawn_session` (child is automatically linked)
+2. When the child calls AskUserQuestion or plan_mode, a trigger appears in your conversation
+3. Respond with `respond_to_trigger(triggerId, "your answer")`
+4. When the child finishes, a session_complete trigger arrives — acknowledge or follow up
 ```
 
+**For non-linked sessions** (e.g., two sessions that weren't spawned by each other):
+- Use `send_message`/`wait_for_message` for manual inter-session messaging.
+- Include session IDs explicitly when coordinating.
+
 **Rules:**
-- Never fire-and-forget a sub-agent — always await a response.
-- If a sub-agent may take a long time, use `check_messages` to poll between other work.
+- The `subagent` tool handles its own communication — triggers only apply to `spawn_session`.
 - Sub-agents must follow the same coding standards (testing, typecheck, etc.) as the parent.
 
 ---
