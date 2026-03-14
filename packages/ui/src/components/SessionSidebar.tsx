@@ -550,6 +550,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                         model: s.model ?? null,
                         runnerId: s.runnerId ?? null,
                         runnerName: s.runnerName ?? null,
+                        parentSessionId: s.parentSessionId ?? null,
                     },
                 ];
             });
