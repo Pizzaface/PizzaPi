@@ -1930,8 +1930,12 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 : data.deliverAs === "steer" ? "steer" as const
                 : undefined;
             void (async () => {
-                const message = await buildUserMessageFromRemoteInput(inputText, attachments);
-                pi.sendUserMessage(message as any, deliverAs ? { deliverAs } : undefined);
+                try {
+                    const message = await buildUserMessageFromRemoteInput(inputText, attachments);
+                    pi.sendUserMessage(message as any, deliverAs ? { deliverAs } : undefined);
+                } catch (err) {
+                    console.error(`pizzapi: failed to deliver remote input: ${err instanceof Error ? err.message : String(err)}`);
+                }
             })();
         });
 
@@ -2118,9 +2122,43 @@ export const remoteExtension: ExtensionFactory = (pi) => {
 
     let sessionCompleteFired = false;
 
+    // ── Follow-up grace period ────────────────────────────────────────────────
+    // After firing session_complete, child sessions keep their relay socket
+    // alive for FOLLOWUP_GRACE_MS so the parent can send follow-up work via
+    // respond_to_trigger(action: "followUp") or tell_child.  If no new turn
+    // starts within the window the session shuts down automatically.
+    const FOLLOWUP_GRACE_MS = 10 * 60 * 1000; // 10 minutes
+    let followUpGraceTimer: ReturnType<typeof setTimeout> | null = null;
+
+    function clearFollowUpGrace() {
+        if (followUpGraceTimer !== null) {
+            clearTimeout(followUpGraceTimer);
+            followUpGraceTimer = null;
+        }
+    }
+
+    /** Start (or restart) the follow-up grace period.  When it expires the
+     *  session shuts down via ctx.shutdown(). */
+    function startFollowUpGrace(ctx: { shutdown: () => void }) {
+        clearFollowUpGrace();
+        console.log(`pizzapi: waiting ${FOLLOWUP_GRACE_MS / 1000}s for parent follow-up before shutting down`);
+        followUpGraceTimer = setTimeout(() => {
+            followUpGraceTimer = null;
+            console.log("pizzapi: follow-up grace period expired — shutting down");
+            ctx.shutdown();
+        }, FOLLOWUP_GRACE_MS);
+        // Don't let the grace timer keep the process alive if everything else
+        // has been torn down (e.g. explicit SIGTERM).
+        if (followUpGraceTimer && typeof followUpGraceTimer === "object" && "unref" in followUpGraceTimer) {
+            (followUpGraceTimer as NodeJS.Timeout).unref();
+        }
+    }
+
     // Reset completion latch when a new turn starts (e.g. parent sent follow-up via tell_child)
     pi.on("turn_start", () => {
         sessionCompleteFired = false;
+        // A new turn means a follow-up arrived — cancel the grace timer.
+        clearFollowUpGrace();
     });
 
     /** Emit session_complete trigger to parent (idempotent per turn). */
@@ -2150,6 +2188,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
 
     pi.on("session_shutdown", () => {
         shuttingDown = true;
+        clearFollowUpGrace();
         stopHeartbeat();
         stopSessionNameSync();
         _cliErrorForwarder = null;
@@ -3001,6 +3040,13 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 }
             }
             fireSessionComplete(summary, fullOutputPath);
+
+            // Start grace period so the parent can send follow-up work.
+            // The timer is cancelled if a new turn starts (turn_start handler)
+            // or on explicit shutdown (session_shutdown handler).
+            if (isChildSession) {
+                startFollowUpGrace(ctx);
+            }
         }
     });
     pi.on("turn_start", (event) => forwardEvent(event));
