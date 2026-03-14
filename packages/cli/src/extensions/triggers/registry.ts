@@ -101,8 +101,6 @@ const sessionCompleteRenderer: TriggerRenderer = {
         return [
             `🔗 Child "${name}" completed:`,
             summary,
-            "",
-            `Acknowledge or follow up using \`respond_to_trigger\` with trigger ID \`${trigger.triggerId}\`.`,
         ].join("\n");
     },
     parseResponse(responseText) {
