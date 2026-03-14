@@ -13,3 +13,7 @@
 ## 2025-03-09 - Socket.IO Cluster Network Bottlenecks
 **Learning:** `fetchSockets()` is highly inefficient when only checking for socket presence in a clustered (Redis) environment, as it pulls full `RemoteSocket` objects across the network. `.allSockets()` is deprecated in Socket.IO v4.
 **Action:** Use `adapter.sockets(new Set([roomName]))` directly to efficiently return a `Set` of socket IDs without cross-cluster serialization overhead.
+
+## 2025-03-09 - [Optimize high-frequency event stream bottlenecks]
+**Learning:** In high-frequency real-time event streams (like Socket.IO text deltas in `packages/server/src/ws/namespaces/relay.ts`), failing to early-return before executing asynchronous operations (like Redis `getSharedSession` or `getViewerCount`) causes severe systemic N+1 bottlenecks.
+**Action:** Strictly evaluate simple synchronous conditions (like `event.type`) to short-circuit the function before invoking any expensive I/O operations.

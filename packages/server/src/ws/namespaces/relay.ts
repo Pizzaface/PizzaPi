@@ -153,6 +153,16 @@ async function checkPushNotifications(
     sessionId: string,
     event: Record<string, unknown>,
 ): Promise<void> {
+    // ⚡ Bolt: Fast synchronous check to bypass expensive Redis operations (getSharedSession/getViewerCount)
+    // for high-frequency stream events (like text deltas) that don't trigger push notifications.
+    if (
+        event.type !== "agent_end" &&
+        event.type !== "cli_error" &&
+        !(event.type === "tool_execution_start" && event.toolName === "AskUserQuestion")
+    ) {
+        return;
+    }
+
     const session = await getSharedSession(sessionId);
     const userId = session?.userId;
     if (!userId) return;
