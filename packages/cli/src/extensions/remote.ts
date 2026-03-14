@@ -2978,7 +2978,11 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                             .filter((c: any) => c.type === "text" && c.text)
                             .map((c: any) => c.text);
                         if (textParts.length > 0) {
-                            summary = textParts.join("\n").slice(0, 2000); // cap at 2k chars
+                            const full = textParts.join("\n");
+                            const MAX_SUMMARY = 16_000;
+                            summary = full.length > MAX_SUMMARY
+                                ? full.slice(0, MAX_SUMMARY) + `\n\n[summary truncated — original was ${full.length} chars]`
+                                : full;
                             break;
                         }
                     }
