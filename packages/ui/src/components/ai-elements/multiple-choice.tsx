@@ -145,16 +145,25 @@ export function MultipleChoiceQuestions({
     });
   };
 
-  // Initialize ranked order when the question first renders.
+  // Initialize ranked order for all ranked questions via effect (not during render).
   // Stores origIdx values (indices into q.options) so buildAnswer can look up correctly.
-  const ensureRankedOrder = React.useCallback((qIdx: number, origIndices: number[]) => {
+  React.useEffect(() => {
     setRankedOrders((prev) => {
-      if (prev.has(qIdx)) return prev;
+      let changed = false;
       const next = new Map(prev);
-      next.set(qIdx, [...origIndices]);
-      return next;
+      for (let qIdx = 0; qIdx < questions.length; qIdx++) {
+        const q = questions[qIdx];
+        if (getQuestionType(q) !== "ranked" || next.has(qIdx)) continue;
+        const visibleOrigIndices = q.options
+          .map((option, origIdx) => ({ option, origIdx }))
+          .filter(({ option }) => option.toLowerCase().replace(/[^a-z]/g, "") !== "typeyourown")
+          .map(({ origIdx }) => origIdx);
+        next.set(qIdx, visibleOrigIndices);
+        changed = true;
+      }
+      return changed ? next : prev;
     });
-  }, []);
+  }, [questions, promptKey]);
 
   const handleRankedMove = (qIdx: number, fromPos: number, toPos: number) => {
     setRankedOrders((prev) => {
@@ -343,8 +352,7 @@ export function MultipleChoiceQuestions({
     // Build a lookup from origIdx → visible option for rendering
     const origIdxToVisible = new Map(visibleOptions.map((v) => [v.origIdx, v]));
 
-    // Ensure order is initialized with origIdx values
-    ensureRankedOrder(qIdx, visibleOptions.map((v) => v.origIdx));
+    // Order is initialized by the useEffect above; fallback for first render before effect runs
     const order = rankedOrders.get(qIdx) ?? visibleOptions.map((v) => v.origIdx);
 
     return (
