@@ -121,9 +121,12 @@ export function forwardCliError(message: string, source?: string): void {
 let _relaySocket: Socket<RelayServerToClientEvents, RelayClientToServerEvents> | null = null;
 let _relayToken: string | null = null;
 
-/** Get the active relay socket and token, or null if not connected. */
+/** Get the active relay socket and token, or null if not connected/registered. */
 export function getRelaySocket(): { socket: Socket<RelayServerToClientEvents, RelayClientToServerEvents>; token: string } | null {
-    return _relaySocket?.connected ? { socket: _relaySocket, token: _relayToken ?? "" } : null;
+    // Require both a connected socket AND a valid token. The token is cleared
+    // on disconnect and refreshed on re-registration, so this returns null
+    // during the reconnect window before the server issues a new token.
+    return _relaySocket?.connected && _relayToken ? { socket: _relaySocket, token: _relayToken } : null;
 }
 
 let _relaySessionId: string | null = null;
@@ -2033,6 +2036,10 @@ export const remoteExtension: ExtensionFactory = (pi) => {
 
         sock.on("disconnect", (_reason) => {
             relay = null;
+            // Clear stale token so getRelaySocket() returns null during the
+            // reconnect window (socket connected but not yet re-registered).
+            // The token is refreshed on each `registered` event.
+            _relayToken = null;
             cancelPendingAskUserQuestion();
             cancelPendingPlanMode();
             setRelayStatus(disconnectedStatusText());

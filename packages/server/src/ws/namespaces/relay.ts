@@ -503,16 +503,15 @@ export function registerRelayNamespace(io: SocketIOServer): void {
                 return;
             }
 
-            // Enforce parent-child linkage: the sender must be the target's parent,
-            // or the target must be a child of the sender. This prevents any relay
-            // client under the same account from injecting trigger responses into
-            // unrelated child sessions. We rely solely on the live parentSessionId
-            // field rather than the Redis children set, which can contain stale
-            // entries from sessions that ended without cleanup.
+            // Enforce parent→child direction: trigger_response should only flow
+            // from a parent to its child. The reverse direction (child→parent) is
+            // not needed — children emit session_trigger to parents, and parents
+            // respond with trigger_response to children. Allowing child→parent
+            // would let a sibling session inject responses into another child's
+            // pending trigger through the parent's forwarding handler.
             const isParentOfTarget = targetSession.parentSessionId === socket.data.sessionId;
-            const isChildOfSender = senderSession.parentSessionId === targetSessionId;
-            if (!isParentOfTarget && !isChildOfSender) {
-                socket.emit("error", { message: "Sender is not linked to target session" });
+            if (!isParentOfTarget) {
+                socket.emit("error", { message: "Sender is not the parent of the target session" });
                 return;
             }
 
