@@ -635,6 +635,10 @@ After completing a step, include a [DONE:n] tag in your response (e.g. [DONE:1])
         if (choice?.startsWith("Execute")) {
             planModeEnabled = false;
             executionMode = todoItems.length > 0;
+            // Lift sandbox read-only overlay so execution can write files
+            if (isSandboxActive()) {
+                setReadOnlyOverlay(false);
+            }
             syncModuleState();
             _onPlanModeChange?.(false);
 
@@ -696,6 +700,12 @@ After completing a step, include a [DONE:n] tag in your response (e.g. [DONE:1])
             markCompletedSteps(allText, todoItems);
         }
 
+        // Re-apply sandbox overlay to match restored plan mode state.
+        // On resume with plan mode enabled, the overlay must be re-activated;
+        // on resume with plan mode off, ensure it's cleared.
+        if (isSandboxActive()) {
+            setReadOnlyOverlay(planModeEnabled);
+        }
         syncModuleState();
     });
 
@@ -706,6 +716,12 @@ After completing a step, include a [DONE:n] tag in your response (e.g. [DONE:1])
         todoItems = [];
         planModeContextSent = false;
         _pendingContextClear = false;
+        // Clear sandbox read-only overlay so the new session starts with full
+        // write access. Without this, a previous session's plan mode leaks
+        // read-only restrictions into the next session.
+        if (wasEnabled && isSandboxActive()) {
+            setReadOnlyOverlay(false);
+        }
         syncModuleState();
         if (wasEnabled) {
             _onPlanModeChange?.(false);
