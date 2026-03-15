@@ -1,0 +1,288 @@
+---
+title: Agent Sandbox
+description: OS-level sandboxing for agent tool execution — filesystem and network restrictions.
+sidebar:
+  order: 11
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+PizzaPi can enforce OS-level sandboxing around every tool call the agent makes — bash commands, file reads/writes, and MCP server interactions. This prevents prompt injections or model hallucinations from accessing sensitive files, exfiltrating data, or damaging your system.
+
+The sandbox is powered by [Anthropic's `sandbox-runtime`](https://github.com/anthropic-experimental/sandbox-runtime), which uses **macOS `sandbox-exec`** and **Linux `bubblewrap` + seccomp** to enforce restrictions at the kernel level.
+
+---
+
+## Sandbox Modes
+
+PizzaPi provides three preset modes. The default is `basic`.
+
+| Mode | Filesystem | Network | Summary |
+|------|-----------|---------|---------|
+| `none` | Unrestricted | Unrestricted | Sandbox disabled. All tools run directly on the host. |
+| `basic` | Protected ✅ | Unrestricted | Blocks reads/writes of sensitive dotfiles. Network is unrestricted. **(default)** |
+| `full` | Protected ✅ | Deny-all by default ✅ | Full enforcement. Network is blocked unless you explicitly allow domains. |
+
+Configure the mode in `~/.pizzapi/config.json`:
+
+```json
+{
+  "sandbox": {
+    "mode": "full"
+  }
+}
+```
+
+Or via CLI flag:
+
+```bash
+pizza --sandbox full
+pizza --sandbox basic
+pizza --sandbox none
+```
+
+Or environment variable:
+
+```bash
+PIZZAPI_SANDBOX=full pizza
+PIZZAPI_NO_SANDBOX=1 pizza   # shorthand for none
+```
+
+---
+
+## What `basic` protects
+
+The `basic` preset blocks the most common exfiltration targets:
+
+| Category | Protected paths |
+|----------|----------------|
+| **Read blocked** | `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config/gcloud`, `~/.docker/config.json`, browser data dirs |
+| **Write blocked** | `.env`, `.env.local`, `~/.ssh` |
+| **Write allowed** | Current working directory (`.`), `/tmp` |
+
+Network access is **unrestricted** in `basic` mode — the agent can connect to any host.
+
+---
+
+## What `full` adds
+
+The `full` preset adds network enforcement on top of `basic`:
+
+- **Network deny-all by default** — all outbound connections are blocked unless you add `allowedDomains`.
+- Same filesystem protections as `basic`.
+
+To open specific domains in `full` mode, add overrides:
+
+```json
+{
+  "sandbox": {
+    "mode": "full",
+    "network": {
+      "allowedDomains": [
+        "*.github.com",
+        "api.anthropic.com",
+        "registry.npmjs.org"
+      ]
+    }
+  }
+}
+```
+
+---
+
+## Overrides
+
+Any field you add under `sandbox` is a **srt-native override** merged on top of the preset. The format matches [`~/.srt-settings.json`](https://github.com/anthropic-experimental/sandbox-runtime) exactly.
+
+### Filesystem overrides
+
+```json
+{
+  "sandbox": {
+    "mode": "basic",
+    "filesystem": {
+      "denyRead": ["~/.kube", "~/.terraform"],
+      "allowWrite": [".", "/tmp", "~/my-project"],
+      "denyWrite": [".env.production"]
+    }
+  }
+}
+```
+
+- **`denyRead`** — additional paths to block from reading (merged with preset)
+- **`allowWrite`** — paths the agent may write to (replaces preset when specified)
+- **`denyWrite`** — additional paths to block from writing (merged with preset)
+
+### Network overrides
+
+```json
+{
+  "sandbox": {
+    "mode": "full",
+    "network": {
+      "allowedDomains": ["*.github.com", "api.example.com"],
+      "deniedDomains": ["ads.example.com"],
+      "allowLocalBinding": true,
+      "allowUnixSockets": ["/var/run/docker.sock"]
+    }
+  }
+}
+```
+
+- **`allowedDomains`** — domains the agent can reach (allow-only; `[]` = deny all)
+- **`deniedDomains`** — domains to explicitly block
+- **`allowLocalBinding`** — allow the process to bind local ports (default: `true`)
+- **`allowUnixSockets`** — Unix socket paths to allow (blocked by default)
+- **`allowAllUnixSockets`** — disable Unix socket blocking entirely
+
+<Aside type="tip">
+  Setting `network.allowedDomains` in `basic` mode **opts in to network sandboxing** for that session — you don't need to use `full` mode if you just want to restrict one session's network access.
+</Aside>
+
+### Other srt options
+
+These pass through directly to `sandbox-runtime`:
+
+```json
+{
+  "sandbox": {
+    "mode": "basic",
+    "mandatoryDenySearchDepth": 5,
+    "enableWeakerNetworkIsolation": true,
+    "allowPty": true,
+    "ignoreViolations": {
+      "jest": ["/tmp"]
+    }
+  }
+}
+```
+
+See the [srt documentation](https://github.com/anthropic-experimental/sandbox-runtime#configuration) for details on each option.
+
+---
+
+## SSH Agent Detection
+
+The sandbox automatically detects your SSH agent socket via `$SSH_AUTH_SOCK` and adds it to the Unix socket allowlist. This means `git push`, `git pull`, and other SSH operations work transparently inside the sandbox.
+
+---
+
+## Merge Semantics (project vs global config)
+
+When both global (`~/.pizzapi/config.json`) and project (`.pizzapi/config.json`) configs exist:
+
+| Field | Merge behavior |
+|-------|----------------|
+| `mode` | Project can only escalate (`none → basic → full`), never weaken |
+| `filesystem.denyRead` | Union — project adds more denials, never removes global ones |
+| `filesystem.denyWrite` | Union — same |
+| `filesystem.allowWrite` | Intersection — project can only narrow, never widen |
+| `network.allowedDomains` | Intersection — project can only narrow |
+| `network.deniedDomains` | Union — project adds more denials |
+
+<Aside type="caution">
+  Project-local configs **cannot weaken** the global sandbox. A malicious repo cannot disable your protections.
+</Aside>
+
+---
+
+## Platform Support
+
+| Platform | Enforcement | Status |
+|----------|-------------|--------|
+| **macOS** | `sandbox-exec` (built-in) | ✅ Fully supported |
+| **Linux** | `bubblewrap` + seccomp | ✅ Supported — requires `bubblewrap` and `socat` |
+| **Windows** | — | ⚠️ Graceful degradation (sandbox disabled) |
+
+On Linux, install dependencies:
+
+```bash
+sudo apt install bubblewrap socat
+```
+
+On unsupported platforms, the sandbox initializes but is inactive — all tools execute without restrictions.
+
+---
+
+## Violation Logging
+
+When the sandbox blocks an operation, it records a **violation event**:
+
+- Timestamp
+- Operation (`read` / `write`)
+- Target path
+- Reason for denial
+
+Violations are stored in a ring buffer (100 entries max). In sessions connected to the PizzaPi relay, violations are forwarded as `sandbox:violation` events visible in the web UI.
+
+Use the `/sandbox` slash command in a session to view status and recent violations:
+
+```
+/sandbox           # status overview
+/sandbox violations  # full violation log
+/sandbox config     # show resolved config
+```
+
+---
+
+## Troubleshooting
+
+### "Sandbox blocked: Read denied"
+
+The agent tried to read a file in `denyRead`. To allow it, remove the path from your config's `denyRead`, or narrow the deny rule:
+
+```json
+{
+  "sandbox": {
+    "filesystem": {
+      "denyRead": []
+    }
+  }
+}
+```
+
+<Aside type="caution">
+  Think carefully before removing default deny rules — they protect your most sensitive files.
+</Aside>
+
+### "Sandbox blocked: Write denied"
+
+The agent tried to write outside `allowWrite`. Add the path:
+
+```json
+{
+  "sandbox": {
+    "filesystem": {
+      "allowWrite": [".", "/tmp", "/custom/output"]
+    }
+  }
+}
+```
+
+### Network blocked in `full` mode
+
+Add the domain to `allowedDomains`:
+
+```json
+{
+  "sandbox": {
+    "mode": "full",
+    "network": {
+      "allowedDomains": ["*.github.com", "api.example.com"]
+    }
+  }
+}
+```
+
+### Linux: "bubblewrap not found"
+
+```bash
+sudo apt install bubblewrap socat
+```
+
+### "Sandbox init failed, continuing unsandboxed"
+
+The sandbox runtime failed to initialize. The session continues without protection. Check the error message — common causes:
+- Linux: `bubblewrap` not installed
+- macOS: permission issue with `sandbox-exec`
+- Incompatible OS version

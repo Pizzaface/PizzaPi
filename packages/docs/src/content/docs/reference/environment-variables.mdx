@@ -39,6 +39,16 @@ These are set automatically by the runner daemon on spawned worker sessions.
 | `PIZZAPI_WORKER_CWD` | Working directory for the worker session. | — |
 | `PIZZAPI_WORKER_INITIAL_PROMPT` | Initial prompt to inject into the session. | — |
 
+### Sandbox Variables
+
+These variables control the [Agent Sandbox](/PizzaPi/guides/sandbox/) behavior.
+
+| Variable | Description | Default |
+|---|---|---|
+| `PIZZAPI_SANDBOX` | Override sandbox mode: `enforce`, `audit`, or `off`. | Config value |
+| `PIZZAPI_NO_SANDBOX` | Set to `1` to disable sandbox (shorthand for `PIZZAPI_SANDBOX=off`). | — |
+| `PIZZAPI_SANDBOX_NETWORK` | Override network restriction mode: `denylist`, `allowlist`, or `off`. | Config value |
+
 ### Worker Safe-Mode Variables
 
 These variables control which subsystems are loaded by runner-spawned worker sessions. They're equivalent to the CLI's `--no-*` flags. See [Safe Mode & Startup Performance](/PizzaPi/guides/safe-mode/) for details.

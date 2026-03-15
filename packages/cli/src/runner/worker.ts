@@ -2,9 +2,10 @@ import { createAgentSession, DefaultResourceLoader } from "@mariozechner/pi-codi
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { BUILTIN_SYSTEM_PROMPT, defaultAgentDir, loadConfig } from "../config.js";
+import { BUILTIN_SYSTEM_PROMPT, defaultAgentDir, loadConfig, resolveSandboxConfig } from "../config.js";
 import { buildWorkerSkillPaths } from "../skills.js";
 import { getPluginSkillPaths } from "../extensions/claude-plugins.js";
+import { initSandbox, cleanupSandbox, isSandboxActive } from "@pizzapi/tools";
 
 /**
  * Build additional prompt template paths for the headless worker.
@@ -53,6 +54,43 @@ async function main(): Promise<void> {
     const config = loadConfig(cwd);
     const agentDir = config.agentDir?.replace(/^~/, homedir()) ?? defaultAgentDir();
     const skipPlugins = process.env.PIZZAPI_NO_PLUGINS === "1";
+
+    // ── Sandbox initialization ─────────────────────────────────────────────
+    // Must happen before any tools execute (including MCP init via extensions).
+    const sandboxConfig = resolveSandboxConfig(cwd, config);
+
+    // PIZZAPI_SANDBOX / PIZZAPI_NO_SANDBOX env var overrides
+    // Normalise user-facing aliases to internal SandboxMode values.
+    // CLI exposes: enforce (→ full), audit (→ basic), off (→ none).
+    const sandboxAliasMap: Record<string, string> = { enforce: "full", audit: "basic", off: "none" };
+    const sandboxEnvRaw = process.env.PIZZAPI_SANDBOX;
+    const sandboxEnvOverride = sandboxAliasMap[sandboxEnvRaw ?? ""] ?? sandboxEnvRaw;
+    if (process.env.PIZZAPI_NO_SANDBOX === "1" || sandboxEnvOverride === "none") {
+        sandboxConfig.mode = "none";
+        sandboxConfig.srtConfig = null;
+    } else if (sandboxEnvOverride === "basic" || sandboxEnvOverride === "full") {
+        // Re-resolve with the overridden mode so srtConfig matches the new preset,
+        // not just the mode string.
+        const overrideConfig = { ...config, sandbox: { ...(config.sandbox ?? {}), mode: sandboxEnvOverride as import("../config.js").SandboxMode } };
+        const overridden = resolveSandboxConfig(cwd, overrideConfig);
+        sandboxConfig.mode = overridden.mode;
+        sandboxConfig.srtConfig = overridden.srtConfig;
+    }
+
+    try {
+        await initSandbox(sandboxConfig);
+    } catch (err) {
+        console.warn(
+            `pizzapi worker: sandbox init failed, continuing unsandboxed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+    }
+    if (isSandboxActive()) {
+        process.env.PIZZAPI_SANDBOX_ACTIVE = "1";
+        process.env.PIZZAPI_SANDBOX_MODE = sandboxConfig.mode;
+        console.log(`pizzapi worker: sandbox initialized (mode=${sandboxConfig.mode})`);
+    } else if (sandboxConfig.mode !== "none") {
+        console.warn("pizzapi worker: sandbox was requested but is not active (platform unsupported or init failed)");
+    }
 
     // ── Agent session config ───────────────────────────────────────────────
     // When spawned "as" an agent, these env vars carry the agent definition.
@@ -156,7 +194,10 @@ async function main(): Promise<void> {
     const sessionId = process.env.PIZZAPI_SESSION_ID;
     console.log(`pizzapi worker: started (cwd=${cwd}${sessionId ? `, sessionId=${sessionId}` : ""}${agentName ? `, agent=${agentName}` : ""})`);
 
-    const shutdown = () => {
+    const shutdown = async () => {
+        try {
+            await cleanupSandbox();
+        } catch {}
         try {
             session.dispose();
         } catch {}

@@ -18,6 +18,7 @@ PizzaPi is built around a **relay pattern**: the CLI on your dev machine connect
 │  ┌───────────────────────────────────────────────────┐ │
 │  │  pizzapi CLI                                      │ │
 │  │   ├─ pi coding agent (LLM + tools)               │ │
+│  │   ├─ sandbox layer (OS-level enforcement)         │ │
 │  │   ├─ remote extension (event serializer)          │ │
 │  │   └─ runner daemon (optional)                     │ │
 │  └───────────────────────┬───────────────────────────┘ │
@@ -54,7 +55,7 @@ The monorepo is organized into focused packages:
 | Package | Description |
 |---------|-------------|
 | `packages/protocol` | Shared TypeScript types for the relay wire protocol |
-| `packages/tools` | Shared agent tools (bash, read-file, write-file, search) |
+| `packages/tools` | Shared agent tools (bash, read-file, write-file, search) and [sandbox enforcement](/PizzaPi/guides/sandbox/) |
 | `packages/server` | Bun HTTP + WebSocket relay server (auth, sessions, push notifications) |
 | `packages/ui` | React 19 PWA web interface (Vite, TailwindCSS v4, Radix UI) |
 | `packages/cli` | CLI wrapper — launches `pi` with PizzaPi extensions, the runner daemon, and the Claude Code plugin adapter |
