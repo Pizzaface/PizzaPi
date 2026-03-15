@@ -164,8 +164,10 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         : randomUUID();
 
     // ── Child session detection for trigger system ────────────────────────
-    const parentSessionId = process.env.PIZZAPI_WORKER_PARENT_SESSION_ID ?? null;
-    const isChildSession = parentSessionId !== null;
+    // Start with the env-var hint, but update from the server's `registered`
+    // payload so that rejected/stale parents fall back to local interaction.
+    let parentSessionId: string | null = process.env.PIZZAPI_WORKER_PARENT_SESSION_ID ?? null;
+    let isChildSession = parentSessionId !== null;
 
     // ── Direct relay status text ──────────────────────────────────────────────
     // Maintained alongside ctx.ui.setStatus() so the custom footer can read it
@@ -1886,9 +1888,18 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 return true;
             });
 
-            // Log parent-child link confirmation from server
+            // Reconcile parent linkage with server-confirmed value.
+            // If the server rejected our parent (stale, disconnected, wrong user),
+            // clear child mode so we fall back to normal local interaction instead
+            // of routing AskUserQuestion/plan_mode through triggers that will time out.
             if (data.parentSessionId) {
+                parentSessionId = data.parentSessionId;
+                isChildSession = true;
                 console.log(`pizzapi: linked as child of parent session ${data.parentSessionId}`);
+            } else if (parentSessionId && !data.parentSessionId) {
+                console.log(`pizzapi: server rejected parent link (${parentSessionId}), falling back to local interaction`);
+                parentSessionId = null;
+                isChildSession = false;
             }
 
             forwardEvent({ type: "session_active", state: buildSessionState() });
@@ -2305,7 +2316,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
 
                 sioSocket.emit("session_trigger", { token: relay.token, trigger });
 
-                // Wait for trigger_response with matching triggerId
+                // Wait for trigger_response with matching triggerId, or fail fast on delivery error
                 const triggerResult = await new Promise<{ response: string; cancelled: boolean }>((resolve) => {
                     const timeout = setTimeout(() => {
                         cleanup();
@@ -2319,12 +2330,22 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                         }
                     };
 
+                    // Fail fast if the relay rejects delivery (e.g. parent disconnected)
+                    const errorHandler = (data: { targetSessionId: string; error: string }) => {
+                        if (data.targetSessionId === parentSessionId) {
+                            cleanup();
+                            resolve({ response: `Trigger delivery failed: ${data.error}`, cancelled: true });
+                        }
+                    };
+
                     const cleanup = () => {
                         clearTimeout(timeout);
                         sioSocket?.off("trigger_response" as any, handler);
+                        sioSocket?.off("session_message_error" as any, errorHandler);
                     };
 
                     sioSocket!.on("trigger_response" as any, handler);
+                    sioSocket!.on("session_message_error" as any, errorHandler);
                     signal?.addEventListener("abort", () => { cleanup(); resolve({ response: "Aborted", cancelled: true }); });
                 });
 
@@ -2557,12 +2578,22 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                         }
                     };
 
+                    // Fail fast if the relay rejects delivery (e.g. parent disconnected)
+                    const errorHandler = (data: { targetSessionId: string; error: string }) => {
+                        if (data.targetSessionId === parentSessionId) {
+                            cleanup();
+                            resolve({ response: "Cancel", action: "cancel" });
+                        }
+                    };
+
                     const cleanup = () => {
                         clearTimeout(timeout);
                         sioSocket?.off("trigger_response" as any, handler);
+                        sioSocket?.off("session_message_error" as any, errorHandler);
                     };
 
                     sioSocket!.on("trigger_response" as any, handler);
+                    sioSocket!.on("session_message_error" as any, errorHandler);
                     signal?.addEventListener("abort", () => { cleanup(); resolve({ response: "Cancel", action: "cancel" }); });
                 });
 

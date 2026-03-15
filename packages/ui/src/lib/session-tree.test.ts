@@ -81,6 +81,37 @@ describe("session-tree", () => {
       expect(tree[0].children[0].session.sessionId).toBe("child-old");
       expect(tree[0].children[1].session.sessionId).toBe("child-new");
     });
+
+    test("handles cyclic parent chains by treating cycle members as roots", () => {
+      const now = Date.now();
+      // A→B and B→A creates a cycle; both should appear as roots
+      const sessions = [
+        { ...createSession("a", "b"), startedAt: new Date(now - 2000).toISOString() },
+        { ...createSession("b", "a"), startedAt: new Date(now - 1000).toISOString() },
+        { ...createSession("c"), startedAt: new Date(now).toISOString() },
+      ];
+
+      const tree = buildSessionTree(sessions);
+      // All 3 should be roots — a and b because of cycle, c because no parent
+      const rootIds = tree.map(n => n.session.sessionId).sort();
+      expect(rootIds).toEqual(["a", "b", "c"]);
+      // Cycle members should have no children (edges broken)
+      const aNode = tree.find(n => n.session.sessionId === "a")!;
+      const bNode = tree.find(n => n.session.sessionId === "b")!;
+      expect(aNode.children).toHaveLength(0);
+      expect(bNode.children).toHaveLength(0);
+    });
+
+    test("handles self-referencing parentSessionId in tree building", () => {
+      const sessions = [
+        { ...createSession("self-ref", "self-ref"), startedAt: new Date().toISOString() },
+      ];
+
+      const tree = buildSessionTree(sessions);
+      expect(tree).toHaveLength(1);
+      expect(tree[0].session.sessionId).toBe("self-ref");
+      expect(tree[0].children).toHaveLength(0);
+    });
   });
 
   describe("flattenSessionTree", () => {

@@ -44,13 +44,35 @@ export function buildSessionTree(sessions: HubSession[]): SessionTreeNode[] {
     nodeMap.set(session.sessionId, { session, children: [] });
   }
 
-  // Build parent-child relationships
+  // Detect cycles in parent chains so we can break them.
+  // A session is in a cycle if following parentSessionId links eventually
+  // revisits a node. We treat cycle members as roots by clearing their parent.
+  const cycleMembers = new Set<string>();
   for (const session of sessions) {
-    if (session.parentSessionId) {
+    if (cycleMembers.has(session.sessionId)) continue;
+    const visited = new Set<string>();
+    let cur: string | null | undefined = session.sessionId;
+    while (cur && sessionMap.has(cur) && !visited.has(cur) && !cycleMembers.has(cur)) {
+      visited.add(cur);
+      cur = sessionMap.get(cur)?.parentSessionId;
+    }
+    // If we stopped because we revisited a node in this walk, mark the cycle
+    if (cur && visited.has(cur)) {
+      // Walk from `cur` around the cycle marking all members
+      let c: string | null | undefined = cur;
+      do {
+        cycleMembers.add(c!);
+        c = sessionMap.get(c!)?.parentSessionId;
+      } while (c && c !== cur);
+    }
+  }
+
+  // Build parent-child relationships (skip cycle edges)
+  for (const session of sessions) {
+    if (session.parentSessionId && !cycleMembers.has(session.sessionId)) {
       const parentNode = nodeMap.get(session.parentSessionId);
       const childNode = nodeMap.get(session.sessionId);
       if (parentNode && childNode) {
-        // Sort children by start time (oldest first)
         parentNode.children.push(childNode);
       }
     }
@@ -65,10 +87,11 @@ export function buildSessionTree(sessions: HubSession[]): SessionTreeNode[] {
     });
   }
 
-  // Return root sessions: those with no parent, or whose parent is not in this subset
+  // Return root sessions: those with no parent, whose parent is not in this subset,
+  // or that are part of a cycle (to prevent them from disappearing entirely).
   const roots: SessionTreeNode[] = [];
   for (const session of sessions) {
-    if (!session.parentSessionId || !nodeMap.has(session.parentSessionId)) {
+    if (!session.parentSessionId || !nodeMap.has(session.parentSessionId) || cycleMembers.has(session.sessionId)) {
       const node = nodeMap.get(session.sessionId);
       if (node) roots.push(node);
     }

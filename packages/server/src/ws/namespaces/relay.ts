@@ -30,7 +30,7 @@ import {
     setPushPendingQuestion,
     clearPushPendingQuestion,
     deleteRunnerAssociation,
-    getChildSessions,
+    removeChildSession,
 } from "../sio-state.js";
 import {
     notifyAgentFinished,
@@ -495,16 +495,14 @@ export function registerRelayNamespace(io: SocketIOServer): void {
             // Enforce parent-child linkage: the sender must be the target's parent,
             // or the target must be a child of the sender. This prevents any relay
             // client under the same account from injecting trigger responses into
-            // unrelated child sessions.
+            // unrelated child sessions. We rely solely on the live parentSessionId
+            // field rather than the Redis children set, which can contain stale
+            // entries from sessions that ended without cleanup.
             const isParentOfTarget = targetSession.parentSessionId === socket.data.sessionId;
             const isChildOfSender = senderSession.parentSessionId === targetSessionId;
             if (!isParentOfTarget && !isChildOfSender) {
-                // Also check the Redis children set as a fallback
-                const children = await getChildSessions(socket.data.sessionId);
-                if (!children.includes(targetSessionId)) {
-                    socket.emit("error", { message: "Sender is not linked to target session" });
-                    return;
-                }
+                socket.emit("error", { message: "Sender is not linked to target session" });
+                return;
             }
 
             const triggerPayload = { triggerId, response, ...(action ? { action } : {}) };
@@ -534,6 +532,11 @@ export function registerRelayNamespace(io: SocketIOServer): void {
             if (sessionId) {
                 clearThinkingMaps(sessionId);
                 void clearPushPendingQuestion(sessionId);
+                // Clean up child-index entry so stale memberships don't persist
+                const session = await getSharedSession(sessionId);
+                if (session?.parentSessionId) {
+                    void removeChildSession(session.parentSessionId, sessionId);
+                }
                 await endSharedSession(sessionId);
             }
             socketAckedSeqs.delete(socket.id);
