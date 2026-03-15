@@ -290,8 +290,15 @@ export function SandboxManager({ runnerId }: SandboxManagerProps) {
                 mode: form.mode,
                 filesystem: form.filesystem,
             };
-            // Only include network if mode is full
-            if (form.mode === "full") {
+            // Include network config for full mode, or for basic mode when
+            // the user has configured network overrides (allowedDomains or
+            // deniedDomains).  Dropping network on save would silently
+            // remove existing basic-mode network restrictions.
+            const hasNetworkOverrides =
+                (form.network.allowedDomains?.length ?? 0) > 0 ||
+                (form.network.deniedDomains?.length ?? 0) > 0 ||
+                form.network.allowLocalBinding === false;
+            if (form.mode === "full" || hasNetworkOverrides) {
                 body.network = form.network;
             }
             // Include advanced options
@@ -615,7 +622,7 @@ export function SandboxManager({ runnerId }: SandboxManagerProps) {
                                         size="sm"
                                         className="h-7 px-3 text-xs"
                                         onClick={handleSave}
-                                        disabled={saving}
+                                        disabled={saving || !isDirty}
                                     >
                                         {saving ? (
                                             <Loader2 className="size-3 mr-1 animate-spin" />

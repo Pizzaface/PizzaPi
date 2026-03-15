@@ -1379,8 +1379,12 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     socket.emit("file_result", { requestId, ok: false, message: `Invalid mode "${body.mode}"` });
                     return;
                 }
-                const { saveGlobalConfig, loadConfig, resolveSandboxConfig } = await import("../config.js");
-                saveGlobalConfig({ sandbox: body });
+                const { saveGlobalConfig, loadConfig, resolveSandboxConfig, loadGlobalConfig } = await import("../config.js");
+                // Merge with existing global sandbox config so UI-unmanaged
+                // fields (ignoreViolations, allowUnixSockets, proxy ports,
+                // allowGitConfig, etc.) are preserved across saves.
+                const existingSandbox = loadGlobalConfig().sandbox ?? {};
+                saveGlobalConfig({ sandbox: { ...existingSandbox, ...body } });
                 const newConfig = loadConfig(process.cwd());
                 const resolved = resolveSandboxConfig(process.cwd(), newConfig);
                 socket.emit("file_result", {
