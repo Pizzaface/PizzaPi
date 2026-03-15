@@ -524,7 +524,8 @@ export function mergeSandboxConfig(global: SandboxConfig, project: SandboxConfig
             allowGitConfig: keepStrict(global.filesystem?.allowGitConfig, project.filesystem?.allowGitConfig),
         },
         // Top-level scalar fields: different rules per field type
-        ignoreViolations: global.ignoreViolations ?? project.ignoreViolations,
+        // ignoreViolations: global-only — project cannot suppress srt violation enforcement
+        ignoreViolations: global.ignoreViolations,
         // Weaker-isolation flags must keep strict (false) default when no global config exists
         enableWeakerNetworkIsolation: keepStrict(global.enableWeakerNetworkIsolation, project.enableWeakerNetworkIsolation),
         enableWeakerNestedSandbox: keepStrict(global.enableWeakerNestedSandbox, project.enableWeakerNestedSandbox),

@@ -436,4 +436,18 @@ describe("mergeSandboxConfig — scalar fields propagated", () => {
         // global-only: project value is ignored to prevent weakening search depth
         expect(merged.mandatoryDenySearchDepth).toBeUndefined();
     });
+
+    test("ignoreViolations: global-only — project cannot suppress violations", () => {
+        const global: SandboxConfig = {};
+        const project: SandboxConfig = { ignoreViolations: { node: ["filesystem-read", "network-connect"] } };
+        const merged = mergeSandboxConfig(global, project);
+        expect(merged.ignoreViolations).toBeUndefined();
+    });
+
+    test("ignoreViolations: global value preserved", () => {
+        const global: SandboxConfig = { ignoreViolations: { node: ["filesystem-read"] } };
+        const project: SandboxConfig = { ignoreViolations: { node: ["filesystem-read", "network-connect"] } };
+        const merged = mergeSandboxConfig(global, project);
+        expect(merged.ignoreViolations).toEqual({ node: ["filesystem-read"] });
+    });
 });

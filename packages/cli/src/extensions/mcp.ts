@@ -143,7 +143,9 @@ async function createStdioMcpClient(opts: { name: string; command: string; args?
   // Sandbox: inject proxy env vars so sandboxed MCP servers route traffic
   // through the sandbox network proxy. User-provided env takes precedence.
   const sandboxEnv = isSandboxActive() ? getSandboxEnv() : {};
-  const mergedEnv = { ...process.env, ...sandboxEnv, ...(opts.env ?? {}) };
+  // Sandbox env vars (proxy settings) spread LAST so MCP server config cannot
+  // override them to bypass network filtering.
+  const mergedEnv = { ...process.env, ...(opts.env ?? {}), ...sandboxEnv };
 
   // Wrap MCP command with OS-level sandbox (filesystem + socket restrictions).
   // wrapCommand applies sandbox-exec (macOS) or bwrap (Linux) around the command.
