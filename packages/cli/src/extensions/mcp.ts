@@ -800,10 +800,11 @@ function isMcpDomainAllowed(url: string, serverName: string): boolean {
   }
 
   try {
-    const hostname = new URL(url).hostname;
+    const hostname = new URL(url).hostname.toLowerCase();
 
     // Check deniedDomains first — deny takes precedence over allow
-    const deniedDomains = sandboxCfg.srtConfig.network.deniedDomains ?? [];
+    // Normalize to lowercase for case-insensitive DNS matching
+    const deniedDomains = (sandboxCfg.srtConfig.network.deniedDomains ?? []).map(d => d.toLowerCase());
     if (deniedDomains.some(d => hostname === d || hostname.endsWith(`.${d.replace(/^\*\./, "")}`))) {
       console.warn(
         `[sandbox/mcp] Blocked MCP server "${serverName}": domain "${hostname}" ` +
@@ -812,7 +813,8 @@ function isMcpDomainAllowed(url: string, serverName: string): boolean {
       return false;
     }
 
-    if (allowedDomains.some(d => hostname === d || hostname.endsWith(`.${d.replace(/^\*\./, "")}`))) {
+    const normalizedAllowed = allowedDomains.map(d => d.toLowerCase());
+    if (normalizedAllowed.some(d => hostname === d || hostname.endsWith(`.${d.replace(/^\*\./, "")}`))) {
       return true;
     }
     console.warn(

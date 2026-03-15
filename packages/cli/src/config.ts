@@ -348,7 +348,17 @@ function resolveSandboxPath(p: string, cwd: string): string {
  */
 export function resolveSandboxConfig(cwd: string, config: PizzaPiConfig): ResolvedSandboxConfig {
     const s = config.sandbox ?? {};
-    const mode: SandboxMode = s.mode ?? "basic";
+    const rawMode = s.mode ?? "basic";
+
+    // Validate mode — fail closed on unknown values to prevent silent security downgrades
+    const VALID_MODES: readonly SandboxMode[] = ["none", "basic", "full"] as const;
+    if (!VALID_MODES.includes(rawMode as SandboxMode)) {
+        throw new Error(
+            `Invalid sandbox mode "${rawMode}" in config. ` +
+            `Valid values: ${VALID_MODES.join(", ")}. Refusing to start with unknown mode.`,
+        );
+    }
+    const mode: SandboxMode = rawMode as SandboxMode;
 
     if (mode === "none") {
         return { mode: "none", srtConfig: null };

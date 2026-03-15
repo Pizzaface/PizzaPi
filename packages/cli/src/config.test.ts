@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { toggleMcpServer, loadConfig, _setGlobalConfigDir } from "./config.js";
+import { toggleMcpServer, loadConfig, _setGlobalConfigDir, resolveSandboxConfig } from "./config.js";
 
 describe("toggleMcpServer", () => {
   let tempDir: string;
@@ -290,5 +290,43 @@ describe("loadConfig disabledMcpServers merge", () => {
 
     const config = loadConfig(projectDir);
     expect(config.disabledMcpServers).toEqual(["playwright"]);
+  });
+});
+
+describe("resolveSandboxConfig", () => {
+  test("throws on invalid sandbox mode", () => {
+    expect(() =>
+      resolveSandboxConfig("/tmp", { sandbox: { mode: "ful" as any } } as any),
+    ).toThrow(/Invalid sandbox mode "ful"/);
+  });
+
+  test("throws on empty string mode", () => {
+    expect(() =>
+      resolveSandboxConfig("/tmp", { sandbox: { mode: "" as any } } as any),
+    ).toThrow(/Invalid sandbox mode ""/);
+  });
+
+  test("accepts valid mode 'none'", () => {
+    const result = resolveSandboxConfig("/tmp", { sandbox: { mode: "none" } } as any);
+    expect(result.mode).toBe("none");
+    expect(result.srtConfig).toBeNull();
+  });
+
+  test("accepts valid mode 'basic'", () => {
+    const result = resolveSandboxConfig("/tmp", { sandbox: { mode: "basic" } } as any);
+    expect(result.mode).toBe("basic");
+    expect(result.srtConfig).not.toBeNull();
+  });
+
+  test("accepts valid mode 'full'", () => {
+    const result = resolveSandboxConfig("/tmp", { sandbox: { mode: "full" } } as any);
+    expect(result.mode).toBe("full");
+    expect(result.srtConfig).not.toBeNull();
+    expect(result.srtConfig!.network).toBeDefined();
+  });
+
+  test("defaults to 'basic' when mode is omitted", () => {
+    const result = resolveSandboxConfig("/tmp", { sandbox: {} } as any);
+    expect(result.mode).toBe("basic");
   });
 });
