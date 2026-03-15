@@ -324,9 +324,11 @@ export async function cleanupSandbox(): Promise<void> {
 function _buildSrtConfig(config: ResolvedSandboxConfig): SandboxRuntimeConfig {
     const srt = config.srtConfig!;
 
-    // Merge SSH agent socket into allowUnixSockets if detected
+    // Merge SSH agent socket into allowUnixSockets if detected.
+    // Runs regardless of whether srt.network is defined — basic mode's
+    // permissive fallback also includes the socket for defense in depth.
     let allowUnixSockets = srt.network?.allowUnixSockets;
-    if (_sshAuthSock && srt.network) {
+    if (_sshAuthSock) {
         const existing = allowUnixSockets ?? [];
         if (!existing.includes(_sshAuthSock)) {
             allowUnixSockets = [...existing, _sshAuthSock];
@@ -373,6 +375,14 @@ function _buildSrtConfig(config: ResolvedSandboxConfig): SandboxRuntimeConfig {
                 // "allow all" (distinct from `[]` which means "deny all").
                 deniedDomains: [],
                 allowLocalBinding: true,
+                // Allow all Unix sockets so basic mode doesn't break SSH agent,
+                // Docker socket, or other local IPC that users expect to work.
+                allowAllUnixSockets: true,
+                // Also explicitly include the detected SSH socket for defense
+                // in depth, in case allowAllUnixSockets semantics change.
+                ...(allowUnixSockets !== undefined && allowUnixSockets.length > 0
+                    ? { allowUnixSockets }
+                    : {}),
             },
         ...(srt.ignoreViolations !== undefined
             ? { ignoreViolations: srt.ignoreViolations }
