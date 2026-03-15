@@ -10,7 +10,7 @@ import { existsSync } from "fs";
 import { readFile, readdir } from "fs/promises";
 import { join } from "path";
 import { homedir } from "os";
-import { BUILTIN_SYSTEM_PROMPT, defaultAgentDir, loadConfig, resolveSandboxConfig } from "./config.js";
+import { BUILTIN_SYSTEM_PROMPT, defaultAgentDir, loadConfig, resolveSandboxConfig, validateSandboxOverride } from "./config.js";
 import { buildInteractiveSkillPaths } from "./skills.js";
 import { buildPizzaPiExtensionFactories } from "./extensions/factories.js";
 import { runSetup } from "./setup.js";
@@ -423,19 +423,16 @@ Run \`pizza <command> --help\` for command-specific help.
 
     // ── Sandbox initialization ─────────────────────────────────────────────
     const sandboxConfig = resolveSandboxConfig(cwd, config);
-    // PIZZAPI_SANDBOX env var can override the configured mode.
-    // "off" is a documented alias for "none".
-    const sandboxEnvRaw = process.env.PIZZAPI_SANDBOX;
-    // Normalise user-facing aliases to internal SandboxMode values.
-    // CLI help exposes: enforce (→ full), audit (→ basic), off (→ none).
-    const sandboxAliasMap: Record<string, string> = { enforce: "full", audit: "basic", off: "none" };
-    const sandboxEnvOverride = sandboxAliasMap[sandboxEnvRaw ?? ""] ?? sandboxEnvRaw;
-    if (sandboxEnvOverride === "none") {
+    // PIZZAPI_SANDBOX env var / --sandbox flag can override the configured mode.
+    // validateSandboxOverride() resolves aliases (enforce→full, audit→basic, off→none)
+    // and throws on unrecognised values so operators get a clear error.
+    const sandboxOverride = validateSandboxOverride(process.env.PIZZAPI_SANDBOX);
+    if (sandboxOverride === "none") {
         sandboxConfig.mode = "none";
         sandboxConfig.srtConfig = null;
-    } else if (sandboxEnvOverride === "basic" || sandboxEnvOverride === "full") {
+    } else if (sandboxOverride === "basic" || sandboxOverride === "full") {
         // Re-resolve so srtConfig matches the overridden preset, not just the mode string.
-        const overrideConfig = { ...config, sandbox: { ...(config.sandbox ?? {}), mode: sandboxEnvOverride as import("./config.js").SandboxMode } };
+        const overrideConfig = { ...config, sandbox: { ...(config.sandbox ?? {}), mode: sandboxOverride } };
         const overridden = resolveSandboxConfig(cwd, overrideConfig);
         sandboxConfig.mode = overridden.mode;
         sandboxConfig.srtConfig = overridden.srtConfig;

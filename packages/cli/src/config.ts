@@ -174,6 +174,38 @@ export const BUILTIN_SYSTEM_PROMPT = [
 export type SandboxMode = "none" | "basic" | "full";
 
 /**
+ * Documented aliases for sandbox modes exposed via CLI `--sandbox` flag and
+ * `PIZZAPI_SANDBOX` env var.  Maps user-facing names to internal `SandboxMode`.
+ */
+export const SANDBOX_MODE_ALIASES: Readonly<Record<string, SandboxMode>> = {
+    enforce: "full",
+    audit: "basic",
+    off: "none",
+    // Identity mappings so the canonical names also resolve
+    full: "full",
+    basic: "basic",
+    none: "none",
+};
+
+/**
+ * Resolve a raw sandbox override string (from CLI flag or env var) to a
+ * validated `SandboxMode`.  Throws on unrecognised values so operators get
+ * a clear error instead of a silent fallback to a weaker mode.
+ *
+ * Returns `undefined` when `raw` is `undefined`/empty (no override).
+ */
+export function validateSandboxOverride(raw: string | undefined): SandboxMode | undefined {
+    if (raw === undefined || raw === "") return undefined;
+    const resolved = SANDBOX_MODE_ALIASES[raw.toLowerCase()];
+    if (resolved !== undefined) return resolved;
+    const validValues = [...new Set([...Object.keys(SANDBOX_MODE_ALIASES)])].join(", ");
+    throw new Error(
+        `Invalid sandbox override "${raw}". ` +
+        `Valid values: ${validValues}. Refusing to start with unknown mode.`,
+    );
+}
+
+/**
  * User-facing sandbox config in `~/.pizzapi/config.json`.
  *
  * `mode` selects a preset. All other fields are srt-native overrides that are

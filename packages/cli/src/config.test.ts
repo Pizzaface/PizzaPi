@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { toggleMcpServer, loadConfig, _setGlobalConfigDir, resolveSandboxConfig } from "./config.js";
+import { toggleMcpServer, loadConfig, _setGlobalConfigDir, resolveSandboxConfig, validateSandboxOverride } from "./config.js";
 
 describe("toggleMcpServer", () => {
   let tempDir: string;
@@ -376,5 +376,38 @@ describe("resolveSandboxConfig", () => {
       },
     } as any);
     expect(result.srtConfig!.network!.allowedDomains).toEqual(["example.com"]);
+  });
+});
+
+describe("validateSandboxOverride", () => {
+  test("returns undefined for undefined/empty input", () => {
+    expect(validateSandboxOverride(undefined)).toBeUndefined();
+    expect(validateSandboxOverride("")).toBeUndefined();
+  });
+
+  test("resolves canonical mode names", () => {
+    expect(validateSandboxOverride("none")).toBe("none");
+    expect(validateSandboxOverride("basic")).toBe("basic");
+    expect(validateSandboxOverride("full")).toBe("full");
+  });
+
+  test("resolves documented aliases", () => {
+    expect(validateSandboxOverride("off")).toBe("none");
+    expect(validateSandboxOverride("audit")).toBe("basic");
+    expect(validateSandboxOverride("enforce")).toBe("full");
+  });
+
+  test("resolves case-insensitively", () => {
+    expect(validateSandboxOverride("OFF")).toBe("none");
+    expect(validateSandboxOverride("Full")).toBe("full");
+    expect(validateSandboxOverride("ENFORCE")).toBe("full");
+    expect(validateSandboxOverride("Basic")).toBe("basic");
+  });
+
+  test("throws on typos/unknown values", () => {
+    expect(() => validateSandboxOverride("ful")).toThrow(/Invalid sandbox override "ful"/);
+    expect(() => validateSandboxOverride("enabled")).toThrow(/Invalid sandbox override "enabled"/);
+    expect(() => validateSandboxOverride("true")).toThrow(/Invalid sandbox override "true"/);
+    expect(() => validateSandboxOverride("on")).toThrow(/Invalid sandbox override "on"/);
   });
 });

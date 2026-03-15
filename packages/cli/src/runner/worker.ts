@@ -2,7 +2,7 @@ import { createAgentSession, DefaultResourceLoader } from "@mariozechner/pi-codi
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { BUILTIN_SYSTEM_PROMPT, defaultAgentDir, loadConfig, resolveSandboxConfig } from "../config.js";
+import { BUILTIN_SYSTEM_PROMPT, defaultAgentDir, loadConfig, resolveSandboxConfig, validateSandboxOverride } from "../config.js";
 import { buildWorkerSkillPaths } from "../skills.js";
 import { getPluginSkillPaths } from "../extensions/claude-plugins.js";
 import { initSandbox, cleanupSandbox, isSandboxActive } from "@pizzapi/tools";
@@ -59,19 +59,18 @@ async function main(): Promise<void> {
     // Must happen before any tools execute (including MCP init via extensions).
     const sandboxConfig = resolveSandboxConfig(cwd, config);
 
-    // PIZZAPI_SANDBOX / PIZZAPI_NO_SANDBOX env var overrides
-    // Normalise user-facing aliases to internal SandboxMode values.
-    // CLI exposes: enforce (→ full), audit (→ basic), off (→ none).
-    const sandboxAliasMap: Record<string, string> = { enforce: "full", audit: "basic", off: "none" };
-    const sandboxEnvRaw = process.env.PIZZAPI_SANDBOX;
-    const sandboxEnvOverride = sandboxAliasMap[sandboxEnvRaw ?? ""] ?? sandboxEnvRaw;
-    if (process.env.PIZZAPI_NO_SANDBOX === "1" || sandboxEnvOverride === "none") {
+    // PIZZAPI_SANDBOX / PIZZAPI_NO_SANDBOX env var overrides.
+    // validateSandboxOverride() resolves aliases (enforce→full, audit→basic, off→none)
+    // and throws on unrecognised values so operators get a clear error.
+    const sandboxOverrideRaw = process.env.PIZZAPI_NO_SANDBOX === "1" ? "off" : process.env.PIZZAPI_SANDBOX;
+    const sandboxOverride = validateSandboxOverride(sandboxOverrideRaw);
+    if (sandboxOverride === "none") {
         sandboxConfig.mode = "none";
         sandboxConfig.srtConfig = null;
-    } else if (sandboxEnvOverride === "basic" || sandboxEnvOverride === "full") {
+    } else if (sandboxOverride === "basic" || sandboxOverride === "full") {
         // Re-resolve with the overridden mode so srtConfig matches the new preset,
         // not just the mode string.
-        const overrideConfig = { ...config, sandbox: { ...(config.sandbox ?? {}), mode: sandboxEnvOverride as import("../config.js").SandboxMode } };
+        const overrideConfig = { ...config, sandbox: { ...(config.sandbox ?? {}), mode: sandboxOverride } };
         const overridden = resolveSandboxConfig(cwd, overrideConfig);
         sandboxConfig.mode = overridden.mode;
         sandboxConfig.srtConfig = overridden.srtConfig;
