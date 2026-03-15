@@ -173,10 +173,22 @@ function _buildDenyExclusions(searchRoot: string): { rg: string[]; find: string[
             continue;
         }
 
-        // rg: --glob '!relativePath/**'
-        // When root is "/", the relative path is everything after the leading slash.
-        const relPath = resolvedRoot === "/" ? resolvedDenied.slice(1) : resolvedDenied.slice(resolvedRoot.length + 1);
+        // rg: --glob patterns to exclude denied paths
+        // rg matches globs against file paths. To exclude a directory and all its contents,
+        // we pass multiple patterns:
+        // - !deniedDir to exclude the directory itself (if someone tries to list just the dir)
+        // - !deniedDir/** to exclude all files under the directory
+        // When root is "/", compute the relative path from the filesystem root.
+        // Otherwise, compute relative to the search root for correct glob matching.
+        let relPath: string;
+        if (resolvedRoot === "/") {
+            relPath = resolvedDenied;
+        } else {
+            // Relative path from search root
+            relPath = resolvedDenied.slice(resolvedRoot.length + 1);
+        }
         if (relPath) {
+            // Exclude the directory itself and everything under it
             rgArgs.push("--glob", `!${relPath}`, "--glob", `!${relPath}/**`);
         }
 

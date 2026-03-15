@@ -381,11 +381,12 @@ describe("mergeSandboxConfig — scalar fields propagated", () => {
         expect(merged.filesystem?.allowGitConfig).toBe(false);
     });
 
-    test("allowGitConfig: project used when global not set", () => {
+    test("allowGitConfig: strict default kept when global not set", () => {
         const global: SandboxConfig = {};
         const project: SandboxConfig = { filesystem: { allowGitConfig: true } };
         const merged = mergeSandboxConfig(global, project);
-        expect(merged.filesystem?.allowGitConfig).toBe(true);
+        // Security invariant: project cannot enable allowGitConfig when global config absent
+        expect(merged.filesystem?.allowGitConfig).toBeUndefined();
     });
 
     test("allowPty: global wins", () => {
@@ -395,11 +396,12 @@ describe("mergeSandboxConfig — scalar fields propagated", () => {
         expect(merged.allowPty).toBe(false);
     });
 
-    test("enableWeakerNetworkIsolation: project used when global not set", () => {
+    test("enableWeakerNetworkIsolation: strict default kept when global not set", () => {
         const global: SandboxConfig = {};
         const project: SandboxConfig = { enableWeakerNetworkIsolation: true };
         const merged = mergeSandboxConfig(global, project);
-        expect(merged.enableWeakerNetworkIsolation).toBe(true);
+        // Security invariant: project cannot enable weaker isolation when global config absent
+        expect(merged.enableWeakerNetworkIsolation).toBeUndefined();
     });
 
     test("mandatoryDenySearchDepth: global wins", () => {

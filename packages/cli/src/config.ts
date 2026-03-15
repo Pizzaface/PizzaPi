@@ -487,9 +487,19 @@ export function mergeSandboxConfig(global: SandboxConfig, project: SandboxConfig
         modeStrength[projectMode] >= modeStrength[globalMode] ? projectMode : globalMode;
 
     // For scalar fields: global wins (security invariant — project cannot weaken).
-    // Helper: pick global value if defined, else project value.
+    // Helper: pick global value if defined, else use project fallback.
     const globalWins = <T>(g: T | undefined, p: T | undefined): T | undefined =>
         g !== undefined ? g : p;
+    
+    // For security-sensitive boolean flags: project cannot enable weakening when global
+    // config is absent. Keep strict defaults (false for "enable weaker" options) to
+    // prevent project-local config from reducing isolation strength.
+    const keepStrict = (g: boolean | undefined, p: boolean | undefined): boolean | undefined => {
+        // If global is set, use it (project cannot override)
+        if (g !== undefined) return g;
+        // If global is not set, only use project value if it maintains strict settings (false)
+        return p === false ? false : undefined;
+    };
 
     return {
         mode: effectiveMode,
@@ -509,15 +519,16 @@ export function mergeSandboxConfig(global: SandboxConfig, project: SandboxConfig
             denyRead: union(global.filesystem?.denyRead, project.filesystem?.denyRead),
             denyWrite: union(global.filesystem?.denyWrite, project.filesystem?.denyWrite),
             allowWrite: intersect(global.filesystem?.allowWrite, project.filesystem?.allowWrite),
-            // allowGitConfig: global wins (false is stricter)
-            allowGitConfig: globalWins(global.filesystem?.allowGitConfig, project.filesystem?.allowGitConfig),
+            // allowGitConfig: must keep strict (false) default when global not set
+            allowGitConfig: keepStrict(global.filesystem?.allowGitConfig, project.filesystem?.allowGitConfig),
         },
-        // Top-level scalar fields: global wins
+        // Top-level scalar fields: different rules per field type
         ignoreViolations: global.ignoreViolations ?? project.ignoreViolations,
-        enableWeakerNetworkIsolation: globalWins(global.enableWeakerNetworkIsolation, project.enableWeakerNetworkIsolation),
-        enableWeakerNestedSandbox: globalWins(global.enableWeakerNestedSandbox, project.enableWeakerNestedSandbox),
+        // Weaker-isolation flags must keep strict (false) default when no global config exists
+        enableWeakerNetworkIsolation: keepStrict(global.enableWeakerNetworkIsolation, project.enableWeakerNetworkIsolation),
+        enableWeakerNestedSandbox: keepStrict(global.enableWeakerNestedSandbox, project.enableWeakerNestedSandbox),
         mandatoryDenySearchDepth: globalWins(global.mandatoryDenySearchDepth, project.mandatoryDenySearchDepth),
-        allowPty: globalWins(global.allowPty, project.allowPty),
+        allowPty: keepStrict(global.allowPty, project.allowPty),
     };
 }
 
