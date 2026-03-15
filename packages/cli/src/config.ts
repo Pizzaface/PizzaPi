@@ -528,7 +528,8 @@ export function mergeSandboxConfig(global: SandboxConfig, project: SandboxConfig
         // Weaker-isolation flags must keep strict (false) default when no global config exists
         enableWeakerNetworkIsolation: keepStrict(global.enableWeakerNetworkIsolation, project.enableWeakerNetworkIsolation),
         enableWeakerNestedSandbox: keepStrict(global.enableWeakerNestedSandbox, project.enableWeakerNestedSandbox),
-        mandatoryDenySearchDepth: globalWins(global.mandatoryDenySearchDepth, project.mandatoryDenySearchDepth),
+        // mandatoryDenySearchDepth: global-only — project cannot control search depth
+        mandatoryDenySearchDepth: global.mandatoryDenySearchDepth,
         allowPty: keepStrict(global.allowPty, project.allowPty),
     };
 }

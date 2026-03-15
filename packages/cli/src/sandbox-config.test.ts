@@ -428,4 +428,12 @@ describe("mergeSandboxConfig — scalar fields propagated", () => {
         const merged = mergeSandboxConfig(global, project);
         expect(merged.mandatoryDenySearchDepth).toBe(2);
     });
+
+    test("mandatoryDenySearchDepth: project cannot set when global absent", () => {
+        const global: SandboxConfig = {};
+        const project: SandboxConfig = { mandatoryDenySearchDepth: 0 };
+        const merged = mergeSandboxConfig(global, project);
+        // global-only: project value is ignored to prevent weakening search depth
+        expect(merged.mandatoryDenySearchDepth).toBeUndefined();
+    });
 });
