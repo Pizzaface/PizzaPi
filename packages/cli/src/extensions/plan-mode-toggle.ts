@@ -25,10 +25,57 @@ const DESTRUCTIVE_CMD_PATTERNS = [
     /^\s*pip\s+(install|uninstall)/i,
     /^\s*apt(-get)?\s+(install|remove|purge|update|upgrade)/i,
     /^\s*brew\s+(install|uninstall|upgrade)/i,
-    /^\s*git\s+(add|commit|push|pull|merge|rebase|reset|checkout|branch\s+-[dDmMcC]|stash|cherry-pick|revert|tag|init|clone)/i,
-    /^\s*git\s+remote\s+(add|remove|rm|rename|set-url|set-head|set-branches|prune|update)/i,
     /^\s*systemctl\s+(start|stop|restart|enable|disable)/i,
     /^\s*service\s+\S+\s+(start|stop|restart)/i,
+];
+
+/**
+ * Read-only git subcommands allowed in plan mode.
+ *
+ * Uses an **allowlist** instead of a blocklist because enumerating all
+ * destructive git subcommands is fragile — new git versions add more, and
+ * commands like `git clean`, `git apply`, `git restore`, `git am`, etc. are
+ * easy to miss. Any `git <subcommand>` not on this list is treated as
+ * destructive when the OS sandbox is unavailable.
+ */
+const GIT_SAFE_SUBCOMMANDS = new Set([
+    // Inspection / query
+    "status", "log", "diff", "show", "blame", "grep", "shortlog",
+    // Ref listing / lookup
+    "branch", "tag", "remote", "stash",
+    // Low-level read-only
+    "ls-files", "ls-tree", "ls-remote", "cat-file", "rev-parse",
+    "rev-list", "for-each-ref", "name-rev", "describe", "merge-base",
+    "count-objects", "fsck", "verify-commit", "verify-tag", "verify-pack",
+    // Misc read-only
+    "help", "version", "config", "reflog", "worktree",
+]);
+
+/**
+ * Git subcommand + argument combinations that are destructive even though
+ * the subcommand itself is on the safe list (e.g. `git branch -D`, `git
+ * remote add`, `git stash drop`, `git config --unset`, `git worktree add`).
+ */
+const GIT_SAFE_SUBCOMMAND_DESTRUCTIVE_OVERRIDES: RegExp[] = [
+    // branch: -d/-D/-m/-M/-c/-C are mutating (must be a standalone short flag, not part of --merged etc.)
+    /^\s*git\s+branch\s+.*\s-[dDmMcC]\b/i,
+    /^\s*git\s+branch\s+-[dDmMcC]\b/i,
+    // tag: -d (delete), -a/-s (create), or any arg that looks like a new tag name
+    // We allow listing (no args, -l, --list, -n, --contains, --merged, etc.)
+    /^\s*git\s+tag\s+.*-[dsafFu]/i,
+    /^\s*git\s+tag\s+(?!-|$)\S/i, // `git tag v1.0` (creating a tag)
+    // remote: add/remove/rm/rename/set-url/set-head/set-branches/prune/update
+    /^\s*git\s+remote\s+(add|remove|rm|rename|set-url|set-head|set-branches|prune|update)\b/i,
+    // stash: push/save/drop/pop/apply/clear are mutating; only list/show are safe
+    /^\s*git\s+stash\s+(push|save|drop|pop|apply|clear|create|store)\b/i,
+    /^\s*git\s+stash\s*$/i, // bare `git stash` is `git stash push`
+    // config: writing operations
+    /^\s*git\s+config\s+.*--(unset|unset-all|remove-section|rename-section|replace-all|add)\b/i,
+    /^\s*git\s+config\s+(?!.*--(get|get-all|get-regexp|list|show-origin|show-scope|type|default|includes))\S+\s+\S/i,
+    // reflog: delete/expire are mutating; show is safe
+    /^\s*git\s+reflog\s+(delete|expire)\b/i,
+    // worktree: add/remove/move/repair are mutating; list is safe
+    /^\s*git\s+worktree\s+(add|remove|move|repair|lock|unlock)\b/i,
 ];
 
 /**
@@ -113,11 +160,34 @@ export function splitShellSegments(command: string): string[] {
 }
 
 /**
+ * Check whether a single command segment is a destructive git invocation.
+ *
+ * Uses an **allowlist** of read-only git subcommands. Any git subcommand not
+ * on the list is treated as destructive. For subcommands that are on the safe
+ * list, a secondary override check catches argument combinations that are
+ * still mutating (e.g. `git branch -D`, `git remote add`).
+ */
+function isDestructiveGitCommand(segment: string): boolean {
+    const gitMatch = segment.match(/^\s*git\s+(\S+)/i);
+    if (!gitMatch) return false; // not a git command
+
+    const subcommand = gitMatch[1].toLowerCase();
+
+    // Subcommand not on the safe list → destructive
+    if (!GIT_SAFE_SUBCOMMANDS.has(subcommand)) return true;
+
+    // Subcommand is safe in general, but check for destructive argument patterns
+    return GIT_SAFE_SUBCOMMAND_DESTRUCTIVE_OVERRIDES.some((p) => p.test(segment));
+}
+
+/**
  * Check if a command looks destructive based on known patterns.
  *
- * This is a **blocklist-only** check — it flags commands that match known
- * destructive patterns but does NOT require commands to appear on an allowlist.
- * Any command that doesn't match a destructive pattern is allowed through.
+ * For most commands this is a **blocklist** check — known destructive patterns
+ * are flagged and everything else passes. For `git` specifically an
+ * **allowlist** approach is used because the set of mutating git subcommands
+ * is too large to enumerate reliably (git clean, git apply, git restore,
+ * git am, git bisect, etc.).
  *
  * This is used as a best-effort advisory check when the OS-level sandbox is
  * not active. When the sandbox IS active, plan mode uses the sandbox's
@@ -138,6 +208,15 @@ export function isDestructiveCommand(command: string): boolean {
     for (const part of parts) {
         const trimmed = part.trim();
         if (!trimmed) continue; // empty segment (e.g. trailing semicolon)
+
+        // Git: allowlist-based check (stricter than the generic blocklist)
+        if (/^\s*git\b/i.test(trimmed)) {
+            if (isDestructiveGitCommand(trimmed)) return true;
+            // Flag-level check still applies (e.g. git diff --output=...)
+            if (DESTRUCTIVE_FLAG_PATTERNS.some((p) => p.test(trimmed))) return true;
+            continue;
+        }
+
         const isCmdDestructive = DESTRUCTIVE_CMD_PATTERNS.some((p) => p.test(trimmed));
         const isFlagDestructive = DESTRUCTIVE_FLAG_PATTERNS.some((p) => p.test(trimmed));
         if (isCmdDestructive || isFlagDestructive) return true;

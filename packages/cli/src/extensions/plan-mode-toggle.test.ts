@@ -278,6 +278,127 @@ describe("isDestructiveCommand", () => {
         expect(isDestructiveCommand("git remote rename origin upstream")).toBe(true);
     });
 
+    // Previously missing git destructive commands (allowlist regression tests)
+    test("flags git clean (removes untracked files)", () => {
+        expect(isDestructiveCommand("git clean -fd")).toBe(true);
+        expect(isDestructiveCommand("git clean -n")).toBe(true); // even dry-run, subcommand not on allowlist
+    });
+
+    test("flags git apply (applies patches)", () => {
+        expect(isDestructiveCommand("git apply patch.diff")).toBe(true);
+        expect(isDestructiveCommand("git apply --stat patch.diff")).toBe(true);
+    });
+
+    test("flags git restore (discards changes)", () => {
+        expect(isDestructiveCommand("git restore .")).toBe(true);
+        expect(isDestructiveCommand("git restore --staged file.ts")).toBe(true);
+    });
+
+    test("flags git rm (removes files)", () => {
+        expect(isDestructiveCommand("git rm file.ts")).toBe(true);
+        expect(isDestructiveCommand("git rm --cached file.ts")).toBe(true);
+    });
+
+    test("flags git mv (moves files)", () => {
+        expect(isDestructiveCommand("git mv old.ts new.ts")).toBe(true);
+    });
+
+    test("flags git am (applies mailbox patches)", () => {
+        expect(isDestructiveCommand("git am < patch.mbox")).toBe(true);
+    });
+
+    test("flags git bisect (modifies HEAD)", () => {
+        expect(isDestructiveCommand("git bisect start")).toBe(true);
+        expect(isDestructiveCommand("git bisect reset")).toBe(true);
+    });
+
+    test("flags git format-patch (writes files)", () => {
+        expect(isDestructiveCommand("git format-patch HEAD~3")).toBe(true);
+    });
+
+    test("flags git filter-branch (rewrites history)", () => {
+        expect(isDestructiveCommand("git filter-branch --tree-filter 'rm -f secret' HEAD")).toBe(true);
+    });
+
+    test("flags git notes (modifies notes)", () => {
+        expect(isDestructiveCommand("git notes add -m 'note'")).toBe(true);
+    });
+
+    test("flags git submodule update (modifies working tree)", () => {
+        expect(isDestructiveCommand("git submodule update --init")).toBe(true);
+    });
+
+    test("flags git switch -c (creates branch + switches)", () => {
+        expect(isDestructiveCommand("git switch -c new-branch")).toBe(true);
+        expect(isDestructiveCommand("git switch main")).toBe(true); // switch modifies HEAD
+    });
+
+    // Safe git subcommand with destructive override tests
+    test("flags git branch -D (delete)", () => {
+        expect(isDestructiveCommand("git branch -D feature")).toBe(true);
+        expect(isDestructiveCommand("git branch -d feature")).toBe(true);
+        expect(isDestructiveCommand("git branch -m old new")).toBe(true);
+    });
+
+    test("flags git stash push/drop/pop (mutating)", () => {
+        expect(isDestructiveCommand("git stash")).toBe(true);
+        expect(isDestructiveCommand("git stash push")).toBe(true);
+        expect(isDestructiveCommand("git stash drop")).toBe(true);
+        expect(isDestructiveCommand("git stash pop")).toBe(true);
+        expect(isDestructiveCommand("git stash apply")).toBe(true);
+        expect(isDestructiveCommand("git stash clear")).toBe(true);
+    });
+
+    test("allows git stash list/show (read-only)", () => {
+        expect(isDestructiveCommand("git stash list")).toBe(false);
+        expect(isDestructiveCommand("git stash show")).toBe(false);
+        expect(isDestructiveCommand("git stash show -p")).toBe(false);
+    });
+
+    test("flags git worktree add/remove (mutating)", () => {
+        expect(isDestructiveCommand("git worktree add ../feature")).toBe(true);
+        expect(isDestructiveCommand("git worktree remove ../feature")).toBe(true);
+    });
+
+    test("allows git worktree list (read-only)", () => {
+        expect(isDestructiveCommand("git worktree list")).toBe(false);
+    });
+
+    test("flags git config set (write)", () => {
+        expect(isDestructiveCommand("git config user.name 'Test'")).toBe(true);
+        expect(isDestructiveCommand("git config --unset user.name")).toBe(true);
+    });
+
+    test("allows git config --get/--list (read-only)", () => {
+        expect(isDestructiveCommand("git config --get user.name")).toBe(false);
+        expect(isDestructiveCommand("git config --list")).toBe(false);
+        expect(isDestructiveCommand("git config --get-all user.name")).toBe(false);
+    });
+
+    test("flags git reflog delete/expire (mutating)", () => {
+        expect(isDestructiveCommand("git reflog delete HEAD@{0}")).toBe(true);
+        expect(isDestructiveCommand("git reflog expire --all")).toBe(true);
+    });
+
+    test("allows git reflog show (read-only)", () => {
+        expect(isDestructiveCommand("git reflog")).toBe(false);
+        expect(isDestructiveCommand("git reflog show")).toBe(false);
+    });
+
+    test("allows other read-only git commands", () => {
+        expect(isDestructiveCommand("git log --oneline -10")).toBe(false);
+        expect(isDestructiveCommand("git show HEAD")).toBe(false);
+        expect(isDestructiveCommand("git blame file.ts")).toBe(false);
+        expect(isDestructiveCommand("git grep 'pattern'")).toBe(false);
+        expect(isDestructiveCommand("git ls-files")).toBe(false);
+        expect(isDestructiveCommand("git rev-parse HEAD")).toBe(false);
+        expect(isDestructiveCommand("git describe --tags")).toBe(false);
+        expect(isDestructiveCommand("git for-each-ref")).toBe(false);
+        expect(isDestructiveCommand("git cat-file -p HEAD")).toBe(false);
+        expect(isDestructiveCommand("git fsck")).toBe(false);
+        expect(isDestructiveCommand("git count-objects")).toBe(false);
+    });
+
     // sort -o file-write bypass
     test("flags sort with -o/--output (file write)", () => {
         expect(isDestructiveCommand("sort -o out.txt input.txt")).toBe(true);
