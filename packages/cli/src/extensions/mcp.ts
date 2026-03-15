@@ -1,7 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
 import type { PizzaPiConfig } from "../config.js";
 import { PizzaPiOAuthProvider, type RelayContext } from "./mcp-oauth.js";
-import { getSandboxEnv, isSandboxActive, getResolvedConfig, getSandboxMode, wrapCommand } from "@pizzapi/tools";
+import { getSandboxEnv, isSandboxActive, getResolvedConfig } from "@pizzapi/tools";
 
 /**
  * Minimal MCP client transport + tool bridge.
@@ -147,29 +147,19 @@ async function createStdioMcpClient(opts: { name: string; command: string; args?
   // override them to bypass network filtering.
   const mergedEnv = { ...process.env, ...(opts.env ?? {}), ...sandboxEnv };
 
-  // Wrap MCP command with OS-level sandbox (filesystem + socket restrictions).
-  // wrapCommand applies sandbox-exec (macOS) or bwrap (Linux) around the command.
-  let child: ChildProcessWithoutNullStreams;
-  if (isSandboxActive()) {
-    // Build shell command string from command + args for wrapping
-    const shellQuote = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
-    const shellArgs = (opts.args ?? []).map(a => shellQuote(a)).join(" ");
-    const quotedCmd = shellQuote(opts.command);
-    const shellCmd = shellArgs ? `${quotedCmd} ${shellArgs}` : quotedCmd;
-    const wrappedCmd = await wrapCommand(shellCmd);
-    child = spawn(wrappedCmd, [], {
-      stdio: "pipe",
-      shell: true,
-      env: mergedEnv,
-      ...(opts.cwd ? { cwd: opts.cwd } : {}),
-    });
-  } else {
-    child = spawn(opts.command, opts.args ?? [], {
-      stdio: "pipe",
-      env: mergedEnv,
-      ...(opts.cwd ? { cwd: opts.cwd } : {}),
-    });
-  }
+  // STDIO MCP servers are trusted local processes spawned from the user's
+  // config — NOT agent-generated commands. We do NOT wrap them with the
+  // filesystem sandbox (wrapCommand). They need full filesystem access to
+  // read/write their own data directories (e.g. Godmother → ~/Documents/AgentMemory).
+  //
+  // Network sandboxing still applies via the proxy env vars injected above —
+  // outbound traffic is routed through srt's proxy for domain filtering when
+  // sandbox is active in "full" mode.
+  const child: ChildProcessWithoutNullStreams = spawn(opts.command, opts.args ?? [], {
+    stdio: "pipe",
+    env: mergedEnv,
+    ...(opts.cwd ? { cwd: opts.cwd } : {}),
+  });
 
   let nextId = 1;
   const pending = new Map<number, { resolve: (v: any) => void; reject: (e: any) => void }>();
