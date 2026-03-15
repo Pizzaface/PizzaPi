@@ -18,6 +18,8 @@ const tmpDir = mkdtempSync(join(tmpdir(), "pizzapi-e2e-"));
 const dbPath = join(tmpDir, "test.db");
 const BASE = "http://localhost:7777";
 
+process.env.PIZZAPI_TRUST_PROXY = "true";
+
 /** Helper to make requests through the handler */
 async function req(method: string, path: string, body?: any, headers?: Record<string, string>): Promise<Response> {
     const init: RequestInit = {

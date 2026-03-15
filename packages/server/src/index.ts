@@ -33,12 +33,28 @@ function nodeReqToFetchRequest(req: IncomingMessage): Request {
     const headers = new Headers();
     for (const [key, value] of Object.entries(req.headers)) {
         if (value === undefined) continue;
+        // Strip out any spoofed client IP headers from the original request
+        if (key.toLowerCase() === "x-pizzapi-client-ip") continue;
         if (Array.isArray(value)) {
             for (const v of value) headers.append(key, v);
         } else {
             headers.set(key, value);
         }
     }
+
+    // Securely inject the true remote address so route handlers can trust it
+    let clientIp = req.socket.remoteAddress || "unknown";
+
+    // Opt-in mechanism for trusted proxies
+    if (process.env.PIZZAPI_TRUST_PROXY === "true" || process.env.PIZZAPI_TRUST_PROXY === "1") {
+        const xff = req.headers["x-forwarded-for"];
+        if (xff) {
+            const ips = (Array.isArray(xff) ? xff[0] : xff).split(",").map(s => s.trim());
+            clientIp = ips[0] || clientIp;
+        }
+    }
+
+    headers.set("x-pizzapi-client-ip", clientIp);
 
     const method = (req.method ?? "GET").toUpperCase();
     const hasBody = method !== "GET" && method !== "HEAD";

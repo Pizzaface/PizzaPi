@@ -54,6 +54,10 @@ export class RateLimiter {
     }
 }
 
+export function getClientIp(req: Request): string {
+    return req.headers.get("x-pizzapi-client-ip") || "unknown";
+}
+
 export function isValidEmail(email: string): boolean {
     // Simple but effective regex for most use cases
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
