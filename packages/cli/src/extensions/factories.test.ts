@@ -32,13 +32,14 @@ const CORE_EXTENSIONS: ExtensionFactory[] = [
 ];
 
 /**
- * Most tests use a non-existent cwd ("/tmp/pizzapi-test") so no plugins are
- * discovered and the plugin extension is not appended. Tests that need
- * plugins create a temp HOME with a real plugin directory.
+ * Tests that focus on core extension composition use skipPlugins: true
+ * to avoid depending on whether global plugins exist in the real HOME
+ * directory (Bun caches homedir() at process start, so overriding HOME
+ * in tests doesn't help).
  */
 describe("buildPizzaPiExtensionFactories", () => {
     test("returns core extensions by default", () => {
-        const factories = buildPizzaPiExtensionFactories({ cwd: "/tmp/pizzapi-test" });
+        const factories = buildPizzaPiExtensionFactories({ cwd: "/tmp/pizzapi-test", skipPlugins: true });
         expect(factories).toEqual(CORE_EXTENSIONS);
     });
 
@@ -46,6 +47,7 @@ describe("buildPizzaPiExtensionFactories", () => {
         const factories = buildPizzaPiExtensionFactories({
             cwd: "/tmp/pizzapi-test",
             includeInitialPrompt: true,
+            skipPlugins: true,
         });
 
         expect(factories).toEqual([...CORE_EXTENSIONS, initialPromptExtension]);
@@ -59,6 +61,7 @@ describe("buildPizzaPiExtensionFactories", () => {
         const factories = buildPizzaPiExtensionFactories({
             cwd: "/tmp/pizzapi-test",
             hooks,
+            skipPlugins: true,
         });
 
         expect(factories).toHaveLength(CORE_EXTENSIONS.length + 1);
@@ -75,6 +78,7 @@ describe("buildPizzaPiExtensionFactories", () => {
             cwd: "/tmp/pizzapi-test",
             hooks,
             includeInitialPrompt: true,
+            skipPlugins: true,
         });
 
         expect(factories).toHaveLength(CORE_EXTENSIONS.length + 2);

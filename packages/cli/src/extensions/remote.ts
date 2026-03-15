@@ -635,7 +635,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             receivedTriggers.delete(data.triggerId);
         });
 
-        sock.on("session_expired", (_data) => {
+        sock.on("session_expired", (_data: any) => {
             rctx.shuttingDown = true;
             rctx.relay = null;
             rctx.setRelayStatus("Session expired");
@@ -655,7 +655,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             }
         });
 
-        sock.on("error", (data) => {
+        sock.on("error", (data: any) => {
             rctx.setRelayStatus(`Relay error: ${data.message}`);
         });
 
