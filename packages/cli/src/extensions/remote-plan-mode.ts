@@ -317,6 +317,20 @@ export function registerPlanModeTool(rctx: RelayContext) {
 
                 const triggerResult = await rctx.waitForTriggerResponse(triggerId, trigger.timeoutMs, signal);
 
+                // Treat timeout / delivery-failure as cancellation
+                if (triggerResult.cancelled) {
+                    return {
+                        content: [{ type: "text", text: `Plan cancelled: ${triggerResult.response}` }],
+                        details: {
+                            title,
+                            description,
+                            steps,
+                            action: "cancel" as PlanModeAction,
+                            editSuggestion: null,
+                        } satisfies PlanModeDetails,
+                    };
+                }
+
                 const response = triggerResult.response;
 
                 let isApproval: boolean;
