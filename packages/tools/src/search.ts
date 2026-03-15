@@ -148,6 +148,7 @@ function isFailure(result: SpawnResult, type: string): boolean {
 }
 
 import { resolve as pathResolve } from "node:path";
+import { realpathSync } from "node:fs";
 
 /**
  * Build deny-path exclusion args for rg and find.
@@ -160,10 +161,15 @@ function _buildDenyExclusions(searchRoot: string): { rg: string[]; find: string[
 
     const rgArgs: string[] = [];
     const findArgs: string[] = [];
-    const resolvedRoot = pathResolve(searchRoot);
+    // Resolve symlinks so equivalent paths (e.g. symlinked search root or
+    // denied paths) produce identical prefixes in the traversal check below.
+    // Fall back to pathResolve if the path doesn't exist yet (e.g. in tests).
+    let resolvedRoot: string;
+    try { resolvedRoot = realpathSync(pathResolve(searchRoot)); } catch { resolvedRoot = pathResolve(searchRoot); }
 
     for (const denied of config.srtConfig.filesystem.denyRead) {
-        const resolvedDenied = pathResolve(denied);
+        let resolvedDenied: string;
+        try { resolvedDenied = realpathSync(pathResolve(denied)); } catch { resolvedDenied = pathResolve(denied); }
 
         // Only add exclusion if denied path is under (or equal to) the search root.
         // Use a trailing slash only when resolvedRoot is not already "/", to avoid
@@ -267,9 +273,16 @@ export const searchTool: AgentTool = {
         const denyExclusions = _buildDenyExclusions(safePath);
 
         // -e forces rg to treat pattern as a regex (not a flag); -- ends options before path.
+        // find must use an absolute, symlink-resolved search root so that
+        // -path prune clauses (which use realpathSync-resolved denied paths)
+        // actually match traversal entries. On macOS /var → /private/var, so
+        // without realpath the prune paths would mismatch the find root.
+        // rg handles its own relative path matching via --glob patterns.
+        let absSafePath: string;
+        try { absSafePath = realpathSync(pathResolve(safePath)); } catch { absSafePath = pathResolve(safePath); }
         const [cmd, args, maxLines] =
             type === "files"
-                ? (["find", [safePath, ...denyExclusions.find, "-name", pattern, "-type", "f", "-print"], 50] as const)
+                ? (["find", [absSafePath, ...denyExclusions.find, "-name", pattern, "-type", "f", "-print"], 50] as const)
                 : (["rg", ["--no-heading", "-n", ...denyExclusions.rg, "-e", pattern, "--", safePath], 100] as const);
 
         let result: SpawnResult;

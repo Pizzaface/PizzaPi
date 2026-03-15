@@ -620,19 +620,12 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             const trigger = data?.trigger;
             if (!trigger) return;
 
-            // Auto-ack session_complete triggers when the parent already consumed
-            // messages from this child via wait_for_message/drain — the output was
-            // already processed, so the trigger is redundant clutter.
-            if (
-                trigger.type === "session_complete" &&
-                messageBus.hasConsumedMessagesFrom(trigger.sourceSessionId)
-            ) {
-                console.log(
-                    `pizzapi: auto-acked redundant session_complete from ${trigger.sourceSessionId} (already consumed via messages)`,
-                );
-                return;
-            }
-
+            // NOTE: We no longer auto-suppress session_complete triggers when
+            // the parent has consumed messages from the child. Linked sessions
+            // may mix send_message (for streaming updates) with trigger-based
+            // completion — suppressing session_complete after any bus consumption
+            // would cause the parent to miss the final completion signal. If a
+            // parent doesn't want triggers, it should spawn with linked: false.
             trackReceivedTrigger(trigger.triggerId, trigger.sourceSessionId, trigger.type);
             const rendered = renderTrigger(trigger);
             const deliverAs = trigger.deliverAs === "followUp" ? "followUp" as const : "steer" as const;

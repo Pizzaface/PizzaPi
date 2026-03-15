@@ -152,8 +152,10 @@ async function createStdioMcpClient(opts: { name: string; command: string; args?
   let child: ChildProcessWithoutNullStreams;
   if (isSandboxActive()) {
     // Build shell command string from command + args for wrapping
-    const shellArgs = (opts.args ?? []).map(a => `'${a.replace(/'/g, "'\\''")}'`).join(" ");
-    const shellCmd = shellArgs ? `${opts.command} ${shellArgs}` : opts.command;
+    const shellQuote = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
+    const shellArgs = (opts.args ?? []).map(a => shellQuote(a)).join(" ");
+    const quotedCmd = shellQuote(opts.command);
+    const shellCmd = shellArgs ? `${quotedCmd} ${shellArgs}` : quotedCmd;
     const wrappedCmd = await wrapCommand(shellCmd);
     child = spawn(wrappedCmd, [], {
       stdio: "pipe",
