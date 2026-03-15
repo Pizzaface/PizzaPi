@@ -33,6 +33,12 @@ class SessionMessageBus {
     private sendFn: SendFn | null = null;
     /** This session's own ID (set by remote extension after registration). */
     private ownSessionId: string | null = null;
+    /**
+     * Session IDs from which this parent has consumed at least one message
+     * via waitForMessage or drain. Used to auto-ack redundant session_complete
+     * triggers when the parent already processed the child's output via messages.
+     */
+    private consumedSessions = new Set<string>();
 
     /** Called by remote extension to wire up the send path. */
     setSendFn(fn: SendFn | null): void {
@@ -61,6 +67,7 @@ class SessionMessageBus {
             const waiter = this.waiters[i];
             if (waiter.fromSessionId === null || waiter.fromSessionId === msg.fromSessionId) {
                 this.waiters.splice(i, 1);
+                this.consumedSessions.add(msg.fromSessionId);
                 waiter.resolve(msg);
                 return;
             }
@@ -84,7 +91,9 @@ class SessionMessageBus {
         if (fromSessionId) {
             const q = this.queues.get(fromSessionId);
             if (q && q.length > 0) {
-                return Promise.resolve(q.shift()!);
+                const msg = q.shift()!;
+                this.consumedSessions.add(msg.fromSessionId);
+                return Promise.resolve(msg);
             }
         } else {
             // Any sender — grab the oldest message across all queues.
@@ -99,6 +108,7 @@ class SessionMessageBus {
             }
             if (oldest) {
                 this.queues.get(oldest.key)!.shift();
+                this.consumedSessions.add(oldest.msg.fromSessionId);
                 return Promise.resolve(oldest.msg);
             }
         }
@@ -125,13 +135,22 @@ class SessionMessageBus {
     drain(fromSessionId?: string): SessionMessage[] {
         if (fromSessionId) {
             const q = this.queues.get(fromSessionId) ?? [];
+            if (q.length > 0) this.consumedSessions.add(fromSessionId);
             this.queues.delete(fromSessionId);
             return q;
         }
         const all: SessionMessage[] = [];
-        for (const [, q] of this.queues) all.push(...q);
+        for (const [key, q] of this.queues) {
+            if (q.length > 0) this.consumedSessions.add(key);
+            all.push(...q);
+        }
         this.queues.clear();
         return all.sort((a, b) => a.ts.localeCompare(b.ts));
+    }
+
+    /** Returns true if this parent has consumed at least one message from the given session. */
+    hasConsumedMessagesFrom(sessionId: string): boolean {
+        return this.consumedSessions.has(sessionId);
     }
 
     /** Get count of pending messages. */

@@ -619,6 +619,20 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         sock.on("session_trigger" as any, (data: { trigger: ConversationTrigger }) => {
             const trigger = data?.trigger;
             if (!trigger) return;
+
+            // Auto-ack session_complete triggers when the parent already consumed
+            // messages from this child via wait_for_message/drain — the output was
+            // already processed, so the trigger is redundant clutter.
+            if (
+                trigger.type === "session_complete" &&
+                messageBus.hasConsumedMessagesFrom(trigger.sourceSessionId)
+            ) {
+                console.log(
+                    `pizzapi: auto-acked redundant session_complete from ${trigger.sourceSessionId} (already consumed via messages)`,
+                );
+                return;
+            }
+
             trackReceivedTrigger(trigger.triggerId, trigger.sourceSessionId, trigger.type);
             const rendered = renderTrigger(trigger);
             const deliverAs = trigger.deliverAs === "followUp" ? "followUp" as const : "steer" as const;
