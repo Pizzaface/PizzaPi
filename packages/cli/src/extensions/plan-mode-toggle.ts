@@ -1,6 +1,7 @@
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import type { AssistantMessage, TextContent } from "@mariozechner/pi-ai";
 import type { ExtensionFactory } from "@mariozechner/pi-coding-agent";
+import { isSandboxActive, setReadOnlyOverlay } from "@pizzapi/tools";
 
 // ── Safe-command detection ───────────────────────────────────────────────────
 
@@ -24,10 +25,57 @@ const DESTRUCTIVE_CMD_PATTERNS = [
     /^\s*pip\s+(install|uninstall)/i,
     /^\s*apt(-get)?\s+(install|remove|purge|update|upgrade)/i,
     /^\s*brew\s+(install|uninstall|upgrade)/i,
-    /^\s*git\s+(add|commit|push|pull|merge|rebase|reset|checkout|branch\s+-[dDmMcC]|stash|cherry-pick|revert|tag|init|clone)/i,
-    /^\s*git\s+remote\s+(add|remove|rm|rename|set-url|set-head|set-branches|prune|update)/i,
     /^\s*systemctl\s+(start|stop|restart|enable|disable)/i,
     /^\s*service\s+\S+\s+(start|stop|restart)/i,
+];
+
+/**
+ * Read-only git subcommands allowed in plan mode.
+ *
+ * Uses an **allowlist** instead of a blocklist because enumerating all
+ * destructive git subcommands is fragile — new git versions add more, and
+ * commands like `git clean`, `git apply`, `git restore`, `git am`, etc. are
+ * easy to miss. Any `git <subcommand>` not on this list is treated as
+ * destructive when the OS sandbox is unavailable.
+ */
+const GIT_SAFE_SUBCOMMANDS = new Set([
+    // Inspection / query
+    "status", "log", "diff", "show", "blame", "grep", "shortlog",
+    // Ref listing / lookup
+    "branch", "tag", "remote", "stash",
+    // Low-level read-only
+    "ls-files", "ls-tree", "ls-remote", "cat-file", "rev-parse",
+    "rev-list", "for-each-ref", "name-rev", "describe", "merge-base",
+    "count-objects", "fsck", "verify-commit", "verify-tag", "verify-pack",
+    // Misc read-only
+    "help", "version", "config", "reflog", "worktree",
+]);
+
+/**
+ * Git subcommand + argument combinations that are destructive even though
+ * the subcommand itself is on the safe list (e.g. `git branch -D`, `git
+ * remote add`, `git stash drop`, `git config --unset`, `git worktree add`).
+ */
+const GIT_SAFE_SUBCOMMAND_DESTRUCTIVE_OVERRIDES: RegExp[] = [
+    // branch: -d/-D/-m/-M/-c/-C are mutating (must be a standalone short flag, not part of --merged etc.)
+    /^\s*git\s+branch\s+.*\s-[dDmMcC]\b/i,
+    /^\s*git\s+branch\s+-[dDmMcC]\b/i,
+    // tag: -d (delete), -a/-s (create), or any arg that looks like a new tag name
+    // We allow listing (no args, -l, --list, -n, --contains, --merged, etc.)
+    /^\s*git\s+tag\s+.*-[dsafFu]/i,
+    /^\s*git\s+tag\s+(?!-|$)\S/i, // `git tag v1.0` (creating a tag)
+    // remote: add/remove/rm/rename/set-url/set-head/set-branches/prune/update
+    /^\s*git\s+remote\s+(add|remove|rm|rename|set-url|set-head|set-branches|prune|update)\b/i,
+    // stash: push/save/drop/pop/apply/clear are mutating; only list/show are safe
+    /^\s*git\s+stash\s+(push|save|drop|pop|apply|clear|create|store)\b/i,
+    /^\s*git\s+stash\s*$/i, // bare `git stash` is `git stash push`
+    // config: writing operations
+    /^\s*git\s+config\s+.*--(unset|unset-all|remove-section|rename-section|replace-all|add)\b/i,
+    /^\s*git\s+config\s+(?!.*--(get|get-all|get-regexp|list|show-origin|show-scope|type|default|includes))\S+\s+\S/i,
+    // reflog: delete/expire are mutating; show is safe
+    /^\s*git\s+reflog\s+(delete|expire)\b/i,
+    // worktree: add/remove/move/repair are mutating; list is safe
+    /^\s*git\s+worktree\s+(add|remove|move|repair|lock|unlock)\b/i,
 ];
 
 /**
@@ -41,29 +89,15 @@ const DESTRUCTIVE_FLAG_PATTERNS = [
     /\bfind\b.*\s-exec(dir)?\b/i, /\bfind\b.*\s-ok(dir)?\b/i, /\bfind\b.*\s-delete\b/i, /\bfind\b.*\s-fprintf\b/i,
     /\bgit\b.*\s--output[= ]/i,
     /\bsort\b.*\s(-o\s|-o\S|--output\b|--output=)/i,
-];
-
-const SAFE_PATTERNS = [
-    /^\s*cat\b/, /^\s*head\b/, /^\s*tail\b/, /^\s*less\b/, /^\s*more\b/,
-    /^\s*grep\b/, /^\s*find\b/, /^\s*ls\b/, /^\s*pwd\b/,
-    /^\s*echo\b/, /^\s*printf\b/, /^\s*wc\b/, /^\s*sort\b/, /^\s*uniq\b/,
-    /^\s*diff\b/, /^\s*file\b/, /^\s*stat\b/, /^\s*du\b/, /^\s*df\b/,
-    /^\s*tree\b/, /^\s*which\b/, /^\s*whereis\b/, /^\s*type\b/,
-    /^\s*printenv\b/, /^\s*uname\b/, /^\s*whoami\b/,
-    /^\s*id\b/, /^\s*date\b/, /^\s*cal\b/, /^\s*uptime\b/,
-    /^\s*ps\b/, /^\s*top\b/, /^\s*htop\b/, /^\s*free\b/,
-    /^\s*git\s+(status|log|diff|show|config\s+--get)/i,
-    /^\s*git\s+branch(?:\s+(?:-[avr]+|--list|--merged|--no-merged|--contains|--sort=\S+))*$/i,
-    /^\s*git\s+remote(\s+(-v|--verbose|show\b))/i,
-    /^\s*git\s+remote\s*$/i,
-    /^\s*git\s+ls-/i,
-    /^\s*npm\s+(list|ls|view|info|search|outdated|audit(?!\s+(fix|signatures)))/i,
-    /^\s*yarn\s+(list|info|why|audit)/i,
-    /^\s*bun\s+(pm\s+ls|--version)/i,
-    /^\s*node\s+--version/i, /^\s*python\s+--version/i,
-    /^\s*curl\s/i, /^\s*wget\s+-O\s*-/i,
-    /^\s*jq\b/,
-    /^\s*rg\b/, /^\s*fd\b/, /^\s*bat\b/, /^\s*exa\b/,
+    // In-place editing via sed/perl -i
+    /\bsed\b.*\s-i\b/i, /\bsed\b.*\s-i\S/i,
+    /\bperl\b.*\s-i\b/i, /\bperl\b.*\s-i\S/i,
+    // Interpreters executing scripts (not just --version/--help)
+    /^\s*python[23]?\s+(?!--(version|help)\b)\S/i,
+    /^\s*ruby\s+(?!--(version|help)\b)\S/i,
+    /^\s*node\s+(?!--(version|help)\b)\S/i,
+    // Build tools (not --dry-run / --just-print / -n)
+    /^\s*make\b(?!.*(\s-n\b|\s--dry-run\b|\s--just-print\b))/i,
 ];
 
 /**
@@ -125,12 +159,48 @@ export function splitShellSegments(command: string): string[] {
     return segments;
 }
 
-/** @internal Exported for testing only. */
-export function isSafeCommand(command: string): boolean {
+/**
+ * Check whether a single command segment is a destructive git invocation.
+ *
+ * Uses an **allowlist** of read-only git subcommands. Any git subcommand not
+ * on the list is treated as destructive. For subcommands that are on the safe
+ * list, a secondary override check catches argument combinations that are
+ * still mutating (e.g. `git branch -D`, `git remote add`).
+ */
+function isDestructiveGitCommand(segment: string): boolean {
+    const gitMatch = segment.match(/^\s*git\s+(\S+)/i);
+    if (!gitMatch) return false; // not a git command
+
+    const subcommand = gitMatch[1].toLowerCase();
+
+    // Subcommand not on the safe list → destructive
+    if (!GIT_SAFE_SUBCOMMANDS.has(subcommand)) return true;
+
+    // Subcommand is safe in general, but check for destructive argument patterns
+    return GIT_SAFE_SUBCOMMAND_DESTRUCTIVE_OVERRIDES.some((p) => p.test(segment));
+}
+
+/**
+ * Check if a command looks destructive based on known patterns.
+ *
+ * For most commands this is a **blocklist** check — known destructive patterns
+ * are flagged and everything else passes. For `git` specifically an
+ * **allowlist** approach is used because the set of mutating git subcommands
+ * is too large to enumerate reliably (git clean, git apply, git restore,
+ * git am, git bisect, etc.).
+ *
+ * This is used as a best-effort advisory check when the OS-level sandbox is
+ * not active. When the sandbox IS active, plan mode uses the sandbox's
+ * read-only overlay instead (which enforces at the OS level regardless of
+ * what command is run).
+ *
+ * @internal Exported for testing only.
+ */
+export function isDestructiveCommand(command: string): boolean {
     // Reject command substitution, backtick expansion, process substitution,
-    // and multi-line payloads that could smuggle non-allowlisted commands past
+    // and multi-line payloads that could smuggle destructive commands past
     // the per-segment check.
-    if (/\$\(|`|\n|<\(|>\(/.test(command)) return false;
+    if (/\$\(|`|\n|<\(|>\(/.test(command)) return true;
 
     // Split on shell chaining operators, respecting quotes
     const parts = splitShellSegments(command);
@@ -138,13 +208,29 @@ export function isSafeCommand(command: string): boolean {
     for (const part of parts) {
         const trimmed = part.trim();
         if (!trimmed) continue; // empty segment (e.g. trailing semicolon)
+
+        // Git: allowlist-based check (stricter than the generic blocklist)
+        if (/^\s*git\b/i.test(trimmed)) {
+            if (isDestructiveGitCommand(trimmed)) return true;
+            // Flag-level check still applies (e.g. git diff --output=...)
+            if (DESTRUCTIVE_FLAG_PATTERNS.some((p) => p.test(trimmed))) return true;
+            continue;
+        }
+
         const isCmdDestructive = DESTRUCTIVE_CMD_PATTERNS.some((p) => p.test(trimmed));
         const isFlagDestructive = DESTRUCTIVE_FLAG_PATTERNS.some((p) => p.test(trimmed));
-        const isSafe = SAFE_PATTERNS.some((p) => p.test(trimmed));
-        if (isCmdDestructive || isFlagDestructive || !isSafe) return false;
+        if (isCmdDestructive || isFlagDestructive) return true;
     }
 
-    return parts.some((p) => p.trim().length > 0); // at least one non-empty subcommand
+    return false;
+}
+
+/**
+ * @deprecated Use `isDestructiveCommand` instead. Kept for backward compat during transition.
+ * @internal Exported for testing only.
+ */
+export function isSafeCommand(command: string): boolean {
+    return !isDestructiveCommand(command);
 }
 
 // ── Todo item types ──────────────────────────────────────────────────────────
@@ -332,6 +418,11 @@ export const planModeToggleExtension: ExtensionFactory = (pi) => {
             planSubmittedDuringSession = false;
             planModeContextSent = false; // Reset so the context message fires once on the next turn
         }
+        // Toggle sandbox read-only overlay when sandbox is active.
+        // This makes the OS enforce no-write for all bash commands in plan mode.
+        if (isSandboxActive()) {
+            setReadOnlyOverlay(enabled);
+        }
         syncModuleState();
         _onPlanModeChange?.(planModeEnabled);
         persistState();
@@ -430,13 +521,17 @@ export const planModeToggleExtension: ExtensionFactory = (pi) => {
             };
         }
 
-        // Block destructive bash commands
+        // Block destructive bash commands in plan mode.
+        // The sandbox read-only overlay enforces filesystem write restrictions,
+        // but non-filesystem side effects (kill, network calls, etc.) are not
+        // blocked by the overlay — so we always check the destructive pattern
+        // regardless of sandbox state.
         if (event.toolName === "bash") {
             const command = (event.input as any).command as string;
-            if (!isSafeCommand(command)) {
+            if (isDestructiveCommand(command)) {
                 return {
                     block: true,
-                    reason: `Plan mode: command blocked (not in read-only allowlist). Use toggle_plan_mode to exit plan mode first.\nCommand: ${command}`,
+                    reason: `Plan mode: command blocked (matches destructive pattern). Use toggle_plan_mode to exit plan mode first.\nCommand: ${command}`,
                 };
             }
         }
@@ -619,6 +714,10 @@ After completing a step, include a [DONE:n] tag in your response (e.g. [DONE:1])
         if (choice?.startsWith("Execute")) {
             planModeEnabled = false;
             executionMode = todoItems.length > 0;
+            // Lift sandbox read-only overlay so execution can write files
+            if (isSandboxActive()) {
+                setReadOnlyOverlay(false);
+            }
             syncModuleState();
             _onPlanModeChange?.(false);
 
@@ -680,6 +779,12 @@ After completing a step, include a [DONE:n] tag in your response (e.g. [DONE:1])
             markCompletedSteps(allText, todoItems);
         }
 
+        // Re-apply sandbox overlay to match restored plan mode state.
+        // On resume with plan mode enabled, the overlay must be re-activated;
+        // on resume with plan mode off, ensure it's cleared.
+        if (isSandboxActive()) {
+            setReadOnlyOverlay(planModeEnabled);
+        }
         syncModuleState();
     });
 
@@ -690,6 +795,12 @@ After completing a step, include a [DONE:n] tag in your response (e.g. [DONE:1])
         todoItems = [];
         planModeContextSent = false;
         _pendingContextClear = false;
+        // Clear sandbox read-only overlay so the new session starts with full
+        // write access. Without this, a previous session's plan mode leaks
+        // read-only restrictions into the next session.
+        if (wasEnabled && isSandboxActive()) {
+            setReadOnlyOverlay(false);
+        }
         syncModuleState();
         if (wasEnabled) {
             _onPlanModeChange?.(false);

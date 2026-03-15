@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { toggleMcpServer, loadConfig, _setGlobalConfigDir } from "./config.js";
+import { toggleMcpServer, loadConfig, _setGlobalConfigDir, resolveSandboxConfig, validateSandboxOverride } from "./config.js";
 
 describe("toggleMcpServer", () => {
   let tempDir: string;
@@ -290,5 +290,124 @@ describe("loadConfig disabledMcpServers merge", () => {
 
     const config = loadConfig(projectDir);
     expect(config.disabledMcpServers).toEqual(["playwright"]);
+  });
+});
+
+describe("resolveSandboxConfig", () => {
+  test("throws on invalid sandbox mode", () => {
+    expect(() =>
+      resolveSandboxConfig("/tmp", { sandbox: { mode: "ful" as any } } as any),
+    ).toThrow(/Invalid sandbox mode "ful"/);
+  });
+
+  test("throws on empty string mode", () => {
+    expect(() =>
+      resolveSandboxConfig("/tmp", { sandbox: { mode: "" as any } } as any),
+    ).toThrow(/Invalid sandbox mode ""/);
+  });
+
+  test("accepts valid mode 'none'", () => {
+    const result = resolveSandboxConfig("/tmp", { sandbox: { mode: "none" } } as any);
+    expect(result.mode).toBe("none");
+    expect(result.srtConfig).toBeNull();
+  });
+
+  test("accepts valid mode 'basic'", () => {
+    const result = resolveSandboxConfig("/tmp", { sandbox: { mode: "basic" } } as any);
+    expect(result.mode).toBe("basic");
+    expect(result.srtConfig).not.toBeNull();
+  });
+
+  test("accepts valid mode 'full'", () => {
+    const result = resolveSandboxConfig("/tmp", { sandbox: { mode: "full" } } as any);
+    expect(result.mode).toBe("full");
+    expect(result.srtConfig).not.toBeNull();
+    expect(result.srtConfig!.network).toBeDefined();
+  });
+
+  test("defaults to 'basic' when mode is omitted", () => {
+    const result = resolveSandboxConfig("/tmp", { sandbox: {} } as any);
+    expect(result.mode).toBe("basic");
+  });
+
+  test("coerces bare string allowWrite to array", () => {
+    const result = resolveSandboxConfig("/tmp", {
+      sandbox: { mode: "basic", filesystem: { allowWrite: "." as any } },
+    } as any);
+    expect(result.srtConfig).not.toBeNull();
+    // Should not throw — the bare string "." is coerced to ["."]
+    expect(result.srtConfig!.filesystem.allowWrite).toBeInstanceOf(Array);
+    expect(result.srtConfig!.filesystem.allowWrite.length).toBeGreaterThan(0);
+  });
+
+  test("coerces bare string denyRead to array", () => {
+    const result = resolveSandboxConfig("/tmp", {
+      sandbox: { mode: "basic", filesystem: { denyRead: "/secret" as any } },
+    } as any);
+    // /secret should appear in denyRead (merged with preset defaults)
+    expect(result.srtConfig!.filesystem.denyRead).toContain("/secret");
+  });
+
+  test("filters non-string items from array fields", () => {
+    const result = resolveSandboxConfig("/tmp", {
+      sandbox: {
+        mode: "basic",
+        filesystem: { denyWrite: [42, ".env", null, true] as any },
+      },
+    } as any);
+    // Only the valid string ".env" should survive (plus preset defaults)
+    const denyWrite = result.srtConfig!.filesystem.denyWrite;
+    expect(denyWrite.every((v: unknown) => typeof v === "string")).toBe(true);
+  });
+
+  test("ignores non-array non-string allowWrite (falls back to preset)", () => {
+    const result = resolveSandboxConfig("/tmp", {
+      sandbox: { mode: "basic", filesystem: { allowWrite: true as any } },
+    } as any);
+    // Should fall back to preset default [".", "/tmp"]
+    expect(result.srtConfig!.filesystem.allowWrite.length).toBe(2);
+  });
+
+  test("coerces network allowedDomains bare string in full mode", () => {
+    const result = resolveSandboxConfig("/tmp", {
+      sandbox: {
+        mode: "full",
+        network: { allowedDomains: "example.com" as any },
+      },
+    } as any);
+    expect(result.srtConfig!.network!.allowedDomains).toEqual(["example.com"]);
+  });
+});
+
+describe("validateSandboxOverride", () => {
+  test("returns undefined for undefined/empty input", () => {
+    expect(validateSandboxOverride(undefined)).toBeUndefined();
+    expect(validateSandboxOverride("")).toBeUndefined();
+  });
+
+  test("resolves canonical mode names", () => {
+    expect(validateSandboxOverride("none")).toBe("none");
+    expect(validateSandboxOverride("basic")).toBe("basic");
+    expect(validateSandboxOverride("full")).toBe("full");
+  });
+
+  test("resolves documented aliases", () => {
+    expect(validateSandboxOverride("off")).toBe("none");
+    expect(validateSandboxOverride("audit")).toBe("basic");
+    expect(validateSandboxOverride("enforce")).toBe("full");
+  });
+
+  test("resolves case-insensitively", () => {
+    expect(validateSandboxOverride("OFF")).toBe("none");
+    expect(validateSandboxOverride("Full")).toBe("full");
+    expect(validateSandboxOverride("ENFORCE")).toBe("full");
+    expect(validateSandboxOverride("Basic")).toBe("basic");
+  });
+
+  test("throws on typos/unknown values", () => {
+    expect(() => validateSandboxOverride("ful")).toThrow(/Invalid sandbox override "ful"/);
+    expect(() => validateSandboxOverride("enabled")).toThrow(/Invalid sandbox override "enabled"/);
+    expect(() => validateSandboxOverride("true")).toThrow(/Invalid sandbox override "true"/);
+    expect(() => validateSandboxOverride("on")).toThrow(/Invalid sandbox override "on"/);
   });
 });

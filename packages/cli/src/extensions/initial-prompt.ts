@@ -92,13 +92,15 @@ export const initialPromptExtension: ExtensionFactory = (pi) => {
                 // Also map Claude Code tool aliases (Glob→find, Grep→grep, etc.)
                 // so agent files written for Claude Code work correctly.
                 const claudeToPi: Record<string, string> = {
-                    read: "read",
-                    write: "write",
-                    edit: "edit",
-                    multiedit: "edit",
+                    read: "read_file",
+                    write: "write_file",
+                    edit: "write_file",
+                    multiedit: "write_file",
                     bash: "bash",
-                    glob: "find",
-                    grep: "grep",
+                    glob: "search",
+                    grep: "search",
+                    ls: "search",
+                    find: "search",
                 };
                 const allTools = pi.getAllTools();
                 const toolIndex = new Map(allTools.map(t => [t.name.toLowerCase(), t.name]));
@@ -133,8 +135,9 @@ export const initialPromptExtension: ExtensionFactory = (pi) => {
             try {
                 // Map Claude aliases to pi names for the denylist too
                 const claudeToPiDeny: Record<string, string> = {
-                    read: "read", write: "write", edit: "edit",
-                    multiedit: "edit", bash: "bash", glob: "find", grep: "grep",
+                    read: "read_file", write: "write_file", edit: "write_file",
+                    multiedit: "write_file", bash: "bash", glob: "search", grep: "search",
+                    ls: "search", find: "search",
                 };
                 const rawDenied = agentDisallowedTools.split(",").map(t => t.trim()).filter(Boolean);
                 const denied = new Set(rawDenied.flatMap(t => {

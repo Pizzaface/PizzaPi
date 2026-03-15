@@ -2,6 +2,26 @@ import { Type } from "@mariozechner/pi-ai";
 import type { AgentTool } from "@mariozechner/pi-agent-core";
 import { spawn } from "child_process";
 import { StringDecoder } from "string_decoder";
+import { validatePath, getResolvedConfig } from "./sandbox.js";
+
+/**
+ * Escape glob metacharacters for ripgrep --glob patterns.
+ * rg uses gitignore-style globs where `[`, `]`, `*`, `?`, `{`, `}`, and `\`
+ * are special characters. We escape them with a backslash so literal directory
+ * names containing these characters match correctly.
+ */
+export function escapeRgGlob(s: string): string {
+    return s.replace(/[\\[\]*?{}]/g, "\\$&");
+}
+
+/**
+ * Escape glob metacharacters for find's -path pattern matching.
+ * find treats `*`, `?`, `[`, `]` as pattern characters in -path arguments.
+ * We escape them with a backslash so literal paths match correctly.
+ */
+export function escapeFindPath(s: string): string {
+    return s.replace(/[\\[\]*?]/g, "\\$&");
+}
 
 /** Maximum chars of stderr to retain in memory. */
 const MAX_STDERR_CHARS = 512;
@@ -146,6 +166,83 @@ function isFailure(result: SpawnResult, type: string): boolean {
     return result.exitCode !== 0;
 }
 
+import { resolve as pathResolve } from "node:path";
+import { realpathSync } from "node:fs";
+
+/**
+ * Build deny-path exclusion args for rg and find.
+ * Returns exclusion arguments that prevent the search from traversing
+ * into directories that the sandbox denyRead list forbids.
+ */
+function _buildDenyExclusions(searchRoot: string): { rg: string[]; find: string[] } {
+    const config = getResolvedConfig();
+    if (!config || config.mode === "none" || !config.srtConfig) return { rg: [], find: [] };
+
+    const rgArgs: string[] = [];
+    const findArgs: string[] = [];
+    // Resolve symlinks so equivalent paths (e.g. symlinked search root or
+    // denied paths) produce identical prefixes in the traversal check below.
+    // Fall back to pathResolve if the path doesn't exist yet (e.g. in tests).
+    let resolvedRoot: string;
+    try { resolvedRoot = realpathSync(pathResolve(searchRoot)); } catch { resolvedRoot = pathResolve(searchRoot); }
+
+    for (const denied of config.srtConfig.filesystem.denyRead) {
+        let resolvedDenied: string;
+        try { resolvedDenied = realpathSync(pathResolve(denied)); } catch { resolvedDenied = pathResolve(denied); }
+
+        // Only add exclusion if denied path is under (or equal to) the search root.
+        // Use a trailing slash only when resolvedRoot is not already "/", to avoid
+        // producing the invalid prefix "//" when searching from the filesystem root.
+        const rootPrefix = resolvedRoot === "/" ? "/" : resolvedRoot + "/";
+        if (!resolvedDenied.startsWith(rootPrefix) && resolvedDenied !== resolvedRoot) {
+            continue;
+        }
+
+        // rg: --glob patterns to exclude denied paths
+        // rg matches globs against file paths relative to the search root (no leading slash).
+        // To exclude a directory and all its contents, we pass multiple patterns:
+        // - !deniedDir to exclude the directory itself
+        // - !deniedDir/** to exclude all files under the directory
+        // When root is "/", strip the leading "/" so the glob matches rg's relative paths
+        // (rg reports "etc/passwd" not "/etc/passwd" when searching from "/").
+        let relPath: string;
+        if (resolvedRoot === "/") {
+            // Strip leading "/" — rg paths from root are relative (e.g. "etc/passwd")
+            relPath = resolvedDenied.startsWith("/") ? resolvedDenied.slice(1) : resolvedDenied;
+        } else {
+            // Relative path from search root
+            relPath = resolvedDenied.slice(resolvedRoot.length + 1);
+        }
+        if (relPath) {
+            // Escape glob metacharacters so literal directory names like
+            // "secret[prod]" are matched exactly, not treated as patterns.
+            const escapedRel = escapeRgGlob(relPath);
+            // Exclude the directory itself and everything under it
+            rgArgs.push("--glob", `!${escapedRel}`, "--glob", `!${escapedRel}/**`);
+        }
+
+        // Collect denied paths for prune clause (built below).
+        findArgs.push(resolvedDenied);
+    }
+
+    // Build find prune clause: ( -path d1 -o -path d2 ) -prune -o
+    // This stops traversal into denied directories entirely (much cheaper than
+    // -not -path which still walks the subtree but filters output).
+    const findPruneArgs: string[] = [];
+    if (findArgs.length > 0) {
+        findPruneArgs.push("(");
+        for (let i = 0; i < findArgs.length; i++) {
+            if (i > 0) findPruneArgs.push("-o");
+            // Escape glob metacharacters so literal paths like
+            // "/tmp/data[old]" are matched exactly by find's -path.
+            findPruneArgs.push("-path", escapeFindPath(findArgs[i]));
+        }
+        findPruneArgs.push(")", "-prune", "-o");
+    }
+
+    return { rg: rgArgs, find: findPruneArgs };
+}
+
 export const searchTool: AgentTool = {
     name: "search",
     label: "Search",
@@ -187,11 +284,30 @@ export const searchTool: AgentTool = {
             ? rawPath
             : `./${rawPath}`;
 
+        // Sandbox: validate read access to the search root
+        const validation = validatePath(safePath, "read");
+        if (!validation.allowed) {
+            const text = `❌ Sandbox blocked search of ${rawPath} — ${validation.reason}`;
+            return {
+                content: [{ type: "text" as const, text }],
+                details: { pattern, path: rawPath, type: type === "files" ? "files" : "content", sandboxBlocked: true },
+            };
+        }
+        // Build deny-path exclusions so search doesn't traverse denied paths.
+        const denyExclusions = _buildDenyExclusions(safePath);
+
         // -e forces rg to treat pattern as a regex (not a flag); -- ends options before path.
+        // find must use an absolute, symlink-resolved search root so that
+        // -path prune clauses (which use realpathSync-resolved denied paths)
+        // actually match traversal entries. On macOS /var → /private/var, so
+        // without realpath the prune paths would mismatch the find root.
+        // rg handles its own relative path matching via --glob patterns.
+        let absSafePath: string;
+        try { absSafePath = realpathSync(pathResolve(safePath)); } catch { absSafePath = pathResolve(safePath); }
         const [cmd, args, maxLines] =
             type === "files"
-                ? (["find", [safePath, "-name", pattern, "-type", "f"], 50] as const)
-                : (["rg", ["--no-heading", "-n", "-e", pattern, "--", safePath], 100] as const);
+                ? (["find", [absSafePath, ...denyExclusions.find, "-name", pattern, "-type", "f", "-print"], 50] as const)
+                : (["rg", ["--no-heading", "-n", ...denyExclusions.rg, "-e", pattern, "--", safePath], 100] as const);
 
         let result: SpawnResult;
         try {

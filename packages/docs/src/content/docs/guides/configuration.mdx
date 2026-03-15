@@ -66,7 +66,22 @@ You can also override any setting with **environment variables**.
 
   // Show warnings when startup is slow (default: true).
   // Set to false to suppress slow-startup notifications.
-  "slowStartupWarning": true
+  "slowStartupWarning": true,
+
+  // OS-level sandbox configuration.
+  // mode: "none" | "basic" (default) | "full"
+  // All other fields are srt-native overrides merged on top of the preset.
+  "sandbox": {
+    "mode": "full",
+    "network": {
+      "allowedDomains": ["*.github.com", "api.anthropic.com"]
+    },
+    "filesystem": {
+      "denyRead": ["~/.kube"],
+      "allowWrite": [".", "/tmp"],
+      "denyWrite": [".env.production"]
+    }
+  }
 }
 ```
 
@@ -85,6 +100,13 @@ You can also override any setting with **environment variables**.
 | `allowProjectHooks` | `boolean` | `false` | Trust gate: allow project-local hooks to run. **Global config only.** |
 | `trustedPlugins` | `string[]` | `[]` | Trusted Claude Code plugin paths. **Global config only.** Managed via `pizza plugins trust`. |
 | `mcpTimeout` | `number` | `30000` | Timeout (ms) for each MCP server's `tools/list` call during startup. Set to `0` to disable. See [Safe Mode](/PizzaPi/guides/safe-mode/). |
+| `sandbox` | `object` | *(see below)* | OS-level sandbox config. See [Agent Sandbox](/PizzaPi/guides/sandbox/). |
+| `sandbox.mode` | `string` | `"basic"` | Preset: `"none"`, `"basic"`, or `"full"`. |
+| `sandbox.network.allowedDomains` | `string[]` | `[]` (full) / unset (basic) | Domains the agent may reach. Required for outbound access in `full` mode. |
+| `sandbox.network.deniedDomains` | `string[]` | `[]` | Domains explicitly blocked. |
+| `sandbox.filesystem.denyRead` | `string[]` | *merged with preset* | Additional paths blocked from reading. |
+| `sandbox.filesystem.allowWrite` | `string[]` | `[".", "/tmp"]` | Paths allowed for writing (replaces preset when set). |
+| `sandbox.filesystem.denyWrite` | `string[]` | *merged with preset* | Additional paths blocked from writing. |
 | `slowStartupWarning` | `boolean` | `true` | Show warnings when startup takes longer than expected (slow MCP servers, etc.). See [Safe Mode](/PizzaPi/guides/safe-mode/). |
 
 ---
@@ -101,6 +123,8 @@ Every config option can also be set as an environment variable. Environment vari
 | `PIZZAPI_NO_PLUGINS` | — | Set to `1` to skip plugin loading ([Safe Mode](/PizzaPi/guides/safe-mode/)) |
 | `PIZZAPI_NO_HOOKS` | — | Set to `1` to skip hook execution ([Safe Mode](/PizzaPi/guides/safe-mode/)) |
 | `PIZZAPI_NO_RELAY` | — | Set to `1` to skip relay connection ([Safe Mode](/PizzaPi/guides/safe-mode/)) |
+| `PIZZAPI_SANDBOX` | `sandbox.mode` | Override sandbox mode: `none`, `basic`, or `full` ([Sandbox](/PizzaPi/guides/sandbox/)) |
+| `PIZZAPI_NO_SANDBOX` | — | Set to `1` to disable sandbox (shorthand for `none`) ([Sandbox](/PizzaPi/guides/sandbox/)) |
 
 **Example:**
 

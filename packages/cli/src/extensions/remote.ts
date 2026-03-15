@@ -619,6 +619,13 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         sock.on("session_trigger" as any, (data: { trigger: ConversationTrigger }) => {
             const trigger = data?.trigger;
             if (!trigger) return;
+
+            // NOTE: We no longer auto-suppress session_complete triggers when
+            // the parent has consumed messages from the child. Linked sessions
+            // may mix send_message (for streaming updates) with trigger-based
+            // completion — suppressing session_complete after any bus consumption
+            // would cause the parent to miss the final completion signal. If a
+            // parent doesn't want triggers, it should spawn with linked: false.
             trackReceivedTrigger(trigger.triggerId, trigger.sourceSessionId, trigger.type);
             const rendered = renderTrigger(trigger);
             const deliverAs = trigger.deliverAs === "followUp" ? "followUp" as const : "steer" as const;

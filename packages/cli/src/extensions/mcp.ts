@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
 import type { PizzaPiConfig } from "../config.js";
 import { PizzaPiOAuthProvider, type RelayContext } from "./mcp-oauth.js";
+import { getSandboxEnv, isSandboxActive, getResolvedConfig, getSandboxMode, wrapCommand } from "@pizzapi/tools";
 
 /**
  * Minimal MCP client transport + tool bridge.
@@ -138,12 +139,37 @@ function allocateProviderSafeToolName(serverName: string, mcpToolName: string, u
 // STDIO client
 // ─────────────────────────────────────────────────────────────────────────────
 
-function createStdioMcpClient(opts: { name: string; command: string; args?: string[]; env?: Record<string, string>; cwd?: string }): McpClient {
-  const child: ChildProcessWithoutNullStreams = spawn(opts.command, opts.args ?? [], {
-    stdio: "pipe",
-    env: { ...process.env, ...(opts.env ?? {}) },
-    ...(opts.cwd ? { cwd: opts.cwd } : {}),
-  });
+async function createStdioMcpClient(opts: { name: string; command: string; args?: string[]; env?: Record<string, string>; cwd?: string }): Promise<McpClient> {
+  // Sandbox: inject proxy env vars so sandboxed MCP servers route traffic
+  // through the sandbox network proxy. User-provided env takes precedence.
+  const sandboxEnv = isSandboxActive() ? getSandboxEnv() : {};
+  // Sandbox env vars (proxy settings) spread LAST so MCP server config cannot
+  // override them to bypass network filtering.
+  const mergedEnv = { ...process.env, ...(opts.env ?? {}), ...sandboxEnv };
+
+  // Wrap MCP command with OS-level sandbox (filesystem + socket restrictions).
+  // wrapCommand applies sandbox-exec (macOS) or bwrap (Linux) around the command.
+  let child: ChildProcessWithoutNullStreams;
+  if (isSandboxActive()) {
+    // Build shell command string from command + args for wrapping
+    const shellQuote = (s: string) => `'${s.replace(/'/g, "'\\''")}'`;
+    const shellArgs = (opts.args ?? []).map(a => shellQuote(a)).join(" ");
+    const quotedCmd = shellQuote(opts.command);
+    const shellCmd = shellArgs ? `${quotedCmd} ${shellArgs}` : quotedCmd;
+    const wrappedCmd = await wrapCommand(shellCmd);
+    child = spawn(wrappedCmd, [], {
+      stdio: "pipe",
+      shell: true,
+      env: mergedEnv,
+      ...(opts.cwd ? { cwd: opts.cwd } : {}),
+    });
+  } else {
+    child = spawn(opts.command, opts.args ?? [], {
+      stdio: "pipe",
+      env: mergedEnv,
+      ...(opts.cwd ? { cwd: opts.cwd } : {}),
+    });
+  }
 
   let nextId = 1;
   const pending = new Map<number, { resolve: (v: any) => void; reject: (e: any) => void }>();
@@ -747,6 +773,61 @@ export function getOAuthProviders(): PizzaPiOAuthProvider[] {
   return activeOAuthProviders;
 }
 
+/**
+ * Check whether an MCP server URL is allowed by the sandbox MCP domain policy.
+ * Returns true if the sandbox is inactive, the MCP policy has no allowedDomains,
+ * or the URL's hostname is in the allowlist.
+ *
+ * Network-level domain filtering for MCP is enforced by srt's proxy when sandbox
+ * is active in "full" mode (allowedDomains in the srt config). This function
+ * provides an early application-level check using the same network.allowedDomains
+ * list, so blocked connections fail fast with a helpful error rather than a
+ * generic proxy timeout.
+ */
+function isMcpDomainAllowed(url: string, serverName: string): boolean {
+  if (!isSandboxActive()) return true;
+  const sandboxCfg = getResolvedConfig();
+  if (!sandboxCfg || !sandboxCfg.srtConfig?.network) return true;
+
+  const allowedDomains = sandboxCfg.srtConfig.network.allowedDomains;
+  // Empty allowedDomains in full mode means deny-all network
+  if (allowedDomains.length === 0) {
+    console.warn(
+      `[sandbox/mcp] Blocked MCP server "${serverName}": no domains in allowedDomains (full mode). ` +
+      `Add the domain to sandbox.network.allowedDomains in config.`,
+    );
+    return false;
+  }
+
+  try {
+    const hostname = new URL(url).hostname.toLowerCase();
+
+    // Check deniedDomains first — deny takes precedence over allow
+    // Normalize to lowercase for case-insensitive DNS matching
+    const deniedDomains = (sandboxCfg.srtConfig.network.deniedDomains ?? []).map(d => d.toLowerCase());
+    if (deniedDomains.some(d => hostname === d || hostname.endsWith(`.${d.replace(/^\*\./, "")}`))) {
+      console.warn(
+        `[sandbox/mcp] Blocked MCP server "${serverName}": domain "${hostname}" ` +
+        `is in deniedDomains [${deniedDomains.join(", ")}]`,
+      );
+      return false;
+    }
+
+    const normalizedAllowed = allowedDomains.map(d => d.toLowerCase());
+    if (normalizedAllowed.some(d => hostname === d || hostname.endsWith(`.${d.replace(/^\*\./, "")}`))) {
+      return true;
+    }
+    console.warn(
+      `[sandbox/mcp] Blocked MCP server "${serverName}": domain "${hostname}" ` +
+      `not in allowedDomains [${allowedDomains.join(", ")}]`,
+    );
+    return false;
+  } catch {
+    console.warn(`[sandbox/mcp] Blocked MCP server "${serverName}": invalid URL "${url}"`);
+    return false;
+  }
+}
+
 export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConfig): Promise<McpClient[]> {
   // Clear stale OAuth providers from previous loads (e.g. /mcp reload)
   // to prevent unbounded growth and iteration over dead providers.
@@ -761,16 +842,21 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
     if (!s || typeof s !== "object") continue;
     if (disabled.has(s.name)) continue; // skip disabled servers
     if (s.transport === "stdio") {
-      clients.push(
-        createStdioMcpClient({
-          name: s.name,
-          command: s.command,
-          args: s.args,
-          env: s.env,
-          cwd: s.cwd,
-        }),
-      );
+      try {
+        clients.push(
+          await createStdioMcpClient({
+            name: s.name,
+            command: s.command,
+            args: s.args,
+            env: s.env,
+            cwd: s.cwd,
+          }),
+        );
+      } catch (err) {
+        console.error(`[MCP] Failed to create stdio client for "${s.name}": ${err}`);
+      }
     } else if (s.transport === "http") {
+      if (!isMcpDomainAllowed(s.url, s.name)) continue;
       clients.push(
         createHttpMcpClient({
           name: s.name,
@@ -779,6 +865,7 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
         }),
       );
     } else if (s.transport === "streamable") {
+      if (!isMcpDomainAllowed(s.url, s.name)) continue;
       const provider = new PizzaPiOAuthProvider({ serverUrl: s.url, serverName: s.name });
       activeOAuthProviders.push(provider);
       clients.push(
@@ -800,20 +887,27 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
 
     if ("command" in def && typeof (def as any).command === "string") {
       const d = def as { command: string; args?: string[]; env?: Record<string, string>; cwd?: string };
-      clients.push(
-        createStdioMcpClient({
-          name,
-          command: d.command,
-          args: d.args,
-          env: d.env,
-          cwd: d.cwd,
-        }),
-      );
+      try {
+        clients.push(
+          await createStdioMcpClient({
+            name,
+            command: d.command,
+            args: d.args,
+            env: d.env,
+            cwd: d.cwd,
+          }),
+        );
+      } catch (err) {
+        console.error(`[MCP] Failed to create stdio client for "${name}": ${err}`);
+      }
       continue;
     }
 
     if ("url" in def && typeof (def as any).url === "string") {
       const d = def as { url: string; transport?: string; type?: string; headers?: Record<string, string> };
+
+      // Domain gating for URL-based MCP servers
+      if (!isMcpDomainAllowed(d.url, name)) continue;
 
       // Determine transport mode:
       //  - "transport" field (our format): "streamable" → streamable, else plain HTTP

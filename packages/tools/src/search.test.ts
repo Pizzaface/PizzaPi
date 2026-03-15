@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { searchTool } from "./search";
+import { searchTool, escapeRgGlob, escapeFindPath } from "./search";
 import { execFile } from "child_process";
 import { promisify } from "util";
 import { mkdtempSync, writeFileSync, mkdirSync } from "fs";
@@ -17,6 +17,54 @@ function makeTempDir(): string {
     writeFileSync(join(dir, "sub", "nested.txt"), "nested content\nhello again\n");
     return dir;
 }
+
+describe("escapeRgGlob", () => {
+    test("passes through plain paths unchanged", () => {
+        expect(escapeRgGlob("foo/bar/baz")).toBe("foo/bar/baz");
+    });
+
+    test("escapes square brackets", () => {
+        expect(escapeRgGlob("secret[prod]")).toBe("secret\\[prod\\]");
+    });
+
+    test("escapes asterisks and question marks", () => {
+        expect(escapeRgGlob("dir*name?")).toBe("dir\\*name\\?");
+    });
+
+    test("escapes curly braces", () => {
+        expect(escapeRgGlob("data{old}")).toBe("data\\{old\\}");
+    });
+
+    test("escapes backslashes", () => {
+        expect(escapeRgGlob("path\\to\\file")).toBe("path\\\\to\\\\file");
+    });
+
+    test("escapes multiple metacharacters in one path", () => {
+        expect(escapeRgGlob("a[b]*c{d}?e\\f")).toBe("a\\[b\\]\\*c\\{d\\}\\?e\\\\f");
+    });
+});
+
+describe("escapeFindPath", () => {
+    test("passes through plain paths unchanged", () => {
+        expect(escapeFindPath("/tmp/foo/bar")).toBe("/tmp/foo/bar");
+    });
+
+    test("escapes square brackets", () => {
+        expect(escapeFindPath("/tmp/data[old]")).toBe("/tmp/data\\[old\\]");
+    });
+
+    test("escapes asterisks and question marks", () => {
+        expect(escapeFindPath("/tmp/dir*name?")).toBe("/tmp/dir\\*name\\?");
+    });
+
+    test("escapes backslashes", () => {
+        expect(escapeFindPath("/tmp/path\\to")).toBe("/tmp/path\\\\to");
+    });
+
+    test("does not escape curly braces (find doesn't glob them)", () => {
+        expect(escapeFindPath("/tmp/data{old}")).toBe("/tmp/data{old}");
+    });
+});
 
 describe("searchTool", () => {
     test("has correct metadata", () => {
