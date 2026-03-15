@@ -145,12 +145,13 @@ export function MultipleChoiceQuestions({
     });
   };
 
-  // Initialize ranked order when the question first renders
-  const ensureRankedOrder = React.useCallback((qIdx: number, optionCount: number) => {
+  // Initialize ranked order when the question first renders.
+  // Stores origIdx values (indices into q.options) so buildAnswer can look up correctly.
+  const ensureRankedOrder = React.useCallback((qIdx: number, origIndices: number[]) => {
     setRankedOrders((prev) => {
       if (prev.has(qIdx)) return prev;
       const next = new Map(prev);
-      next.set(qIdx, Array.from({ length: optionCount }, (_, i) => i));
+      next.set(qIdx, [...origIndices]);
       return next;
     });
   }, []);
@@ -337,21 +338,24 @@ export function MultipleChoiceQuestions({
       .map((option, origIdx) => ({ option, origIdx }))
       .filter(({ option }) => option.toLowerCase().replace(/[^a-z]/g, "") !== "typeyourown");
 
-    // Ensure order is initialized
-    ensureRankedOrder(qIdx, visibleOptions.length);
-    const order = rankedOrders.get(qIdx) ?? visibleOptions.map((_, i) => i);
+    // Build a lookup from origIdx → visible option for rendering
+    const origIdxToVisible = new Map(visibleOptions.map((v) => [v.origIdx, v]));
+
+    // Ensure order is initialized with origIdx values
+    ensureRankedOrder(qIdx, visibleOptions.map((v) => v.origIdx));
+    const order = rankedOrders.get(qIdx) ?? visibleOptions.map((v) => v.origIdx);
 
     return (
       <div className="space-y-1" aria-label={q.question}>
         <div className="text-[11px] text-violet-300/60 px-2.5 mb-1">Drag or use arrows to rank by preference (top = most preferred)</div>
-        {order.map((optIdx, rank) => {
-          const item = visibleOptions[optIdx];
+        {order.map((origIdx, rank) => {
+          const item = origIdxToVisible.get(origIdx);
           if (!item) return null;
           const isDragging = dragIdx === rank;
 
           return (
             <div
-              key={optIdx}
+              key={origIdx}
               draggable
               onDragStart={(e) => {
                 setDragIdx(rank);
