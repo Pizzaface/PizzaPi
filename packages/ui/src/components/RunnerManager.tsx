@@ -17,6 +17,7 @@ import { Label } from "@/components/ui/label";
 import { SkillsManager, type SkillInfo } from "@/components/SkillsManager";
 import { AgentsManager, type AgentInfo } from "@/components/AgentsManager";
 import { PluginsManager, type PluginInfo } from "@/components/PluginsManager";
+import { SandboxManager } from "@/components/SandboxManager";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ErrorAlert } from "@/components/ui/error-alert";
 
@@ -658,6 +659,9 @@ function RunnerCard({ runner, sessions, latestVersion, isRestarting, isStopping,
                     runnerId={runner.runnerId}
                     plugins={runner.plugins}
                 />
+
+                {/* Sandbox manager */}
+                <SandboxManager runnerId={runner.runnerId} />
             </div>
         </div>
     );

@@ -1322,6 +1322,77 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             }
         });
 
+        // ── Sandbox ────────────────────────────────────────────────────────
+
+        socket.on("sandbox_get_status", async (data: any) => {
+            if (isShuttingDown) return;
+            const requestId = data.requestId;
+            try {
+                // Import lazily to avoid pulling in sandbox deps when not needed
+                const { isSandboxActive, getSandboxMode, getViolations, getResolvedConfig } = await import("@pizzapi/tools");
+                const mode = getSandboxMode();
+                const active = isSandboxActive();
+                const violations = getViolations();
+                const resolvedConfig = getResolvedConfig();
+                const recentViolations = violations.slice(-20).reverse().map((v: any) => ({
+                    timestamp: v.timestamp.toISOString(),
+                    operation: v.operation,
+                    target: v.target,
+                    reason: v.reason,
+                }));
+                socket.emit("file_result", {
+                    requestId,
+                    ok: true,
+                    mode,
+                    active,
+                    platform: process.platform,
+                    violations: violations.length,
+                    recentViolations,
+                    config: resolvedConfig,
+                });
+            } catch (err) {
+                socket.emit("file_result", {
+                    requestId,
+                    ok: false,
+                    message: err instanceof Error ? err.message : String(err),
+                });
+            }
+        });
+
+        socket.on("sandbox_update_config", async (data: any) => {
+            if (isShuttingDown) return;
+            const requestId = data.requestId;
+            const body = data.config;
+            try {
+                if (!body || typeof body !== "object") {
+                    socket.emit("file_result", { requestId, ok: false, message: "Invalid sandbox config body" });
+                    return;
+                }
+                const validModes = ["none", "basic", "full"];
+                if (body.mode !== undefined && !validModes.includes(body.mode)) {
+                    socket.emit("file_result", { requestId, ok: false, message: `Invalid mode "${body.mode}"` });
+                    return;
+                }
+                const { saveGlobalConfig, loadConfig, resolveSandboxConfig } = await import("../config.js");
+                saveGlobalConfig({ sandbox: body });
+                const newConfig = loadConfig(process.cwd());
+                const resolved = resolveSandboxConfig(process.cwd(), newConfig);
+                socket.emit("file_result", {
+                    requestId,
+                    ok: true,
+                    saved: true,
+                    resolvedConfig: resolved,
+                    message: "Changes will apply on next session start.",
+                });
+            } catch (err) {
+                socket.emit("file_result", {
+                    requestId,
+                    ok: false,
+                    message: err instanceof Error ? err.message : String(err),
+                });
+            }
+        });
+
         // ── Error handling ────────────────────────────────────────────────
 
         socket.on("error", (data: any) => {

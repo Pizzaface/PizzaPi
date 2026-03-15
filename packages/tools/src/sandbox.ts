@@ -133,7 +133,6 @@ export async function initSandbox(config: ResolvedSandboxConfig): Promise<void> 
     try {
         await SandboxManager.initialize(runtimeConfig);
         _initialized = true;
-        console.log(`[sandbox] Initialized in "${config.mode}" mode`);
     } catch (err) {
         console.error(
             "[sandbox] Failed to initialize sandbox. Continuing unsandboxed:",

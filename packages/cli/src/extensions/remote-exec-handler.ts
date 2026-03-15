@@ -7,8 +7,9 @@
 import { spawn } from "node:child_process";
 import { buildSessionContext, SessionManager, type ExtensionContext, type SessionInfo } from "@mariozechner/pi-coding-agent";
 import { getMcpBridge } from "./mcp-bridge.js";
-import { toggleMcpServer } from "../config.js";
+import { toggleMcpServer, saveGlobalConfig, loadConfig, resolveSandboxConfig, type SandboxConfig } from "../config.js";
 import { isPlanModeEnabled, togglePlanModeFromRemote, setPlanModeFromRemote } from "./plan-mode-toggle.js";
+import { isSandboxActive, getSandboxMode, getViolations, getResolvedConfig } from "@pizzapi/tools";
 import { refreshAllUsage, buildProviderUsage } from "./remote-provider-usage.js";
 import type { RemoteExecRequest, RemoteExecResponse } from "./remote-commands.js";
 import type { RelayContext, RelayModelInfo } from "./remote-types.js";
@@ -419,6 +420,54 @@ export async function handleExecFromWeb(
                 child.unref();
                 process.exit(0);
             }, 100);
+            return;
+        }
+
+        if (req.command === "sandbox_get_status") {
+            const mode = getSandboxMode();
+            const active = isSandboxActive();
+            const violations = getViolations();
+            const resolvedConfig = getResolvedConfig();
+            const recentViolations = violations.slice(-20).reverse().map((v) => ({
+                timestamp: v.timestamp.toISOString(),
+                operation: v.operation,
+                target: v.target,
+                reason: v.reason,
+            }));
+            replyOk({
+                mode,
+                active,
+                platform: process.platform,
+                violations: violations.length,
+                recentViolations,
+                config: resolvedConfig,
+            });
+            return;
+        }
+
+        if (req.command === "sandbox_update_config") {
+            const body = req.config;
+            if (!body || typeof body !== "object") {
+                replyErr("Invalid sandbox config body");
+                return;
+            }
+            // Validate mode
+            const validModes = ["none", "basic", "full"];
+            if (body.mode !== undefined && !validModes.includes(body.mode)) {
+                replyErr(`Invalid mode "${body.mode}". Valid values: ${validModes.join(", ")}`);
+                return;
+            }
+            // Save to global config — replaces entire sandbox key
+            const sandboxConfig: SandboxConfig = body;
+            saveGlobalConfig({ sandbox: sandboxConfig });
+            // Reload and resolve config to return the new resolved state
+            const newConfig = loadConfig(process.cwd());
+            const resolved = resolveSandboxConfig(process.cwd(), newConfig);
+            replyOk({
+                saved: true,
+                resolvedConfig: resolved,
+                message: "Changes will apply on next session start.",
+            });
             return;
         }
 

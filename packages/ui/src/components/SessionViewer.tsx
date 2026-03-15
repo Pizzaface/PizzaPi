@@ -581,7 +581,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
   const webHandledCommands = React.useMemo(() => new Set([
     "new", "resume", "mcp", "plugins", "skills", "agents", "model", "cycle_model",
     "effort", "cycle_effort", "compact", "name", "copy", "stop", "restart",
-    "remote", "plan",
+    "remote", "plan", "sandbox",
   ]), []);
 
   // MCP toggle handler — sends mcp_toggle_server remote exec to the runner
@@ -723,6 +723,38 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
         .catch((err: Error) => {
           if (dispatchSessionId !== sessionIdRef.current) return;
           onAppendSystemMessage?.(`**Skills** — Failed to load: ${err.message}`);
+        });
+      return true;
+    }
+
+    if (rawCommand === "sandbox") {
+      if (!runnerId) {
+        setInput("");
+        setCommandOpen(false);
+        setCommandQuery("");
+        onAppendSystemMessage?.("**Sandbox** — Runner not connected yet. Try again in a moment.");
+        return true;
+      }
+      setInput("");
+      setCommandOpen(false);
+      setCommandQuery("");
+      const dispatchSessionId = sessionId;
+      fetch(`/api/runners/${encodeURIComponent(runnerId)}/sandbox-status`, { credentials: "include" })
+        .then((res) => res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))
+        .then((data: any) => {
+          if (dispatchSessionId !== sessionIdRef.current) return;
+          onAppendSystemMessage?.({
+            kind: "sandbox" as const,
+            mode: data.mode ?? "none",
+            active: data.active ?? false,
+            platform: data.platform ?? "unknown",
+            violations: data.violations ?? 0,
+            recentViolations: Array.isArray(data.recentViolations) ? data.recentViolations : [],
+          });
+        })
+        .catch((err: Error) => {
+          if (dispatchSessionId !== sessionIdRef.current) return;
+          onAppendSystemMessage?.(`**Sandbox** — Failed to load: ${err.message}`);
         });
       return true;
     }

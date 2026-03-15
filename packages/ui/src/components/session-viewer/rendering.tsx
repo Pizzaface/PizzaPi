@@ -68,7 +68,7 @@ import { TriggerCard } from "@/components/session-viewer/cards/TriggerCard";
 export function isCommandResult(content: unknown): content is CommandResultData {
   if (!content || typeof content !== "object" || Array.isArray(content)) return false;
   const c = content as Record<string, unknown>;
-  return c.kind === "mcp" || c.kind === "plugins" || c.kind === "skills";
+  return c.kind === "mcp" || c.kind === "plugins" || c.kind === "skills" || c.kind === "sandbox";
 }
 
 export function toMessageRole(role: string): "user" | "assistant" | "system" {

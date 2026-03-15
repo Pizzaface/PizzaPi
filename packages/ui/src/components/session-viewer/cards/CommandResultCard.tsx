@@ -20,6 +20,8 @@ import {
   RefreshCw,
   Eye,
   EyeOff,
+  Shield,
+  ExternalLink,
 } from "lucide-react";
 import { useMcpToggle } from "@/components/session-viewer/McpToggleContext";
 
@@ -29,7 +31,8 @@ import { useMcpToggle } from "@/components/session-viewer/McpToggleContext";
 export type CommandResultData =
   | McpResultData
   | PluginsResultData
-  | SkillsResultData;
+  | SkillsResultData
+  | SandboxResultData;
 
 // ── MCP ───────────────────────────────────────────────────────────────────────
 
@@ -95,6 +98,26 @@ export interface SkillEntry {
 export interface SkillsResultData {
   kind: "skills";
   skills: SkillEntry[];
+}
+
+// ── Sandbox ───────────────────────────────────────────────────────────────────
+
+export interface SandboxViolationEntry {
+  timestamp: string;
+  operation: string;
+  target: string;
+  reason: string;
+}
+
+export interface SandboxResultData {
+  kind: "sandbox";
+  mode: "none" | "basic" | "full";
+  active: boolean;
+  platform: string;
+  violations: number;
+  recentViolations: SandboxViolationEntry[];
+  /** Callback to navigate to the full sandbox settings panel */
+  onOpenSettings?: () => void;
 }
 
 // ── Card Renderers ────────────────────────────────────────────────────────────
@@ -498,6 +521,96 @@ function SkillsCard({ data }: { data: SkillsResultData }) {
   );
 }
 
+// ── Sandbox Card ──────────────────────────────────────────────────────────────
+
+function SandboxModeBadge({ mode }: { mode: "none" | "basic" | "full" }) {
+  const variants: Record<string, { bg: string; text: string }> = {
+    full: { bg: "bg-emerald-500/20", text: "text-emerald-400" },
+    basic: { bg: "bg-amber-500/20", text: "text-amber-400" },
+    none: { bg: "bg-zinc-500/20", text: "text-zinc-400" },
+  };
+  const v = variants[mode] ?? variants.none;
+  return (
+    <span className={cn("inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-mono font-semibold", v.bg, v.text)}>
+      {mode}
+    </span>
+  );
+}
+
+function SandboxCard({ data }: { data: SandboxResultData }) {
+  return (
+    <ToolCardShell>
+      <ToolCardHeader>
+        <ToolCardTitle icon={<Shield className="size-4 shrink-0 text-zinc-400" />}>
+          <span className="text-sm font-medium text-zinc-300">🔒 Sandbox</span>
+          <SandboxModeBadge mode={data.mode} />
+        </ToolCardTitle>
+        <div className="flex items-center gap-1.5">
+          {data.violations > 0 && (
+            <StatusPill variant="error">
+              {data.violations} violation{data.violations !== 1 ? "s" : ""}
+            </StatusPill>
+          )}
+          <StatusPill variant={data.active ? "success" : "neutral"}>
+            {data.active ? "active" : "inactive"}
+          </StatusPill>
+        </div>
+      </ToolCardHeader>
+
+      {/* Status row */}
+      <div className="px-4 py-2.5 border-b border-zinc-800/60 flex items-center gap-3 text-xs text-zinc-400">
+        <span>{data.active ? "✅" : "❌"} {data.active ? "Active" : "Inactive"}</span>
+        <span className="text-zinc-600">·</span>
+        <span>{data.platform}</span>
+        <span className="text-zinc-600">·</span>
+        <span>{data.violations} violation{data.violations !== 1 ? "s" : ""}</span>
+      </div>
+
+      {/* Recent violations */}
+      {data.recentViolations.length > 0 && (
+        <div className="px-4 py-2.5 border-b border-zinc-800/60">
+          <div className="text-[10px] uppercase tracking-wide text-zinc-500 mb-1.5">
+            Recent Violations
+          </div>
+          <div className="flex flex-col gap-1">
+            {data.recentViolations.slice(0, 3).map((v, i) => {
+              const icon = v.operation === "read" ? "📖" : v.operation === "write" ? "✏️" : "⚡";
+              return (
+                <div key={i} className="text-xs text-zinc-400 flex items-start gap-1.5 truncate">
+                  <span>{icon}</span>
+                  <span className="font-mono text-zinc-300 shrink-0">{v.target.length > 40 ? v.target.slice(0, 40) + "…" : v.target}</span>
+                  <span className="text-zinc-600 truncate">— {v.reason.length > 60 ? v.reason.slice(0, 60) + "…" : v.reason}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* No violations */}
+      {data.recentViolations.length === 0 && data.violations === 0 && (
+        <div className="px-4 py-3 text-xs text-zinc-500 text-center">
+          No violations recorded.
+        </div>
+      )}
+
+      {/* Footer link */}
+      {data.onOpenSettings && (
+        <div className="px-4 py-2">
+          <button
+            type="button"
+            onClick={data.onOpenSettings}
+            className="text-xs text-primary hover:text-primary/80 flex items-center gap-1 transition-colors"
+          >
+            <ExternalLink className="size-3" />
+            Open Sandbox Settings
+          </button>
+        </div>
+      )}
+    </ToolCardShell>
+  );
+}
+
 // ── Main Card ─────────────────────────────────────────────────────────────────
 
 export function CommandResultCard({ data }: { data: CommandResultData }) {
@@ -508,6 +621,8 @@ export function CommandResultCard({ data }: { data: CommandResultData }) {
       return <PluginsCard data={data} />;
     case "skills":
       return <SkillsCard data={data} />;
+    case "sandbox":
+      return <SandboxCard data={data} />;
     default:
       return null;
   }
