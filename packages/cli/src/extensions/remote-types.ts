@@ -28,9 +28,13 @@ export interface RelayState {
 
 export type AskUserQuestionDisplay = "stepper";
 
+export type AskUserQuestionType = "radio" | "checkbox" | "ranked";
+
 export interface AskUserQuestionItem {
     question: string;
     options: string[];
+    /** Selection mode: "radio" (single select, default), "checkbox" (multiselect), or "ranked" (ranked choice). */
+    type?: AskUserQuestionType;
 }
 
 export interface AskUserQuestionParams {

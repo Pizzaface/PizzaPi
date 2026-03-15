@@ -10,6 +10,7 @@ import type {
     RelayContext,
     AskUserQuestionParams,
     AskUserQuestionItem,
+    AskUserQuestionType,
     AskUserQuestionDisplay,
     AskUserQuestionDetails,
 } from "./remote-types.js";
@@ -32,7 +33,10 @@ export function sanitizeQuestions(params: AskUserQuestionParams): AskUserQuestio
             const opts = Array.isArray(rawOpts)
                 ? rawOpts.filter((o): o is string => typeof o === "string" && o.trim().length > 0).map((o) => o.trim())
                 : [];
-            result.push({ question: q.trim(), options: opts });
+            const rawType = raw.type;
+            const type: AskUserQuestionType | undefined =
+                rawType === "checkbox" ? "checkbox" : rawType === "ranked" ? "ranked" : rawType === "radio" ? "radio" : undefined;
+            result.push({ question: q.trim(), options: opts, ...(type ? { type } : {}) });
         }
         if (result.length > 0) return result;
     }
@@ -199,6 +203,11 @@ export function registerAskUserTool(rctx: RelayContext) {
                                 type: "array",
                                 items: { type: "string" },
                                 description: "Predefined choices for the user to select from. The UI will automatically add a \"Write your own...\" free-form option.",
+                            },
+                            type: {
+                                type: "string",
+                                enum: ["radio", "checkbox", "ranked"],
+                                description: "Selection mode. \"radio\" (default) for single-select, \"checkbox\" for multi-select, \"ranked\" for ranked-choice ordering.",
                             },
                         },
                         required: ["question", "options"],

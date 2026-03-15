@@ -4,9 +4,13 @@
 
 export type QuestionDisplayMode = "stepper";
 
+export type QuestionType = "radio" | "checkbox" | "ranked";
+
 export interface ParsedQuestion {
   question: string;
   options: string[];
+  /** Selection mode: "radio" (single select, default), "checkbox" (multiselect), or "ranked" (ranked choice). */
+  type: QuestionType;
 }
 
 /**
@@ -25,7 +29,9 @@ export function parsePendingQuestions(data: Record<string, unknown> | undefined 
         const opts = Array.isArray((q as any).options)
           ? ((q as any).options as unknown[]).filter((o): o is string => typeof o === "string" && o.trim().length > 0).map((o) => o.trim())
           : [];
-        result.push({ question: (q as any).question.trim(), options: opts });
+        const rawType = (q as any).type;
+        const type: QuestionType = rawType === "checkbox" ? "checkbox" : rawType === "ranked" ? "ranked" : "radio";
+        result.push({ question: (q as any).question.trim(), options: opts, type });
       }
     }
     if (result.length > 0) return result;
@@ -36,7 +42,7 @@ export function parsePendingQuestions(data: Record<string, unknown> | undefined 
     const opts = Array.isArray(data.options)
       ? (data.options as unknown[]).filter((o): o is string => typeof o === "string" && o.trim().length > 0).map((o) => o.trim())
       : [];
-    return [{ question: (data.question as string).trim(), options: opts }];
+    return [{ question: (data.question as string).trim(), options: opts, type: "radio" as QuestionType }];
   }
 
   return [];

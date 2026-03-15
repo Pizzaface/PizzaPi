@@ -111,7 +111,7 @@ export interface SessionViewerProps {
   /** Active model info for the current session (used to show provider indicator) */
   activeModel?: { provider: string; id: string; name?: string; reasoning?: boolean } | null;
   activeToolCalls?: Map<string, string>;
-  pendingQuestion?: { toolCallId: string; questions: Array<{ question: string; options: string[] }>; display: QuestionDisplayMode } | null;
+  pendingQuestion?: { toolCallId: string; questions: Array<{ question: string; options: string[]; type?: import("@/lib/ask-user-questions").QuestionType }>; display: QuestionDisplayMode } | null;
   /** Pending plan mode prompt — shown as a plan review panel */
   pendingPlan?: { toolCallId: string; title: string; description: string | null; steps: Array<{ title: string; description?: string }> } | null;
   /** Plugin trust prompt from the worker — shown as a confirmation dialog */
