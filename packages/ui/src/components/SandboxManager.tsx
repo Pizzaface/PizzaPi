@@ -393,7 +393,7 @@ export function SandboxManager({ runnerId }: SandboxManagerProps) {
                             <div className="flex items-center gap-2 flex-wrap px-2 py-2 rounded-lg border border-border/40 bg-muted/20">
                                 <ModeBadge mode={form.mode} />
                                 <span className="text-xs text-muted-foreground">
-                                    {status.active ? "✅ Active" : "❌ Inactive"}
+                                    {status.active ? "✅ Configured" : "❌ Not configured"}
                                 </span>
                                 <span className="text-xs text-muted-foreground">·</span>
                                 <span className="text-xs text-muted-foreground">{status.platform}</span>

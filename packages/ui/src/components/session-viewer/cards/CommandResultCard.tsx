@@ -552,14 +552,14 @@ function SandboxCard({ data }: { data: SandboxResultData }) {
             </StatusPill>
           )}
           <StatusPill variant={data.active ? "success" : "neutral"}>
-            {data.active ? "active" : "inactive"}
+            {data.active ? "configured" : "inactive"}
           </StatusPill>
         </div>
       </ToolCardHeader>
 
       {/* Status row */}
       <div className="px-4 py-2.5 border-b border-zinc-800/60 flex items-center gap-3 text-xs text-zinc-400">
-        <span>{data.active ? "✅" : "❌"} {data.active ? "Active" : "Inactive"}</span>
+        <span>{data.active ? "✅" : "❌"} {data.active ? "Configured" : "Not configured"}</span>
         <span className="text-zinc-600">·</span>
         <span>{data.platform}</span>
         <span className="text-zinc-600">·</span>

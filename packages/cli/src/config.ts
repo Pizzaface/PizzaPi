@@ -782,6 +782,16 @@ export function isProjectHooksTrusted(globalConfig: Partial<PizzaPiConfig>): boo
  * trusted via `allowProjectHooks: true` in the global config or the
  * PIZZAPI_ALLOW_PROJECT_HOOKS=1 env var.
  */
+/**
+ * Load only the global config from `~/.pizzapi/config.json` without merging
+ * project-local overrides.  Useful when the caller needs the raw user-level
+ * settings (e.g. for the sandbox settings editor).
+ */
+export function loadGlobalConfig(): Partial<PizzaPiConfig> {
+    const globalPath = join(globalConfigDir(), "config.json");
+    return readJsonSafe(globalPath);
+}
+
 export function loadConfig(cwd: string = process.cwd()): PizzaPiConfig {
     const globalPath = join(globalConfigDir(), "config.json");
     const projectPath = join(cwd, ".pizzapi", "config.json");

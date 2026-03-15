@@ -1333,26 +1333,28 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 // (getSandboxMode, isSandboxActive, getViolations) would always
                 // return defaults.  The persisted config is the source of truth
                 // for what workers will use.
-                const { loadConfig, resolveSandboxConfig } = await import("../config.js");
+                const { loadConfig, resolveSandboxConfig, loadGlobalConfig } = await import("../config.js");
                 const config = loadConfig(process.cwd());
                 const resolvedConfig = resolveSandboxConfig(process.cwd(), config);
                 const mode = resolvedConfig.mode ?? "none";
-                // The daemon can't know if a worker sandbox is actively enforcing
-                // right now — report whether a non-"none" mode is configured.
-                const active = mode !== "none";
+                // The daemon can't know if a worker sandbox is actively
+                // enforcing right now — report that a non-"none" mode is
+                // *configured*, not that enforcement is proven active.
+                const configured = mode !== "none";
                 socket.emit("file_result", {
                     requestId,
                     ok: true,
                     mode,
-                    active,
+                    active: configured,
+                    configured,
                     platform: process.platform,
                     violations: 0,
                     recentViolations: [],
                     config: resolvedConfig,
-                    // Send the raw (unresolved) sandbox config so the UI can
-                    // populate the editor with `.` / `~` paths instead of
-                    // absolute resolved paths.
-                    rawConfig: config.sandbox ?? {},
+                    // Send only the *global* raw config so the UI editor
+                    // doesn't leak project-local overrides into global config
+                    // when saving.
+                    rawConfig: loadGlobalConfig().sandbox ?? {},
                 });
             } catch (err) {
                 socket.emit("file_result", {
