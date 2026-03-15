@@ -267,6 +267,38 @@ describe("isSafeCommand", () => {
         expect(isSafeCommand('rg kill src/')).toBe(true);
     });
 
+    // cd and other shell navigation / utility commands
+    test("allows cd (directory navigation)", () => {
+        expect(isSafeCommand("cd /tmp")).toBe(true);
+        expect(isSafeCommand("cd /Users/jordan/Documents/Projects/PizzaPi")).toBe(true);
+        expect(isSafeCommand("cd ..")).toBe(true);
+    });
+
+    test("allows cd && rg chained commands", () => {
+        expect(isSafeCommand('cd /tmp && rg -l "pattern" .')).toBe(true);
+        expect(isSafeCommand('cd /Users/jordan/Projects && rg "foo|bar" src/ | head -20')).toBe(true);
+    });
+
+    test("allows path utility commands", () => {
+        expect(isSafeCommand("basename /foo/bar.txt")).toBe(true);
+        expect(isSafeCommand("dirname /foo/bar.txt")).toBe(true);
+        expect(isSafeCommand("realpath ./src")).toBe(true);
+        expect(isSafeCommand("readlink -f ./src")).toBe(true);
+    });
+
+    test("allows test/conditional commands", () => {
+        expect(isSafeCommand("test -f foo.txt")).toBe(true);
+        expect(isSafeCommand("[ -f foo.txt ]")).toBe(true);
+        expect(isSafeCommand("true")).toBe(true);
+        expect(isSafeCommand("false")).toBe(true);
+        expect(isSafeCommand("command -v rg")).toBe(true);
+    });
+
+    test("allows hostname and bare env", () => {
+        expect(isSafeCommand("hostname")).toBe(true);
+        expect(isSafeCommand("env")).toBe(true);
+    });
+
     test("blocks awk (can execute arbitrary commands via system())", () => {
         expect(isSafeCommand("awk '{print $1}' file.txt")).toBe(false);
         expect(isSafeCommand("awk 'BEGIN{system(\"touch /tmp/pwned\")}'")).toBe(false);
