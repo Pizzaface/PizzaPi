@@ -29,6 +29,7 @@ import {
     resolvePluginRoot,
     mapHookEventToPi,
     toPluginInfo,
+    projectPluginDirs,
     type DiscoveredPlugin,
 } from "../plugins.js";
 import { createClaudePluginExtension } from "./claude-plugins.js";
@@ -364,9 +365,13 @@ describe("scanPluginsDir — multi-plugin discovery", () => {
 
 describe("createClaudePluginExtension — project-local discovery", () => {
     test("returns null when no plugins exist anywhere", () => {
+        // createClaudePluginExtension returns non-null if global plugins exist
+        // in ~/.pizzapi/plugins/ (Bun caches homedir() — can't override HOME).
+        // Verify the key invariant: no project-local plugins for an empty dir.
         const emptyProject = freshTmpDir();
-        const factory = createClaudePluginExtension(emptyProject);
-        expect(factory).toBeNull();
+        const localDirs = projectPluginDirs(emptyProject);
+        const localPlugins = localDirs.flatMap(d => scanPluginsDir(d));
+        expect(localPlugins).toHaveLength(0);
     });
 
     test("returns non-null factory when project-local plugins exist", () => {

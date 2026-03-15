@@ -1,145 +1,11 @@
-import { randomUUID } from "node:crypto";
-import { spawn } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
-import { AuthStorage, buildSessionContext, SessionManager, type ExtensionContext, type ExtensionFactory, type SessionInfo } from "@mariozechner/pi-coding-agent";
-import { getEnvApiKey } from "@mariozechner/pi-ai/dist/env-api-keys.js";
-import { loadConfig, defaultAgentDir, toggleMcpServer } from "../config.js";
-import { getMcpBridge } from "./mcp-bridge.js";
-import { getCurrentTodoList, setTodoUpdateCallback, type TodoItem } from "./update-todo.js";
-import { isPlanModeEnabled, isExecutionMode, getPlanTodoItems, setPlanModeChangeCallback, togglePlanModeFromRemote, setPlanModeFromRemote, requestContextClear } from "./plan-mode-toggle.js";
-import type { RemoteExecRequest, RemoteExecResponse } from "./remote-commands.js";
-
-import { renderTrigger } from "./triggers/registry.js";
-import { trackReceivedTrigger, receivedTriggers } from "./triggers/extension.js";
-import { messageBus } from "./session-message-bus.js";
-import { io, type Socket } from "socket.io-client";
-import type { RelayClientToServerEvents, RelayServerToClientEvents } from "@pizzapi/protocol";
-
-interface RelayState {
-    sessionId: string;
-    token: string;
-    shareUrl: string;
-    /** Monotonic sequence number for the next event forwarded to relay */
-    seq: number;
-    /** Highest cumulative seq acknowledged by relay */
-    ackedSeq: number;
-}
-
-type AskUserQuestionDisplay = "stepper";
-
-interface AskUserQuestionItem {
-    question: string;
-    options: string[];
-}
-
-interface AskUserQuestionParams {
-    /** Canonical format */
-    questions?: AskUserQuestionItem[];
-    /** Optional multi-question UI layout preference. */
-    display?: AskUserQuestionDisplay;
-    /** Legacy single-question fields (older callers) */
-    question?: string;
-    placeholder?: string;
-    options?: string[];
-}
-
-interface AskUserQuestionDetails {
-    questions: AskUserQuestionItem[];
-    display: AskUserQuestionDisplay;
-    answers: Record<string, string> | null;
-    answer: string | null;
-    source: "tui" | "web" | null;
-    cancelled: boolean;
-    status?: "waiting" | "answered";
-}
-
-interface PendingAskUserQuestion {
-    toolCallId: string;
-    questions: AskUserQuestionItem[];
-    display: AskUserQuestionDisplay;
-    resolve: (answer: string | null) => void;
-}
-
-// ── Plan Mode types ──────────────────────────────────────────────────────────
-
-interface PlanModeStep {
-    title: string;
-    description?: string;
-}
-
-interface PlanModeParams {
-    title: string;
-    description?: string;
-    steps?: PlanModeStep[];
-}
-
-/** User responses for plan mode: execute with/without context clear, edit, or cancel. */
-type PlanModeAction = "execute" | "execute_keep_context" | "edit" | "cancel";
-
-interface PlanModeDetails {
-    title: string;
-    description: string | null;
-    steps: PlanModeStep[];
-    action: PlanModeAction | null;
-    editSuggestion: string | null;
-    status?: "waiting" | "responded";
-}
-
-interface PendingPlanMode {
-    toolCallId: string;
-    title: string;
-    description: string | null;
-    steps: PlanModeStep[];
-    resolve: (response: { action: PlanModeAction; editSuggestion?: string } | null) => void;
-}
-
-interface RelayModelInfo {
-    provider: string;
-    id: string;
-    name: string;
-    reasoning: boolean;
-    contextWindow: number;
-}
-
-const RELAY_DEFAULT = "ws://localhost:7492";
-const RELAY_STATUS_KEY = "relay";
-const ASK_USER_TOOL_NAME = "AskUserQuestion";
-
-// ── Module-level CLI error forwarder ─────────────────────────────────────────
-// Set by the factory so worker.ts can forward errors into the relay from outside
-// the extension boundary (e.g. the bindExtensions onError callback).
-let _cliErrorForwarder: ((message: string, source?: string) => void) | null = null;
-
-/** Forward a CLI-side error to all active relay viewers. */
-export function forwardCliError(message: string, source?: string): void {
-    _cliErrorForwarder?.(message, source);
-}
-
-// ── Relay socket access for trigger system ────────────────────────────────────
-let _relaySocket: Socket<RelayServerToClientEvents, RelayClientToServerEvents> | null = null;
-let _relayToken: string | null = null;
-
-/** Get the active relay socket and token, or null if not connected/registered. */
-export function getRelaySocket(): { socket: Socket<RelayServerToClientEvents, RelayClientToServerEvents>; token: string } | null {
-    // Require both a connected socket AND a valid token. The token is cleared
-    // on disconnect and refreshed on re-registration, so this returns null
-    // during the reconnect window before the server issues a new token.
-    return _relaySocket?.connected && _relayToken ? { socket: _relaySocket, token: _relayToken } : null;
-}
-
-let _relaySessionId: string | null = null;
-/** Get the active relay session ID, if connected. Falls back to PIZZAPI_SESSION_ID env var. */
-export function getRelaySessionId(): string | null {
-    return _relaySessionId ?? process.env.PIZZAPI_SESSION_ID ?? null;
-}
-
 /**
- * PizzaPi Remote extension.
+ * PizzaPi Remote extension — orchestrator.
  *
  * Automatically connects to the PizzaPi relay on session start and streams all
  * agent events in real-time so any browser client can pick up the session.
+ *
+ * This file is the orchestrator: it creates the RelayContext, manages the
+ * Socket.IO connection lifecycle, and wires together the extracted modules.
  *
  * Config:
  *   PIZZAPI_RELAY_URL  WebSocket URL of the relay (default: ws://localhost:7492)
@@ -155,445 +21,302 @@ export function getRelaySessionId(): string | null {
  * `newSession()`/`switchSession()` on the extension runtime.
  * See `patches/README.md` for details.
  */
+
+import { randomUUID } from "node:crypto";
+import { writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { buildSessionContext, type ExtensionContext, type ExtensionFactory } from "@mariozechner/pi-coding-agent";
+import { loadConfig } from "../config.js";
+import { getMcpBridge } from "./mcp-bridge.js";
+import { setTodoUpdateCallback, type TodoItem } from "./update-todo.js";
+import { getCurrentTodoList } from "./update-todo.js";
+import { isPlanModeEnabled, setPlanModeChangeCallback, setPlanModeFromRemote } from "./plan-mode-toggle.js";
+import type { RemoteExecResponse } from "./remote-commands.js";
+
+import { renderTrigger } from "./triggers/registry.js";
+import { trackReceivedTrigger, receivedTriggers } from "./triggers/extension.js";
+import type { ConversationTrigger } from "./triggers/types.js";
+import { messageBus } from "./session-message-bus.js";
+import { io, type Socket } from "socket.io-client";
+import type { RelayClientToServerEvents, RelayServerToClientEvents } from "@pizzapi/protocol";
+
+// ── Extracted modules ────────────────────────────────────────────────────────
+import type {
+    RelayState,
+    RelayContext,
+    RelayModelInfo,
+    McpStartupReportSummary,
+    PendingPluginTrust,
+    TriggerResponse,
+} from "./remote-types.js";
+import { getAuthSource } from "./remote-auth-source.js";
+import { refreshAllUsage, buildProviderUsage } from "./remote-provider-usage.js";
+import { normalizeRemoteInputAttachments, buildUserMessageFromRemoteInput } from "./remote-input.js";
+import { installFooter } from "./remote-footer.js";
+import { buildHeartbeat, startHeartbeat, stopHeartbeat } from "./remote-heartbeat.js";
+import { handleExecFromWeb } from "./remote-exec-handler.js";
+import { registerAskUserTool, consumePendingAskUserQuestionFromWeb, cancelPendingAskUserQuestion } from "./remote-ask-user.js";
+import { registerPlanModeTool, consumePendingPlanModeFromWeb, cancelPendingPlanMode } from "./remote-plan-mode.js";
+
+const RELAY_DEFAULT = "ws://localhost:7492";
+const RELAY_STATUS_KEY = "relay";
+
+// ── Module-level state for external consumers ────────────────────────────────
+let _ctx: RelayContext | null = null;
+
+/** Forward a CLI-side error to all active relay viewers. */
+export function forwardCliError(message: string, source?: string): void {
+    _ctx?.forwardEvent({ type: "cli_error", message, source: source ?? null, ts: Date.now() });
+}
+
+/** Get the active relay socket and token, or null if not connected/registered. */
+export function getRelaySocket(): { socket: Socket<RelayServerToClientEvents, RelayClientToServerEvents>; token: string } | null {
+    return _ctx?.sioSocket?.connected && _ctx.relay
+        ? { socket: _ctx.sioSocket, token: _ctx.relay.token }
+        : null;
+}
+
+/**
+ * Get the relay session ID. Returns the session ID even while disconnected
+ * (e.g. during reconnect windows) so child-session linking via spawn_session
+ * doesn't break. Falls back to PIZZAPI_SESSION_ID env var.
+ */
+export function getRelaySessionId(): string | null {
+    return _ctx?.relaySessionId ?? process.env.PIZZAPI_SESSION_ID ?? null;
+}
+
+// ── Extension factory ────────────────────────────────────────────────────────
+
 export const remoteExtension: ExtensionFactory = (pi) => {
-    let relay: RelayState | null = null;
-    let sioSocket: Socket<RelayServerToClientEvents, RelayClientToServerEvents> | null = null;
-    let shuttingDown = false;
-    let latestCtx: ExtensionContext | null = null;
-    let pendingAskUserQuestion: PendingAskUserQuestion | null = null;
-    let pendingPlanMode: PendingPlanMode | null = null;
-    let relaySessionId: string = (process.env.PIZZAPI_SESSION_ID && process.env.PIZZAPI_SESSION_ID.trim().length > 0)
-        ? process.env.PIZZAPI_SESSION_ID.trim()
-        : randomUUID();
-
-    // ── Child session detection for trigger system ────────────────────────
-    // Start with the env-var hint, but update from the server's `registered`
-    // payload so that rejected/stale parents fall back to local interaction.
-    let parentSessionId: string | null = process.env.PIZZAPI_WORKER_PARENT_SESSION_ID ?? null;
-    let isChildSession = parentSessionId !== null;
-
-    // ── Direct relay status text ──────────────────────────────────────────────
-    // Maintained alongside ctx.ui.setStatus() so the custom footer can read it
-    // directly from this closure variable. This avoids timing issues where the
-    // framework's extension status Map might not be populated before the first
-    // render cycle (e.g. status set during session_start before ui.start()).
-    let relayStatusText = "";
-
-    // ── MCP startup report cache ──────────────────────────────────────────────
-    // Captured when the MCP extension emits mcp:startup_report, and included
-    // in heartbeats so reconnecting web viewers can see startup timing info.
-    interface McpStartupReportSummary {
-        toolCount: number;
-        serverCount: number;
-        totalDurationMs: number;
-        slow: boolean;
-        /** Whether slow-startup warnings should be shown (from config). */
-        showSlowWarning: boolean;
-        errors: Array<{ server: string; error: string }>;
-        serverTimings: Array<{
-            name: string;
-            durationMs: number;
-            toolCount: number;
-            timedOut: boolean;
-            error?: string;
-        }>;
-        ts: number;
-    }
-    let lastMcpStartupReport: McpStartupReportSummary | null = null;
-
-    // ── Provider usage cache ──────────────────────────────────────────────────
-    // Generic normalized shape shared with the UI.
-    interface UsageWindow { label: string; utilization: number; resets_at: string }
-    interface ProviderUsageData {
-        windows: UsageWindow[];
-        status?: "ok" | "unknown";
-        errorCode?: number;
-    }
-
-    const DEFAULT_USAGE_CACHE_TTL = 5 * 60 * 1000; // 5 min
-    const ANTHROPIC_USAGE_CACHE_TTL = 15 * 60 * 1000; // 15 min (rate-limit anthropic checks)
-    const usageCache = new Map<string, { data: ProviderUsageData; fetchedAt: number }>();
-
-    // When running as a runner-spawned worker the daemon is responsible for
-    // fetching provider quota data and writing it to a shared cache file.
-    // Reading from that file avoids N identical API calls (one per session).
-    // CLI sessions (no env var) continue to fetch independently as before.
-    const runnerUsageCachePath: string | null = process.env.PIZZAPI_RUNNER_USAGE_CACHE_PATH ?? null;
-
-    function getOAuthToken(providerId: string): string | null {
-        try {
-            const config = loadConfig(process.cwd());
-            const agentDir = config.agentDir
-                ? config.agentDir.replace(/^~/, homedir())
-                : defaultAgentDir();
-            const authPath = join(agentDir, "auth.json");
-            if (!existsSync(authPath)) return null;
-            const auth = JSON.parse(readFileSync(authPath, "utf-8"));
-            return (auth as any)?.[providerId]?.access ?? null;
-        } catch {
-            return null;
-        }
-    }
-
-    // ── Auth source detection ──────────────────────────────────────────────────
-    // Mirrors AuthStorage.getApiKey() priority chain to determine WHERE the
-    // active API key comes from, so we can relay that to the user.
-    type AuthSource = "oauth" | "auth.json" | "env" | "unknown";
-
-    function getAuthSource(ctx: ExtensionContext | null): AuthSource {
-        if (!ctx?.model) return "unknown";
-        const provider = ctx.model.provider;
-
-        // 1. Check auth.json credentials (highest priority after runtime overrides)
-        const cred = ctx.modelRegistry.authStorage.get(provider);
-        if (cred?.type === "oauth") return "oauth";
-        if (cred?.type === "api_key") return "auth.json";
-
-        // 2. Check environment variable
-        if (getEnvApiKey(provider)) return "env";
-
-        return "unknown";
-    }
-
-    function authSourceLabel(source: AuthSource): string {
-        switch (source) {
-            case "auth.json": return "API key";
-            case "env": return "env var";
-            default: return "";
-        }
-    }
-
-    function providerUsageTtl(providerId: string): number {
-        return providerId === "anthropic" ? ANTHROPIC_USAGE_CACHE_TTL : DEFAULT_USAGE_CACHE_TTL;
-    }
-
-    function isCached(providerId: string, opts: { force?: boolean } = {}): boolean {
-        if (opts.force) return false;
-        const entry = usageCache.get(providerId);
-        if (!entry) return false;
-        return Date.now() - entry.fetchedAt < providerUsageTtl(providerId);
-    }
-
-    function buildProviderUsage(): Record<string, ProviderUsageData> {
-        const out: Record<string, ProviderUsageData> = {};
-        for (const [id, { data }] of usageCache) out[id] = data;
-        return out;
-    }
-
-    /**
-     * Read the runner daemon's shared usage cache file and populate the local
-     * in-memory cache.  Called instead of direct API fetches for runner-spawned
-     * sessions — the daemon is the single source of truth for quota data on this
-     * node, so all sessions see the same numbers without redundant API calls.
-     */
-    async function refreshFromRunnerCache(): Promise<void> {
-        if (!runnerUsageCachePath) return;
-        try {
-            if (!existsSync(runnerUsageCachePath)) return;
-            const parsed = JSON.parse(readFileSync(runnerUsageCachePath, "utf-8")) as {
-                fetchedAt: number;
-                providers: Record<string, ProviderUsageData>;
-            };
-            const fetchedAt = typeof parsed.fetchedAt === "number" ? parsed.fetchedAt : 0;
-            for (const [id, data] of Object.entries(parsed.providers ?? {})) {
-                if (data && Array.isArray((data as ProviderUsageData).windows)) {
-                    usageCache.set(id, { data: data as ProviderUsageData, fetchedAt });
-                }
-            }
-        } catch {
-            // Non-fatal — cache file may not exist yet (daemon still starting) or
-            // be temporarily unreadable.  Workers will show stale/empty data until
-            // the daemon writes its first snapshot.
-        }
-    }
-
-    async function refreshAnthropicUsage(opts: { force?: boolean } = {}): Promise<void> {
-        if (isCached("anthropic", opts)) return;
-        const token = getOAuthToken("anthropic");
-        if (!token) return;
-        try {
-            const res = await fetch("https://api.anthropic.com/api/oauth/usage", {
-                headers: {
-                    Authorization: `Bearer ${token}`,
-                    "anthropic-version": "2023-06-01",
-                    "anthropic-beta": "oauth-2025-04-20",
-                },
-            });
-            if (!res.ok) {
-                if (res.status === 403) {
-                    usageCache.set("anthropic", {
-                        data: { windows: [], status: "unknown", errorCode: 403 },
-                        fetchedAt: Date.now(),
-                    });
-                }
-                return;
-            }
-            const raw = (await res.json()) as Record<string, unknown>;
-
-            // Map known windows; ignore nulls and unknown fields.
-            const WINDOW_LABELS: Record<string, string> = {
-                five_hour: "5-hour",
-                seven_day: "7-day",
-                seven_day_opus: "7-day (Opus)",
-                seven_day_sonnet: "7-day (Sonnet)",
-                seven_day_oauth_apps: "7-day (OAuth apps)",
-                seven_day_cowork: "7-day (co-work)",
-            };
-            const windows: UsageWindow[] = [];
-            for (const [key, label] of Object.entries(WINDOW_LABELS)) {
-                const w = raw[key] as { utilization: number; resets_at: string } | null | undefined;
-                if (w?.resets_at != null && typeof w.utilization === "number") {
-                    windows.push({ label, utilization: w.utilization, resets_at: w.resets_at });
-                }
-            }
-            if (windows.length > 0) {
-                usageCache.set("anthropic", { data: { windows, status: "ok" }, fetchedAt: Date.now() });
-            }
-        } catch {
-            // Non-fatal
-        }
-    }
-
-    async function refreshCodexUsage(opts: { force?: boolean } = {}): Promise<void> {
-        if (isCached("openai-codex", opts)) return;
-        const token = getOAuthToken("openai-codex");
-        if (!token) return;
-        try {
-            // Codex subscription usage is served from ChatGPT backend APIs.
-            const res = await fetch("https://chatgpt.com/backend-api/wham/usage", {
-                headers: {
-                    Authorization: `Bearer ${token}`,
-                },
-            });
-            if (!res.ok) {
-                if (res.status === 403) {
-                    usageCache.set("openai-codex", {
-                        data: { windows: [], status: "unknown", errorCode: 403 },
-                        fetchedAt: Date.now(),
-                    });
-                }
-                return;
-            }
-            const raw = (await res.json()) as {
-                plan_type?: string;
-                rate_limit?: {
-                    primary?: { used_percent: number; window_minutes?: number | null; resets_at?: number | null } | null;
-                    secondary?: { used_percent: number; window_minutes?: number | null; resets_at?: number | null } | null;
-                    primary_window?: { used_percent: number; limit_window_seconds?: number | null; reset_at?: number | null } | null;
-                    secondary_window?: { used_percent: number; limit_window_seconds?: number | null; reset_at?: number | null } | null;
-                } | null;
-                code_review_rate_limit?: {
-                    primary_window?: { used_percent: number; limit_window_seconds?: number | null; reset_at?: number | null } | null;
-                    secondary_window?: { used_percent: number; limit_window_seconds?: number | null; reset_at?: number | null } | null;
-                } | null;
-                additional_rate_limits?: Array<{
-                    limit_name: string;
-                    metered_feature?: string;
-                    rate_limit?: {
-                        primary?: { used_percent: number; window_minutes?: number | null; resets_at?: number | null } | null;
-                        primary_window?: { used_percent: number; limit_window_seconds?: number | null; reset_at?: number | null } | null;
-                    } | null;
-                }> | null;
-            };
-
-            function windowLabel(minutes: number | null | undefined): string {
-                if (!minutes) return "Usage";
-                if (minutes < 60) return `${minutes}-min`;
-                if (minutes < 60 * 24) return `${Math.round(minutes / 60)}-hour`;
-                return `${Math.round(minutes / 60 / 24)}-day`;
-            }
-
-            function toWindow(
-                w:
-                    | { used_percent: number; window_minutes?: number | null; resets_at?: number | null }
-                    | { used_percent: number; limit_window_seconds?: number | null; reset_at?: number | null }
-                    | null
-                    | undefined,
-                label: string,
-            ): UsageWindow | null {
-                if (!w) return null;
-                const used = typeof w.used_percent === "number" ? w.used_percent : null;
-                const resetAt =
-                    "resets_at" in w
-                        ? w.resets_at
-                        : "reset_at" in w
-                          ? w.reset_at
-                          : null;
-                if (used == null || resetAt == null) return null;
-
-                const minutes =
-                    "window_minutes" in w
-                        ? (w.window_minutes ?? undefined)
-                        : "limit_window_seconds" in w && typeof w.limit_window_seconds === "number"
-                          ? Math.max(1, Math.round(w.limit_window_seconds / 60))
-                          : undefined;
-
-                return {
-                    label: minutes ? windowLabel(minutes) : label,
-                    utilization: used,
-                    resets_at: new Date(resetAt * 1000).toISOString(),
-                };
-            }
-
-            const windows: UsageWindow[] = [];
-            const primary = toWindow(raw.rate_limit?.primary_window ?? raw.rate_limit?.primary, "Primary");
-            if (primary) windows.push(primary);
-            const secondary = toWindow(raw.rate_limit?.secondary_window ?? raw.rate_limit?.secondary, "Secondary");
-            if (secondary) windows.push(secondary);
-
-            // Additional metered features (e.g. background tasks)
-            for (const extra of raw.additional_rate_limits ?? []) {
-                const w = toWindow(extra.rate_limit?.primary_window ?? extra.rate_limit?.primary, extra.limit_name);
-                if (w) {
-                    w.label = extra.limit_name;
-                    windows.push(w);
-                }
-            }
-
-            if (windows.length > 0) {
-                usageCache.set("openai-codex", { data: { windows, status: "ok" }, fetchedAt: Date.now() });
-            }
-        } catch {
-            // Non-fatal
-        }
-    }
-
-    async function refreshGeminiUsage(opts: { force?: boolean } = {}): Promise<void> {
-        if (isCached("google-gemini-cli", opts)) return;
-        // Credentials are stored as JSON: { token, projectId }
-        let token: string;
-        let projectId: string;
-        try {
-            const config = loadConfig(process.cwd());
-            const agentDir = config.agentDir ? config.agentDir.replace(/^~/, homedir()) : defaultAgentDir();
-            const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
-            const raw = await authStorage.getApiKey("google-gemini-cli");
-            if (!raw) return;
-            const parsed = JSON.parse(raw) as { token?: string; projectId?: string };
-            if (!parsed.token || !parsed.projectId) return;
-            token = parsed.token;
-            projectId = parsed.projectId;
-        } catch {
-            return;
-        }
-
-        try {
-            const endpoint = process.env["CODE_ASSIST_ENDPOINT"] ?? "https://cloudcode-pa.googleapis.com";
-            const version = process.env["CODE_ASSIST_API_VERSION"] ?? "v1internal";
-            const res = await fetch(`${endpoint}/${version}:retrieveUserQuota`, {
-                method: "POST",
-                headers: {
-                    Authorization: `Bearer ${token}`,
-                    "Content-Type": "application/json",
-                },
-                body: JSON.stringify({ project: projectId }),
-            });
-            if (!res.ok) {
-                if (res.status === 403) {
-                    usageCache.set("google-gemini-cli", {
-                        data: { windows: [], status: "unknown", errorCode: 403 },
-                        fetchedAt: Date.now(),
-                    });
-                }
-                return;
-            }
-
-            const raw = (await res.json()) as {
-                buckets?: Array<{
-                    remainingAmount?: string;
-                    remainingFraction?: number;
-                    resetTime?: string;
-                    tokenType?: string;
-                    modelId?: string;
-                }>;
-            };
-
-            const windows: UsageWindow[] = [];
-            for (const bucket of raw.buckets ?? []) {
-                if (bucket.remainingFraction == null || !bucket.resetTime) continue;
-                // API returns remaining fraction (0–1); convert to utilization (0–100 used)
-                const utilization = (1 - bucket.remainingFraction) * 100;
-                const label = [bucket.tokenType, bucket.modelId].filter(Boolean).join(" / ") || "Quota";
-                windows.push({ label, utilization, resets_at: bucket.resetTime });
-            }
-            if (windows.length > 0) {
-                usageCache.set("google-gemini-cli", { data: { windows, status: "ok" }, fetchedAt: Date.now() });
-            }
-        } catch {
-            // Non-fatal
-        }
-    }
-
-    async function refreshAllUsage(opts: { force?: boolean } = {}): Promise<void> {
-        const force = opts.force === true;
-
-        if (runnerUsageCachePath && !force) {
-            // Runner-spawned worker: read the daemon's shared cache instead of
-            // making independent API calls.  The daemon already fetches on our
-            // behalf and keeps the file fresh.
-            await refreshFromRunnerCache();
-            return;
-        }
-
-        // CLI session, or an explicit manual refresh in runner mode: fetch
-        // directly from each provider.
-        await Promise.allSettled([
-            refreshAnthropicUsage({ force }),
-            refreshCodexUsage({ force }),
-            refreshGeminiUsage({ force }),
-        ]);
-    }
-
-    // ── Heartbeat state ───────────────────────────────────────────────────────
-    let isAgentActive = false;
-    let isCompacting = false;
-    let sessionStartedAt: number | null = null;
-    let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
-
-    // ── Auto-retry tracking ──────────────────────────────────────────────────
-    // The pi agent core emits auto_retry_start/end events on its internal event
-    // bus, but they are NOT forwarded through the extension event API.  We detect
-    // retryable errors from `message_end` (stopReason === "error") and track them
-    // so the heartbeat can inform the web UI.
-    interface RetryState {
-        errorMessage: string;
-        detectedAt: number;
-    }
-    let lastRetryableError: RetryState | null = null;
-
-    // ── Relay connection failure tracking ─────────────────────────────────────
-    // Show a one-time notification on the first connection failure so the user
-    // knows relay isn't working.  Reset on successful registration so a later
-    // drop can re-notify.
+    // ── Orchestrator-local state (NOT in RelayContext) ─────────────────────
     let connectFailureNotified = false;
-
-    // ── Session name sync state ───────────────────────────────────────────────
-    // Keeps web viewers in sync when /name is run directly in the TUI.
+    let sessionCompleteFired = false;
+    let followUpGraceTimer: ReturnType<typeof setTimeout> | null = null;
     let sessionNameSyncTimer: ReturnType<typeof setInterval> | null = null;
     let lastBroadcastSessionName: string | null = null;
+    const oauthPendingCallbacks = new Map<string, (code: string) => void>();
 
-    // ── Core relay helpers ────────────────────────────────────────────────────
+    // ── RelayContext creation ─────────────────────────────────────────────
+    const rctx: RelayContext = {
+        pi,
+        relay: null,
+        sioSocket: null,
+        latestCtx: null,
 
-    function relayUrl(): string {
-        const configured =
-            process.env.PIZZAPI_RELAY_URL ??
-            loadConfig(process.cwd()).relayUrl ??
-            RELAY_DEFAULT;
-        return configured.replace(/\/$/, "");
-    }
+        isAgentActive: false,
+        isCompacting: false,
+        shuttingDown: false,
+        sessionStartedAt: null,
+        lastRetryableError: null,
+
+        parentSessionId: process.env.PIZZAPI_WORKER_PARENT_SESSION_ID ?? null,
+        isChildSession: (process.env.PIZZAPI_WORKER_PARENT_SESSION_ID ?? null) !== null,
+        relaySessionId: (process.env.PIZZAPI_SESSION_ID && process.env.PIZZAPI_SESSION_ID.trim().length > 0)
+            ? process.env.PIZZAPI_SESSION_ID.trim()
+            : randomUUID(),
+
+        pendingAskUserQuestion: null,
+        pendingPlanMode: null,
+        pendingPluginTrust: null,
+
+        lastMcpStartupReport: null,
+        relayStatusText: "",
+
+        forwardEvent(event: unknown) {
+            if (!rctx.relay || !rctx.sioSocket?.connected) return;
+            const seq = ++rctx.relay.seq;
+            rctx.sioSocket.emit("event", { sessionId: rctx.relay.sessionId, token: rctx.relay.token, event, seq });
+        },
+
+        sendToWeb(payload: RemoteExecResponse) {
+            if (!rctx.relay || !rctx.sioSocket?.connected) return;
+            const { type: _, ...data } = payload;
+            rctx.sioSocket.emit("exec_result", data);
+        },
+
+        relayUrl(): string {
+            const configured =
+                process.env.PIZZAPI_RELAY_URL ??
+                loadConfig(process.cwd()).relayUrl ??
+                RELAY_DEFAULT;
+            return configured.replace(/\/$/, "");
+        },
+
+        relayHttpBaseUrl(): string {
+            const wsBase = toWebSocketBaseUrl(rctx.relayUrl()).replace(/\/ws\/sessions$/, "");
+            if (wsBase.startsWith("ws://")) return `http://${wsBase.slice("ws://".length)}`;
+            if (wsBase.startsWith("wss://")) return `https://${wsBase.slice("wss://".length)}`;
+            return wsBase;
+        },
+
+        apiKey(): string | undefined {
+            return (
+                process.env.PIZZAPI_API_KEY ??
+                process.env.PIZZAPI_API_TOKEN ??
+                loadConfig(process.cwd()).apiKey
+            );
+        },
+
+        setRelayStatus(text?: string) {
+            rctx.relayStatusText = text ?? "";
+            if (!rctx.latestCtx) return;
+            rctx.latestCtx.ui.setStatus(RELAY_STATUS_KEY, text);
+        },
+
+        disconnectedStatusText(): string | undefined {
+            if (isDisabled()) return undefined;
+            if (!rctx.apiKey()) return "Relay not configured — run pizza setup";
+            return "Disconnected from Relay";
+        },
+
+        isConnected(): boolean {
+            return !!rctx.relay && !!rctx.sioSocket?.connected;
+        },
+
+        buildSessionState() {
+            if (!rctx.latestCtx) return undefined;
+            const { messages, model } = buildSessionContext(
+                rctx.latestCtx.sessionManager.getEntries(),
+                rctx.latestCtx.sessionManager.getLeafId(),
+            );
+            return {
+                messages,
+                model,
+                thinkingLevel: rctx.getCurrentThinkingLevel(),
+                sessionName: rctx.getCurrentSessionName(),
+                cwd: rctx.latestCtx.cwd,
+                availableModels: rctx.getConfiguredModels(),
+                todoList: getCurrentTodoList(),
+            };
+        },
+
+        buildHeartbeat() {
+            return buildHeartbeat(rctx);
+        },
+
+        buildCapabilitiesState() {
+            if (!rctx.latestCtx) {
+                return { type: "capabilities", models: [], commands: [] };
+            }
+            const commands = (pi.getCommands?.() ?? []).map((c: any) => ({
+                name: c.name,
+                description: c.description,
+                source: c.source,
+            }));
+            return {
+                type: "capabilities",
+                models: rctx.getConfiguredModels(),
+                commands,
+            };
+        },
+
+        getConfiguredModels(): RelayModelInfo[] {
+            if (!rctx.latestCtx) return [];
+            return rctx.latestCtx.modelRegistry
+                .getAvailable()
+                .map((model) => ({
+                    provider: model.provider,
+                    id: model.id,
+                    name: model.name,
+                    reasoning: model.reasoning,
+                    contextWindow: model.contextWindow,
+                }))
+                .sort((a, b) => {
+                    if (a.provider !== b.provider) return a.provider.localeCompare(b.provider);
+                    return a.id.localeCompare(b.id);
+                });
+        },
+
+        getCurrentSessionName(): string | null {
+            if (!rctx.latestCtx) return null;
+            const raw = rctx.latestCtx.sessionManager.getSessionName();
+            if (typeof raw !== "string") return null;
+            const trimmed = raw.trim();
+            return trimmed.length > 0 ? trimmed : null;
+        },
+
+        getCurrentThinkingLevel(): string | null {
+            const api = pi as any;
+            if (typeof api.getThinkingLevel === "function") {
+                const level = api.getThinkingLevel();
+                if (typeof level === "string") {
+                    const trimmed = level.trim();
+                    if (trimmed) return trimmed;
+                }
+            }
+            if (!rctx.latestCtx) return null;
+            const { thinkingLevel } = buildSessionContext(rctx.latestCtx.sessionManager.getEntries(), rctx.latestCtx.sessionManager.getLeafId());
+            return thinkingLevel ?? null;
+        },
+
+        markSessionNameBroadcasted() {
+            lastBroadcastSessionName = rctx.getCurrentSessionName();
+        },
+
+        emitTrigger(trigger: ConversationTrigger) {
+            if (!rctx.relay || !rctx.sioSocket?.connected) return;
+            rctx.sioSocket.emit("session_trigger" as any, { token: rctx.relay.token, trigger });
+        },
+
+        waitForTriggerResponse(triggerId: string, timeoutMs: number, signal?: AbortSignal): Promise<TriggerResponse> {
+            return new Promise<TriggerResponse>((resolve) => {
+                const timeout = setTimeout(() => {
+                    cleanup();
+                    resolve({ response: "Trigger timed out — no response from parent within 5 minutes.", cancelled: true });
+                }, timeoutMs);
+
+                const handler = (data: { triggerId: string; response: string; action?: string }) => {
+                    if (data.triggerId === triggerId) {
+                        cleanup();
+                        resolve({ response: data.response, action: data.action, cancelled: false });
+                    }
+                };
+
+                const errorHandler = (data: { targetSessionId: string; error: string }) => {
+                    if (data.targetSessionId === rctx.parentSessionId) {
+                        cleanup();
+                        resolve({ response: `Trigger delivery failed: ${data.error}`, cancelled: true });
+                    }
+                };
+
+                const cleanup = () => {
+                    clearTimeout(timeout);
+                    rctx.sioSocket?.off("trigger_response" as any, handler);
+                    rctx.sioSocket?.off("session_message_error" as any, errorHandler);
+                };
+
+                rctx.sioSocket!.on("trigger_response" as any, handler);
+                rctx.sioSocket!.on("session_message_error" as any, errorHandler);
+                signal?.addEventListener("abort", () => { cleanup(); resolve({ response: "Aborted", cancelled: true }); });
+            });
+        },
+    };
+
+    // Set module-level ref for external consumers
+    _ctx = rctx;
+
+    // ── Register tools ────────────────────────────────────────────────────
+    registerAskUserTool(rctx);
+    registerPlanModeTool(rctx);
+
+    // ── Wire up callbacks ─────────────────────────────────────────────────
+
+    setTodoUpdateCallback((list: TodoItem[]) => {
+        rctx.forwardEvent({ type: "todo_update", todos: list, ts: Date.now() });
+    });
+
+    setPlanModeChangeCallback((_enabled: boolean) => {
+        rctx.forwardEvent(rctx.buildHeartbeat());
+    });
+
+    // ── Core relay helpers ────────────────────────────────────────────────
 
     function toWebSocketBaseUrl(value: string): string {
         const trimmed = value.trim().replace(/\/$/, "");
-        if (trimmed.startsWith("ws://") || trimmed.startsWith("wss://")) {
-            return trimmed;
-        }
-        if (trimmed.startsWith("http://")) {
-            return `ws://${trimmed.slice("http://".length)}`;
-        }
-        if (trimmed.startsWith("https://")) {
-            return `wss://${trimmed.slice("https://".length)}`;
-        }
-        // No scheme — treat as a secure remote host (e.g. "example.com" or "example.com:5173")
+        if (trimmed.startsWith("ws://") || trimmed.startsWith("wss://")) return trimmed;
+        if (trimmed.startsWith("http://")) return `ws://${trimmed.slice("http://".length)}`;
+        if (trimmed.startsWith("https://")) return `wss://${trimmed.slice("https://".length)}`;
         return `wss://${trimmed}`;
     }
 
@@ -602,238 +325,14 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         return configured.toLowerCase() === "off";
     }
 
-    // Wire up module-level error forwarder so worker.ts can push errors into the relay.
-    _cliErrorForwarder = (message, source) => {
-        forwardEvent({ type: "cli_error", message, source: source ?? null, ts: Date.now() });
-    };
-
-    // Wire up todo update callback so the web UI gets live updates when the model
-    // calls the `update_todo` tool.
-    setTodoUpdateCallback((list: TodoItem[]) => {
-        forwardEvent({ type: "todo_update", todos: list, ts: Date.now() });
-    });
-
-    setPlanModeChangeCallback((_enabled: boolean) => {
-        // Push an immediate heartbeat so the web UI updates the plan mode indicator.
-        forwardEvent(buildHeartbeat());
-    });
-
-    function forwardEvent(event: unknown) {
-        if (!relay || !sioSocket?.connected) return;
-        const seq = ++relay.seq;
-        sioSocket.emit("event", { sessionId: relay.sessionId, token: relay.token, event, seq });
+    function socketIoUrl(): string {
+        const explicit = process.env.PIZZAPI_SOCKETIO_URL;
+        if (explicit && explicit.trim()) return explicit.trim().replace(/\/$/, "");
+        const base = rctx.relayUrl();
+        return base.replace(/^ws:/, "http:").replace(/^wss:/, "https:").replace(/\/$/, "");
     }
 
-    type RemoteInputAttachment = {
-        attachmentId?: string;
-        mediaType?: string;
-        filename?: string;
-        url?: string;
-    };
-
-    function normalizeRemoteInputAttachments(raw: unknown): RemoteInputAttachment[] {
-        if (!Array.isArray(raw)) return [];
-        return raw
-            .filter((item) => item && typeof item === "object")
-            .map((item) => {
-                const record = item as Record<string, unknown>;
-                return {
-                    attachmentId: typeof record.attachmentId === "string" ? record.attachmentId : undefined,
-                    mediaType: typeof record.mediaType === "string" ? record.mediaType : undefined,
-                    filename: typeof record.filename === "string" ? record.filename : undefined,
-                    url: typeof record.url === "string" ? record.url : undefined,
-                } satisfies RemoteInputAttachment;
-            })
-            .filter((item) =>
-                (typeof item.attachmentId === "string" && item.attachmentId.length > 0) ||
-                (typeof item.url === "string" && item.url.length > 0),
-            );
-    }
-
-    function parseDataUrl(url: string): { mediaType: string; data: string } | null {
-        const match = /^data:([^;,]+)?;base64,(.+)$/i.exec(url);
-        if (!match) return null;
-        return {
-            mediaType: match[1] || "application/octet-stream",
-            data: match[2],
-        };
-    }
-
-    function relayHttpBaseUrl(): string {
-        const wsBase = toWebSocketBaseUrl(relayUrl()).replace(/\/ws\/sessions$/, "");
-        if (wsBase.startsWith("ws://")) return `http://${wsBase.slice("ws://".length)}`;
-        if (wsBase.startsWith("wss://")) return `https://${wsBase.slice("wss://".length)}`;
-        return wsBase;
-    }
-
-    async function loadAttachmentFromRelay(attachmentId: string): Promise<{ mediaType: string; filename?: string; dataBase64: string } | null> {
-        const key = apiKey();
-        if (!key) return null;
-
-        const response = await fetch(`${relayHttpBaseUrl()}/api/attachments/${encodeURIComponent(attachmentId)}`, {
-            headers: { "x-api-key": key },
-        });
-
-        if (!response.ok) return null;
-
-        const mediaType = (response.headers.get("content-type") || "application/octet-stream").split(";")[0].trim();
-        const filename = response.headers.get("x-attachment-filename") ?? undefined;
-        const dataBase64 = Buffer.from(await response.arrayBuffer()).toString("base64");
-
-        return { mediaType, filename, dataBase64 };
-    }
-
-    async function buildUserMessageFromRemoteInput(text: string, attachments: RemoteInputAttachment[]): Promise<string | unknown[]> {
-        if (attachments.length === 0) return text;
-
-        const parts: unknown[] = [];
-        if (text.length > 0) {
-            parts.push({ type: "text", text });
-        }
-
-        for (const attachment of attachments) {
-            let mediaType = attachment.mediaType || "application/octet-stream";
-            let filename = attachment.filename;
-            let dataBase64: string | null = null;
-
-            if (attachment.attachmentId) {
-                const loaded = await loadAttachmentFromRelay(attachment.attachmentId);
-                if (loaded) {
-                    mediaType = loaded.mediaType;
-                    filename = loaded.filename ?? filename;
-                    dataBase64 = loaded.dataBase64;
-                }
-            } else if (attachment.url) {
-                const parsed = parseDataUrl(attachment.url);
-                if (parsed) {
-                    mediaType = parsed.mediaType;
-                    dataBase64 = parsed.data;
-                }
-            }
-
-            if (dataBase64 && mediaType.startsWith("image/")) {
-                parts.push({
-                    type: "image",
-                    mimeType: mediaType,
-                    data: dataBase64,
-                });
-                continue;
-            }
-
-            const label = filename || mediaType || "attachment";
-            parts.push({ type: "text", text: `[Attachment provided by web client: ${label}]` });
-        }
-
-        return parts.length > 0 ? parts : text;
-    }
-
-    function buildTokenUsage() {
-        if (!latestCtx) return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
-        let input = 0, output = 0, cacheRead = 0, cacheWrite = 0, cost = 0;
-        for (const entry of latestCtx.sessionManager.getEntries()) {
-            if (entry.type === "message" && entry.message.role === "assistant") {
-                input += entry.message.usage.input;
-                output += entry.message.usage.output;
-                cacheRead += entry.message.usage.cacheRead;
-                cacheWrite += entry.message.usage.cacheWrite;
-                cost += entry.message.usage.cost.total;
-            }
-        }
-        return { input, output, cacheRead, cacheWrite, cost };
-    }
-
-    function getCurrentSessionName(ctx: ExtensionContext | null | undefined): string | null {
-        if (!ctx) return null;
-        const raw = ctx.sessionManager.getSessionName();
-        if (typeof raw !== "string") return null;
-        const trimmed = raw.trim();
-        return trimmed.length > 0 ? trimmed : null;
-    }
-
-    function getCurrentThinkingLevel(ctx: ExtensionContext | null | undefined): string | null {
-        const api = pi as any;
-        if (typeof api.getThinkingLevel === "function") {
-            const level = api.getThinkingLevel();
-            if (typeof level === "string") {
-                const trimmed = level.trim();
-                if (trimmed) return trimmed;
-            }
-        }
-
-        if (!ctx) return null;
-        const { thinkingLevel } = buildSessionContext(ctx.sessionManager.getEntries(), ctx.sessionManager.getLeafId());
-        return thinkingLevel ?? null;
-    }
-
-    function buildHeartbeat() {
-        const thinkingLevel = getCurrentThinkingLevel(latestCtx);
-        const authSource = getAuthSource(latestCtx);
-
-        return {
-            type: "heartbeat",
-            active: isAgentActive,
-            isCompacting,
-            model: latestCtx?.model
-                ? { provider: latestCtx.model.provider, id: latestCtx.model.id, name: latestCtx.model.name, reasoning: latestCtx.model.reasoning }
-                : null,
-            authSource,
-            sessionName: getCurrentSessionName(latestCtx),
-            thinkingLevel: thinkingLevel ?? null,
-            tokenUsage: buildTokenUsage(),
-            cwd: latestCtx?.cwd ?? null,
-            uptime: sessionStartedAt !== null ? Date.now() - sessionStartedAt : null,
-            ts: Date.now(),
-            providerUsage: buildProviderUsage(),
-            todoList: getCurrentTodoList(),
-            pendingQuestion: pendingAskUserQuestion
-                ? {
-                      toolCallId: pendingAskUserQuestion.toolCallId,
-                      questions: pendingAskUserQuestion.questions,
-                      display: pendingAskUserQuestion.display,
-                  }
-                : null,
-            pendingPlan: pendingPlanMode
-                ? {
-                      toolCallId: pendingPlanMode.toolCallId,
-                      title: pendingPlanMode.title,
-                      description: pendingPlanMode.description,
-                      steps: pendingPlanMode.steps,
-                  }
-                : null,
-            retryState: lastRetryableError
-                ? {
-                      errorMessage: lastRetryableError.errorMessage,
-                      detectedAt: lastRetryableError.detectedAt,
-                  }
-                : null,
-            pendingPluginTrust: pendingPluginTrust
-                ? {
-                      promptId: pendingPluginTrust.promptId,
-                      pluginNames: pendingPluginTrust.pluginNames,
-                      pluginSummaries: pendingPluginTrust.pluginSummaries,
-                  }
-                : null,
-            mcpStartupReport: lastMcpStartupReport,
-            planModeEnabled: isPlanModeEnabled(),
-        };
-    }
-
-    function startHeartbeat() {
-        stopHeartbeat();
-        // Send an immediate heartbeat so the viewer has state right away.
-        forwardEvent(buildHeartbeat());
-        heartbeatTimer = setInterval(() => {
-            void refreshAllUsage();
-            forwardEvent(buildHeartbeat());
-        }, 10_000);
-    }
-
-    function stopHeartbeat() {
-        if (heartbeatTimer !== null) {
-            clearInterval(heartbeatTimer);
-            heartbeatTimer = null;
-        }
-    }
+    // ── Session name sync ─────────────────────────────────────────────────
 
     function stopSessionNameSync() {
         if (sessionNameSyncTimer !== null) {
@@ -842,548 +341,28 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         }
     }
 
-    function markSessionNameBroadcasted() {
-        lastBroadcastSessionName = getCurrentSessionName(latestCtx);
-    }
-
     function startSessionNameSync() {
         stopSessionNameSync();
-        markSessionNameBroadcasted();
+        rctx.markSessionNameBroadcasted();
 
         sessionNameSyncTimer = setInterval(() => {
-            const currentSessionName = getCurrentSessionName(latestCtx);
+            const currentSessionName = rctx.getCurrentSessionName();
             if (currentSessionName === lastBroadcastSessionName) return;
 
             lastBroadcastSessionName = currentSessionName;
-            forwardEvent({ type: "session_active", state: buildSessionState() });
-            forwardEvent(buildHeartbeat());
+            rctx.forwardEvent({ type: "session_active", state: rctx.buildSessionState() });
+            rctx.forwardEvent(rctx.buildHeartbeat());
         }, 1000);
     }
 
-    function getConfiguredModels(ctx: ExtensionContext): RelayModelInfo[] {
-        return ctx.modelRegistry
-            .getAvailable()
-            .map((model) => ({
-                provider: model.provider,
-                id: model.id,
-                name: model.name,
-                reasoning: model.reasoning,
-                contextWindow: model.contextWindow,
-            }))
-            .sort((a, b) => {
-                if (a.provider !== b.provider) return a.provider.localeCompare(b.provider);
-                return a.id.localeCompare(b.id);
-            });
-    }
-
-    function buildSessionState() {
-        if (!latestCtx) return undefined;
-        const { messages, model } = buildSessionContext(
-            latestCtx.sessionManager.getEntries(),
-            latestCtx.sessionManager.getLeafId(),
-        );
-        return {
-            messages,
-            model,
-            thinkingLevel: getCurrentThinkingLevel(latestCtx),
-            sessionName: getCurrentSessionName(latestCtx),
-            cwd: latestCtx.cwd,
-            availableModels: getConfiguredModels(latestCtx),
-            todoList: getCurrentTodoList(),
-        };
-    }
-
-    function buildCapabilitiesState() {
-        if (!latestCtx) {
-            return {
-                type: "capabilities",
-                models: [],
-                commands: [],
-            };
-        }
-
-        const commands = (pi.getCommands?.() ?? []).map((c: any) => ({
-            name: c.name,
-            description: c.description,
-            source: c.source,
-        }));
-
-        return {
-            type: "capabilities",
-            models: getConfiguredModels(latestCtx),
-            commands,
-        };
-    }
-
-    function sendToWeb(payload: RemoteExecResponse) {
-        if (!relay || !sioSocket?.connected) return;
-        // Strip the `type` discriminant — socket.io uses the event name instead.
-        const { type: _, ...data } = payload;
-        sioSocket.emit("exec_result", data);
-    }
-
-    async function listSessionsForResume(ctx: ExtensionContext): Promise<SessionInfo[]> {
-        const cwd = ctx.sessionManager.getCwd();
-        const sessionDir = ctx.sessionManager.getSessionDir();
-        const sessions = await SessionManager.list(cwd, sessionDir);
-        return sessions.sort((a, b) => b.modified.getTime() - a.modified.getTime());
-    }
-
-    function pickResumeSession(sessions: SessionInfo[], currentPath: string | undefined, query?: string): SessionInfo | null {
-        const normalized = query?.trim().toLowerCase();
-        const candidates = sessions.filter((session) => session.path !== currentPath);
-        if (candidates.length === 0) return null;
-
-        if (!normalized) {
-            return candidates[0] ?? null;
-        }
-
-        return (
-            candidates.find((session) => {
-                const id = session.id.toLowerCase();
-                const path = session.path.toLowerCase();
-                const name = (session.name ?? "").toLowerCase();
-                const firstMessage = (session.firstMessage ?? "").toLowerCase();
-                return (
-                    id.includes(normalized) ||
-                    path.includes(normalized) ||
-                    name.includes(normalized) ||
-                    firstMessage.includes(normalized)
-                );
-            }) ?? null
-        );
-    }
-
-    function toResumeSessionSummary(session: SessionInfo) {
-        return {
-            id: session.id,
-            path: session.path,
-            name: session.name ?? null,
-            modified: session.modified.toISOString(),
-            firstMessage: session.firstMessage,
-        };
-    }
-
-    async function handleExecFromWeb(req: RemoteExecRequest) {
-        const replyOk = (result?: unknown) => sendToWeb({ type: "exec_result", id: req.id, ok: true, command: req.command, result });
-        const replyErr = (error: string) => sendToWeb({ type: "exec_result", id: req.id, ok: false, command: req.command, error });
-
-        try {
-            if (req.command === "get_commands") {
-                // Return the same list we already advertise in capabilities
-                const commands = (pi.getCommands?.() ?? []).map((c: any) => ({ name: c.name, description: c.description, source: c.source }));
-                replyOk({ commands });
-                return;
-            }
-
-            if (req.command === "mcp") {
-                const bridge = getMcpBridge();
-                if (!bridge) {
-                    replyErr("MCP extension is not initialized yet");
-                    return;
-                }
-
-                const action = req.action === "reload" ? "reload" : "status";
-                const result = action === "reload" ? await bridge.reload() : bridge.status();
-                replyOk({ ...result as object, action });
-                return;
-            }
-
-            if (req.command === "mcp_toggle_server") {
-                const bridge = getMcpBridge();
-                if (!bridge) {
-                    replyErr("MCP extension is not initialized yet");
-                    return;
-                }
-                const { serverName, disabled } = req;
-                if (!serverName || typeof serverName !== "string") {
-                    replyErr("Missing serverName");
-                    return;
-                }
-                const toggleResult = toggleMcpServer(serverName, disabled, process.cwd());
-                if (toggleResult.globallyDisabled) {
-                    replyErr(`Cannot enable "${serverName}" — it is disabled in the global config (~/.pizzapi/config.json)`);
-                    return;
-                }
-                // Reload MCP to apply the change
-                const snapshot = await bridge.reload();
-                replyOk({ ...snapshot as object, action: "reload", toggledServer: serverName, disabled });
-                return;
-            }
-
-            if (req.command === "abort") {
-                if (!latestCtx) {
-                    replyErr("No active session");
-                    return;
-                }
-                latestCtx.abort();
-                replyOk();
-                // Push a heartbeat immediately so the web UI updates active state quickly.
-                forwardEvent(buildHeartbeat());
-                return;
-            }
-
-            if (req.command === "set_model") {
-                await setModelFromWeb(req.provider, req.modelId);
-                replyOk();
-                return;
-            }
-
-            if (req.command === "cycle_model") {
-                if (!latestCtx) {
-                    replyErr("No active session");
-                    return;
-                }
-                // Naive implementation: pick the next configured model after the current one.
-                const models = getConfiguredModels(latestCtx);
-                const state = buildSessionState();
-                const currentKey = state?.model ? `${(state.model as any).provider}/${(state.model as any).id}` : null;
-                const idx = currentKey ? models.findIndex((m) => `${m.provider}/${m.id}` === currentKey) : -1;
-                const next = models.length > 0 ? models[(idx + 1 + models.length) % models.length] : null;
-                if (!next) {
-                    replyOk(null);
-                    return;
-                }
-                await setModelFromWeb(next.provider, next.id);
-                replyOk(next);
-                return;
-            }
-
-            if (req.command === "get_available_models") {
-                if (!latestCtx) {
-                    replyErr("No active session");
-                    return;
-                }
-                replyOk({ models: getConfiguredModels(latestCtx) });
-                return;
-            }
-
-            if (req.command === "set_thinking_level") {
-                const level = String((req as any).level ?? "").trim();
-                if (!level) {
-                    replyErr("Missing level");
-                    return;
-                }
-                if (!latestCtx) {
-                    replyErr("No active session");
-                    return;
-                }
-                const api = pi as any;
-                if (typeof api.setThinkingLevel !== "function" || typeof api.getThinkingLevel !== "function") {
-                    replyErr("Thinking level controls are not available in this pi version");
-                    return;
-                }
-                api.setThinkingLevel(level);
-                replyOk({ thinkingLevel: api.getThinkingLevel() });
-                forwardEvent({ type: "session_active", state: buildSessionState() });
-                return;
-            }
-
-            if (req.command === "cycle_thinking_level") {
-                if (!latestCtx) {
-                    replyErr("No active session");
-                    return;
-                }
-                const api = pi as any;
-                if (typeof api.setThinkingLevel !== "function" || typeof api.getThinkingLevel !== "function") {
-                    replyErr("Thinking level controls are not available in this pi version");
-                    return;
-                }
-
-                // No cycleThinkingLevel API exists, so we cycle manually.
-                const LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"];
-                const current = String(api.getThinkingLevel() ?? "off");
-                const startIdx = LEVELS.indexOf(current);
-
-                let appliedLevel = current;
-                for (let i = 1; i <= LEVELS.length; i++) {
-                    const candidate = LEVELS[((startIdx >= 0 ? startIdx : 0) + i) % LEVELS.length];
-                    api.setThinkingLevel(candidate);
-                    appliedLevel = String(api.getThinkingLevel() ?? candidate);
-                    // If clamping kept the same level, keep looking for the next distinct one.
-                    if (appliedLevel !== current) break;
-                }
-
-                replyOk({ thinkingLevel: appliedLevel });
-                forwardEvent({ type: "session_active", state: buildSessionState() });
-                return;
-            }
-
-            if (req.command === "set_steering_mode") {
-                replyErr("set_steering_mode is not supported by the PizzaPi runner yet");
-                return;
-            }
-
-            if (req.command === "set_follow_up_mode") {
-                replyErr("set_follow_up_mode is not supported by the PizzaPi runner yet");
-                return;
-            }
-
-            if (req.command === "set_plan_mode") {
-                // If an explicit `enabled` value is provided, set to that value.
-                // Otherwise toggle (backwards-compatible with the /plan command).
-                const explicitEnabled = (req as any).enabled;
-                if (typeof explicitEnabled === "boolean") {
-                    const result = setPlanModeFromRemote(explicitEnabled);
-                    if (result === null) {
-                        replyErr("Plan mode extension not initialized");
-                        return;
-                    }
-                } else {
-                    const toggled = togglePlanModeFromRemote();
-                    if (!toggled) {
-                        replyErr("Plan mode extension not initialized");
-                        return;
-                    }
-                }
-                const enabled = isPlanModeEnabled();
-                replyOk({ planModeEnabled: enabled });
-                forwardEvent(buildHeartbeat());
-                return;
-            }
-
-            if (req.command === "refresh_usage") {
-                await refreshAllUsage({ force: true });
-                const providerUsage = buildProviderUsage();
-                replyOk({ providerUsage, refreshedAt: Date.now() });
-                forwardEvent(buildHeartbeat());
-                return;
-            }
-
-            if (req.command === "compact") {
-                if (!latestCtx) {
-                    replyErr("No active session");
-                    return;
-                }
-                if (isCompacting) {
-                    replyErr("Compaction already in progress");
-                    return;
-                }
-                isCompacting = true;
-                // Push a heartbeat immediately so any connected viewer sees the compacting state.
-                forwardEvent(buildHeartbeat());
-                try {
-                    // ctx.compact() is fire-and-forget; wrap in a promise for request/response semantics.
-                    const result = await new Promise<unknown>((resolve, reject) => {
-                        latestCtx!.compact({
-                            customInstructions: req.customInstructions,
-                            onComplete: (r) => resolve(r),
-                            onError: (err) => reject(err),
-                        });
-                    });
-                    // Compaction aborts the agent internally, so sync our tracking state.
-                    // The agent_end event may be lost because compact disconnects before aborting.
-                    isAgentActive = false;
-                    lastRetryableError = null;
-                    // Clear compacting flag *before* the heartbeat so the UI
-                    // receives isCompacting=false immediately on completion.
-                    isCompacting = false;
-                    replyOk(result ?? null);
-                    forwardEvent({ type: "session_active", state: buildSessionState() });
-                    // Push an immediate heartbeat so the web UI shows the correct idle state.
-                    forwardEvent(buildHeartbeat());
-                } catch (err) {
-                    // Ensure the flag is cleared even on failure so the UI
-                    // doesn't stay stuck in "Compacting…" state.
-                    isCompacting = false;
-                    forwardEvent(buildHeartbeat());
-                    throw err;
-                }
-                return;
-            }
-
-            if (req.command === "set_session_name") {
-                if (typeof pi.setSessionName !== "function") {
-                    replyErr("setSessionName is not available in this pi version");
-                    return;
-                }
-                await pi.setSessionName(req.name);
-
-                markSessionNameBroadcasted();
-                const state = buildSessionState();
-                replyOk({ sessionName: state?.sessionName ?? null });
-                forwardEvent({ type: "session_active", state });
-                forwardEvent(buildHeartbeat());
-                return;
-            }
-
-            if (req.command === "get_last_assistant_text") {
-                if (!latestCtx) {
-                    replyErr("No active session");
-                    return;
-                }
-                const { messages } = buildSessionContext(
-                    latestCtx.sessionManager.getEntries(),
-                    latestCtx.sessionManager.getLeafId(),
-                );
-                const lastAssistant = [...messages].reverse().find((m: any) => m?.role === "assistant");
-                const content = (lastAssistant as any)?.content;
-                const text =
-                    typeof content === "string"
-                        ? content
-                        : Array.isArray(content)
-                          ? content
-                                .filter((c: any) => c && typeof c === "object" && c.type === "text" && typeof c.text === "string")
-                                .map((c: any) => c.text)
-                                .join("")
-                          : null;
-                replyOk({ text });
-                return;
-            }
-
-            if (req.command === "list_resume_sessions") {
-                if (!latestCtx) {
-                    replyErr("No active session");
-                    return;
-                }
-
-                const sessions = await listSessionsForResume(latestCtx);
-                const currentPath = latestCtx.sessionManager.getSessionFile();
-                const candidates = sessions.filter((session) => session.path !== currentPath).map(toResumeSessionSummary);
-
-                replyOk({
-                    currentPath: currentPath ?? null,
-                    sessions: candidates,
-                });
-                return;
-            }
-
-            if (req.command === "resume_session") {
-                if (!latestCtx) {
-                    replyErr("No active session");
-                    return;
-                }
-
-                if (typeof (pi as any).switchSession !== "function") {
-                    replyErr("switchSession is not available in this pi version");
-                    return;
-                }
-
-                const sessions = await listSessionsForResume(latestCtx);
-                const currentPath = latestCtx.sessionManager.getSessionFile();
-                const target = req.sessionPath
-                    ? sessions.find((session) => session.path === req.sessionPath) ?? null
-                    : pickResumeSession(sessions, currentPath, req.query);
-
-                if (!target || target.path === currentPath) {
-                    replyErr("No other sessions found to resume");
-                    return;
-                }
-
-                try {
-                    const result = await (pi as any).switchSession(target.path);
-                    if (result?.cancelled) {
-                        replyErr("Resume was cancelled");
-                        return;
-                    }
-                } catch (e) {
-                    replyErr(e instanceof Error ? e.message : String(e));
-                    return;
-                }
-
-                replyOk({ session: toResumeSessionSummary(target) });
-                forwardEvent({ type: "session_active", state: buildSessionState() });
-                forwardEvent(buildHeartbeat());
-                return;
-            }
-
-            if (req.command === "new_session") {
-                if (!latestCtx) {
-                    replyErr("No active session");
-                    return;
-                }
-
-                try {
-                    // Uses patched pi.newSession() which delegates to
-                    // AgentSession.newSession() — resets agent state, creates
-                    // a new session file, and fires session lifecycle events.
-                    const result = await (pi as any).newSession();
-                    if (result?.cancelled) {
-                        replyErr("New session was cancelled");
-                        return;
-                    }
-                } catch (e) {
-                    replyErr(e instanceof Error ? e.message : String(e));
-                    return;
-                }
-
-                replyOk();
-                forwardEvent({ type: "session_active", state: buildSessionState() });
-                return;
-            }
-
-            if (req.command === "end_session") {
-                if (!latestCtx) {
-                    replyErr("No active session");
-                    return;
-                }
-
-                replyOk();
-                shuttingDown = true;
-                // Brief delay to ensure the response is flushed to the relay/web client
-                setTimeout(() => {
-                    latestCtx?.shutdown();
-                }, 100);
-                return;
-            }
-
-            if (req.command === "export_html") {
-                replyErr("export_html is not implemented for remote exec yet");
-                return;
-            }
-
-            if (req.command === "restart") {
-                replyOk();
-                // Brief delay to ensure the response is flushed to the relay/web client
-                setTimeout(() => {
-                    // When running as a runner-spawned worker, signal the daemon to
-                    // re-spawn us (exit code 43) so it can send a fresh session_ready
-                    // and preserve the runner→session link.
-                    if (process.env.PIZZAPI_RUNNER_USAGE_CACHE_PATH) {
-                        process.exit(43);
-                        return;
-                    }
-                    // Standalone: self-fork as before.
-                    const child = spawn(process.execPath, process.argv.slice(1), {
-                        detached: true,
-                        stdio: "inherit",
-                        env: process.env,
-                    });
-                    child.unref();
-                    process.exit(0);
-                }, 100);
-                return;
-            }
-
-            if (req.command === "plugin_trust_response") {
-                if (!pendingPluginTrust) {
-                    replyErr("No pending plugin trust prompt (may have expired)");
-                    return;
-                }
-                // Validate promptId to prevent stale/mismatched responses
-                if (req.promptId !== pendingPluginTrust.promptId) {
-                    replyErr("Prompt ID mismatch — this prompt may have expired");
-                    return;
-                }
-                const trusted = req.trusted === true;
-                pendingPluginTrust.respond(trusted);
-                pendingPluginTrust = null;
-                replyOk({ trusted });
-                return;
-            }
-
-            replyErr(`Unknown exec command: ${String((req satisfies never as any).command)}`);
-        } catch (e) {
-            replyErr(e instanceof Error ? e.message : String(e));
-        }
-    }
+    // ── Model set from web ────────────────────────────────────────────────
 
     async function setModelFromWeb(provider: string, modelId: string) {
-        if (!latestCtx) return;
+        if (!rctx.latestCtx) return;
 
-        const model = latestCtx.modelRegistry.find(provider, modelId);
+        const model = rctx.latestCtx.modelRegistry.find(provider, modelId);
         if (!model) {
-            forwardEvent({
+            rctx.forwardEvent({
                 type: "model_set_result",
                 ok: false,
                 provider,
@@ -1394,11 +373,8 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         }
 
         try {
-            // pi.setModel() will emit a model_select event on success.
-            // We only push a full session_active snapshot if the selection succeeded,
-            // to avoid the UI temporarily seeing a "stale" model in session_active.
             const ok = await pi.setModel(model);
-            forwardEvent({
+            rctx.forwardEvent({
                 type: "model_set_result",
                 ok,
                 provider,
@@ -1406,10 +382,10 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 message: ok ? undefined : "Model selected, but no valid credentials were found.",
             });
             if (ok) {
-                forwardEvent({ type: "session_active", state: buildSessionState() });
+                rctx.forwardEvent({ type: "session_active", state: rctx.buildSessionState() });
             }
         } catch (error) {
-            forwardEvent({
+            rctx.forwardEvent({
                 type: "model_set_result",
                 ok: false,
                 provider,
@@ -1419,734 +395,9 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         }
     }
 
-    function setRelayStatus(text?: string) {
-        relayStatusText = text ?? "";
-        if (!latestCtx) return;
-        latestCtx.ui.setStatus(RELAY_STATUS_KEY, text);
-    }
+    // ── Follow-up grace period ────────────────────────────────────────────
 
-    function disconnectedStatusText(): string | undefined {
-        if (isDisabled()) return undefined;
-        if (!apiKey()) return "Relay not configured — run pizza setup";
-        return "Disconnected from Relay";
-    }
-
-    function consumePendingAskUserQuestionFromWeb(text: string): boolean {
-        if (!pendingAskUserQuestion) return false;
-        const answer = text.trim();
-        if (!answer) return true;
-
-        const pending = pendingAskUserQuestion;
-        pendingAskUserQuestion = null;
-        pending.resolve(answer);
-        setRelayStatus(relay ? "Connected to Relay" : disconnectedStatusText());
-        return true;
-    }
-
-    function cancelPendingAskUserQuestion() {
-        if (!pendingAskUserQuestion) return;
-        const pending = pendingAskUserQuestion;
-        pendingAskUserQuestion = null;
-        pending.resolve(null);
-        setRelayStatus(relay ? "Connected to Relay" : disconnectedStatusText());
-    }
-
-    function consumePendingPlanModeFromWeb(text: string): boolean {
-        if (!pendingPlanMode) return false;
-        const trimmed = text.trim();
-        if (!trimmed) return true;
-
-        // Parse the response: expect JSON { action, editSuggestion? }
-        let response: { action: PlanModeAction; editSuggestion?: string } | null = null;
-        try {
-            const parsed = JSON.parse(trimmed);
-            if (parsed && typeof parsed === "object" && typeof parsed.action === "string") {
-                const validActions: PlanModeAction[] = ["execute", "execute_keep_context", "edit", "cancel"];
-                if (validActions.includes(parsed.action)) {
-                    response = {
-                        action: parsed.action,
-                        editSuggestion: typeof parsed.editSuggestion === "string" ? parsed.editSuggestion : undefined,
-                    };
-                }
-            }
-        } catch {
-            // If not JSON, treat as a plain text edit suggestion
-            response = { action: "edit", editSuggestion: trimmed };
-        }
-
-        // If JSON parsed but didn't validate to a supported action, reject
-        // the payload without consuming the pending prompt so the user can
-        // retry with a valid action.
-        if (!response) return true;
-
-        const pending = pendingPlanMode;
-        pendingPlanMode = null;
-        pending.resolve(response);
-        setRelayStatus(relay ? "Connected to Relay" : disconnectedStatusText());
-        return true;
-    }
-
-    function cancelPendingPlanMode() {
-        if (!pendingPlanMode) return;
-        const pending = pendingPlanMode;
-        pendingPlanMode = null;
-        pending.resolve(null);
-        setRelayStatus(relay ? "Connected to Relay" : disconnectedStatusText());
-    }
-
-    /** Defensively sanitize questions from params (supports new + legacy format). */
-    function sanitizeQuestions(params: AskUserQuestionParams): AskUserQuestionItem[] {
-        // New format: questions[]
-        if (Array.isArray(params.questions) && params.questions.length > 0) {
-            const result: AskUserQuestionItem[] = [];
-            for (const item of params.questions) {
-                if (!item || typeof item !== "object") continue;
-                const raw = item as unknown as Record<string, unknown>;
-                const q = raw.question;
-                if (typeof q !== "string" || !q.trim()) continue;
-                const rawOpts = raw.options;
-                const opts = Array.isArray(rawOpts)
-                    ? rawOpts.filter((o): o is string => typeof o === "string" && o.trim().length > 0).map((o) => o.trim())
-                    : [];
-                result.push({ question: q.trim(), options: opts });
-            }
-            if (result.length > 0) return result;
-        }
-        // Legacy format: single question + options
-        if (typeof params.question === "string" && params.question.trim()) {
-            const opts = Array.isArray(params.options)
-                ? params.options.filter((o): o is string => typeof o === "string" && o.trim().length > 0).map((o) => o.trim())
-                : [];
-            return [{ question: params.question.trim(), options: opts }];
-        }
-        return [];
-    }
-
-    function sanitizeDisplay(_rawDisplay: unknown): AskUserQuestionDisplay {
-        return "stepper";
-    }
-
-    async function askUserQuestion(
-        toolCallId: string,
-        questions: AskUserQuestionItem[],
-        display: AskUserQuestionDisplay,
-        placeholder: string | undefined,
-        signal: AbortSignal | undefined,
-        ctx: ExtensionContext,
-    ): Promise<{ answer: string | null; source: "tui" | "web" | null }> {
-        const canAskViaWeb = !!relay && !!sioSocket?.connected;
-        const canAskViaTui = ctx.hasUI;
-
-        if (!canAskViaWeb && !canAskViaTui) {
-            return { answer: null, source: null };
-        }
-
-        const localAbort = new AbortController();
-
-        return await new Promise((resolve) => {
-            let finished = false;
-            let localDone = !canAskViaTui;
-            let webDone = !canAskViaWeb;
-
-            const onAbort = () => finish(null, null);
-
-            const maybeFinishCancelled = () => {
-                if (localDone && webDone) finish(null, null);
-            };
-
-            const finish = (answer: string | null, source: "tui" | "web" | null) => {
-                if (finished) return;
-                finished = true;
-
-                if (pendingAskUserQuestion?.toolCallId === toolCallId) {
-                    pendingAskUserQuestion = null;
-                }
-
-                localAbort.abort();
-                if (signal) signal.removeEventListener("abort", onAbort);
-                setRelayStatus(relay ? "Connected to Relay" : disconnectedStatusText());
-                resolve({ answer, source });
-            };
-
-            if (signal?.aborted) {
-                finish(null, null);
-                return;
-            }
-
-            if (signal) {
-                signal.addEventListener("abort", onAbort, { once: true });
-            }
-
-            if (canAskViaWeb) {
-                pendingAskUserQuestion = {
-                    toolCallId,
-                    questions,
-                    display,
-                    resolve: (answer) => {
-                        webDone = true;
-                        if (answer) {
-                            finish(answer, "web");
-                        } else {
-                            maybeFinishCancelled();
-                        }
-                    },
-                };
-                setRelayStatus("Waiting for AskUserQuestion answer");
-            }
-
-            if (canAskViaTui) {
-                // Format all questions with their options for TUI display
-                const displayParts = questions.map((q, i) => {
-                    let text = questions.length > 1 ? `Q${i + 1}: ${q.question}` : q.question;
-                    if (q.options.length > 0) {
-                        text += ` (Options: ${q.options.join(", ")})`;
-                    }
-                    return text;
-                });
-                const displayQuestion = displayParts.join("\n");
-                
-                void ctx.ui
-                    .input(displayQuestion, placeholder, { signal: localAbort.signal })
-                    .then((value) => {
-                        localDone = true;
-                        const answer = value?.trim();
-                        if (answer) {
-                            finish(answer, "tui");
-                        } else {
-                            maybeFinishCancelled();
-                        }
-                    })
-                    .catch(() => {
-                        localDone = true;
-                        maybeFinishCancelled();
-                    });
-            }
-
-            maybeFinishCancelled();
-        });
-    }
-
-    function sanitizeStatusText(text: string): string {
-        return text
-            .replace(/\x1B\[[0-9;]*m/g, "")
-            .replace(/[\r\n\t]/g, " ")
-            .replace(/ +/g, " ")
-            .trim();
-    }
-
-    function formatTokens(count: number): string {
-        if (count < 1000) return count.toString();
-        if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
-        if (count < 1000000) return `${Math.round(count / 1000)}k`;
-        if (count < 10000000) return `${(count / 1000000).toFixed(1)}M`;
-        return `${Math.round(count / 1000000)}M`;
-    }
-
-    function truncateEnd(text: string, width: number): string {
-        if (width <= 0) return "";
-        if (text.length <= width) return text;
-        if (width <= 3) return text.slice(0, width);
-        return `${text.slice(0, width - 3)}...`;
-    }
-
-    function truncateMiddle(text: string, width: number): string {
-        if (width <= 0) return "";
-        if (text.length <= width) return text;
-        if (width <= 5) return truncateEnd(text, width);
-        const half = Math.floor((width - 3) / 2);
-        const start = text.slice(0, half);
-        const end = text.slice(-(width - 3 - half));
-        return `${start}...${end}`;
-    }
-
-    function layoutLeftRight(
-        left: string,
-        right: string,
-        width: number,
-        truncateLeft: (text: string, width: number) => string,
-    ): { left: string; pad: string; right: string } {
-        if (width <= 0) return { left: "", pad: "", right: "" };
-        const safeRight = truncateEnd(right, width);
-        if (!safeRight) return { left: truncateLeft(left, width), pad: "", right: "" };
-        if (safeRight.length + 2 >= width) return { left: "", pad: "", right: safeRight };
-
-        const leftWidth = width - safeRight.length - 2;
-        const safeLeft = truncateLeft(left, leftWidth);
-        const pad = " ".repeat(Math.max(width - safeLeft.length - safeRight.length, 2));
-        return { left: safeLeft, pad, right: safeRight };
-    }
-
-    function installFooter(ctx: ExtensionContext) {
-        ctx.ui.setFooter((tui, theme, footerData) => {
-            const unsubscribe = footerData.onBranchChange(() => tui.requestRender());
-
-            return {
-                dispose: unsubscribe,
-                invalidate() {},
-                render(width: number): string[] {
-                    const activeCtx = latestCtx ?? ctx;
-
-                    let totalInput = 0;
-                    let totalOutput = 0;
-                    let totalCacheRead = 0;
-                    let totalCacheWrite = 0;
-                    let totalCost = 0;
-                    for (const entry of activeCtx.sessionManager.getEntries()) {
-                        if (entry.type === "message" && entry.message.role === "assistant") {
-                            totalInput += entry.message.usage.input;
-                            totalOutput += entry.message.usage.output;
-                            totalCacheRead += entry.message.usage.cacheRead;
-                            totalCacheWrite += entry.message.usage.cacheWrite;
-                            totalCost += entry.message.usage.cost.total;
-                        }
-                    }
-
-                    const contextUsage = activeCtx.getContextUsage();
-                    const contextWindow = contextUsage?.contextWindow ?? activeCtx.model?.contextWindow ?? 0;
-                    const contextPart =
-                        contextUsage?.percent === null
-                            ? `?/${formatTokens(contextWindow)} (auto)`
-                            : `${(contextUsage?.percent ?? 0).toFixed(1)}%/${formatTokens(contextWindow)} (auto)`;
-
-                    let pwd = activeCtx.cwd;
-                    const home = homedir();
-                    if (home && pwd.startsWith(home)) {
-                        pwd = `~${pwd.slice(home.length)}`;
-                    }
-
-                    const branch = footerData.getGitBranch();
-                    if (branch) {
-                        pwd = `${pwd} (${branch})`;
-                    }
-
-                    const sessionName = activeCtx.sessionManager.getSessionName();
-                    if (sessionName) {
-                        pwd = `${pwd} • ${sessionName}`;
-                    }
-
-                    const statsParts: string[] = [];
-                    if (totalInput) statsParts.push(`↑${formatTokens(totalInput)}`);
-                    if (totalOutput) statsParts.push(`↓${formatTokens(totalOutput)}`);
-                    if (totalCacheRead) statsParts.push(`R${formatTokens(totalCacheRead)}`);
-                    if (totalCacheWrite) statsParts.push(`W${formatTokens(totalCacheWrite)}`);
-                    if (totalCost) statsParts.push(`$${totalCost.toFixed(3)}`);
-                    statsParts.push(contextPart);
-
-                    const thinkingLevel = getCurrentThinkingLevel(activeCtx);
-                    const modelName = activeCtx.model?.id ?? "no-model";
-                    let modelText =
-                        activeCtx.model?.reasoning && thinkingLevel
-                            ? thinkingLevel === "off"
-                                ? `${modelName} • thinking off`
-                                : `${modelName} • ${thinkingLevel}`
-                            : modelName;
-
-                    if (footerData.getAvailableProviderCount() > 1 && activeCtx.model) {
-                        modelText = `(${activeCtx.model.provider}) ${modelText}`;
-                    }
-
-                    // Append auth source so the user knows where their API key is coming from
-                    const currentAuthSource = getAuthSource(activeCtx);
-                    const currentAuthLabel = authSourceLabel(currentAuthSource);
-                    if (currentAuthLabel) {
-                        modelText += ` • ${currentAuthLabel}`;
-                    }
-
-                    // Read relay status directly from the closure variable.
-                    // The framework's extensionStatuses Map (via footerData) may not
-                    // be populated before the first render cycle when the status is
-                    // set during session_start (before ui.start()). The closure
-                    // variable is always up to date.
-                    const relayStatus = sanitizeStatusText(relayStatusText);
-
-                    const statsText = statsParts.join(" ");
-                    const modelBadge = `• ${modelText}`;
-                    // Make sure the footer always consumes the full available width.
-                    // Some terminals/fonts can make the right side look "floating" if the
-                    // concatenated string ends up shorter than `width`.
-                    const locationLine = layoutLeftRight(pwd, modelBadge, width, truncateMiddle);
-                    const statsLine = layoutLeftRight(statsText, relayStatus, width, truncateEnd);
-                    const statusLower = relayStatus.toLowerCase();
-                    const relayStatusColor =
-                        statusLower.includes("disconnected") || statusLower.includes("not configured") ||
-                        statusLower.includes("failed") || statusLower.includes("error")
-                            ? "error"
-                            : "success";
-
-                    const line1Raw = locationLine.left + locationLine.pad + locationLine.right;
-                    const line2Raw = statsLine.left + statsLine.pad + statsLine.right;
-
-                    const line1Pad = " ".repeat(Math.max(0, width - line1Raw.length));
-                    const line2Pad = " ".repeat(Math.max(0, width - line2Raw.length));
-
-                    return [
-                        theme.fg("dim", locationLine.left) + locationLine.pad + theme.fg("dim", locationLine.right) + line1Pad,
-                        theme.fg("dim", statsLine.left) + statsLine.pad + theme.fg(relayStatusColor as any, statsLine.right) + line2Pad,
-                    ];
-                },
-            };
-        });
-    }
-
-    // ── Socket.IO connection ─────────────────────────────────────────────────
-
-    function apiKey(): string | undefined {
-        return (
-            process.env.PIZZAPI_API_KEY ??
-            process.env.PIZZAPI_API_TOKEN ??
-            loadConfig(process.cwd()).apiKey
-        );
-    }
-
-    /**
-     * Derive the Socket.IO base URL from the relay URL.
-     * Socket.IO now runs on the same port as the REST API.
-     */
-    function socketIoUrl(): string {
-        // Prefer explicit env var if set.
-        const explicit = process.env.PIZZAPI_SOCKETIO_URL;
-        if (explicit && explicit.trim()) return explicit.trim().replace(/\/$/, "");
-
-        // Derive from relay URL: ws→http, wss→https (same port).
-        const base = relayUrl();
-        return base
-            .replace(/^ws:/, "http:")
-            .replace(/^wss:/, "https:")
-            .replace(/\/$/, "");
-    }
-
-    function connect() {
-        if (isDisabled() || shuttingDown) {
-            setRelayStatus(disconnectedStatusText());
-            return;
-        }
-
-        const key = apiKey();
-        if (!key) {
-            setRelayStatus(disconnectedStatusText());
-            return;
-        }
-
-        // Tear down any previous socket before creating a new one.
-        if (sioSocket) {
-            sioSocket.removeAllListeners();
-            sioSocket.disconnect();
-            sioSocket = null;
-        }
-
-        const sioUrl = socketIoUrl();
-
-        const sock: Socket<RelayServerToClientEvents, RelayClientToServerEvents> = io(
-            sioUrl + "/relay",
-            {
-                auth: { apiKey: key },
-                transports: ["websocket"],
-                reconnection: true,
-                reconnectionDelay: 1000,
-                reconnectionDelayMax: 30_000,
-            },
-        );
-        sioSocket = sock;
-
-        // ── Connection lifecycle ──────────────────────────────────────────
-
-        sock.on("connect", () => {
-            sock.emit("register", {
-                sessionId: relaySessionId,
-                cwd: process.cwd(),
-                ephemeral: true,
-                collabMode: true,
-                sessionName: getCurrentSessionName(latestCtx) ?? undefined,
-                // Send parent session ID so the relay can link child→parent
-                // at registration time (no more racy pre-seeding).
-                ...(parentSessionId ? { parentSessionId } : {}),
-            });
-        });
-
-        sock.on("registered", (data) => {
-            relaySessionId = data.sessionId;
-            relay = {
-                sessionId: data.sessionId,
-                token: data.token,
-                shareUrl: data.shareUrl,
-                seq: 0,
-                ackedSeq: 0,
-            };
-            // Expose relay socket and session ID for the trigger system / spawn
-            _relaySocket = sock;
-            _relayToken = data.token;
-            _relaySessionId = data.sessionId;
-            connectFailureNotified = false;
-            setRelayStatus("Connected to Relay");
-
-            // Wire up the inter-session message bus now that we have a relay connection.
-            messageBus.setOwnSessionId(relaySessionId);
-            messageBus.setSendFn((targetSessionId: string, message: string) => {
-                if (!relay || !sioSocket?.connected) return false;
-                sioSocket.emit("session_message", {
-                    token: relay.token,
-                    targetSessionId,
-                    message,
-                });
-                return true;
-            });
-
-            // Reconcile parent linkage with server-confirmed value.
-            // If the server rejected our parent (stale, disconnected, wrong user),
-            // clear child mode so we fall back to normal local interaction instead
-            // of routing AskUserQuestion/plan_mode through triggers that will time out.
-            if (data.parentSessionId) {
-                parentSessionId = data.parentSessionId;
-                isChildSession = true;
-                console.log(`pizzapi: linked as child of parent session ${data.parentSessionId}`);
-            } else if (parentSessionId && !data.parentSessionId) {
-                console.log(`pizzapi: server rejected parent link (${parentSessionId}), falling back to local interaction`);
-                parentSessionId = null;
-                isChildSession = false;
-            }
-
-            forwardEvent({ type: "session_active", state: buildSessionState() });
-            void refreshAllUsage();
-            startHeartbeat();
-
-            // Now that relay is set, inject the relay context into MCP OAuth
-            // providers so they can route callbacks through the PizzaPi server.
-            updateMcpRelayContext();
-        });
-
-        // ── Incoming events from server ───────────────────────────────────
-
-        sock.on("event_ack", (data) => {
-            // Relay sends cumulative acks; keep only the highest seq we've seen.
-            if (relay && typeof data.seq === "number") {
-                relay.ackedSeq = Math.max(relay.ackedSeq, data.seq);
-            }
-        });
-
-        sock.on("connected", () => {
-            // A new viewer connected (web UI). Send capability snapshot.
-            forwardEvent(buildCapabilitiesState());
-            // Also send a fresh session snapshot so the viewer can populate models/messages.
-            forwardEvent({ type: "session_active", state: buildSessionState() });
-        });
-
-        sock.on("input", (data) => {
-            const inputText = data.text;
-            if (consumePendingAskUserQuestionFromWeb(inputText)) {
-                return;
-            }
-            if (consumePendingPlanModeFromWeb(inputText)) {
-                return;
-            }
-
-            const attachments = normalizeRemoteInputAttachments(data.attachments);
-            const deliverAs = data.deliverAs === "followUp" ? "followUp" as const
-                : data.deliverAs === "steer" ? "steer" as const
-                : undefined;
-            void (async () => {
-                try {
-                    const message = await buildUserMessageFromRemoteInput(inputText, attachments);
-                    pi.sendUserMessage(message as any, deliverAs ? { deliverAs } : undefined);
-                } catch (err) {
-                    console.error(`pizzapi: failed to deliver remote input: ${err instanceof Error ? err.message : String(err)}`);
-                }
-            })();
-        });
-
-        sock.on("exec", (data) => {
-            if (typeof data.id === "string" && typeof data.command === "string") {
-                void handleExecFromWeb(data as any);
-            }
-        });
-
-        sock.on("model_set", (data) => {
-            void setModelFromWeb(data.provider, data.modelId);
-        });
-
-        sock.on("session_message", (data) => {
-            messageBus.receive({
-                fromSessionId: data.fromSessionId,
-                message: data.message,
-                ts: typeof data.ts === "string" ? data.ts : new Date().toISOString(),
-            });
-        });
-
-        // ── session_trigger — receive triggers from child sessions ─────────
-        sock.on("session_trigger" as any, (data: { trigger: import("./triggers/types.js").ConversationTrigger }) => {
-            const trigger = data?.trigger;
-            if (!trigger) return;
-
-            // Track all triggers so respond_to_trigger can route responses back.
-            // session_complete triggers are respondable: "ack" is a no-op,
-            // "followUp" delivers a new input message to resume the child.
-            trackReceivedTrigger(trigger.triggerId, trigger.sourceSessionId, trigger.type);
-
-            // Render trigger to text with trigger ID metadata prefix
-            const rendered = renderTrigger(trigger);
-            const deliverAs = trigger.deliverAs === "followUp" ? "followUp" as const : "steer" as const;
-            pi.sendUserMessage(rendered, { deliverAs });
-        });
-
-        // ── trigger_response from viewer — forward to child via relay ──────
-        // When a human viewer responds to a child trigger via the web UI,
-        // the server forwards trigger_response to this parent's relay socket.
-        // We look up the trigger in receivedTriggers and re-emit to the child.
-        sock.on("trigger_response" as any, (data: { triggerId: string; response: string; action?: string; targetSessionId?: string }) => {
-            if (!data?.triggerId) return;
-            const pending = receivedTriggers.get(data.triggerId);
-            if (!pending || !relay || !sioSocket?.connected) return;
-            // Forward to the child session via relay
-            sioSocket.emit("trigger_response" as any, {
-                token: relay.token,
-                triggerId: data.triggerId,
-                response: data.response,
-                ...(data.action ? { action: data.action } : {}),
-                targetSessionId: pending.sourceSessionId,
-            });
-            receivedTriggers.delete(data.triggerId);
-        });
-
-        sock.on("session_expired", (data) => {
-            // Session was expired by the server — stop retrying.
-            shuttingDown = true;
-            relay = null;
-            setRelayStatus("Session expired");
-        });
-
-        sock.on("connect_error", (err) => {
-            const url = socketIoUrl();
-            setRelayStatus(`Relay connection failed (${url})`);
-
-            if (!connectFailureNotified && latestCtx) {
-                connectFailureNotified = true;
-                latestCtx.ui.notify(
-                    `⚠ Could not connect to relay at ${url}\n` +
-                    "Sessions won't appear in the web UI until the connection is established.\n" +
-                    "Check PIZZAPI_RELAY_URL or run `pizza setup` to reconfigure.",
-                );
-            }
-        });
-
-        sock.on("error", (data) => {
-            // Server-side error — log but don't tear down (socket.io will reconnect).
-            setRelayStatus(`Relay error: ${data.message}`);
-        });
-
-        // ── Disconnect / reconnect ────────────────────────────────────────
-
-        sock.on("disconnect", (_reason) => {
-            relay = null;
-            // Clear stale token so getRelaySocket() returns null during the
-            // reconnect window (socket connected but not yet re-registered).
-            // The token is refreshed on each `registered` event.
-            _relayToken = null;
-            cancelPendingAskUserQuestion();
-            cancelPendingPlanMode();
-            setRelayStatus(disconnectedStatusText());
-        });
-
-        // socket.io fires "connect" again on reconnect, which triggers
-        // re-registration automatically via the handler above.
-
-        // ── MCP OAuth relay context ───────────────────────────────────────
-        // Update OAuth relay context when connection state changes so MCP
-        // OAuth providers can route callbacks through the PizzaPi server.
-        sock.on("connect", () => updateMcpRelayContext());
-        sock.on("disconnect", () => {
-            const bridge = getMcpBridge();
-            bridge?.setRelayContext?.(null);
-        });
-
-        // Listen for OAuth callback delivery from the server
-        (sock as any).on("mcp_oauth_callback", (data: any) => {
-            if (data && typeof data === "object" && typeof data.nonce === "string" && typeof data.code === "string") {
-                // Deliver to the pending callback
-                const resolve = oauthPendingCallbacks.get(data.nonce);
-                if (resolve) {
-                    oauthPendingCallbacks.delete(data.nonce);
-                    resolve(data.code);
-                }
-                // Also try via bridge
-                const bridge = getMcpBridge();
-                bridge?.deliverOAuthCallback?.(data.nonce, data.code);
-            }
-        });
-
-        // Set context now if already connected
-        updateMcpRelayContext();
-    }
-
-    function disconnect() {
-        stopHeartbeat();
-        cancelPendingAskUserQuestion();
-        cancelPendingPlanMode();
-        messageBus.setSendFn(null);
-        // Clear MCP OAuth relay context before tearing down the socket,
-        // since removeAllListeners() would prevent the disconnect handler
-        // from clearing it automatically.
-        const bridge = getMcpBridge();
-        bridge?.setRelayContext?.(null);
-        if (sioSocket) {
-            if (relay && sioSocket.connected) {
-                sioSocket.emit("session_end", { sessionId: relay.sessionId, token: relay.token });
-            }
-            sioSocket.removeAllListeners();
-            sioSocket.disconnect();
-            sioSocket = null;
-        }
-        relay = null;
-        setRelayStatus(disconnectedStatusText());
-    }
-
-    // ── Auto-connect on session start ─────────────────────────────────────────
-
-    pi.on("session_start", (_event, ctx) => {
-        latestCtx = ctx;
-        sessionStartedAt = Date.now();
-        isAgentActive = false;
-        installFooter(ctx);
-        startSessionNameSync();
-        if (isDisabled()) {
-            setRelayStatus(disconnectedStatusText());
-            return;
-        }
-        connect();
-
-        // One-time warning when relay can't connect due to missing config
-        if (!apiKey()) {
-            ctx.ui.notify(
-                "⚠ Relay not configured — sessions won't appear in the web UI.\n" +
-                "Run `pizza setup` or set PIZZAPI_API_KEY to connect.",
-            );
-        }
-    });
-
-    pi.on("session_switch", (_event, ctx) => {
-        latestCtx = ctx;
-        sessionStartedAt = Date.now();
-        isAgentActive = false;
-        installFooter(ctx);
-        startSessionNameSync();
-        setRelayStatus(
-            pendingAskUserQuestion
-                ? "Waiting for AskUserQuestion answer"
-                : relay
-                  ? "Connected to Relay"
-                  : disconnectedStatusText(),
-        );
-        forwardEvent({ type: "session_active", state: buildSessionState() });
-        forwardEvent(buildHeartbeat());
-    });
-
-    let sessionCompleteFired = false;
-
-    // ── Follow-up grace period ────────────────────────────────────────────────
-    // After firing session_complete, child sessions keep their relay socket
-    // alive for FOLLOWUP_GRACE_MS so the parent can send follow-up work via
-    // respond_to_trigger(action: "followUp") or tell_child.  If no new turn
-    // starts within the window the session shuts down automatically.
-    const FOLLOWUP_GRACE_MS = 10 * 60 * 1000; // 10 minutes
-    let followUpGraceTimer: ReturnType<typeof setTimeout> | null = null;
+    const FOLLOWUP_GRACE_MS = 10 * 60 * 1000;
 
     function clearFollowUpGrace() {
         if (followUpGraceTimer !== null) {
@@ -2155,8 +406,6 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         }
     }
 
-    /** Start (or restart) the follow-up grace period.  When it expires the
-     *  session shuts down via ctx.shutdown(). */
     function startFollowUpGrace(ctx: { shutdown: () => void }) {
         clearFollowUpGrace();
         console.log(`pizzapi: waiting ${FOLLOWUP_GRACE_MS / 1000}s for parent follow-up before shutting down`);
@@ -2165,32 +414,22 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             console.log("pizzapi: follow-up grace period expired — shutting down");
             ctx.shutdown();
         }, FOLLOWUP_GRACE_MS);
-        // Don't let the grace timer keep the process alive if everything else
-        // has been torn down (e.g. explicit SIGTERM).
         if (followUpGraceTimer && typeof followUpGraceTimer === "object" && "unref" in followUpGraceTimer) {
             (followUpGraceTimer as NodeJS.Timeout).unref();
         }
     }
 
-    // Reset completion latch when a new turn starts (e.g. parent sent follow-up via tell_child)
-    pi.on("turn_start", () => {
-        sessionCompleteFired = false;
-        // A new turn means a follow-up arrived — cancel the grace timer.
-        clearFollowUpGrace();
-    });
-
-    /** Emit session_complete trigger to parent (idempotent per turn). */
     function fireSessionComplete(summary?: string, fullOutputPath?: string) {
         if (sessionCompleteFired) return;
-        if (!isChildSession || !parentSessionId || !relay || !sioSocket?.connected) return;
+        if (!rctx.isChildSession || !rctx.parentSessionId || !rctx.relay || !rctx.sioSocket?.connected) return;
         sessionCompleteFired = true;
-        sioSocket.emit("session_trigger" as any, {
-            token: relay.token,
+        rctx.sioSocket.emit("session_trigger" as any, {
+            token: rctx.relay.token,
             trigger: {
                 type: "session_complete",
-                sourceSessionId: relay.sessionId,
+                sourceSessionId: rctx.relay.sessionId,
                 sourceSessionName: undefined,
-                targetSessionId: parentSessionId,
+                targetSessionId: rctx.parentSessionId,
                 payload: {
                     summary: summary ?? "Session completed",
                     exitCode: 0,
@@ -2204,776 +443,18 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         });
     }
 
-    pi.on("session_shutdown", () => {
-        shuttingDown = true;
-        clearFollowUpGrace();
-        stopHeartbeat();
-        stopSessionNameSync();
-        _cliErrorForwarder = null;
-
-        // Last chance to fire session_complete before socket goes away
-        fireSessionComplete();
-
-        disconnect();
-    });
-
-    // ── AskUserQuestion tool ──────────────────────────────────────────────────
-
-    pi.registerTool({
-        name: ASK_USER_TOOL_NAME,
-        label: "Ask User Question",
-        description:
-            "Ask the user one or more multiple-choice questions and wait for responses. Use this when you must collect user input before continuing.",
-        parameters: {
-            type: "object",
-            properties: {
-                questions: {
-                    type: "array",
-                    description: "One or more questions to ask. Each must include options for the user to choose from.",
-                    items: {
-                        type: "object",
-                        properties: {
-                            question: {
-                                type: "string",
-                                description: "The question text.",
-                            },
-                            options: {
-                                type: "array",
-                                items: { type: "string" },
-                                description: "Predefined choices for the user to select from. The UI will automatically add a \"Write your own...\" free-form option.",
-                            },
-                        },
-                        required: ["question", "options"],
-                    },
-                },
-                display: {
-                    type: "string",
-                    enum: ["stepper"],
-                    description: "Optional UI layout hint. Only `stepper` is supported.",
-                },
-                // Legacy single-question fields (backward compat with older callers)
-                question: {
-                    type: "string",
-                    description: "(Legacy) The question to ask the user. Prefer `questions` array.",
-                },
-                placeholder: {
-                    type: "string",
-                    description: "(Legacy) Optional placeholder hint.",
-                },
-                options: {
-                    type: "array",
-                    items: { type: "string" },
-                    description: "(Legacy) Predefined choices. Prefer `questions` array.",
-                },
-            },
-            additionalProperties: false,
-        } as any,
-        async execute(toolCallId, rawParams, signal, onUpdate, ctx) {
-            if (pendingAskUserQuestion && pendingAskUserQuestion.toolCallId !== toolCallId) {
-                return {
-                    content: [{ type: "text", text: "A different AskUserQuestion prompt is already pending." }],
-                    details: {
-                        questions: pendingAskUserQuestion.questions,
-                        display: pendingAskUserQuestion.display,
-                        answers: null,
-                        answer: null,
-                        source: null,
-                        cancelled: true,
-                    } satisfies AskUserQuestionDetails,
-                };
-            }
-
-            const params = (rawParams ?? {}) as AskUserQuestionParams;
-            const questions = sanitizeQuestions(params);
-            const display = sanitizeDisplay(params.display);
-
-            if (questions.length === 0 || !questions.some(q => q.question.trim())) {
-                return {
-                    content: [{ type: "text", text: "AskUserQuestion requires at least one non-empty question." }],
-                    details: {
-                        questions: [],
-                        display,
-                        answers: null,
-                        answer: null,
-                        source: null,
-                        cancelled: true,
-                    } satisfies AskUserQuestionDetails,
-                };
-            }
-
-            // ── Child session: fire trigger to parent instead of waiting for web/TUI ──
-            if (isChildSession && parentSessionId && relay && sioSocket?.connected) {
-                const triggerId = randomUUID();
-                const trigger: import("./triggers/types.js").ConversationTrigger = {
-                    type: "ask_user_question",
-                    sourceSessionId: relaySessionId,
-                    sourceSessionName: latestCtx?.sessionManager.getSessionName() ?? relaySessionId.slice(0, 8),
-                    targetSessionId: parentSessionId,
-                    payload: {
-                        question: questions.map(q => q.question).join("; "),
-                        options: questions.flatMap(q => q.options),
-                        questions,
-                    },
-                    deliverAs: "followUp",
-                    expectsResponse: true,
-                    triggerId,
-                    timeoutMs: 300_000,
-                    ts: new Date().toISOString(),
-                };
-
-                sioSocket.emit("session_trigger", { token: relay.token, trigger });
-
-                // Wait for trigger_response with matching triggerId, or fail fast on delivery error
-                const triggerResult = await new Promise<{ response: string; cancelled: boolean }>((resolve) => {
-                    const timeout = setTimeout(() => {
-                        cleanup();
-                        resolve({ response: "Trigger timed out — no response from parent within 5 minutes.", cancelled: true });
-                    }, trigger.timeoutMs ?? 300_000);
-
-                    const handler = (data: { triggerId: string; response: string }) => {
-                        if (data.triggerId === triggerId) {
-                            cleanup();
-                            resolve({ response: data.response, cancelled: false });
-                        }
-                    };
-
-                    // Fail fast if the relay rejects delivery (e.g. parent disconnected)
-                    const errorHandler = (data: { targetSessionId: string; error: string }) => {
-                        if (data.targetSessionId === parentSessionId) {
-                            cleanup();
-                            resolve({ response: `Trigger delivery failed: ${data.error}`, cancelled: true });
-                        }
-                    };
-
-                    const cleanup = () => {
-                        clearTimeout(timeout);
-                        sioSocket?.off("trigger_response" as any, handler);
-                        sioSocket?.off("session_message_error" as any, errorHandler);
-                    };
-
-                    sioSocket!.on("trigger_response" as any, handler);
-                    sioSocket!.on("session_message_error" as any, errorHandler);
-                    signal?.addEventListener("abort", () => { cleanup(); resolve({ response: "Aborted", cancelled: true }); });
-                });
-
-                return {
-                    content: [{ type: "text", text: triggerResult.response }],
-                    details: {
-                        questions,
-                        display,
-                        answers: null,
-                        answer: triggerResult.cancelled ? null : triggerResult.response,
-                        source: "parent_trigger" as any,
-                        cancelled: triggerResult.cancelled,
-                    } satisfies AskUserQuestionDetails,
-                };
-            }
-
-            const summaryText = questions.map(q => q.question).join("; ");
-            onUpdate?.({
-                content: [{ type: "text", text: `Waiting for answer: ${summaryText}` }],
-                details: {
-                    questions,
-                    display,
-                    answers: null,
-                    answer: null,
-                    source: null,
-                    cancelled: false,
-                    status: "waiting",
-                } satisfies AskUserQuestionDetails,
-            });
-
-            const result = await askUserQuestion(
-                toolCallId,
-                questions,
-                display,
-                typeof params.placeholder === "string" ? params.placeholder : undefined,
-                signal,
-                ctx,
-            );
-
-            if (!result.answer) {
-                return {
-                    content: [{ type: "text", text: "User did not provide an answer." }],
-                    details: {
-                        questions,
-                        display,
-                        answers: null,
-                        answer: null,
-                        source: null,
-                        cancelled: true,
-                    } satisfies AskUserQuestionDetails,
-                };
-            }
-
-            // Try to parse structured answers from web UI (JSON object)
-            let parsedAnswers: Record<string, string> | null = null;
-            try {
-                const parsed = JSON.parse(result.answer);
-                if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-                    // Validate all keys and values are strings
-                    const entries = Object.entries(parsed);
-                    if (entries.every(([k, v]) => typeof k === "string" && typeof v === "string")) {
-                        parsedAnswers = parsed as Record<string, string>;
-                    }
-                }
-            } catch {
-                // TUI or plain text answer — leave as raw string
-            }
-
-            onUpdate?.({
-                content: [{ type: "text", text: `Answer received: ${result.answer}` }],
-                details: {
-                    questions,
-                    display,
-                    answers: parsedAnswers,
-                    answer: result.answer,
-                    source: result.source,
-                    cancelled: false,
-                    status: "answered",
-                } satisfies AskUserQuestionDetails,
-            });
-
-            return {
-                content: [{ type: "text", text: `User answered: ${result.answer}` }],
-                details: {
-                    questions,
-                    display,
-                    answers: parsedAnswers,
-                    answer: result.answer,
-                    source: result.source,
-                    cancelled: false,
-                } satisfies AskUserQuestionDetails,
-            };
-        },
-    });
-
-    // ── plan_mode tool ────────────────────────────────────────────────────────
-
-    const PLAN_MODE_TOOL_NAME = "plan_mode";
-
-    pi.registerTool({
-        name: PLAN_MODE_TOOL_NAME,
-        label: "Plan Mode",
-        description:
-            "Submit a plan for user review before execution. The user can approve, edit, or cancel the plan. " +
-            "Use this when you want to outline a multi-step approach and get user confirmation before proceeding. " +
-            "The tool blocks until the user responds with one of: " +
-            "'Clear Context & Begin' (user wants a fresh start — proceed with the plan), " +
-            "'Begin' (proceed with current context), " +
-            "'Suggest Edit' (user provides feedback to revise the plan — resubmit an updated plan), " +
-            "or 'Cancel' (do not proceed).",
-        parameters: {
-            type: "object",
-            properties: {
-                title: {
-                    type: "string",
-                    description: "Short title summarizing the plan.",
-                },
-                description: {
-                    type: "string",
-                    description: "Optional detailed description of the plan in markdown format.",
-                },
-                steps: {
-                    type: "array",
-                    description: "Ordered list of steps in the plan.",
-                    items: {
-                        type: "object",
-                        properties: {
-                            title: {
-                                type: "string",
-                                description: "Short title for this step.",
-                            },
-                            description: {
-                                type: "string",
-                                description: "Optional longer description of what this step entails.",
-                            },
-                        },
-                        required: ["title"],
-                    },
-                },
-            },
-            required: ["title"],
-            additionalProperties: false,
-        } as any,
-        async execute(toolCallId, rawParams, signal, onUpdate, ctx) {
-            if (pendingPlanMode && pendingPlanMode.toolCallId !== toolCallId) {
-                return {
-                    content: [{ type: "text", text: "A different plan_mode prompt is already pending." }],
-                    details: {
-                        title: "",
-                        description: null,
-                        steps: [],
-                        action: null,
-                        editSuggestion: null,
-                    } satisfies PlanModeDetails,
-                };
-            }
-
-            const params = (rawParams ?? {}) as PlanModeParams;
-            const title = typeof params.title === "string" ? params.title.trim() : "";
-            const description = typeof params.description === "string" ? params.description.trim() || null : null;
-            const steps: PlanModeStep[] = Array.isArray(params.steps)
-                ? (params.steps as unknown[])
-                    .filter((s): s is Record<string, unknown> => s !== null && typeof s === "object")
-                    .map((s) => ({
-                        title: typeof s.title === "string" ? (s.title as string).trim() : "",
-                        description: typeof s.description === "string" && (s.description as string).trim()
-                            ? (s.description as string).trim()
-                            : undefined,
-                    }))
-                    .filter((s) => s.title.length > 0)
-                : [];
-
-            if (!title) {
-                return {
-                    content: [{ type: "text", text: "plan_mode requires a non-empty title." }],
-                    details: {
-                        title: "",
-                        description: null,
-                        steps: [],
-                        action: null,
-                        editSuggestion: null,
-                    } satisfies PlanModeDetails,
-                };
-            }
-
-            onUpdate?.({
-                content: [{ type: "text", text: `Waiting for plan review: ${title}` }],
-                details: {
-                    title,
-                    description,
-                    steps,
-                    action: null,
-                    editSuggestion: null,
-                    status: "waiting",
-                } satisfies PlanModeDetails,
-            });
-
-            // ── Child session: fire trigger to parent instead of waiting for web/TUI ──
-            if (isChildSession && parentSessionId && relay && sioSocket?.connected) {
-                const triggerId = randomUUID();
-                const trigger: import("./triggers/types.js").ConversationTrigger = {
-                    type: "plan_review",
-                    sourceSessionId: relaySessionId,
-                    sourceSessionName: latestCtx?.sessionManager.getSessionName() ?? relaySessionId.slice(0, 8),
-                    targetSessionId: parentSessionId,
-                    payload: {
-                        title,
-                        steps,
-                        description: description ?? undefined,
-                    },
-                    deliverAs: "followUp",
-                    expectsResponse: true,
-                    triggerId,
-                    timeoutMs: 300_000,
-                    ts: new Date().toISOString(),
-                };
-
-                sioSocket.emit("session_trigger", { token: relay.token, trigger });
-
-                const triggerResult = await new Promise<{ response: string; action?: string }>((resolve) => {
-                    const timeout = setTimeout(() => {
-                        cleanup();
-                        resolve({ response: "Cancel", action: "cancel" }); // Default to cancel on timeout
-                    }, trigger.timeoutMs ?? 300_000);
-
-                    const handler = (data: { triggerId: string; response: string; action?: string }) => {
-                        if (data.triggerId === triggerId) {
-                            cleanup();
-                            resolve({ response: data.response, action: data.action });
-                        }
-                    };
-
-                    // Fail fast if the relay rejects delivery (e.g. parent disconnected)
-                    const errorHandler = (data: { targetSessionId: string; error: string }) => {
-                        if (data.targetSessionId === parentSessionId) {
-                            cleanup();
-                            resolve({ response: "Cancel", action: "cancel" });
-                        }
-                    };
-
-                    const cleanup = () => {
-                        clearTimeout(timeout);
-                        sioSocket?.off("trigger_response" as any, handler);
-                        sioSocket?.off("session_message_error" as any, errorHandler);
-                    };
-
-                    sioSocket!.on("trigger_response" as any, handler);
-                    sioSocket!.on("session_message_error" as any, errorHandler);
-                    signal?.addEventListener("abort", () => { cleanup(); resolve({ response: "Cancel", action: "cancel" }); });
-                });
-
-                const response = triggerResult.response;
-
-                // Use structured action if provided; fall back to text matching for backward compat
-                let isApproval: boolean;
-                let isCancel: boolean;
-                if (triggerResult.action) {
-                    isApproval = triggerResult.action === "approve";
-                    isCancel = triggerResult.action === "cancel";
-                } else {
-                    const lower = response.toLowerCase().trim();
-                    isApproval = ["begin", "approve", "approved", "lgtm", "looks good", "proceed"].some(p => lower === p || lower.startsWith(p + " "));
-                    isCancel = ["cancel", "stop", "no", "reject"].some(p => lower === p || lower.startsWith(p + " "));
-                }
-
-                let responseText: string;
-                let action: PlanModeAction;
-                if (isApproval) {
-                    responseText = "Plan approved by parent. Proceeding.";
-                    action = "execute_keep_context";
-                    setPlanModeFromRemote(false);
-                } else if (isCancel) {
-                    responseText = "Plan cancelled by parent.";
-                    action = "cancel";
-                } else {
-                    responseText = `Parent suggests edit: ${response}`;
-                    action = "edit";
-                }
-
-                return {
-                    content: [{ type: "text", text: responseText }],
-                    details: {
-                        title,
-                        description,
-                        steps,
-                        action,
-                        editSuggestion: action === "edit" ? response : null,
-                    } satisfies PlanModeDetails,
-                };
-            }
-
-            const result = await askPlanMode(toolCallId, title, description, steps, signal, ctx);
-
-            if (!result) {
-                return {
-                    content: [{ type: "text", text: "Plan review was cancelled or no response received." }],
-                    details: {
-                        title,
-                        description,
-                        steps,
-                        action: "cancel",
-                        editSuggestion: null,
-                    } satisfies PlanModeDetails,
-                };
-            }
-
-            const actionLabel = {
-                execute: "Clear Context & Begin",
-                execute_keep_context: "Begin",
-                edit: "Suggest Edit",
-                cancel: "Cancel",
-            }[result.action];
-
-            // When the user approves the plan, automatically exit plan mode
-            // so the agent can proceed with full tool access immediately.
-            if (result.action === "execute" || result.action === "execute_keep_context") {
-                setPlanModeFromRemote(false);
-            }
-
-            // When the user picks "Clear Context & Begin", signal the plan-mode
-            // extension to strip all prior messages on the next context event so
-            // the agent starts fresh (keeping only the plan_mode exchange).
-            if (result.action === "execute") {
-                requestContextClear();
-            }
-
-            let responseText: string;
-            if (result.action === "execute") {
-                responseText = `User chose: ${actionLabel}. The user wants to clear the conversation context and start fresh to execute this plan. Proceed by executing the plan steps.`;
-            } else if (result.action === "execute_keep_context") {
-                responseText = `User chose: ${actionLabel}. The user approved the plan. Proceed by executing the plan steps with the current context.`;
-            } else if (result.action === "edit" && result.editSuggestion) {
-                responseText = `User chose: ${actionLabel}. Suggestion: ${result.editSuggestion}`;
-            } else if (result.action === "cancel") {
-                responseText = `User chose: ${actionLabel}. The user rejected the plan. Do not proceed with execution.`;
-            } else {
-                responseText = `User chose: ${actionLabel}`;
-            }
-
-            onUpdate?.({
-                content: [{ type: "text", text: responseText }],
-                details: {
-                    title,
-                    description,
-                    steps,
-                    action: result.action,
-                    editSuggestion: result.editSuggestion ?? null,
-                    status: "responded",
-                } satisfies PlanModeDetails,
-            });
-
-            return {
-                content: [{ type: "text", text: responseText }],
-                details: {
-                    title,
-                    description,
-                    steps,
-                    action: result.action,
-                    editSuggestion: result.editSuggestion ?? null,
-                } satisfies PlanModeDetails,
-            };
-        },
-    });
-
-    async function askPlanMode(
-        toolCallId: string,
-        title: string,
-        description: string | null,
-        steps: PlanModeStep[],
-        signal: AbortSignal | undefined,
-        ctx: ExtensionContext,
-    ): Promise<{ action: PlanModeAction; editSuggestion?: string } | null> {
-        const canAskViaWeb = !!relay && !!sioSocket?.connected;
-        const canAskViaTui = ctx.hasUI;
-
-        if (!canAskViaWeb && !canAskViaTui) {
-            return null;
-        }
-
-        const localAbort = new AbortController();
-
-        return await new Promise((resolve) => {
-            let finished = false;
-            let localDone = !canAskViaTui;
-            let webDone = !canAskViaWeb;
-
-            const onAbort = () => finish(null);
-
-            const maybeFinishCancelled = () => {
-                if (localDone && webDone) finish(null);
-            };
-
-            const finish = (response: { action: PlanModeAction; editSuggestion?: string } | null) => {
-                if (finished) return;
-                finished = true;
-
-                if (pendingPlanMode?.toolCallId === toolCallId) {
-                    pendingPlanMode = null;
-                }
-
-                localAbort.abort();
-                if (signal) signal.removeEventListener("abort", onAbort);
-                setRelayStatus(relay ? "Connected to Relay" : disconnectedStatusText());
-                resolve(response);
-            };
-
-            if (signal?.aborted) {
-                finish(null);
-                return;
-            }
-
-            if (signal) {
-                signal.addEventListener("abort", onAbort, { once: true });
-            }
-
-            if (canAskViaWeb) {
-                pendingPlanMode = {
-                    toolCallId,
-                    title,
-                    description,
-                    steps,
-                    resolve: (response) => {
-                        webDone = true;
-                        if (response) {
-                            finish(response);
-                        } else {
-                            maybeFinishCancelled();
-                        }
-                    },
-                };
-                setRelayStatus("Waiting for plan review");
-            }
-
-            if (canAskViaTui) {
-                // Format plan for TUI display
-                const displayParts: string[] = [`📋 Plan: ${title}`];
-                if (description) displayParts.push(description);
-                if (steps.length > 0) {
-                    displayParts.push("");
-                    steps.forEach((s, i) => {
-                        displayParts.push(`  ${i + 1}. ${s.title}`);
-                        if (s.description) displayParts.push(`     ${s.description}`);
-                    });
-                }
-                displayParts.push("");
-                displayParts.push("Options: (1) Clear Context & Begin, (2) Begin, (3) Suggest Edit, (4) Cancel");
-
-                void ctx.ui
-                    .input(displayParts.join("\n"), "Enter choice (1-4) or edit suggestion…", { signal: localAbort.signal })
-                    .then((value) => {
-                        const answer = value?.trim();
-                        if (!answer) {
-                            localDone = true;
-                            maybeFinishCancelled();
-                            return;
-                        }
-
-                        if (answer === "1") {
-                            localDone = true;
-                            finish({ action: "execute" });
-                        } else if (answer === "2") {
-                            localDone = true;
-                            finish({ action: "execute_keep_context" });
-                        } else if (answer === "4") {
-                            localDone = true;
-                            finish({ action: "cancel" });
-                        } else if (answer === "3") {
-                            // Don't set localDone yet — second prompt still pending.
-                            // This prevents a relay disconnect during the edit prompt
-                            // from cancelling the local input via maybeFinishCancelled().
-                            void ctx.ui
-                                .input("Describe your suggested changes:", undefined, { signal: localAbort.signal })
-                                .then((editValue) => {
-                                    localDone = true;
-                                    const suggestion = editValue?.trim();
-                                    if (suggestion) {
-                                        finish({ action: "edit", editSuggestion: suggestion });
-                                    } else {
-                                        finish({ action: "edit", editSuggestion: "No details provided." });
-                                    }
-                                })
-                                .catch(() => {
-                                    localDone = true;
-                                    finish({ action: "edit", editSuggestion: "No details provided." });
-                                });
-                        } else {
-                            localDone = true;
-                            // Treat as an edit suggestion
-                            finish({ action: "edit", editSuggestion: answer });
-                        }
-                    })
-                    .catch(() => {
-                        localDone = true;
-                        maybeFinishCancelled();
-                    });
-            }
-
-            maybeFinishCancelled();
-        });
-    }
-
-    // ── /remote command ───────────────────────────────────────────────────────
-
-    pi.registerCommand("remote", {
-        description: "Show relay share URL, or: /remote stop | /remote reconnect",
-        getArgumentCompletions: (prefix) => {
-            const options = ["stop", "reconnect"];
-            const filtered = options.filter((o) => o.startsWith(prefix.trim().toLowerCase()));
-            return filtered.length ? filtered.map((o) => ({ value: o, label: o })) : null;
-        },
-        handler: async (args, ctx) => {
-            const arg = args.trim().toLowerCase();
-
-            if (arg === "stop") {
-                disconnect();
-                ctx.ui.notify("Disconnected from relay.");
-                return;
-            }
-
-            if (arg === "reconnect") {
-                disconnect();
-                shuttingDown = false;
-                connect();
-                ctx.ui.notify("Reconnecting to relay…");
-                return;
-            }
-
-            // Default: show status
-            if (relay) {
-                ctx.ui.notify(`Connected to Relay\nShare URL: ${relay.shareUrl}`);
-            } else {
-                const url = isDisabled() ? "(disabled — set PIZZAPI_RELAY_URL to enable)" : relayUrl();
-                ctx.ui.notify(`Not connected to relay.\nRelay: ${url}\nUse /remote reconnect to retry.`);
-            }
-        },
-    });
-
-    // ── Plugin trust prompt bridge ────────────────────────────────────────────
-    // The claude-plugins extension emits `plugin:trust_prompt` when it finds
-    // project-local plugins that need user approval.  We forward the prompt to
-    // the web viewer as a custom event and wait for the viewer to respond via
-    // the `plugin_trust_response` exec command.
-
-    /** Pending plugin trust prompt — only one at a time. */
-    let pendingPluginTrust: {
-        promptId: string;
-        pluginNames: string[];
-        pluginSummaries: string[];
-        respond: (trusted: boolean) => void;
-    } | null = null;
-
-    pi.events.on("plugin:trust_prompt", (data: unknown) => {
-        // Runtime validation of event shape
-        const event = data as Record<string, unknown> | null;
-        if (!event || typeof event !== "object") return;
-        if (typeof event.promptId !== "string") return;
-        if (!Array.isArray(event.pluginNames)) return;
-        if (!Array.isArray(event.pluginSummaries)) return;
-        if (typeof event.respond !== "function") return;
-
-        // If there's already a pending prompt, reject it (only one at a time)
-        if (pendingPluginTrust) {
-            pendingPluginTrust.respond(false);
-        }
-
-        const promptId = event.promptId as string;
-        const pluginNames = event.pluginNames as string[];
-        const pluginSummaries = event.pluginSummaries as string[];
-        const respond = event.respond as (trusted: boolean) => void;
-
-        // Store the responder so exec handler can resolve it
-        pendingPluginTrust = { promptId, pluginNames, pluginSummaries, respond };
-
-        // Forward to the web viewer as a custom event
-        forwardEvent({
-            type: "plugin_trust_prompt",
-            promptId,
-            pluginNames,
-            pluginSummaries,
-            ts: Date.now(),
-        });
-    });
-
-    // Clean up when prompt times out on the extension side
-    pi.events.on("plugin:trust_timeout", (data: unknown) => {
-        const event = data as Record<string, unknown> | null;
-        if (!event || typeof event.promptId !== "string") return;
-        if (pendingPluginTrust?.promptId === event.promptId) {
-            pendingPluginTrust = null;
-            // Notify web UI that the prompt expired
-            forwardEvent({
-                type: "plugin_trust_expired",
-                promptId: event.promptId,
-                ts: Date.now(),
-            });
-        }
-    });
-
-    // When plugins are loaded after the initial capabilities snapshot (e.g.
-    // after the user trusts project-local plugins), re-send capabilities so
-    // the web viewer picks up the new commands.
-    pi.events.on("plugin:loaded", () => {
-        forwardEvent(buildCapabilitiesState());
-    });
-
-    // ── Forward MCP startup reports to relay ──────────────────────────────────
-    // ── MCP OAuth relay context ──────────────────────────────────────────────
-    // When the relay connects, inject the relay context into the MCP OAuth
-    // providers so they can route OAuth callbacks through the PizzaPi server.
-    const oauthPendingCallbacks = new Map<string, (code: string) => void>();
+    // ── MCP relay context ─────────────────────────────────────────────────
 
     function updateMcpRelayContext() {
         const bridge = getMcpBridge();
         if (!bridge?.setRelayContext) return;
 
-        if (relay && sioSocket?.connected) {
+        if (rctx.relay && rctx.sioSocket?.connected) {
             bridge.setRelayContext({
-                serverBaseUrl: relayHttpBaseUrl(),
-                sessionId: relay.sessionId,
+                serverBaseUrl: rctx.relayHttpBaseUrl(),
+                sessionId: rctx.relay.sessionId,
                 emitEvent: (_eventName: string, data: unknown) => {
-                    forwardEvent(data);
+                    rctx.forwardEvent(data);
                 },
                 waitForCallback: (nonce: string, timeoutMs: number = 120_000) => {
                     return new Promise<string>((resolve, reject) => {
@@ -2994,58 +475,311 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         }
     }
 
-    // Note: OAuth relay context listeners are registered inside connect()
-    // so they have access to the live socket.
+    // ── Socket.IO connection ─────────────────────────────────────────────
 
-    // ── MCP auth events → web UI ─────────────────────────────────────────────
-    pi.events.on("mcp:auth_required", (data: unknown) => {
-        forwardEvent(data);
-    });
-
-    pi.events.on("mcp:auth_complete", (data: unknown) => {
-        forwardEvent(data);
-    });
-
-    // The MCP extension emits this event after initialization so the web UI
-    // can display timing info, slow-startup warnings, and server errors.
-    pi.events.on("mcp:startup_report", (report: unknown) => {
-        // Cache for heartbeats so reconnecting viewers see it
-        if (report && typeof report === "object") {
-            const r = report as Record<string, unknown>;
-            lastMcpStartupReport = {
-                toolCount: typeof r.toolCount === "number" ? r.toolCount : 0,
-                serverCount: typeof r.serverCount === "number" ? r.serverCount : 0,
-                totalDurationMs: typeof r.totalDurationMs === "number" ? r.totalDurationMs : 0,
-                slow: r.slow === true,
-                showSlowWarning: r.showSlowWarning !== false,
-                errors: Array.isArray(r.errors) ? r.errors as any : [],
-                serverTimings: Array.isArray(r.serverTimings) ? r.serverTimings as any : [],
-                ts: typeof r.ts === "number" ? r.ts : Date.now(),
-            };
+    function connect() {
+        if (isDisabled() || rctx.shuttingDown) {
+            rctx.setRelayStatus(rctx.disconnectedStatusText());
+            return;
         }
-        forwardEvent(report);
+
+        const key = rctx.apiKey();
+        if (!key) {
+            rctx.setRelayStatus(rctx.disconnectedStatusText());
+            return;
+        }
+
+        if (rctx.sioSocket) {
+            rctx.sioSocket.removeAllListeners();
+            rctx.sioSocket.disconnect();
+            rctx.sioSocket = null;
+        }
+
+        const sioUrl = socketIoUrl();
+
+        const sock: Socket<RelayServerToClientEvents, RelayClientToServerEvents> = io(
+            sioUrl + "/relay",
+            {
+                auth: { apiKey: key },
+                transports: ["websocket"],
+                reconnection: true,
+                reconnectionDelay: 1000,
+                reconnectionDelayMax: 30_000,
+            },
+        );
+        rctx.sioSocket = sock;
+
+        // ── Connection lifecycle ──────────────────────────────────────────
+
+        sock.on("connect", () => {
+            sock.emit("register", {
+                sessionId: rctx.relaySessionId,
+                cwd: process.cwd(),
+                ephemeral: true,
+                collabMode: true,
+                sessionName: rctx.getCurrentSessionName() ?? undefined,
+                ...(rctx.parentSessionId ? { parentSessionId: rctx.parentSessionId } : {}),
+            });
+        });
+
+        sock.on("registered", (data) => {
+            rctx.relaySessionId = data.sessionId;
+            rctx.relay = {
+                sessionId: data.sessionId,
+                token: data.token,
+                shareUrl: data.shareUrl,
+                seq: 0,
+                ackedSeq: 0,
+            };
+            connectFailureNotified = false;
+            rctx.setRelayStatus("Connected to Relay");
+
+            messageBus.setOwnSessionId(rctx.relaySessionId);
+            messageBus.setSendFn((targetSessionId: string, message: string) => {
+                if (!rctx.relay || !rctx.sioSocket?.connected) return false;
+                rctx.sioSocket.emit("session_message", {
+                    token: rctx.relay.token,
+                    targetSessionId,
+                    message,
+                });
+                return true;
+            });
+
+            if (data.parentSessionId) {
+                rctx.parentSessionId = data.parentSessionId;
+                rctx.isChildSession = true;
+                console.log(`pizzapi: linked as child of parent session ${data.parentSessionId}`);
+            } else if (rctx.parentSessionId && !data.parentSessionId) {
+                console.log(`pizzapi: server rejected parent link (${rctx.parentSessionId}), falling back to local interaction`);
+                rctx.parentSessionId = null;
+                rctx.isChildSession = false;
+            }
+
+            rctx.forwardEvent({ type: "session_active", state: rctx.buildSessionState() });
+            void refreshAllUsage();
+            startHeartbeat(rctx);
+            updateMcpRelayContext();
+        });
+
+        // ── Incoming events from server ───────────────────────────────────
+
+        sock.on("event_ack", (data) => {
+            if (rctx.relay && typeof data.seq === "number") {
+                rctx.relay.ackedSeq = Math.max(rctx.relay.ackedSeq, data.seq);
+            }
+        });
+
+        sock.on("connected", () => {
+            rctx.forwardEvent(rctx.buildCapabilitiesState());
+            rctx.forwardEvent({ type: "session_active", state: rctx.buildSessionState() });
+        });
+
+        sock.on("input", (data) => {
+            const inputText = data.text;
+            if (consumePendingAskUserQuestionFromWeb(rctx, inputText)) return;
+            if (consumePendingPlanModeFromWeb(rctx, inputText)) return;
+
+            const attachments = normalizeRemoteInputAttachments(data.attachments);
+            const deliverAs = data.deliverAs === "followUp" ? "followUp" as const
+                : data.deliverAs === "steer" ? "steer" as const
+                : undefined;
+            void (async () => {
+                try {
+                    const httpBase = rctx.relayHttpBaseUrl();
+                    const key = rctx.apiKey();
+                    const message = await buildUserMessageFromRemoteInput(inputText, attachments, httpBase, key ?? "");
+                    pi.sendUserMessage(message as any, deliverAs ? { deliverAs } : undefined);
+                } catch (err) {
+                    console.error(`pizzapi: failed to deliver remote input: ${err instanceof Error ? err.message : String(err)}`);
+                }
+            })();
+        });
+
+        sock.on("exec", (data) => {
+            if (typeof data.id === "string" && typeof data.command === "string") {
+                void handleExecFromWeb(data as any, rctx, {
+                    setModelFromWeb,
+                    markSessionNameBroadcasted: () => rctx.markSessionNameBroadcasted(),
+                });
+            }
+        });
+
+        sock.on("model_set", (data) => {
+            void setModelFromWeb(data.provider, data.modelId);
+        });
+
+        sock.on("session_message", (data) => {
+            messageBus.receive({
+                fromSessionId: data.fromSessionId,
+                message: data.message,
+                ts: typeof data.ts === "string" ? data.ts : new Date().toISOString(),
+            });
+        });
+
+        sock.on("session_trigger" as any, (data: { trigger: ConversationTrigger }) => {
+            const trigger = data?.trigger;
+            if (!trigger) return;
+            trackReceivedTrigger(trigger.triggerId, trigger.sourceSessionId, trigger.type);
+            const rendered = renderTrigger(trigger);
+            const deliverAs = trigger.deliverAs === "followUp" ? "followUp" as const : "steer" as const;
+            pi.sendUserMessage(rendered, { deliverAs });
+        });
+
+        sock.on("trigger_response" as any, (data: { triggerId: string; response: string; action?: string; targetSessionId?: string }) => {
+            if (!data?.triggerId) return;
+            const pending = receivedTriggers.get(data.triggerId);
+            if (!pending || !rctx.relay || !rctx.sioSocket?.connected) return;
+            rctx.sioSocket.emit("trigger_response" as any, {
+                token: rctx.relay.token,
+                triggerId: data.triggerId,
+                response: data.response,
+                ...(data.action ? { action: data.action } : {}),
+                targetSessionId: pending.sourceSessionId,
+            });
+            receivedTriggers.delete(data.triggerId);
+        });
+
+        sock.on("session_expired", (_data: any) => {
+            rctx.shuttingDown = true;
+            rctx.relay = null;
+            rctx.setRelayStatus("Session expired");
+        });
+
+        sock.on("connect_error", (_err) => {
+            const url = socketIoUrl();
+            rctx.setRelayStatus(`Relay connection failed (${url})`);
+
+            if (!connectFailureNotified && rctx.latestCtx) {
+                connectFailureNotified = true;
+                rctx.latestCtx.ui.notify(
+                    `⚠ Could not connect to relay at ${url}\n` +
+                    "Sessions won't appear in the web UI until the connection is established.\n" +
+                    "Check PIZZAPI_RELAY_URL or run `pizza setup` to reconfigure.",
+                );
+            }
+        });
+
+        sock.on("error", (data: any) => {
+            rctx.setRelayStatus(`Relay error: ${data.message}`);
+        });
+
+        sock.on("disconnect", (_reason) => {
+            rctx.relay = null;
+            cancelPendingAskUserQuestion(rctx);
+            cancelPendingPlanMode(rctx);
+            rctx.setRelayStatus(rctx.disconnectedStatusText());
+        });
+
+        // ── MCP OAuth relay context ───────────────────────────────────────
+        sock.on("connect", () => updateMcpRelayContext());
+        sock.on("disconnect", () => {
+            const bridge = getMcpBridge();
+            bridge?.setRelayContext?.(null);
+        });
+
+        (sock as any).on("mcp_oauth_callback", (data: any) => {
+            if (data && typeof data === "object" && typeof data.nonce === "string" && typeof data.code === "string") {
+                const resolve = oauthPendingCallbacks.get(data.nonce);
+                if (resolve) {
+                    oauthPendingCallbacks.delete(data.nonce);
+                    resolve(data.code);
+                }
+                const bridge = getMcpBridge();
+                bridge?.deliverOAuthCallback?.(data.nonce, data.code);
+            }
+        });
+
+        updateMcpRelayContext();
+    }
+
+    function disconnect() {
+        stopHeartbeat();
+        cancelPendingAskUserQuestion(rctx);
+        cancelPendingPlanMode(rctx);
+        messageBus.setSendFn(null);
+        const bridge = getMcpBridge();
+        bridge?.setRelayContext?.(null);
+        if (rctx.sioSocket) {
+            if (rctx.relay && rctx.sioSocket.connected) {
+                rctx.sioSocket.emit("session_end", { sessionId: rctx.relay.sessionId, token: rctx.relay.token });
+            }
+            rctx.sioSocket.removeAllListeners();
+            rctx.sioSocket.disconnect();
+            rctx.sioSocket = null;
+        }
+        rctx.relay = null;
+        rctx.setRelayStatus(rctx.disconnectedStatusText());
+    }
+
+    // ── Session lifecycle events ──────────────────────────────────────────
+
+    pi.on("session_start", (_event, ctx) => {
+        rctx.latestCtx = ctx;
+        rctx.sessionStartedAt = Date.now();
+        rctx.isAgentActive = false;
+        installFooter(rctx, ctx);
+        startSessionNameSync();
+        if (isDisabled()) {
+            rctx.setRelayStatus(rctx.disconnectedStatusText());
+            return;
+        }
+        connect();
+        if (!rctx.apiKey()) {
+            ctx.ui.notify(
+                "⚠ Relay not configured — sessions won't appear in the web UI.\n" +
+                "Run `pizza setup` or set PIZZAPI_API_KEY to connect.",
+            );
+        }
     });
 
-    // ── Forward agent events to relay ─────────────────────────────────────────
+    pi.on("session_switch", (_event, ctx) => {
+        rctx.latestCtx = ctx;
+        rctx.sessionStartedAt = Date.now();
+        rctx.isAgentActive = false;
+        installFooter(rctx, ctx);
+        startSessionNameSync();
+        rctx.setRelayStatus(
+            rctx.pendingAskUserQuestion
+                ? "Waiting for AskUserQuestion answer"
+                : rctx.relay
+                  ? "Connected to Relay"
+                  : rctx.disconnectedStatusText(),
+        );
+        rctx.forwardEvent({ type: "session_active", state: rctx.buildSessionState() });
+        rctx.forwardEvent(rctx.buildHeartbeat());
+    });
+
+    pi.on("turn_start", (event) => {
+        sessionCompleteFired = false;
+        clearFollowUpGrace();
+        rctx.forwardEvent(event);
+    });
+
+    pi.on("session_shutdown", () => {
+        rctx.shuttingDown = true;
+        clearFollowUpGrace();
+        stopHeartbeat();
+        stopSessionNameSync();
+        _ctx = null;
+        fireSessionComplete();
+        disconnect();
+    });
+
+    // ── Agent lifecycle events ────────────────────────────────────────────
 
     pi.on("agent_start", (event) => {
-        isAgentActive = true;
-        // Clear any previous retry state when a new agent loop starts (retry succeeded).
-        lastRetryableError = null;
-        forwardEvent(event);
-        // Push an immediate heartbeat so viewers see "active" without waiting 10s.
-        forwardEvent(buildHeartbeat());
+        rctx.isAgentActive = true;
+        rctx.lastRetryableError = null;
+        rctx.forwardEvent(event);
+        rctx.forwardEvent(rctx.buildHeartbeat());
     });
-    pi.on("agent_end", (event, ctx) => {
-        isAgentActive = false;
-        // Clear retry state on agent end — retries are done (succeeded or exhausted).
-        lastRetryableError = null;
-        forwardEvent(event);
-        // Push a heartbeat immediately so viewers see "idle" after the turn.
-        forwardEvent(buildHeartbeat());
 
-        // Fire session_complete when child finishes with no queued follow-ups.
-        // Extract the last assistant message as the summary so the parent knows what happened.
+    pi.on("agent_end", (event, ctx) => {
+        rctx.isAgentActive = false;
+        rctx.lastRetryableError = null;
+        rctx.forwardEvent(event);
+        rctx.forwardEvent(rctx.buildHeartbeat());
+
         if (!ctx.hasPendingMessages()) {
             let summary = "Session completed";
             let fullOutputPath: string | undefined;
@@ -3061,13 +795,8 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                             const full = textParts.join("\n");
                             const INLINE_MAX = 4_000;
                             if (full.length > INLINE_MAX) {
-                                // Save full output to a file the parent can read on demand
                                 try {
-                                    // NOTE: This writes to the child's local tmpdir. Currently fine
-                                    // because spawned children run on the same runner host as the parent.
-                                    // For future multi-runner support, this should use server-side
-                                    // artifact storage so the parent can always access the content.
-                                    const sessionSlug = relay?.sessionId?.slice(0, 8) ?? "unknown";
+                                    const sessionSlug = rctx.relay?.sessionId?.slice(0, 8) ?? "unknown";
                                     const uniqueSuffix = Date.now().toString(36);
                                     const tmpPath = join(tmpdir(), `pizzapi-session-${sessionSlug}-${uniqueSuffix}-output.md`);
                                     writeFileSync(tmpPath, full, "utf-8");
@@ -3083,52 +812,131 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 }
             }
             fireSessionComplete(summary, fullOutputPath);
-
-            // Start grace period so the parent can send follow-up work.
-            // The timer is cancelled if a new turn starts (turn_start handler)
-            // or on explicit shutdown (session_shutdown handler).
-            if (isChildSession) {
+            if (rctx.isChildSession) {
                 startFollowUpGrace(ctx);
             }
         }
     });
-    pi.on("turn_start", (event) => forwardEvent(event));
-    pi.on("turn_end", (event) => forwardEvent(event));
-    pi.on("message_start", (event) => forwardEvent(event));
-    pi.on("message_update", (event) => forwardEvent(event));
-    pi.on("message_end", (event) => {
-        forwardEvent(event);
 
-        // Detect provider errors from assistant messages and forward as cli_error
-        // so the web UI can surface them even if the message content is empty.
+    pi.on("turn_end", (event) => rctx.forwardEvent(event));
+    pi.on("message_start", (event) => rctx.forwardEvent(event));
+    pi.on("message_update", (event) => rctx.forwardEvent(event));
+    pi.on("message_end", (event) => {
+        rctx.forwardEvent(event);
         const msg = (event as any).message;
         if (msg && msg.role === "assistant" && msg.stopReason === "error" && msg.errorMessage) {
             const errorText = String(msg.errorMessage);
-
-            // Track for heartbeat retry state reporting.
-            lastRetryableError = {
-                errorMessage: errorText,
-                detectedAt: Date.now(),
-            };
-
-            // Also emit a cli_error event so the UI shows a visible error banner
-            // in the message list (independent of the assistant message rendering).
-            forwardEvent({
-                type: "cli_error",
-                message: errorText,
-                source: "provider",
-                ts: Date.now(),
-            });
-
-            // Push an immediate heartbeat with the retry state.
-            forwardEvent(buildHeartbeat());
+            rctx.lastRetryableError = { errorMessage: errorText, detectedAt: Date.now() };
+            rctx.forwardEvent({ type: "cli_error", message: errorText, source: "provider", ts: Date.now() });
+            rctx.forwardEvent(rctx.buildHeartbeat());
         }
     });
-    pi.on("tool_execution_start", (event) => forwardEvent(event));
-    pi.on("tool_execution_update", (event) => forwardEvent(event));
-    pi.on("tool_execution_end", (event) => forwardEvent(event));
+    pi.on("tool_execution_start", (event) => rctx.forwardEvent(event));
+    pi.on("tool_execution_update", (event) => rctx.forwardEvent(event));
+    pi.on("tool_execution_end", (event) => rctx.forwardEvent(event));
     pi.on("model_select", (event) => {
-        forwardEvent(event);
-        forwardEvent({ type: "session_active", state: buildSessionState() });
+        rctx.forwardEvent(event);
+        rctx.forwardEvent({ type: "session_active", state: rctx.buildSessionState() });
+    });
+
+    // ── /remote command ───────────────────────────────────────────────────
+
+    pi.registerCommand("remote", {
+        description: "Show relay share URL, or: /remote stop | /remote reconnect",
+        getArgumentCompletions: (prefix) => {
+            const options = ["stop", "reconnect"];
+            const filtered = options.filter((o) => o.startsWith(prefix.trim().toLowerCase()));
+            return filtered.length ? filtered.map((o) => ({ value: o, label: o })) : null;
+        },
+        handler: async (args, ctx) => {
+            const arg = args.trim().toLowerCase();
+            if (arg === "stop") {
+                disconnect();
+                ctx.ui.notify("Disconnected from relay.");
+                return;
+            }
+            if (arg === "reconnect") {
+                disconnect();
+                rctx.shuttingDown = false;
+                connect();
+                ctx.ui.notify("Reconnecting to relay…");
+                return;
+            }
+            if (rctx.relay) {
+                ctx.ui.notify(`Connected to Relay\nShare URL: ${rctx.relay.shareUrl}`);
+            } else {
+                const url = isDisabled() ? "(disabled — set PIZZAPI_RELAY_URL to enable)" : rctx.relayUrl();
+                ctx.ui.notify(`Not connected to relay.\nRelay: ${url}\nUse /remote reconnect to retry.`);
+            }
+        },
+    });
+
+    // ── Plugin trust prompt bridge ────────────────────────────────────────
+
+    pi.events.on("plugin:trust_prompt", (data: unknown) => {
+        const event = data as Record<string, unknown> | null;
+        if (!event || typeof event !== "object") return;
+        if (typeof event.promptId !== "string") return;
+        if (!Array.isArray(event.pluginNames)) return;
+        if (!Array.isArray(event.pluginSummaries)) return;
+        if (typeof event.respond !== "function") return;
+
+        if (rctx.pendingPluginTrust) {
+            rctx.pendingPluginTrust.respond(false);
+        }
+
+        rctx.pendingPluginTrust = {
+            promptId: event.promptId as string,
+            pluginNames: event.pluginNames as string[],
+            pluginSummaries: event.pluginSummaries as string[],
+            respond: event.respond as (trusted: boolean) => void,
+        };
+
+        rctx.forwardEvent({
+            type: "plugin_trust_prompt",
+            promptId: event.promptId,
+            pluginNames: event.pluginNames,
+            pluginSummaries: event.pluginSummaries,
+            ts: Date.now(),
+        });
+    });
+
+    pi.events.on("plugin:trust_timeout", (data: unknown) => {
+        const event = data as Record<string, unknown> | null;
+        if (!event || typeof event.promptId !== "string") return;
+        if (rctx.pendingPluginTrust?.promptId === event.promptId) {
+            rctx.pendingPluginTrust = null;
+            rctx.forwardEvent({
+                type: "plugin_trust_expired",
+                promptId: event.promptId,
+                ts: Date.now(),
+            });
+        }
+    });
+
+    pi.events.on("plugin:loaded", () => {
+        rctx.forwardEvent(rctx.buildCapabilitiesState());
+    });
+
+    // ── MCP events ────────────────────────────────────────────────────────
+
+    pi.events.on("mcp:auth_required", (data: unknown) => rctx.forwardEvent(data));
+    pi.events.on("mcp:auth_complete", (data: unknown) => rctx.forwardEvent(data));
+
+    pi.events.on("mcp:startup_report", (report: unknown) => {
+        if (report && typeof report === "object") {
+            const r = report as Record<string, unknown>;
+            rctx.lastMcpStartupReport = {
+                toolCount: typeof r.toolCount === "number" ? r.toolCount : 0,
+                serverCount: typeof r.serverCount === "number" ? r.serverCount : 0,
+                totalDurationMs: typeof r.totalDurationMs === "number" ? r.totalDurationMs : 0,
+                slow: r.slow === true,
+                showSlowWarning: r.showSlowWarning !== false,
+                errors: Array.isArray(r.errors) ? r.errors as any : [],
+                serverTimings: Array.isArray(r.serverTimings) ? r.serverTimings as any : [],
+                ts: typeof r.ts === "number" ? r.ts : Date.now(),
+            };
+        }
+        rctx.forwardEvent(report);
     });
 };

@@ -557,7 +557,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
 
         // ── Registration confirmation ─────────────────────────────────────
 
-        socket.on("runner_registered", (data) => {
+        socket.on("runner_registered", (data: any) => {
             runnerId = data.runnerId;
             if (runnerId !== identity.runnerId) {
                 console.warn(
@@ -582,14 +582,14 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     adopted++;
                 }
                 if (adopted > 0) {
-                    console.log(`pizzapi runner: re-adopted ${adopted} orphaned session(s): ${existingSessions.map(s => s.sessionId.slice(0, 8)).join(", ")}`);
+                    console.log(`pizzapi runner: re-adopted ${adopted} orphaned session(s): ${existingSessions.map((s: any) => s.sessionId.slice(0, 8)).join(", ")}`);
                 }
             }
         });
 
         // ── Session management ────────────────────────────────────────────
 
-        socket.on("new_session", (data) => {
+        socket.on("new_session", (data: any) => {
             if (isShuttingDown) return;
             const { sessionId, cwd: requestedCwd, prompt: requestedPrompt, model: requestedModel, hiddenModels: requestedHiddenModels, agent: requestedAgent, parentSessionId: requestedParentSessionId } = data;
 
@@ -659,7 +659,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             doSpawn();
         });
 
-        socket.on("kill_session", (data) => {
+        socket.on("kill_session", (data: any) => {
             if (isShuttingDown) return;
             const { sessionId } = data;
             const entry = runningSessions.get(sessionId);
@@ -680,7 +680,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         });
 
         // ── session_ended — relay notifies us a worker disconnected ───────
-        socket.on("session_ended", (data) => {
+        socket.on("session_ended", (data: any) => {
             if (isShuttingDown) return;
             const { sessionId } = data;
             const entry = runningSessions.get(sessionId);
@@ -722,7 +722,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
 
         // ── Terminal PTY management ───────────────────────────────────────
 
-        socket.on("new_terminal", (data) => {
+        socket.on("new_terminal", (data: any) => {
             if (isShuttingDown) return;
             const { terminalId, cwd: requestedCwd, cols, rows, shell } = data;
             console.log(
@@ -766,7 +766,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             });
         });
 
-        socket.on("terminal_input", (data) => {
+        socket.on("terminal_input", (data: any) => {
             if (isShuttingDown) return;
             const { terminalId, data: inputData } = data;
             if (!terminalId || !inputData) {
@@ -778,7 +778,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             writeTerminalInput(terminalId, inputData);
         });
 
-        socket.on("terminal_resize", (data) => {
+        socket.on("terminal_resize", (data: any) => {
             if (isShuttingDown) return;
             const { terminalId, cols, rows } = data;
             if (!terminalId) {
@@ -789,7 +789,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             resizeTerminal(terminalId, cols, rows);
         });
 
-        socket.on("kill_terminal", (data) => {
+        socket.on("kill_terminal", (data: any) => {
             if (isShuttingDown) return;
             const { terminalId } = data;
             if (!terminalId) {
@@ -816,14 +816,14 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
 
         // ── Skills management ─────────────────────────────────────────────
 
-        socket.on("list_skills", (data) => {
+        socket.on("list_skills", (data: any) => {
             if (isShuttingDown) return;
             const requestId = data.requestId;
             const skills = scanGlobalSkills();
             socket.emit("skills_list", { skills, requestId });
         });
 
-        socket.on("create_skill", async (data) => {
+        socket.on("create_skill", async (data: any) => {
             if (isShuttingDown) return;
             const requestId = data.requestId;
             const skillName = (data.name ?? "").trim();
@@ -856,7 +856,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             }
         });
 
-        socket.on("update_skill", async (data) => {
+        socket.on("update_skill", async (data: any) => {
             if (isShuttingDown) return;
             const requestId = data.requestId;
             const skillName = (data.name ?? "").trim();
@@ -889,7 +889,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             }
         });
 
-        socket.on("delete_skill", (data) => {
+        socket.on("delete_skill", (data: any) => {
             if (isShuttingDown) return;
             const requestId = data.requestId;
             const skillName = (data.name ?? "").trim();
@@ -909,7 +909,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             });
         });
 
-        socket.on("get_skill", (data) => {
+        socket.on("get_skill", (data: any) => {
             if (isShuttingDown) return;
             const requestId = data.requestId;
             const skillName = (data.name ?? "").trim();
@@ -923,14 +923,14 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
 
         // ── Agents management ──────────────────────────────────────────────
 
-        socket.on("list_agents", (data) => {
+        socket.on("list_agents", (data: any) => {
             if (isShuttingDown) return;
             const requestId = data.requestId;
             const agents = scanGlobalAgents();
             socket.emit("agents_list", { agents, requestId });
         });
 
-        socket.on("create_agent", async (data) => {
+        socket.on("create_agent", async (data: any) => {
             if (isShuttingDown) return;
             const requestId = data.requestId;
             const agentName = (data.name ?? "").trim();
@@ -963,7 +963,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             }
         });
 
-        socket.on("update_agent", async (data) => {
+        socket.on("update_agent", async (data: any) => {
             if (isShuttingDown) return;
             const requestId = data.requestId;
             const agentName = (data.name ?? "").trim();
@@ -999,7 +999,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             }
         });
 
-        socket.on("delete_agent", (data) => {
+        socket.on("delete_agent", (data: any) => {
             if (isShuttingDown) return;
             const requestId = data.requestId;
             const agentName = (data.name ?? "").trim();
@@ -1019,7 +1019,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             });
         });
 
-        socket.on("get_agent", (data) => {
+        socket.on("get_agent", (data: any) => {
             if (isShuttingDown) return;
             const requestId = data.requestId;
             const agentName = (data.name ?? "").trim();
@@ -1033,7 +1033,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
 
         // ── Plugins management ─────────────────────────────────────────────
 
-        socket.on("list_plugins", (data) => {
+        socket.on("list_plugins", (data: any) => {
             if (isShuttingDown) return;
             const requestId = data?.requestId;
             // Use the provided cwd (e.g. session's working directory) if
@@ -1055,7 +1055,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
 
         // ── File Explorer ─────────────────────────────────────────────────
 
-        socket.on("list_files", async (data) => {
+        socket.on("list_files", async (data: any) => {
             if (isShuttingDown) return;
             const requestId = data.requestId;
             const dirPath = data.path ?? "";
@@ -1107,7 +1107,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             }
         });
 
-        socket.on("search_files", async (data) => {
+        socket.on("search_files", async (data: any) => {
             if (isShuttingDown) return;
             const requestId = data.requestId;
             const cwd = (data as any).cwd ?? "";
@@ -1166,7 +1166,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             }
         });
 
-        socket.on("read_file", async (data) => {
+        socket.on("read_file", async (data: any) => {
             if (isShuttingDown) return;
             const requestId = data.requestId;
             const filePath = data.path ?? "";
@@ -1220,7 +1220,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
 
         // ── Git operations ────────────────────────────────────────────────
 
-        socket.on("git_status", async (data) => {
+        socket.on("git_status", async (data: any) => {
             if (isShuttingDown) return;
             const requestId = data.requestId;
             const cwd = data.cwd ?? "";
@@ -1294,7 +1294,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             }
         });
 
-        socket.on("git_diff", async (data) => {
+        socket.on("git_diff", async (data: any) => {
             if (isShuttingDown) return;
             const requestId = data.requestId;
             const cwd = data.cwd ?? "";
@@ -1324,7 +1324,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
 
         // ── Error handling ────────────────────────────────────────────────
 
-        socket.on("error", (data) => {
+        socket.on("error", (data: any) => {
             console.error(`pizzapi runner: server error: ${data.message}`);
         });
     });
