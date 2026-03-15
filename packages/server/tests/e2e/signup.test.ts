@@ -22,9 +22,21 @@ process.env.PIZZAPI_TRUST_PROXY = "true";
 
 /** Helper to make requests through the handler */
 async function req(method: string, path: string, body?: any, headers?: Record<string, string>): Promise<Response> {
+    const mergedHeaders: Record<string, string> = { "content-type": "application/json", ...headers };
+
+    // Mock the behavior of nodeReqToFetchRequest for tests since handleFetch bypasses it
+    let clientIp = "127.0.0.1";
+    if (process.env.PIZZAPI_TRUST_PROXY === "true" || process.env.PIZZAPI_TRUST_PROXY === "1") {
+        const xff = mergedHeaders["x-forwarded-for"];
+        if (xff) {
+            clientIp = xff.split(",")[0].trim();
+        }
+    }
+    mergedHeaders["x-pizzapi-client-ip"] = clientIp;
+
     const init: RequestInit = {
         method,
-        headers: { "content-type": "application/json", ...headers },
+        headers: mergedHeaders,
     };
     if (body) init.body = JSON.stringify(body);
     return handleFetch(new Request(`${BASE}${path}`, init));
