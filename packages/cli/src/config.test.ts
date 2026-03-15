@@ -329,4 +329,52 @@ describe("resolveSandboxConfig", () => {
     const result = resolveSandboxConfig("/tmp", { sandbox: {} } as any);
     expect(result.mode).toBe("basic");
   });
+
+  test("coerces bare string allowWrite to array", () => {
+    const result = resolveSandboxConfig("/tmp", {
+      sandbox: { mode: "basic", filesystem: { allowWrite: "." as any } },
+    } as any);
+    expect(result.srtConfig).not.toBeNull();
+    // Should not throw — the bare string "." is coerced to ["."]
+    expect(result.srtConfig!.filesystem.allowWrite).toBeInstanceOf(Array);
+    expect(result.srtConfig!.filesystem.allowWrite.length).toBeGreaterThan(0);
+  });
+
+  test("coerces bare string denyRead to array", () => {
+    const result = resolveSandboxConfig("/tmp", {
+      sandbox: { mode: "basic", filesystem: { denyRead: "/secret" as any } },
+    } as any);
+    // /secret should appear in denyRead (merged with preset defaults)
+    expect(result.srtConfig!.filesystem.denyRead).toContain("/secret");
+  });
+
+  test("filters non-string items from array fields", () => {
+    const result = resolveSandboxConfig("/tmp", {
+      sandbox: {
+        mode: "basic",
+        filesystem: { denyWrite: [42, ".env", null, true] as any },
+      },
+    } as any);
+    // Only the valid string ".env" should survive (plus preset defaults)
+    const denyWrite = result.srtConfig!.filesystem.denyWrite;
+    expect(denyWrite.every((v: unknown) => typeof v === "string")).toBe(true);
+  });
+
+  test("ignores non-array non-string allowWrite (falls back to preset)", () => {
+    const result = resolveSandboxConfig("/tmp", {
+      sandbox: { mode: "basic", filesystem: { allowWrite: true as any } },
+    } as any);
+    // Should fall back to preset default [".", "/tmp"]
+    expect(result.srtConfig!.filesystem.allowWrite.length).toBe(2);
+  });
+
+  test("coerces network allowedDomains bare string in full mode", () => {
+    const result = resolveSandboxConfig("/tmp", {
+      sandbox: {
+        mode: "full",
+        network: { allowedDomains: "example.com" as any },
+      },
+    } as any);
+    expect(result.srtConfig!.network!.allowedDomains).toEqual(["example.com"]);
+  });
 });

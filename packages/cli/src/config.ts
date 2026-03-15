@@ -327,6 +327,51 @@ const PRESET_FULL: SrtConfig = {
 };
 
 /**
+ * Coerce a raw JSON value into a `string[]` suitable for sandbox path/domain lists.
+ *
+ * Handles common user mistakes in config.json:
+ *   - `"."` (bare string instead of array) → `["."]`
+ *   - `[42, ".", null]` (non-string items) → `["."]` (non-strings filtered out)
+ *   - `true` / `{}` / other non-array, non-string → `undefined` (falls back to preset)
+ *
+ * Returns `undefined` when the input is `undefined`/`null` so callers can
+ * distinguish "not specified" from "explicitly empty".
+ */
+function coerceStringArray(value: unknown): string[] | undefined {
+    if (value === undefined || value === null) return undefined;
+    if (typeof value === "string") return [value];
+    if (Array.isArray(value)) return value.filter((v): v is string => typeof v === "string");
+    // Unrecognised type (number, boolean, object) — ignore and fall back to preset
+    return undefined;
+}
+
+/**
+ * Sanitize a raw `SandboxConfig` from JSON, coercing array fields so that
+ * downstream code can safely spread / `.map()` without `TypeError`.
+ */
+function sanitizeSandboxConfig(raw: SandboxConfig): SandboxConfig {
+    return {
+        ...raw,
+        filesystem: raw.filesystem
+            ? {
+                  ...raw.filesystem,
+                  denyRead: coerceStringArray(raw.filesystem.denyRead),
+                  allowWrite: coerceStringArray(raw.filesystem.allowWrite),
+                  denyWrite: coerceStringArray(raw.filesystem.denyWrite),
+              }
+            : undefined,
+        network: raw.network
+            ? {
+                  ...raw.network,
+                  allowedDomains: coerceStringArray(raw.network.allowedDomains),
+                  deniedDomains: coerceStringArray(raw.network.deniedDomains),
+                  allowUnixSockets: coerceStringArray(raw.network.allowUnixSockets),
+              }
+            : undefined,
+    };
+}
+
+/**
  * Expand `~` to `os.homedir()` and resolve `.` to the given `cwd`.
  * Absolute paths are returned as-is (after ~ expansion).
  */
@@ -347,7 +392,7 @@ function resolveSandboxPath(p: string, cwd: string): string {
  * 4. Return `{ mode: "none", srtConfig: null }` when mode is `"none"`.
  */
 export function resolveSandboxConfig(cwd: string, config: PizzaPiConfig): ResolvedSandboxConfig {
-    const s = config.sandbox ?? {};
+    const s = sanitizeSandboxConfig(config.sandbox ?? {});
     const rawMode = s.mode ?? "basic";
 
     // Validate mode — fail closed on unknown values to prevent silent security downgrades
@@ -472,7 +517,10 @@ export function resolveSandboxConfig(cwd: string, config: PizzaPiConfig): Resolv
  *   - `network.allowedDomains`: intersection when both are specified (project can only narrow).
  *   - `network.deniedDomains`: union (project can add more denials, not remove).
  */
-export function mergeSandboxConfig(global: SandboxConfig, project: SandboxConfig): SandboxConfig {
+export function mergeSandboxConfig(rawGlobal: SandboxConfig, rawProject: SandboxConfig): SandboxConfig {
+    const global = sanitizeSandboxConfig(rawGlobal);
+    const project = sanitizeSandboxConfig(rawProject);
+
     const union = (a: string[] | undefined, b: string[] | undefined): string[] | undefined => {
         const combined = [...(a ?? []), ...(b ?? [])];
         return combined.length > 0 ? [...new Set(combined)] : undefined;
