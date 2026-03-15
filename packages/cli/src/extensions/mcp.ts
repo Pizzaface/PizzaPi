@@ -1,7 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
 import type { PizzaPiConfig } from "../config.js";
 import { PizzaPiOAuthProvider, type RelayContext } from "./mcp-oauth.js";
-import { getSandboxEnv, isSandboxActive, getResolvedConfig, getSandboxMode } from "@pizzapi/tools";
+import { getSandboxEnv, isSandboxActive, getResolvedConfig, getSandboxMode, wrapCommand } from "@pizzapi/tools";
 
 /**
  * Minimal MCP client transport + tool bridge.
@@ -139,15 +139,33 @@ function allocateProviderSafeToolName(serverName: string, mcpToolName: string, u
 // STDIO client
 // ─────────────────────────────────────────────────────────────────────────────
 
-function createStdioMcpClient(opts: { name: string; command: string; args?: string[]; env?: Record<string, string>; cwd?: string }): McpClient {
+async function createStdioMcpClient(opts: { name: string; command: string; args?: string[]; env?: Record<string, string>; cwd?: string }): Promise<McpClient> {
   // Sandbox: inject proxy env vars so sandboxed MCP servers route traffic
   // through the sandbox network proxy. User-provided env takes precedence.
   const sandboxEnv = isSandboxActive() ? getSandboxEnv() : {};
-  const child: ChildProcessWithoutNullStreams = spawn(opts.command, opts.args ?? [], {
-    stdio: "pipe",
-    env: { ...process.env, ...sandboxEnv, ...(opts.env ?? {}) },
-    ...(opts.cwd ? { cwd: opts.cwd } : {}),
-  });
+  const mergedEnv = { ...process.env, ...sandboxEnv, ...(opts.env ?? {}) };
+
+  // Wrap MCP command with OS-level sandbox (filesystem + socket restrictions).
+  // wrapCommand applies sandbox-exec (macOS) or bwrap (Linux) around the command.
+  let child: ChildProcessWithoutNullStreams;
+  if (isSandboxActive()) {
+    // Build shell command string from command + args for wrapping
+    const shellArgs = (opts.args ?? []).map(a => `'${a.replace(/'/g, "'\\''")}'`).join(" ");
+    const shellCmd = shellArgs ? `${opts.command} ${shellArgs}` : opts.command;
+    const wrappedCmd = await wrapCommand(shellCmd);
+    child = spawn(wrappedCmd, [], {
+      stdio: "pipe",
+      shell: true,
+      env: mergedEnv,
+      ...(opts.cwd ? { cwd: opts.cwd } : {}),
+    });
+  } else {
+    child = spawn(opts.command, opts.args ?? [], {
+      stdio: "pipe",
+      env: mergedEnv,
+      ...(opts.cwd ? { cwd: opts.cwd } : {}),
+    });
+  }
 
   let nextId = 1;
   const pending = new Map<number, { resolve: (v: any) => void; reject: (e: any) => void }>();
@@ -819,7 +837,7 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
     if (disabled.has(s.name)) continue; // skip disabled servers
     if (s.transport === "stdio") {
       clients.push(
-        createStdioMcpClient({
+        await createStdioMcpClient({
           name: s.name,
           command: s.command,
           args: s.args,
@@ -860,7 +878,7 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
     if ("command" in def && typeof (def as any).command === "string") {
       const d = def as { command: string; args?: string[]; env?: Record<string, string>; cwd?: string };
       clients.push(
-        createStdioMcpClient({
+        await createStdioMcpClient({
           name,
           command: d.command,
           args: d.args,
