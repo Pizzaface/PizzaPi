@@ -304,6 +304,43 @@ describe("isDestructiveCommand", () => {
         expect(isDestructiveCommand("git status; git push")).toBe(true);
         expect(isDestructiveCommand('rg "pattern" src/ | rm file')).toBe(true);
     });
+
+    // sed/perl in-place editing
+    test("flags sed -i (in-place file modification)", () => {
+        expect(isDestructiveCommand("sed -i 's/foo/bar/g' file.txt")).toBe(true);
+        expect(isDestructiveCommand("sed -i.bak 's/foo/bar/' file.txt")).toBe(true);
+        expect(isDestructiveCommand("sed -n 'p' file.txt")).toBe(false); // read-only sed is fine
+    });
+
+    test("flags perl -i (in-place file modification)", () => {
+        expect(isDestructiveCommand("perl -i -pe 's/foo/bar/g' file.txt")).toBe(true);
+        expect(isDestructiveCommand("perl -i.bak -pe 's/foo/bar/' file.txt")).toBe(true);
+    });
+
+    // Interpreter script execution
+    test("flags interpreter script execution", () => {
+        expect(isDestructiveCommand("python script.py")).toBe(true);
+        expect(isDestructiveCommand("python3 script.py")).toBe(true);
+        expect(isDestructiveCommand("python -c 'import os; os.remove(\"f\")'")).toBe(true);
+        expect(isDestructiveCommand("ruby script.rb")).toBe(true);
+        expect(isDestructiveCommand("node script.js")).toBe(true);
+        // Version/help flags are safe
+        expect(isDestructiveCommand("python --version")).toBe(false);
+        expect(isDestructiveCommand("python3 --help")).toBe(false);
+        expect(isDestructiveCommand("ruby --version")).toBe(false);
+        expect(isDestructiveCommand("node --version")).toBe(false);
+    });
+
+    // Build tools
+    test("flags make (build tool)", () => {
+        expect(isDestructiveCommand("make")).toBe(true);
+        expect(isDestructiveCommand("make install")).toBe(true);
+        expect(isDestructiveCommand("make clean")).toBe(true);
+        // Dry-run is safe
+        expect(isDestructiveCommand("make --dry-run")).toBe(false);
+        expect(isDestructiveCommand("make -n")).toBe(false);
+        expect(isDestructiveCommand("make --just-print")).toBe(false);
+    });
 });
 
 // ── isSafeCommand backward-compat wrapper ────────────────────────────────────

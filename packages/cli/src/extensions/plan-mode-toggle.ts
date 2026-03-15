@@ -42,6 +42,15 @@ const DESTRUCTIVE_FLAG_PATTERNS = [
     /\bfind\b.*\s-exec(dir)?\b/i, /\bfind\b.*\s-ok(dir)?\b/i, /\bfind\b.*\s-delete\b/i, /\bfind\b.*\s-fprintf\b/i,
     /\bgit\b.*\s--output[= ]/i,
     /\bsort\b.*\s(-o\s|-o\S|--output\b|--output=)/i,
+    // In-place editing via sed/perl -i
+    /\bsed\b.*\s-i\b/i, /\bsed\b.*\s-i\S/i,
+    /\bperl\b.*\s-i\b/i, /\bperl\b.*\s-i\S/i,
+    // Interpreters executing scripts (not just --version/--help)
+    /^\s*python[23]?\s+(?!--(version|help)\b)\S/i,
+    /^\s*ruby\s+(?!--(version|help)\b)\S/i,
+    /^\s*node\s+(?!--(version|help)\b)\S/i,
+    // Build tools (not --dry-run / --just-print / -n)
+    /^\s*make\b(?!.*(\s-n\b|\s--dry-run\b|\s--just-print\b))/i,
 ];
 
 /**
@@ -433,10 +442,12 @@ export const planModeToggleExtension: ExtensionFactory = (pi) => {
             };
         }
 
-        // Block destructive bash commands (fallback when sandbox is not active).
-        // When sandbox IS active, the read-only overlay on the sandbox enforces
-        // filesystem write restrictions at the OS level — no command parsing needed.
-        if (event.toolName === "bash" && !isSandboxActive()) {
+        // Block destructive bash commands in plan mode.
+        // The sandbox read-only overlay enforces filesystem write restrictions,
+        // but non-filesystem side effects (kill, network calls, etc.) are not
+        // blocked by the overlay — so we always check the destructive pattern
+        // regardless of sandbox state.
+        if (event.toolName === "bash") {
             const command = (event.input as any).command as string;
             if (isDestructiveCommand(command)) {
                 return {

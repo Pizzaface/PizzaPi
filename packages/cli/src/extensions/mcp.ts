@@ -840,15 +840,19 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
     if (!s || typeof s !== "object") continue;
     if (disabled.has(s.name)) continue; // skip disabled servers
     if (s.transport === "stdio") {
-      clients.push(
-        await createStdioMcpClient({
-          name: s.name,
-          command: s.command,
-          args: s.args,
-          env: s.env,
-          cwd: s.cwd,
-        }),
-      );
+      try {
+        clients.push(
+          await createStdioMcpClient({
+            name: s.name,
+            command: s.command,
+            args: s.args,
+            env: s.env,
+            cwd: s.cwd,
+          }),
+        );
+      } catch (err) {
+        console.error(`[MCP] Failed to create stdio client for "${s.name}": ${err}`);
+      }
     } else if (s.transport === "http") {
       if (!isMcpDomainAllowed(s.url, s.name)) continue;
       clients.push(
@@ -881,15 +885,19 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
 
     if ("command" in def && typeof (def as any).command === "string") {
       const d = def as { command: string; args?: string[]; env?: Record<string, string>; cwd?: string };
-      clients.push(
-        await createStdioMcpClient({
-          name,
-          command: d.command,
-          args: d.args,
-          env: d.env,
-          cwd: d.cwd,
-        }),
-      );
+      try {
+        clients.push(
+          await createStdioMcpClient({
+            name,
+            command: d.command,
+            args: d.args,
+            env: d.env,
+            cwd: d.cwd,
+          }),
+        );
+      } catch (err) {
+        console.error(`[MCP] Failed to create stdio client for "${name}": ${err}`);
+      }
       continue;
     }
 
