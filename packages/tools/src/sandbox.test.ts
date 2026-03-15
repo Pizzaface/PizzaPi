@@ -115,6 +115,27 @@ describe("sandbox", () => {
             expect(isSandboxActive()).toBe(false);
         });
 
+        test("basic mode without network config initializes successfully", async () => {
+            // Regression: SandboxRuntimeConfig requires `network` to always
+            // be present. When srtConfig.network was undefined (basic mode),
+            // SandboxManager.initialize() crashed and _initFailed was set,
+            // silently disabling OS-level enforcement.
+            const config = makeConfig({ mode: "basic" });
+            // Ensure no network key — this is the scenario that used to fail
+            expect(config.srtConfig!.network).toBeUndefined();
+
+            await initSandbox(config);
+            expect(getSandboxMode()).toBe("basic");
+
+            // On supported platforms, sandbox should be fully active (not
+            // degraded). On unsupported platforms it degrades gracefully.
+            if (isSandboxActive()) {
+                // Verify OS-level enforcement is live, not just validation
+                const wrapped = await wrapCommand("echo hello");
+                expect(wrapped).not.toBe("echo hello");
+            }
+        });
+
         test("detects SSH_AUTH_SOCK from environment", async () => {
             const origSock = process.env.SSH_AUTH_SOCK;
             process.env.SSH_AUTH_SOCK = "/tmp/test-ssh-agent.sock";

@@ -333,6 +333,31 @@ function _buildSrtConfig(config: ResolvedSandboxConfig): SandboxRuntimeConfig {
         }
     }
 
+    // SandboxRuntimeConfig requires `network` to always be present.
+    // When our config omits it (basic mode), use a permissive default
+    // that imposes no network restrictions.
+    const network = srt.network
+        ? {
+            allowedDomains: srt.network.allowedDomains,
+            deniedDomains: srt.network.deniedDomains,
+            allowLocalBinding: srt.network.allowLocalBinding,
+            ...(allowUnixSockets !== undefined ? { allowUnixSockets } : {}),
+            ...(srt.network.allowAllUnixSockets !== undefined
+                ? { allowAllUnixSockets: srt.network.allowAllUnixSockets }
+                : {}),
+            ...(srt.network.httpProxyPort !== undefined
+                ? { httpProxyPort: srt.network.httpProxyPort }
+                : {}),
+            ...(srt.network.socksProxyPort !== undefined
+                ? { socksProxyPort: srt.network.socksProxyPort }
+                : {}),
+        }
+        : {
+            allowedDomains: [] as string[],
+            deniedDomains: [] as string[],
+            allowLocalBinding: true,
+        };
+
     return {
         filesystem: {
             denyRead: srt.filesystem.denyRead,
@@ -345,25 +370,7 @@ function _buildSrtConfig(config: ResolvedSandboxConfig): SandboxRuntimeConfig {
                 ? { allowGitConfig: srt.filesystem.allowGitConfig }
                 : {}),
         },
-        ...(srt.network !== undefined
-            ? {
-                network: {
-                    allowedDomains: srt.network.allowedDomains,
-                    deniedDomains: srt.network.deniedDomains,
-                    allowLocalBinding: srt.network.allowLocalBinding,
-                    ...(allowUnixSockets !== undefined ? { allowUnixSockets } : {}),
-                    ...(srt.network.allowAllUnixSockets !== undefined
-                        ? { allowAllUnixSockets: srt.network.allowAllUnixSockets }
-                        : {}),
-                    ...(srt.network.httpProxyPort !== undefined
-                        ? { httpProxyPort: srt.network.httpProxyPort }
-                        : {}),
-                    ...(srt.network.socksProxyPort !== undefined
-                        ? { socksProxyPort: srt.network.socksProxyPort }
-                        : {}),
-                },
-            }
-            : {}),
+        network,
         ...(srt.ignoreViolations !== undefined
             ? { ignoreViolations: srt.ignoreViolations }
             : {}),
