@@ -1328,26 +1328,26 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             if (isShuttingDown) return;
             const requestId = data.requestId;
             try {
-                // Import lazily to avoid pulling in sandbox deps when not needed
-                const { isSandboxActive, getSandboxMode, getViolations, getResolvedConfig } = await import("@pizzapi/tools");
-                const mode = getSandboxMode();
-                const active = isSandboxActive();
-                const violations = getViolations();
-                const resolvedConfig = getResolvedConfig();
-                const recentViolations = violations.slice(-20).reverse().map((v: any) => ({
-                    timestamp: v.timestamp.toISOString(),
-                    operation: v.operation,
-                    target: v.target,
-                    reason: v.reason,
-                }));
+                // Read sandbox config from disk — the daemon process does NOT
+                // run inside a sandbox itself, so process-local sandbox state
+                // (getSandboxMode, isSandboxActive, getViolations) would always
+                // return defaults.  The persisted config is the source of truth
+                // for what workers will use.
+                const { loadConfig, resolveSandboxConfig } = await import("../config.js");
+                const config = loadConfig(process.cwd());
+                const resolvedConfig = resolveSandboxConfig(process.cwd(), config);
+                const mode = resolvedConfig.mode ?? "none";
+                // The daemon can't know if a worker sandbox is actively enforcing
+                // right now — report whether a non-"none" mode is configured.
+                const active = mode !== "none";
                 socket.emit("file_result", {
                     requestId,
                     ok: true,
                     mode,
                     active,
                     platform: process.platform,
-                    violations: violations.length,
-                    recentViolations,
+                    violations: 0,
+                    recentViolations: [],
                     config: resolvedConfig,
                 });
             } catch (err) {

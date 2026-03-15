@@ -304,9 +304,17 @@ export function SandboxManager({ runnerId }: SandboxManagerProps) {
                 body: JSON.stringify(body),
                 credentials: "include",
             });
+            const data = await res.json().catch(() => null) as any;
             if (!res.ok) {
-                const data = await res.json().catch(() => null) as any;
                 throw new Error(data?.error ?? `HTTP ${res.status}`);
+            }
+            // Must have valid JSON response on HTTP 200
+            if (!data || typeof data !== "object") {
+                throw new Error("Invalid response from server");
+            }
+            // The runner may return HTTP 200 with { ok: false } on rejection
+            if (data.ok === false) {
+                throw new Error(data.message ?? "Runner rejected the configuration update");
             }
             setPersisted(form);
             setSavedBadge(true);
