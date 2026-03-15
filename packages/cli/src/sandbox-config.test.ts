@@ -329,28 +329,46 @@ describe("mergeSandboxConfig — network", () => {
         expect(merged.network?.allowLocalBinding).toBe(false);
     });
 
-    test("project allowLocalBinding used when global not set", () => {
+    test("project allowLocalBinding cannot weaken when global not set", () => {
         const global: SandboxConfig = {};
         const project: SandboxConfig = { network: { allowLocalBinding: true } };
         const merged = mergeSandboxConfig(global, project);
-        expect(merged.network?.allowLocalBinding).toBe(true);
+        // keepStrict: project cannot enable weakening when global is absent
+        expect(merged.network?.allowLocalBinding).toBeUndefined();
+    });
+
+    test("project allowLocalBinding=false preserved when global not set", () => {
+        const global: SandboxConfig = {};
+        const project: SandboxConfig = { network: { allowLocalBinding: false } };
+        const merged = mergeSandboxConfig(global, project);
+        // keepStrict: project can maintain strict (false) settings
+        expect(merged.network?.allowLocalBinding).toBe(false);
     });
 });
 
 describe("mergeSandboxConfig — scalar fields propagated", () => {
-    test("allowUnixSockets: global wins (project cannot widen socket allowlist)", () => {
-        const global: SandboxConfig = { network: { allowUnixSockets: ["/run/g.sock"] } };
-        const project: SandboxConfig = { network: { allowUnixSockets: ["/run/p.sock"] } };
+    test("allowUnixSockets: intersect — project cannot widen socket allowlist", () => {
+        const global: SandboxConfig = { network: { allowUnixSockets: ["/run/g.sock", "/run/shared.sock"] } };
+        const project: SandboxConfig = { network: { allowUnixSockets: ["/run/p.sock", "/run/shared.sock"] } };
         const merged = mergeSandboxConfig(global, project);
-        expect(merged.network?.allowUnixSockets).toEqual(["/run/g.sock"]);
+        // Only the intersection is kept — project cannot add new sockets
+        expect(merged.network?.allowUnixSockets).toEqual(["/run/shared.sock"]);
         expect(merged.network?.allowUnixSockets).not.toContain("/run/p.sock");
     });
 
-    test("allowUnixSockets: project used when global not set", () => {
+    test("allowUnixSockets: no overlap yields empty array", () => {
+        const global: SandboxConfig = { network: { allowUnixSockets: ["/run/g.sock"] } };
+        const project: SandboxConfig = { network: { allowUnixSockets: ["/run/p.sock"] } };
+        const merged = mergeSandboxConfig(global, project);
+        expect(merged.network?.allowUnixSockets).toEqual([]);
+    });
+
+    test("allowUnixSockets: project cannot introduce sockets when global not set", () => {
         const global: SandboxConfig = {};
         const project: SandboxConfig = { network: { allowUnixSockets: ["/run/p.sock"] } };
         const merged = mergeSandboxConfig(global, project);
-        expect(merged.network?.allowUnixSockets).toEqual(["/run/p.sock"]);
+        // intersect: global undefined → return undefined (preserve preset default)
+        expect(merged.network?.allowUnixSockets).toBeUndefined();
     });
 
     test("allowAllUnixSockets: global wins", () => {

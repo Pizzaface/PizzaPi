@@ -779,6 +779,17 @@ function isMcpDomainAllowed(url: string, serverName: string): boolean {
 
   try {
     const hostname = new URL(url).hostname;
+
+    // Check deniedDomains first — deny takes precedence over allow
+    const deniedDomains = sandboxCfg.srtConfig.network.deniedDomains ?? [];
+    if (deniedDomains.some(d => hostname === d || hostname.endsWith(`.${d.replace(/^\*\./, "")}`))) {
+      console.warn(
+        `[sandbox/mcp] Blocked MCP server "${serverName}": domain "${hostname}" ` +
+        `is in deniedDomains [${deniedDomains.join(", ")}]`,
+      );
+      return false;
+    }
+
     if (allowedDomains.some(d => hostname === d || hostname.endsWith(`.${d.replace(/^\*\./, "")}`))) {
       return true;
     }

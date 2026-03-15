@@ -506,11 +506,12 @@ export function mergeSandboxConfig(global: SandboxConfig, project: SandboxConfig
         network: {
             allowedDomains: intersect(global.network?.allowedDomains, project.network?.allowedDomains),
             deniedDomains: union(global.network?.deniedDomains, project.network?.deniedDomains),
-            allowLocalBinding: globalWins(global.network?.allowLocalBinding, project.network?.allowLocalBinding),
-            // Unix socket allowances: global wins
-            // Unix socket allowlist: global wins (project cannot widen this allowlist)
-            allowUnixSockets: globalWins(global.network?.allowUnixSockets, project.network?.allowUnixSockets),
-            allowAllUnixSockets: globalWins(global.network?.allowAllUnixSockets, project.network?.allowAllUnixSockets),
+            allowLocalBinding: keepStrict(global.network?.allowLocalBinding, project.network?.allowLocalBinding),
+            // Unix socket allowances: project cannot weaken
+            // allowUnixSockets is a string[] allowlist — intersect so project can only narrow
+            allowUnixSockets: intersect(global.network?.allowUnixSockets, project.network?.allowUnixSockets),
+            // allowAllUnixSockets is a boolean weakening flag — keep strict default
+            allowAllUnixSockets: keepStrict(global.network?.allowAllUnixSockets, project.network?.allowAllUnixSockets),
             // Proxy ports: global wins
             httpProxyPort: globalWins(global.network?.httpProxyPort, project.network?.httpProxyPort),
             socksProxyPort: globalWins(global.network?.socksProxyPort, project.network?.socksProxyPort),
