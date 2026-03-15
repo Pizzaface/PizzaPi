@@ -138,10 +138,11 @@ function allocateProviderSafeToolName(serverName: string, mcpToolName: string, u
 // STDIO client
 // ─────────────────────────────────────────────────────────────────────────────
 
-function createStdioMcpClient(opts: { name: string; command: string; args?: string[]; env?: Record<string, string> }): McpClient {
+function createStdioMcpClient(opts: { name: string; command: string; args?: string[]; env?: Record<string, string>; cwd?: string }): McpClient {
   const child: ChildProcessWithoutNullStreams = spawn(opts.command, opts.args ?? [], {
     stdio: "pipe",
     env: { ...process.env, ...(opts.env ?? {}) },
+    ...(opts.cwd ? { cwd: opts.cwd } : {}),
   });
 
   let nextId = 1;
@@ -712,7 +713,7 @@ export type McpConfig = {
   // Preferred format
   mcp?: {
     servers?: Array<
-      | { name: string; transport: "stdio"; command: string; args?: string[]; env?: Record<string, string> }
+      | { name: string; transport: "stdio"; command: string; args?: string[]; env?: Record<string, string>; cwd?: string }
       | { name: string; transport: "http"; url: string; headers?: Record<string, string> }
       | { name: string; transport: "streamable"; url: string; headers?: Record<string, string> }
     >;
@@ -733,7 +734,7 @@ export type McpConfig = {
   // Note: in the standard MCP ecosystem, type "http" means Streamable HTTP.
   mcpServers?: Record<
     string,
-    | { command: string; args?: string[]; env?: Record<string, string> }
+    | { command: string; args?: string[]; env?: Record<string, string>; cwd?: string }
     | { url: string; transport?: "http" | "streamable"; type?: "http" | "sse"; headers?: Record<string, string> }
   >;
 };
@@ -766,6 +767,7 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
           command: s.command,
           args: s.args,
           env: s.env,
+          cwd: s.cwd,
         }),
       );
     } else if (s.transport === "http") {
@@ -797,13 +799,14 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
     if (disabled.has(name)) continue; // skip disabled servers
 
     if ("command" in def && typeof (def as any).command === "string") {
-      const d = def as { command: string; args?: string[]; env?: Record<string, string> };
+      const d = def as { command: string; args?: string[]; env?: Record<string, string>; cwd?: string };
       clients.push(
         createStdioMcpClient({
           name,
           command: d.command,
           args: d.args,
           env: d.env,
+          cwd: d.cwd,
         }),
       );
       continue;
