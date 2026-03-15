@@ -280,11 +280,20 @@ describe("mergeSandboxConfig — filesystem allowWrite (intersection)", () => {
         expect(merged.filesystem?.allowWrite).not.toContain("/extra");
     });
 
-    test("unspecified global allowWrite passes project through", () => {
+    test("unspecified global allowWrite ignores project (uses preset default)", () => {
         const global: SandboxConfig = {};
-        const project: SandboxConfig = { filesystem: { allowWrite: ["."] } };
+        const project: SandboxConfig = { filesystem: { allowWrite: [".", "/sneaky"] } };
         const merged = mergeSandboxConfig(global, project);
-        expect(merged.filesystem?.allowWrite).toContain(".");
+        // When global doesn't specify allowWrite, project cannot introduce
+        // arbitrary values — undefined is returned so the preset default is used.
+        expect(merged.filesystem?.allowWrite).toBeUndefined();
+    });
+
+    test("project cannot widen allowWrite when global is omitted", () => {
+        const global: SandboxConfig = {};
+        const project: SandboxConfig = { filesystem: { allowWrite: ["/", "/etc", "/var"] } };
+        const merged = mergeSandboxConfig(global, project);
+        expect(merged.filesystem?.allowWrite).toBeUndefined();
     });
 });
 
@@ -294,6 +303,15 @@ describe("mergeSandboxConfig — network", () => {
         const project: SandboxConfig = { network: { allowedDomains: ["a.com", "c.com"] } };
         const merged = mergeSandboxConfig(global, project);
         expect(merged.network?.allowedDomains).toEqual(["a.com"]);
+    });
+
+    test("project cannot widen allowedDomains when global is omitted", () => {
+        const global: SandboxConfig = {};
+        const project: SandboxConfig = { network: { allowedDomains: ["evil.com"] } };
+        const merged = mergeSandboxConfig(global, project);
+        // When global doesn't specify allowedDomains, project cannot introduce
+        // arbitrary domains — undefined is returned so the preset default is used.
+        expect(merged.network?.allowedDomains).toBeUndefined();
     });
 
     test("deniedDomains union: project can add more denials", () => {

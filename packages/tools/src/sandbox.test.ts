@@ -224,6 +224,23 @@ describe("sandbox", () => {
                 expect(result.allowed).toBe(false);
             });
 
+            test("root / deny rule blocks all child paths", async () => {
+                await initSandbox(makeConfig({ denyRead: ["/"] }));
+                expect(validatePath("/etc/passwd", "read").allowed).toBe(false);
+                expect(validatePath("/home/user/.ssh/id_rsa", "read").allowed).toBe(false);
+                expect(validatePath("/", "read").allowed).toBe(false);
+            });
+
+            test("root / allowWrite rule permits child paths", async () => {
+                await initSandbox(makeConfig({
+                    denyRead: [],
+                    allowWrite: ["/"],
+                    denyWrite: [],
+                }));
+                expect(validatePath("/tmp/file.txt", "write").allowed).toBe(true);
+                expect(validatePath("/etc/passwd", "write").allowed).toBe(true);
+            });
+
             test("handles trailing slashes in config rules", async () => {
                 await initSandbox(makeConfig({
                     denyRead: ["/etc/"],

@@ -469,7 +469,10 @@ export function mergeSandboxConfig(global: SandboxConfig, project: SandboxConfig
         g: string[] | undefined,
         p: string[] | undefined,
     ): string[] | undefined => {
-        if (g === undefined) return p;
+        // When global is undefined, return undefined so the preset default is
+        // used.  Returning `p` here would let the project-local config introduce
+        // arbitrary allowlist values and widen preset protections.
+        if (g === undefined) return undefined;
         if (p === undefined) return g;
         const pSet = new Set(p);
         const result = g.filter((item) => pSet.has(item));

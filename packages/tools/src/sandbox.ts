@@ -472,12 +472,16 @@ function _pathStartsWith(path: string, prefix: string): boolean {
 
 function _pathMatchesDeny(normalizedPath: string, deniedPath: string): boolean {
     const rule = _normalizeRulePath(deniedPath);
-    return _pathsEqual(normalizedPath, rule) || _pathStartsWith(normalizedPath, rule + "/");
+    // When the rule is "/" (filesystem root), every absolute path is a child.
+    // Appending "/" naively would produce "//" which never matches.
+    const prefix = rule === "/" ? "/" : rule + "/";
+    return _pathsEqual(normalizedPath, rule) || _pathStartsWith(normalizedPath, prefix);
 }
 
 function _pathWithinAllow(normalizedPath: string, allowedPath: string): boolean {
     const rule = _normalizeRulePath(allowedPath);
-    return _pathsEqual(normalizedPath, rule) || _pathStartsWith(normalizedPath, rule + "/");
+    const prefix = rule === "/" ? "/" : rule + "/";
+    return _pathsEqual(normalizedPath, rule) || _pathStartsWith(normalizedPath, prefix);
 }
 
 /** Record a violation. Caps at MAX_VIOLATIONS entries. */
