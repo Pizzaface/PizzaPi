@@ -9,6 +9,8 @@ export {
     validatePath,
     getSandboxEnv,
     isSandboxActive,
+    setReadOnlyOverlay,
+    isReadOnlyOverlay,
     getSandboxMode,
     getViolations,
     clearViolations,

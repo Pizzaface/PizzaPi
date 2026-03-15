@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { isPlanModeEnabled, isExecutionMode, getPlanTodoItems, togglePlanModeFromRemote, setPlanModeFromRemote, isSafeCommand, splitShellSegments } from "./plan-mode-toggle.js";
+import { isPlanModeEnabled, isExecutionMode, getPlanTodoItems, togglePlanModeFromRemote, setPlanModeFromRemote, isSafeCommand, isDestructiveCommand, splitShellSegments } from "./plan-mode-toggle.js";
 
 // These tests verify the module-level state accessors and the remote toggle.
 // The extension itself requires a full pi runtime to test (registerCommand,
@@ -38,322 +38,282 @@ describe("plan-mode-toggle module state", () => {
     });
 });
 
-// ── isSafeCommand tests ──────────────────────────────────────────────────────
+// ── isDestructiveCommand tests ───────────────────────────────────────────────
+//
+// Blocklist-only approach: commands matching known destructive patterns are
+// flagged. Everything else is allowed through — the OS-level sandbox enforces
+// filesystem write restrictions. This replaces the old allowlist approach
+// where commands had to appear on a safe-list to be permitted.
 
-describe("isSafeCommand", () => {
-    // Basic safe commands
-    test("allows simple read-only commands", () => {
-        expect(isSafeCommand("ls -la")).toBe(true);
-        expect(isSafeCommand("cat foo.txt")).toBe(true);
-        expect(isSafeCommand("grep -r pattern src/")).toBe(true);
-        expect(isSafeCommand("git status")).toBe(true);
-        expect(isSafeCommand("find . -name '*.ts'")).toBe(true);
-        expect(isSafeCommand("pwd")).toBe(true);
+describe("isDestructiveCommand", () => {
+    // ── Non-destructive commands (should NOT be flagged) ─────────────────────
+
+    test("allows common read-only commands", () => {
+        expect(isDestructiveCommand("ls -la")).toBe(false);
+        expect(isDestructiveCommand("cat foo.txt")).toBe(false);
+        expect(isDestructiveCommand("grep -r pattern src/")).toBe(false);
+        expect(isDestructiveCommand("git status")).toBe(false);
+        expect(isDestructiveCommand("find . -name '*.ts'")).toBe(false);
+        expect(isDestructiveCommand("pwd")).toBe(false);
     });
 
-    // Basic destructive commands
-    test("blocks destructive commands", () => {
-        expect(isSafeCommand("rm -rf /")).toBe(false);
-        expect(isSafeCommand("mv foo bar")).toBe(false);
-        expect(isSafeCommand("git push")).toBe(false);
+    test("allows commands that the old allowlist didn't cover", () => {
+        expect(isDestructiveCommand("cd /tmp && rg pattern .")).toBe(false);
+        expect(isDestructiveCommand("xargs echo")).toBe(false);
+        expect(isDestructiveCommand("column -t file.txt")).toBe(false);
+        expect(isDestructiveCommand("cut -d: -f1 /etc/passwd")).toBe(false);
+        expect(isDestructiveCommand("tr '[:lower:]' '[:upper:]'")).toBe(false);
+        expect(isDestructiveCommand("basename /foo/bar.txt")).toBe(false);
+        expect(isDestructiveCommand("dirname /foo/bar.txt")).toBe(false);
+        expect(isDestructiveCommand("awk '{print $1}' file.txt")).toBe(false);
+        expect(isDestructiveCommand("sed -n 'p' file.txt")).toBe(false);
+        expect(isDestructiveCommand("env")).toBe(false);
+        expect(isDestructiveCommand("make --dry-run")).toBe(false);
+        expect(isDestructiveCommand("python --version")).toBe(false);
     });
 
-    // PR fix #1: command substitution bypass
-    test("blocks command substitution via $()", () => {
-        expect(isSafeCommand("ls $(make)")).toBe(false);
-        expect(isSafeCommand("echo $(rm -rf /)")).toBe(false);
-        expect(isSafeCommand("cat $(python -c 'evil')")).toBe(false);
-    });
-
-    test("blocks command substitution via backticks", () => {
-        expect(isSafeCommand("ls `make`")).toBe(false);
-        expect(isSafeCommand("echo `rm -rf /`")).toBe(false);
-    });
-
-    test("blocks multi-line command payloads", () => {
-        expect(isSafeCommand("ls\nmake")).toBe(false);
-        expect(isSafeCommand("cat foo.txt\nrm bar.txt")).toBe(false);
-    });
-
-    // PR fix #3: curl with -o / --output
-    test("blocks curl with -o flag (file write)", () => {
-        expect(isSafeCommand("curl -o out.bin https://example.com")).toBe(false);
-        expect(isSafeCommand("curl --output file.txt https://example.com")).toBe(false);
-    });
-
-    test("blocks curl with -o attached to filename (no space)", () => {
-        expect(isSafeCommand("curl -oout.bin https://example.com")).toBe(false);
-        expect(isSafeCommand("curl -ofile.txt https://example.com")).toBe(false);
-    });
-
-    test("blocks curl with --output=file (equals form)", () => {
-        expect(isSafeCommand("curl --output=out.bin https://example.com")).toBe(false);
-    });
-
-    test("blocks curl with -D/--dump-header (file write)", () => {
-        expect(isSafeCommand("curl -D out.txt https://example.com")).toBe(false);
-        expect(isSafeCommand("curl --dump-header h.txt https://example.com")).toBe(false);
-        expect(isSafeCommand("curl -Dout.txt https://example.com")).toBe(false);
-        expect(isSafeCommand("curl --dump-header=h.txt https://example.com")).toBe(false);
-    });
-
-    test("blocks curl with -c/--cookie-jar (file write)", () => {
-        expect(isSafeCommand("curl -c cookies.txt https://example.com")).toBe(false);
-        expect(isSafeCommand("curl --cookie-jar c.txt https://example.com")).toBe(false);
-        expect(isSafeCommand("curl -ccookies.txt https://example.com")).toBe(false);
-        expect(isSafeCommand("curl --cookie-jar=c.txt https://example.com")).toBe(false);
-    });
-
-    test("allows curl without -o flag (stdout-only)", () => {
-        expect(isSafeCommand("curl https://example.com")).toBe(true);
-        expect(isSafeCommand("curl -s https://example.com")).toBe(true);
-        expect(isSafeCommand("curl -sL https://example.com/api")).toBe(true);
-    });
-
-    test("blocks wget with -O flag (file write, not stdout)", () => {
-        expect(isSafeCommand("wget --output-document file.txt https://example.com")).toBe(false);
-    });
-
-    // PR fix: find -exec bypass
-    test("blocks find with -exec flag", () => {
-        expect(isSafeCommand("find . -exec rm {} \\;")).toBe(false);
-        expect(isSafeCommand("find . -execdir git clean -fd \\;")).toBe(false);
-    });
-
-    test("blocks find with -delete flag", () => {
-        expect(isSafeCommand("find . -name '*.tmp' -delete")).toBe(false);
-        expect(isSafeCommand("find /tmp -type f -delete")).toBe(false);
-    });
-
-    test("blocks find with -fprintf flag", () => {
-        expect(isSafeCommand("find . -fprintf /tmp/out.txt '%p\\n'")).toBe(false);
-    });
-
-    test("allows find without -exec", () => {
-        expect(isSafeCommand("find . -name '*.ts'")).toBe(true);
-        expect(isSafeCommand("find src -type f")).toBe(true);
-    });
-
-    // PR fix: curl -O / --remote-name bypass
-    test("blocks curl with -O/--remote-name flags (file write)", () => {
-        expect(isSafeCommand("curl -O https://example.com/file.bin")).toBe(false);
-        expect(isSafeCommand("curl --remote-name https://example.com/file.bin")).toBe(false);
-        expect(isSafeCommand("curl --remote-name-all https://example.com/file.bin")).toBe(false);
-    });
-
-    // PR fix: env command-execution bypass
-    test("blocks env used to execute arbitrary commands", () => {
-        expect(isSafeCommand("env bash -lc 'touch /tmp/pwned'")).toBe(false);
-        expect(isSafeCommand("env sh -c 'rm -rf /'")).toBe(false);
-    });
-
-    test("still allows printenv for reading env vars", () => {
-        expect(isSafeCommand("printenv PATH")).toBe(true);
-        expect(isSafeCommand("printenv")).toBe(true);
-    });
-
-    // PR fix: git diff --output file-write bypass
-    test("blocks git diff --output (file write)", () => {
-        expect(isSafeCommand("git diff --output=/tmp/patch.diff")).toBe(false);
-        expect(isSafeCommand("git diff --output /tmp/patch.diff")).toBe(false);
-    });
-
-    test("still allows git diff without --output", () => {
-        expect(isSafeCommand("git diff")).toBe(true);
-        expect(isSafeCommand("git diff HEAD~1")).toBe(true);
-        expect(isSafeCommand("git diff --stat")).toBe(true);
-    });
-
-    // PR fix: npm audit fix bypass
-    test("blocks npm audit fix (mutates project files)", () => {
-        expect(isSafeCommand("npm audit fix")).toBe(false);
-        expect(isSafeCommand("npm audit fix --force")).toBe(false);
-    });
-
-    test("blocks npm audit signatures (may perform network writes)", () => {
-        expect(isSafeCommand("npm audit signatures")).toBe(false);
-    });
-
-    test("still allows npm audit (read-only report)", () => {
-        expect(isSafeCommand("npm audit")).toBe(true);
-        expect(isSafeCommand("npm audit --json")).toBe(true);
-    });
-
-    // PR fix: process substitution bypass
-    test("blocks process substitution via <() and >()", () => {
-        expect(isSafeCommand("cat <(touch /tmp/pwned)")).toBe(false);
-        expect(isSafeCommand("diff <(cat a.txt) <(cat b.txt)")).toBe(false);
-        expect(isSafeCommand("cat >(rm /tmp/file)")).toBe(false);
-    });
-
-    // PR fix: find -ok / -okdir bypass
-    test("blocks find with -ok and -okdir flags", () => {
-        expect(isSafeCommand("find . -ok rm {} \\;")).toBe(false);
-        expect(isSafeCommand("find . -okdir git clean -fd \\;")).toBe(false);
-    });
-
-    // PR fix: curl --trace / --trace-ascii / --libcurl / --stderr bypass
-    test("blocks curl with --trace and other file-writing flags", () => {
-        expect(isSafeCommand("curl --trace trace.log https://example.com")).toBe(false);
-        expect(isSafeCommand("curl --trace-ascii trace.txt https://example.com")).toBe(false);
-        expect(isSafeCommand("curl --libcurl code.c https://example.com")).toBe(false);
-        expect(isSafeCommand("curl --stderr err.log https://example.com")).toBe(false);
-    });
-
-    // PR fix: escaped quote bypass in shell-segment splitting
-    test("blocks escaped-quote bypass that hides chaining operators", () => {
-        expect(isSafeCommand('ls \\"; touch /tmp/pwned')).toBe(false);
-        expect(isSafeCommand("ls \\'; touch /tmp/pwned")).toBe(false);
-    });
-
-    // PR fix: git branch/remote mutating forms
-    test("blocks git branch create/rename/copy (mutating)", () => {
-        expect(isSafeCommand("git branch new-feature")).toBe(false);
-        expect(isSafeCommand("git branch -m old new")).toBe(false);
-        expect(isSafeCommand("git branch -M old new")).toBe(false);
-        expect(isSafeCommand("git branch -c old new")).toBe(false);
-        expect(isSafeCommand("git branch -C old new")).toBe(false);
-    });
-
-    test("still allows git branch listing (read-only)", () => {
-        expect(isSafeCommand("git branch")).toBe(true);
-        expect(isSafeCommand("git branch -a")).toBe(true);
-        expect(isSafeCommand("git branch -v")).toBe(true);
-        expect(isSafeCommand("git branch --list")).toBe(true);
-        expect(isSafeCommand("git branch -r")).toBe(true);
-        expect(isSafeCommand("git branch --merged")).toBe(true);
-    });
-
-    test("blocks git remote add/remove/set-url (mutating)", () => {
-        expect(isSafeCommand("git remote add origin https://example.com")).toBe(false);
-        expect(isSafeCommand("git remote remove origin")).toBe(false);
-        expect(isSafeCommand("git remote set-url origin https://new.com")).toBe(false);
-        expect(isSafeCommand("git remote rename origin upstream")).toBe(false);
-    });
-
-    test("still allows git remote listing (read-only)", () => {
-        expect(isSafeCommand("git remote")).toBe(true);
-        expect(isSafeCommand("git remote -v")).toBe(true);
-        expect(isSafeCommand("git remote show origin")).toBe(true);
-    });
-
-    // PR fix: sort -o/--output file-write bypass
-    test("blocks sort with -o/--output (file write)", () => {
-        expect(isSafeCommand("sort -o out.txt input.txt")).toBe(false);
-        expect(isSafeCommand("sort --output=sorted.txt input.txt")).toBe(false);
-        expect(isSafeCommand("sort --output sorted.txt input.txt")).toBe(false);
-        expect(isSafeCommand("sort -oout.txt input.txt")).toBe(false);
-    });
-
-    test("still allows sort without -o (stdout-only)", () => {
-        expect(isSafeCommand("sort file.txt")).toBe(true);
-        expect(isSafeCommand("sort -n file.txt")).toBe(true);
-        expect(isSafeCommand("sort -r -u file.txt")).toBe(true);
-    });
-
-    // Chaining operators (pre-existing behavior, regression guard)
-    test("blocks chained unsafe commands", () => {
-        expect(isSafeCommand("ls && make")).toBe(false);
-        expect(isSafeCommand("git status; python script.py")).toBe(false);
-        expect(isSafeCommand("ls & make")).toBe(false);
-    });
-
-    // False-positive guard: destructive keywords in arguments must not block
-    test("allows searching for destructive keywords in arguments", () => {
-        expect(isSafeCommand('grep -R "rm" src/')).toBe(true);
-        expect(isSafeCommand('rg "rm -rf" src/')).toBe(true);
-        expect(isSafeCommand("grep mv changelog.md")).toBe(true);
-        expect(isSafeCommand("find . -name rm")).toBe(true);
-        expect(isSafeCommand('rg kill src/')).toBe(true);
-    });
-
-    // cd and other shell navigation / utility commands
     test("allows cd (directory navigation)", () => {
-        expect(isSafeCommand("cd /tmp")).toBe(true);
-        expect(isSafeCommand("cd /Users/jordan/Documents/Projects/PizzaPi")).toBe(true);
-        expect(isSafeCommand("cd ..")).toBe(true);
+        expect(isDestructiveCommand("cd /tmp")).toBe(false);
+        expect(isDestructiveCommand("cd /Users/jordan/Documents/Projects/PizzaPi")).toBe(false);
+        expect(isDestructiveCommand("cd ..")).toBe(false);
     });
 
     test("allows cd && rg chained commands", () => {
-        expect(isSafeCommand('cd /tmp && rg -l "pattern" .')).toBe(true);
-        expect(isSafeCommand('cd /Users/jordan/Projects && rg "foo|bar" src/ | head -20')).toBe(true);
+        expect(isDestructiveCommand('cd /tmp && rg -l "pattern" .')).toBe(false);
+        expect(isDestructiveCommand('cd /Users/jordan/Projects && rg "foo|bar" src/ | head -20')).toBe(false);
     });
 
-    test("allows path utility commands", () => {
-        expect(isSafeCommand("basename /foo/bar.txt")).toBe(true);
-        expect(isSafeCommand("dirname /foo/bar.txt")).toBe(true);
-        expect(isSafeCommand("realpath ./src")).toBe(true);
-        expect(isSafeCommand("readlink -f ./src")).toBe(true);
+    test("allows piping between non-destructive commands", () => {
+        expect(isDestructiveCommand("ls | head -20")).toBe(false);
+        expect(isDestructiveCommand("cat file | grep pattern | wc -l")).toBe(false);
+        expect(isDestructiveCommand("rg pattern src/ | sort | uniq")).toBe(false);
     });
 
-    test("allows test/conditional commands", () => {
-        expect(isSafeCommand("test -f foo.txt")).toBe(true);
-        expect(isSafeCommand("[ -f foo.txt ]")).toBe(true);
-        expect(isSafeCommand("true")).toBe(true);
-        expect(isSafeCommand("false")).toBe(true);
-        expect(isSafeCommand("command -v rg")).toBe(true);
+    test("allows chained non-destructive commands", () => {
+        expect(isDestructiveCommand("ls && pwd")).toBe(false);
+        expect(isDestructiveCommand("echo hello; date")).toBe(false);
     });
 
-    test("allows hostname and bare env", () => {
-        expect(isSafeCommand("hostname")).toBe(true);
-        expect(isSafeCommand("env")).toBe(true);
+    test("allows printenv for reading env vars", () => {
+        expect(isDestructiveCommand("printenv PATH")).toBe(false);
+        expect(isDestructiveCommand("printenv")).toBe(false);
     });
 
-    test("blocks awk (can execute arbitrary commands via system())", () => {
-        expect(isSafeCommand("awk '{print $1}' file.txt")).toBe(false);
-        expect(isSafeCommand("awk 'BEGIN{system(\"touch /tmp/pwned\")}'")).toBe(false);
+    test("allows git diff without --output", () => {
+        expect(isDestructiveCommand("git diff")).toBe(false);
+        expect(isDestructiveCommand("git diff HEAD~1")).toBe(false);
+        expect(isDestructiveCommand("git diff --stat")).toBe(false);
     });
 
-    test("blocks sed (scripts can write files via w command)", () => {
-        expect(isSafeCommand("sed -n '1w /tmp/pwn' /etc/hosts")).toBe(false);
-        expect(isSafeCommand("sed -n 'p' file.txt")).toBe(false);
+    test("allows npm audit (read-only report)", () => {
+        expect(isDestructiveCommand("npm audit")).toBe(false);
+        expect(isDestructiveCommand("npm audit --json")).toBe(false);
     });
 
-    test("still blocks destructive commands as executables", () => {
-        expect(isSafeCommand("rm -rf /")).toBe(false);
-        expect(isSafeCommand("mv foo bar")).toBe(false);
-        expect(isSafeCommand("kill -9 1234")).toBe(false);
-        expect(isSafeCommand("sudo ls")).toBe(false);
+    test("allows find without -exec", () => {
+        expect(isDestructiveCommand("find . -name '*.ts'")).toBe(false);
+        expect(isDestructiveCommand("find src -type f")).toBe(false);
     });
 
-    // Quote-aware splitting — pipe inside quotes must not split
+    test("allows git branch listing (read-only)", () => {
+        expect(isDestructiveCommand("git branch")).toBe(false);
+        expect(isDestructiveCommand("git branch -a")).toBe(false);
+        expect(isDestructiveCommand("git branch -v")).toBe(false);
+        expect(isDestructiveCommand("git branch --list")).toBe(false);
+        expect(isDestructiveCommand("git branch -r")).toBe(false);
+        expect(isDestructiveCommand("git branch --merged")).toBe(false);
+    });
+
+    test("allows git remote listing (read-only)", () => {
+        expect(isDestructiveCommand("git remote")).toBe(false);
+        expect(isDestructiveCommand("git remote -v")).toBe(false);
+        expect(isDestructiveCommand("git remote show origin")).toBe(false);
+    });
+
+    test("allows sort without -o (stdout-only)", () => {
+        expect(isDestructiveCommand("sort file.txt")).toBe(false);
+        expect(isDestructiveCommand("sort -n file.txt")).toBe(false);
+        expect(isDestructiveCommand("sort -r -u file.txt")).toBe(false);
+    });
+
+    test("allows curl without -o flag (stdout-only)", () => {
+        expect(isDestructiveCommand("curl https://example.com")).toBe(false);
+        expect(isDestructiveCommand("curl -s https://example.com")).toBe(false);
+        expect(isDestructiveCommand("curl -sL https://example.com/api")).toBe(false);
+    });
+
     test("allows rg/grep with quoted alternation patterns", () => {
-        expect(isSafeCommand('rg "foo|bar" src/')).toBe(true);
-        expect(isSafeCommand("rg 'foo|bar' src/")).toBe(true);
-        expect(isSafeCommand("grep -E 'a|b' file.txt")).toBe(true);
-        expect(isSafeCommand('grep -E "a|b|c" src/')).toBe(true);
+        expect(isDestructiveCommand('rg "foo|bar" src/')).toBe(false);
+        expect(isDestructiveCommand("rg 'foo|bar' src/")).toBe(false);
+        expect(isDestructiveCommand("grep -E 'a|b' file.txt")).toBe(false);
+        expect(isDestructiveCommand('grep -E "a|b|c" src/')).toBe(false);
     });
 
-    test("still splits on real pipes outside quotes", () => {
-        expect(isSafeCommand("ls | make")).toBe(false);
-        expect(isSafeCommand('rg "pattern" src/ | rm file')).toBe(false);
+    test("allows searching for destructive keywords in arguments", () => {
+        expect(isDestructiveCommand('grep -R "rm" src/')).toBe(false);
+        expect(isDestructiveCommand('rg "rm -rf" src/')).toBe(false);
+        expect(isDestructiveCommand("grep mv changelog.md")).toBe(false);
+        expect(isDestructiveCommand("find . -name rm")).toBe(false);
+        expect(isDestructiveCommand('rg kill src/')).toBe(false);
     });
 
-    // PR fix: curl --hsts / --alt-svc cache-file bypass
-    test("blocks curl with --hsts flag (cache file write)", () => {
-        expect(isSafeCommand("curl --hsts state.txt https://example.com")).toBe(false);
-        expect(isSafeCommand("curl --hsts=state.txt https://example.com")).toBe(false);
+    // ── Destructive commands (SHOULD be flagged) ─────────────────────────────
+
+    test("flags basic destructive commands", () => {
+        expect(isDestructiveCommand("rm -rf /")).toBe(true);
+        expect(isDestructiveCommand("mv foo bar")).toBe(true);
+        expect(isDestructiveCommand("git push")).toBe(true);
+        expect(isDestructiveCommand("kill -9 1234")).toBe(true);
+        expect(isDestructiveCommand("sudo ls")).toBe(true);
     });
 
-    test("blocks curl with --alt-svc flag (cache file write)", () => {
-        expect(isSafeCommand("curl --alt-svc cache.txt https://example.com")).toBe(false);
-        expect(isSafeCommand("curl --alt-svc=cache.txt https://example.com")).toBe(false);
+    test("flags command substitution via $()", () => {
+        expect(isDestructiveCommand("ls $(make)")).toBe(true);
+        expect(isDestructiveCommand("echo $(rm -rf /)")).toBe(true);
+        expect(isDestructiveCommand("cat $(python -c 'evil')")).toBe(true);
     });
 
-    test("still allows stdout-only curl after hsts/alt-svc fix", () => {
-        expect(isSafeCommand("curl -s https://example.com")).toBe(true);
-        expect(isSafeCommand("curl -sL https://example.com/api")).toBe(true);
+    test("flags command substitution via backticks", () => {
+        expect(isDestructiveCommand("ls `make`")).toBe(true);
+        expect(isDestructiveCommand("echo `rm -rf /`")).toBe(true);
     });
 
-    // Regex efficiency: git branch pattern must not cause exponential backtracking
-    test("git branch regex does not cause exponential backtracking on long inputs", () => {
-        // Craft an input that would trigger ReDoS on the old regex: `git branch -a -a -a ... X`
-        const manyFlags = Array(50).fill("-a").join(" ");
-        const start = performance.now();
-        expect(isSafeCommand(`git branch ${manyFlags} X`)).toBe(false);
-        const elapsed = performance.now() - start;
-        // With exponential backtracking this would take seconds/minutes; should complete in ms
-        expect(elapsed).toBeLessThan(100);
+    test("flags multi-line command payloads", () => {
+        expect(isDestructiveCommand("ls\nmake")).toBe(true);
+        expect(isDestructiveCommand("cat foo.txt\nrm bar.txt")).toBe(true);
+    });
+
+    test("flags process substitution via <() and >()", () => {
+        expect(isDestructiveCommand("cat <(touch /tmp/pwned)")).toBe(true);
+        expect(isDestructiveCommand("diff <(cat a.txt) <(cat b.txt)")).toBe(true);
+        expect(isDestructiveCommand("cat >(rm /tmp/file)")).toBe(true);
+    });
+
+    // curl file-writing flags
+    test("flags curl with -o flag (file write)", () => {
+        expect(isDestructiveCommand("curl -o out.bin https://example.com")).toBe(true);
+        expect(isDestructiveCommand("curl --output file.txt https://example.com")).toBe(true);
+    });
+
+    test("flags curl with -o attached to filename (no space)", () => {
+        expect(isDestructiveCommand("curl -oout.bin https://example.com")).toBe(true);
+        expect(isDestructiveCommand("curl -ofile.txt https://example.com")).toBe(true);
+    });
+
+    test("flags curl with --output=file (equals form)", () => {
+        expect(isDestructiveCommand("curl --output=out.bin https://example.com")).toBe(true);
+    });
+
+    test("flags curl with -D/--dump-header (file write)", () => {
+        expect(isDestructiveCommand("curl -D out.txt https://example.com")).toBe(true);
+        expect(isDestructiveCommand("curl --dump-header h.txt https://example.com")).toBe(true);
+        expect(isDestructiveCommand("curl -Dout.txt https://example.com")).toBe(true);
+        expect(isDestructiveCommand("curl --dump-header=h.txt https://example.com")).toBe(true);
+    });
+
+    test("flags curl with -c/--cookie-jar (file write)", () => {
+        expect(isDestructiveCommand("curl -c cookies.txt https://example.com")).toBe(true);
+        expect(isDestructiveCommand("curl --cookie-jar c.txt https://example.com")).toBe(true);
+        expect(isDestructiveCommand("curl -ccookies.txt https://example.com")).toBe(true);
+        expect(isDestructiveCommand("curl --cookie-jar=c.txt https://example.com")).toBe(true);
+    });
+
+    test("flags curl with -O/--remote-name flags (file write)", () => {
+        expect(isDestructiveCommand("curl -O https://example.com/file.bin")).toBe(true);
+        expect(isDestructiveCommand("curl --remote-name https://example.com/file.bin")).toBe(true);
+        expect(isDestructiveCommand("curl --remote-name-all https://example.com/file.bin")).toBe(true);
+    });
+
+    test("flags curl with --trace and other file-writing flags", () => {
+        expect(isDestructiveCommand("curl --trace trace.log https://example.com")).toBe(true);
+        expect(isDestructiveCommand("curl --trace-ascii trace.txt https://example.com")).toBe(true);
+        expect(isDestructiveCommand("curl --libcurl code.c https://example.com")).toBe(true);
+        expect(isDestructiveCommand("curl --stderr err.log https://example.com")).toBe(true);
+    });
+
+    test("flags curl with --hsts flag (cache file write)", () => {
+        expect(isDestructiveCommand("curl --hsts state.txt https://example.com")).toBe(true);
+        expect(isDestructiveCommand("curl --hsts=state.txt https://example.com")).toBe(true);
+    });
+
+    test("flags curl with --alt-svc flag (cache file write)", () => {
+        expect(isDestructiveCommand("curl --alt-svc cache.txt https://example.com")).toBe(true);
+        expect(isDestructiveCommand("curl --alt-svc=cache.txt https://example.com")).toBe(true);
+    });
+
+    test("flags wget with -O flag (file write, not stdout)", () => {
+        expect(isDestructiveCommand("wget --output-document file.txt https://example.com")).toBe(true);
+    });
+
+    // find destructive flags
+    test("flags find with -exec flag", () => {
+        expect(isDestructiveCommand("find . -exec rm {} \\;")).toBe(true);
+        expect(isDestructiveCommand("find . -execdir git clean -fd \\;")).toBe(true);
+    });
+
+    test("flags find with -delete flag", () => {
+        expect(isDestructiveCommand("find . -name '*.tmp' -delete")).toBe(true);
+        expect(isDestructiveCommand("find /tmp -type f -delete")).toBe(true);
+    });
+
+    test("flags find with -fprintf flag", () => {
+        expect(isDestructiveCommand("find . -fprintf /tmp/out.txt '%p\\n'")).toBe(true);
+    });
+
+    test("flags find with -ok and -okdir flags", () => {
+        expect(isDestructiveCommand("find . -ok rm {} \\;")).toBe(true);
+        expect(isDestructiveCommand("find . -okdir git clean -fd \\;")).toBe(true);
+    });
+
+    // git destructive forms
+    test("flags git diff --output (file write)", () => {
+        expect(isDestructiveCommand("git diff --output=/tmp/patch.diff")).toBe(true);
+        expect(isDestructiveCommand("git diff --output /tmp/patch.diff")).toBe(true);
+    });
+
+    test("flags git remote add/remove/set-url (mutating)", () => {
+        expect(isDestructiveCommand("git remote add origin https://example.com")).toBe(true);
+        expect(isDestructiveCommand("git remote remove origin")).toBe(true);
+        expect(isDestructiveCommand("git remote set-url origin https://new.com")).toBe(true);
+        expect(isDestructiveCommand("git remote rename origin upstream")).toBe(true);
+    });
+
+    // sort -o file-write bypass
+    test("flags sort with -o/--output (file write)", () => {
+        expect(isDestructiveCommand("sort -o out.txt input.txt")).toBe(true);
+        expect(isDestructiveCommand("sort --output=sorted.txt input.txt")).toBe(true);
+        expect(isDestructiveCommand("sort --output sorted.txt input.txt")).toBe(true);
+        expect(isDestructiveCommand("sort -oout.txt input.txt")).toBe(true);
+    });
+
+    // output redirection
+    test("flags output redirection", () => {
+        expect(isDestructiveCommand("echo foo > file.txt")).toBe(true);
+        expect(isDestructiveCommand("echo foo >> file.txt")).toBe(true);
+    });
+
+    // escaped quote bypass
+    test("flags escaped-quote bypass that hides chaining operators", () => {
+        expect(isDestructiveCommand('ls \\"; touch /tmp/pwned')).toBe(true);
+        expect(isDestructiveCommand("ls \\'; touch /tmp/pwned")).toBe(true);
+    });
+
+    // chain with a destructive segment
+    test("flags chains containing a destructive segment", () => {
+        expect(isDestructiveCommand("ls && rm foo")).toBe(true);
+        expect(isDestructiveCommand("git status; git push")).toBe(true);
+        expect(isDestructiveCommand('rg "pattern" src/ | rm file')).toBe(true);
+    });
+});
+
+// ── isSafeCommand backward-compat wrapper ────────────────────────────────────
+
+describe("isSafeCommand (backward compat)", () => {
+    test("returns inverse of isDestructiveCommand", () => {
+        expect(isSafeCommand("ls -la")).toBe(true);
+        expect(isSafeCommand("rm -rf /")).toBe(false);
+        expect(isSafeCommand("cd /tmp && rg pattern .")).toBe(true);
+        expect(isSafeCommand("git push")).toBe(false);
     });
 });
 

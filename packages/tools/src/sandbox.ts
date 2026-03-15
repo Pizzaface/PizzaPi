@@ -84,6 +84,7 @@ let _initFailed = false;
 let _violations: ViolationRecord[] = [];
 let _violationListeners: Array<(violation: ViolationRecord) => void> = [];
 let _sshAuthSock: string | null = null;
+let _readOnlyOverlay = false;
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
@@ -155,7 +156,13 @@ export async function wrapCommand(cmd: string): Promise<string> {
     }
 
     try {
-        return await SandboxManager.wrapWithSandbox(cmd);
+        // When read-only overlay is active (plan mode), wrap with a config
+        // that denies all filesystem writes. The OS enforces this regardless
+        // of what command is run — no command parsing needed.
+        const customConfig = _readOnlyOverlay
+            ? { filesystem: { allowWrite: [] as string[], denyWrite: ["/"], denyRead: [] as string[] } }
+            : undefined;
+        return await SandboxManager.wrapWithSandbox(cmd, undefined, customConfig);
     } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         // Fail closed: block the command rather than run it unsandboxed.
@@ -227,6 +234,27 @@ export function isSandboxActive(): boolean {
 }
 
 /**
+ * Enable or disable the read-only filesystem overlay.
+ *
+ * When enabled, `wrapCommand` wraps all commands with a sandbox config that
+ * denies all filesystem writes (allowWrite: [], denyWrite: ["/"]).
+ * Used by plan mode to enforce read-only exploration without parsing commands.
+ *
+ * Only effective when sandbox is active. When sandbox is inactive, this is a
+ * no-op — callers should check `isSandboxActive()` and use a fallback.
+ */
+export function setReadOnlyOverlay(enabled: boolean): void {
+    _readOnlyOverlay = enabled;
+}
+
+/**
+ * Check if the read-only overlay is currently active.
+ */
+export function isReadOnlyOverlay(): boolean {
+    return _readOnlyOverlay;
+}
+
+/**
  * Get the current sandbox mode, or `"none"` if not initialized.
  */
 export function getSandboxMode(): "none" | "basic" | "full" {
@@ -287,6 +315,7 @@ export async function cleanupSandbox(): Promise<void> {
     _violations = [];
     _violationListeners = [];
     _sshAuthSock = null;
+    _readOnlyOverlay = false;
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
@@ -520,4 +549,5 @@ export function _resetState(): void {
     _violations = [];
     _violationListeners = [];
     _sshAuthSock = null;
+    _readOnlyOverlay = false;
 }

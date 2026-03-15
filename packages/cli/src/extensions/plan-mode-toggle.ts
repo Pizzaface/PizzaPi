@@ -1,6 +1,7 @@
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import type { AssistantMessage, TextContent } from "@mariozechner/pi-ai";
 import type { ExtensionFactory } from "@mariozechner/pi-coding-agent";
+import { isSandboxActive, setReadOnlyOverlay } from "@pizzapi/tools";
 
 // ── Safe-command detection ───────────────────────────────────────────────────
 
@@ -41,32 +42,6 @@ const DESTRUCTIVE_FLAG_PATTERNS = [
     /\bfind\b.*\s-exec(dir)?\b/i, /\bfind\b.*\s-ok(dir)?\b/i, /\bfind\b.*\s-delete\b/i, /\bfind\b.*\s-fprintf\b/i,
     /\bgit\b.*\s--output[= ]/i,
     /\bsort\b.*\s(-o\s|-o\S|--output\b|--output=)/i,
-];
-
-const SAFE_PATTERNS = [
-    /^\s*cat\b/, /^\s*head\b/, /^\s*tail\b/, /^\s*less\b/, /^\s*more\b/,
-    /^\s*grep\b/, /^\s*find\b/, /^\s*ls\b/, /^\s*pwd\b/,
-    /^\s*echo\b/, /^\s*printf\b/, /^\s*wc\b/, /^\s*sort\b/, /^\s*uniq\b/,
-    /^\s*diff\b/, /^\s*file\b/, /^\s*stat\b/, /^\s*du\b/, /^\s*df\b/,
-    /^\s*tree\b/, /^\s*which\b/, /^\s*whereis\b/, /^\s*type\b/,
-    /^\s*printenv\b/, /^\s*uname\b/, /^\s*whoami\b/,
-    /^\s*id\b/, /^\s*date\b/, /^\s*cal\b/, /^\s*uptime\b/,
-    /^\s*ps\b/, /^\s*top\b/, /^\s*htop\b/, /^\s*free\b/,
-    /^\s*cd\b/, /^\s*basename\b/, /^\s*dirname\b/, /^\s*realpath\b/, /^\s*readlink\b/,
-    /^\s*test\b/, /^\s*\[/, /^\s*true\b/, /^\s*false\b/, /^\s*command\b/,
-    /^\s*hostname\b/, /^\s*env\s*$/i,
-    /^\s*git\s+(status|log|diff|show|config\s+--get)/i,
-    /^\s*git\s+branch(?:\s+(?:-[avr]+|--list|--merged|--no-merged|--contains|--sort=\S+))*$/i,
-    /^\s*git\s+remote(\s+(-v|--verbose|show\b))/i,
-    /^\s*git\s+remote\s*$/i,
-    /^\s*git\s+ls-/i,
-    /^\s*npm\s+(list|ls|view|info|search|outdated|audit(?!\s+(fix|signatures)))/i,
-    /^\s*yarn\s+(list|info|why|audit)/i,
-    /^\s*bun\s+(pm\s+ls|--version)/i,
-    /^\s*node\s+--version/i, /^\s*python\s+--version/i,
-    /^\s*curl\s/i, /^\s*wget\s+-O\s*-/i,
-    /^\s*jq\b/,
-    /^\s*rg\b/, /^\s*fd\b/, /^\s*bat\b/, /^\s*exa\b/,
 ];
 
 /**
@@ -128,12 +103,25 @@ export function splitShellSegments(command: string): string[] {
     return segments;
 }
 
-/** @internal Exported for testing only. */
-export function isSafeCommand(command: string): boolean {
+/**
+ * Check if a command looks destructive based on known patterns.
+ *
+ * This is a **blocklist-only** check — it flags commands that match known
+ * destructive patterns but does NOT require commands to appear on an allowlist.
+ * Any command that doesn't match a destructive pattern is allowed through.
+ *
+ * This is used as a best-effort advisory check when the OS-level sandbox is
+ * not active. When the sandbox IS active, plan mode uses the sandbox's
+ * read-only overlay instead (which enforces at the OS level regardless of
+ * what command is run).
+ *
+ * @internal Exported for testing only.
+ */
+export function isDestructiveCommand(command: string): boolean {
     // Reject command substitution, backtick expansion, process substitution,
-    // and multi-line payloads that could smuggle non-allowlisted commands past
+    // and multi-line payloads that could smuggle destructive commands past
     // the per-segment check.
-    if (/\$\(|`|\n|<\(|>\(/.test(command)) return false;
+    if (/\$\(|`|\n|<\(|>\(/.test(command)) return true;
 
     // Split on shell chaining operators, respecting quotes
     const parts = splitShellSegments(command);
@@ -143,11 +131,18 @@ export function isSafeCommand(command: string): boolean {
         if (!trimmed) continue; // empty segment (e.g. trailing semicolon)
         const isCmdDestructive = DESTRUCTIVE_CMD_PATTERNS.some((p) => p.test(trimmed));
         const isFlagDestructive = DESTRUCTIVE_FLAG_PATTERNS.some((p) => p.test(trimmed));
-        const isSafe = SAFE_PATTERNS.some((p) => p.test(trimmed));
-        if (isCmdDestructive || isFlagDestructive || !isSafe) return false;
+        if (isCmdDestructive || isFlagDestructive) return true;
     }
 
-    return parts.some((p) => p.trim().length > 0); // at least one non-empty subcommand
+    return false;
+}
+
+/**
+ * @deprecated Use `isDestructiveCommand` instead. Kept for backward compat during transition.
+ * @internal Exported for testing only.
+ */
+export function isSafeCommand(command: string): boolean {
+    return !isDestructiveCommand(command);
 }
 
 // ── Todo item types ──────────────────────────────────────────────────────────
@@ -335,6 +330,11 @@ export const planModeToggleExtension: ExtensionFactory = (pi) => {
             planSubmittedDuringSession = false;
             planModeContextSent = false; // Reset so the context message fires once on the next turn
         }
+        // Toggle sandbox read-only overlay when sandbox is active.
+        // This makes the OS enforce no-write for all bash commands in plan mode.
+        if (isSandboxActive()) {
+            setReadOnlyOverlay(enabled);
+        }
         syncModuleState();
         _onPlanModeChange?.(planModeEnabled);
         persistState();
@@ -433,13 +433,15 @@ export const planModeToggleExtension: ExtensionFactory = (pi) => {
             };
         }
 
-        // Block destructive bash commands
-        if (event.toolName === "bash") {
+        // Block destructive bash commands (fallback when sandbox is not active).
+        // When sandbox IS active, the read-only overlay on the sandbox enforces
+        // filesystem write restrictions at the OS level — no command parsing needed.
+        if (event.toolName === "bash" && !isSandboxActive()) {
             const command = (event.input as any).command as string;
-            if (!isSafeCommand(command)) {
+            if (isDestructiveCommand(command)) {
                 return {
                     block: true,
-                    reason: `Plan mode: command blocked (not in read-only allowlist). Use toggle_plan_mode to exit plan mode first.\nCommand: ${command}`,
+                    reason: `Plan mode: command blocked (matches destructive pattern). Use toggle_plan_mode to exit plan mode first.\nCommand: ${command}`,
                 };
             }
         }
