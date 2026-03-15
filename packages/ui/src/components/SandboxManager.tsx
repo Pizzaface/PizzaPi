@@ -244,8 +244,10 @@ export function SandboxManager({ runnerId }: SandboxManagerProps) {
             const data = await res.json() as any;
             setStatus(data);
 
-            // Populate form from config
-            const cfg = data.config?.srtConfig;
+            // Populate form from raw (unresolved) config to preserve
+            // relative paths like "." and "~" instead of absolute paths.
+            // Falls back to resolved srtConfig for backwards compat.
+            const cfg = data.rawConfig ?? data.config?.srtConfig;
             const mode = data.mode ?? data.config?.mode ?? "basic";
             const newForm: SandboxFormState = {
                 mode,

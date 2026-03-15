@@ -663,7 +663,10 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         if (runner.userId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
 
         try {
-            const result = await sendRunnerCommand(runnerId, { type: "sandbox_get_status" });
+            const result = await sendRunnerCommand(runnerId, { type: "sandbox_get_status" }) as any;
+            if (result && result.ok === false) {
+                return Response.json({ error: result.message ?? "Sandbox status command failed" }, { status: 502 });
+            }
             return Response.json(result);
         } catch (err) {
             return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 502 });
@@ -692,7 +695,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         if (!body || typeof body !== "object" || Array.isArray(body)) {
             return Response.json({ error: "Body must be a JSON object" }, { status: 400 });
         }
-        const validModes = ["none", "basic", "full", "enforce", "audit", "off"];
+        const validModes = ["none", "basic", "full"];
         if (body.mode !== undefined && !validModes.includes(body.mode)) {
             return Response.json({ error: `Invalid mode "${body.mode}"` }, { status: 400 });
         }
@@ -711,7 +714,10 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         }
 
         try {
-            const result = await sendRunnerCommand(runnerId, { type: "sandbox_update_config", config: body });
+            const result = await sendRunnerCommand(runnerId, { type: "sandbox_update_config", config: body }) as any;
+            if (result && result.ok === false) {
+                return Response.json({ error: result.message ?? "Sandbox config update failed" }, { status: 502 });
+            }
             return Response.json(result);
         } catch (err) {
             return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 502 });

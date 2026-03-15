@@ -1349,6 +1349,10 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     violations: 0,
                     recentViolations: [],
                     config: resolvedConfig,
+                    // Send the raw (unresolved) sandbox config so the UI can
+                    // populate the editor with `.` / `~` paths instead of
+                    // absolute resolved paths.
+                    rawConfig: config.sandbox ?? {},
                 });
             } catch (err) {
                 socket.emit("file_result", {
