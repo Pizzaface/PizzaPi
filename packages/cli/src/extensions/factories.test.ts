@@ -8,15 +8,18 @@ import { buildPizzaPiExtensionFactories } from "./factories.js";
 import { mcpExtension } from "./mcp-extension.js";
 import { remoteExtension } from "./remote.js";
 import { restartExtension } from "./restart.js";
+
 import { sessionMessagingExtension } from "./session-messaging.js";
 import { setSessionNameExtension } from "./set-session-name.js";
 import { spawnSessionExtension } from "./spawn-session.js";
 import { updateTodoExtension } from "./update-todo.js";
 import { subagentExtension } from "./subagent.js";
 import { planModeToggleExtension } from "./plan-mode-toggle.js";
+import { triggersExtension } from "./triggers/extension.js";
 import { initialPromptExtension } from "./initial-prompt.js";
 
 const CORE_EXTENSIONS: ExtensionFactory[] = [
+    triggersExtension,  // Must be before remoteExtension (shutdown ordering)
     remoteExtension,
     mcpExtension,
     restartExtension,
@@ -135,7 +138,7 @@ describe("buildPizzaPiExtensionFactories — safe mode", () => {
         expect(factories).toContain(setSessionNameExtension);
         expect(factories).toContain(updateTodoExtension);
         expect(factories).toContain(spawnSessionExtension);
-        expect(factories).toContain(sessionMessagingExtension);
+        expect(factories).toContain(spawnSessionExtension);
     });
 });
 

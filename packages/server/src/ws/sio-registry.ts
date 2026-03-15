@@ -48,6 +48,7 @@ import {
     deleteRunnerAssociation,
     refreshRunnerAssociationTTL,
     scanExpiredSessions,
+    addChildSession,
 } from "./sio-state.js";
 import {
     getEphemeralTtlMs,
@@ -236,6 +237,8 @@ export interface RegisterTuiSessionOpts {
     sessionName?: string | null;
     userId?: string;
     userName?: string;
+    /** Parent session ID — set when registering a child session. */
+    parentSessionId?: string | null;
 }
 
 /**
@@ -252,7 +255,7 @@ export async function registerTuiSession(
     socket: Socket,
     cwd: string = "",
     opts: RegisterTuiSessionOpts = {},
-): Promise<{ sessionId: string; token: string; shareUrl: string }> {
+): Promise<{ sessionId: string; token: string; shareUrl: string; parentSessionId: string | null }> {
     const requestedSessionId = typeof opts.sessionId === "string" ? opts.sessionId.trim() : "";
     const sessionId = requestedSessionId.length > 0 ? requestedSessionId : randomUUID();
     const token = randomBytes(32).toString("hex");
@@ -298,6 +301,23 @@ export async function registerTuiSession(
         }
     }
 
+    // Resolve parentSessionId: prefer the value from registration opts (sent
+    // by the CLI), fall back to any pre-seeded value in Redis (legacy path).
+    let resolvedParentSessionId =
+        opts.parentSessionId ??
+        existing?.parentSessionId ??
+        null;
+
+    // Validate parent session exists and belongs to the same user.
+    // If the parent disconnected or the ID is stale, clear it to avoid
+    // dangling trigger flows that would time out.
+    if (resolvedParentSessionId) {
+        const parentSession = await getSession(resolvedParentSessionId);
+        if (!parentSession || parentSession.userId !== userId) {
+            resolvedParentSessionId = null;
+        }
+    }
+
     const sessionData: RedisSessionData = {
         sessionId,
         token,
@@ -317,9 +337,16 @@ export async function registerTuiSession(
         runnerId,
         runnerName,
         seq: 0,
+        parentSessionId: resolvedParentSessionId,
     };
 
     await setSession(sessionId, sessionData);
+
+    // Register parent→child relationship in Redis for the trigger system.
+    // This is the authoritative place for linking — no more racy pre-seeding.
+    if (resolvedParentSessionId) {
+        await addChildSession(resolvedParentSessionId, sessionId);
+    }
 
     // Store local socket reference
     localTuiSockets.set(sessionId, socket);
@@ -357,11 +384,12 @@ export async function registerTuiSession(
             model: null,
             runnerId,
             runnerName,
+            parentSessionId: resolvedParentSessionId,
         } satisfies SessionInfo,
         userId ?? undefined,
     );
 
-    return { sessionId, token, shareUrl };
+    return { sessionId, token, shareUrl, parentSessionId: resolvedParentSessionId };
 }
 
 /**
@@ -416,6 +444,7 @@ export async function getSessions(filterUserId?: string): Promise<SessionInfo[]>
             model,
             runnerId: s.runnerId,
             runnerName: s.runnerName,
+            parentSessionId: s.parentSessionId,
         };
     });
 }

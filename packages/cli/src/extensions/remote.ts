@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { AuthStorage, buildSessionContext, SessionManager, type ExtensionContext, type ExtensionFactory, type SessionInfo } from "@mariozechner/pi-coding-agent";
 import { getEnvApiKey } from "@mariozechner/pi-ai/dist/env-api-keys.js";
@@ -10,6 +10,9 @@ import { getMcpBridge } from "./mcp-bridge.js";
 import { getCurrentTodoList, setTodoUpdateCallback, type TodoItem } from "./update-todo.js";
 import { isPlanModeEnabled, isExecutionMode, getPlanTodoItems, setPlanModeChangeCallback, togglePlanModeFromRemote, setPlanModeFromRemote, requestContextClear } from "./plan-mode-toggle.js";
 import type { RemoteExecRequest, RemoteExecResponse } from "./remote-commands.js";
+
+import { renderTrigger } from "./triggers/registry.js";
+import { trackReceivedTrigger, receivedTriggers } from "./triggers/extension.js";
 import { messageBus } from "./session-message-bus.js";
 import { io, type Socket } from "socket.io-client";
 import type { RelayClientToServerEvents, RelayServerToClientEvents } from "@pizzapi/protocol";
@@ -114,6 +117,24 @@ export function forwardCliError(message: string, source?: string): void {
     _cliErrorForwarder?.(message, source);
 }
 
+// ── Relay socket access for trigger system ────────────────────────────────────
+let _relaySocket: Socket<RelayServerToClientEvents, RelayClientToServerEvents> | null = null;
+let _relayToken: string | null = null;
+
+/** Get the active relay socket and token, or null if not connected/registered. */
+export function getRelaySocket(): { socket: Socket<RelayServerToClientEvents, RelayClientToServerEvents>; token: string } | null {
+    // Require both a connected socket AND a valid token. The token is cleared
+    // on disconnect and refreshed on re-registration, so this returns null
+    // during the reconnect window before the server issues a new token.
+    return _relaySocket?.connected && _relayToken ? { socket: _relaySocket, token: _relayToken } : null;
+}
+
+let _relaySessionId: string | null = null;
+/** Get the active relay session ID, if connected. Falls back to PIZZAPI_SESSION_ID env var. */
+export function getRelaySessionId(): string | null {
+    return _relaySessionId ?? process.env.PIZZAPI_SESSION_ID ?? null;
+}
+
 /**
  * PizzaPi Remote extension.
  *
@@ -144,6 +165,12 @@ export const remoteExtension: ExtensionFactory = (pi) => {
     let relaySessionId: string = (process.env.PIZZAPI_SESSION_ID && process.env.PIZZAPI_SESSION_ID.trim().length > 0)
         ? process.env.PIZZAPI_SESSION_ID.trim()
         : randomUUID();
+
+    // ── Child session detection for trigger system ────────────────────────
+    // Start with the env-var hint, but update from the server's `registered`
+    // payload so that rejected/stale parents fall back to local interaction.
+    let parentSessionId: string | null = process.env.PIZZAPI_WORKER_PARENT_SESSION_ID ?? null;
+    let isChildSession = parentSessionId !== null;
 
     // ── Direct relay status text ──────────────────────────────────────────────
     // Maintained alongside ctx.ui.setStatus() so the custom footer can read it
@@ -1830,6 +1857,9 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 ephemeral: true,
                 collabMode: true,
                 sessionName: getCurrentSessionName(latestCtx) ?? undefined,
+                // Send parent session ID so the relay can link child→parent
+                // at registration time (no more racy pre-seeding).
+                ...(parentSessionId ? { parentSessionId } : {}),
             });
         });
 
@@ -1842,6 +1872,10 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 seq: 0,
                 ackedSeq: 0,
             };
+            // Expose relay socket and session ID for the trigger system / spawn
+            _relaySocket = sock;
+            _relayToken = data.token;
+            _relaySessionId = data.sessionId;
             connectFailureNotified = false;
             setRelayStatus("Connected to Relay");
 
@@ -1856,6 +1890,20 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 });
                 return true;
             });
+
+            // Reconcile parent linkage with server-confirmed value.
+            // If the server rejected our parent (stale, disconnected, wrong user),
+            // clear child mode so we fall back to normal local interaction instead
+            // of routing AskUserQuestion/plan_mode through triggers that will time out.
+            if (data.parentSessionId) {
+                parentSessionId = data.parentSessionId;
+                isChildSession = true;
+                console.log(`pizzapi: linked as child of parent session ${data.parentSessionId}`);
+            } else if (parentSessionId && !data.parentSessionId) {
+                console.log(`pizzapi: server rejected parent link (${parentSessionId}), falling back to local interaction`);
+                parentSessionId = null;
+                isChildSession = false;
+            }
 
             forwardEvent({ type: "session_active", state: buildSessionState() });
             void refreshAllUsage();
@@ -1896,8 +1944,12 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 : data.deliverAs === "steer" ? "steer" as const
                 : undefined;
             void (async () => {
-                const message = await buildUserMessageFromRemoteInput(inputText, attachments);
-                pi.sendUserMessage(message as any, deliverAs ? { deliverAs } : undefined);
+                try {
+                    const message = await buildUserMessageFromRemoteInput(inputText, attachments);
+                    pi.sendUserMessage(message as any, deliverAs ? { deliverAs } : undefined);
+                } catch (err) {
+                    console.error(`pizzapi: failed to deliver remote input: ${err instanceof Error ? err.message : String(err)}`);
+                }
             })();
         });
 
@@ -1917,6 +1969,41 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 message: data.message,
                 ts: typeof data.ts === "string" ? data.ts : new Date().toISOString(),
             });
+        });
+
+        // ── session_trigger — receive triggers from child sessions ─────────
+        sock.on("session_trigger" as any, (data: { trigger: import("./triggers/types.js").ConversationTrigger }) => {
+            const trigger = data?.trigger;
+            if (!trigger) return;
+
+            // Track all triggers so respond_to_trigger can route responses back.
+            // session_complete triggers are respondable: "ack" is a no-op,
+            // "followUp" delivers a new input message to resume the child.
+            trackReceivedTrigger(trigger.triggerId, trigger.sourceSessionId, trigger.type);
+
+            // Render trigger to text with trigger ID metadata prefix
+            const rendered = renderTrigger(trigger);
+            const deliverAs = trigger.deliverAs === "followUp" ? "followUp" as const : "steer" as const;
+            pi.sendUserMessage(rendered, { deliverAs });
+        });
+
+        // ── trigger_response from viewer — forward to child via relay ──────
+        // When a human viewer responds to a child trigger via the web UI,
+        // the server forwards trigger_response to this parent's relay socket.
+        // We look up the trigger in receivedTriggers and re-emit to the child.
+        sock.on("trigger_response" as any, (data: { triggerId: string; response: string; action?: string; targetSessionId?: string }) => {
+            if (!data?.triggerId) return;
+            const pending = receivedTriggers.get(data.triggerId);
+            if (!pending || !relay || !sioSocket?.connected) return;
+            // Forward to the child session via relay
+            sioSocket.emit("trigger_response" as any, {
+                token: relay.token,
+                triggerId: data.triggerId,
+                response: data.response,
+                ...(data.action ? { action: data.action } : {}),
+                targetSessionId: pending.sourceSessionId,
+            });
+            receivedTriggers.delete(data.triggerId);
         });
 
         sock.on("session_expired", (data) => {
@@ -1949,6 +2036,10 @@ export const remoteExtension: ExtensionFactory = (pi) => {
 
         sock.on("disconnect", (_reason) => {
             relay = null;
+            // Clear stale token so getRelaySocket() returns null during the
+            // reconnect window (socket connected but not yet re-registered).
+            // The token is refreshed on each `registered` event.
+            _relayToken = null;
             cancelPendingAskUserQuestion();
             cancelPendingPlanMode();
             setRelayStatus(disconnectedStatusText());
@@ -2047,11 +2138,82 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         forwardEvent(buildHeartbeat());
     });
 
+    let sessionCompleteFired = false;
+
+    // ── Follow-up grace period ────────────────────────────────────────────────
+    // After firing session_complete, child sessions keep their relay socket
+    // alive for FOLLOWUP_GRACE_MS so the parent can send follow-up work via
+    // respond_to_trigger(action: "followUp") or tell_child.  If no new turn
+    // starts within the window the session shuts down automatically.
+    const FOLLOWUP_GRACE_MS = 10 * 60 * 1000; // 10 minutes
+    let followUpGraceTimer: ReturnType<typeof setTimeout> | null = null;
+
+    function clearFollowUpGrace() {
+        if (followUpGraceTimer !== null) {
+            clearTimeout(followUpGraceTimer);
+            followUpGraceTimer = null;
+        }
+    }
+
+    /** Start (or restart) the follow-up grace period.  When it expires the
+     *  session shuts down via ctx.shutdown(). */
+    function startFollowUpGrace(ctx: { shutdown: () => void }) {
+        clearFollowUpGrace();
+        console.log(`pizzapi: waiting ${FOLLOWUP_GRACE_MS / 1000}s for parent follow-up before shutting down`);
+        followUpGraceTimer = setTimeout(() => {
+            followUpGraceTimer = null;
+            console.log("pizzapi: follow-up grace period expired — shutting down");
+            ctx.shutdown();
+        }, FOLLOWUP_GRACE_MS);
+        // Don't let the grace timer keep the process alive if everything else
+        // has been torn down (e.g. explicit SIGTERM).
+        if (followUpGraceTimer && typeof followUpGraceTimer === "object" && "unref" in followUpGraceTimer) {
+            (followUpGraceTimer as NodeJS.Timeout).unref();
+        }
+    }
+
+    // Reset completion latch when a new turn starts (e.g. parent sent follow-up via tell_child)
+    pi.on("turn_start", () => {
+        sessionCompleteFired = false;
+        // A new turn means a follow-up arrived — cancel the grace timer.
+        clearFollowUpGrace();
+    });
+
+    /** Emit session_complete trigger to parent (idempotent per turn). */
+    function fireSessionComplete(summary?: string, fullOutputPath?: string) {
+        if (sessionCompleteFired) return;
+        if (!isChildSession || !parentSessionId || !relay || !sioSocket?.connected) return;
+        sessionCompleteFired = true;
+        sioSocket.emit("session_trigger" as any, {
+            token: relay.token,
+            trigger: {
+                type: "session_complete",
+                sourceSessionId: relay.sessionId,
+                sourceSessionName: undefined,
+                targetSessionId: parentSessionId,
+                payload: {
+                    summary: summary ?? "Session completed",
+                    exitCode: 0,
+                    ...(fullOutputPath ? { fullOutputPath } : {}),
+                },
+                deliverAs: "followUp" as const,
+                expectsResponse: true,
+                triggerId: crypto.randomUUID(),
+                ts: new Date().toISOString(),
+            },
+        });
+    }
+
     pi.on("session_shutdown", () => {
         shuttingDown = true;
+        clearFollowUpGrace();
         stopHeartbeat();
         stopSessionNameSync();
         _cliErrorForwarder = null;
+
+        // Last chance to fire session_complete before socket goes away
+        fireSessionComplete();
+
         disconnect();
     });
 
@@ -2135,6 +2297,74 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                         answer: null,
                         source: null,
                         cancelled: true,
+                    } satisfies AskUserQuestionDetails,
+                };
+            }
+
+            // ── Child session: fire trigger to parent instead of waiting for web/TUI ──
+            if (isChildSession && parentSessionId && relay && sioSocket?.connected) {
+                const triggerId = randomUUID();
+                const trigger: import("./triggers/types.js").ConversationTrigger = {
+                    type: "ask_user_question",
+                    sourceSessionId: relaySessionId,
+                    sourceSessionName: latestCtx?.sessionManager.getSessionName() ?? relaySessionId.slice(0, 8),
+                    targetSessionId: parentSessionId,
+                    payload: {
+                        question: questions.map(q => q.question).join("; "),
+                        options: questions.flatMap(q => q.options),
+                        questions,
+                    },
+                    deliverAs: "followUp",
+                    expectsResponse: true,
+                    triggerId,
+                    timeoutMs: 300_000,
+                    ts: new Date().toISOString(),
+                };
+
+                sioSocket.emit("session_trigger", { token: relay.token, trigger });
+
+                // Wait for trigger_response with matching triggerId, or fail fast on delivery error
+                const triggerResult = await new Promise<{ response: string; cancelled: boolean }>((resolve) => {
+                    const timeout = setTimeout(() => {
+                        cleanup();
+                        resolve({ response: "Trigger timed out — no response from parent within 5 minutes.", cancelled: true });
+                    }, trigger.timeoutMs ?? 300_000);
+
+                    const handler = (data: { triggerId: string; response: string }) => {
+                        if (data.triggerId === triggerId) {
+                            cleanup();
+                            resolve({ response: data.response, cancelled: false });
+                        }
+                    };
+
+                    // Fail fast if the relay rejects delivery (e.g. parent disconnected)
+                    const errorHandler = (data: { targetSessionId: string; error: string }) => {
+                        if (data.targetSessionId === parentSessionId) {
+                            cleanup();
+                            resolve({ response: `Trigger delivery failed: ${data.error}`, cancelled: true });
+                        }
+                    };
+
+                    const cleanup = () => {
+                        clearTimeout(timeout);
+                        sioSocket?.off("trigger_response" as any, handler);
+                        sioSocket?.off("session_message_error" as any, errorHandler);
+                    };
+
+                    sioSocket!.on("trigger_response" as any, handler);
+                    sioSocket!.on("session_message_error" as any, errorHandler);
+                    signal?.addEventListener("abort", () => { cleanup(); resolve({ response: "Aborted", cancelled: true }); });
+                });
+
+                return {
+                    content: [{ type: "text", text: triggerResult.response }],
+                    details: {
+                        questions,
+                        display,
+                        answers: null,
+                        answer: triggerResult.cancelled ? null : triggerResult.response,
+                        source: "parent_trigger" as any,
+                        cancelled: triggerResult.cancelled,
                     } satisfies AskUserQuestionDetails,
                 };
             }
@@ -2319,6 +2549,100 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                     status: "waiting",
                 } satisfies PlanModeDetails,
             });
+
+            // ── Child session: fire trigger to parent instead of waiting for web/TUI ──
+            if (isChildSession && parentSessionId && relay && sioSocket?.connected) {
+                const triggerId = randomUUID();
+                const trigger: import("./triggers/types.js").ConversationTrigger = {
+                    type: "plan_review",
+                    sourceSessionId: relaySessionId,
+                    sourceSessionName: latestCtx?.sessionManager.getSessionName() ?? relaySessionId.slice(0, 8),
+                    targetSessionId: parentSessionId,
+                    payload: {
+                        title,
+                        steps,
+                        description: description ?? undefined,
+                    },
+                    deliverAs: "followUp",
+                    expectsResponse: true,
+                    triggerId,
+                    timeoutMs: 300_000,
+                    ts: new Date().toISOString(),
+                };
+
+                sioSocket.emit("session_trigger", { token: relay.token, trigger });
+
+                const triggerResult = await new Promise<{ response: string; action?: string }>((resolve) => {
+                    const timeout = setTimeout(() => {
+                        cleanup();
+                        resolve({ response: "Cancel", action: "cancel" }); // Default to cancel on timeout
+                    }, trigger.timeoutMs ?? 300_000);
+
+                    const handler = (data: { triggerId: string; response: string; action?: string }) => {
+                        if (data.triggerId === triggerId) {
+                            cleanup();
+                            resolve({ response: data.response, action: data.action });
+                        }
+                    };
+
+                    // Fail fast if the relay rejects delivery (e.g. parent disconnected)
+                    const errorHandler = (data: { targetSessionId: string; error: string }) => {
+                        if (data.targetSessionId === parentSessionId) {
+                            cleanup();
+                            resolve({ response: "Cancel", action: "cancel" });
+                        }
+                    };
+
+                    const cleanup = () => {
+                        clearTimeout(timeout);
+                        sioSocket?.off("trigger_response" as any, handler);
+                        sioSocket?.off("session_message_error" as any, errorHandler);
+                    };
+
+                    sioSocket!.on("trigger_response" as any, handler);
+                    sioSocket!.on("session_message_error" as any, errorHandler);
+                    signal?.addEventListener("abort", () => { cleanup(); resolve({ response: "Cancel", action: "cancel" }); });
+                });
+
+                const response = triggerResult.response;
+
+                // Use structured action if provided; fall back to text matching for backward compat
+                let isApproval: boolean;
+                let isCancel: boolean;
+                if (triggerResult.action) {
+                    isApproval = triggerResult.action === "approve";
+                    isCancel = triggerResult.action === "cancel";
+                } else {
+                    const lower = response.toLowerCase().trim();
+                    isApproval = ["begin", "approve", "approved", "lgtm", "looks good", "proceed"].some(p => lower === p || lower.startsWith(p + " "));
+                    isCancel = ["cancel", "stop", "no", "reject"].some(p => lower === p || lower.startsWith(p + " "));
+                }
+
+                let responseText: string;
+                let action: PlanModeAction;
+                if (isApproval) {
+                    responseText = "Plan approved by parent. Proceeding.";
+                    action = "execute_keep_context";
+                    setPlanModeFromRemote(false);
+                } else if (isCancel) {
+                    responseText = "Plan cancelled by parent.";
+                    action = "cancel";
+                } else {
+                    responseText = `Parent suggests edit: ${response}`;
+                    action = "edit";
+                }
+
+                return {
+                    content: [{ type: "text", text: responseText }],
+                    details: {
+                        title,
+                        description,
+                        steps,
+                        action,
+                        editSuggestion: action === "edit" ? response : null,
+                    } satisfies PlanModeDetails,
+                };
+            }
 
             const result = await askPlanMode(toolCallId, title, description, steps, signal, ctx);
 
@@ -2712,13 +3036,61 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         // Push an immediate heartbeat so viewers see "active" without waiting 10s.
         forwardEvent(buildHeartbeat());
     });
-    pi.on("agent_end", (event) => {
+    pi.on("agent_end", (event, ctx) => {
         isAgentActive = false;
         // Clear retry state on agent end — retries are done (succeeded or exhausted).
         lastRetryableError = null;
         forwardEvent(event);
         // Push a heartbeat immediately so viewers see "idle" after the turn.
         forwardEvent(buildHeartbeat());
+
+        // Fire session_complete when child finishes with no queued follow-ups.
+        // Extract the last assistant message as the summary so the parent knows what happened.
+        if (!ctx.hasPendingMessages()) {
+            let summary = "Session completed";
+            let fullOutputPath: string | undefined;
+            const messages = (event as any).messages;
+            if (Array.isArray(messages)) {
+                for (let i = messages.length - 1; i >= 0; i--) {
+                    const msg = messages[i];
+                    if (msg?.role === "assistant" && Array.isArray(msg.content)) {
+                        const textParts = msg.content
+                            .filter((c: any) => c.type === "text" && c.text)
+                            .map((c: any) => c.text);
+                        if (textParts.length > 0) {
+                            const full = textParts.join("\n");
+                            const INLINE_MAX = 4_000;
+                            if (full.length > INLINE_MAX) {
+                                // Save full output to a file the parent can read on demand
+                                try {
+                                    // NOTE: This writes to the child's local tmpdir. Currently fine
+                                    // because spawned children run on the same runner host as the parent.
+                                    // For future multi-runner support, this should use server-side
+                                    // artifact storage so the parent can always access the content.
+                                    const sessionSlug = relay?.sessionId?.slice(0, 8) ?? "unknown";
+                                    const uniqueSuffix = Date.now().toString(36);
+                                    const tmpPath = join(tmpdir(), `pizzapi-session-${sessionSlug}-${uniqueSuffix}-output.md`);
+                                    writeFileSync(tmpPath, full, "utf-8");
+                                    fullOutputPath = tmpPath;
+                                } catch { /* best-effort */ }
+                                summary = full.slice(0, INLINE_MAX);
+                            } else {
+                                summary = full;
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+            fireSessionComplete(summary, fullOutputPath);
+
+            // Start grace period so the parent can send follow-up work.
+            // The timer is cancelled if a new turn starts (turn_start handler)
+            // or on explicit shutdown (session_shutdown handler).
+            if (isChildSession) {
+                startFollowUpGrace(ctx);
+            }
+        }
     });
     pi.on("turn_start", (event) => forwardEvent(event));
     pi.on("turn_end", (event) => forwardEvent(event));

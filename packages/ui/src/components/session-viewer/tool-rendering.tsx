@@ -57,6 +57,9 @@ import {
   WaitForMessageCard,
   CheckMessagesCard,
   GetSessionIdCard,
+  RespondToTriggerCard,
+  TellChildCard,
+  EscalateTriggerCard,
 } from "@/components/session-viewer/cards/InterAgentCards";
 import { AskUserQuestionCard } from "@/components/session-viewer/cards/AskUserQuestionCard";
 import { PlanModeCard } from "@/components/session-viewer/cards/PlanModeCard";
@@ -727,6 +730,50 @@ export function renderGroupedToolExecution(
         </div>
       ) : null;
     }
+  } else if (norm === "respond_to_trigger" || norm.endsWith(".respond_to_trigger")) {
+    const inputArgs = parseToolInputArgs(toolInput);
+    const triggerId = typeof inputArgs.triggerId === "string" ? inputArgs.triggerId : "unknown";
+    const response = typeof inputArgs.response === "string" ? inputArgs.response : "";
+    const action = typeof inputArgs.action === "string" ? inputArgs.action : undefined;
+    const resultText = hasOutput ? extractTextFromToolContent(content) : null;
+
+    card = (
+      <RespondToTriggerCard
+        triggerId={triggerId}
+        response={response}
+        action={action}
+        resultText={resultText}
+        isStreaming={isStreaming}
+      />
+    );
+  } else if (norm === "tell_child" || norm.endsWith(".tell_child")) {
+    const inputArgs = parseToolInputArgs(toolInput);
+    const sessionId = typeof inputArgs.sessionId === "string" ? inputArgs.sessionId : "unknown";
+    const message = typeof inputArgs.message === "string" ? inputArgs.message : "";
+    const resultText = hasOutput ? extractTextFromToolContent(content) : null;
+
+    card = (
+      <TellChildCard
+        sessionId={sessionId}
+        message={message}
+        resultText={resultText}
+        isStreaming={isStreaming}
+      />
+    );
+  } else if (norm === "escalate_trigger" || norm.endsWith(".escalate_trigger")) {
+    const inputArgs = parseToolInputArgs(toolInput);
+    const triggerId = typeof inputArgs.triggerId === "string" ? inputArgs.triggerId : "unknown";
+    const context = typeof inputArgs.context === "string" ? inputArgs.context : undefined;
+    const resultText = hasOutput ? extractTextFromToolContent(content) : null;
+
+    card = (
+      <EscalateTriggerCard
+        triggerId={triggerId}
+        context={context}
+        resultText={resultText}
+        isStreaming={isStreaming}
+      />
+    );
   } else if (norm === "subagent" || norm.endsWith(".subagent") || norm === "task" || norm.endsWith(".task")) {
     card = (
       <SubagentResultCard

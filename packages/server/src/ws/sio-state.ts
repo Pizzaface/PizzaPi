@@ -134,6 +134,8 @@ export interface RedisSessionData {
     runnerId: string | null;
     runnerName: string | null;
     seq: number;
+    /** ID of the parent session that spawned this one, or null for top-level. */
+    parentSessionId: string | null;
 }
 
 export interface RedisRunnerData {
@@ -203,6 +205,7 @@ function parseSessionFromHash(hash: Record<string, string>): RedisSessionData | 
         runnerId: hash.runnerId || null,
         runnerName: hash.runnerName || null,
         seq: parseInt(hash.seq ?? "0", 10) || 0,
+        parentSessionId: hash.parentSessionId || null,
     };
 }
 
@@ -287,6 +290,23 @@ export async function updateSessionFields(
     const multi = r.multi();
     multi.hSet(key, hashFields);
     multi.expire(key, SESSION_TTL_SECONDS); // refresh TTL on update
+    await multi.exec();
+}
+
+/**
+ * Like updateSessionFields but creates the hash if it doesn't exist yet.
+ * Used when the session record may not have been registered by the TUI socket.
+ */
+export async function upsertSessionFields(
+    sessionId: string,
+    fields: Partial<RedisSessionData>,
+): Promise<void> {
+    const r = requireRedis();
+    const key = sessionKey(sessionId);
+    const hashFields = toHashFields(fields as unknown as Record<string, unknown>);
+    const multi = r.multi();
+    multi.hSet(key, hashFields);
+    multi.expire(key, SESSION_TTL_SECONDS);
     await multi.exec();
 }
 
@@ -613,6 +633,35 @@ export async function deleteRunnerAssociation(sessionId: string): Promise<void> 
 export async function refreshRunnerAssociationTTL(sessionId: string): Promise<void> {
     const r = requireRedis();
     await r.expire(runnerAssocKey(sessionId), RUNNER_ASSOC_TTL_SECONDS);
+}
+
+// ── Child session index ─────────────────────────────────────────────────────
+// Tracks which child sessions belong to a parent session.
+
+/** Set of child session IDs for a parent session. */
+function childrenKey(parentSessionId: string): string {
+    return `${KEY_PREFIX}:children:${parentSessionId}`;
+}
+
+/** Record a child session under its parent. */
+export async function addChildSession(parentSessionId: string, childSessionId: string): Promise<void> {
+    const r = requireRedis();
+    const multi = r.multi();
+    multi.sAdd(childrenKey(parentSessionId), childSessionId);
+    multi.expire(childrenKey(parentSessionId), SESSION_TTL_SECONDS);
+    await multi.exec();
+}
+
+/** Get all child session IDs for a parent. */
+export async function getChildSessions(parentSessionId: string): Promise<string[]> {
+    const r = requireRedis();
+    return r.sMembers(childrenKey(parentSessionId));
+}
+
+/** Remove a child from its parent's children set. */
+export async function removeChildSession(parentSessionId: string, childSessionId: string): Promise<void> {
+    const r = requireRedis();
+    await r.sRem(childrenKey(parentSessionId), childSessionId);
 }
 
 // ── Push pending question tracking ──────────────────────────────────────────

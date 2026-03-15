@@ -2912,6 +2912,23 @@ export function App() {
     }
   }, [spawningSession, spawnRunnerId, spawnCwd, handleOpenSession, waitForSessionToGoLive]);
 
+  // ── Respond to a trigger from a child session ─────────────────────────────
+  const handleTriggerResponse = React.useCallback((triggerId: string, response: string, action?: string) => {
+    const socket = viewerWsRef.current;
+    const sessionId = activeSessionRef.current;
+    if (!socket || !socket.connected || !sessionId) {
+      setViewerStatus("Not connected to a live session");
+      return;
+    }
+
+    socket.emit("trigger_response", {
+      triggerId,
+      response,
+      ...(action ? { action } : {}),
+      targetSessionId: sessionId,
+    });
+  }, []);
+
   // ── Spawn a new session as a specific agent ─────────────────────────────
   const handleSpawnAgentSession = React.useCallback(async (agent: {
     name: string;
@@ -3645,6 +3662,7 @@ export function App() {
                   sessionCwd={activeSessionInfo?.cwd || undefined}
                   onAppendSystemMessage={appendLocalSystemMessage}
                   onSpawnAgentSession={handleSpawnAgentSession}
+                  onTriggerResponse={handleTriggerResponse}
                 />
               )}
             </div>

@@ -70,6 +70,8 @@ import { AlertTriangleIcon, ArrowDownIcon, BookOpen, Bot, CheckCircle2, Chevrons
 import { AtMentionPopover } from "@/components/AtMentionPopover";
 import type { Entry as AtMentionEntry } from "@/hooks/useAtMentionFiles";
 import { McpToggleContext, type McpToggleHandler } from "@/components/session-viewer/McpToggleContext";
+import { isTriggerMessage, renderTriggerCard } from "@/components/session-viewer/cards/InterAgentCards";
+
 
 export type { RelayMessage } from "@/components/session-viewer/types";
 
@@ -164,6 +166,8 @@ export interface SessionViewerProps {
   onAppendSystemMessage?: (content: string | CommandResultData) => void;
   /** Spawn a new session configured as a specific agent */
   onSpawnAgentSession?: (agent: { name: string; description?: string; systemPrompt?: string; tools?: string; disallowedTools?: string }) => void;
+  /** Respond to a trigger from a child session */
+  onTriggerResponse?: (triggerId: string, response: string, action?: string) => void;
 }
 
 function formatTokenCount(n: number): string {
@@ -328,11 +332,12 @@ function ComposerSubmitButton({
   );
 }
 
-const SessionMessageItem = React.memo(({ message, activeToolCalls, agentActive, isLast }: {
+const SessionMessageItem = React.memo(({ message, activeToolCalls, agentActive, isLast, onTriggerResponse }: {
   message: RelayMessage;
   activeToolCalls?: Map<string, string>;
   agentActive?: boolean;
   isLast: boolean;
+  onTriggerResponse?: (triggerId: string, response: string, action?: string) => void;
 }) => {
   // System messages with structured command result data render as standalone cards
   if (message.role === "system" && isCommandResult(message.content)) {
@@ -375,6 +380,7 @@ const SessionMessageItem = React.memo(({ message, activeToolCalls, agentActive, 
             message.thinkingDuration,
             undefined,
             message.details,
+            onTriggerResponse,
           )}
         </div>
       );
@@ -399,7 +405,17 @@ const SessionMessageItem = React.memo(({ message, activeToolCalls, agentActive, 
           message.thinkingDuration,
           message.subAgentTurns,
           message.details,
+          onTriggerResponse,
         )}
+      </div>
+    );
+  }
+
+  // Trigger-injected user messages — render as a TriggerCard instead of a blue bubble
+  if (message.role === "user" && typeof message.content === "string" && isTriggerMessage(message.content)) {
+    return (
+      <div className="w-full max-w-3xl mx-auto px-4 py-1.5">
+        {renderTriggerCard(message.content, onTriggerResponse)}
       </div>
     );
   }
@@ -438,6 +454,7 @@ const SessionMessageItem = React.memo(({ message, activeToolCalls, agentActive, 
             message.thinkingDuration,
             undefined, // subAgentTurns
             message.details,
+            onTriggerResponse,
           )}
           {message.stopReason === "error" && message.errorMessage && (
             <div className="mt-2 flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
@@ -489,7 +506,7 @@ function SessionSkeleton() {
   );
 }
 
-export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, pendingPlan, pluginTrustPrompt, onPluginTrustResponse, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, isCompacting, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], planModeEnabled, runnerId, sessionCwd, onAppendSystemMessage, onSpawnAgentSession }: SessionViewerProps) {
+export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, pendingPlan, pluginTrustPrompt, onPluginTrustResponse, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, isCompacting, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], planModeEnabled, runnerId, sessionCwd, onAppendSystemMessage, onSpawnAgentSession, onTriggerResponse }: SessionViewerProps) {
   const [input, setInput] = React.useState("");
   const [composerError, setComposerError] = React.useState<string | null>(null);
   const [showClearDialog, setShowClearDialog] = React.useState(false);
@@ -1603,6 +1620,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                     activeToolCalls={activeToolCalls}
                     agentActive={agentActive}
                     isLast={index === renderedMessages.length - 1}
+                    onTriggerResponse={onTriggerResponse}
                   />
                 ))}
               </div>

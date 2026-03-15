@@ -17,6 +17,7 @@ import {
     registerTuiSession,
     getSharedSession,
     getLocalTuiSocket,
+    emitToRelaySession,
     updateSessionState,
     updateSessionHeartbeat,
     touchSessionActivity,
@@ -29,6 +30,7 @@ import {
     setPushPendingQuestion,
     clearPushPendingQuestion,
     deleteRunnerAssociation,
+    removeChildSession,
 } from "../sio-state.js";
 import {
     notifyAgentFinished,
@@ -241,13 +243,14 @@ export function registerRelayNamespace(io: SocketIOServer): void {
             const isEphemeral = data.ephemeral !== false;
             const collabMode = data.collabMode !== false;
 
-            const { sessionId, token, shareUrl } = await registerTuiSession(socket, cwd, {
+            const { sessionId, token, shareUrl, parentSessionId } = await registerTuiSession(socket, cwd, {
                 sessionId: data.sessionId,
                 isEphemeral,
                 collabMode,
                 sessionName: data.sessionName,
                 userId: socket.data.userId,
                 userName: (socket.data as RelaySocketData & { userName?: string }).userName,
+                parentSessionId: data.parentSessionId ?? undefined,
             });
 
             socket.data.sessionId = sessionId;
@@ -261,6 +264,7 @@ export function registerRelayNamespace(io: SocketIOServer): void {
                 shareUrl,
                 isEphemeral,
                 collabMode,
+                parentSessionId,
             });
         });
 
@@ -355,11 +359,22 @@ export function registerRelayNamespace(io: SocketIOServer): void {
                 return;
             }
 
+            const senderSession = await getSharedSession(sessionId);
             const targetSession = await getSharedSession(targetSessionId);
             if (!targetSession) {
                 socket.emit("session_message_error", {
                     targetSessionId,
                     error: "Target session not found or not connected",
+                });
+                return;
+            }
+
+            // Enforce same-user ownership to prevent cross-user message injection,
+            // especially for deliverAs:"input" which starts new agent turns.
+            if (!senderSession?.userId || !targetSession?.userId || senderSession.userId !== targetSession.userId) {
+                socket.emit("session_message_error", {
+                    targetSessionId,
+                    error: "Target session belongs to a different user",
                 });
                 return;
             }
@@ -374,15 +389,148 @@ export function registerRelayNamespace(io: SocketIOServer): void {
             }
 
             try {
-                targetSocket.emit("session_message" as string, {
-                    fromSessionId: sessionId,
-                    message: messageText,
-                    ts: new Date().toISOString(),
-                });
+                if (data.deliverAs === "input") {
+                    // Deliver as agent input — starts a new turn (used by tell_child).
+                    // Mirrors the viewer namespace "input" handler behavior.
+                    targetSocket.emit("input" as string, {
+                        text: messageText,
+                        attachments: [],
+                        client: "agent",
+                        deliverAs: "followUp",
+                    });
+                } else {
+                    // Deliver to message bus (used by send_message / wait_for_message).
+                    targetSocket.emit("session_message" as string, {
+                        fromSessionId: sessionId,
+                        message: messageText,
+                        ts: new Date().toISOString(),
+                    });
+                }
             } catch {
                 socket.emit("session_message_error", {
                     targetSessionId,
                     error: "Failed to deliver message to target session",
+                });
+            }
+        });
+
+        // ── session_trigger — child-to-parent trigger routing ────────────────
+        socket.on("session_trigger", async (data) => {
+            const sessionId = socket.data.sessionId;
+            if (!sessionId || data?.token !== socket.data.token) {
+                socket.emit("error", { message: "Invalid token" });
+                return;
+            }
+
+            const trigger = data?.trigger;
+            if (!trigger?.targetSessionId || !trigger?.triggerId) {
+                socket.emit("error", { message: "session_trigger requires trigger with targetSessionId and triggerId" });
+                return;
+            }
+
+            const targetSessionId = trigger.targetSessionId;
+
+            // Find the target session's relay socket and validate ownership
+            const targetSession = await getSharedSession(targetSessionId);
+            if (!targetSession) {
+                socket.emit("session_message_error", {
+                    targetSessionId,
+                    error: `Target session ${targetSessionId} is not connected`,
+                });
+                return;
+            }
+
+            // Validate that the target session belongs to the same user
+            const senderSession = await getSharedSession(sessionId);
+            if (!senderSession?.userId || senderSession.userId !== targetSession.userId) {
+                socket.emit("error", { message: "Target session belongs to a different user" });
+                return;
+            }
+
+            const targetSocket = getLocalTuiSocket(targetSessionId);
+            if (!targetSocket) {
+                socket.emit("session_message_error", {
+                    targetSessionId,
+                    error: `Target session ${targetSessionId} is not connected`,
+                });
+                return;
+            }
+
+            try {
+                // For escalations targeting the sender's own session, preserve the
+                // original child sourceSessionId so the viewer can attribute the
+                // escalation to the correct child. For all other triggers, enforce
+                // server-side identity to prevent spoofing.
+                if (trigger.type === "escalate" && targetSessionId === sessionId) {
+                    // Escalation to self — keep original sourceSessionId for viewer attribution
+                } else {
+                    trigger.sourceSessionId = sessionId;
+                }
+                targetSocket.emit("session_trigger" as any, { trigger });
+            } catch {
+                socket.emit("session_message_error", {
+                    targetSessionId,
+                    error: "Failed to deliver trigger to target session",
+                });
+            }
+        });
+
+        // ── trigger_response — parent-to-child response routing ────────────
+        socket.on("trigger_response" as any, async (data: {
+            token: string;
+            triggerId: string;
+            response: string;
+            action?: string;
+            targetSessionId: string;
+        }) => {
+            const { triggerId, response, action, targetSessionId } = data ?? {};
+            if (!triggerId || !response || !targetSessionId) {
+                socket.emit("error", { message: "trigger_response requires triggerId, response, and targetSessionId" });
+                return;
+            }
+
+            // Validate sender is authenticated and token matches
+            if (!socket.data.sessionId || data?.token !== socket.data.token) {
+                socket.emit("error", { message: "Invalid token" });
+                return;
+            }
+
+            // Validate that the target session belongs to the same user
+            const senderSession = await getSharedSession(socket.data.sessionId);
+            const targetSession = await getSharedSession(targetSessionId);
+            if (!senderSession?.userId || !targetSession?.userId || senderSession.userId !== targetSession.userId) {
+                socket.emit("error", { message: "Target session belongs to a different user" });
+                return;
+            }
+
+            // Enforce parent→child direction: trigger_response should only flow
+            // from a parent to its child. The reverse direction (child→parent) is
+            // not needed — children emit session_trigger to parents, and parents
+            // respond with trigger_response to children. Allowing child→parent
+            // would let a sibling session inject responses into another child's
+            // pending trigger through the parent's forwarding handler.
+            const isParentOfTarget = targetSession.parentSessionId === socket.data.sessionId;
+            if (!isParentOfTarget) {
+                socket.emit("error", { message: "Sender is not the parent of the target session" });
+                return;
+            }
+
+            const triggerPayload = { triggerId, response, ...(action ? { action } : {}) };
+            // Try local socket first, fall back to relay room for cross-node delivery
+            const targetSocket = getLocalTuiSocket(targetSessionId);
+            if (targetSocket) {
+                try {
+                    targetSocket.emit("trigger_response" as any, triggerPayload);
+                } catch {
+                    socket.emit("session_message_error", {
+                        targetSessionId,
+                        error: "Failed to deliver trigger response to target session",
+                    });
+                }
+            } else if (!emitToRelaySession(targetSessionId, "trigger_response", triggerPayload)) {
+                socket.emit("session_message_error", {
+                    targetSessionId,
+                    error: `Target session ${targetSessionId} is not connected`,
                 });
             }
         });
@@ -394,6 +542,11 @@ export function registerRelayNamespace(io: SocketIOServer): void {
             if (sessionId) {
                 clearThinkingMaps(sessionId);
                 void clearPushPendingQuestion(sessionId);
+                // Clean up child-index entry so stale memberships don't persist
+                const session = await getSharedSession(sessionId);
+                if (session?.parentSessionId) {
+                    void removeChildSession(session.parentSessionId, sessionId);
+                }
                 await endSharedSession(sessionId);
             }
             socketAckedSeqs.delete(socket.id);

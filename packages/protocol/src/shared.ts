@@ -19,6 +19,8 @@ export interface SessionInfo {
   model: ModelInfo | null;
   runnerId: string | null;
   runnerName: string | null;
+  /** ID of the parent session that spawned this one, or null for top-level. */
+  parentSessionId?: string | null;
 }
 
 /** Model provider and identifier */

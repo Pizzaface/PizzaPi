@@ -30,6 +30,8 @@ interface RunnerSession {
      * running independently with its own relay connection.
      */
     adopted?: boolean;
+    /** ID of the parent session that spawned this one. */
+    parentSessionId?: string;
 }
 
 // ── Runner state file (~/.pizzapi/runner.json) ────────────────────────────────
@@ -589,7 +591,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
 
         socket.on("new_session", (data) => {
             if (isShuttingDown) return;
-            const { sessionId, cwd: requestedCwd, prompt: requestedPrompt, model: requestedModel, hiddenModels: requestedHiddenModels, agent: requestedAgent } = data;
+            const { sessionId, cwd: requestedCwd, prompt: requestedPrompt, model: requestedModel, hiddenModels: requestedHiddenModels, agent: requestedAgent, parentSessionId: requestedParentSessionId } = data;
 
             if (!sessionId) {
                 socket.emit("session_error", { sessionId: sessionId ?? "", message: "Missing sessionId" });
@@ -642,8 +644,8 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     // On restart (exit code 43), the session already has
                     // the prompt in its history — re-sending would duplicate it.
                     const spawnOpts = isFirstSpawn
-                        ? { prompt: requestedPrompt, model: requestedModel, hiddenModels: requestedHiddenModels, agent: resolvedAgent }
-                        : { hiddenModels: requestedHiddenModels, agent: resolvedAgent }; // Always pass agent + hidden models on restart
+                        ? { prompt: requestedPrompt, model: requestedModel, hiddenModels: requestedHiddenModels, agent: resolvedAgent, parentSessionId: requestedParentSessionId }
+                        : { hiddenModels: requestedHiddenModels, agent: resolvedAgent, parentSessionId: requestedParentSessionId }; // Always pass agent + hidden models + parent on restart
                     isFirstSpawn = false;
                     spawnSession(sessionId, apiKey!, requestedCwd, runningSessions, doSpawn, spawnOpts);
                     socket.emit("session_ready", { sessionId });
@@ -1434,6 +1436,7 @@ function spawnSession(
         model?: { provider: string; id: string };
         hiddenModels?: string[];
         agent?: { name: string; systemPrompt?: string; tools?: string; disallowedTools?: string };
+        parentSessionId?: string;
     },
 ): void {
     console.log(`pizzapi runner: spawning headless worker for session ${sessionId}…`);
@@ -1480,6 +1483,8 @@ function spawnSession(
             ? { PIZZAPI_HIDDEN_MODELS: JSON.stringify(options.hiddenModels) }
             : {}),
         // Agent session config — spawn the worker "as" this agent.
+        // Parent session ID for trigger system (child→parent communication).
+        ...(options?.parentSessionId ? { PIZZAPI_WORKER_PARENT_SESSION_ID: options.parentSessionId } : {}),
         ...(options?.agent?.name ? { PIZZAPI_WORKER_AGENT_NAME: options.agent.name } : {}),
         ...(options?.agent?.systemPrompt ? { PIZZAPI_WORKER_AGENT_SYSTEM_PROMPT: options.agent.systemPrompt } : {}),
         ...(options?.agent?.tools ? { PIZZAPI_WORKER_AGENT_TOOLS: options.agent.tools } : {}),
@@ -1502,7 +1507,7 @@ function spawnSession(
         }
     });
 
-    runningSessions.set(sessionId, { sessionId, child, startedAt: Date.now() });
+    runningSessions.set(sessionId, { sessionId, child, startedAt: Date.now(), parentSessionId: options?.parentSessionId });
     console.log(`pizzapi runner: session ${sessionId} worker spawned (pid=${child.pid})`);
 }
 

@@ -246,6 +246,46 @@ describe("scanSkillsDir", () => {
         expect(result).toHaveLength(1);
         expect(result[0].name).toBe("UPPER");
     });
+
+    test("skips broken symlinks without crashing other skills", () => {
+        writeSubdirSkill(dir, "good-skill", SKILL_WITH_DESCRIPTION);
+        // Create a broken symlink as a .md file
+        const brokenLink = join(dir, "broken.md");
+        try {
+            require("node:fs").symlinkSync("/nonexistent/path/skill.md", brokenLink);
+        } catch {
+            return; // Skip if symlinks not supported
+        }
+        const result = scanSkillsDir(dir);
+        expect(result).toHaveLength(1);
+        expect(result[0].name).toBe("good-skill");
+    });
+
+    test("handles binary content in .md files gracefully", () => {
+        writeSubdirSkill(dir, "valid-skill", SKILL_WITH_DESCRIPTION);
+        const binaryPath = join(dir, "binary-garbage.md");
+        require("node:fs").writeFileSync(binaryPath, Buffer.from([0x00, 0x01, 0xFF, 0xFE, 0x89]));
+        const result = scanSkillsDir(dir);
+        // Both should load without crashing
+        expect(result.length).toBeGreaterThanOrEqual(1);
+        const valid = result.find(s => s.name === "valid-skill");
+        expect(valid?.description).toBe("A helpful skill for testing.");
+    });
+
+    test("handles broken SKILL.md symlink in subdirectory", () => {
+        writeSubdirSkill(dir, "good-skill", SKILL_WITH_DESCRIPTION);
+        // Create a subdirectory with a broken SKILL.md symlink
+        const badDir = join(dir, "bad-skill");
+        mkdirSync(badDir, { recursive: true });
+        try {
+            require("node:fs").symlinkSync("/nonexistent/SKILL.md", join(badDir, "SKILL.md"));
+        } catch {
+            return; // Skip if symlinks not supported
+        }
+        const result = scanSkillsDir(dir);
+        expect(result).toHaveLength(1);
+        expect(result[0].name).toBe("good-skill");
+    });
 });
 
 // ── readSkillContent ──────────────────────────────────────────────────────────

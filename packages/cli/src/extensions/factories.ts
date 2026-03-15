@@ -5,6 +5,7 @@ import { initialPromptExtension } from "./initial-prompt.js";
 import { mcpExtension } from "./mcp-extension.js";
 import { remoteExtension } from "./remote.js";
 import { restartExtension } from "./restart.js";
+
 import { sessionMessagingExtension } from "./session-messaging.js";
 import { setSessionNameExtension } from "./set-session-name.js";
 import { spawnSessionExtension } from "./spawn-session.js";
@@ -12,6 +13,7 @@ import { updateTodoExtension } from "./update-todo.js";
 import { createClaudePluginExtension } from "./claude-plugins.js";
 import { subagentExtension } from "./subagent.js";
 import { planModeToggleExtension } from "./plan-mode-toggle.js";
+import { triggersExtension } from "./triggers/extension.js";
 
 export interface BuildExtensionFactoriesOptions {
     cwd: string;
@@ -32,6 +34,10 @@ export interface BuildExtensionFactoriesOptions {
  */
 export function buildPizzaPiExtensionFactories(options: BuildExtensionFactoriesOptions): ExtensionFactory[] {
     const factories: ExtensionFactory[] = [];
+
+    // triggersExtension provides tell_child, respond_to_trigger, escalate_trigger tools.
+    // session_complete is fired from remoteExtension's shutdown handler (before disconnect).
+    factories.push(triggersExtension);
 
     if (!options.skipRelay) {
         factories.push(remoteExtension);
