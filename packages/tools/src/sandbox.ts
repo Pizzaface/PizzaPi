@@ -324,9 +324,11 @@ export async function cleanupSandbox(): Promise<void> {
 function _buildSrtConfig(config: ResolvedSandboxConfig): SandboxRuntimeConfig {
     const srt = config.srtConfig!;
 
-    // Merge SSH agent socket into allowUnixSockets if detected
+    // Merge SSH agent socket into allowUnixSockets if detected.
+    // Runs regardless of whether srt.network is defined — basic mode's
+    // permissive fallback also includes the socket for defense in depth.
     let allowUnixSockets = srt.network?.allowUnixSockets;
-    if (_sshAuthSock && srt.network) {
+    if (_sshAuthSock) {
         const existing = allowUnixSockets ?? [];
         if (!existing.includes(_sshAuthSock)) {
             allowUnixSockets = [...existing, _sshAuthSock];
@@ -345,25 +347,43 @@ function _buildSrtConfig(config: ResolvedSandboxConfig): SandboxRuntimeConfig {
                 ? { allowGitConfig: srt.filesystem.allowGitConfig }
                 : {}),
         },
-        ...(srt.network !== undefined
+        // SandboxManager.initialize() requires a `network` key — omitting it
+        // crashes with "undefined is not an object (evaluating 'config.network.httpProxyPort')".
+        // When srt.network is undefined (basic mode), provide a permissive
+        // default that means "no network restrictions". This is NOT the same
+        // as `allowedDomains: []` which srt interprets as "block all outbound".
+        network: srt.network
             ? {
-                network: {
-                    allowedDomains: srt.network.allowedDomains,
-                    deniedDomains: srt.network.deniedDomains,
-                    allowLocalBinding: srt.network.allowLocalBinding,
-                    ...(allowUnixSockets !== undefined ? { allowUnixSockets } : {}),
-                    ...(srt.network.allowAllUnixSockets !== undefined
-                        ? { allowAllUnixSockets: srt.network.allowAllUnixSockets }
-                        : {}),
-                    ...(srt.network.httpProxyPort !== undefined
-                        ? { httpProxyPort: srt.network.httpProxyPort }
-                        : {}),
-                    ...(srt.network.socksProxyPort !== undefined
-                        ? { socksProxyPort: srt.network.socksProxyPort }
-                        : {}),
-                },
+                allowedDomains: srt.network.allowedDomains,
+                deniedDomains: srt.network.deniedDomains,
+                allowLocalBinding: srt.network.allowLocalBinding,
+                ...(allowUnixSockets !== undefined ? { allowUnixSockets } : {}),
+                ...(srt.network.allowAllUnixSockets !== undefined
+                    ? { allowAllUnixSockets: srt.network.allowAllUnixSockets }
+                    : {}),
+                ...(srt.network.httpProxyPort !== undefined
+                    ? { httpProxyPort: srt.network.httpProxyPort }
+                    : {}),
+                ...(srt.network.socksProxyPort !== undefined
+                    ? { socksProxyPort: srt.network.socksProxyPort }
+                    : {}),
             }
-            : {}),
+            : {
+                // Permissive defaults for basic mode: no network restrictions.
+                // deniedDomains: [] means nothing is blocked.
+                // allowedDomains is omitted — srt treats missing/undefined as
+                // "allow all" (distinct from `[]` which means "deny all").
+                deniedDomains: [],
+                allowLocalBinding: true,
+                // Allow all Unix sockets so basic mode doesn't break SSH agent,
+                // Docker socket, or other local IPC that users expect to work.
+                allowAllUnixSockets: true,
+                // Also explicitly include the detected SSH socket for defense
+                // in depth, in case allowAllUnixSockets semantics change.
+                ...(allowUnixSockets !== undefined && allowUnixSockets.length > 0
+                    ? { allowUnixSockets }
+                    : {}),
+            },
         ...(srt.ignoreViolations !== undefined
             ? { ignoreViolations: srt.ignoreViolations }
             : {}),
