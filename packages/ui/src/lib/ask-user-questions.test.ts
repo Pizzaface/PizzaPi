@@ -25,8 +25,8 @@ describe("parsePendingQuestions", () => {
       ],
     });
     expect(result).toEqual([
-      { question: "Color?", options: ["Red", "Blue"] },
-      { question: "Size?", options: ["S", "M", "L"] },
+      { question: "Color?", options: ["Red", "Blue"], type: "radio" },
+      { question: "Size?", options: ["S", "M", "L"], type: "radio" },
     ]);
   });
 
@@ -34,28 +34,28 @@ describe("parsePendingQuestions", () => {
     const result = parsePendingQuestions({
       questions: [{ question: "Ready?", options: ["Yes", "No"] }],
     });
-    expect(result).toEqual([{ question: "Ready?", options: ["Yes", "No"] }]);
+    expect(result).toEqual([{ question: "Ready?", options: ["Yes", "No"], type: "radio" }]);
   });
 
   test("trims whitespace from questions", () => {
     const result = parsePendingQuestions({
       questions: [{ question: "  Padded?  ", options: ["Yes"] }],
     });
-    expect(result).toEqual([{ question: "Padded?", options: ["Yes"] }]);
+    expect(result).toEqual([{ question: "Padded?", options: ["Yes"], type: "radio" }]);
   });
 
   test("filters out non-string options", () => {
     const result = parsePendingQuestions({
       questions: [{ question: "Pick", options: ["A", 42, null, "B"] }],
     });
-    expect(result).toEqual([{ question: "Pick", options: ["A", "B"] }]);
+    expect(result).toEqual([{ question: "Pick", options: ["A", "B"], type: "radio" }]);
   });
 
   test("trims options and filters empty/whitespace options", () => {
     const result = parsePendingQuestions({
       questions: [{ question: "Pick", options: ["  A  ", "", "  ", "B"] }],
     });
-    expect(result).toEqual([{ question: "Pick", options: ["A", "B"] }]);
+    expect(result).toEqual([{ question: "Pick", options: ["A", "B"], type: "radio" }]);
   });
 
   test("skips questions with empty text", () => {
@@ -65,14 +65,14 @@ describe("parsePendingQuestions", () => {
         { question: "Valid?", options: ["Yes"] },
       ],
     });
-    expect(result).toEqual([{ question: "Valid?", options: ["Yes"] }]);
+    expect(result).toEqual([{ question: "Valid?", options: ["Yes"], type: "radio" }]);
   });
 
   test("handles missing options in questions array items", () => {
     const result = parsePendingQuestions({
       questions: [{ question: "No opts?" }],
     });
-    expect(result).toEqual([{ question: "No opts?", options: [] }]);
+    expect(result).toEqual([{ question: "No opts?", options: [], type: "radio" }]);
   });
 
   test("returns empty for empty questions array", () => {
@@ -83,7 +83,45 @@ describe("parsePendingQuestions", () => {
     const result = parsePendingQuestions({
       questions: [null, "string", 42, { question: "Valid?", options: ["Yes"] }],
     });
-    expect(result).toEqual([{ question: "Valid?", options: ["Yes"] }]);
+    expect(result).toEqual([{ question: "Valid?", options: ["Yes"], type: "radio" }]);
+  });
+
+  // ── Question types ───────────────────────────────────────────────────
+
+  test("parses checkbox question type", () => {
+    const result = parsePendingQuestions({
+      questions: [{ question: "Select all", options: ["A", "B", "C"], type: "checkbox" }],
+    });
+    expect(result).toEqual([{ question: "Select all", options: ["A", "B", "C"], type: "checkbox" }]);
+  });
+
+  test("parses ranked question type", () => {
+    const result = parsePendingQuestions({
+      questions: [{ question: "Rank these", options: ["X", "Y", "Z"], type: "ranked" }],
+    });
+    expect(result).toEqual([{ question: "Rank these", options: ["X", "Y", "Z"], type: "ranked" }]);
+  });
+
+  test("defaults unknown type to radio", () => {
+    const result = parsePendingQuestions({
+      questions: [{ question: "Pick", options: ["A"], type: "unknown_type" }],
+    });
+    expect(result).toEqual([{ question: "Pick", options: ["A"], type: "radio" }]);
+  });
+
+  test("mixed question types", () => {
+    const result = parsePendingQuestions({
+      questions: [
+        { question: "Pick one", options: ["A", "B"], type: "radio" },
+        { question: "Pick many", options: ["X", "Y"], type: "checkbox" },
+        { question: "Rank them", options: ["1", "2", "3"], type: "ranked" },
+      ],
+    });
+    expect(result).toEqual([
+      { question: "Pick one", options: ["A", "B"], type: "radio" },
+      { question: "Pick many", options: ["X", "Y"], type: "checkbox" },
+      { question: "Rank them", options: ["1", "2", "3"], type: "ranked" },
+    ]);
   });
 
   // ── Legacy format (backward compat) ──────────────────────────────────
@@ -94,7 +132,7 @@ describe("parsePendingQuestions", () => {
       options: ["Red", "Blue", "Green"],
     });
     expect(result).toEqual([
-      { question: "What color?", options: ["Red", "Blue", "Green"] },
+      { question: "What color?", options: ["Red", "Blue", "Green"], type: "radio" },
     ]);
   });
 
@@ -103,7 +141,7 @@ describe("parsePendingQuestions", () => {
       question: "What do you think?",
     });
     expect(result).toEqual([
-      { question: "What do you think?", options: [] },
+      { question: "What do you think?", options: [], type: "radio" },
     ]);
   });
 
@@ -113,7 +151,7 @@ describe("parsePendingQuestions", () => {
       question: "Old format",
       options: ["B"],
     });
-    expect(result).toEqual([{ question: "New format", options: ["A"] }]);
+    expect(result).toEqual([{ question: "New format", options: ["A"], type: "radio" }]);
   });
 
   test("falls back to legacy when questions array is empty", () => {
@@ -122,7 +160,7 @@ describe("parsePendingQuestions", () => {
       question: "Fallback?",
       options: ["Yes"],
     });
-    expect(result).toEqual([{ question: "Fallback?", options: ["Yes"] }]);
+    expect(result).toEqual([{ question: "Fallback?", options: ["Yes"], type: "radio" }]);
   });
 
   test("ignores legacy format with blank question", () => {

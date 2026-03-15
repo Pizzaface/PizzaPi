@@ -614,7 +614,7 @@ export function App() {
   const [recentFolders, setRecentFolders] = React.useState<string[]>([]);
   const [recentFoldersLoading, setRecentFoldersLoading] = React.useState(false);
 
-  const [pendingQuestion, setPendingQuestion] = React.useState<{ toolCallId: string; questions: Array<{ question: string; options: string[] }>; display: QuestionDisplayMode } | null>(null);
+  const [pendingQuestion, setPendingQuestion] = React.useState<{ toolCallId: string; questions: Array<{ question: string; options: string[]; type?: import("@/lib/ask-user-questions").QuestionType }>; display: QuestionDisplayMode } | null>(null);
 
   /** Pending plan mode prompt from the worker — shown as a plan review panel in the viewer. */
   const [pendingPlan, setPendingPlan] = React.useState<{
