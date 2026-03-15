@@ -190,7 +190,9 @@ export function MultipleChoiceQuestions({
     if (type === "checkbox") {
       const checked = checkboxSelections.get(qIdx) ?? new Set<number>();
       const parts: string[] = [];
-      for (const optIdx of checked) {
+      // Sort by option index to maintain display order regardless of click order
+      const sortedIndices = Array.from(checked).sort((a, b) => a - b);
+      for (const optIdx of sortedIndices) {
         if (optIdx === q.options.length) {
           parts.push((customTexts.get(qIdx) ?? "").trim());
         } else {
