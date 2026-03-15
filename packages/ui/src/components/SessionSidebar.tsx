@@ -1079,6 +1079,12 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                                 <span
                                                                   role="button"
                                                                   tabIndex={0}
+                                                                  onPointerDown={(e) => {
+                                                                    // Stop the parent session button from capturing the
+                                                                    // pointer — without this, setPointerCapture steals
+                                                                    // subsequent events and the click never fires.
+                                                                    e.stopPropagation();
+                                                                  }}
                                                                   onClick={(e) => {
                                                                     e.stopPropagation();
                                                                     setExpandedNodeIds(prev => {

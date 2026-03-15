@@ -3182,21 +3182,17 @@ export function App() {
       <header className="md:hidden fixed top-0 left-0 right-0 z-50 flex items-center justify-between gap-2 border-b bg-background px-3 pp-safe-left pp-safe-right"
         style={{ paddingTop: "calc(0.5rem + env(safe-area-inset-top))", paddingBottom: "0.5rem" }}
       >
-        {/* Left: sidebar toggle */}
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-9 w-9 flex-shrink-0"
-              onClick={() => setSidebarOpen(prev => !prev)}
-              aria-label={sidebarOpen ? "Close sidebar" : "Open sidebar"}
-            >
-              <PanelLeftOpen className={`h-5 w-5 transition-transform duration-300 ${sidebarOpen ? "rotate-180" : ""}`} />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>{sidebarOpen ? "Close sidebar" : "Open sidebar"}</TooltipContent>
-        </Tooltip>
+        {/* Left: sidebar toggle — no Tooltip wrapper; on mobile, tooltips
+            intercept the first tap and prevent the click from firing. */}
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-9 w-9 flex-shrink-0"
+          onClick={() => setSidebarOpen(prev => !prev)}
+          aria-label={sidebarOpen ? "Close sidebar" : "Open sidebar"}
+        >
+          <PanelLeftOpen className={`h-5 w-5 transition-transform duration-300 ${sidebarOpen ? "rotate-180" : ""}`} />
+        </Button>
 
         {/* Center: session switcher pill or logo */}
         <div className="flex-1 min-w-0 flex justify-center">
