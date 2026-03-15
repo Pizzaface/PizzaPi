@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { initAuth, getAuth, getKysely, type AuthConfig } from "../../src/auth.js";
 import { runAllMigrations } from "../../src/migrations.js";
 import { handleFetch } from "../../src/handler.js";
+import { initStateRedis } from "../../src/ws/sio-state.js";
 
 // ── Test setup ────────────────────────────────────────────────────────────────
 
@@ -36,6 +37,8 @@ beforeAll(async () => {
         disableSignupAfterFirstUser: false,
     });
     await runAllMigrations();
+    // Routes like /api/runners/spawn need Redis for runner lookups.
+    await initStateRedis();
 });
 
 afterAll(() => {
@@ -195,13 +198,11 @@ describe("E2E: API key authenticates HTTP requests", () => {
     });
 
     test("x-api-key header authenticates on /api/runners/spawn", async () => {
-        // /api/runners/spawn requires auth + runnerId. Without Redis, the runner
-        // lookup will fail with 404 (not 401), proving auth succeeded.
+        // /api/runners/spawn requires auth + runnerId. The runner lookup will
+        // fail (runner doesn't exist), but NOT with 401 — proving auth passed.
         const res = await req("POST", "/api/runners/spawn", { runnerId: "nonexistent" }, {
             "x-api-key": apiKey,
         });
-        // 500 = Redis not connected (auth passed, reached runner lookup)
-        // OR 404 = runner not found. Either way, NOT 401.
         expect(res.status).not.toBe(401);
     });
 
