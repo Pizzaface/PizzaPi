@@ -77,9 +77,13 @@ export function getRelaySocket(): { socket: Socket<RelayServerToClientEvents, Re
         : null;
 }
 
-/** Get the active relay session ID, if connected. Falls back to PIZZAPI_SESSION_ID env var. */
+/**
+ * Get the relay session ID. Returns the session ID even while disconnected
+ * (e.g. during reconnect windows) so child-session linking via spawn_session
+ * doesn't break. Falls back to PIZZAPI_SESSION_ID env var.
+ */
 export function getRelaySessionId(): string | null {
-    return _ctx?.relay?.sessionId ?? process.env.PIZZAPI_SESSION_ID ?? null;
+    return _ctx?.relaySessionId ?? process.env.PIZZAPI_SESSION_ID ?? null;
 }
 
 // ── Extension factory ────────────────────────────────────────────────────────
