@@ -127,12 +127,19 @@ describe("sandbox", () => {
             await initSandbox(config);
             expect(getSandboxMode()).toBe("basic");
 
-            // On supported platforms, sandbox should be fully active (not
-            // degraded). On unsupported platforms it degrades gracefully.
-            if (isSandboxActive()) {
+            // On supported platforms (macOS, Linux), sandbox MUST be fully
+            // active — not silently degraded. This is the core assertion:
+            // if initSandbox() hits _initFailed, isSandboxActive() returns
+            // false and this expect() catches the regression.
+            const supported = process.platform === "darwin" || process.platform === "linux";
+            if (supported) {
+                expect(isSandboxActive()).toBe(true);
                 // Verify OS-level enforcement is live, not just validation
                 const wrapped = await wrapCommand("echo hello");
                 expect(wrapped).not.toBe("echo hello");
+            } else {
+                // Unsupported platforms degrade gracefully
+                expect(isSandboxActive()).toBe(false);
             }
         });
 

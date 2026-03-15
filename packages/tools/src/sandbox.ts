@@ -345,30 +345,35 @@ function _buildSrtConfig(config: ResolvedSandboxConfig): SandboxRuntimeConfig {
                 ? { allowGitConfig: srt.filesystem.allowGitConfig }
                 : {}),
         },
-        // Only include `network` when srt.network is defined (full mode or
-        // basic-mode with explicit allowedDomains opt-in).  Omitting it in
-        // basic mode tells the sandbox runtime to skip network restrictions
-        // entirely — `allowedDomains: []` would be interpreted as "block all
-        // outbound traffic", which is NOT the intent for basic mode.
-        ...(srt.network !== undefined
+        // SandboxManager.initialize() requires a `network` key — omitting it
+        // crashes with "undefined is not an object (evaluating 'config.network.httpProxyPort')".
+        // When srt.network is undefined (basic mode), provide a permissive
+        // default that means "no network restrictions". This is NOT the same
+        // as `allowedDomains: []` which srt interprets as "block all outbound".
+        network: srt.network
             ? {
-                network: {
-                    allowedDomains: srt.network.allowedDomains,
-                    deniedDomains: srt.network.deniedDomains,
-                    allowLocalBinding: srt.network.allowLocalBinding,
-                    ...(allowUnixSockets !== undefined ? { allowUnixSockets } : {}),
-                    ...(srt.network.allowAllUnixSockets !== undefined
-                        ? { allowAllUnixSockets: srt.network.allowAllUnixSockets }
-                        : {}),
-                    ...(srt.network.httpProxyPort !== undefined
-                        ? { httpProxyPort: srt.network.httpProxyPort }
-                        : {}),
-                    ...(srt.network.socksProxyPort !== undefined
-                        ? { socksProxyPort: srt.network.socksProxyPort }
-                        : {}),
-                },
+                allowedDomains: srt.network.allowedDomains,
+                deniedDomains: srt.network.deniedDomains,
+                allowLocalBinding: srt.network.allowLocalBinding,
+                ...(allowUnixSockets !== undefined ? { allowUnixSockets } : {}),
+                ...(srt.network.allowAllUnixSockets !== undefined
+                    ? { allowAllUnixSockets: srt.network.allowAllUnixSockets }
+                    : {}),
+                ...(srt.network.httpProxyPort !== undefined
+                    ? { httpProxyPort: srt.network.httpProxyPort }
+                    : {}),
+                ...(srt.network.socksProxyPort !== undefined
+                    ? { socksProxyPort: srt.network.socksProxyPort }
+                    : {}),
             }
-            : {}),
+            : {
+                // Permissive defaults for basic mode: no network restrictions.
+                // deniedDomains: [] means nothing is blocked.
+                // allowedDomains is omitted — srt treats missing/undefined as
+                // "allow all" (distinct from `[]` which means "deny all").
+                deniedDomains: [],
+                allowLocalBinding: true,
+            },
         ...(srt.ignoreViolations !== undefined
             ? { ignoreViolations: srt.ignoreViolations }
             : {}),
