@@ -4,6 +4,25 @@ import { spawn } from "child_process";
 import { StringDecoder } from "string_decoder";
 import { validatePath, getResolvedConfig } from "./sandbox.js";
 
+/**
+ * Escape glob metacharacters for ripgrep --glob patterns.
+ * rg uses gitignore-style globs where `[`, `]`, `*`, `?`, `{`, `}`, and `\`
+ * are special characters. We escape them with a backslash so literal directory
+ * names containing these characters match correctly.
+ */
+export function escapeRgGlob(s: string): string {
+    return s.replace(/[\\[\]*?{}]/g, "\\$&");
+}
+
+/**
+ * Escape glob metacharacters for find's -path pattern matching.
+ * find treats `*`, `?`, `[`, `]` as pattern characters in -path arguments.
+ * We escape them with a backslash so literal paths match correctly.
+ */
+export function escapeFindPath(s: string): string {
+    return s.replace(/[\\[\]*?]/g, "\\$&");
+}
+
 /** Maximum chars of stderr to retain in memory. */
 const MAX_STDERR_CHARS = 512;
 
@@ -195,8 +214,11 @@ function _buildDenyExclusions(searchRoot: string): { rg: string[]; find: string[
             relPath = resolvedDenied.slice(resolvedRoot.length + 1);
         }
         if (relPath) {
+            // Escape glob metacharacters so literal directory names like
+            // "secret[prod]" are matched exactly, not treated as patterns.
+            const escapedRel = escapeRgGlob(relPath);
             // Exclude the directory itself and everything under it
-            rgArgs.push("--glob", `!${relPath}`, "--glob", `!${relPath}/**`);
+            rgArgs.push("--glob", `!${escapedRel}`, "--glob", `!${escapedRel}/**`);
         }
 
         // Collect denied paths for prune clause (built below).
@@ -211,7 +233,9 @@ function _buildDenyExclusions(searchRoot: string): { rg: string[]; find: string[
         findPruneArgs.push("(");
         for (let i = 0; i < findArgs.length; i++) {
             if (i > 0) findPruneArgs.push("-o");
-            findPruneArgs.push("-path", findArgs[i]);
+            // Escape glob metacharacters so literal paths like
+            // "/tmp/data[old]" are matched exactly by find's -path.
+            findPruneArgs.push("-path", escapeFindPath(findArgs[i]));
         }
         findPruneArgs.push(")", "-prune", "-o");
     }
