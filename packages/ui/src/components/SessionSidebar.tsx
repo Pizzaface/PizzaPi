@@ -1078,7 +1078,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                               return (
                                                                 <span
                                                                   role="button"
-                                                                  tabIndex={-1}
+                                                                  tabIndex={0}
                                                                   onClick={(e) => {
                                                                     e.stopPropagation();
                                                                     setExpandedNodeIds(prev => {

@@ -359,11 +359,22 @@ export function registerRelayNamespace(io: SocketIOServer): void {
                 return;
             }
 
+            const senderSession = await getSharedSession(sessionId);
             const targetSession = await getSharedSession(targetSessionId);
             if (!targetSession) {
                 socket.emit("session_message_error", {
                     targetSessionId,
                     error: "Target session not found or not connected",
+                });
+                return;
+            }
+
+            // Enforce same-user ownership to prevent cross-user message injection,
+            // especially for deliverAs:"input" which starts new agent turns.
+            if (!senderSession?.userId || !targetSession?.userId || senderSession.userId !== targetSession.userId) {
+                socket.emit("session_message_error", {
+                    targetSessionId,
+                    error: "Target session belongs to a different user",
                 });
                 return;
             }
