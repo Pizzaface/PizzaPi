@@ -57,7 +57,7 @@ index f574ad921537cf71e1c05c743e0c13688eb36637..031e29f82eed13cd66ad1d9650f0b34b
          params.tools = convertTools(context.tools, isOAuthToken);
      }
 +    // PATCH(pizzapi): inject Anthropic web search tool when PIZZAPI_WEB_SEARCH is set
-+    if (typeof process !== "undefined" && process.env.PIZZAPI_WEB_SEARCH) {
++    if (typeof process !== "undefined" && process.env.PIZZAPI_WEB_SEARCH && !["0", "false", "no", "off"].includes(process.env.PIZZAPI_WEB_SEARCH.toLowerCase())) {
 +        if (!params.tools) params.tools = [];
 +        const webSearchTool = { type: "web_search_20250305", name: "web_search" };
 +        const maxUses = parseInt(process.env.PIZZAPI_WEB_SEARCH_MAX_USES || "5", 10);

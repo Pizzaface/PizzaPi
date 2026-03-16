@@ -210,6 +210,8 @@ describe("pi-ai patch application — Anthropic web search", () => {
         expect(source).toContain("PIZZAPI_WEB_SEARCH_MAX_USES");
         expect(source).toContain("PIZZAPI_WEB_SEARCH_ALLOWED_DOMAINS");
         expect(source).toContain("PIZZAPI_WEB_SEARCH_BLOCKED_DOMAINS");
+        // P2: env var must be parsed as explicit boolean (reject "0", "false", "no", "off")
+        expect(source).toMatch(/\["0",\s*"false",\s*"no",\s*"off"\]/);
     });
 
     test("anthropic.js: stream handler processes server_tool_use blocks", async () => {
