@@ -115,6 +115,9 @@ export function RunnerManager({ onOpenSession }: RunnerManagerProps) {
             setRecentFolders([]);
             return;
         }
+        // Clear stale folders immediately so chips from the previous runner
+        // can't be deleted against the newly selected runner.
+        setRecentFolders([]);
         let cancelled = false;
         setRecentFoldersLoading(true);
         fetch(`/api/runners/${encodeURIComponent(spawnRunnerId)}/recent-folders`, { credentials: "include" })
