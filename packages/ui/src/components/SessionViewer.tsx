@@ -564,6 +564,12 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     }
     prevSessionIdRef.current = sessionId ?? null;
     setComposerError(null);
+    // Reset command picker / @-mention popover so stale state from the
+    // previous session's slash-command input doesn't bleed through.
+    setCommandOpen(false);
+    setCommandQuery("");
+    setCommandHighlightedIndex(0);
+    setAtMentionOpen(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally reading `input` at transition time only
   }, [sessionId]);
 
@@ -945,26 +951,31 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
         ? { ...message, deliverAs: deliveryMode }
         : message;
 
-      // Capture the originating sessionId so we can clear its draft even if
-      // the user switches sessions before the async send resolves.
+      // Capture the originating sessionId and the text being sent so we can
+      // correctly clear state even if the user switches sessions before the
+      // async send resolves.
       const originSessionId = sessionId;
+      const sentText = text;
 
       Promise.resolve(onSendInput(payload))
         .then((result) => {
           if (result !== false) {
-            // Only clear the live composer if the user is still on the
-            // originating session — otherwise we'd erase the new session's draft.
             if (sessionIdRef.current === originSessionId) {
+              // Still on the originating session — clear live composer state.
               setInput("");
               setCommandOpen(false);
               setCommandQuery("");
-              // Also clear the saved draft entry — safe because the user is
-              // still on this session so no newer draft could have been saved.
               draftsRef.current.delete(originSessionId);
+            } else if (originSessionId) {
+              // User switched away. Only clear the saved draft if it still
+              // matches what was sent — if the user typed new text after
+              // submitting (before switching), the switch effect saved the
+              // newer draft and we must not clobber it.
+              const saved = draftsRef.current.get(originSessionId);
+              if (saved === sentText || saved === "") {
+                draftsRef.current.delete(originSessionId);
+              }
             }
-            // If the user already switched away, DON'T delete the draft —
-            // the switch effect may have saved newer unsent text for this
-            // session that we must not clobber.
           } else {
             setComposerError("Failed to send message.");
           }
