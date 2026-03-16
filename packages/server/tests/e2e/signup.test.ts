@@ -13,6 +13,8 @@ import { runAllMigrations } from "../../src/migrations.js";
 import { handleFetch } from "../../src/handler.js";
 import { initStateRedis } from "../../src/ws/sio-state.js";
 
+process.env.PIZZAPI_TRUST_PROXY = "true";
+
 // ── Test setup ────────────────────────────────────────────────────────────────
 
 const tmpDir = mkdtempSync(join(tmpdir(), "pizzapi-e2e-"));
