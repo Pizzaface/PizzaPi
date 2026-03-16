@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { formatTokens, formatUsageStats } from "./subagent.js";
+import { formatTokens, formatUsageStats, toFinitePositiveInt } from "./subagent.js";
 import { _setGlobalConfigDir, loadConfig } from "../config.js";
 
 /**
@@ -147,6 +147,44 @@ describe("SubagentDetails type exports", () => {
     });
 });
 
+describe("toFinitePositiveInt", () => {
+    test("returns the value for valid positive integers", () => {
+        expect(toFinitePositiveInt(4, 99)).toBe(4);
+        expect(toFinitePositiveInt(1, 99)).toBe(1);
+        expect(toFinitePositiveInt(100, 99)).toBe(100);
+    });
+
+    test("floors floating point values", () => {
+        expect(toFinitePositiveInt(4.7, 99)).toBe(4);
+        expect(toFinitePositiveInt(1.1, 99)).toBe(1);
+    });
+
+    test("coerces numeric strings", () => {
+        expect(toFinitePositiveInt("8", 99)).toBe(8);
+        expect(toFinitePositiveInt("3.9", 99)).toBe(3);
+    });
+
+    test("returns fallback for non-numeric strings", () => {
+        expect(toFinitePositiveInt("fast", 99)).toBe(99);
+        expect(toFinitePositiveInt("", 99)).toBe(99);
+    });
+
+    test("returns fallback for zero, negative, Infinity, NaN", () => {
+        expect(toFinitePositiveInt(0, 99)).toBe(99);
+        expect(toFinitePositiveInt(-1, 99)).toBe(99);
+        expect(toFinitePositiveInt(Infinity, 99)).toBe(99);
+        expect(toFinitePositiveInt(-Infinity, 99)).toBe(99);
+        expect(toFinitePositiveInt(NaN, 99)).toBe(99);
+    });
+
+    test("returns fallback for objects, arrays, null, undefined", () => {
+        expect(toFinitePositiveInt({}, 99)).toBe(99);
+        expect(toFinitePositiveInt([], 99)).toBe(99);
+        expect(toFinitePositiveInt(null, 99)).toBe(99);
+        expect(toFinitePositiveInt(undefined, 99)).toBe(99);
+    });
+});
+
 describe("subagent config", () => {
     test("loadConfig reads subagent settings", () => {
         const tmp = mkdtempSync(join(tmpdir(), "subagent-config-"));
@@ -160,6 +198,22 @@ describe("subagent config", () => {
         const config = loadConfig(tmp);
         expect(config.subagent?.maxParallelTasks).toBe(16);
         expect(config.subagent?.maxConcurrency).toBe(8);
+        _setGlobalConfigDir(null);
+    });
+
+    test("loadConfig falls back to defaults for non-numeric subagent values", () => {
+        const tmp = mkdtempSync(join(tmpdir(), "subagent-config-"));
+        _setGlobalConfigDir(tmp);
+        writeFileSync(
+            join(tmp, "config.json"),
+            JSON.stringify({
+                subagent: { maxParallelTasks: "fast", maxConcurrency: {} },
+            }),
+        );
+        const config = loadConfig(tmp);
+        // toFinitePositiveInt should reject these at consumption time
+        expect(toFinitePositiveInt(config.subagent?.maxParallelTasks, 8)).toBe(8);
+        expect(toFinitePositiveInt(config.subagent?.maxConcurrency, 4)).toBe(4);
         _setGlobalConfigDir(null);
     });
 

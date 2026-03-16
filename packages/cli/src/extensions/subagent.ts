@@ -47,6 +47,13 @@ const DEFAULT_MAX_PARALLEL_TASKS = 8;
 const DEFAULT_MAX_CONCURRENCY = 4;
 const COLLAPSED_ITEM_COUNT = 10;
 
+/** Coerce an unknown config value to a finite positive integer, or return the fallback. */
+export function toFinitePositiveInt(value: unknown, fallback: number): number {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < 1) return fallback;
+    return Math.floor(n);
+}
+
 // ── Usage formatting helpers ───────────────────────────────────────────
 
 export function formatTokens(count: number): string {
@@ -534,8 +541,8 @@ export const subagentExtension = (pi: ExtensionAPI) => {
 
         async execute(_toolCallId, rawParams, signal, onUpdate, ctx) {
             const config = loadConfig(ctx.cwd);
-            const maxParallelTasks = config.subagent?.maxParallelTasks ?? DEFAULT_MAX_PARALLEL_TASKS;
-            const maxConcurrency = config.subagent?.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY;
+            const maxParallelTasks = toFinitePositiveInt(config.subagent?.maxParallelTasks, DEFAULT_MAX_PARALLEL_TASKS);
+            const maxConcurrency = toFinitePositiveInt(config.subagent?.maxConcurrency, DEFAULT_MAX_CONCURRENCY);
 
             const params = (rawParams ?? {}) as {
                 agent?: string;
