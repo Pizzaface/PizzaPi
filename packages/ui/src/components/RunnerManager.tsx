@@ -1,6 +1,6 @@
 import * as React from "react";
 import { Button } from "@/components/ui/button";
-import { RefreshCw, HardDrive, Hash, Loader2, Server, ChevronDown, Plus, FolderOpen, Terminal, Clock, Power, AlertTriangle } from "lucide-react";
+import { RefreshCw, HardDrive, Hash, Loader2, Server, ChevronDown, Plus, FolderOpen, Terminal, Clock, Power, AlertTriangle, X } from "lucide-react";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 import { formatPathTail } from "@/lib/path";
@@ -391,20 +391,44 @@ export function RunnerManager({ onOpenSession }: RunnerManagerProps) {
                                 ) : (
                                     <div className="flex flex-col gap-1 min-w-0">
                                         {recentFolders.map((folder) => (
-                                            <button
+                                            <div
                                                 key={folder}
-                                                type="button"
-                                                onClick={() => setSpawnCwd(folder)}
                                                 className={cn(
-                                                    "flex items-center gap-2 text-left px-2.5 py-1.5 rounded-md text-xs font-mono transition-colors min-w-0",
+                                                    "flex items-center gap-2 text-left px-2.5 py-1.5 rounded-md text-xs font-mono transition-colors min-w-0 group",
                                                     spawnCwd === folder
                                                         ? "bg-accent text-accent-foreground"
                                                         : "text-muted-foreground hover:bg-muted hover:text-foreground"
                                                 )}
                                             >
-                                                <FolderOpen className="h-3.5 w-3.5 flex-shrink-0 opacity-60" />
-                                                <span className="truncate [direction:rtl] text-left" dir="rtl">{folder}</span>
-                                            </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setSpawnCwd(folder)}
+                                                    className="flex items-center gap-2 min-w-0 flex-1"
+                                                    title={folder}
+                                                >
+                                                    <FolderOpen className="h-3.5 w-3.5 flex-shrink-0 opacity-60" />
+                                                    <span className="truncate">{folder.split("/").filter(Boolean).pop() || folder}</span>
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={async (e) => {
+                                                        e.stopPropagation();
+                                                        if (spawnRunnerId) {
+                                                            await fetch(`/api/runners/${encodeURIComponent(spawnRunnerId)}/recent-folders`, {
+                                                                method: "DELETE",
+                                                                credentials: "include",
+                                                                headers: { "Content-Type": "application/json" },
+                                                                body: JSON.stringify({ path: folder }),
+                                                            });
+                                                        }
+                                                        setRecentFolders((prev) => prev.filter((f) => f !== folder));
+                                                    }}
+                                                    className="flex-shrink-0 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-opacity"
+                                                    title="Remove from recent"
+                                                >
+                                                    <X className="h-3 w-3" />
+                                                </button>
+                                            </div>
                                         ))}
                                     </div>
                                 )}

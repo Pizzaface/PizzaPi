@@ -465,6 +465,7 @@ export function TerminalManager({
         cwd={cwd}
         onCwdChange={setCwd}
         recentFolders={recentFolders}
+        onRemoveFolder={(folder) => setRecentFolders((prev) => prev.filter((f) => f !== folder))}
         spawning={spawning}
         onSpawn={spawnFromDialog}
       />
@@ -644,6 +645,7 @@ interface NewTerminalDialogProps {
   cwd: string;
   onCwdChange: (cwd: string) => void;
   recentFolders: string[];
+  onRemoveFolder: (folder: string) => void;
   spawning: boolean;
   onSpawn: () => void;
 }
@@ -658,6 +660,7 @@ function NewTerminalDialog({
   cwd,
   onCwdChange,
   recentFolders,
+  onRemoveFolder,
   spawning,
   onSpawn,
 }: NewTerminalDialogProps) {
@@ -713,13 +716,34 @@ function NewTerminalDialog({
             {recentFolders.length > 0 && (
               <div className="flex flex-wrap gap-1 mt-1">
                 {recentFolders.slice(0, 5).map((folder) => (
-                  <button
+                  <div
                     key={folder}
-                    onClick={() => onCwdChange(folder)}
-                    className="rounded bg-secondary px-2 py-0.5 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground transition-colors truncate max-w-[200px]"
+                    className="inline-flex items-center rounded bg-secondary text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground transition-colors group"
                   >
-                    {folder.split("/").pop() || folder}
-                  </button>
+                    <button
+                      onClick={() => onCwdChange(folder)}
+                      className="px-2 py-0.5 truncate max-w-[200px]"
+                      title={folder}
+                    >
+                      {folder.split("/").filter(Boolean).pop() || folder}
+                    </button>
+                    <button
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        await fetch(`/api/runners/${encodeURIComponent(selectedRunnerId)}/recent-folders`, {
+                          method: "DELETE",
+                          credentials: "include",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ path: folder }),
+                        });
+                        onRemoveFolder(folder);
+                      }}
+                      className="px-1 py-0.5 opacity-0 group-hover:opacity-100 hover:text-destructive transition-opacity"
+                      title="Remove from recent"
+                    >
+                      ×
+                    </button>
+                  </div>
                 ))}
               </div>
             )}

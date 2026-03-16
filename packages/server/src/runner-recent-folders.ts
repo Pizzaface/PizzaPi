@@ -79,6 +79,24 @@ export async function recordRecentFolder(
     }
 }
 
+export async function deleteRecentFolder(
+    userId: string,
+    runnerId: string,
+    path: string,
+): Promise<boolean> {
+    const normalizedPath = path.trim();
+    if (!normalizedPath) return false;
+
+    const result = await getKysely()
+        .deleteFrom("runner_recent_folder")
+        .where("userId", "=", userId)
+        .where("runnerId", "=", runnerId)
+        .where("path", "=", normalizedPath)
+        .executeTakeFirst();
+
+    return (result.numDeletedRows ?? 0n) > 0n;
+}
+
 export async function getRecentFolders(
     userId: string,
     runnerId: string,

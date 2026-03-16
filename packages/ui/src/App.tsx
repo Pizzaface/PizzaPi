@@ -1888,21 +1888,8 @@ export function App() {
     }
 
     if (type === "mcp_auth_complete") {
-      const serverName = typeof evt.serverName === "string" ? evt.serverName : "MCP server";
-      const ts = typeof evt.ts === "number" ? evt.ts : Date.now();
-
-      const message: RelayMessage = {
-        key: `mcp_auth_ok:${ts}:${Math.random().toString(16).slice(2)}`,
-        role: "system",
-        timestamp: ts,
-        content: `✅ Authenticated with **${serverName}**`,
-        isError: false,
-      };
-      setMessages((prev) => {
-        const next = [...prev, message];
-        patchSessionCache({ messages: next });
-        return next;
-      });
+      // Silently ignore — auth success is noise on the happy path.
+      // The CLI still logs to stderr for debugging.
       return;
     }
 
@@ -3912,20 +3899,44 @@ export function App() {
                     <span className="text-xs font-medium text-muted-foreground">Recent</span>
                     <div className="flex flex-wrap gap-1.5">
                       {recentFolders.map((folder) => (
-                        <button
+                        <div
                           key={folder}
-                          type="button"
-                          disabled={spawningSession}
-                          onClick={() => setSpawnCwd(folder)}
-                          className={`inline-flex items-center rounded border px-2 py-0.5 font-mono text-[11px] transition-colors
+                          className={`inline-flex items-center rounded border font-mono text-[11px] transition-colors
                             ${spawnCwd === folder
                               ? "border-primary bg-primary/10 text-primary"
                               : "border-border bg-muted/50 text-muted-foreground hover:border-foreground/30 hover:text-foreground"
                             }`}
-                          title={folder}
                         >
-                          <span className="max-w-[220px] truncate">{folder}</span>
-                        </button>
+                          <button
+                            type="button"
+                            disabled={spawningSession}
+                            onClick={() => setSpawnCwd(folder)}
+                            className="px-2 py-0.5"
+                            title={folder}
+                          >
+                            <span className="max-w-[220px] truncate">{folder.split("/").filter(Boolean).pop() || folder}</span>
+                          </button>
+                          <button
+                            type="button"
+                            disabled={spawningSession}
+                            onClick={async (e) => {
+                              e.stopPropagation();
+                              if (spawnRunnerId) {
+                                await fetch(`/api/runners/${encodeURIComponent(spawnRunnerId)}/recent-folders`, {
+                                  method: "DELETE",
+                                  credentials: "include",
+                                  headers: { "Content-Type": "application/json" },
+                                  body: JSON.stringify({ path: folder }),
+                                });
+                              }
+                              setRecentFolders((prev) => prev.filter((f) => f !== folder));
+                            }}
+                            className="px-1 py-0.5 border-l border-inherit text-muted-foreground hover:text-destructive"
+                            title="Remove from recent"
+                          >
+                            ×
+                          </button>
+                        </div>
                       ))}
                     </div>
                   </div>
