@@ -55,7 +55,7 @@ The monorepo is organized into focused packages:
 | Package | Description |
 |---------|-------------|
 | `packages/protocol` | Shared TypeScript types for the relay wire protocol |
-| `packages/tools` | Shared agent tools (bash, read-file, write-file, search) and [sandbox enforcement](/PizzaPi/guides/sandbox/) |
+| `packages/tools` | Shared agent tools (bash, read-file, write-file, search) and [sandbox enforcement](/PizzaPi/security/sandbox/) |
 | `packages/server` | Bun HTTP + WebSocket relay server (auth, sessions, push notifications) |
 | `packages/ui` | React 19 PWA web interface (Vite, TailwindCSS v4, Radix UI) |
 | `packages/cli` | CLI wrapper — launches `pi` with PizzaPi extensions, the runner daemon, and the Claude Code plugin adapter |
@@ -123,7 +123,7 @@ All WebSocket connections from the CLI require a valid API key in the connection
 
 ## Runner Architecture
 
-See the [Runner Daemon guide](/PizzaPi/guides/runner-daemon/) for the full process hierarchy diagram. In summary:
+See the [Runner Daemon guide](/PizzaPi/running/runner-daemon/) for the full process hierarchy diagram. In summary:
 
 - The **supervisor** (`pizzapi runner`) is the stable outer process
 - It spawns the **daemon** as a child and restarts it on crash
@@ -141,7 +141,7 @@ The CLI includes a **plugin adapter** that discovers Claude Code plugins and map
 
 The adapter scans global dirs (`~/.pizzapi/plugins/`, `~/.agents/plugins/`, `~/.claude/plugins/`) automatically. Project-local plugins require explicit trust — managed via `pizza plugins trust` or interactive confirmation at session start.
 
-See the [Claude Code Plugins guide](/PizzaPi/guides/claude-plugins/) for full details.
+See the [Claude Code Plugins guide](/PizzaPi/customization/claude-plugins/) for full details.
 
 ---
 
@@ -173,10 +173,10 @@ Parent agent session
 - **Parallel** — up to 4 concurrent agents (max 8 tasks)
 - **Chain** — sequential steps with `{previous}` output substitution
 
-See the [Subagents guide](/PizzaPi/guides/subagents/) for full details.
+See the [Subagents guide](/PizzaPi/customization/subagents/) for full details.
 
 ---
 
 ## Development
 
-For a complete guide to setting up a local development environment, running tests, and contributing, see the [Development guide](/PizzaPi/guides/development/).
+For a complete guide to setting up a local development environment, running tests, and contributing, see the [Development guide](/PizzaPi/reference/development/).
