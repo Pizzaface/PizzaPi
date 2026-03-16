@@ -2279,10 +2279,12 @@ export function App() {
     setProviderUsage(cached?.providerUsage ?? null);
     setLastHeartbeatAt(cached?.lastHeartbeatAt ?? null);
     setTodoList(cached?.todoList ?? []);
-    // Restore pending interactive states from cache so they survive session switches.
-    // The next heartbeat will refresh them with authoritative values from the runner.
-    setPendingQuestion(cached?.pendingQuestion ?? null);
-    setPendingPlan(cached?.pendingPlan ?? null);
+    // Don't restore pendingQuestion/pendingPlan from cache — the cache can be
+    // stale if the user answered/rejected before the next heartbeat arrived.
+    // The heartbeat (which arrives within seconds) will restore them with
+    // authoritative values from the runner.
+    setPendingQuestion(null);
+    setPendingPlan(null);
 
     const socket: Socket<ViewerServerToClientEvents, ViewerClientToServerEvents> = io("/viewer", {
       auth: { sessionId: relaySessionId },
@@ -4036,8 +4038,8 @@ export function App() {
             </div>
             <div className="flex-1 overflow-y-auto p-4">
               <div className="flex flex-col gap-4">
-                <ApiKeyManager key={`api-${apiKeyVersion}`} onKeysChanged={() => setApiKeyVersion((v) => v + 1)} />
-                <RunnerTokenManager key={`runner-${apiKeyVersion}`} onKeysChanged={() => setApiKeyVersion((v) => v + 1)} />
+                <ApiKeyManager refreshSignal={apiKeyVersion} onKeysChanged={() => setApiKeyVersion((v) => v + 1)} />
+                <RunnerTokenManager refreshSignal={apiKeyVersion} onKeysChanged={() => setApiKeyVersion((v) => v + 1)} />
               </div>
             </div>
           </div>

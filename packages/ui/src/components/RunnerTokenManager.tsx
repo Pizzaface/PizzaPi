@@ -68,7 +68,7 @@ function DeleteTokenButton({ onDelete, isDeleting }: { onDelete: () => void; isD
   );
 }
 
-export function RunnerTokenManager({ onKeysChanged }: { onKeysChanged?: () => void } = {}) {
+export function RunnerTokenManager({ onKeysChanged, refreshSignal }: { onKeysChanged?: () => void; refreshSignal?: number } = {}) {
   const [keys, setKeys] = React.useState<ApiKey[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [creating, setCreating] = React.useState(false);
@@ -98,7 +98,7 @@ export function RunnerTokenManager({ onKeysChanged }: { onKeysChanged?: () => vo
 
   React.useEffect(() => {
     loadKeys();
-  }, []);
+  }, [refreshSignal]);
 
   async function createToken() {
     setCreating(true);

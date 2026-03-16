@@ -78,7 +78,7 @@ interface ApiKey {
     enabled: boolean;
 }
 
-export function ApiKeyManager({ onKeysChanged }: { onKeysChanged?: () => void } = {}) {
+export function ApiKeyManager({ onKeysChanged, refreshSignal }: { onKeysChanged?: () => void; refreshSignal?: number } = {}) {
     const [keys, setKeys] = React.useState<ApiKey[]>([]);
     const [loading, setLoading] = React.useState(true);
     const [creating, setCreating] = React.useState(false);
@@ -106,7 +106,7 @@ export function ApiKeyManager({ onKeysChanged }: { onKeysChanged?: () => void } 
 
     React.useEffect(() => {
         loadKeys();
-    }, []);
+    }, [refreshSignal]);
 
     async function handleCreate(e: React.FormEvent) {
         e.preventDefault();
