@@ -163,7 +163,7 @@ sidebar: [
    ```
    Cover: `url`, `transport` (sse, streamable), headers, when to use each.
 
-5. **OAuth for HTTP servers** — How PizzaPi handles OAuth flows for MCP servers that require authentication. Cover the OAuth provider, callback flow, and token storage.
+5. **OAuth for HTTP servers** — How PizzaPi handles OAuth flows for MCP servers that require authentication. Include a concrete config example showing `"auth": "oauth"` (or equivalent), explain the callback flow (browser opens, token stored), and document token storage location. Note: if OAuth support is still experimental, mark the section accordingly.
 
 6. **Managing servers at runtime** — `/mcp` slash command:
    - `/mcp` — show status of all connected servers
@@ -198,7 +198,7 @@ sidebar: [
    | `PreToolUse` | Before any tool call | Yes (exit 2) |
    | `PostToolUse` | After a tool completes | No |
    | `PostToolUseFailure` | After a tool errors | No |
-   | `UserPromptSubmit` / `Input` | When user sends input | Yes (exit 2) |
+   | `Input` (alias: `UserPromptSubmit`) | When user sends input | Yes (exit 2) |
    | `Stop` | When agent is about to stop | Can inject follow-up |
    | `SessionStart` | Session initialization | No |
    | `SessionEnd` | Session teardown | No |
@@ -346,9 +346,9 @@ A linear tutorial that walks through setting up the relay server:
 
 | Page | Changes |
 |------|---------|
-| `configuration.mdx` | Trim MCP content (now has its own page). Add cross-links to MCP, Hooks, Skills pages. Keep config.json reference table. |
-| `claude-plugins.mdx` | Trim hooks section (now has its own page). Add cross-link: "For standalone hooks outside plugins, see the Hooks guide." |
-| `subagents.mdx` | Trim agent definition section (now has its own page). Add cross-link: "For writing agent definitions, see Agent Definitions." |
+| `configuration.mdx` | Trim MCP content (now has its own page). Keep a 1-2 sentence summary of MCP/hooks/skills with link to dedicated page. Keep config.json reference table. |
+| `claude-plugins.mdx` | Trim hooks section to a 1-2 sentence summary + link: "Plugins can define hooks. For full hooks documentation, see the [Hooks guide](/customization/hooks/)." |
+| `subagents.mdx` | Trim agent definition section to a 1-2 sentence summary + link: "Subagents use agent definitions. For writing agents, see [Agent Definitions](/customization/agent-definitions/)." |
 | `index.mdx` | Update sidebar links and feature highlights to match new structure. |
 
 ---
@@ -367,5 +367,6 @@ Add to project AGENTS.md under Development Notes or a new "Configuration Convent
 - **New pages** (MCP, Hooks, Agent Definitions) should be sourced from the codebase (`packages/cli/src/extensions/`) for accuracy.
 - **Sidebar config** changes from `autogenerate` to explicit `items` arrays in `astro.config.mjs`.
 - **No redirects needed** — old URLs are being abandoned (per user decision).
+- **Reference autogenerate** — Reference section keeps `autogenerate`. Ensure `development.mdx` (moved into reference/) has correct `order` frontmatter to sort properly among auto-generated peers.
 - **Build verification**: `cd packages/docs && bun run build` must pass after all changes.
 - Use Starlight components (`Aside`, `Steps`, `Tabs`, `FileTree`, `Code`) consistently across new pages.
