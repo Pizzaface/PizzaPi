@@ -116,7 +116,7 @@ PizzaPi patches two upstream pi packages via `patchedDependencies` in the root `
 
 ### @mariozechner/pi-ai
 
-- **Anthropic web search:** Adds support for Anthropic's native server-side web search tool, including streaming handling and conversation round-tripping. See `patches/README.md` for env var configuration.
+- **Anthropic web search:** Adds support for Anthropic's native server-side web search tool, including streaming handling and conversation round-tripping. Configured via `providerSettings.anthropic.webSearch` in `~/.pizzapi/config.json`. See `patches/README.md` for details.
 
 ### Recreating patches after a version bump
 

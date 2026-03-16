@@ -655,6 +655,31 @@ export function mergeSandboxConfig(rawGlobal: SandboxConfig, rawProject: Sandbox
     };
 }
 
+/**
+ * Web search configuration for a provider that supports server-side web search
+ * (e.g., Anthropic's web_search_20250305 tool).
+ */
+export interface WebSearchConfig {
+    /** Enable web search. Default: false. */
+    enabled?: boolean;
+    /** Maximum number of searches per request. Default: 5. */
+    maxUses?: number;
+    /** Only include results from these domains. */
+    allowedDomains?: string[];
+    /** Never include results from these domains. */
+    blockedDomains?: string[];
+}
+
+/**
+ * Provider-specific settings. Keys are provider names (e.g., "anthropic").
+ */
+export interface ProviderSettings {
+    [provider: string]: {
+        /** Web search configuration (Anthropic only). */
+        webSearch?: WebSearchConfig;
+    };
+}
+
 export interface PizzaPiConfig {
     /** Override the default system prompt */
     systemPrompt?: string;
@@ -737,6 +762,28 @@ export interface PizzaPiConfig {
         /** Max concurrent agent sessions running simultaneously. Default: 4. */
         maxConcurrency?: number;
     };
+
+    /**
+     * Provider-specific settings (web search, etc.).
+     * Keys are provider names (e.g., "anthropic").
+     *
+     * Example:
+     * ```json
+     * {
+     *   "providerSettings": {
+     *     "anthropic": {
+     *       "webSearch": {
+     *         "enabled": true,
+     *         "maxUses": 5,
+     *         "allowedDomains": ["docs.python.org"],
+     *         "blockedDomains": ["example.com"]
+     *       }
+     *     }
+     *   }
+     * }
+     * ```
+     */
+    providerSettings?: ProviderSettings;
 }
 
 function readJsonSafe(path: string): Partial<PizzaPiConfig> {
@@ -934,6 +981,27 @@ export function untrustPlugin(pluginRootPath: string): boolean {
 /**
  * Merge fields into ~/.pizzapi/config.json (global config).
  */
+/**
+ * Bridge providerSettings from config.json to env vars consumed by the
+ * pi-ai Anthropic patch. Env vars take precedence if already set.
+ * Call this early in both CLI and worker entry points.
+ */
+export function applyProviderSettingsEnv(config: PizzaPiConfig): void {
+    const ws = config.providerSettings?.anthropic?.webSearch;
+    if (ws?.enabled && !process.env.PIZZAPI_WEB_SEARCH) {
+        process.env.PIZZAPI_WEB_SEARCH = "1";
+    }
+    if (ws?.maxUses != null && !process.env.PIZZAPI_WEB_SEARCH_MAX_USES) {
+        process.env.PIZZAPI_WEB_SEARCH_MAX_USES = String(ws.maxUses);
+    }
+    if (ws?.allowedDomains?.length && !process.env.PIZZAPI_WEB_SEARCH_ALLOWED_DOMAINS) {
+        process.env.PIZZAPI_WEB_SEARCH_ALLOWED_DOMAINS = ws.allowedDomains.join(",");
+    }
+    if (ws?.blockedDomains?.length && !process.env.PIZZAPI_WEB_SEARCH_BLOCKED_DOMAINS) {
+        process.env.PIZZAPI_WEB_SEARCH_BLOCKED_DOMAINS = ws.blockedDomains.join(",");
+    }
+}
+
 export function saveGlobalConfig(fields: Partial<PizzaPiConfig>): void {
     const dir = globalConfigDir();
     const path = join(dir, "config.json");

@@ -72,24 +72,42 @@ web search use a different format with a `type` field.
 | `dist/providers/anthropic.js` — stream handler | Handle `web_search_tool_result` blocks (results with citations) → emit as text blocks with `_webSearchResult` metadata |
 | `dist/providers/anthropic.js` — `convertMessages()` | Round-trip `_serverToolUse` and `_webSearchResult` blocks back to the API format on subsequent turns |
 
-**Environment variables:**
+**Configuration (preferred):**
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `PIZZAPI_WEB_SEARCH` | Set to any truthy value to enable web search | (disabled) |
-| `PIZZAPI_WEB_SEARCH_MAX_USES` | Maximum number of searches per request | `5` |
-| `PIZZAPI_WEB_SEARCH_ALLOWED_DOMAINS` | Comma-separated list of allowed domains | (all) |
-| `PIZZAPI_WEB_SEARCH_BLOCKED_DOMAINS` | Comma-separated list of blocked domains | (none) |
+Add to `~/.pizzapi/config.json`:
 
-**Usage:**
-
-```bash
-# Enable web search
-PIZZAPI_WEB_SEARCH=1 pizza runner
-
-# With domain restrictions
-PIZZAPI_WEB_SEARCH=1 PIZZAPI_WEB_SEARCH_ALLOWED_DOMAINS="docs.python.org,stackoverflow.com" pizza runner
+```json
+{
+  "providerSettings": {
+    "anthropic": {
+      "webSearch": {
+        "enabled": true,
+        "maxUses": 5,
+        "allowedDomains": ["docs.python.org", "stackoverflow.com"],
+        "blockedDomains": ["example.com"]
+      }
+    }
+  }
+}
 ```
+
+| Field | Description | Default |
+|-------|-------------|---------|
+| `enabled` | Enable web search | `false` |
+| `maxUses` | Maximum searches per request | `5` |
+| `allowedDomains` | Only include results from these domains | (all) |
+| `blockedDomains` | Never include results from these domains | (none) |
+
+**Environment variable override:**
+
+Env vars take precedence over config.json if both are set:
+
+| Variable | Description |
+|----------|-------------|
+| `PIZZAPI_WEB_SEARCH` | Set to any truthy value to enable |
+| `PIZZAPI_WEB_SEARCH_MAX_USES` | Max searches per request |
+| `PIZZAPI_WEB_SEARCH_ALLOWED_DOMAINS` | Comma-separated domain whitelist |
+| `PIZZAPI_WEB_SEARCH_BLOCKED_DOMAINS` | Comma-separated domain blacklist |
 
 **How it works:**
 
