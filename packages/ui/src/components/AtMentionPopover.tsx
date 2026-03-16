@@ -227,6 +227,18 @@ export function AtMentionPopover({
     }
   }, [allItems, onHighlightedIndexChange, onHighlightedEntryChange, onHighlightedAgentChange]);
 
+  // Scroll the highlighted item into view when it changes
+  React.useEffect(() => {
+    if (!highlightedValue) return;
+    // Find the aria-selected item inside the popover and scroll it into view
+    requestAnimationFrame(() => {
+      const el = document.querySelector<HTMLElement>(
+        "[role='listbox'][aria-label='Mentions'] [aria-selected='true']"
+      );
+      el?.scrollIntoView({ block: "nearest" });
+    });
+  }, [highlightedValue]);
+
   // Keyboard navigation
   const handleKeyDown = React.useCallback(
     (e: React.KeyboardEvent) => {

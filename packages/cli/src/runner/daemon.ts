@@ -1334,8 +1334,15 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 // return defaults.  The persisted config is the source of truth
                 // for what workers will use.
                 const { loadConfig, resolveSandboxConfig, loadGlobalConfig } = await import("../config.js");
-                const config = loadConfig(process.cwd());
-                const resolvedConfig = resolveSandboxConfig(process.cwd(), config);
+                // Use only the global config for resolution — the daemon
+                // process CWD may contain project-local overrides that
+                // should not influence the global settings editor.
+                const globalCfg = loadGlobalConfig();
+                const globalOnlyConfig = loadConfig(process.cwd());
+                // Override sandbox with global-only to prevent project-local
+                // settings from leaking into the status response.
+                globalOnlyConfig.sandbox = globalCfg.sandbox ?? {};
+                const resolvedConfig = resolveSandboxConfig(process.cwd(), globalOnlyConfig);
                 const mode = resolvedConfig.mode ?? "none";
                 // The daemon can't know if a worker sandbox is actively
                 // enforcing right now — report that a non-"none" mode is
