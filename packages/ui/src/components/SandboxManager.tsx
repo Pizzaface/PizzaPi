@@ -255,7 +255,7 @@ export function SandboxManager({ runnerId }: SandboxManagerProps) {
             // project override, `data.mode` reflects that project mode.
             // Writing it back on save would leak project-local settings
             // into the global config.
-            const mode = cfg?.mode ?? data.rawConfig?.mode ?? data.mode ?? "basic";
+            const mode = cfg?.mode ?? "basic";
             const newForm: SandboxFormState = {
                 mode,
                 filesystem: {
