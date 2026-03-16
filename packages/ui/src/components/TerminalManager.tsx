@@ -135,6 +135,9 @@ export function TerminalManager({
       setRecentFolders([]);
       return;
     }
+    // Clear stale folders immediately so chips from the previous runner
+    // can't be deleted against the newly selected runner.
+    setRecentFolders([]);
     let cancelled = false;
     void fetch(`/api/runners/${encodeURIComponent(selectedRunnerId)}/recent-folders`, { credentials: "include" })
       .then((res) => res.ok ? res.json() : Promise.reject())
