@@ -248,7 +248,14 @@ export function SandboxManager({ runnerId }: SandboxManagerProps) {
             // relative paths like "." and "~" instead of absolute paths.
             // Falls back to resolved srtConfig for backwards compat.
             const cfg = data.rawConfig ?? data.config?.srtConfig;
-            const mode = data.mode ?? data.config?.mode ?? "basic";
+            // Use the raw global config mode as the source of truth for
+            // this editor — NOT the resolved `data.mode`.  The status
+            // endpoint resolves mode from the merged config (global +
+            // project-local), so if the daemon runs in a directory with a
+            // project override, `data.mode` reflects that project mode.
+            // Writing it back on save would leak project-local settings
+            // into the global config.
+            const mode = cfg?.mode ?? data.rawConfig?.mode ?? data.mode ?? "basic";
             const newForm: SandboxFormState = {
                 mode,
                 filesystem: {
@@ -300,6 +307,12 @@ export function SandboxManager({ runnerId }: SandboxManagerProps) {
                 form.network.allowLocalBinding === false;
             if (form.mode === "full" || hasNetworkOverrides) {
                 body.network = form.network;
+            } else {
+                // Explicitly clear stale network rules when downgrading
+                // from full mode.  The backend deep-merges, so omitting
+                // `network` would preserve old allowedDomains / deniedDomains
+                // that could enforce deny-all behaviour in basic/none modes.
+                body.network = null;
             }
             // Always include advanced options so toggling them off
             // explicitly overwrites the existing global config value.

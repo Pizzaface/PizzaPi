@@ -464,7 +464,11 @@ export async function handleExecFromWeb(
             const existingSandbox = existingGlobal.sandbox ?? {} as Record<string, any>;
             const merged: Record<string, any> = { ...existingSandbox };
             for (const [key, value] of Object.entries(body)) {
-                if (value && typeof value === "object" && !Array.isArray(value)
+                if (value === null || value === undefined) {
+                    // Explicit null means "remove this key" — used when
+                    // downgrading from full mode to clear stale network rules.
+                    delete merged[key];
+                } else if (value && typeof value === "object" && !Array.isArray(value)
                     && merged[key] && typeof merged[key] === "object" && !Array.isArray(merged[key])) {
                     merged[key] = { ...merged[key], ...value };
                 } else {
