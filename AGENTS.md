@@ -104,8 +104,33 @@ bun run clean
 
 ---
 
+## Upstream Patches
+
+PizzaPi patches two upstream pi packages via `patchedDependencies` in the root `package.json`. Patches live in `patches/` and are auto-applied on `bun install`. See `patches/README.md` for full details.
+
+### @mariozechner/pi-coding-agent
+
+- **Session control:** Exposes `newSession()` / `switchSession()` on the extension API so the remote extension can trigger `/new` and `/resume` from the web UI.
+- **Version check removal:** Disables the npm registry version check and "Update Available" notification (irrelevant for PizzaPi's headless runner).
+- **Auth path display:** Shows the actual auth file path instead of hardcoded default.
+
+### @mariozechner/pi-ai
+
+- **Anthropic web search:** Adds support for Anthropic's native server-side web search tool, including streaming handling and conversation round-tripping. See `patches/README.md` for env var configuration.
+
+### Recreating patches after a version bump
+
+1. Update version specifiers in all `package.json` files
+2. `bun install` to fetch the new versions
+3. `bun patch @mariozechner/pi-coding-agent@<version>` — edit files, then `bun patch --commit 'node_modules/@mariozechner/pi-coding-agent'`
+4. `bun patch @mariozechner/pi-ai@<version>` — edit files, then `bun patch --commit 'node_modules/@mariozechner/pi-ai'`
+5. Run `cd packages/cli && bun test src/patches.test.ts` to verify
+
+---
+
 ## Configuration Conventions
 
+- **Environment variable prefix:** PizzaPi-specific env vars use the `PIZZAPI_` prefix (e.g., `PIZZAPI_SERVER_URL`, `PIZZAPI_AUTH_TOKEN`). Upstream pi env vars use the `PI_` prefix (e.g., `PI_WEB_SEARCH`, `PI_CACHE_RETENTION`). Never introduce a new env var without one of these prefixes.
 - **MCP config format:** Always use the `mcpServers{}` format (Claude Code compatible) as the preferred format. The `mcp.servers[]` array format is supported but not preferred. Claude Code compatibility is always the priority.
 
 ---

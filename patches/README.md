@@ -67,7 +67,7 @@ web search use a different format with a `type` field.
 | File | Change |
 |------|--------|
 | `dist/providers/anthropic.js` — `convertTools()` | Pass through objects that already have a `type` field (server-side tools) instead of converting them |
-| `dist/providers/anthropic.js` — `buildParams()` | Inject web search tool definition when `PI_WEB_SEARCH` env var is set |
+| `dist/providers/anthropic.js` — `buildParams()` | Inject web search tool definition when `PIZZAPI_WEB_SEARCH` env var is set |
 | `dist/providers/anthropic.js` — stream handler | Handle `server_tool_use` blocks (search queries) → emit as text blocks with `_serverToolUse` metadata |
 | `dist/providers/anthropic.js` — stream handler | Handle `web_search_tool_result` blocks (results with citations) → emit as text blocks with `_webSearchResult` metadata |
 | `dist/providers/anthropic.js` — `convertMessages()` | Round-trip `_serverToolUse` and `_webSearchResult` blocks back to the API format on subsequent turns |
@@ -76,24 +76,24 @@ web search use a different format with a `type` field.
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `PI_WEB_SEARCH` | Set to any truthy value to enable web search | (disabled) |
-| `PI_WEB_SEARCH_MAX_USES` | Maximum number of searches per request | `5` |
-| `PI_WEB_SEARCH_ALLOWED_DOMAINS` | Comma-separated list of allowed domains | (all) |
-| `PI_WEB_SEARCH_BLOCKED_DOMAINS` | Comma-separated list of blocked domains | (none) |
+| `PIZZAPI_WEB_SEARCH` | Set to any truthy value to enable web search | (disabled) |
+| `PIZZAPI_WEB_SEARCH_MAX_USES` | Maximum number of searches per request | `5` |
+| `PIZZAPI_WEB_SEARCH_ALLOWED_DOMAINS` | Comma-separated list of allowed domains | (all) |
+| `PIZZAPI_WEB_SEARCH_BLOCKED_DOMAINS` | Comma-separated list of blocked domains | (none) |
 
 **Usage:**
 
 ```bash
 # Enable web search
-PI_WEB_SEARCH=1 pizza runner
+PIZZAPI_WEB_SEARCH=1 pizza runner
 
 # With domain restrictions
-PI_WEB_SEARCH=1 PI_WEB_SEARCH_ALLOWED_DOMAINS="docs.python.org,stackoverflow.com" pizza runner
+PIZZAPI_WEB_SEARCH=1 PIZZAPI_WEB_SEARCH_ALLOWED_DOMAINS="docs.python.org,stackoverflow.com" pizza runner
 ```
 
 **How it works:**
 
-1. When `PI_WEB_SEARCH` is set, `buildParams()` appends a `web_search_20250305`
+1. When `PIZZAPI_WEB_SEARCH` is set, `buildParams()` appends a `web_search_20250305`
    tool definition to the tools array.
 2. Claude decides when to search. The API returns `server_tool_use` (the query)
    and `web_search_tool_result` (the results) content blocks.

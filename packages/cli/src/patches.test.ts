@@ -199,17 +199,17 @@ describe("pi-ai patch application — Anthropic web search", () => {
         expect(source).toContain('tool.type && typeof tool.type === "string"');
     });
 
-    test("anthropic.js: buildParams injects web search tool from PI_WEB_SEARCH env", async () => {
+    test("anthropic.js: buildParams injects web search tool from PIZZAPI_WEB_SEARCH env", async () => {
         const source = await Bun.file(
             piAiPath("dist/providers/anthropic.js"),
         ).text();
 
         expect(source).toContain("PATCH(pizzapi): inject Anthropic web search tool");
-        expect(source).toContain("PI_WEB_SEARCH");
+        expect(source).toContain("PIZZAPI_WEB_SEARCH");
         expect(source).toContain("web_search_20250305");
-        expect(source).toContain("PI_WEB_SEARCH_MAX_USES");
-        expect(source).toContain("PI_WEB_SEARCH_ALLOWED_DOMAINS");
-        expect(source).toContain("PI_WEB_SEARCH_BLOCKED_DOMAINS");
+        expect(source).toContain("PIZZAPI_WEB_SEARCH_MAX_USES");
+        expect(source).toContain("PIZZAPI_WEB_SEARCH_ALLOWED_DOMAINS");
+        expect(source).toContain("PIZZAPI_WEB_SEARCH_BLOCKED_DOMAINS");
     });
 
     test("anthropic.js: stream handler processes server_tool_use blocks", async () => {

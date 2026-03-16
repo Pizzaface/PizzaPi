@@ -1,5 +1,8 @@
+diff --git a/node_modules/@mariozechner/pi-ai/.bun-tag-8d8af48225a55c6a b/.bun-tag-8d8af48225a55c6a
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
 diff --git a/dist/providers/anthropic.js b/dist/providers/anthropic.js
-index f574ad921537cf71e1c05c743e0c13688eb36637..63090794744ef17b13125b60b8b34e90d5f8eb9d 100644
+index f574ad921537cf71e1c05c743e0c13688eb36637..382fdd84dd099674fa9f971a79bd1b9a1798566e 100644
 --- a/dist/providers/anthropic.js
 +++ b/dist/providers/anthropic.js
 @@ -209,6 +209,37 @@ export const streamAnthropic = (model, context, options) => {
@@ -44,17 +47,17 @@ index f574ad921537cf71e1c05c743e0c13688eb36637..63090794744ef17b13125b60b8b34e90
      if (context.tools) {
          params.tools = convertTools(context.tools, isOAuthToken);
      }
-+    // PATCH(pizzapi): inject Anthropic web search tool when PI_WEB_SEARCH is set
-+    if (typeof process !== "undefined" && process.env.PI_WEB_SEARCH) {
++    // PATCH(pizzapi): inject Anthropic web search tool when PIZZAPI_WEB_SEARCH is set
++    if (typeof process !== "undefined" && process.env.PIZZAPI_WEB_SEARCH) {
 +        if (!params.tools) params.tools = [];
 +        const webSearchTool = { type: "web_search_20250305", name: "web_search" };
-+        const maxUses = parseInt(process.env.PI_WEB_SEARCH_MAX_USES || "5", 10);
++        const maxUses = parseInt(process.env.PIZZAPI_WEB_SEARCH_MAX_USES || "5", 10);
 +        if (maxUses > 0) webSearchTool.max_uses = maxUses;
-+        if (process.env.PI_WEB_SEARCH_ALLOWED_DOMAINS) {
-+            webSearchTool.allowed_domains = process.env.PI_WEB_SEARCH_ALLOWED_DOMAINS.split(",").map(d => d.trim());
++        if (process.env.PIZZAPI_WEB_SEARCH_ALLOWED_DOMAINS) {
++            webSearchTool.allowed_domains = process.env.PIZZAPI_WEB_SEARCH_ALLOWED_DOMAINS.split(",").map(d => d.trim());
 +        }
-+        if (process.env.PI_WEB_SEARCH_BLOCKED_DOMAINS) {
-+            webSearchTool.blocked_domains = process.env.PI_WEB_SEARCH_BLOCKED_DOMAINS.split(",").map(d => d.trim());
++        if (process.env.PIZZAPI_WEB_SEARCH_BLOCKED_DOMAINS) {
++            webSearchTool.blocked_domains = process.env.PIZZAPI_WEB_SEARCH_BLOCKED_DOMAINS.split(",").map(d => d.trim());
 +        }
 +        params.tools.push(webSearchTool);
 +    }
