@@ -1,0 +1,205 @@
+---
+title: Agent Definitions
+description: Create reusable agent definitions with scoped tools, custom instructions, and model overrides for the subagent tool.
+---
+
+import { Aside, FileTree } from "@astrojs/starlight/components";
+
+Agent definitions are **markdown files** that define specialized agents with scoped tools, custom instructions, and optional model overrides. They're used by the `subagent` tool and `spawn_session` to create focused child agents — letting you delegate work to purpose-built agents instead of one monolithic session.
+
+---
+
+## File Format
+
+Each agent definition is a markdown file with YAML frontmatter:
+
+```markdown
+---
+name: researcher
+description: Read-only codebase research and analysis
+tools: read,grep,find,ls
+model: claude-sonnet-4-20250514
+---
+
+You are a research agent. Read files, trace dependencies,
+and summarize findings without modifying anything.
+```
+
+### Frontmatter Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | ✅ | Identifier used to invoke the agent |
+| `description` | string | ✅ | Tells the parent agent when to use this agent; also used for skill matching |
+| `tools` | string | — | Comma-separated list of allowed tool names. Omit for all tools. |
+| `model` | string | — | Model ID override (e.g. `claude-sonnet-4-20250514`) |
+| `provider` | string | — | Provider override (e.g. `anthropic`, `google`) |
+
+The body text (everything after the frontmatter) becomes the agent's **system prompt**.
+
+---
+
+## Discovery Paths
+
+PizzaPi searches for agent definitions in these directories:
+
+| Path | Scope |
+|------|-------|
+| `~/.pizzapi/agents/` | Global — available in all projects |
+| `<cwd>/.pizzapi/agents/` | Project-local — scoped to this repo |
+| `~/.claude/agents/` | Claude Code compatibility |
+| `<cwd>/.claude/agents/` | Project-local Claude Code compat |
+
+<FileTree>
+- ~/.pizzapi/
+  - agents/
+    - researcher.md
+    - reviewer.md
+- my-project/
+  - .pizzapi/
+    - agents/
+      - refactorer.md
+  - .claude/
+    - agents/
+      - legacy-agent.md
+  - src/
+  - package.json
+</FileTree>
+
+The `agentScope` parameter in the `subagent` tool controls which directories are searched:
+
+- **`"user"`** (default) — only global dirs (`~/.pizzapi/agents/`, `~/.claude/agents/`)
+- **`"project"`** — only project-local dirs (`.pizzapi/agents/`, `.claude/agents/`)
+- **`"both"`** — all directories
+
+---
+
+## Tool Restrictions
+
+The `tools:` frontmatter limits what tools the agent can access:
+
+- Comma-separated tool names: `read,grep,find,ls`
+- **Omitting `tools:`** gives the agent access to ALL tools
+- MCP tools are referenced by their prefixed name (e.g. `mcp_tavily_tavily_search`)
+- Built-in tool names: `bash`, `read`, `write`, `edit`, `grep`, `find`, `ls`
+
+<Aside type="tip" title="Restrict tools for safety">
+  A reviewer agent shouldn't have write access — limit it to `read,grep,find` so it can
+  analyze code without accidentally modifying anything. The same principle applies to
+  research agents, auditors, or any agent whose job is to observe and report.
+</Aside>
+
+---
+
+## Using Agents
+
+There are two ways to invoke agent definitions:
+
+### subagent tool (inline, blocking)
+
+The recommended approach. Runs inline, blocks until complete, and returns output directly:
+
+```json
+{
+  "agent": "researcher",
+  "task": "Find all API endpoints in this codebase"
+}
+```
+
+See [Subagents](/PizzaPi/customization/subagents/) for full documentation.
+
+### spawn_session (background, async)
+
+For long-running work. Runs as a separate session with triggers:
+
+```json
+{
+  "prompt": "Review all TypeScript files for security issues"
+}
+```
+
+See [CLI Reference](/PizzaPi/running/cli-reference/) for details.
+
+---
+
+## Built-in `task` Agent
+
+A general-purpose `task` agent is always available without any definition file. Use it for ad-hoc delegation when you don't need scoped tools or a custom system prompt:
+
+```json
+{
+  "agent": "task",
+  "task": "Refactor the auth module to use async/await"
+}
+```
+
+---
+
+## Examples
+
+### researcher.md
+
+A read-only research agent that can explore but never modify.
+
+```markdown
+---
+name: researcher
+description: Read-only codebase research and analysis — traces dependencies, summarizes architecture, and answers questions about the code.
+tools: read,grep,find,ls
+model: claude-sonnet-4-20250514
+---
+
+You are a research agent. Your job is to read files, trace dependencies,
+and summarize findings. You MUST NOT modify any files.
+
+When given a task:
+1. Search the codebase to find relevant files
+2. Read and understand the code
+3. Provide a clear, structured summary of your findings
+4. Include file paths and line numbers for all references
+```
+
+### refactorer.md
+
+A code transformation agent with read and write access.
+
+```markdown
+---
+name: refactorer
+description: Targeted code refactoring — makes precise changes to improve code quality while preserving behavior.
+tools: read,write,edit,bash
+---
+
+You are a refactoring agent. Make targeted code transformations that
+improve quality while preserving existing behavior.
+
+Rules:
+1. Read and understand the code before making changes
+2. Make the smallest change that achieves the goal
+3. Run existing tests after every change (`bun test`)
+4. If tests fail, revert and try a different approach
+5. Never change public API signatures without explicit approval
+```
+
+### reviewer.md
+
+A code review agent with no write access.
+
+```markdown
+---
+name: reviewer
+description: Code review agent — finds bugs, security issues, and style problems. Suggests improvements without modifying files.
+tools: read,grep,find
+---
+
+You are a code review agent. Analyze code for bugs, security
+vulnerabilities, and improvement opportunities.
+
+For each issue found, report:
+- **File** and **line number**
+- **Severity**: critical / warning / suggestion
+- **Description** of the problem
+- **Suggested fix** (as a code snippet, but do NOT apply it)
+
+Prioritize security issues and correctness bugs over style nits.
+```
