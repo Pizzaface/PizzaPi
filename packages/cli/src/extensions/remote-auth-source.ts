@@ -6,7 +6,7 @@
  */
 
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { getEnvApiKey } from "@mariozechner/pi-ai/dist/env-api-keys.js";
+import { getEnvApiKey } from "@mariozechner/pi-ai";
 import type { AuthSource } from "./remote-types.js";
 
 /**

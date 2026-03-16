@@ -60,9 +60,12 @@ import { CompactionSummaryCard } from "@/components/session-viewer/cards/Compact
 
 export { CompactionSummaryCard } from "@/components/session-viewer/cards/CompactionSummaryCard";
 export { CommandResultCard, type CommandResultData } from "@/components/session-viewer/cards/CommandResultCard";
+export { WebSearchQueryCard, WebSearchResultsCard, type WebSearchResult } from "@/components/session-viewer/cards/WebSearchCard";
+export { tryRenderServerToolBlock } from "@/components/session-viewer/server-tools";
 
 import { CommandResultCard, type CommandResultData } from "@/components/session-viewer/cards/CommandResultCard";
 import { TriggerCard } from "@/components/session-viewer/cards/TriggerCard";
+import { tryRenderServerToolBlock } from "@/components/session-viewer/server-tools";
 
 /** Type guard: is the content a structured command result? */
 export function isCommandResult(content: unknown): content is CommandResultData {
@@ -170,6 +173,10 @@ export function renderContent(
           const b = block as Record<string, unknown>;
 
           if (b.type === "text") {
+            // Check for server-side tool metadata (web search, etc.)
+            const serverToolCard = tryRenderServerToolBlock(b, i);
+            if (serverToolCard) return serverToolCard;
+
             return (
               <MessageResponse key={i}>
                 {typeof b.text === "string" ? b.text : ""}

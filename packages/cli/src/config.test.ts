@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { toggleMcpServer, loadConfig, _setGlobalConfigDir, resolveSandboxConfig, validateSandboxOverride, saveGlobalConfig } from "./config.js";
+import { toggleMcpServer, loadConfig, _setGlobalConfigDir, resolveSandboxConfig, validateSandboxOverride, saveGlobalConfig, applyProviderSettingsEnv, type PizzaPiConfig } from "./config.js";
 
 describe("toggleMcpServer", () => {
   let tempDir: string;
@@ -473,5 +473,76 @@ describe("saveGlobalConfig", () => {
     const config = loadConfig(tempDir);
     expect(config.apiKey).toBe("original");
     expect(config.sandbox?.mode).toBe("basic");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// applyProviderSettingsEnv
+// ---------------------------------------------------------------------------
+
+describe("applyProviderSettingsEnv", () => {
+  const envKeys = [
+    "PIZZAPI_WEB_SEARCH",
+    "PIZZAPI_WEB_SEARCH_MAX_USES",
+    "PIZZAPI_WEB_SEARCH_ALLOWED_DOMAINS",
+    "PIZZAPI_WEB_SEARCH_BLOCKED_DOMAINS",
+  ];
+
+  beforeEach(() => {
+    for (const k of envKeys) delete process.env[k];
+  });
+  afterEach(() => {
+    for (const k of envKeys) delete process.env[k];
+  });
+
+  test("sets PIZZAPI_WEB_SEARCH when enabled", () => {
+    applyProviderSettingsEnv({
+      providerSettings: { anthropic: { webSearch: { enabled: true } } },
+    } as PizzaPiConfig);
+    expect(process.env.PIZZAPI_WEB_SEARCH).toBe("1");
+  });
+
+  test("does not set PIZZAPI_WEB_SEARCH when disabled/missing", () => {
+    applyProviderSettingsEnv({} as PizzaPiConfig);
+    expect(process.env.PIZZAPI_WEB_SEARCH).toBeUndefined();
+
+    applyProviderSettingsEnv({
+      providerSettings: { anthropic: { webSearch: { enabled: false } } },
+    } as PizzaPiConfig);
+    expect(process.env.PIZZAPI_WEB_SEARCH).toBeUndefined();
+  });
+
+  test("sets maxUses, allowedDomains, blockedDomains", () => {
+    applyProviderSettingsEnv({
+      providerSettings: {
+        anthropic: {
+          webSearch: {
+            enabled: true,
+            maxUses: 10,
+            allowedDomains: ["a.com", "b.com"],
+            blockedDomains: ["c.com"],
+          },
+        },
+      },
+    } as PizzaPiConfig);
+    expect(process.env.PIZZAPI_WEB_SEARCH).toBe("1");
+    expect(process.env.PIZZAPI_WEB_SEARCH_MAX_USES).toBe("10");
+    expect(process.env.PIZZAPI_WEB_SEARCH_ALLOWED_DOMAINS).toBe("a.com,b.com");
+    expect(process.env.PIZZAPI_WEB_SEARCH_BLOCKED_DOMAINS).toBe("c.com");
+  });
+
+  test("env vars take precedence over config", () => {
+    process.env.PIZZAPI_WEB_SEARCH = "already-set";
+    process.env.PIZZAPI_WEB_SEARCH_MAX_USES = "99";
+    applyProviderSettingsEnv({
+      providerSettings: {
+        anthropic: {
+          webSearch: { enabled: true, maxUses: 3 },
+        },
+      },
+    } as PizzaPiConfig);
+    // Should NOT overwrite
+    expect(process.env.PIZZAPI_WEB_SEARCH).toBe("already-set");
+    expect(process.env.PIZZAPI_WEB_SEARCH_MAX_USES).toBe("99");
   });
 });

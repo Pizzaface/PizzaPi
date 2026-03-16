@@ -116,6 +116,55 @@ You can also override any setting with **environment variables**.
 | `slowStartupWarning` | `boolean` | `true` | Show warnings when startup takes longer than expected (slow MCP servers, etc.). See [Safe Mode](/PizzaPi/security/sandbox/). |
 | `subagent.maxParallelTasks` | `number` | `8` | Max tasks in a single parallel subagent call. **Global config only.** |
 | `subagent.maxConcurrency` | `number` | `4` | Max concurrent agent sessions running simultaneously. **Global config only.** |
+| `providerSettings` | `object` | — | Provider-specific settings. See [Web Search](#web-search) below. |
+
+---
+
+## Web Search
+
+PizzaPi can inject Anthropic's server-side web search tool into requests, giving the agent the ability to search the web during conversations. This uses Anthropic's `web_search_20250305` tool type.
+
+### Configuration
+
+Add a `providerSettings` block to `~/.pizzapi/config.json`:
+
+```jsonc
+// ~/.pizzapi/config.json
+{
+  "providerSettings": {
+    "anthropic": {
+      "webSearch": {
+        "enabled": true,
+        "maxUses": 5,
+        "allowedDomains": ["docs.python.org", "developer.mozilla.org"],
+        "blockedDomains": ["example.com"]
+      }
+    }
+  }
+}
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | `boolean` | `false` | Enable web search for Anthropic models. |
+| `maxUses` | `number` | `5` | Maximum number of searches per request. |
+| `allowedDomains` | `string[]` | — | Only return results from these domains. |
+| `blockedDomains` | `string[]` | — | Never return results from these domains. |
+
+### Environment Variables
+
+You can also enable web search via environment variables (these take precedence if the config values are not already set):
+
+| Variable | Description |
+|----------|-------------|
+| `PIZZAPI_WEB_SEARCH` | Set to `1` to enable web search. |
+| `PIZZAPI_WEB_SEARCH_MAX_USES` | Max searches per request (default: `5`). |
+| `PIZZAPI_WEB_SEARCH_ALLOWED_DOMAINS` | Comma-separated list of allowed domains. |
+| `PIZZAPI_WEB_SEARCH_BLOCKED_DOMAINS` | Comma-separated list of blocked domains. |
+
+<Aside type="note">
+  Web search works with both API key and OAuth authentication.
+</Aside>
 
 ---
 

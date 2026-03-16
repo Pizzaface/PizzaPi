@@ -10,7 +10,7 @@ import { existsSync } from "fs";
 import { readFile, readdir } from "fs/promises";
 import { join } from "path";
 import { homedir } from "os";
-import { BUILTIN_SYSTEM_PROMPT, defaultAgentDir, loadConfig, resolveSandboxConfig, validateSandboxOverride } from "./config.js";
+import { BUILTIN_SYSTEM_PROMPT, defaultAgentDir, loadConfig, resolveSandboxConfig, validateSandboxOverride, applyProviderSettingsEnv } from "./config.js";
 import { buildInteractiveSkillPaths } from "./skills.js";
 import { buildPizzaPiExtensionFactories } from "./extensions/factories.js";
 import { runSetup } from "./setup.js";
@@ -409,6 +409,9 @@ Run \`pizza <command> --help\` for command-specific help.
 
     const config = loadConfig(cwd);
     const agentDir = config.agentDir ? config.agentDir.replace(/^~/, homedir()) : defaultAgentDir();
+
+    // ── Provider settings → env vars ───────────────────────────────────────
+    applyProviderSettingsEnv(config);
 
     // First-run: no API key configured — prompt setup before launching TUI
     const hasApiKey = !!(process.env.PIZZAPI_API_KEY ?? config.apiKey);

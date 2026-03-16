@@ -1,0 +1,143 @@
+diff --git a/node_modules/@mariozechner/pi-ai/.bun-tag-2b215ecac77b994f b/.bun-tag-2b215ecac77b994f
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+diff --git a/node_modules/@mariozechner/pi-ai/.bun-tag-72b5e57c598092a8 b/.bun-tag-72b5e57c598092a8
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+diff --git a/node_modules/@mariozechner/pi-ai/.bun-tag-738250e6e1ef017c b/.bun-tag-738250e6e1ef017c
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+diff --git a/node_modules/@mariozechner/pi-ai/.bun-tag-8d8af48225a55c6a b/.bun-tag-8d8af48225a55c6a
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+diff --git a/node_modules/@mariozechner/pi-ai/.bun-tag-f6a91c23f3ebaa08 b/.bun-tag-f6a91c23f3ebaa08
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+diff --git a/dist/providers/anthropic.js b/dist/providers/anthropic.js
+index f574ad921537cf71e1c05c743e0c13688eb36637..03a533076fbaf97e5b4c623ef74d2c53eafe370b 100644
+--- a/dist/providers/anthropic.js
++++ b/dist/providers/anthropic.js
+@@ -209,6 +209,37 @@ export const streamAnthropic = (model, context, options) => {
+                         output.content.push(block);
+                         stream.push({ type: "toolcall_start", contentIndex: output.content.length - 1, partial: output });
+                     }
++                    // PATCH(pizzapi): handle server_tool_use (web search query)
++                    // Input arrives empty ({}) at start; actual input streams via
++                    // input_json_delta events, so we accumulate partialJson just
++                    // like regular toolCall blocks. Text is left empty — the UI
++                    // renderer decides how to display web-search blocks using the
++                    // structured _serverToolUse metadata.
++                    else if (event.content_block.type === "server_tool_use") {
++                        const block = {
++                            type: "text",
++                            text: "",
++                            partialJson: "",
++                            _serverToolUse: { id: event.content_block.id, name: event.content_block.name, input: event.content_block.input },
++                            index: event.index,
++                        };
++                        output.content.push(block);
++                        stream.push({ type: "text_start", contentIndex: output.content.length - 1, partial: output });
++                    }
++                    // PATCH(pizzapi): handle web_search_tool_result
++                    // content is a union: Array<WebSearchResultBlock> | WebSearchToolResultError
++                    // — must check Array.isArray before iterating to avoid "{} is not iterable".
++                    // Text is left empty; the UI renderer uses _webSearchResult metadata.
++                    else if (event.content_block.type === "web_search_tool_result") {
++                        const block = {
++                            type: "text",
++                            text: "",
++                            _webSearchResult: { tool_use_id: event.content_block.tool_use_id, content: event.content_block.content },
++                            index: event.index,
++                        };
++                        output.content.push(block);
++                        stream.push({ type: "text_start", contentIndex: output.content.length - 1, partial: output });
++                    }
+                 }
+                 else if (event.type === "content_block_delta") {
+                     if (event.delta.type === "text_delta") {
+@@ -250,6 +281,10 @@ export const streamAnthropic = (model, context, options) => {
+                                 partial: output,
+                             });
+                         }
++                        // PATCH(pizzapi): accumulate input_json_delta for server_tool_use blocks
++                        else if (block && block._serverToolUse && block.partialJson !== undefined) {
++                            block.partialJson += event.delta.partial_json;
++                        }
+                     }
+                     else if (event.delta.type === "signature_delta") {
+                         const index = blocks.findIndex((b) => b.index === event.index);
+@@ -266,6 +301,15 @@ export const streamAnthropic = (model, context, options) => {
+                     if (block) {
+                         delete block.index;
+                         if (block.type === "text") {
++                            // PATCH(pizzapi): finalize server_tool_use input from accumulated JSON
++                            if (block._serverToolUse && block.partialJson) {
++                                try {
++                                    block._serverToolUse.input = JSON.parse(block.partialJson);
++                                } catch (e) {
++                                    block._serverToolUse.input = parseStreamingJson(block.partialJson);
++                                }
++                            }
++                            delete block.partialJson;
+                             stream.push({
+                                 type: "text_end",
+                                 contentIndex: index,
+@@ -496,6 +540,20 @@ function buildParams(model, context, isOAuthToken, options) {
+     if (context.tools) {
+         params.tools = convertTools(context.tools, isOAuthToken);
+     }
++    // PATCH(pizzapi): inject Anthropic web search tool when PIZZAPI_WEB_SEARCH is set
++    if (typeof process !== "undefined" && process.env.PIZZAPI_WEB_SEARCH && !["0", "false", "no", "off"].includes(process.env.PIZZAPI_WEB_SEARCH.toLowerCase())) {
++        if (!params.tools) params.tools = [];
++        const webSearchTool = { type: "web_search_20250305", name: "web_search" };
++        const maxUses = parseInt(process.env.PIZZAPI_WEB_SEARCH_MAX_USES || "5", 10);
++        if (maxUses > 0) webSearchTool.max_uses = maxUses;
++        if (process.env.PIZZAPI_WEB_SEARCH_ALLOWED_DOMAINS) {
++            webSearchTool.allowed_domains = process.env.PIZZAPI_WEB_SEARCH_ALLOWED_DOMAINS.split(",").map(d => d.trim());
++        }
++        if (process.env.PIZZAPI_WEB_SEARCH_BLOCKED_DOMAINS) {
++            webSearchTool.blocked_domains = process.env.PIZZAPI_WEB_SEARCH_BLOCKED_DOMAINS.split(",").map(d => d.trim());
++        }
++        params.tools.push(webSearchTool);
++    }
+     // Configure thinking mode: adaptive (Opus 4.6 and Sonnet 4.6) or budget-based (older models)
+     if (options?.thinkingEnabled && model.reasoning) {
+         if (supportsAdaptiveThinking(model.id)) {
+@@ -585,7 +643,25 @@ function convertMessages(messages, model, isOAuthToken, cacheControl) {
+         else if (msg.role === "assistant") {
+             const blocks = [];
+             for (const block of msg.content) {
+-                if (block.type === "text") {
++                // PATCH(pizzapi): round-trip server tool use and web search results
++                // These must be checked BEFORE the generic text handler since they
++                // use type:"text" with metadata that needs to be restored.
++                if (block.type === "text" && block._serverToolUse) {
++                    blocks.push({
++                        type: "server_tool_use",
++                        id: block._serverToolUse.id,
++                        name: block._serverToolUse.name,
++                        input: block._serverToolUse.input,
++                    });
++                }
++                else if (block.type === "text" && block._webSearchResult) {
++                    blocks.push({
++                        type: "web_search_tool_result",
++                        tool_use_id: block._webSearchResult.tool_use_id,
++                        content: block._webSearchResult.content,
++                    });
++                }
++                else if (block.type === "text") {
+                     if (block.text.trim().length === 0)
+                         continue;
+                     blocks.push({
+@@ -696,6 +772,10 @@ function convertTools(tools, isOAuthToken) {
+     if (!tools)
+         return [];
+     return tools.map((tool) => {
++        // PATCH(pizzapi): pass through server-side tools (e.g., web_search) as-is
++        if (tool.type && typeof tool.type === "string") {
++            return tool;
++        }
+         const jsonSchema = tool.parameters; // TypeBox already generates JSON Schema
+         return {
+             name: isOAuthToken ? toClaudeCodeName(tool.name) : tool.name,
