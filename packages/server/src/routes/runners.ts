@@ -17,7 +17,7 @@ import { getSession } from "../ws/sio-state.js";
 import { sendSkillCommand, sendAgentCommand, sendRunnerCommand } from "../ws/namespaces/runner.js";
 import { waitForSpawnAck } from "../ws/runner-control.js";
 import { requireSession, validateApiKey } from "../middleware.js";
-import { getRecentFolders, recordRecentFolder } from "../runner-recent-folders.js";
+import { deleteRecentFolder, getRecentFolders, recordRecentFolder } from "../runner-recent-folders.js";
 import { getHiddenModels } from "../user-hidden-models.js";
 import { cwdMatchesRoots } from "../security.js";
 import { isValidSkillName } from "../validation.js";
@@ -249,6 +249,14 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         if (req.method === "GET") {
             const folders = await getRecentFolders(identity.userId, runnerId);
             return Response.json({ folders });
+        }
+
+        if (req.method === "DELETE") {
+            const body = await req.json().catch(() => null) as Record<string, unknown> | null;
+            const path = typeof body?.path === "string" ? body.path : "";
+            if (!path) return Response.json({ error: "Missing path" }, { status: 400 });
+            const deleted = await deleteRecentFolder(identity.userId, runnerId, path);
+            return Response.json({ ok: true, deleted });
         }
 
         return undefined;
