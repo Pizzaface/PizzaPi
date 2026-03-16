@@ -952,11 +952,15 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
       Promise.resolve(onSendInput(payload))
         .then((result) => {
           if (result !== false) {
-            setInput("");
-            setCommandOpen(false);
-            setCommandQuery("");
-            // Clear the saved draft for the originating session so stale text
-            // isn't rehydrated when switching back after an off-session resolve.
+            // Only clear the live composer if the user is still on the
+            // originating session — otherwise we'd erase the new session's draft.
+            if (sessionIdRef.current === originSessionId) {
+              setInput("");
+              setCommandOpen(false);
+              setCommandQuery("");
+            }
+            // Always clear the saved draft for the originating session so
+            // stale text isn't rehydrated on switch-back.
             if (originSessionId) {
               draftsRef.current.delete(originSessionId);
             }
