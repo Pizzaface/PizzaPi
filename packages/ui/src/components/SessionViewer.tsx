@@ -975,6 +975,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
       { name: "stop", description: "Abort current generation" },
       { name: "restart", description: "Restart the CLI process" },
       { name: "plan", description: "Toggle plan mode (read-only exploration)" },
+      { name: "sandbox", description: "Show sandbox status" },
     ] as Array<{ name: string; description: string; subCommands?: Array<{ name: string; description: string; requiresArg?: boolean }> }>;
   }, []);
 
@@ -2289,6 +2290,23 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                     event.stopPropagation();
                     const newPath = atMentionPath ? `${atMentionPath}${atMentionHighlightedEntry.name}/` : `${atMentionHighlightedEntry.name}/`;
                     handleAtMentionDrillInto(newPath);
+                    return;
+                  }
+
+                  // Arrow key navigation for @-mention popover
+                  if (atMentionOpen && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+                    event.preventDefault();
+                    // Delegate to the popover's keyboard handler by simulating index change.
+                    // The popover tracks items internally, so we nudge its highlighted index
+                    // and it will report back via onHighlightedIndexChange / onHighlightedEntryChange.
+                    const popoverEl = document.querySelector<HTMLElement>("[role='listbox'][aria-label='Mentions']");
+                    if (popoverEl) {
+                      popoverEl.dispatchEvent(new KeyboardEvent("keydown", {
+                        key: event.key,
+                        bubbles: true,
+                        cancelable: true,
+                      }));
+                    }
                     return;
                   }
 
