@@ -114,6 +114,8 @@ You can also override any setting with **environment variables**.
 | `sandbox.filesystem.allowWrite` | `string[]` | `[".", "/tmp"]` | Paths allowed for writing (replaces preset when set). |
 | `sandbox.filesystem.denyWrite` | `string[]` | *merged with preset* | Additional paths blocked from writing. |
 | `slowStartupWarning` | `boolean` | `true` | Show warnings when startup takes longer than expected (slow MCP servers, etc.). See [Safe Mode](/PizzaPi/security/sandbox/). |
+| `subagent.maxParallelTasks` | `number` | `8` | Max tasks in a single parallel subagent call. **Global config only.** |
+| `subagent.maxConcurrency` | `number` | `4` | Max concurrent agent sessions running simultaneously. **Global config only.** |
 
 ---
 

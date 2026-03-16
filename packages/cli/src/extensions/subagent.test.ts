@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { formatTokens, formatUsageStats } from "./subagent.js";
+import { mkdtempSync, writeFileSync } from "fs";
+import { join } from "path";
+import { tmpdir } from "os";
+import { formatTokens, formatUsageStats, toFinitePositiveInt } from "./subagent.js";
+import { _setGlobalConfigDir, loadConfig, loadGlobalConfig } from "../config.js";
 
 /**
  * Tests for the subagent tool utility functions.
@@ -140,5 +144,111 @@ describe("SubagentDetails type exports", () => {
         };
         expect(usage.input).toBe(100);
         expect(usage.turns).toBe(1);
+    });
+});
+
+describe("toFinitePositiveInt", () => {
+    test("returns the value for valid positive integers", () => {
+        expect(toFinitePositiveInt(4, 99)).toBe(4);
+        expect(toFinitePositiveInt(1, 99)).toBe(1);
+        expect(toFinitePositiveInt(100, 99)).toBe(100);
+    });
+
+    test("floors floating point values", () => {
+        expect(toFinitePositiveInt(4.7, 99)).toBe(4);
+        expect(toFinitePositiveInt(1.1, 99)).toBe(1);
+    });
+
+    test("coerces numeric strings", () => {
+        expect(toFinitePositiveInt("8", 99)).toBe(8);
+        expect(toFinitePositiveInt("3.9", 99)).toBe(3);
+    });
+
+    test("returns fallback for non-numeric strings", () => {
+        expect(toFinitePositiveInt("fast", 99)).toBe(99);
+        expect(toFinitePositiveInt("", 99)).toBe(99);
+    });
+
+    test("returns fallback for zero, negative, Infinity, NaN", () => {
+        expect(toFinitePositiveInt(0, 99)).toBe(99);
+        expect(toFinitePositiveInt(-1, 99)).toBe(99);
+        expect(toFinitePositiveInt(Infinity, 99)).toBe(99);
+        expect(toFinitePositiveInt(-Infinity, 99)).toBe(99);
+        expect(toFinitePositiveInt(NaN, 99)).toBe(99);
+    });
+
+    test("returns fallback for objects, arrays, null, undefined", () => {
+        expect(toFinitePositiveInt({}, 99)).toBe(99);
+        expect(toFinitePositiveInt([], 99)).toBe(99);
+        expect(toFinitePositiveInt(null, 99)).toBe(99);
+        expect(toFinitePositiveInt(undefined, 99)).toBe(99);
+    });
+});
+
+describe("subagent config", () => {
+    test("loadConfig reads subagent settings", () => {
+        const tmp = mkdtempSync(join(tmpdir(), "subagent-config-"));
+        _setGlobalConfigDir(tmp);
+        writeFileSync(
+            join(tmp, "config.json"),
+            JSON.stringify({
+                subagent: { maxParallelTasks: 16, maxConcurrency: 8 },
+            }),
+        );
+        const config = loadConfig(tmp);
+        expect(config.subagent?.maxParallelTasks).toBe(16);
+        expect(config.subagent?.maxConcurrency).toBe(8);
+        _setGlobalConfigDir(null);
+    });
+
+    test("loadConfig falls back to defaults for non-numeric subagent values", () => {
+        const tmp = mkdtempSync(join(tmpdir(), "subagent-config-"));
+        _setGlobalConfigDir(tmp);
+        writeFileSync(
+            join(tmp, "config.json"),
+            JSON.stringify({
+                subagent: { maxParallelTasks: "fast", maxConcurrency: {} },
+            }),
+        );
+        const config = loadConfig(tmp);
+        // toFinitePositiveInt should reject these at consumption time
+        expect(toFinitePositiveInt(config.subagent?.maxParallelTasks, 8)).toBe(8);
+        expect(toFinitePositiveInt(config.subagent?.maxConcurrency, 4)).toBe(4);
+        _setGlobalConfigDir(null);
+    });
+
+    test("loadConfig returns defaults when subagent is not set", () => {
+        const tmp = mkdtempSync(join(tmpdir(), "subagent-config-"));
+        _setGlobalConfigDir(tmp);
+        writeFileSync(join(tmp, "config.json"), JSON.stringify({}));
+        const config = loadConfig(tmp);
+        expect(config.subagent).toBeUndefined();
+        _setGlobalConfigDir(null);
+    });
+
+    test("project config cannot override global subagent limits via loadGlobalConfig", () => {
+        const tmp = mkdtempSync(join(tmpdir(), "subagent-config-"));
+        _setGlobalConfigDir(tmp);
+        // Global config sets conservative limits
+        writeFileSync(
+            join(tmp, "config.json"),
+            JSON.stringify({ subagent: { maxParallelTasks: 4, maxConcurrency: 2 } }),
+        );
+        // Create a project dir with aggressive limits
+        const projectDir = mkdtempSync(join(tmpdir(), "subagent-project-"));
+        const { mkdirSync } = require("fs");
+        mkdirSync(join(projectDir, ".pizzapi"), { recursive: true });
+        writeFileSync(
+            join(projectDir, ".pizzapi", "config.json"),
+            JSON.stringify({ subagent: { maxParallelTasks: 100, maxConcurrency: 50 } }),
+        );
+        // loadGlobalConfig ignores project config entirely
+        const globalConfig = loadGlobalConfig();
+        expect(toFinitePositiveInt(globalConfig.subagent?.maxParallelTasks, 8)).toBe(4);
+        expect(toFinitePositiveInt(globalConfig.subagent?.maxConcurrency, 4)).toBe(2);
+        // loadConfig would merge project over global — verify the difference
+        const mergedConfig = loadConfig(projectDir);
+        expect(mergedConfig.subagent?.maxParallelTasks).toBe(100); // project wins in merged
+        _setGlobalConfigDir(null);
     });
 });

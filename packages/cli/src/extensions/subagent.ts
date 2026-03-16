@@ -39,13 +39,20 @@ import {
 import { Container, Markdown, Spacer, Text } from "@mariozechner/pi-tui";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./subagent-agents.js";
 import { getPluginAgentPaths } from "./claude-plugins.js";
-import { defaultAgentDir } from "../config.js";
+import { defaultAgentDir, loadGlobalConfig } from "../config.js";
 
 // ── Constants ──────────────────────────────────────────────────────────
 
-const MAX_PARALLEL_TASKS = 8;
-const MAX_CONCURRENCY = 4;
+const DEFAULT_MAX_PARALLEL_TASKS = 8;
+const DEFAULT_MAX_CONCURRENCY = 4;
 const COLLAPSED_ITEM_COUNT = 10;
+
+/** Coerce an unknown config value to a finite positive integer, or return the fallback. */
+export function toFinitePositiveInt(value: unknown, fallback: number): number {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < 1) return fallback;
+    return Math.floor(n);
+}
 
 // ── Usage formatting helpers ───────────────────────────────────────────
 
@@ -533,6 +540,12 @@ export const subagentExtension = (pi: ExtensionAPI) => {
         parameters: SubagentParams as any,
 
         async execute(_toolCallId, rawParams, signal, onUpdate, ctx) {
+            // Read concurrency limits from global config only — project-local
+            // config must not be able to raise fan-out limits for untrusted repos.
+            const globalConfig = loadGlobalConfig();
+            const maxParallelTasks = toFinitePositiveInt(globalConfig.subagent?.maxParallelTasks, DEFAULT_MAX_PARALLEL_TASKS);
+            const maxConcurrency = toFinitePositiveInt(globalConfig.subagent?.maxConcurrency, DEFAULT_MAX_CONCURRENCY);
+
             const params = (rawParams ?? {}) as {
                 agent?: string;
                 task?: string;
@@ -660,10 +673,10 @@ export const subagentExtension = (pi: ExtensionAPI) => {
 
             // ── Parallel mode ──────────────────────────────────────────
             if (params.tasks && params.tasks.length > 0) {
-                if (params.tasks.length > MAX_PARALLEL_TASKS)
+                if (params.tasks.length > maxParallelTasks)
                     return {
                         content: [
-                            { type: "text", text: `Too many parallel tasks (${params.tasks.length}). Max is ${MAX_PARALLEL_TASKS}.` },
+                            { type: "text", text: `Too many parallel tasks (${params.tasks.length}). Max is ${maxParallelTasks}.` },
                         ],
                         details: makeDetails("parallel")([]),
                     };
@@ -692,7 +705,7 @@ export const subagentExtension = (pi: ExtensionAPI) => {
                     }
                 };
 
-                const results = await mapWithConcurrencyLimit(params.tasks, MAX_CONCURRENCY, async (t, index) => {
+                const results = await mapWithConcurrencyLimit(params.tasks, maxConcurrency, async (t, index) => {
                     const result = await runSingleAgent(
                         ctx.cwd, agents, t.agent, t.task, t.cwd, undefined, signal,
                         (partial) => {

@@ -508,6 +508,9 @@ function SessionSkeleton() {
 
 export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, pendingPlan, pluginTrustPrompt, onPluginTrustResponse, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, isCompacting, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], planModeEnabled, runnerId, sessionCwd, onAppendSystemMessage, onSpawnAgentSession, onTriggerResponse }: SessionViewerProps) {
   const [input, setInput] = React.useState("");
+  // Per-session draft storage so switching sessions preserves unsent text
+  const draftsRef = React.useRef<Map<string, string>>(new Map());
+  const prevSessionIdRef = React.useRef<string | null>(null);
   const [composerError, setComposerError] = React.useState<string | null>(null);
   const [showClearDialog, setShowClearDialog] = React.useState(false);
   const [showEndSessionDialog, setShowEndSessionDialog] = React.useState(false);
@@ -548,10 +551,26 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
   const [atMentionHighlightedAgent, setAtMentionHighlightedAgent] = React.useState<string | null>(null);
 
   React.useEffect(() => {
-    if (!sessionId) {
+    // Save the current draft for the previous session
+    const prevId = prevSessionIdRef.current;
+    if (prevId) {
+      draftsRef.current.set(prevId, input);
+    }
+    // Restore the draft for the new session (or clear if null)
+    if (sessionId) {
+      setInput(draftsRef.current.get(sessionId) ?? "");
+    } else {
       setInput("");
     }
+    prevSessionIdRef.current = sessionId ?? null;
     setComposerError(null);
+    // Reset command picker / @-mention popover so stale state from the
+    // previous session's slash-command input doesn't bleed through.
+    setCommandOpen(false);
+    setCommandQuery("");
+    setCommandHighlightedIndex(0);
+    setAtMentionOpen(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally reading `input` at transition time only
   }, [sessionId]);
 
   // Reset the compacting guard when the heartbeat confirms compact is done
@@ -932,12 +951,31 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
         ? { ...message, deliverAs: deliveryMode }
         : message;
 
+      // Capture the originating sessionId and the text being sent so we can
+      // correctly clear state even if the user switches sessions before the
+      // async send resolves.
+      const originSessionId = sessionId;
+      const sentText = text;
+
       Promise.resolve(onSendInput(payload))
         .then((result) => {
           if (result !== false) {
-            setInput("");
-            setCommandOpen(false);
-            setCommandQuery("");
+            if (sessionIdRef.current === originSessionId) {
+              // Still on the originating session — clear live composer state.
+              setInput("");
+              setCommandOpen(false);
+              setCommandQuery("");
+              draftsRef.current.delete(originSessionId);
+            } else if (originSessionId) {
+              // User switched away. Only clear the saved draft if it still
+              // matches what was sent — if the user typed new text after
+              // submitting (before switching), the switch effect saved the
+              // newer draft and we must not clobber it.
+              const saved = draftsRef.current.get(originSessionId)?.trim();
+              if (saved === sentText || saved === undefined || saved === "") {
+                draftsRef.current.delete(originSessionId);
+              }
+            }
           } else {
             setComposerError("Failed to send message.");
           }
@@ -2154,6 +2192,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
         )}
 
         <PromptInput
+          key={sessionId ?? "__none"}
           onSubmit={handleSubmit}
           maxFiles={8}
           maxFileSize={20 * 1024 * 1024}
