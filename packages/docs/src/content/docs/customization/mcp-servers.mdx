@@ -1,0 +1,229 @@
+---
+title: MCP Servers
+description: Connect Model Context Protocol servers to give the agent additional tools — web search, databases, custom APIs, and more.
+---
+
+import { Aside, Tabs, TabItem, Code } from '@astrojs/starlight/components';
+
+## What Are MCP Servers
+
+MCP (Model Context Protocol) servers expose additional tools the agent can call alongside its built-in tools like `bash`, `read`, `write`, and `edit`. Each MCP server is a separate process or remote endpoint that advertises one or more tools over a standardized protocol. Common examples include web search (Tavily, Brave Search), database queries (PostgreSQL, SQLite), extended file system access, GitHub/GitLab integrations, and custom internal APIs. Once connected, the agent sees MCP tools exactly like built-in ones and can call them in any session.
+
+## Configuration
+
+MCP servers are configured in JSON config files:
+
+- **`~/.pizzapi/config.json`** (global) — servers defined here are available in all sessions.
+- **`.pizzapi/config.json`** (project-local, at the repo root) — servers defined here are scoped to this project only.
+
+Two config formats are supported:
+
+<Tabs>
+  <TabItem label="mcpServers (preferred)">
+    The `mcpServers` format uses an object where each key is the server name. This is compatible with Claude Code and VS Code configurations.
+
+    ```jsonc
+    // ~/.pizzapi/config.json
+    {
+      "mcpServers": {
+        "tavily": {
+          "command": "npx",
+          "args": ["-y", "@tavily/mcp-server"],
+          "env": { "TAVILY_API_KEY": "tvly-..." }
+        },
+        "filesystem": {
+          "command": "npx",
+          "args": ["-y", "@anthropic/mcp-filesystem"],
+          "env": {}
+        }
+      }
+    }
+    ```
+  </TabItem>
+  <TabItem label="mcp.servers (array)">
+    The `mcp.servers` format uses an array of server objects, each with an explicit `name` field.
+
+    ```jsonc
+    // ~/.pizzapi/config.json
+    {
+      "mcp": {
+        "servers": [
+          {
+            "name": "tavily",
+            "command": "npx",
+            "args": ["-y", "@tavily/mcp-server"],
+            "env": { "TAVILY_API_KEY": "tvly-..." }
+          },
+          {
+            "name": "filesystem",
+            "command": "npx",
+            "args": ["-y", "@anthropic/mcp-filesystem"],
+            "env": {}
+          }
+        ]
+      }
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+Project-local config overrides global config **by top-level key**. If your project `.pizzapi/config.json` defines `mcpServers`, it replaces the entire global `mcpServers` object — the two are not merged. To use a global server alongside project-specific ones, redeclare it in the project config.
+
+See the [Configuration guide](/PizzaPi/customization/configuration/) for full details on config file loading and precedence.
+
+## STDIO Transport
+
+STDIO is the most common transport. PizzaPi spawns the MCP server as a child process and communicates over stdin/stdout.
+
+```jsonc
+{
+  "mcpServers": {
+    "tavily": {
+      "command": "npx",
+      "args": ["-y", "@tavily/mcp-server"],
+      "env": { "TAVILY_API_KEY": "tvly-..." }
+    }
+  }
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `command` | `string` | ✅ | Executable to run (e.g. `npx`, `node`, `python`). |
+| `args` | `string[]` | — | Arguments passed to the command. |
+| `env` | `Record<string, string>` | — | Environment variables set for the child process. These are merged with the current environment. |
+| `cwd` | `string` | — | Working directory for the child process. Defaults to the current project root. |
+
+## HTTP / Streamable HTTP Transport
+
+For remote MCP servers, use URL-based configuration instead of spawning a local process.
+
+```jsonc
+{
+  "mcpServers": {
+    "remote-tools": {
+      "url": "https://mcp.example.com/sse",
+      "transport": "sse"
+    }
+  }
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `url` | `string` | ✅ | Full URL of the MCP server endpoint. |
+| `transport` | `"sse"` \| `"streamable"` | — | Transport mode. `"sse"` uses Server-Sent Events; `"streamable"` uses the newer Streamable HTTP protocol. If omitted, PizzaPi infers the transport from the URL path. |
+| `headers` | `Record<string, string>` | — | Custom HTTP headers sent with every request (e.g. API keys, auth tokens). |
+| `type` | `"http"` | — | Setting `type` to `"http"` selects Streamable HTTP transport. This matches the Claude Code / VS Code format. |
+
+## OAuth for HTTP Servers
+
+Some HTTP MCP servers require OAuth authentication. PizzaPi handles the OAuth flow automatically — when a server requires auth, it opens a browser window for the OAuth consent flow and stores the resulting token for future sessions. When connected to a relay server (e.g. via `pizza web`), the OAuth callback routes through the relay so the flow works for remote sessions too.
+
+<Aside type="caution">
+  OAuth support for MCP servers is somewhat experimental. If you encounter issues with token refresh or callback URLs, try disconnecting and re-authenticating by removing the stored token and reloading the server with `/mcp reload`.
+</Aside>
+
+## Managing Servers at Runtime
+
+Use the `/mcp` slash command to inspect and manage MCP servers without restarting your session:
+
+| Command | Description |
+|---------|-------------|
+| `/mcp` | Show status of all connected servers — tool count, connection timing, errors, and which config file each server came from. |
+| `/mcp reload` | Disconnect and reconnect all MCP servers. Useful after editing config files or if a server crashed. |
+| `/mcp disable <name>` | Disable a server by name. The server is disconnected and added to `disabledMcpServers` in your config so it stays disabled across sessions. |
+| `/mcp enable <name>` | Re-enable a previously disabled server and reconnect it. |
+
+<Aside type="note">
+  Servers disabled in the global `~/.pizzapi/config.json` (via `disabledMcpServers`) cannot be re-enabled from a project-local config. Remove the entry from the global config to re-enable them.
+</Aside>
+
+## Troubleshooting
+
+**Server timeout on startup** — MCP servers must respond within `mcpTimeout` milliseconds (default: `30000`, i.e. 30 seconds). If a server needs more time to initialize, increase the timeout in your config:
+
+```jsonc
+{
+  "mcpTimeout": 60000,
+  "mcpServers": { ... }
+}
+```
+
+**Skip all MCP servers** — To start a session without any MCP servers (useful for debugging), set the environment variable or flag:
+
+```bash
+PIZZAPI_NO_MCP=1 pizza
+# or
+pizza --no-mcp
+```
+
+**Server not found** — Run `/mcp` to see which config files were loaded and which servers were discovered. Check that your config file is in the right location (`~/.pizzapi/config.json` for global, `.pizzapi/config.json` at the repo root for project-local).
+
+**All servers initialize in parallel** — Multiple slow servers don't stack their startup times. If one server takes 10 seconds and another takes 15 seconds, total startup is ~15 seconds, not 25.
+
+<Aside type="caution">
+  MCP servers launched via `npx` (e.g. `npx -y @tavily/mcp-server`) download the package on first run. This initial download can take 30+ seconds and is a common cause of timeout errors. Run the `npx` command manually once before adding it to your config, or increase `mcpTimeout` for the first session.
+</Aside>
+
+## Examples
+
+### Tavily Web Search (STDIO)
+
+Gives the agent a `tavily_search` tool for real-time web search. Get an API key at [tavily.com](https://tavily.com).
+
+```jsonc
+{
+  "mcpServers": {
+    "tavily": {
+      "command": "npx",
+      "args": ["-y", "@tavily/mcp-server"],
+      "env": {
+        "TAVILY_API_KEY": "tvly-your-api-key-here"
+      }
+    }
+  }
+}
+```
+
+### Filesystem MCP Server (STDIO)
+
+Gives the agent tools to list directories, read files, search, and get file metadata outside the working directory. Useful for accessing reference projects or shared assets.
+
+```jsonc
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@anthropic/mcp-filesystem",
+        "/Users/jordan/Documents/reference",
+        "/Users/jordan/Documents/shared-assets"
+      ],
+      "env": {}
+    }
+  }
+}
+```
+
+The paths passed as arguments define the allowed directories the server can access.
+
+### Remote HTTP Server with Auth Headers
+
+Connects to a remote MCP server that requires an API key via HTTP header.
+
+```jsonc
+{
+  "mcpServers": {
+    "internal-tools": {
+      "url": "https://mcp.internal.example.com/v1/mcp",
+      "transport": "streamable",
+      "headers": {
+        "Authorization": "Bearer your-api-token",
+        "X-Team-Id": "engineering"
+      }
+    }
+  }
+}
+```
