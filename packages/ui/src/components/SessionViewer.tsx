@@ -971,8 +971,8 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
               // matches what was sent — if the user typed new text after
               // submitting (before switching), the switch effect saved the
               // newer draft and we must not clobber it.
-              const saved = draftsRef.current.get(originSessionId);
-              if (saved === sentText || saved === "") {
+              const saved = draftsRef.current.get(originSessionId)?.trim();
+              if (saved === sentText || saved === undefined || saved === "") {
                 draftsRef.current.delete(originSessionId);
               }
             }
