@@ -10,6 +10,7 @@ import { cn } from "@/lib/utils";
 import { Skeleton } from "@/components/ui/skeleton";
 import { RevealedSecretBanner } from "@/components/ui/revealed-secret";
 import { Spinner } from "@/components/ui/spinner";
+import { isRunnerKey } from "@/components/RunnerTokenManager";
 
 function DeleteKeyButton({ onDelete, isDeleting }: { onDelete: () => void; isDeleting: boolean }) {
     const [confirming, setConfirming] = React.useState(false);
@@ -77,7 +78,7 @@ interface ApiKey {
     enabled: boolean;
 }
 
-export function ApiKeyManager() {
+export function ApiKeyManager({ onKeysChanged, refreshSignal }: { onKeysChanged?: () => void; refreshSignal?: number } = {}) {
     const [keys, setKeys] = React.useState<ApiKey[]>([]);
     const [loading, setLoading] = React.useState(true);
     const [creating, setCreating] = React.useState(false);
@@ -93,7 +94,8 @@ export function ApiKeyManager() {
             if (error) {
                 setError((error as any)?.message ?? "Failed to load API keys");
             } else {
-                setKeys(data ?? []);
+                // Filter out runner keys — those are managed by RunnerTokenManager
+                setKeys((data ?? []).filter((k) => !isRunnerKey(k)));
             }
         } catch (e) {
             setError(e instanceof Error ? e.message : "Failed to load API keys");
@@ -104,7 +106,7 @@ export function ApiKeyManager() {
 
     React.useEffect(() => {
         loadKeys();
-    }, []);
+    }, [refreshSignal]);
 
     async function handleCreate(e: React.FormEvent) {
         e.preventDefault();
@@ -121,6 +123,7 @@ export function ApiKeyManager() {
                 setNewKeyValue((data as any)?.key ?? null);
                 setNewKeyName("");
                 await loadKeys();
+                onKeysChanged?.();
             }
         } catch (e) {
             setError(e instanceof Error ? e.message : "Failed to create API key");
@@ -141,6 +144,7 @@ export function ApiKeyManager() {
                 setError((error as any)?.message ?? "Failed to delete API key");
             } else {
                 await loadKeys();
+                onKeysChanged?.();
             }
         } catch (e) {
             setError(e instanceof Error ? e.message : "Failed to delete API key");

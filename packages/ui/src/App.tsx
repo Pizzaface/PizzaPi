@@ -134,6 +134,18 @@ function getAssistantToolCallIds(msg: RelayMessage): string[] {
   return ids;
 }
 
+/** Extract concatenated text content from an assistant message for dedup comparison. */
+function extractAssistantText(msg: RelayMessage): string {
+  if (msg.role !== "assistant" || !Array.isArray(msg.content)) return "";
+  let text = "";
+  for (const block of msg.content) {
+    if (!block || typeof block !== "object") continue;
+    const b = block as Record<string, unknown>;
+    if (b.type === "text" && typeof b.text === "string") text += b.text;
+  }
+  return text;
+}
+
 function normalizeMessages(rawMessages: unknown[]): RelayMessage[] {
   const all = rawMessages
     .map((m, i) => toRelayMessage(m, `snapshot-${i}`))
@@ -173,6 +185,26 @@ function normalizeMessages(rawMessages: unknown[]): RelayMessage[] {
     const ids = getAssistantToolCallIds(cur);
     if (ids.length > 0 && ids.some((id) => timestampedToolCallIds.has(id))) {
       dropIndices.add(i);
+      continue;
+    }
+
+    // Text-prefix heuristic: if this no-timestamp message has no toolCallIds,
+    // check if any later timestamped assistant message contains the same text
+    // (the partial is a prefix of the final). This catches text-only streaming
+    // partials that survive alongside the final message (e.g. after web_search).
+    if (ids.length === 0) {
+      const curText = extractAssistantText(cur);
+      if (curText) {
+        for (let j = i + 1; j < all.length; j++) {
+          const candidate = all[j];
+          if (candidate.role !== "assistant" || candidate.timestamp === undefined) continue;
+          const candidateText = extractAssistantText(candidate);
+          if (candidateText && candidateText.startsWith(curText)) {
+            dropIndices.add(i);
+            break;
+          }
+        }
+      }
     }
   }
 
@@ -225,6 +257,13 @@ interface SessionUiCacheEntry {
   providerUsage: ProviderUsageMap | null;
   lastHeartbeatAt: number | null;
   todoList: TodoItem[];
+  pendingQuestion: { toolCallId: string; questions: Array<{ question: string; options: string[]; type?: import("@/lib/ask-user-questions").QuestionType }>; display: QuestionDisplayMode } | null;
+  pendingPlan: {
+    toolCallId: string;
+    title: string;
+    description: string | null;
+    steps: Array<{ title: string; description?: string }>;
+  } | null;
 }
 
 function normalizeModel(raw: unknown): ConfiguredModelInfo | null {
@@ -294,6 +333,7 @@ export function App() {
   const [retryState, setRetryState] = React.useState<{ errorMessage: string; detectedAt: number } | null>(null);
   const [relayStatus, setRelayStatus] = React.useState<DotState>("connecting");
   const [showApiKeys, setShowApiKeys] = React.useState(false);
+  const [apiKeyVersion, setApiKeyVersion] = React.useState(0);
   const [showRunners, setShowRunners] = React.useState(false);
   const [showTerminal, setShowTerminal] = React.useState(false);
   const [terminalPosition, setTerminalPosition] = React.useState<"bottom" | "right" | "left">(() => {
@@ -898,6 +938,8 @@ export function App() {
       providerUsage: prev?.providerUsage ?? null,
       lastHeartbeatAt: prev?.lastHeartbeatAt ?? null,
       todoList: prev?.todoList ?? [],
+      pendingQuestion: prev?.pendingQuestion ?? null,
+      pendingPlan: prev?.pendingPlan ?? null,
       ...patch,
     };
 
@@ -1290,18 +1332,22 @@ export function App() {
         if (pq) {
           const questions = parsePendingQuestions(pq);
           if (questions.length > 0) {
-            setPendingQuestion({
+            const resolved = {
               toolCallId: typeof pq.toolCallId === "string" ? pq.toolCallId : getFallbackPromptKey(questions),
               questions,
               display: parsePendingQuestionDisplayMode(pq, questions.length),
-            });
+            };
+            setPendingQuestion(resolved);
+            cachePatch.pendingQuestion = resolved;
             setViewerStatus("Waiting for answer…");
           } else {
             setPendingQuestion(null);
+            cachePatch.pendingQuestion = null;
           }
         } else {
           // Heartbeat explicitly says no pending question; clear any stale state.
           setPendingQuestion(null);
+          cachePatch.pendingQuestion = null;
         }
       }
 
@@ -1319,15 +1365,18 @@ export function App() {
                 s !== null && typeof s === "object" && typeof s.title === "string" && s.title.trim().length > 0,
               )
             : [];
-          setPendingPlan({
+          const resolved = {
             toolCallId: pp.toolCallId,
             title: pp.title.trim(),
             description: typeof pp.description === "string" && pp.description.trim() ? pp.description.trim() : null,
             steps,
-          });
+          };
+          setPendingPlan(resolved);
+          cachePatch.pendingPlan = resolved;
           setViewerStatus("Waiting for plan review…");
         } else {
           setPendingPlan(null);
+          cachePatch.pendingPlan = null;
         }
       }
 
@@ -2208,8 +2257,6 @@ export function App() {
     sessionHydratedRef.current = false;
     setActiveSessionId(relaySessionId);
     setViewerStatus("Connecting…");
-    setPendingQuestion(null);
-    setPendingPlan(null);
     setRetryState(null);
     setActiveToolCalls(new Map());
     setIsChangingModel(false);
@@ -2232,6 +2279,12 @@ export function App() {
     setProviderUsage(cached?.providerUsage ?? null);
     setLastHeartbeatAt(cached?.lastHeartbeatAt ?? null);
     setTodoList(cached?.todoList ?? []);
+    // Don't restore pendingQuestion/pendingPlan from cache — the cache can be
+    // stale if the user answered/rejected before the next heartbeat arrived.
+    // The heartbeat (which arrives within seconds) will restore them with
+    // authoritative values from the runner.
+    setPendingQuestion(null);
+    setPendingPlan(null);
 
     const socket: Socket<ViewerServerToClientEvents, ViewerClientToServerEvents> = io("/viewer", {
       auth: { sessionId: relaySessionId },
@@ -3985,8 +4038,8 @@ export function App() {
             </div>
             <div className="flex-1 overflow-y-auto p-4">
               <div className="flex flex-col gap-4">
-                <ApiKeyManager />
-                <RunnerTokenManager />
+                <ApiKeyManager refreshSignal={apiKeyVersion} onKeysChanged={() => setApiKeyVersion((v) => v + 1)} />
+                <RunnerTokenManager refreshSignal={apiKeyVersion} onKeysChanged={() => setApiKeyVersion((v) => v + 1)} />
               </div>
             </div>
           </div>
