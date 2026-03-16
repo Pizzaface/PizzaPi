@@ -3,6 +3,7 @@ import * as ReactDOM from "react-dom";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Spinner } from "@/components/ui/spinner";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import {
   ChevronRight,
@@ -1062,28 +1063,40 @@ export function FileExplorer({ runnerId, cwd, className, onClose, position = "le
 
         {/* Refresh button for files tab */}
         {tab === "files" && (
-          <button
-            type="button"
-            onClick={fetchFiles}
-            className="text-muted-foreground hover:text-foreground transition-colors px-2 py-1"
-            title="Refresh file list"
-            aria-label="Refresh file list"
-          >
-            <RefreshCw className="size-3.5" />
-          </button>
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  onClick={fetchFiles}
+                  className="text-muted-foreground hover:text-foreground transition-colors px-2 py-1"
+                  aria-label="Refresh file list"
+                >
+                  <RefreshCw className="size-3.5" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent>Refresh file list</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
         )}
 
         {/* Desktop: grip + position buttons + close */}
         <div className="hidden md:flex items-center gap-px pr-1 shrink-0">
           {onDragStart && (
-            <div
-              className="flex items-center justify-center size-7 rounded cursor-grab active:cursor-grabbing text-muted-foreground/60 hover:text-muted-foreground hover:bg-accent transition-colors touch-none select-none"
-              onPointerDown={onDragStart}
-              title="Drag to reposition panel"
-              aria-label="Drag to reposition panel"
-            >
-              <GripHorizontal size={13} />
-            </div>
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <div
+                    className="flex items-center justify-center size-7 rounded cursor-grab active:cursor-grabbing text-muted-foreground/60 hover:text-muted-foreground hover:bg-accent transition-colors touch-none select-none"
+                    onPointerDown={onDragStart}
+                    aria-label="Drag to reposition panel"
+                  >
+                    <GripHorizontal size={13} />
+                  </div>
+                </TooltipTrigger>
+                <TooltipContent>Drag to reposition panel</TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
           )}
           {onPositionChange && (
             <>
@@ -1093,15 +1106,21 @@ export function FileExplorer({ runnerId, cwd, className, onClose, position = "le
             </>
           )}
           {onClose && (
-            <button
-              type="button"
-              onClick={onClose}
-              className="flex items-center justify-center size-7 rounded text-muted-foreground/60 hover:text-foreground hover:bg-accent transition-colors"
-              title="Close file explorer"
-              aria-label="Close file explorer"
-            >
-              <X className="size-3.5" />
-            </button>
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    onClick={onClose}
+                    className="flex items-center justify-center size-7 rounded text-muted-foreground/60 hover:text-foreground hover:bg-accent transition-colors"
+                    aria-label="Close file explorer"
+                  >
+                    <X className="size-3.5" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent>Close file explorer</TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
           )}
         </div>
 
