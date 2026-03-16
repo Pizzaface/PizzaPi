@@ -2181,6 +2181,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
         )}
 
         <PromptInput
+          key={sessionId ?? "__none"}
           onSubmit={handleSubmit}
           maxFiles={8}
           maxFileSize={20 * 1024 * 1024}
