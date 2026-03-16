@@ -728,6 +728,10 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     }
 
     if (rawCommand === "sandbox") {
+      // Subcommands like "violations" and "config" are handled by the CLI's
+      // sandbox-events extension — let them pass through as session input.
+      if (args.trim()) return false;
+
       if (!runnerId) {
         setInput("");
         setCommandOpen(false);
