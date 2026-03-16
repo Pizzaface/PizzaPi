@@ -42,6 +42,7 @@ export default defineConfig({
                         { label: "Overview", slug: "index" },
                         { label: "Installation", slug: "start-here/installation" },
                         { label: "Getting Started", slug: "start-here/getting-started" },
+                        { label: "Your First Remote Session", slug: "start-here/first-remote-session" },
                     ],
                 },
                 {
