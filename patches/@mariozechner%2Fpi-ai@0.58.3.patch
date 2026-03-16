@@ -10,39 +10,42 @@ index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2
 diff --git a/node_modules/@mariozechner/pi-ai/.bun-tag-8d8af48225a55c6a b/.bun-tag-8d8af48225a55c6a
 new file mode 100644
 index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+diff --git a/node_modules/@mariozechner/pi-ai/.bun-tag-f6a91c23f3ebaa08 b/.bun-tag-f6a91c23f3ebaa08
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
 diff --git a/dist/providers/anthropic.js b/dist/providers/anthropic.js
-index f574ad921537cf71e1c05c743e0c13688eb36637..031e29f82eed13cd66ad1d9650f0b34b9feedb8c 100644
+index f574ad921537cf71e1c05c743e0c13688eb36637..03a533076fbaf97e5b4c623ef74d2c53eafe370b 100644
 --- a/dist/providers/anthropic.js
 +++ b/dist/providers/anthropic.js
 @@ -209,6 +209,37 @@ export const streamAnthropic = (model, context, options) => {
                          output.content.push(block);
                          stream.push({ type: "toolcall_start", contentIndex: output.content.length - 1, partial: output });
                      }
-+                    // PATCH(pizzapi): handle server_tool_use (web search query) as text
++                    // PATCH(pizzapi): handle server_tool_use (web search query)
++                    // Input arrives empty ({}) at start; actual input streams via
++                    // input_json_delta events, so we accumulate partialJson just
++                    // like regular toolCall blocks. Text is left empty — the UI
++                    // renderer decides how to display web-search blocks using the
++                    // structured _serverToolUse metadata.
 +                    else if (event.content_block.type === "server_tool_use") {
-+                        const searchQuery = event.content_block.input?.query || "";
 +                        const block = {
 +                            type: "text",
-+                            text: `\n🔍 **Web Search:** ${searchQuery}\n`,
++                            text: "",
++                            partialJson: "",
 +                            _serverToolUse: { id: event.content_block.id, name: event.content_block.name, input: event.content_block.input },
 +                            index: event.index,
 +                        };
 +                        output.content.push(block);
 +                        stream.push({ type: "text_start", contentIndex: output.content.length - 1, partial: output });
 +                    }
-+                    // PATCH(pizzapi): handle web_search_tool_result as text with citations
++                    // PATCH(pizzapi): handle web_search_tool_result
++                    // content is a union: Array<WebSearchResultBlock> | WebSearchToolResultError
++                    // — must check Array.isArray before iterating to avoid "{} is not iterable".
++                    // Text is left empty; the UI renderer uses _webSearchResult metadata.
 +                    else if (event.content_block.type === "web_search_tool_result") {
-+                        let resultText = "";
-+                        if (event.content_block.content) {
-+                            for (const r of event.content_block.content) {
-+                                if (r.type === "web_search_result") {
-+                                    resultText += `- [${r.title}](${r.url})\n`;
-+                                }
-+                            }
-+                        }
 +                        const block = {
 +                            type: "text",
-+                            text: resultText ? `\n📋 **Search Results:**\n${resultText}` : "",
++                            text: "",
 +                            _webSearchResult: { tool_use_id: event.content_block.tool_use_id, content: event.content_block.content },
 +                            index: event.index,
 +                        };
@@ -52,7 +55,34 @@ index f574ad921537cf71e1c05c743e0c13688eb36637..031e29f82eed13cd66ad1d9650f0b34b
                  }
                  else if (event.type === "content_block_delta") {
                      if (event.delta.type === "text_delta") {
-@@ -496,6 +527,20 @@ function buildParams(model, context, isOAuthToken, options) {
+@@ -250,6 +281,10 @@ export const streamAnthropic = (model, context, options) => {
+                                 partial: output,
+                             });
+                         }
++                        // PATCH(pizzapi): accumulate input_json_delta for server_tool_use blocks
++                        else if (block && block._serverToolUse && block.partialJson !== undefined) {
++                            block.partialJson += event.delta.partial_json;
++                        }
+                     }
+                     else if (event.delta.type === "signature_delta") {
+                         const index = blocks.findIndex((b) => b.index === event.index);
+@@ -266,6 +301,15 @@ export const streamAnthropic = (model, context, options) => {
+                     if (block) {
+                         delete block.index;
+                         if (block.type === "text") {
++                            // PATCH(pizzapi): finalize server_tool_use input from accumulated JSON
++                            if (block._serverToolUse && block.partialJson) {
++                                try {
++                                    block._serverToolUse.input = JSON.parse(block.partialJson);
++                                } catch (e) {
++                                    block._serverToolUse.input = parseStreamingJson(block.partialJson);
++                                }
++                            }
++                            delete block.partialJson;
+                             stream.push({
+                                 type: "text_end",
+                                 contentIndex: index,
+@@ -496,6 +540,20 @@ function buildParams(model, context, isOAuthToken, options) {
      if (context.tools) {
          params.tools = convertTools(context.tools, isOAuthToken);
      }
@@ -73,7 +103,7 @@ index f574ad921537cf71e1c05c743e0c13688eb36637..031e29f82eed13cd66ad1d9650f0b34b
      // Configure thinking mode: adaptive (Opus 4.6 and Sonnet 4.6) or budget-based (older models)
      if (options?.thinkingEnabled && model.reasoning) {
          if (supportsAdaptiveThinking(model.id)) {
-@@ -585,7 +630,25 @@ function convertMessages(messages, model, isOAuthToken, cacheControl) {
+@@ -585,7 +643,25 @@ function convertMessages(messages, model, isOAuthToken, cacheControl) {
          else if (msg.role === "assistant") {
              const blocks = [];
              for (const block of msg.content) {
@@ -100,7 +130,7 @@ index f574ad921537cf71e1c05c743e0c13688eb36637..031e29f82eed13cd66ad1d9650f0b34b
                      if (block.text.trim().length === 0)
                          continue;
                      blocks.push({
-@@ -696,6 +759,10 @@ function convertTools(tools, isOAuthToken) {
+@@ -696,6 +772,10 @@ function convertTools(tools, isOAuthToken) {
      if (!tools)
          return [];
      return tools.map((tool) => {

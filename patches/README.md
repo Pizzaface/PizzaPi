@@ -68,8 +68,8 @@ web search use a different format with a `type` field.
 |------|--------|
 | `dist/providers/anthropic.js` — `convertTools()` | Pass through objects that already have a `type` field (server-side tools) instead of converting them |
 | `dist/providers/anthropic.js` — `buildParams()` | Inject web search tool definition when `PIZZAPI_WEB_SEARCH` env var is set |
-| `dist/providers/anthropic.js` — stream handler | Handle `server_tool_use` blocks (search queries) → emit as text blocks with `_serverToolUse` metadata |
-| `dist/providers/anthropic.js` — stream handler | Handle `web_search_tool_result` blocks (results with citations) → emit as text blocks with `_webSearchResult` metadata |
+| `dist/providers/anthropic.js` — stream handler | Handle `server_tool_use` blocks (search queries) → emit as text blocks with `_serverToolUse` metadata; accumulate input via `input_json_delta` events and finalize at `content_block_stop` |
+| `dist/providers/anthropic.js` — stream handler | Handle `web_search_tool_result` blocks → emit as text blocks with `_webSearchResult` metadata; safely handle both array results and `WebSearchToolResultError` objects |
 | `dist/providers/anthropic.js` — `convertMessages()` | Round-trip `_serverToolUse` and `_webSearchResult` blocks back to the API format on subsequent turns |
 
 **Configuration (preferred):**
@@ -116,17 +116,19 @@ Env vars take precedence over config.json if both are set:
 2. Claude decides when to search. The API returns `server_tool_use` (the query)
    and `web_search_tool_result` (the results) content blocks.
 3. These blocks are mapped to `text` content blocks with hidden metadata
-   (`_serverToolUse`, `_webSearchResult`) so they display in the UI and are
-   stored in session history.
-4. On subsequent turns, `convertMessages()` converts them back to the proper
+   (`_serverToolUse`, `_webSearchResult`). The text is left empty — the UI
+   renderer is responsible for presenting web-search blocks using the
+   structured metadata.
+4. For `server_tool_use`, the search query input arrives via `input_json_delta`
+   streaming events (just like regular tool calls). The patch accumulates the
+   partial JSON and finalizes it at `content_block_stop`.
+5. On subsequent turns, `convertMessages()` converts them back to the proper
    API format for context continuity.
 
 **Limitations:**
 
-- Search results appear as markdown text rather than structured citations
-  (pi's content model doesn't have a native citation type).
 - The `web_search_tool_result` content blocks may contain encrypted search
-  result data; only the title/URL are extracted for display.
+  result data; the UI renderer must decide how to present them.
 
 **Tests:** `packages/cli/src/patches.test.ts` verifies patch presence and
 syntactic validity. Run with `bun test packages/cli/src/patches.test.ts`.
