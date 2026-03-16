@@ -1,8 +1,8 @@
 diff --git a/dist/core/extensions/loader.js b/dist/core/extensions/loader.js
-index a69a086d7492b99fc6e7d021e31e9561fd2b1a3a..3025ed381d2cf3e28c65459aa96d9c092c6bdf4c 100644
+index dbea1bc1410bd76d125251b5c74b431e5a2c0c60..e1c571f5369f6e75a549bbc485861683a0f2a9b5 100644
 --- a/dist/core/extensions/loader.js
 +++ b/dist/core/extensions/loader.js
-@@ -107,6 +107,9 @@ export function createExtensionRuntime() {
+@@ -118,6 +118,9 @@ export function createExtensionRuntime() {
          unregisterProvider: (name) => {
              runtime.pendingProviderRegistrations = runtime.pendingProviderRegistrations.filter((r) => r.name !== name);
          },
@@ -12,7 +12,7 @@ index a69a086d7492b99fc6e7d021e31e9561fd2b1a3a..3025ed381d2cf3e28c65459aa96d9c09
      };
      return runtime;
  }
-@@ -200,6 +203,13 @@ function createExtensionAPI(extension, runtime, cwd, eventBus) {
+@@ -211,6 +214,13 @@ function createExtensionAPI(extension, runtime, cwd, eventBus) {
          unregisterProvider(name) {
              runtime.unregisterProvider(name);
          },
@@ -27,7 +27,7 @@ index a69a086d7492b99fc6e7d021e31e9561fd2b1a3a..3025ed381d2cf3e28c65459aa96d9c09
      };
      return api;
 diff --git a/dist/core/extensions/runner.js b/dist/core/extensions/runner.js
-index 6c32bd9438c02e12c40b4f98171b37ab622ed18c..be32027918d34daeb819d7b7a38330cb47384a7b 100644
+index 8ef7aa25255056266cf9103bbd6f14685a09937c..79394dadbd85abef0c8847754289f2ea7abdffda 100644
 --- a/dist/core/extensions/runner.js
 +++ b/dist/core/extensions/runner.js
 @@ -153,6 +153,9 @@ export class ExtensionRunner {
@@ -40,20 +40,21 @@ index 6c32bd9438c02e12c40b4f98171b37ab622ed18c..be32027918d34daeb819d7b7a38330cb
              return;
          }
          this.waitForIdleFn = async () => { };
-@@ -161,6 +164,8 @@ export class ExtensionRunner {
+@@ -161,6 +164,9 @@ export class ExtensionRunner {
          this.navigateTreeHandler = async () => ({ cancelled: false });
          this.switchSessionHandler = async () => ({ cancelled: false });
          this.reloadHandler = async () => { };
++        // PATCH(pizzapi): expose session control on runtime for extension access
 +        this.runtime.newSession = (options) => this.newSessionHandler(options);
 +        this.runtime.switchSession = (sessionPath) => this.switchSessionHandler(sessionPath);
      }
      setUIContext(uiContext) {
          this.uiContext = uiContext ?? noOpUIContext;
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index d257afa404987930ba4de685100f5215dcf05ef0..7cf11d7d65c3450f14b48330790dcc6e0445cabe 100644
+index 038e6600ead762073fda085c806f8aa1eafef9a1..11a82c0fc46f22a71a85654f847543ee5f430cbe 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
-@@ -355,12 +355,6 @@ export class InteractiveMode {
+@@ -354,12 +354,6 @@ export class InteractiveMode {
       */
      async run() {
          await this.init();
@@ -63,16 +64,13 @@ index d257afa404987930ba4de685100f5215dcf05ef0..7cf11d7d65c3450f14b48330790dcc6e
 -                this.showNewVersionNotification(newVersion);
 -            }
 -        });
-         // Show startup warnings
-         const { migratedProviders, modelFallbackMessage, initialMessage, initialImages, initialMessages } = this.options;
-         if (migratedProviders && migratedProviders.length > 0) {
-@@ -406,29 +400,6 @@ export class InteractiveMode {
-             }
-         }
-     }
--    /**
--     * Check npm registry for a newer version.
--     */
+         // Check tmux keyboard setup asynchronously
+         this.checkTmuxKeyboardSetup().then((warning) => {
+             if (warning) {
+@@ -414,26 +408,6 @@ export class InteractiveMode {
+     /**
+      * Check npm registry for a newer version.
+      */
 -    async checkForNewVersion() {
 -        if (process.env.PI_SKIP_VERSION_CHECK || process.env.PI_OFFLINE)
 -            return undefined;
@@ -93,10 +91,10 @@ index d257afa404987930ba4de685100f5215dcf05ef0..7cf11d7d65c3450f14b48330790dcc6e
 -            return undefined;
 -        }
 -    }
-     /**
-      * Get changelog entries to display on startup.
-      * Only shows new entries since last seen version, skips for resumed sessions.
-@@ -2334,17 +2305,6 @@ export class InteractiveMode {
+     async checkTmuxKeyboardSetup() {
+         if (!process.env.TMUX)
+             return undefined;
+@@ -2386,17 +2360,6 @@ export class InteractiveMode {
          this.chatContainer.addChild(new Text(theme.fg("warning", `Warning: ${warningMessage}`), 1, 0));
          this.ui.requestRender();
      }
@@ -114,7 +112,7 @@ index d257afa404987930ba4de685100f5215dcf05ef0..7cf11d7d65c3450f14b48330790dcc6e
      /**
       * Get all queued messages (read-only).
       * Combines session queue and compaction queue.
-@@ -3123,7 +3083,8 @@ export class InteractiveMode {
+@@ -3163,7 +3126,8 @@ export class InteractiveMode {
              restoreEditor();
              this.session.modelRegistry.refresh();
              await this.updateAvailableProviderCount();

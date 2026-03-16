@@ -1,11 +1,11 @@
 /**
- * Patch compatibility tests for @mariozechner/pi-coding-agent.
+ * Patch compatibility tests for @mariozechner/pi-coding-agent and @mariozechner/pi-ai.
  *
- * These tests verify that the bun patches applied to pi-coding-agent
+ * These tests verify that the bun patches applied to upstream pi packages
  * are correctly in place and the patched APIs function as expected.
  *
- * If these tests fail after a pi-coding-agent version bump, you need to
- * recreate the patch. See patches/README.md for details.
+ * If these tests fail after a version bump, you need to recreate the patches.
+ * See patches/README.md for details.
  */
 import { describe, test, expect } from "bun:test";
 import { resolve, dirname } from "path";
@@ -23,6 +23,20 @@ function piCodingAgentPath(subpath: string): string {
     const pkgRoot = resolve(dirname(pkgMain), "..");
     return resolve(pkgRoot, subpath);
 }
+
+/**
+ * Resolve a deep path inside @mariozechner/pi-ai.
+ */
+function piAiPath(subpath: string): string {
+    const pkgMainUrl = import.meta.resolve("@mariozechner/pi-ai");
+    const pkgMain = fileURLToPath(pkgMainUrl);
+    const pkgRoot = resolve(dirname(pkgMain), "..");
+    return resolve(pkgRoot, subpath);
+}
+
+// ===========================================================================
+// pi-coding-agent patches
+// ===========================================================================
 
 // ---------------------------------------------------------------------------
 // 1. Patch presence — verify patched source contains expected code
@@ -167,5 +181,72 @@ describe("pi-coding-agent API surface compatibility", () => {
     test("buildSessionContext is exported", async () => {
         const mod = await import("@mariozechner/pi-coding-agent");
         expect(typeof mod.buildSessionContext).toBe("function");
+    });
+});
+
+// ===========================================================================
+// pi-ai patches (Anthropic web search support)
+// ===========================================================================
+
+describe("pi-ai patch application — Anthropic web search", () => {
+    test("anthropic.js: convertTools passes through server-side tool objects", async () => {
+        const source = await Bun.file(
+            piAiPath("dist/providers/anthropic.js"),
+        ).text();
+
+        // The patch checks for tool.type before converting
+        expect(source).toContain("PATCH(pizzapi): pass through server-side tools");
+        expect(source).toContain('tool.type && typeof tool.type === "string"');
+    });
+
+    test("anthropic.js: buildParams injects web search tool from PI_WEB_SEARCH env", async () => {
+        const source = await Bun.file(
+            piAiPath("dist/providers/anthropic.js"),
+        ).text();
+
+        expect(source).toContain("PATCH(pizzapi): inject Anthropic web search tool");
+        expect(source).toContain("PI_WEB_SEARCH");
+        expect(source).toContain("web_search_20250305");
+        expect(source).toContain("PI_WEB_SEARCH_MAX_USES");
+        expect(source).toContain("PI_WEB_SEARCH_ALLOWED_DOMAINS");
+        expect(source).toContain("PI_WEB_SEARCH_BLOCKED_DOMAINS");
+    });
+
+    test("anthropic.js: stream handler processes server_tool_use blocks", async () => {
+        const source = await Bun.file(
+            piAiPath("dist/providers/anthropic.js"),
+        ).text();
+
+        expect(source).toContain("PATCH(pizzapi): handle server_tool_use");
+        expect(source).toContain('"server_tool_use"');
+        expect(source).toContain("_serverToolUse");
+    });
+
+    test("anthropic.js: stream handler processes web_search_tool_result blocks", async () => {
+        const source = await Bun.file(
+            piAiPath("dist/providers/anthropic.js"),
+        ).text();
+
+        expect(source).toContain("PATCH(pizzapi): handle web_search_tool_result");
+        expect(source).toContain('"web_search_tool_result"');
+        expect(source).toContain("_webSearchResult");
+    });
+
+    test("anthropic.js: convertMessages round-trips server tool blocks", async () => {
+        const source = await Bun.file(
+            piAiPath("dist/providers/anthropic.js"),
+        ).text();
+
+        expect(source).toContain("PATCH(pizzapi): round-trip server tool use");
+        // Verify both server_tool_use and web_search_tool_result are round-tripped
+        expect(source).toContain("block._serverToolUse");
+        expect(source).toContain("block._webSearchResult");
+    });
+
+    test("anthropic.js: file is syntactically valid", async () => {
+        // If the patch broke the JS syntax, this import will throw
+        const mod = await import(piAiPath("dist/providers/anthropic.js"));
+        expect(typeof mod.streamAnthropic).toBe("function");
+        expect(typeof mod.streamSimpleAnthropic).toBe("function");
     });
 });

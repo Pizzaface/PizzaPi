@@ -4,7 +4,7 @@ Patches in this directory are applied automatically by Bun via the
 `patchedDependencies` field in the root `package.json`. They are reapplied on
 every `bun install` — no postinstall script is needed.
 
-## @mariozechner/pi-coding-agent@0.55.4
+## @mariozechner/pi-coding-agent@0.58.3
 
 **Purpose:** Two changes:
 
@@ -15,6 +15,10 @@ every `bun install` — no postinstall script is needed.
 2. **Remove version check:** Disable the npm registry version check and
    "Update Available" notification on startup (not relevant for PizzaPi's
    headless runner mode).
+
+3. **Auth path display:** Show the actual auth path from the model registry
+   instead of the hardcoded default, so the login message is accurate when
+   PizzaPi overrides the auth file location.
 
 **Why this is needed:** Upstream `ExtensionAPI` only exposes session control
 methods on `ExtensionCommandContext`, which is only available inside registered
@@ -32,6 +36,7 @@ work from anywhere in the extension.
 | `dist/core/extensions/runner.js` — `bindCommandContext()` | Copies real `newSessionHandler` / `switchSessionHandler` onto the runtime object |
 | `dist/modes/interactive/interactive-mode.js` — `run()` | Removes `checkForNewVersion()` call |
 | `dist/modes/interactive/interactive-mode.js` | Removes `checkForNewVersion()` and `showNewVersionNotification()` methods |
+| `dist/modes/interactive/interactive-mode.js` — login flow | Uses `authStorage.storage?.authPath` instead of `getAuthPath()` |
 
 **Tests:** `packages/cli/src/patches.test.ts` verifies both patch application
 (source inspection) and functional behavior (runtime method stubs, assignment,
@@ -43,7 +48,81 @@ deleted and the `patchedDependencies` entry removed from `package.json`. The
 call sites in `packages/cli/src/extensions/remote.ts` should then be updated to
 use the typed API.
 
+## @mariozechner/pi-ai@0.58.3
+
+**Purpose:** Add support for Anthropic's native web search tool
+(`web_search_20250305`), which is a server-side tool that lets Claude search
+the web during conversations without requiring an MCP server or external search
+tool.
+
+**Why this is needed:** The upstream `anthropic.js` provider only handles three
+content block types: `text`, `thinking`, and `tool_use`. The web search API
+returns `server_tool_use` and `web_search_tool_result` content blocks that are
+silently dropped. Additionally, `convertTools()` assumes all tools follow the
+standard `{name, description, input_schema}` shape, but server-side tools like
+web search use a different format with a `type` field.
+
+**What it changes:**
+
+| File | Change |
+|------|--------|
+| `dist/providers/anthropic.js` — `convertTools()` | Pass through objects that already have a `type` field (server-side tools) instead of converting them |
+| `dist/providers/anthropic.js` — `buildParams()` | Inject web search tool definition when `PI_WEB_SEARCH` env var is set |
+| `dist/providers/anthropic.js` — stream handler | Handle `server_tool_use` blocks (search queries) → emit as text blocks with `_serverToolUse` metadata |
+| `dist/providers/anthropic.js` — stream handler | Handle `web_search_tool_result` blocks (results with citations) → emit as text blocks with `_webSearchResult` metadata |
+| `dist/providers/anthropic.js` — `convertMessages()` | Round-trip `_serverToolUse` and `_webSearchResult` blocks back to the API format on subsequent turns |
+
+**Environment variables:**
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `PI_WEB_SEARCH` | Set to any truthy value to enable web search | (disabled) |
+| `PI_WEB_SEARCH_MAX_USES` | Maximum number of searches per request | `5` |
+| `PI_WEB_SEARCH_ALLOWED_DOMAINS` | Comma-separated list of allowed domains | (all) |
+| `PI_WEB_SEARCH_BLOCKED_DOMAINS` | Comma-separated list of blocked domains | (none) |
+
+**Usage:**
+
+```bash
+# Enable web search
+PI_WEB_SEARCH=1 pizza runner
+
+# With domain restrictions
+PI_WEB_SEARCH=1 PI_WEB_SEARCH_ALLOWED_DOMAINS="docs.python.org,stackoverflow.com" pizza runner
+```
+
+**How it works:**
+
+1. When `PI_WEB_SEARCH` is set, `buildParams()` appends a `web_search_20250305`
+   tool definition to the tools array.
+2. Claude decides when to search. The API returns `server_tool_use` (the query)
+   and `web_search_tool_result` (the results) content blocks.
+3. These blocks are mapped to `text` content blocks with hidden metadata
+   (`_serverToolUse`, `_webSearchResult`) so they display in the UI and are
+   stored in session history.
+4. On subsequent turns, `convertMessages()` converts them back to the proper
+   API format for context continuity.
+
+**Limitations:**
+
+- Search results appear as markdown text rather than structured citations
+  (pi's content model doesn't have a native citation type).
+- The `web_search_tool_result` content blocks may contain encrypted search
+  result data; only the title/URL are extracted for display.
+- Requires Anthropic API key (not OAuth/Claude Pro subscription) with web
+  search enabled in the Claude Console.
+
+**Tests:** `packages/cli/src/patches.test.ts` verifies patch presence and
+syntactic validity. Run with `bun test packages/cli/src/patches.test.ts`.
+
+**Removing this patch:** If upstream pi-ai adds native web search support,
+this patch can be deleted.
+
 ## Previously patched (no longer needed)
+
+### @mariozechner/pi-coding-agent@0.55.4 (replaced by 0.58.3 patch)
+
+Same purpose as the current patch, just targeting an older version.
 
 ### @mariozechner/pi-ai (removed in 0.55.1 upgrade)
 

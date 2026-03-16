@@ -1,0 +1,97 @@
+diff --git a/dist/providers/anthropic.js b/dist/providers/anthropic.js
+index f574ad921537cf71e1c05c743e0c13688eb36637..63090794744ef17b13125b60b8b34e90d5f8eb9d 100644
+--- a/dist/providers/anthropic.js
++++ b/dist/providers/anthropic.js
+@@ -209,6 +209,37 @@ export const streamAnthropic = (model, context, options) => {
+                         output.content.push(block);
+                         stream.push({ type: "toolcall_start", contentIndex: output.content.length - 1, partial: output });
+                     }
++                    // PATCH(pizzapi): handle server_tool_use (web search query) as text
++                    else if (event.content_block.type === "server_tool_use") {
++                        const searchQuery = event.content_block.input?.query || "";
++                        const block = {
++                            type: "text",
++                            text: `\n🔍 **Web Search:** ${searchQuery}\n`,
++                            _serverToolUse: { id: event.content_block.id, name: event.content_block.name, input: event.content_block.input },
++                            index: event.index,
++                        };
++                        output.content.push(block);
++                        stream.push({ type: "text_start", contentIndex: output.content.length - 1, partial: output });
++                    }
++                    // PATCH(pizzapi): handle web_search_tool_result as text with citations
++                    else if (event.content_block.type === "web_search_tool_result") {
++                        let resultText = "";
++                        if (event.content_block.content) {
++                            for (const r of event.content_block.content) {
++                                if (r.type === "web_search_result") {
++                                    resultText += `- [${r.title}](${r.url})\n`;
++                                }
++                            }
++                        }
++                        const block = {
++                            type: "text",
++                            text: resultText ? `\n📋 **Search Results:**\n${resultText}` : "",
++                            _webSearchResult: { tool_use_id: event.content_block.tool_use_id, content: event.content_block.content },
++                            index: event.index,
++                        };
++                        output.content.push(block);
++                        stream.push({ type: "text_start", contentIndex: output.content.length - 1, partial: output });
++                    }
+                 }
+                 else if (event.type === "content_block_delta") {
+                     if (event.delta.type === "text_delta") {
+@@ -496,6 +527,20 @@ function buildParams(model, context, isOAuthToken, options) {
+     if (context.tools) {
+         params.tools = convertTools(context.tools, isOAuthToken);
+     }
++    // PATCH(pizzapi): inject Anthropic web search tool when PI_WEB_SEARCH is set
++    if (typeof process !== "undefined" && process.env.PI_WEB_SEARCH) {
++        if (!params.tools) params.tools = [];
++        const webSearchTool = { type: "web_search_20250305", name: "web_search" };
++        const maxUses = parseInt(process.env.PI_WEB_SEARCH_MAX_USES || "5", 10);
++        if (maxUses > 0) webSearchTool.max_uses = maxUses;
++        if (process.env.PI_WEB_SEARCH_ALLOWED_DOMAINS) {
++            webSearchTool.allowed_domains = process.env.PI_WEB_SEARCH_ALLOWED_DOMAINS.split(",").map(d => d.trim());
++        }
++        if (process.env.PI_WEB_SEARCH_BLOCKED_DOMAINS) {
++            webSearchTool.blocked_domains = process.env.PI_WEB_SEARCH_BLOCKED_DOMAINS.split(",").map(d => d.trim());
++        }
++        params.tools.push(webSearchTool);
++    }
+     // Configure thinking mode: adaptive (Opus 4.6 and Sonnet 4.6) or budget-based (older models)
+     if (options?.thinkingEnabled && model.reasoning) {
+         if (supportsAdaptiveThinking(model.id)) {
+@@ -629,6 +674,22 @@ function convertMessages(messages, model, isOAuthToken, cacheControl) {
+                         input: block.arguments ?? {},
+                     });
+                 }
++                // PATCH(pizzapi): round-trip server tool use and web search results
++                else if (block.type === "text" && block._serverToolUse) {
++                    blocks.push({
++                        type: "server_tool_use",
++                        id: block._serverToolUse.id,
++                        name: block._serverToolUse.name,
++                        input: block._serverToolUse.input,
++                    });
++                }
++                else if (block.type === "text" && block._webSearchResult) {
++                    blocks.push({
++                        type: "web_search_tool_result",
++                        tool_use_id: block._webSearchResult.tool_use_id,
++                        content: block._webSearchResult.content,
++                    });
++                }
+             }
+             if (blocks.length === 0)
+                 continue;
+@@ -696,6 +757,10 @@ function convertTools(tools, isOAuthToken) {
+     if (!tools)
+         return [];
+     return tools.map((tool) => {
++        // PATCH(pizzapi): pass through server-side tools (e.g., web_search) as-is
++        if (tool.type && typeof tool.type === "string") {
++            return tool;
++        }
+         const jsonSchema = tool.parameters; // TypeBox already generates JSON Schema
+         return {
+             name: isOAuthToken ? toClaudeCodeName(tool.name) : tool.name,
