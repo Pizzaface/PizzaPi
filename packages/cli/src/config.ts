@@ -729,6 +729,14 @@ export interface PizzaPiConfig {
      * Default: true. Set to false to suppress these warnings.
      */
     slowStartupWarning?: boolean;
+
+    /** Subagent execution settings */
+    subagent?: {
+        /** Max number of parallel tasks in a single subagent call. Default: 8. */
+        maxParallelTasks?: number;
+        /** Max concurrent agent sessions running simultaneously. Default: 4. */
+        maxConcurrency?: number;
+    };
 }
 
 function readJsonSafe(path: string): Partial<PizzaPiConfig> {

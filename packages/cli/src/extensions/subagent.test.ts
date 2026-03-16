@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, writeFileSync } from "fs";
+import { join } from "path";
+import { tmpdir } from "os";
 import { formatTokens, formatUsageStats } from "./subagent.js";
+import { _setGlobalConfigDir, loadConfig } from "../config.js";
 
 /**
  * Tests for the subagent tool utility functions.
@@ -140,5 +144,31 @@ describe("SubagentDetails type exports", () => {
         };
         expect(usage.input).toBe(100);
         expect(usage.turns).toBe(1);
+    });
+});
+
+describe("subagent config", () => {
+    test("loadConfig reads subagent settings", () => {
+        const tmp = mkdtempSync(join(tmpdir(), "subagent-config-"));
+        _setGlobalConfigDir(tmp);
+        writeFileSync(
+            join(tmp, "config.json"),
+            JSON.stringify({
+                subagent: { maxParallelTasks: 16, maxConcurrency: 8 },
+            }),
+        );
+        const config = loadConfig(tmp);
+        expect(config.subagent?.maxParallelTasks).toBe(16);
+        expect(config.subagent?.maxConcurrency).toBe(8);
+        _setGlobalConfigDir(null);
+    });
+
+    test("loadConfig returns defaults when subagent is not set", () => {
+        const tmp = mkdtempSync(join(tmpdir(), "subagent-config-"));
+        _setGlobalConfigDir(tmp);
+        writeFileSync(join(tmp, "config.json"), JSON.stringify({}));
+        const config = loadConfig(tmp);
+        expect(config.subagent).toBeUndefined();
+        _setGlobalConfigDir(null);
     });
 });
