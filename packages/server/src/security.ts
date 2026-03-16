@@ -105,3 +105,20 @@ export function cwdMatchesRoots(roots: string[], cwd: string): boolean {
         return rc.startsWith(rr + "/");
     });
 }
+
+/**
+ * Securely extracts the client IP address from a Fetch Request.
+ * Relies on `x-pizzapi-client-ip` which is populated securely by the server
+ * from the underlying TCP connection, preventing client spoofing.
+ * If PIZZAPI_TRUST_PROXY is 'true', it will also trust the `x-forwarded-for` header.
+ */
+export function getClientIp(req: Request): string {
+    const trustProxy = process.env.PIZZAPI_TRUST_PROXY === "true";
+    if (trustProxy) {
+        const forwardedFor = req.headers.get("x-forwarded-for");
+        if (forwardedFor) {
+            return forwardedFor.split(",")[0]?.trim() || "unknown";
+        }
+    }
+    return req.headers.get("x-pizzapi-client-ip") || "unknown";
+}
