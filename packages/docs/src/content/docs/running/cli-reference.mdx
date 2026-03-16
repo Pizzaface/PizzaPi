@@ -1,8 +1,6 @@
 ---
 title: CLI Reference
 description: Complete reference for all pizzapi command-line commands and flags.
-sidebar:
-  order: 2
 ---
 
 import { Aside } from "@astrojs/starlight/components";
@@ -66,7 +64,7 @@ pizzapi --no-mcp               # Skip only MCP servers
 | `--no-plugins` | Skip Claude Code plugin discovery and loading |
 | `--no-hooks` | Skip all hook execution |
 | `--no-relay` | Skip relay server connection |
-| `--sandbox <mode>` | Set sandbox mode: `enforce`, `audit`, or `off`. See [Agent Sandbox](/PizzaPi/guides/sandbox/). |
+| `--sandbox <mode>` | Set sandbox mode: `enforce`, `audit`, or `off`. See [Agent Sandbox](/PizzaPi/security/sandbox/). |
 
 The session ID is derived from the runner configuration and displayed on startup. Open the relay server's web UI to watch the session live.
 
@@ -79,7 +77,7 @@ MCP servers are initialized in parallel with per-server timeouts (default: 30 se
 When startup takes longer than 5 seconds, a warning is displayed in both the TUI and web UI showing which servers were slow. You can disable this warning by setting `"slowStartupWarning": false` in your config.
 
 <Aside type="tip">
-  See the [Safe Mode & Startup Performance guide](/PizzaPi/guides/safe-mode/) for detailed troubleshooting, timeout tuning, and per-server diagnostics.
+  See the [Safe Mode & Startup Performance guide](/PizzaPi/security/sandbox/) for detailed troubleshooting, timeout tuning, and per-server diagnostics.
 </Aside>
 
 ---
@@ -113,7 +111,7 @@ pizzapi runner &
 pizzapi runner stop
 ```
 
-See the [Runner Daemon guide](/PizzaPi/guides/runner-daemon/) for detailed usage.
+See the [Runner Daemon guide](/PizzaPi/running/runner-daemon/) for detailed usage.
 
 ---
 
@@ -364,7 +362,7 @@ There are three ways to trust a local plugin:
 Once approved by any method, the trust is persisted to `~/.pizzapi/config.json` so future sessions auto-load without re-prompting.
 
 <Aside type="tip">
-  See the [Claude Code Plugins guide](/PizzaPi/guides/claude-plugins/) for details on plugin structure, hook mapping, and how the adapter works.
+  See the [Claude Code Plugins guide](/PizzaPi/customization/claude-plugins/) for details on plugin structure, hook mapping, and how the adapter works.
 </Aside>
 
 ---
@@ -407,7 +405,7 @@ Delegate tasks to specialized subagent processes. Each subagent runs in its own 
 
 Agent definitions are loaded from `~/.pizzapi/agents/*.md` (user scope) and `.pizzapi/agents/*.md` (project scope).
 
-See the [Subagents guide](/PizzaPi/guides/subagents/) for full documentation.
+See the [Subagents guide](/PizzaPi/customization/subagents/) for full documentation.
 
 ---
 

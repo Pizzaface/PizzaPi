@@ -1,8 +1,6 @@
 ---
 title: Configuration
 description: Configure PizzaPi using JSON config files or environment variables.
-sidebar:
-  order: 3
 ---
 
 import { Aside } from "@astrojs/starlight/components";
@@ -15,6 +13,14 @@ PizzaPi loads configuration from two JSON files merged together — project-loca
 | `.pizzapi/config.json` | Project-local — overrides global for this project |
 
 You can also override any setting with **environment variables**.
+
+<Aside type="tip" title="Dedicated guides">
+  For in-depth setup of specific features, see:
+  - [MCP Servers](/PizzaPi/customization/mcp-servers/) — connecting external tool servers
+  - [Hooks](/PizzaPi/customization/hooks/) — lifecycle scripts that observe or block agent actions
+  - [Skills](/PizzaPi/customization/skills/) — extending the agent with domain knowledge
+  - [Agent Definitions](/PizzaPi/customization/agent-definitions/) — creating reusable specialized agents
+</Aside>
 
 ---
 
@@ -99,15 +105,15 @@ You can also override any setting with **environment variables**.
 | `skills` | `string[]` | `[]` | Additional skill directories. Supports `~` expansion. |
 | `allowProjectHooks` | `boolean` | `false` | Trust gate: allow project-local hooks to run. **Global config only.** |
 | `trustedPlugins` | `string[]` | `[]` | Trusted Claude Code plugin paths. **Global config only.** Managed via `pizza plugins trust`. |
-| `mcpTimeout` | `number` | `30000` | Timeout (ms) for each MCP server's `tools/list` call during startup. Set to `0` to disable. See [Safe Mode](/PizzaPi/guides/safe-mode/). |
-| `sandbox` | `object` | *(see below)* | OS-level sandbox config. See [Agent Sandbox](/PizzaPi/guides/sandbox/). |
+| `mcpTimeout` | `number` | `30000` | Timeout (ms) for each MCP server's `tools/list` call during startup. Set to `0` to disable. See [Safe Mode](/PizzaPi/security/sandbox/). |
+| `sandbox` | `object` | *(see below)* | OS-level sandbox config. See [Agent Sandbox](/PizzaPi/security/sandbox/). |
 | `sandbox.mode` | `string` | `"basic"` | Preset: `"none"`, `"basic"`, or `"full"`. |
 | `sandbox.network.allowedDomains` | `string[]` | `[]` (full) / unset (basic) | Domains the agent may reach. Required for outbound access in `full` mode. |
 | `sandbox.network.deniedDomains` | `string[]` | `[]` | Domains explicitly blocked. |
 | `sandbox.filesystem.denyRead` | `string[]` | *merged with preset* | Additional paths blocked from reading. |
 | `sandbox.filesystem.allowWrite` | `string[]` | `[".", "/tmp"]` | Paths allowed for writing (replaces preset when set). |
 | `sandbox.filesystem.denyWrite` | `string[]` | *merged with preset* | Additional paths blocked from writing. |
-| `slowStartupWarning` | `boolean` | `true` | Show warnings when startup takes longer than expected (slow MCP servers, etc.). See [Safe Mode](/PizzaPi/guides/safe-mode/). |
+| `slowStartupWarning` | `boolean` | `true` | Show warnings when startup takes longer than expected (slow MCP servers, etc.). See [Safe Mode](/PizzaPi/security/sandbox/). |
 
 ---
 
@@ -119,12 +125,12 @@ Every config option can also be set as an environment variable. Environment vari
 |----------|-----------------------|-------|
 | `PIZZAPI_API_KEY` | `apiKey` | |
 | `PIZZAPI_RELAY_URL` | `relayUrl` | Set to `off` to disable relay for this invocation |
-| `PIZZAPI_NO_MCP` | — | Set to `1` to skip MCP servers ([Safe Mode](/PizzaPi/guides/safe-mode/)) |
-| `PIZZAPI_NO_PLUGINS` | — | Set to `1` to skip plugin loading ([Safe Mode](/PizzaPi/guides/safe-mode/)) |
-| `PIZZAPI_NO_HOOKS` | — | Set to `1` to skip hook execution ([Safe Mode](/PizzaPi/guides/safe-mode/)) |
-| `PIZZAPI_NO_RELAY` | — | Set to `1` to skip relay connection ([Safe Mode](/PizzaPi/guides/safe-mode/)) |
-| `PIZZAPI_SANDBOX` | `sandbox.mode` | Override sandbox mode: `none`, `basic`, or `full` ([Sandbox](/PizzaPi/guides/sandbox/)) |
-| `PIZZAPI_NO_SANDBOX` | — | Set to `1` to disable sandbox (shorthand for `none`) ([Sandbox](/PizzaPi/guides/sandbox/)) |
+| `PIZZAPI_NO_MCP` | — | Set to `1` to skip MCP servers ([Safe Mode](/PizzaPi/security/sandbox/)) |
+| `PIZZAPI_NO_PLUGINS` | — | Set to `1` to skip plugin loading ([Safe Mode](/PizzaPi/security/sandbox/)) |
+| `PIZZAPI_NO_HOOKS` | — | Set to `1` to skip hook execution ([Safe Mode](/PizzaPi/security/sandbox/)) |
+| `PIZZAPI_NO_RELAY` | — | Set to `1` to skip relay connection ([Safe Mode](/PizzaPi/security/sandbox/)) |
+| `PIZZAPI_SANDBOX` | `sandbox.mode` | Override sandbox mode: `none`, `basic`, or `full` ([Sandbox](/PizzaPi/security/sandbox/)) |
+| `PIZZAPI_NO_SANDBOX` | — | Set to `1` to disable sandbox (shorthand for `none`) ([Sandbox](/PizzaPi/security/sandbox/)) |
 
 **Example:**
 
@@ -186,7 +192,7 @@ PizzaPi automatically looks for skills in these locations (all merged):
 2. `<cwd>/.pizzapi/skills/` — project-local skills
 3. Any paths listed in the `skills` config array
 
-See the [Skills & Extensions guide](/PizzaPi/guides/skills/) for how to write and use skills.
+See the [Skills & Extensions guide](/PizzaPi/customization/skills/) for how to write and use skills.
 
 ---
 
@@ -230,4 +236,4 @@ pizzapi web config set vapidSubject "mailto:ops@example.com"
 
 CLI flags like `--port` and `--origins` also persist to this config file automatically.
 
-See the [CLI Reference](/PizzaPi/guides/cli-reference/#pizzapi-web-config-set) and [Self-Hosting guide](/PizzaPi/guides/self-hosting/) for more details.
+See the [CLI Reference](/PizzaPi/running/cli-reference/#pizzapi-web-config-set) and [Self-Hosting guide](/PizzaPi/deployment/self-hosting/) for more details.

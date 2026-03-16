@@ -16,7 +16,7 @@ When the agent calls the `subagent` tool, PizzaPi:
 3. Streams progress updates through the relay server for real-time Web UI display
 4. Returns the child's final output as the tool result
 
-The key difference from [`spawn_session`](/PizzaPi/guides/cli-reference/#spawn_session) is that subagents run **inline** — they block like any other tool call and return their output directly. No cross-session messaging needed.
+The key difference from [`spawn_session`](/PizzaPi/running/cli-reference/#spawn_session) is that subagents run **inline** — they block like any other tool call and return their output directly. No cross-session messaging needed.
 
 ## Quick start
 
@@ -48,6 +48,10 @@ The agent can invoke the subagent tool like this:
 The subagent runs in its own context, reads the relevant files, and returns a summary. Only the summary enters the parent's context window.
 
 ## Agent definitions
+
+<Aside>
+  For a complete guide to writing agent definitions — frontmatter fields, discovery paths, tool restrictions — see [Agent Definitions](/PizzaPi/customization/agent-definitions/).
+</Aside>
 
 Agent definitions are markdown files with YAML frontmatter. PizzaPi is compatible with [Claude Code agent files](https://code.claude.com/docs/en/sub-agents).
 

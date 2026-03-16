@@ -1,0 +1,106 @@
+---
+title: Your First Remote Session
+description: Set up the PizzaPi relay server and stream your first AI coding session to the browser.
+---
+
+import { Steps, Aside } from "@astrojs/starlight/components";
+
+This tutorial walks you through setting up the PizzaPi relay server so you can stream agent sessions to a browser — and interact with them remotely from any device.
+
+<Aside type="tip">
+  Already using PizzaPi without a relay? See the [Getting Started guide](/PizzaPi/start-here/getting-started/) for installation basics.
+</Aside>
+
+---
+
+## Prerequisites
+
+Before you start, make sure you have:
+
+- **PizzaPi CLI installed** — see [Installation](/PizzaPi/start-here/installation/)
+- **Docker and Docker Compose** — needed to run the relay server
+- **An AI provider API key** — Anthropic, OpenAI, Google, or a Claude Pro/Max subscription
+
+---
+
+## Set Up the Relay
+
+<Steps>
+1. ### Start the relay server
+
+   One command builds and starts everything:
+
+   ```bash
+   pizzapi web
+   ```
+
+   Wait for the success message:
+
+   ```
+   ✅ PizzaPi web is running at http://localhost:7492
+   ```
+
+   This spins up a Docker Compose stack with Redis (event buffer) and the PizzaPi server (relay API + web UI).
+
+2. ### Create your account
+
+   Open **http://localhost:7492** in your browser. You'll see the PizzaPi web UI.
+
+   Click **Sign up** to create an account. This is a local account on your relay — no external service involved.
+
+3. ### Connect the CLI
+
+   In your terminal, run:
+
+   ```bash
+   pizzapi setup
+   ```
+
+   The setup wizard will prompt for:
+   - **Relay server URL** — enter `http://localhost:7492`
+   - **Email and password** — use the account you just created
+
+   ```
+   ┌─────────────────────────────────────────┐
+   │        PizzaPi — first-run setup        │
+   └─────────────────────────────────────────┘
+
+   Relay server URL [http://localhost:7492]: http://localhost:7492
+   Email: you@example.com
+   Password: ••••••••
+
+   Connecting to relay server… ✓
+   ✓ API key saved to ~/.pizzapi/config.json
+   ```
+
+4. ### Start a session
+
+   Navigate to any project directory and start PizzaPi:
+
+   ```bash
+   cd /path/to/your/project
+   pizzapi
+   ```
+
+5. ### Watch it in the browser
+
+   Go back to **http://localhost:7492**. Your session appears in the session list with a live status indicator.
+
+   Click on it to see:
+   - **Live token stream** — the agent's response appearing in real-time
+   - **Tool calls** — every file read, bash command, and edit as collapsible cards
+   - **File diffs** — syntax-highlighted diffs for code changes
+   - **Chat input** — type messages to steer the agent from the browser
+
+</Steps>
+
+---
+
+## What's Next?
+
+Now that you have a working relay, here are the natural next steps:
+
+- **[Runner Daemon](/PizzaPi/running/runner-daemon/)** — Run sessions headlessly without a terminal. Spawn and manage agent sessions entirely from the web UI.
+- **[Self-Hosting](/PizzaPi/deployment/self-hosting/)** — Deploy the relay on a remote server with Docker Compose, custom domains, and production settings.
+- **[Tailscale HTTPS](/PizzaPi/deployment/tailscale/)** — Expose your relay over a secure Tailscale tunnel with automatic TLS — access your sessions from anywhere.
+- **[Configuration](/PizzaPi/customization/configuration/)** — Customize model defaults, MCP servers, hooks, and more.

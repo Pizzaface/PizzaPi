@@ -5,6 +5,27 @@ import starlight from "@astrojs/starlight";
 export default defineConfig({
     site: "https://pizzaface.github.io",
     base: "/PizzaPi",
+    // Redirect old /guides/* paths so existing public links don't 404.
+    // Targets must include /PizzaPi base path — Astro doesn't prepend it automatically.
+    redirects: {
+        "/guides/installation/":     "/PizzaPi/start-here/installation/",
+        "/guides/quick-setup/":      "/PizzaPi/start-here/getting-started/",
+        "/guides/cli-reference/":    "/PizzaPi/running/cli-reference/",
+        "/guides/standalone-mode/":  "/PizzaPi/running/standalone-mode/",
+        "/guides/runner-daemon/":    "/PizzaPi/running/runner-daemon/",
+        "/guides/self-hosting/":     "/PizzaPi/deployment/self-hosting/",
+        "/guides/tailscale/":        "/PizzaPi/deployment/tailscale/",
+        "/guides/mac-setup/":        "/PizzaPi/deployment/mac-setup/",
+        "/guides/configuration/":    "/PizzaPi/customization/configuration/",
+        "/guides/skills/":           "/PizzaPi/customization/skills/",
+        "/guides/claude-plugins/":   "/PizzaPi/customization/claude-plugins/",
+        "/guides/subagents/":        "/PizzaPi/customization/subagents/",
+        "/guides/sandbox/":          "/PizzaPi/security/sandbox/",
+        "/guides/safe-mode/":        "/PizzaPi/security/sandbox/",
+        "/guides/development/":      "/PizzaPi/reference/development/",
+        // getting-started was at root level, not under guides/
+        "/getting-started/":         "/PizzaPi/start-here/getting-started/",
+    },
     integrations: [
         starlight({
             title: "PizzaPi",
@@ -39,13 +60,45 @@ export default defineConfig({
                 {
                     label: "Start Here",
                     items: [
-                        { label: "Overview", link: "/" },
-                        { label: "Getting Started", link: "/getting-started/" },
+                        { label: "Overview", slug: "index" },
+                        { label: "Installation", slug: "start-here/installation" },
+                        { label: "Getting Started", slug: "start-here/getting-started" },
+                        { label: "Your First Remote Session", slug: "start-here/first-remote-session" },
                     ],
                 },
                 {
-                    label: "Guides",
-                    autogenerate: { directory: "guides" },
+                    label: "Running PizzaPi",
+                    items: [
+                        { label: "CLI Reference", slug: "running/cli-reference" },
+                        { label: "Standalone Mode", slug: "running/standalone-mode" },
+                        { label: "Runner Daemon", slug: "running/runner-daemon" },
+                    ],
+                },
+                {
+                    label: "Deployment",
+                    items: [
+                        { label: "Self-Hosting", slug: "deployment/self-hosting" },
+                        { label: "Tailscale HTTPS", slug: "deployment/tailscale" },
+                        { label: "macOS Service", slug: "deployment/mac-setup" },
+                    ],
+                },
+                {
+                    label: "Customization",
+                    items: [
+                        { label: "Configuration", slug: "customization/configuration" },
+                        { label: "MCP Servers", slug: "customization/mcp-servers" },
+                        { label: "Hooks", slug: "customization/hooks" },
+                        { label: "Skills", slug: "customization/skills" },
+                        { label: "Agent Definitions", slug: "customization/agent-definitions" },
+                        { label: "Claude Code Plugins", slug: "customization/claude-plugins" },
+                        { label: "Subagents", slug: "customization/subagents" },
+                    ],
+                },
+                {
+                    label: "Security",
+                    items: [
+                        { label: "Agent Sandbox", slug: "security/sandbox" },
+                    ],
                 },
                 {
                     label: "Reference",

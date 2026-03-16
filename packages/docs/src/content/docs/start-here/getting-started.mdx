@@ -1,8 +1,6 @@
 ---
 title: Getting Started
-description: Get PizzaPi running in under five minutes — connect to a hosted relay or spin up your own.
-sidebar:
-  order: 1
+description: Install PizzaPi and run your first AI coding session in under 5 minutes.
 ---
 
 import { Tabs, TabItem, Steps, Aside, Card, CardGrid } from "@astrojs/starlight/components";
@@ -16,6 +14,10 @@ PizzaPi has two parts:
 
 You always need the CLI. The relay can be **hosted by someone else** (quickest) or **run yourself** with Docker.
 
+<Aside type="tip" title="Don't need a relay?">
+  Want to use PizzaPi locally with no server setup? See [Standalone &amp; Relay-Free Mode](/PizzaPi/running/standalone-mode/) — you can skip the relay steps and run `PIZZAPI_RELAY_URL=off pizzapi`.
+</Aside>
+
 ---
 
 ## Prerequisites
@@ -24,10 +26,15 @@ Before you start, make sure you have:
 
 - **Node.js 18+** (or Bun) installed
 - **An AI provider API key** — PizzaPi uses the `pi` coding agent under the hood, which needs an API key from at least one provider (Anthropic, OpenAI, Google, etc.). Alternatively, a [Claude Pro/Max subscription](https://claude.ai) works via the Claude Code OAuth flow.
-- **A relay server URL** — either a hosted relay someone has shared with you, or you'll self-host one in Option B below.
+- **A relay server URL** — either a hosted relay someone has shared with you, or you'll self-host one below.
+- **Docker + Docker Compose** — only if you self-host with `pizzapi web`
 
 <Aside type="note">
   Don't have an API key yet? [Anthropic](https://console.anthropic.com/), [OpenAI](https://platform.openai.com/), and [Google AI Studio](https://aistudio.google.com/) all offer free-tier credits to get started.
+</Aside>
+
+<Aside type="note">
+  Commands below use <code>pizzapi</code>. The <code>pizza</code> alias works too. If you prefer not to install globally, replace each <code>pizzapi ...</code> command with <code>npx @pizzapi/pizza ...</code>.
 </Aside>
 
 ---
@@ -105,7 +112,7 @@ If you have Docker installed, one command does everything:
 pizzapi web
 ```
 
-This clones the repo, builds the containers, and starts the relay at **http://localhost:7492**. See [`pizza web`](/PizzaPi/guides/self-hosting/#quickest-pizza-web) for details.
+This clones the repo, builds the containers, and starts the relay at **http://localhost:7492**. See the [Self-Hosting guide](/PizzaPi/deployment/self-hosting/) for details.
 
 ### Manual Setup
 
@@ -130,7 +137,12 @@ This clones the repo, builds the containers, and starts the relay at **http://lo
 
    The web UI is now live at **http://localhost:7492**.
 
-3. **Install the CLI & connect**
+3. **Open the web UI and sign in**
+
+   - Open `http://localhost:7492` in your browser
+   - Sign in or create an account from the **Sign up** tab
+
+4. **Install the CLI & connect**
 
    ```bash
    npm install -g @pizzapi/pizza
@@ -140,7 +152,7 @@ This clones the repo, builds the containers, and starts the relay at **http://lo
    # Password: your-password
    ```
 
-4. **Start your first session**
+5. **Start your first session**
 
    ```bash
    cd /your/project
@@ -151,7 +163,7 @@ This clones the repo, builds the containers, and starts the relay at **http://lo
 </Steps>
 
 <Aside type="tip" title="No Docker?">
-  You can run the server directly with Bun for local development. See the [Development guide](/PizzaPi/guides/development/) for instructions.
+  You can run the server directly with Bun for local development. See the [Development guide](/PizzaPi/reference/development/) for instructions.
 </Aside>
 
 ---
@@ -179,32 +191,72 @@ You can type messages in the chat input at the bottom to ask questions, give cor
 
 ---
 
+## Verification Checklist
+
+Run these checks after setup to make sure everything is working:
+
+| Check | Command / Action | Expected |
+|---|---|---|
+| CLI works | `pizzapi --version` | Prints PizzaPi CLI version |
+| Relay configured | `pizzapi setup` | Shows saved API key + relay URL |
+| Web hub healthy (if self-hosted) | `pizzapi web status` | Docker services listed |
+| Session visible in UI | Start `pizzapi` session | Session appears in browser |
+| Models available | `pizzapi models` | At least one model listed (after `/login`) |
+
+---
+
+## Troubleshooting
+
+| Problem | Fix |
+|---|---|
+| `pizzapi web` fails immediately | Make sure Docker Desktop/Engine is running and `docker compose version` works. |
+| Setup says `Could not register with the relay server` | Verify URL, email/password, and that relay is reachable in browser. |
+| Setup asks for a name but account already exists | Leave **Your name** blank for existing accounts. |
+| Session not visible in web UI | Re-run `pizzapi setup`, then start a fresh session. |
+| No model available in session | Run `/login`, then `/model` inside the session. |
+
+### Escape Hatches
+
+**Skip relay setup entirely** — If you run `pizzapi` without any saved config, the setup wizard asks "Skip setup and continue without relay?" Type `y` to start with no relay for this run only. To skip permanently, see [Standalone Mode](/PizzaPi/running/standalone-mode/).
+
+**Re-run setup** — Run `pizzapi setup` at any time to re-configure or switch relay servers.
+
+**Full reset** — To wipe all PizzaPi state and start fresh:
+```bash
+rm -rf ~/.pizzapi
+pizzapi setup
+```
+
+See the [Installation guide](/PizzaPi/start-here/installation/#resetting-configuration) for partial reset options.
+
+---
+
 ## What's Next?
 
 <CardGrid>
   <Card title="Installation Details" icon="document">
     Platform-specific notes, binary downloads, and alternative install methods.
 
-    [Installation guide →](/PizzaPi/guides/installation/)
+    [Installation guide →](/PizzaPi/start-here/installation/)
   </Card>
   <Card title="CLI Reference" icon="list-format">
     All `pizzapi` commands and flags — setup, session management, config overrides.
 
-    [CLI reference →](/PizzaPi/guides/cli-reference/)
+    [CLI reference →](/PizzaPi/running/cli-reference/)
   </Card>
   <Card title="Configuration" icon="setting">
     Customize config files, environment variables, model defaults, and relay settings.
 
-    [Configuration →](/PizzaPi/guides/configuration/)
+    [Configuration →](/PizzaPi/customization/configuration/)
   </Card>
   <Card title="Runner Daemon" icon="rocket">
     Run a headless daemon that lets you spawn and manage agent sessions entirely from the web UI.
 
-    [Runner daemon →](/PizzaPi/guides/runner-daemon/)
+    [Runner daemon →](/PizzaPi/running/runner-daemon/)
   </Card>
   <Card title="Self-Hosting Guide" icon="shield">
     Production Docker setup with HTTPS, custom domains, backups, and scaling.
 
-    [Self-hosting →](/PizzaPi/guides/self-hosting/)
+    [Self-hosting →](/PizzaPi/deployment/self-hosting/)
   </Card>
 </CardGrid>

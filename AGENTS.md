@@ -37,14 +37,21 @@ User-facing documentation lives in `packages/docs/` — a [Starlight](https://st
 
 | Topic | Doc page |
 |-------|----------|
-| CLI commands & flags | `guides/cli-reference.mdx` |
-| `~/.pizzapi/config.json`, env vars | `guides/configuration.mdx` |
-| `pizza web`, Docker, self-hosting | `guides/self-hosting.mdx` |
-| Tailscale HTTPS setup | `guides/tailscale.mdx` |
-| Runner daemon | `guides/runner-daemon.mdx` |
-| Installation | `guides/installation.mdx` |
-| Server env vars | `reference/environment-variables.mdx` |
+| CLI commands & flags | `running/cli-reference.mdx` |
+| Config, env vars | `customization/configuration.mdx` |
+| MCP servers | `customization/mcp-servers.mdx` |
+| Hooks | `customization/hooks.mdx` |
+| Skills | `customization/skills.mdx` |
+| Agent definitions | `customization/agent-definitions.mdx` |
+| Claude plugins | `customization/claude-plugins.mdx` |
+| Subagents | `customization/subagents.mdx` |
+| `pizza web`, Docker | `deployment/self-hosting.mdx` |
+| Tailscale HTTPS | `deployment/tailscale.mdx` |
+| Runner daemon | `running/runner-daemon.mdx` |
+| Installation | `start-here/installation.mdx` |
+| Sandbox & safe mode | `security/sandbox.mdx` |
 | Architecture | `reference/architecture.mdx` |
+| Server env vars | `reference/environment-variables.mdx` |
 
 The README is intentionally slim — it has a quick start and links to the docs site. **Do not duplicate detailed docs in the README.**
 
@@ -94,6 +101,12 @@ bun run clean
 - **Patches**: Never edit files inside `node_modules` directly — changes go in `patches/` and are applied via `bun install`.
 - **Redis** is required for the server. For local dev without Docker: `redis-server` or `docker compose up redis`.
 - **Database migrations**: run `bun run migrate` after schema changes. DB file is `packages/server/auth.db`.
+
+---
+
+## Configuration Conventions
+
+- **MCP config format:** Always use the `mcpServers{}` format (Claude Code compatible) as the preferred format. The `mcp.servers[]` array format is supported but not preferred. Claude Code compatibility is always the priority.
 
 ---
 

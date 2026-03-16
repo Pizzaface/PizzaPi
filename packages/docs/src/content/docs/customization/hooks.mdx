@@ -1,0 +1,365 @@
+---
+title: Hooks
+description: Write lifecycle hooks that observe, transform, or block agent actions — lint on save, guard inputs, inject context, and more.
+---
+
+import { Aside, Tabs, TabItem } from "@astrojs/starlight/components";
+
+Hooks are **shell scripts or commands** that run at specific points in the agent's lifecycle. They let you:
+
+- **Observe** — log tool calls, track model switches, audit user input
+- **Transform** — rewrite input text, inject context into the agent's window, override the system prompt
+- **Block** — prevent tool calls, cancel session switches, reject dangerous commands
+
+Hooks receive JSON on **stdin** and communicate back via **exit codes** and **stdout JSON**.
+
+---
+
+## Where to Define Hooks
+
+Hooks live in your PizzaPi config files under the `hooks` key:
+
+| File | Scope | Always active? |
+|------|-------|----------------|
+| `~/.pizzapi/config.json` | Global — applies to every project | ✅ Yes |
+| `.pizzapi/config.json` | Project-local — only this repo | ⚠️ Requires `allowProjectHooks` |
+
+<Aside type="caution" title="Project hooks require explicit trust">
+  Project-local hooks (`.pizzapi/config.json`) are **silently ignored** unless you set `allowProjectHooks: true` in your **global** `~/.pizzapi/config.json`. Projects cannot self-authorize — the trust gate lives in global config only.
+
+  This prevents a malicious repository from running arbitrary code on your machine via hooks.
+
+  ```jsonc
+  // ~/.pizzapi/config.json — global config
+  {
+    "allowProjectHooks": true
+  }
+  ```
+</Aside>
+
+---
+
+## Hook Events
+
+Every event fires at a specific lifecycle point. Some can block the action, and tool hooks support matchers to target specific tools.
+
+| Event | When it fires | Can block? | Uses matchers? |
+|-------|--------------|------------|----------------|
+| `PreToolUse` | Before any tool call | Yes (exit 2) | Yes |
+| `PostToolUse` | After a tool completes | No (can inject context) | Yes |
+| `Input` | When user sends input | Yes (exit 2), can transform | No |
+| `BeforeAgentStart` | Before agent turn begins | Can override system prompt | No |
+| `UserBash` | User runs `!` or `!!` shell command | Yes (exit 2) | No |
+| `SessionBeforeSwitch` | Before switching sessions | Yes (exit 2) | No |
+| `SessionBeforeFork` | Before forking a session | Yes (exit 2) | No |
+| `SessionShutdown` | On process exit | No (best-effort) | No |
+| `SessionBeforeCompact` | Before context compaction | Yes (exit 2) | No |
+| `SessionBeforeTree` | Before session tree navigation | Yes (exit 2) | No |
+| `ModelSelect` | When model is selected | No (observability only) | No |
+
+---
+
+## Writing a Hook
+
+A hook is any executable that reads JSON from **stdin** and communicates its decision via **exit code** and optional **stdout JSON**.
+
+### Exit codes
+
+| Exit code | Meaning |
+|-----------|---------|
+| `0` | **Allow** — action proceeds normally |
+| `2` | **Block** — action is cancelled (stderr is shown as the reason) |
+| Other non-zero | **Error** — treated as a block (fail-closed for safety) |
+
+### Stdout JSON fields
+
+Hooks can return JSON on stdout to influence the agent:
+
+| Field | Used by | Purpose |
+|-------|---------|---------|
+| `additionalContext` | PreToolUse, PostToolUse, BeforeAgentStart | Text injected into the agent's context window |
+| `permissionDecision` | PreToolUse | `"allow"`, `"deny"`, or `"ask"` |
+| `text` | Input | Transformed input text to replace the original |
+| `action` | Input | `"continue"`, `"transform"`, or `"handled"` |
+| `systemPrompt` | BeforeAgentStart | Override the system prompt for this turn |
+
+### Stdin payload
+
+The JSON payload varies by event. Tool hooks receive:
+
+```json
+{
+  "tool_name": "Bash",
+  "tool_input": { "command": "rm -rf /tmp/build" }
+}
+```
+
+PostToolUse hooks additionally receive:
+
+```json
+{
+  "tool_name": "Write",
+  "tool_input": { "command": "...", "file_path": "src/index.ts" },
+  "tool_response": "File written successfully."
+}
+```
+
+Event hooks receive an `event` field plus event-specific data:
+
+```json
+{
+  "event": "Input",
+  "text": "refactor the auth module",
+  "source": "user"
+}
+```
+
+### Simple example
+
+Here's a minimal hook that logs every Bash command to a file:
+
+```bash
+#!/bin/bash
+# ~/.pizzapi/hooks/log-bash.sh
+INPUT=$(cat)
+COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command // empty')
+echo "$(date -Iseconds) $COMMAND" >> ~/.pizzapi/hooks/bash.log
+exit 0
+```
+
+---
+
+## Config Format
+
+Hooks use two config patterns depending on the event type.
+
+### Tool hooks (PreToolUse, PostToolUse)
+
+Tool hooks use **`HookMatcher[]`** — each entry pairs a regex `matcher` with an array of `hooks`:
+
+```jsonc
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Edit|Write",
+        "hooks": [
+          { "command": "~/.pizzapi/hooks/lint.sh", "timeout": 10000 }
+        ]
+      }
+    ]
+  }
+}
+```
+
+### Event hooks (everything else)
+
+All other events use **`HookEntry[]`** directly — no matcher needed:
+
+```jsonc
+{
+  "hooks": {
+    "Input": [
+      { "command": "~/.pizzapi/hooks/input-guard.sh" }
+    ],
+    "SessionShutdown": [
+      { "command": "~/.pizzapi/hooks/cleanup.sh", "timeout": 5000 }
+    ]
+  }
+}
+```
+
+### HookEntry fields
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `command` | `string` | Yes | — | Shell command to execute. Receives JSON on stdin. |
+| `timeout` | `number` | No | `10000` | Timeout in milliseconds. Hook is killed on expiry (fail-closed). |
+
+---
+
+## Matchers
+
+Matchers are regex patterns that filter **which tools** trigger a tool hook. They only apply to `PreToolUse` and `PostToolUse`.
+
+| Pattern | Matches |
+|---------|---------|
+| `"Bash"` | Only the Bash tool |
+| `"Edit\|Write"` | Edit or Write |
+| `".*"` | All tools (wildcard) |
+| `"mcp__(github\|filesystem)__.*"` | MCP tools from specific servers |
+
+**Omitting the matcher** or setting it to `".*"` matches every tool.
+
+### Tool name mapping
+
+Pi's internal tool names are mapped to display names for matching:
+
+| Internal name | Display name |
+|---------------|-------------|
+| `bash` | `Bash` |
+| `read` | `Read` |
+| `write` | `Write` |
+| `edit` | `Edit` |
+| `grep` | `Grep` |
+| `find` | `Find` |
+| `ls` | `Ls` |
+
+MCP tool names are passed as-is (e.g., `mcp_tavily_tavily_search`). Matching is **case-insensitive** — both the internal name and display name are checked.
+
+<Aside type="tip">
+  Regex groups inside parentheses are preserved during alternation splitting. The pattern `mcp__(github|filesystem)__.*` is treated as a single regex, not split on the `|` inside the group.
+</Aside>
+
+---
+
+## Claude Code Compatibility
+
+Claude Code plugins can bundle hooks in a `hooks/hooks.json` file. PizzaPi's plugin adapter automatically discovers these and registers them alongside your config-defined hooks.
+
+For full plugin documentation, see [Claude Code Plugins](/PizzaPi/customization/claude-plugins/).
+
+---
+
+## Examples
+
+### 1. RTK Token Optimization (PreToolUse)
+
+Rewrites Bash commands through an RTK (Read-Transform-Keep) compressor to reduce token usage in tool responses:
+
+```bash
+#!/bin/bash
+# ~/.pizzapi/hooks/rtk-compress.sh
+# PreToolUse hook — rewrites bash commands to pipe through rtk
+INPUT=$(cat)
+TOOL=$(echo "$INPUT" | jq -r '.tool_name')
+
+# Only intercept Bash calls
+if [ "$TOOL" != "Bash" ]; then
+  exit 0
+fi
+
+COMMAND=$(echo "$INPUT" | jq -r '.tool_input.command')
+
+# Skip if already piped through rtk, or if it's a short command
+if echo "$COMMAND" | grep -q "| rtk"; then
+  exit 0
+fi
+
+# Inject advisory context suggesting RTK compression
+cat <<EOF
+{
+  "additionalContext": "Consider piping verbose output through \`rtk\` to compress tokens: \`${COMMAND} | rtk\`"
+}
+EOF
+exit 0
+```
+
+Config:
+
+```jsonc
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "command": "~/.pizzapi/hooks/rtk-compress.sh" }
+        ]
+      }
+    ]
+  }
+}
+```
+
+### 2. Input Guard (Input)
+
+Blocks user input containing potentially dangerous patterns:
+
+```bash
+#!/bin/bash
+# ~/.pizzapi/hooks/input-guard.sh
+# Input hook — blocks prompts that ask for credential exfiltration
+INPUT=$(cat)
+TEXT=$(echo "$INPUT" | jq -r '.text')
+
+# Block requests to exfiltrate secrets
+if echo "$TEXT" | grep -qiE "(send|post|upload|exfil).*(secret|token|key|password|credential)"; then
+  echo "Blocked: input appears to request credential exfiltration." >&2
+  exit 2
+fi
+
+# Allow everything else
+exit 0
+```
+
+Config:
+
+```jsonc
+{
+  "hooks": {
+    "Input": [
+      { "command": "~/.pizzapi/hooks/input-guard.sh" }
+    ]
+  }
+}
+```
+
+### 3. Pre-Compaction Checkpoint (SessionBeforeCompact)
+
+Saves a snapshot of the current working tree before context compaction, so you can diff what changed:
+
+```bash
+#!/bin/bash
+# ~/.pizzapi/hooks/pre-compact-checkpoint.sh
+# SessionBeforeCompact hook — stash uncommitted changes before compaction
+
+CHECKPOINT_DIR="${PIZZAPI_PROJECT_DIR:-.}/.pizzapi/checkpoints"
+mkdir -p "$CHECKPOINT_DIR"
+
+TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+STASH_FILE="$CHECKPOINT_DIR/pre-compact-$TIMESTAMP.patch"
+
+cd "${PIZZAPI_PROJECT_DIR:-.}"
+
+# Save a diff of uncommitted changes
+if git diff --quiet HEAD 2>/dev/null; then
+  # No changes — nothing to checkpoint
+  exit 0
+fi
+
+git diff HEAD > "$STASH_FILE"
+echo "Checkpoint saved: $STASH_FILE" >&2
+exit 0
+```
+
+Config:
+
+```jsonc
+{
+  "hooks": {
+    "SessionBeforeCompact": [
+      { "command": "~/.pizzapi/hooks/pre-compact-checkpoint.sh", "timeout": 5000 }
+    ]
+  }
+}
+```
+
+---
+
+## Project Hooks Trust Model
+
+PizzaPi enforces a strict trust boundary for project-local hooks:
+
+1. **Global hooks** (`~/.pizzapi/config.json`) always run — you control your own machine.
+2. **Project hooks** (`.pizzapi/config.json` in a repo) are **silently ignored by default**.
+3. To enable project hooks, set `allowProjectHooks: true` in your **global** config.
+4. The project config **cannot** set `allowProjectHooks` — only the global config controls this gate.
+
+<Aside type="caution" title="Why this matters">
+  Without this trust gate, any repository you clone could define hooks that execute arbitrary shell commands the moment you start a PizzaPi session. The `allowProjectHooks` setting ensures you consciously opt in to running project-defined hooks.
+
+  **Only enable this if you trust the repositories you work in**, or review `.pizzapi/config.json` in new repos before enabling project hooks.
+</Aside>
+
+The environment variable `PIZZAPI_ALLOW_PROJECT_HOOKS=1` can also enable project hooks, which is useful for CI or automated environments where you manage config externally.

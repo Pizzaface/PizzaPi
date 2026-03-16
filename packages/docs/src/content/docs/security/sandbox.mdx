@@ -1,11 +1,9 @@
 ---
 title: Agent Sandbox
-description: OS-level sandboxing for agent tool execution — filesystem and network restrictions.
-sidebar:
-  order: 11
+description: OS-level sandboxing for agent tool execution, filesystem and network restrictions, and safe mode startup diagnostics.
 ---
 
-import { Aside } from "@astrojs/starlight/components";
+import { Aside, Badge } from "@astrojs/starlight/components";
 
 PizzaPi can enforce OS-level sandboxing around every tool call the agent makes — bash commands, file reads/writes, and MCP server interactions. This prevents prompt injections or model hallucinations from accessing sensitive files, exfiltrating data, or damaging your system.
 
@@ -286,3 +284,108 @@ The sandbox runtime failed to initialize. The session continues without protecti
 - Linux: `bubblewrap` not installed
 - macOS: permission issue with `sandbox-exec`
 - Incompatible OS version
+
+---
+
+## Safe Mode & Startup Diagnostics
+
+PizzaPi connects to external services during startup — MCP servers, the relay server, Claude Code plugins, and hooks. If any of these are slow or unreachable, your CLI session can take a long time to become interactive.
+
+**Safe mode** lets you skip some or all of these dependencies for an instant startup.
+
+### Quick Fix: Safe Mode
+
+If `pizza` is hanging or taking too long:
+
+```bash
+# Skip everything external — instant startup
+pizza --safe-mode
+```
+
+This disables MCP servers, plugins, hooks, and the relay connection. You get a fully functional coding session without any of the integrations.
+
+<Aside type="tip">
+  Safe mode is great for quick one-off tasks, debugging, or when you're on a slow network. If you want to skip only MCP at startup but retain the ability to load it later, use `--no-mcp` instead — you can then run `/mcp reload` inside the session to connect MCP servers on demand.
+</Aside>
+
+### Granular Skip Flags
+
+If you only want to skip specific subsystems:
+
+| Flag | What it skips | When to use |
+|------|---------------|-------------|
+| `--safe-mode` | Everything below | Fastest possible startup |
+| `--no-mcp` | MCP server connections | MCP server is down or slow |
+| `--no-plugins` | Claude Code plugins | Plugin scanning is slow |
+| `--no-hooks` | Hook execution | A hook script is hanging |
+| `--no-relay` | Relay server connection | Relay is unreachable |
+
+**Examples:**
+
+```bash
+# Skip only MCP servers (keep relay, plugins, hooks)
+pizza --no-mcp
+
+# Skip MCP and plugins but keep relay
+pizza --no-mcp --no-plugins
+
+# Equivalent to PIZZAPI_RELAY_URL=off
+pizza --no-relay
+```
+
+### Environment Variables for Runner / Worker Mode
+
+When running sessions through the [runner daemon](/PizzaPi/running/runner-daemon/), you can pass safe-mode options via environment variables:
+
+| Variable | Effect |
+|----------|--------|
+| `PIZZAPI_NO_MCP=1` | Skip MCP servers |
+| `PIZZAPI_NO_PLUGINS=1` | Skip plugin loading |
+| `PIZZAPI_NO_HOOKS=1` | Skip hook execution |
+| `PIZZAPI_NO_RELAY=1` | Skip relay connection |
+
+### What Causes Slow Startup?
+
+**MCP Servers** <Badge text="Most common" variant="caution" /> — Each configured MCP server must spawn, initialize, and respond to `tools/list`. Common culprits include `npx` commands that download packages on first run, Docker-based servers that pull images, and unreachable HTTP endpoints. PizzaPi initializes all servers in parallel and applies a per-server timeout (30s default).
+
+```jsonc
+// ~/.pizzapi/config.json — increase timeout for slow servers
+{
+  "mcpTimeout": 60000
+}
+```
+
+**Relay server** — If unreachable, the initial handshake can take 10–30 seconds. Fix: `--no-relay` or `"relayUrl": "off"`.
+
+**Plugins** — Plugin discovery scans multiple directories. Usually fast but can be slow on network-mounted drives. Fix: `--no-plugins`.
+
+**Hooks** — A hanging hook script blocks startup. Fix: `--no-hooks` or fix the script.
+
+### Slow-Startup Warnings
+
+When MCP initialization takes longer than **5 seconds**, PizzaPi shows a warning with a per-server timing breakdown:
+
+```
+⏱ MCP startup took 12.3s
+Slow servers:
+  • playwright: 8.2s
+  • tavily: 4.1s (timed out)
+
+Tip: Use --safe-mode or --no-mcp for instant startup.
+```
+
+Suppress this warning if you expect slow startup:
+
+```jsonc
+// ~/.pizzapi/config.json
+{
+  "slowStartupWarning": false
+}
+```
+
+### Startup Diagnostics Configuration
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `mcpTimeout` | `number` | `30000` | Per-server timeout (ms) for MCP `tools/list` calls. `0` to disable. |
+| `slowStartupWarning` | `boolean` | `true` | Show warnings when startup exceeds 5 seconds. |

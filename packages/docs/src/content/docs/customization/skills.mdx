@@ -1,8 +1,6 @@
 ---
 title: Skills & Extensions
 description: Extend PizzaPi with custom skills that give the agent specialized knowledge and capabilities.
-sidebar:
-  order: 7
 ---
 
 import { Aside, FileTree } from "@astrojs/starlight/components";
@@ -37,9 +35,38 @@ A skill is a directory containing a `SKILL.md` file:
         - example-1.md
 </FileTree>
 
-### `SKILL.md` structure
+### `SKILL.md` Frontmatter
+
+Skills support YAML frontmatter for metadata:
 
 ```markdown
+---
+name: my-skill
+description: Use when working on authentication code
+tools: read,bash,edit
+---
+
+# My Skill
+
+Instructions for the agent...
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Identifier for the skill (used with `/skill:name` invocation) |
+| `description` | string | Tells the agent when to apply this skill — matched against the user's task |
+| `tools` | string | Comma-separated list of tools this skill needs (informational) |
+
+All frontmatter fields are optional. If no frontmatter is provided, the skill is still loaded — the agent uses the file content to decide relevance.
+
+### Skill Content Structure
+
+```markdown
+---
+name: my-skill
+description: Use when working on authentication code
+---
+
 # My Skill Name
 
 A one-line description of what this skill does.
@@ -58,8 +85,35 @@ Include examples to help the agent understand expected behavior.
 ```
 
 <Aside type="tip">
-  Skills are loaded into the agent's context at startup. Keep them focused and concise — one skill per domain works best.
+  Skills are loaded into the agent's context when they match. Keep them focused and concise — one skill per domain works best.
 </Aside>
+
+---
+
+## Skill Matching
+
+The agent decides which skills to load based on two mechanisms:
+
+**Automatic matching** — The agent compares the user's task against each skill's `description` field (or content) and loads relevant skills automatically.
+
+**Manual invocation** — Users can explicitly load a skill with the `/skill:name` syntax:
+
+```
+/skill:my-skill Implement the login flow
+```
+
+This bypasses automatic matching and loads the specified skill directly.
+
+---
+
+## Referencing Files Within Skills
+
+Skills can reference other files in their directory:
+
+- **Relative paths** are resolved against the skill directory (the parent of `SKILL.md`)
+- **Plugin skills** can use `${CLAUDE_PLUGIN_ROOT}` to reference files relative to the plugin root
+
+For example, if your skill is at `~/.pizzapi/skills/deploy/SKILL.md`, a reference to `./templates/k8s.yaml` resolves to `~/.pizzapi/skills/deploy/templates/k8s.yaml`.
 
 ---
 
@@ -77,18 +131,6 @@ PizzaPi ships with several built-in extensions that are always active:
 | **spawn-session** | Gives the agent the `spawn_session` tool to launch sub-sessions via the runner |
 | **session-messaging** | Gives the agent `send_message`, `wait_for_message`, and `check_messages` tools for inter-agent communication |
 | **claude-plugins** | Discovers Claude Code plugins and loads their commands, hooks, and skills into the runtime |
-
----
-
-## MCP (Model Context Protocol) Servers
-
-PizzaPi supports connecting **MCP servers** to the agent, giving it access to additional tools (web search, file access, databases, etc.).
-
-### Configuration
-
-MCP servers are configured in your `pi` configuration (not PizzaPi config). Refer to the [pi documentation](https://github.com/badlogic/pi-mono) for MCP setup details.
-
-PizzaPi's `mcp-extension` automatically bridges any configured MCP servers into the agent's tool set for every session.
 
 ---
 
@@ -125,4 +167,39 @@ This skill will automatically be available to every `pizzapi` session started fr
 
 PizzaPi can also load skills from **Claude Code plugins**. Both Claude Code and pi use the [Agent Skills standard](https://agentskills.io/specification), so plugin skills work natively.
 
-Skills from global plugins (`~/.pizzapi/plugins/`, `~/.agents/plugins/`, `~/.claude/plugins/`) are automatically discovered alongside your regular skills. See the [Claude Code Plugins guide](/PizzaPi/guides/claude-plugins/) for details.
+Skills from global plugins (`~/.pizzapi/plugins/`, `~/.agents/plugins/`, `~/.claude/plugins/`) are automatically discovered alongside your regular skills. See the [Claude Code Plugins guide](/PizzaPi/customization/claude-plugins/) for details.
+
+---
+
+## Example: Test-Driven Development Skill
+
+```markdown
+---
+name: test-driven-development
+description: Use when implementing any feature or bugfix, before writing implementation code
+---
+
+# Test-Driven Development
+
+## Process
+
+1. Write a failing test first
+2. Run the test to confirm it fails
+3. Write the minimum code to make the test pass
+4. Run the test to confirm it passes
+5. Refactor if needed
+6. Repeat
+
+## Rules
+
+- Never write implementation code without a failing test
+- Tests must be deterministic — no network calls, no time-dependent assertions
+- Use descriptive test names that explain the expected behavior
+- Keep test files co-located with source: `foo.ts` → `foo.test.ts`
+```
+
+---
+
+## Agent Skills Standard
+
+PizzaPi's skill format is compatible with the [Agent Skills](https://agentskills.io) open standard. Skills written for other compatible tools (like Claude Code) work in PizzaPi without modification, and vice versa.
