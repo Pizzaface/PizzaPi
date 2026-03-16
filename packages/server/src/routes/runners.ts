@@ -649,5 +649,80 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         }
     }
 
+    // ── Sandbox ───────────────────────────────────────────────────────
+
+    // GET /api/runners/:id/sandbox-status
+    const sandboxStatusMatch = url.pathname.match(/^\/api\/runners\/([^/]+)\/sandbox-status$/);
+    if (sandboxStatusMatch && req.method === "GET") {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        const runnerId = decodeURIComponent(sandboxStatusMatch[1]);
+        const runner = await getRunnerData(runnerId);
+        if (!runner) return Response.json({ error: "Runner not found" }, { status: 404 });
+        if (runner.userId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
+
+        try {
+            const result = await sendRunnerCommand(runnerId, { type: "sandbox_get_status" }) as any;
+            if (result && result.ok === false) {
+                return Response.json({ error: result.message ?? "Sandbox status command failed" }, { status: 502 });
+            }
+            return Response.json(result);
+        } catch (err) {
+            return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 502 });
+        }
+    }
+
+    // PUT /api/runners/:id/sandbox-config
+    const sandboxConfigMatch = url.pathname.match(/^\/api\/runners\/([^/]+)\/sandbox-config$/);
+    if (sandboxConfigMatch && req.method === "PUT") {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        const runnerId = decodeURIComponent(sandboxConfigMatch[1]);
+        const runner = await getRunnerData(runnerId);
+        if (!runner) return Response.json({ error: "Runner not found" }, { status: 404 });
+        if (runner.userId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
+
+        let body: any;
+        try {
+            body = await req.json();
+        } catch {
+            return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+        }
+
+        // Validate
+        if (!body || typeof body !== "object" || Array.isArray(body)) {
+            return Response.json({ error: "Body must be a JSON object" }, { status: 400 });
+        }
+        const validModes = ["none", "basic", "full"];
+        if (body.mode !== undefined && !validModes.includes(body.mode)) {
+            return Response.json({ error: `Invalid mode "${body.mode}"` }, { status: 400 });
+        }
+        // Validate array fields contain only strings
+        const arrayFields = [
+            body.filesystem?.denyRead,
+            body.filesystem?.allowWrite,
+            body.filesystem?.denyWrite,
+            body.network?.allowedDomains,
+            body.network?.deniedDomains,
+        ].filter(Boolean);
+        for (const arr of arrayFields) {
+            if (!Array.isArray(arr) || !arr.every((v: any) => typeof v === "string")) {
+                return Response.json({ error: "Array fields must contain only strings" }, { status: 400 });
+            }
+        }
+
+        try {
+            const result = await sendRunnerCommand(runnerId, { type: "sandbox_update_config", config: body }) as any;
+            if (result && result.ok === false) {
+                return Response.json({ error: result.message ?? "Sandbox config update failed" }, { status: 502 });
+            }
+            return Response.json(result);
+        } catch (err) {
+            return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 502 });
+        }
+    }
+
     return undefined;
 };

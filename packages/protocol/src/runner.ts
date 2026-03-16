@@ -315,6 +315,17 @@ export interface RunnerServerToClientEvents {
     cwd: string;
   }) => void;
 
+  /** Requests current sandbox status */
+  sandbox_get_status: (data: {
+    requestId?: string;
+  }) => void;
+
+  /** Updates sandbox configuration (global config) */
+  sandbox_update_config: (data: {
+    requestId?: string;
+    config: Record<string, unknown>;
+  }) => void;
+
   /** Generic error */
   error: (data: {
     message: string;

@@ -86,7 +86,6 @@ async function main(): Promise<void> {
     if (isSandboxActive()) {
         process.env.PIZZAPI_SANDBOX_ACTIVE = "1";
         process.env.PIZZAPI_SANDBOX_MODE = sandboxConfig.mode;
-        console.log(`pizzapi worker: sandbox initialized (mode=${sandboxConfig.mode})`);
     } else if (sandboxConfig.mode !== "none") {
         console.warn("pizzapi worker: sandbox was requested but is not active (platform unsupported or init failed)");
     }

@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { toggleMcpServer, loadConfig, _setGlobalConfigDir, resolveSandboxConfig, validateSandboxOverride } from "./config.js";
+import { toggleMcpServer, loadConfig, _setGlobalConfigDir, resolveSandboxConfig, validateSandboxOverride, saveGlobalConfig } from "./config.js";
 
 describe("toggleMcpServer", () => {
   let tempDir: string;
@@ -409,5 +409,69 @@ describe("validateSandboxOverride", () => {
     expect(() => validateSandboxOverride("enabled")).toThrow(/Invalid sandbox override "enabled"/);
     expect(() => validateSandboxOverride("true")).toThrow(/Invalid sandbox override "true"/);
     expect(() => validateSandboxOverride("on")).toThrow(/Invalid sandbox override "on"/);
+  });
+});
+
+// ── saveGlobalConfig ──────────────────────────────────────────────────────────
+
+describe("saveGlobalConfig", () => {
+  let tempDir: string;
+  let globalDir: string;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), "pizzapi-save-config-test-"));
+    globalDir = join(tempDir, "global-pizzapi");
+    mkdirSync(globalDir, { recursive: true });
+    _setGlobalConfigDir(globalDir);
+  });
+
+  afterEach(() => {
+    _setGlobalConfigDir(null);
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  test("writes valid JSON", () => {
+    saveGlobalConfig({ apiKey: "test-key" });
+    const raw = readFileSync(join(globalDir, "config.json"), "utf-8");
+    const parsed = JSON.parse(raw);
+    expect(parsed.apiKey).toBe("test-key");
+  });
+
+  test("creates config file if missing", () => {
+    const freshDir = join(tempDir, "fresh-pizzapi");
+    _setGlobalConfigDir(freshDir);
+    saveGlobalConfig({ relayUrl: "ws://example.com" });
+    const raw = readFileSync(join(freshDir, "config.json"), "utf-8");
+    const parsed = JSON.parse(raw);
+    expect(parsed.relayUrl).toBe("ws://example.com");
+  });
+
+  test("merges sandbox key without clobbering other config keys", () => {
+    writeFileSync(
+      join(globalDir, "config.json"),
+      JSON.stringify({ apiKey: "keep-me", relayUrl: "ws://keep.com" }),
+    );
+    saveGlobalConfig({
+      sandbox: {
+        mode: "full",
+        filesystem: { denyRead: ["~/.ssh"], allowWrite: [".", "/tmp"], denyWrite: [".env"] },
+        network: { allowedDomains: ["*.github.com"], deniedDomains: [] },
+      },
+    });
+    const parsed = JSON.parse(readFileSync(join(globalDir, "config.json"), "utf-8"));
+    expect(parsed.apiKey).toBe("keep-me");
+    expect(parsed.relayUrl).toBe("ws://keep.com");
+    expect(parsed.sandbox.mode).toBe("full");
+    expect(parsed.sandbox.filesystem.denyRead).toContain("~/.ssh");
+  });
+
+  test("round-trip: saveGlobalConfig → loadConfig produces expected merged result", () => {
+    writeFileSync(join(globalDir, "config.json"), JSON.stringify({ apiKey: "original" }));
+    saveGlobalConfig({
+      sandbox: { mode: "basic", filesystem: { denyRead: ["~/custom"], allowWrite: ["."], denyWrite: [] } },
+    });
+    const config = loadConfig(tempDir);
+    expect(config.apiKey).toBe("original");
+    expect(config.sandbox?.mode).toBe("basic");
   });
 });
