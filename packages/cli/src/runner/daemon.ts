@@ -667,7 +667,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                         ? { prompt: requestedPrompt, model: requestedModel, hiddenModels: requestedHiddenModels, agent: resolvedAgent, parentSessionId: requestedParentSessionId }
                         : { hiddenModels: requestedHiddenModels, agent: resolvedAgent, parentSessionId: requestedParentSessionId }; // Always pass agent + hidden models + parent on restart
                     isFirstSpawn = false;
-                    spawnSession(sessionId, apiKey!, requestedCwd, runningSessions, doSpawn, spawnOpts);
+                    spawnSession(sessionId, apiKey!, relayRaw, requestedCwd, runningSessions, doSpawn, spawnOpts);
                     socket.emit("session_ready", { sessionId });
                 } catch (err) {
                     socket.emit("session_error", {
@@ -1548,6 +1548,7 @@ function isCwdAllowed(cwd: string | undefined): boolean {
 function spawnSession(
     sessionId: string,
     apiKey: string,
+    relayUrl: string,
     requestedCwd: string | undefined,
     runningSessions: Map<string, RunnerSession>,
     onRestartRequested?: () => void,
@@ -1583,9 +1584,9 @@ function spawnSession(
 
     const env: Record<string, string> = {
         ...Object.fromEntries(Object.entries(process.env).filter(([, v]) => typeof v === "string")) as any,
-        // Ensure relay URL is present for the remote extension in the worker.
-        // Priority: env var > config.json > default (same as daemon startup).
-        PIZZAPI_RELAY_URL: process.env.PIZZAPI_RELAY_URL ?? resolveConfigRelayUrl() ?? "ws://localhost:7492",
+        // Use the daemon's resolved relay URL so workers always connect to the
+        // same relay the daemon is using (not a potentially-changed config file).
+        PIZZAPI_RELAY_URL: relayUrl,
         PIZZAPI_API_KEY: apiKey,
         PIZZAPI_SESSION_ID: sessionId,
         // Tell the worker where the runner-managed usage cache lives so it can
