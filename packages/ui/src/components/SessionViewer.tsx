@@ -958,12 +958,13 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
               setInput("");
               setCommandOpen(false);
               setCommandQuery("");
-            }
-            // Always clear the saved draft for the originating session so
-            // stale text isn't rehydrated on switch-back.
-            if (originSessionId) {
+              // Also clear the saved draft entry — safe because the user is
+              // still on this session so no newer draft could have been saved.
               draftsRef.current.delete(originSessionId);
             }
+            // If the user already switched away, DON'T delete the draft —
+            // the switch effect may have saved newer unsent text for this
+            // session that we must not clobber.
           } else {
             setComposerError("Failed to send message.");
           }
