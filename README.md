@@ -27,13 +27,13 @@ One command clones the repo, builds a Docker image, and starts the relay + web U
 
 Full docs are at **[pizzaface.github.io/PizzaPi](https://pizzaface.github.io/PizzaPi/)** — including:
 
-- **[Getting Started](https://pizzaface.github.io/PizzaPi/getting-started/)** — up and running in 5 minutes
-- **[Installation](https://pizzaface.github.io/PizzaPi/guides/installation/)** — platform-specific notes and install methods
-- **[CLI Reference](https://pizzaface.github.io/PizzaPi/guides/cli-reference/)** — all commands and flags
-- **[Configuration](https://pizzaface.github.io/PizzaPi/guides/configuration/)** — config files, env vars, model defaults
-- **[Self-Hosting](https://pizzaface.github.io/PizzaPi/guides/self-hosting/)** — production Docker setup with HTTPS
-- **[Runner Daemon](https://pizzaface.github.io/PizzaPi/guides/runner-daemon/)** — headless agent sessions from the web UI
-- **[Development](https://pizzaface.github.io/PizzaPi/guides/development/)** — local dev setup, testing, and contributing
+- **[Getting Started](https://pizzaface.github.io/PizzaPi/start-here/getting-started/)** — up and running in 5 minutes
+- **[Installation](https://pizzaface.github.io/PizzaPi/start-here/installation/)** — platform-specific notes and install methods
+- **[CLI Reference](https://pizzaface.github.io/PizzaPi/running/cli-reference/)** — all commands and flags
+- **[Configuration](https://pizzaface.github.io/PizzaPi/customization/configuration/)** — config files, env vars, model defaults
+- **[Self-Hosting](https://pizzaface.github.io/PizzaPi/deployment/self-hosting/)** — production Docker setup with HTTPS
+- **[Runner Daemon](https://pizzaface.github.io/PizzaPi/running/runner-daemon/)** — headless agent sessions from the web UI
+- **[Development](https://pizzaface.github.io/PizzaPi/reference/development/)** — local dev setup, testing, and contributing
 - **[Architecture](https://pizzaface.github.io/PizzaPi/reference/architecture/)** — relay protocol, event flow, and component design
 
 ## License
