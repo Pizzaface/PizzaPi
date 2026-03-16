@@ -19,6 +19,7 @@ import { join, dirname, relative, basename, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { io, type Socket } from "socket.io-client";
 import type { RunnerClientToServerEvents, RunnerServerToClientEvents } from "@pizzapi/protocol";
+import { loadGlobalConfig } from "../config.js";
 
 interface RunnerSession {
     sessionId: string;
@@ -174,6 +175,17 @@ import {
     scanAllPluginInfo,
     type PluginInfo,
 } from "../plugins.js";
+
+/**
+ * Read the `relayUrl` from ~/.pizzapi/config.json, returning undefined
+ * if not set or set to "off".  Used as a fallback when PIZZAPI_RELAY_URL
+ * env var is not present (e.g. LaunchAgent contexts).
+ */
+function resolveConfigRelayUrl(): string | undefined {
+    const cfg = loadGlobalConfig();
+    const url = cfg.relayUrl;
+    return url && url !== "off" ? url : undefined;
+}
 
 // ── Runner-wide usage cache (shared with worker processes via file) ───────────
 //
@@ -428,7 +440,7 @@ function stopUsageRefreshLoop(): void {
  *
  * Authentication: API key via PIZZAPI_API_KEY env var (required).
  *                (Back-compat: PIZZAPI_RUNNER_TOKEN server token)
- * Relay URL:      PIZZAPI_RELAY_URL env var (default: ws://localhost:7492).
+ * Relay URL:      PIZZAPI_RELAY_URL env var, or `relayUrl` in ~/.pizzapi/config.json (default: ws://localhost:7492).
  * State file:     PIZZAPI_RUNNER_STATE_PATH env var (default: ~/.pizzapi/runner.json).
  */
 export async function runDaemon(_args: string[] = []): Promise<number> {
@@ -452,14 +464,21 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
     // the moment they are spawned.  One daemon refresh covers all sessions on this node.
     startUsageRefreshLoop();
 
+    // Load global config so relayUrl and apiKey can be read from
+    // ~/.pizzapi/config.json (important for LaunchAgent contexts where
+    // env vars aren't available).
+    const daemonConfig = loadGlobalConfig();
+
+    // Priority: env var > config.json > default
     const apiKey =
         process.env.PIZZAPI_RUNNER_API_KEY ??
         process.env.PIZZAPI_API_KEY ??
-        process.env.PIZZAPI_API_TOKEN;
+        process.env.PIZZAPI_API_TOKEN ??
+        daemonConfig.apiKey;
     const token = process.env.PIZZAPI_RUNNER_TOKEN;
 
     if (!apiKey && !token) {
-        console.error("❌ Set PIZZAPI_API_KEY (or PIZZAPI_API_TOKEN) to run the runner daemon.");
+        console.error("❌ Set PIZZAPI_API_KEY (or PIZZAPI_API_TOKEN), or set apiKey in ~/.pizzapi/config.json.");
         releaseStateLock(statePath);
         process.exit(1);
     }
@@ -468,7 +487,8 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         let isShuttingDown = false;
 
         // ── Socket.IO connection setup ────────────────────────────────────
-        const relayRaw = (process.env.PIZZAPI_RELAY_URL ?? "ws://localhost:7492")
+        // Priority: env var > config.json > default
+        const relayRaw = (process.env.PIZZAPI_RELAY_URL ?? resolveConfigRelayUrl() ?? "ws://localhost:7492")
             .trim()
             .replace(/\/$/, "");
 
@@ -1564,7 +1584,8 @@ function spawnSession(
     const env: Record<string, string> = {
         ...Object.fromEntries(Object.entries(process.env).filter(([, v]) => typeof v === "string")) as any,
         // Ensure relay URL is present for the remote extension in the worker.
-        PIZZAPI_RELAY_URL: process.env.PIZZAPI_RELAY_URL ?? "ws://localhost:7492",
+        // Priority: env var > config.json > default (same as daemon startup).
+        PIZZAPI_RELAY_URL: process.env.PIZZAPI_RELAY_URL ?? resolveConfigRelayUrl() ?? "ws://localhost:7492",
         PIZZAPI_API_KEY: apiKey,
         PIZZAPI_SESSION_ID: sessionId,
         // Tell the worker where the runner-managed usage cache lives so it can

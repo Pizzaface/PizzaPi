@@ -1,3 +1,3 @@
-## 2025-02-27 - Standardizing Tooltips for Icon Buttons
-**Learning:** Native `title` attributes on icon-only buttons create an inconsistent, delayed hover experience. The app has a `Tooltip` component from Shadcn/Radix UI that provides a much better accessible and visual experience. When wrapping existing elements with `TooltipTrigger`, you must use `asChild` to preserve event delegation (like `onClick` or `onPointerDown`) on the original elements.
-**Action:** Always replace native `title` attributes on icon-only buttons with the design system`s `Tooltip` component. Use `<TooltipTrigger asChild>` to wrap the interactive element safely.
+## 2024-05-19 - Standardize Tooltips for Icon-only Buttons
+**Learning:** Native HTML `title` attributes on interactive icon-only buttons create inconsistent and often inaccessible experiences. Replacing them with the shadcn `Tooltip` component ensures predictable hover states, proper ARIA labeling, and visual alignment with the design system.
+**Action:** Always use `<Tooltip><TooltipTrigger asChild><button aria-label="..."><Icon/></button></TooltipTrigger><TooltipContent>...</TooltipContent></Tooltip>` for icon-only actions instead of native `title` attributes.

@@ -3,10 +3,11 @@ import { authClient } from "@/lib/auth-client";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Shield, Plus } from "lucide-react";
+import { Shield, Plus, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Skeleton } from "@/components/ui/skeleton";
 import { RevealedSecretBanner } from "@/components/ui/revealed-secret";
+import { Spinner } from "@/components/ui/spinner";
 
 interface ApiKey {
   id: string;
@@ -18,17 +19,62 @@ interface ApiKey {
   enabled: boolean;
 }
 
-function isRunnerKey(k: ApiKey): boolean {
+export function isRunnerKey(k: { name: string | null }): boolean {
   const name = (k.name ?? "").toLowerCase();
   return name === "runner" || name.startsWith("runner:") || name.startsWith("runner-");
 }
 
-export function RunnerTokenManager() {
+function DeleteTokenButton({ onDelete, isDeleting }: { onDelete: () => void; isDeleting: boolean }) {
+  const [confirming, setConfirming] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!confirming) return;
+    const timer = setTimeout(() => setConfirming(false), 3000);
+    return () => clearTimeout(timer);
+  }, [confirming]);
+
+  if (isDeleting) {
+    return (
+      <Button variant="ghost" size="icon" className="h-7 w-7 flex-shrink-0 text-destructive" disabled>
+        <Spinner className="h-3.5 w-3.5" />
+      </Button>
+    );
+  }
+
+  if (confirming) {
+    return (
+      <Button
+        variant="destructive"
+        size="sm"
+        className="h-7 px-2 text-xs animate-in fade-in zoom-in duration-200"
+        onClick={(e) => { e.stopPropagation(); onDelete(); setConfirming(false); }}
+      >
+        Sure?
+      </Button>
+    );
+  }
+
+  return (
+    <Button
+      variant="ghost"
+      size="icon"
+      className="h-7 w-7 flex-shrink-0 text-muted-foreground hover:text-destructive transition-colors"
+      onClick={(e) => { e.stopPropagation(); setConfirming(true); }}
+      title="Revoke runner token"
+      aria-label="Revoke runner token"
+    >
+      <Trash2 className="h-3.5 w-3.5" />
+    </Button>
+  );
+}
+
+export function RunnerTokenManager({ onKeysChanged }: { onKeysChanged?: () => void } = {}) {
   const [keys, setKeys] = React.useState<ApiKey[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [creating, setCreating] = React.useState(false);
   const [newToken, setNewToken] = React.useState<string | null>(null);
   const [error, setError] = React.useState<string | null>(null);
+  const [deletingKeyId, setDeletingKeyId] = React.useState<string | null>(null);
 
   async function loadKeys() {
     setLoading(true);
@@ -62,7 +108,6 @@ export function RunnerTokenManager() {
         method: "POST",
         body: {
           name: "runner",
-          // Prefix is just a cosmetic prefix for the generated token.
           prefix: "ppru",
         },
       });
@@ -75,10 +120,32 @@ export function RunnerTokenManager() {
       const value = (data as any)?.key;
       setNewToken(typeof value === "string" ? value : null);
       await loadKeys();
+      onKeysChanged?.();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to create runner token");
     } finally {
       setCreating(false);
+    }
+  }
+
+  async function handleDelete(id: string) {
+    setError(null);
+    setDeletingKeyId(id);
+    try {
+      const { error } = await authClient.$fetch("/api-key/delete", {
+        method: "POST",
+        body: { keyId: id },
+      });
+      if (error) {
+        setError((error as any)?.message ?? "Failed to revoke runner token");
+      } else {
+        await loadKeys();
+        onKeysChanged?.();
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to revoke runner token");
+    } finally {
+      setDeletingKeyId(null);
     }
   }
 
@@ -91,7 +158,7 @@ export function RunnerTokenManager() {
         </div>
         <CardDescription>
           Tokens used by <code className="rounded bg-muted px-1 py-0.5 text-xs font-mono">pizzapi runner</code> to
-          authenticate to the relay. These are normal API keys.
+          authenticate to the relay.
         </CardDescription>
       </CardHeader>
 
@@ -155,6 +222,10 @@ bun run dev:runner`}
                         : " · no expiry"}
                     </span>
                   </div>
+                  <DeleteTokenButton
+                    onDelete={() => handleDelete(k.id)}
+                    isDeleting={deletingKeyId === k.id}
+                  />
                 </div>
               ))}
             </div>

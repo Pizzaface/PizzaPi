@@ -575,6 +575,10 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         });
 
         sock.on("input", (data) => {
+            // Any new input cancels the follow-up grace period immediately
+            // (don't wait for turn_start which is async).
+            clearFollowUpGrace();
+
             const inputText = data.text;
             if (consumePendingAskUserQuestionFromWeb(rctx, inputText)) return;
             if (consumePendingPlanModeFromWeb(rctx, inputText)) return;
