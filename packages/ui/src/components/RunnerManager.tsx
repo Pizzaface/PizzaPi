@@ -416,15 +416,19 @@ export function RunnerManager({ onOpenSession }: RunnerManagerProps) {
                                                     type="button"
                                                     onClick={async (e) => {
                                                         e.stopPropagation();
-                                                        if (spawnRunnerId) {
-                                                            await fetch(`/api/runners/${encodeURIComponent(spawnRunnerId)}/recent-folders`, {
+                                                        const targetRunner = spawnRunnerId;
+                                                        if (targetRunner) {
+                                                            await fetch(`/api/runners/${encodeURIComponent(targetRunner)}/recent-folders`, {
                                                                 method: "DELETE",
                                                                 credentials: "include",
                                                                 headers: { "Content-Type": "application/json" },
                                                                 body: JSON.stringify({ path: folder }),
                                                             });
                                                         }
-                                                        setRecentFolders((prev) => prev.filter((f) => f !== folder));
+                                                        // Only update local state if the runner hasn't changed during the request
+                                                        if (spawnRunnerId === targetRunner) {
+                                                            setRecentFolders((prev) => prev.filter((f) => f !== folder));
+                                                        }
                                                     }}
                                                     className="flex-shrink-0 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-opacity"
                                                     title="Remove from recent"
