@@ -39,7 +39,7 @@ import {
 import { Container, Markdown, Spacer, Text } from "@mariozechner/pi-tui";
 import { type AgentConfig, type AgentScope, discoverAgents } from "./subagent-agents.js";
 import { getPluginAgentPaths } from "./claude-plugins.js";
-import { defaultAgentDir, loadConfig } from "../config.js";
+import { defaultAgentDir, loadGlobalConfig } from "../config.js";
 
 // ── Constants ──────────────────────────────────────────────────────────
 
@@ -540,9 +540,11 @@ export const subagentExtension = (pi: ExtensionAPI) => {
         parameters: SubagentParams as any,
 
         async execute(_toolCallId, rawParams, signal, onUpdate, ctx) {
-            const config = loadConfig(ctx.cwd);
-            const maxParallelTasks = toFinitePositiveInt(config.subagent?.maxParallelTasks, DEFAULT_MAX_PARALLEL_TASKS);
-            const maxConcurrency = toFinitePositiveInt(config.subagent?.maxConcurrency, DEFAULT_MAX_CONCURRENCY);
+            // Read concurrency limits from global config only — project-local
+            // config must not be able to raise fan-out limits for untrusted repos.
+            const globalConfig = loadGlobalConfig();
+            const maxParallelTasks = toFinitePositiveInt(globalConfig.subagent?.maxParallelTasks, DEFAULT_MAX_PARALLEL_TASKS);
+            const maxConcurrency = toFinitePositiveInt(globalConfig.subagent?.maxConcurrency, DEFAULT_MAX_CONCURRENCY);
 
             const params = (rawParams ?? {}) as {
                 agent?: string;

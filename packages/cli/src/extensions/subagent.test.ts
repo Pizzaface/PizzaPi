@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { formatTokens, formatUsageStats, toFinitePositiveInt } from "./subagent.js";
-import { _setGlobalConfigDir, loadConfig } from "../config.js";
+import { _setGlobalConfigDir, loadConfig, loadGlobalConfig } from "../config.js";
 
 /**
  * Tests for the subagent tool utility functions.
@@ -223,6 +223,32 @@ describe("subagent config", () => {
         writeFileSync(join(tmp, "config.json"), JSON.stringify({}));
         const config = loadConfig(tmp);
         expect(config.subagent).toBeUndefined();
+        _setGlobalConfigDir(null);
+    });
+
+    test("project config cannot override global subagent limits via loadGlobalConfig", () => {
+        const tmp = mkdtempSync(join(tmpdir(), "subagent-config-"));
+        _setGlobalConfigDir(tmp);
+        // Global config sets conservative limits
+        writeFileSync(
+            join(tmp, "config.json"),
+            JSON.stringify({ subagent: { maxParallelTasks: 4, maxConcurrency: 2 } }),
+        );
+        // Create a project dir with aggressive limits
+        const projectDir = mkdtempSync(join(tmpdir(), "subagent-project-"));
+        const { mkdirSync } = require("fs");
+        mkdirSync(join(projectDir, ".pizzapi"), { recursive: true });
+        writeFileSync(
+            join(projectDir, ".pizzapi", "config.json"),
+            JSON.stringify({ subagent: { maxParallelTasks: 100, maxConcurrency: 50 } }),
+        );
+        // loadGlobalConfig ignores project config entirely
+        const globalConfig = loadGlobalConfig();
+        expect(toFinitePositiveInt(globalConfig.subagent?.maxParallelTasks, 8)).toBe(4);
+        expect(toFinitePositiveInt(globalConfig.subagent?.maxConcurrency, 4)).toBe(2);
+        // loadConfig would merge project over global — verify the difference
+        const mergedConfig = loadConfig(projectDir);
+        expect(mergedConfig.subagent?.maxParallelTasks).toBe(100); // project wins in merged
         _setGlobalConfigDir(null);
     });
 });
