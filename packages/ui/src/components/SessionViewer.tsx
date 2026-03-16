@@ -945,12 +945,21 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
         ? { ...message, deliverAs: deliveryMode }
         : message;
 
+      // Capture the originating sessionId so we can clear its draft even if
+      // the user switches sessions before the async send resolves.
+      const originSessionId = sessionId;
+
       Promise.resolve(onSendInput(payload))
         .then((result) => {
           if (result !== false) {
             setInput("");
             setCommandOpen(false);
             setCommandQuery("");
+            // Clear the saved draft for the originating session so stale text
+            // isn't rehydrated when switching back after an off-session resolve.
+            if (originSessionId) {
+              draftsRef.current.delete(originSessionId);
+            }
           } else {
             setComposerError("Failed to send message.");
           }
