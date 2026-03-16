@@ -64,11 +64,10 @@ export default defineConfig({
                     label: "Customization",
                     items: [
                         { label: "Configuration", slug: "customization/configuration" },
-                        // TODO: uncomment when pages are created in Chunks 3-5
-                        // { label: "MCP Servers", slug: "customization/mcp-servers" },
-                        // { label: "Hooks", slug: "customization/hooks" },
+                        { label: "MCP Servers", slug: "customization/mcp-servers" },
+                        { label: "Hooks", slug: "customization/hooks" },
                         { label: "Skills", slug: "customization/skills" },
-                        // { label: "Agent Definitions", slug: "customization/agent-definitions" },
+                        { label: "Agent Definitions", slug: "customization/agent-definitions" },
                         { label: "Claude Code Plugins", slug: "customization/claude-plugins" },
                         { label: "Subagents", slug: "customization/subagents" },
                     ],
