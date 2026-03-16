@@ -127,8 +127,6 @@ Env vars take precedence over config.json if both are set:
   (pi's content model doesn't have a native citation type).
 - The `web_search_tool_result` content blocks may contain encrypted search
   result data; only the title/URL are extracted for display.
-- Requires Anthropic API key (not OAuth/Claude Pro subscription) with web
-  search enabled in the Claude Console.
 
 **Tests:** `packages/cli/src/patches.test.ts` verifies patch presence and
 syntactic validity. Run with `bun test packages/cli/src/patches.test.ts`.

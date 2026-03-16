@@ -1,11 +1,17 @@
 diff --git a/node_modules/@mariozechner/pi-ai/.bun-tag-2b215ecac77b994f b/.bun-tag-2b215ecac77b994f
 new file mode 100644
 index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+diff --git a/node_modules/@mariozechner/pi-ai/.bun-tag-72b5e57c598092a8 b/.bun-tag-72b5e57c598092a8
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+diff --git a/node_modules/@mariozechner/pi-ai/.bun-tag-738250e6e1ef017c b/.bun-tag-738250e6e1ef017c
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
 diff --git a/node_modules/@mariozechner/pi-ai/.bun-tag-8d8af48225a55c6a b/.bun-tag-8d8af48225a55c6a
 new file mode 100644
 index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
 diff --git a/dist/providers/anthropic.js b/dist/providers/anthropic.js
-index f574ad921537cf71e1c05c743e0c13688eb36637..382fdd84dd099674fa9f971a79bd1b9a1798566e 100644
+index f574ad921537cf71e1c05c743e0c13688eb36637..031e29f82eed13cd66ad1d9650f0b34b9feedb8c 100644
 --- a/dist/providers/anthropic.js
 +++ b/dist/providers/anthropic.js
 @@ -209,6 +209,37 @@ export const streamAnthropic = (model, context, options) => {
@@ -67,12 +73,15 @@ index f574ad921537cf71e1c05c743e0c13688eb36637..382fdd84dd099674fa9f971a79bd1b9a
      // Configure thinking mode: adaptive (Opus 4.6 and Sonnet 4.6) or budget-based (older models)
      if (options?.thinkingEnabled && model.reasoning) {
          if (supportsAdaptiveThinking(model.id)) {
-@@ -629,6 +674,22 @@ function convertMessages(messages, model, isOAuthToken, cacheControl) {
-                         input: block.arguments ?? {},
-                     });
-                 }
+@@ -585,7 +630,25 @@ function convertMessages(messages, model, isOAuthToken, cacheControl) {
+         else if (msg.role === "assistant") {
+             const blocks = [];
+             for (const block of msg.content) {
+-                if (block.type === "text") {
 +                // PATCH(pizzapi): round-trip server tool use and web search results
-+                else if (block.type === "text" && block._serverToolUse) {
++                // These must be checked BEFORE the generic text handler since they
++                // use type:"text" with metadata that needs to be restored.
++                if (block.type === "text" && block._serverToolUse) {
 +                    blocks.push({
 +                        type: "server_tool_use",
 +                        id: block._serverToolUse.id,
@@ -87,10 +96,11 @@ index f574ad921537cf71e1c05c743e0c13688eb36637..382fdd84dd099674fa9f971a79bd1b9a
 +                        content: block._webSearchResult.content,
 +                    });
 +                }
-             }
-             if (blocks.length === 0)
-                 continue;
-@@ -696,6 +757,10 @@ function convertTools(tools, isOAuthToken) {
++                else if (block.type === "text") {
+                     if (block.text.trim().length === 0)
+                         continue;
+                     blocks.push({
+@@ -696,6 +759,10 @@ function convertTools(tools, isOAuthToken) {
      if (!tools)
          return [];
      return tools.map((tool) => {
