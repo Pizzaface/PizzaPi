@@ -7,7 +7,7 @@
 import { spawn } from "node:child_process";
 import { buildSessionContext, SessionManager, type ExtensionContext, type SessionInfo } from "@mariozechner/pi-coding-agent";
 import { getMcpBridge } from "./mcp-bridge.js";
-import { toggleMcpServer, saveGlobalConfig, loadConfig, resolveSandboxConfig, type SandboxConfig } from "../config.js";
+import { toggleMcpServer, saveGlobalConfig, loadConfig, loadGlobalConfig, resolveSandboxConfig, type SandboxConfig } from "../config.js";
 import { isPlanModeEnabled, togglePlanModeFromRemote, setPlanModeFromRemote } from "./plan-mode-toggle.js";
 import { isSandboxActive, getSandboxMode, getViolations, getResolvedConfig } from "@pizzapi/tools";
 import { refreshAllUsage, buildProviderUsage } from "./remote-provider-usage.js";
@@ -457,9 +457,21 @@ export async function handleExecFromWeb(
                 replyErr(`Invalid mode "${body.mode}". Valid values: ${validModes.join(", ")}`);
                 return;
             }
-            // Save to global config — replaces entire sandbox key
-            const sandboxConfig: SandboxConfig = body;
-            saveGlobalConfig({ sandbox: sandboxConfig });
+            // Deep-merge with existing global sandbox config so fields
+            // not included in the request (e.g. allowGitConfig,
+            // allowUnixSockets, proxy ports) are preserved.
+            const existingGlobal = loadGlobalConfig();
+            const existingSandbox = existingGlobal.sandbox ?? {} as Record<string, any>;
+            const merged: Record<string, any> = { ...existingSandbox };
+            for (const [key, value] of Object.entries(body)) {
+                if (value && typeof value === "object" && !Array.isArray(value)
+                    && merged[key] && typeof merged[key] === "object" && !Array.isArray(merged[key])) {
+                    merged[key] = { ...merged[key], ...value };
+                } else {
+                    merged[key] = value;
+                }
+            }
+            saveGlobalConfig({ sandbox: merged });
             // Reload and resolve config to return the new resolved state
             const newConfig = loadConfig(process.cwd());
             const resolved = resolveSandboxConfig(process.cwd(), newConfig);

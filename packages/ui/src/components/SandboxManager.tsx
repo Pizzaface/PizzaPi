@@ -301,11 +301,12 @@ export function SandboxManager({ runnerId }: SandboxManagerProps) {
             if (form.mode === "full" || hasNetworkOverrides) {
                 body.network = form.network;
             }
-            // Include advanced options
-            if (form.allowPty) body.allowPty = true;
-            if (form.enableWeakerNetworkIsolation) body.enableWeakerNetworkIsolation = true;
-            if (form.enableWeakerNestedSandbox) body.enableWeakerNestedSandbox = true;
-            if (form.mandatoryDenySearchDepth !== 3) body.mandatoryDenySearchDepth = form.mandatoryDenySearchDepth;
+            // Always include advanced options so toggling them off
+            // explicitly overwrites the existing global config value.
+            body.allowPty = form.allowPty ?? false;
+            body.enableWeakerNetworkIsolation = form.enableWeakerNetworkIsolation ?? false;
+            body.enableWeakerNestedSandbox = form.enableWeakerNestedSandbox ?? false;
+            body.mandatoryDenySearchDepth = form.mandatoryDenySearchDepth ?? 3;
 
             const res = await fetch(`/api/runners/${encodeURIComponent(runnerId)}/sandbox-config`, {
                 method: "PUT",

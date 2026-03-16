@@ -1383,8 +1383,20 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 // Merge with existing global sandbox config so UI-unmanaged
                 // fields (ignoreViolations, allowUnixSockets, proxy ports,
                 // allowGitConfig, etc.) are preserved across saves.
-                const existingSandbox = loadGlobalConfig().sandbox ?? {};
-                saveGlobalConfig({ sandbox: { ...existingSandbox, ...body } });
+                const existingSandbox = loadGlobalConfig().sandbox ?? {} as Record<string, any>;
+                // Deep-merge nested objects (filesystem, network) so that
+                // sub-fields not managed by the UI (e.g. allowGitConfig,
+                // allowUnixSockets, proxy ports) are preserved.
+                const merged: Record<string, any> = { ...existingSandbox };
+                for (const [key, value] of Object.entries(body)) {
+                    if (value && typeof value === "object" && !Array.isArray(value)
+                        && merged[key] && typeof merged[key] === "object" && !Array.isArray(merged[key])) {
+                        merged[key] = { ...merged[key], ...value };
+                    } else {
+                        merged[key] = value;
+                    }
+                }
+                saveGlobalConfig({ sandbox: merged });
                 const newConfig = loadConfig(process.cwd());
                 const resolved = resolveSandboxConfig(process.cwd(), newConfig);
                 socket.emit("file_result", {
