@@ -64,6 +64,33 @@ describe("tryRenderServerToolBlock", () => {
     expect(result).toBeNull();
   });
 
+  test("returns null for _webSearchResult with non-array content (error payload)", () => {
+    // Anthropic can return an error object instead of an array when web search
+    // hits rate limits or encounters errors
+    const block = {
+      type: "text",
+      text: "",
+      _webSearchResult: {
+        tool_use_id: "tool_123",
+        content: { type: "error", error: { message: "rate_limited" } },
+      },
+    };
+    const result = tryRenderServerToolBlock(block, 0);
+    expect(result).toBeNull();
+  });
+
+  test("returns null for _webSearchResult with undefined content", () => {
+    const block = {
+      type: "text",
+      text: "",
+      _webSearchResult: {
+        tool_use_id: "tool_123",
+      },
+    };
+    const result = tryRenderServerToolBlock(block, 0);
+    expect(result).toBeNull();
+  });
+
   test("filters out malformed search results", () => {
     const block = {
       type: "text",

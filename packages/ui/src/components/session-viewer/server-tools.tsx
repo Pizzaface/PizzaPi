@@ -66,7 +66,8 @@ export function tryRenderServerToolBlock(
   // ── Web Search Results ─────────────────────────────────────────────────
   if (block._webSearchResult) {
     const meta = block._webSearchResult as WebSearchResultMetadata;
-    const results: WebSearchResult[] = (meta.content ?? [])
+    const rawContent = Array.isArray(meta.content) ? meta.content : [];
+    const results: WebSearchResult[] = rawContent
       .filter(
         (r): r is WebSearchResultBlock =>
           r.type === "web_search_result" &&
