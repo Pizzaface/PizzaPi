@@ -38,6 +38,8 @@ Respond with \`respond_to_trigger\` using trigger ID \`abc123\`.`;
 
     test("detects session_complete trigger type", () => {
       const body = `🔗 Child "test-task" completed:
+Exit reason: completed
+---
 All tests passed successfully. 5 files modified.
 
 Respond with \`respond_to_trigger\` using trigger ID \`xyz789\`.
@@ -47,6 +49,48 @@ Use respond_to_trigger with action: "ack" to acknowledge, or action: "followUp" 
       expect(parsed.type).toBe("session_complete");
       expect(parsed.childName).toBe("test-task");
       expect(parsed.message).toBe("All tests passed successfully. 5 files modified.");
+      expect(parsed.exitReason).toBe("completed");
+    });
+
+    test("detects killed session_complete trigger", () => {
+      const body = `🔗 Child "test-task" was killed:
+Exit reason: killed
+---
+Session completed
+
+Respond with \`respond_to_trigger\` using trigger ID \`xyz789\`.`;
+
+      const parsed = parseTriggerBody(body);
+      expect(parsed.type).toBe("session_complete");
+      expect(parsed.childName).toBe("test-task");
+      expect(parsed.exitReason).toBe("killed");
+    });
+
+    test("detects errored session_complete trigger", () => {
+      const body = `🔗 Child "test-task" errored:
+Exit reason: error
+---
+Something went wrong
+
+Respond with \`respond_to_trigger\` using trigger ID \`xyz789\`.`;
+
+      const parsed = parseTriggerBody(body);
+      expect(parsed.type).toBe("session_complete");
+      expect(parsed.childName).toBe("test-task");
+      expect(parsed.exitReason).toBe("error");
+    });
+
+    test("handles legacy session_complete format without exitReason", () => {
+      const body = `🔗 Child "test-task" completed:
+All tests passed successfully.
+
+Respond with \`respond_to_trigger\` using trigger ID \`xyz789\`.`;
+
+      const parsed = parseTriggerBody(body);
+      expect(parsed.type).toBe("session_complete");
+      expect(parsed.childName).toBe("test-task");
+      expect(parsed.exitReason).toBe("completed");
+      expect(parsed.message).toBe("All tests passed successfully.");
     });
 
     test("detects session_error trigger type", () => {

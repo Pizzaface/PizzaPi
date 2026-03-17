@@ -12,6 +12,7 @@ export interface ParsedTrigger {
   planSteps?: Array<{ title: string; description?: string }>;
   message?: string;
   reason?: string;
+  exitReason?: "completed" | "killed" | "error";
 }
 
 export function parseTriggerBody(body: string): ParsedTrigger {
@@ -23,7 +24,7 @@ export function parseTriggerBody(body: string): ParsedTrigger {
   if (body.includes("submitted a plan for review")) {
     return parsePlanReview(body);
   }
-  if (body.includes("completed:")) {
+  if (body.includes("completed:") || body.includes("was killed:") || body.includes("errored:")) {
     return parseSessionComplete(body);
   }
   if (body.includes("encountered an error:")) {
@@ -77,12 +78,20 @@ function parsePlanReview(body: string): ParsedTrigger {
 }
 
 function parseSessionComplete(body: string): ParsedTrigger {
-  const childMatch = body.match(/Child "([^"]+)" completed:/);
+  const childMatch = body.match(/Child "([^"]+)" (?:completed|was killed|errored):/);
   const childName = childMatch?.[1];
-  const summaryMatch = body.match(/completed:\n(.+?)(?=\n\n(?:Respond with|Use respond_to_trigger|Acknowledge)|$)/s);
-  const message = summaryMatch?.[1]?.trim();
 
-  return { type: "session_complete", childName, message };
+  // Parse exitReason from "Exit reason: completed|killed|error" line
+  const exitReasonMatch = body.match(/Exit reason: (completed|killed|error)/);
+  const exitReason = (exitReasonMatch?.[1] as "completed" | "killed" | "error") ?? "completed";
+
+  // Summary follows the "---" separator
+  const summaryMatch = body.match(/---\n(.+?)(?=\n\n(?:📄|Respond with|Use respond_to_trigger|Acknowledge)|$)/s);
+  // Fall back to old format (no "Exit reason:" line)
+  const fallbackMatch = !summaryMatch ? body.match(/(?:completed|was killed|errored):\n(.+?)(?=\n\n(?:Respond with|Use respond_to_trigger|Acknowledge)|$)/s) : null;
+  const message = (summaryMatch ?? fallbackMatch)?.[1]?.trim();
+
+  return { type: "session_complete", childName, message, exitReason };
 }
 
 function parseSessionError(body: string): ParsedTrigger {

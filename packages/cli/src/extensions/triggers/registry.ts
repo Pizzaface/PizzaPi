@@ -100,9 +100,16 @@ const sessionCompleteRenderer: TriggerRenderer = {
         const fullOutputPath = typeof trigger.payload.fullOutputPath === "string"
             ? trigger.payload.fullOutputPath
             : null;
+        const exitReason = typeof trigger.payload.exitReason === "string"
+            ? trigger.payload.exitReason as "completed" | "killed" | "error"
+            : "completed";
 
+        const verb = exitReason === "killed" ? "was killed"
+            : exitReason === "error" ? "errored"
+            : "completed";
         const lines = [
-            `🔗 Child "${name}" completed:`,
+            `🔗 Child "${name}" ${verb}:`,
+            `Exit reason: ${exitReason}`,
             `---`,
             summary,
         ];

@@ -4,7 +4,7 @@
  */
 
 import * as React from "react";
-import { ChevronDown, ChevronRight, Send, AlertCircle, CheckCircle2, Clock, Zap } from "lucide-react";
+import { ChevronDown, ChevronRight, Send, AlertCircle, CheckCircle2, Clock, Zap, XCircle } from "lucide-react";
 import {
   ToolCardShell,
   ToolCardHeader,
@@ -221,18 +221,28 @@ function PlanReviewCard({
 function SessionCompleteCard({
   childName,
   message,
+  exitReason,
 }: {
   childName?: string;
   message?: string;
+  exitReason?: "completed" | "killed" | "error";
 }) {
+  const reason = exitReason ?? "completed";
+  const icon = reason === "killed"
+    ? <XCircle className="size-3.5 shrink-0 text-amber-400" />
+    : reason === "error"
+    ? <AlertCircle className="size-3.5 shrink-0 text-red-400" />
+    : <CheckCircle2 className="size-3.5 shrink-0 text-emerald-400" />;
+  const verb = reason === "killed" ? "Killed"
+    : reason === "error" ? "Errored"
+    : "Completed";
+
   return (
     <ToolCardShell>
       <ToolCardHeader className="py-2.5">
-        <ToolCardTitle
-          icon={<CheckCircle2 className="size-3.5 shrink-0 text-emerald-400" />}
-        >
+        <ToolCardTitle icon={icon}>
           <span className="text-sm font-medium text-zinc-300">
-            Completed: {childName ? `"${childName}"` : "Child"}
+            {verb}: {childName ? `"${childName}"` : "Child"}
           </span>
         </ToolCardTitle>
       </ToolCardHeader>
@@ -350,6 +360,7 @@ export function TriggerCard({
         <SessionCompleteCard
           childName={parsed.childName}
           message={parsed.message}
+          exitReason={parsed.exitReason}
         />
       );
     case "session_error":

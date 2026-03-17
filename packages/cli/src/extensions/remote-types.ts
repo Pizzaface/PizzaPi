@@ -193,6 +193,7 @@ export interface RelayContext {
     isAgentActive: boolean;
     isCompacting: boolean;
     shuttingDown: boolean;
+    wasAborted: boolean;
     sessionStartedAt: number | null;
     lastRetryableError: RetryState | null;
 

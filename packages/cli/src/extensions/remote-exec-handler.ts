@@ -117,6 +117,7 @@ export async function handleExecFromWeb(
                 replyErr("No active session");
                 return;
             }
+            rctx.wasAborted = true;
             rctx.latestCtx.abort();
             replyOk();
             rctx.forwardEvent(rctx.buildHeartbeat());

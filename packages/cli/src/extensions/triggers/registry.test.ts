@@ -85,18 +85,49 @@ describe("renderTrigger", () => {
     });
 
     describe("session_complete", () => {
-        it("renders completion summary", () => {
+        it("renders completion summary with exitReason", () => {
             const trigger = makeTrigger({
                 type: "session_complete",
-                payload: { summary: "All tests pass. Feature deployed." },
+                payload: { summary: "All tests pass. Feature deployed.", exitReason: "completed" },
             });
             const result = renderTrigger(trigger);
             expect(result).toContain('Child "my-child" completed:');
+            expect(result).toContain("Exit reason: completed");
             expect(result).toContain("All tests pass. Feature deployed.");
             // session_complete supports ack/followUp responses
             expect(result).toContain("respond_to_trigger");
             expect(result).toContain("ack");
             expect(result).toContain("followUp");
+        });
+
+        it("renders killed session", () => {
+            const trigger = makeTrigger({
+                type: "session_complete",
+                payload: { summary: "Session killed by user", exitReason: "killed" },
+            });
+            const result = renderTrigger(trigger);
+            expect(result).toContain('Child "my-child" was killed:');
+            expect(result).toContain("Exit reason: killed");
+        });
+
+        it("renders errored session", () => {
+            const trigger = makeTrigger({
+                type: "session_complete",
+                payload: { summary: "Crash", exitReason: "error" },
+            });
+            const result = renderTrigger(trigger);
+            expect(result).toContain('Child "my-child" errored:');
+            expect(result).toContain("Exit reason: error");
+        });
+
+        it("defaults exitReason to completed when missing", () => {
+            const trigger = makeTrigger({
+                type: "session_complete",
+                payload: { summary: "Done" },
+            });
+            const result = renderTrigger(trigger);
+            expect(result).toContain('Child "my-child" completed:');
+            expect(result).toContain("Exit reason: completed");
         });
 
         it("includes full output path when provided", () => {
