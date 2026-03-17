@@ -342,7 +342,40 @@ export function App() {
     sessionCount: number;
     version: string | null;
     isOnline: boolean;
-  }>>([]);
+  }>>(() => {
+    try {
+      const cached = sessionStorage.getItem("pp-sidebar-runners");
+      if (cached) { const parsed = JSON.parse(cached); if (Array.isArray(parsed)) return parsed; }
+    } catch { /* ignore */ }
+    return [];
+  });
+  // Write-through: persist sidebar runners to sessionStorage on every update
+  const setSidebarRunners = React.useCallback((runners: typeof runnersForSidebar) => {
+    setRunnersForSidebar(runners);
+    try { sessionStorage.setItem("pp-sidebar-runners", JSON.stringify(runners)); } catch { /* ignore */ }
+  }, []);
+  // Eager fetch: populate sidebar runners immediately on mount (before RunnerManager mounts)
+  React.useEffect(() => {
+    let cancelled = false;
+    void fetch("/api/runners", { credentials: "include" })
+      .then((res) => (res.ok ? res.json() : Promise.reject()))
+      .then((data) => {
+        if (cancelled) return;
+        const list: any[] = Array.isArray(data?.runners) ? data.runners : [];
+        const mapped = list
+          .filter((r) => typeof r?.runnerId === "string" && r.runnerId)
+          .map((r) => ({
+            runnerId: r.runnerId as string,
+            name: (typeof r.name === "string" ? r.name : null) as string | null,
+            sessionCount: (typeof r.sessionCount === "number" ? r.sessionCount : 0) as number,
+            version: (typeof r.version === "string" ? r.version : null) as string | null,
+            isOnline: true,
+          }));
+        setSidebarRunners(mapped);
+      })
+      .catch(() => { /* sidebar will stay with cached/empty data until RunnerManager loads */ });
+    return () => { cancelled = true; };
+  }, [setSidebarRunners]);
   const [showTerminal, setShowTerminal] = React.useState(false);
   const [terminalPosition, setTerminalPosition] = React.useState<"bottom" | "right" | "left">(() => {
     try { return (localStorage.getItem("pp-terminal-position") as "bottom" | "right" | "left") ?? "bottom"; } catch { return "bottom"; }
@@ -3673,7 +3706,7 @@ export function App() {
               {showRunners ? (
                 <RunnerManager
                     onOpenSession={(id) => { handleOpenSession(id); setShowRunners(false); }}
-                    onRunnersChange={setRunnersForSidebar}
+                    onRunnersChange={setSidebarRunners}
                     selectedRunnerId={selectedRunnerId}
                     onSelectRunner={setSelectedRunnerId}
                   />
