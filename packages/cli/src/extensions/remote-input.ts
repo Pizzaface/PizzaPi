@@ -6,6 +6,7 @@
  */
 
 import type { RemoteInputAttachment } from "./remote-types.js";
+import { saveSessionAttachment } from "./session-attachments.js";
 
 export function normalizeRemoteInputAttachments(raw: unknown): RemoteInputAttachment[] {
     if (!Array.isArray(raw)) return [];
@@ -58,6 +59,8 @@ export async function buildUserMessageFromRemoteInput(
     attachments: RemoteInputAttachment[],
     httpBaseUrl: string,
     apiKey: string,
+    /** When provided, attachments are persisted to ~/.pizzapi/session-attachments/{sessionId}/ */
+    sessionId?: string,
 ): Promise<string | unknown[]> {
     if (attachments.length === 0) return text;
 
@@ -84,6 +87,15 @@ export async function buildUserMessageFromRemoteInput(
                 mediaType = parsed.mediaType;
                 dataBase64 = parsed.data;
             }
+        }
+
+        // Persist attachment to session-scoped storage (fire-and-forget)
+        if (dataBase64 && sessionId) {
+            const attachFilename = filename || `attachment-${Date.now()}`;
+            const buf = Buffer.from(dataBase64, "base64");
+            saveSessionAttachment(sessionId, attachFilename, mediaType, buf).catch((err) => {
+                console.error(`pizzapi: failed to persist attachment: ${err instanceof Error ? err.message : String(err)}`);
+            });
         }
 
         if (dataBase64 && mediaType.startsWith("image/")) {
