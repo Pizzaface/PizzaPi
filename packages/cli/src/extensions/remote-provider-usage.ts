@@ -6,10 +6,9 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import { AuthStorage } from "@mariozechner/pi-coding-agent";
-import { loadConfig, defaultAgentDir } from "../config.js";
+import { loadConfig, defaultAgentDir, expandHome } from "../config.js";
 import type { UsageWindow, ProviderUsageData } from "./remote-types.js";
 
 const DEFAULT_USAGE_CACHE_TTL = 5 * 60 * 1000; // 5 min
@@ -25,7 +24,7 @@ export function getOAuthToken(providerId: string): string | null {
     try {
         const config = loadConfig(process.cwd());
         const agentDir = config.agentDir
-            ? config.agentDir.replace(/^~/, homedir())
+            ? expandHome(config.agentDir)
             : defaultAgentDir();
         const authPath = join(agentDir, "auth.json");
         if (!existsSync(authPath)) return null;
@@ -230,7 +229,7 @@ async function refreshGeminiUsage(opts: { force?: boolean } = {}): Promise<void>
     let projectId: string;
     try {
         const config = loadConfig(process.cwd());
-        const agentDir = config.agentDir ? config.agentDir.replace(/^~/, homedir()) : defaultAgentDir();
+        const agentDir = config.agentDir ? expandHome(config.agentDir) : defaultAgentDir();
         const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
         const raw = await authStorage.getApiKey("google-gemini-cli");
         if (!raw) return;

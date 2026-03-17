@@ -8,6 +8,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, wri
 import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { expandHome } from "./config.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -177,12 +178,7 @@ export function deleteSkill(name: string, dir?: string): boolean {
 
 // ── Skill path builders ───────────────────────────────────────────────────────
 
-/**
- * Expand ~ to home directory in a path.
- */
-function expandHome(path: string): string {
-    return path.replace(/^~/, homedir());
-}
+// expandHome is imported from config.ts
 
 /**
  * Build the list of additional skill paths for the interactive CLI.

@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
-import type { PizzaPiConfig } from "../config.js";
+import { expandHome, type PizzaPiConfig } from "../config.js";
 import { PizzaPiOAuthProvider, type RelayContext } from "./mcp-oauth.js";
 import { getSandboxEnv, isSandboxActive, getResolvedConfig } from "@pizzapi/tools";
 
@@ -155,10 +155,17 @@ async function createStdioMcpClient(opts: { name: string; command: string; args?
   // Network sandboxing still applies via the proxy env vars injected above —
   // outbound traffic is routed through srt's proxy for domain filtering when
   // sandbox is active in "full" mode.
-  const child: ChildProcessWithoutNullStreams = spawn(opts.command, opts.args ?? [], {
+  // Expand ~ in command, args, and cwd so paths resolve correctly even when
+  // launched by macOS launchd (LaunchAgent/LaunchDaemon) where shell tilde
+  // expansion doesn't occur.
+  const command = expandHome(opts.command);
+  const args = (opts.args ?? []).map(expandHome);
+  const cwd = opts.cwd ? expandHome(opts.cwd) : undefined;
+
+  const child: ChildProcessWithoutNullStreams = spawn(command, args, {
     stdio: "pipe",
     env: mergedEnv,
-    ...(opts.cwd ? { cwd: opts.cwd } : {}),
+    ...(cwd ? { cwd } : {}),
   });
 
   let nextId = 1;

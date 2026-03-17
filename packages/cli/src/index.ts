@@ -9,8 +9,7 @@ import {
 import { existsSync } from "fs";
 import { readFile, readdir } from "fs/promises";
 import { join } from "path";
-import { homedir } from "os";
-import { BUILTIN_SYSTEM_PROMPT, defaultAgentDir, loadConfig, resolveSandboxConfig, validateSandboxOverride, applyProviderSettingsEnv } from "./config.js";
+import { BUILTIN_SYSTEM_PROMPT, defaultAgentDir, expandHome, loadConfig, resolveSandboxConfig, validateSandboxOverride, applyProviderSettingsEnv } from "./config.js";
 import { buildInteractiveSkillPaths } from "./skills.js";
 import { buildPizzaPiExtensionFactories } from "./extensions/factories.js";
 import { runSetup } from "./setup.js";
@@ -78,7 +77,7 @@ async function main() {
 
     if (args[0] === "usage") {
         const config = loadConfig(cwd);
-        const agentDir = config.agentDir ? config.agentDir.replace(/^~/, homedir()) : defaultAgentDir();
+        const agentDir = config.agentDir ? expandHome(config.agentDir) : defaultAgentDir();
         const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
         const showJson = args.includes("--json");
 
@@ -289,7 +288,7 @@ async function main() {
 
     if (args[0] === "models") {
         const config = loadConfig(cwd);
-        const agentDir = config.agentDir ? config.agentDir.replace(/^~/, homedir()) : defaultAgentDir();
+        const agentDir = config.agentDir ? expandHome(config.agentDir) : defaultAgentDir();
 
         const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
         const modelRegistry = new ModelRegistry(authStorage, join(agentDir, "models.json"));
@@ -408,7 +407,7 @@ Run \`pizza <command> --help\` for command-specific help.
     }
 
     const config = loadConfig(cwd);
-    const agentDir = config.agentDir ? config.agentDir.replace(/^~/, homedir()) : defaultAgentDir();
+    const agentDir = config.agentDir ? expandHome(config.agentDir) : defaultAgentDir();
 
     // ── Provider settings → env vars ───────────────────────────────────────
     applyProviderSettingsEnv(config);
