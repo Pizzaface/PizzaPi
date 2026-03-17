@@ -705,7 +705,7 @@ export async function endSharedSession(sessionId: string, reason: string = "Sess
     if (session.runnerId) {
         const runnerSocket = localRunnerSockets.get(session.runnerId);
         if (runnerSocket?.connected) {
-            runnerSocket.emit("session_ended", { sessionId });
+            runnerSocket.emit("session_ended", { sessionId, reason });
         }
     }
 

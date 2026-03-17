@@ -714,7 +714,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         // ── session_ended — relay notifies us a worker disconnected ───────
         socket.on("session_ended", (data: any) => {
             if (isShuttingDown) return;
-            const { sessionId } = data;
+            const { sessionId, reason } = data;
 
             // If this session just did a restart-in-place (exit code 43), the relay fires
             // session_ended when the new worker's registerTuiSession tears down the OLD
@@ -723,6 +723,14 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             if (restartingSessions.has(sessionId)) {
                 restartingSessions.delete(sessionId);
                 console.log(`pizzapi runner: session_ended for ${sessionId} — restarting in place, skipping teardown`);
+                return;
+            }
+
+            // On relay reconnections the server tears down the old session record
+            // before re-registering the same worker.  The worker is still alive —
+            // don't delete its runningSessions entry or its attachments.
+            if (reason === "Session reconnected") {
+                console.log(`pizzapi runner: session_ended for ${sessionId} — relay reconnect, skipping teardown`);
                 return;
             }
 
