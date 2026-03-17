@@ -24,6 +24,8 @@ import { cn } from "@/lib/utils";
 
 export interface SandboxManagerProps {
     runnerId: string;
+    /** When true, render without Collapsible wrapper (for tab/panel use) */
+    bare?: boolean;
 }
 
 interface SandboxStatus {
@@ -208,7 +210,7 @@ function ViolationFeed({ violations }: {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export function SandboxManager({ runnerId }: SandboxManagerProps) {
+export function SandboxManager({ runnerId, bare }: SandboxManagerProps) {
     const [open, setOpen] = React.useState(false);
     const [loading, setLoading] = React.useState(false);
     const [saving, setSaving] = React.useState(false);
@@ -283,10 +285,10 @@ export function SandboxManager({ runnerId }: SandboxManagerProps) {
     }, [runnerId]);
 
     React.useEffect(() => {
-        if (open && !status) {
+        if ((open || bare) && !status) {
             fetchStatus();
         }
-    }, [open, status, fetchStatus]);
+    }, [open, bare, status, fetchStatus]);
 
     const handleSave = async () => {
         setSaving(true);
@@ -380,26 +382,9 @@ export function SandboxManager({ runnerId }: SandboxManagerProps) {
         }));
     };
 
-    return (
-        <Collapsible open={open} onOpenChange={setOpen}>
-            <div className="flex items-center justify-between mt-3">
-                <CollapsibleTrigger className="flex items-center gap-1.5 text-left group/trigger">
-                    <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide">
-                        Sandbox
-                    </span>
-                    {status && <ModeBadge mode={status.mode} />}
-                    <ChevronDown
-                        className={cn(
-                            "h-3 w-3 text-muted-foreground/60 transition-transform duration-200",
-                            open && "rotate-180"
-                        )}
-                    />
-                </CollapsibleTrigger>
-            </div>
-
-            <CollapsibleContent>
-                <div className="mt-2 flex flex-col gap-3">
-                    {loading && (
+    const formContent = (
+        <div className={cn(bare ? "flex flex-col gap-3" : "mt-2 flex flex-col gap-3")}>
+            {loading && (
                         <div className="flex items-center gap-2 text-xs text-muted-foreground py-3">
                             <Loader2 className="h-3.5 w-3.5 animate-spin" />
                             Loading sandbox status…
@@ -650,6 +635,39 @@ export function SandboxManager({ runnerId }: SandboxManagerProps) {
                         </>
                     )}
                 </div>
+    );
+
+    if (bare) {
+        return (
+            <>
+                <div className="flex items-center justify-between mb-3">
+                    <h3 className="text-sm font-medium">Sandbox</h3>
+                    {status && <ModeBadge mode={status.mode} />}
+                </div>
+                {formContent}
+            </>
+        );
+    }
+
+    return (
+        <Collapsible open={open} onOpenChange={setOpen}>
+            <div className="flex items-center justify-between mt-3">
+                <CollapsibleTrigger className="flex items-center gap-1.5 text-left group/trigger">
+                    <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide">
+                        Sandbox
+                    </span>
+                    {status && <ModeBadge mode={status.mode} />}
+                    <ChevronDown
+                        className={cn(
+                            "h-3 w-3 text-muted-foreground/60 transition-transform duration-200",
+                            open && "rotate-180"
+                        )}
+                    />
+                </CollapsibleTrigger>
+            </div>
+
+            <CollapsibleContent>
+                {formContent}
             </CollapsibleContent>
         </Collapsible>
     );
