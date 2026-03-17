@@ -14,7 +14,7 @@ import { io } from "socket.io-client";
 import type { HubServerToClientEvents, HubClientToServerEvents } from "@pizzapi/protocol";
 import { formatPathTail } from "@/lib/path";
 import { ProviderIcon } from "@/components/ProviderIcon";
-import { PanelLeftClose, PanelLeftOpen, Plus, X, HardDrive, FolderOpen, CheckSquare, Square, CheckCheck, Trash2, Pin, PinOff, ChevronDown, ChevronRight } from "lucide-react";
+import { PanelLeftClose, PanelLeftOpen, Plus, X, HardDrive, FolderOpen, CheckSquare, Square, CheckCheck, Trash2, Pin, PinOff, ChevronDown, ChevronRight, MessageSquare } from "lucide-react";
 import { buildSessionTree, flattenSessionTree, getSessionIndent, getDescendantSessionIds } from "@/lib/session-tree";
 
 interface HubSession {
@@ -83,6 +83,20 @@ export interface SessionSidebarProps {
     onClose?: () => void;
     /** Called when the user confirms ending a session via the swipe gesture */
     onEndSession?: (sessionId: string) => void;
+    /** Called when the user wants to return from Runners view to Sessions */
+    onShowSessions?: () => void;
+    /** List of runners to display when showRunners is true */
+    runners?: Array<{
+        runnerId: string;
+        name: string | null;
+        sessionCount: number;
+        version: string | null;
+        isOnline: boolean;
+    }>;
+    /** Currently selected runner ID */
+    selectedRunnerId?: string | null;
+    /** Called when a runner is selected */
+    onSelectRunner?: (runnerId: string) => void;
 }
 
 function formatRelativeDate(isoString: string): string {
@@ -163,6 +177,10 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     onSessionsChange,
     onClose,
     onEndSession,
+    runners,
+    selectedRunnerId,
+    onSelectRunner,
+    onShowSessions,
 }: SessionSidebarProps) {
     const [collapsed, setCollapsed] = React.useState(false);
 
@@ -767,7 +785,36 @@ export const SessionSidebar = React.memo(function SessionSidebar({
             </Dialog>
 
             {/* Sidebar header */}
-            {selectMode ? (
+            {showRunners ? (
+                <div className="flex items-center justify-between px-3 py-2 border-b border-sidebar-border flex-shrink-0">
+                    <div className="flex items-center gap-2">
+                        <Button
+                            variant="ghost"
+                            size="icon"
+                            className="hidden md:inline-flex h-7 w-7 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
+                            onClick={() => setCollapsed(true)}
+                            aria-label="Collapse sidebar"
+                        >
+                            <PanelLeftClose className="h-4 w-4" />
+                        </Button>
+                        <span className="text-[0.7rem] font-semibold uppercase tracking-widest text-sidebar-foreground/60">
+                            Runners
+                        </span>
+                    </div>
+                    <div className="flex items-center gap-1">
+                        <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
+                            onClick={onClose}
+                            aria-label="Close sidebar"
+                            title="Close sidebar"
+                        >
+                            <X className="h-4 w-4" />
+                        </Button>
+                    </div>
+                </div>
+            ) : selectMode ? (
                 <div className="flex items-center justify-between px-3 py-2 border-b border-sidebar-border flex-shrink-0">
                     <div className="flex items-center gap-2">
                         <Button
@@ -874,27 +921,84 @@ export const SessionSidebar = React.memo(function SessionSidebar({
             )}
 
             <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
-                {/* Runners nav item / Live sessions header */}
-                <div className="px-2 pt-2 pb-1 flex-shrink-0">
+                {/* Sessions / Runners nav tabs */}
+                <div className="mx-3 mt-2 mb-1 flex-shrink-0 flex border-b border-sidebar-border/50">
+                    <button
+                        onClick={onShowSessions}
+                        className={cn(
+                            "flex items-center justify-center gap-1.5 px-3 pb-2 text-xs font-medium transition-colors relative",
+                            "focus-visible:outline-none",
+                            !showRunners
+                                ? "text-sidebar-foreground"
+                                : "text-sidebar-foreground/40 hover:text-sidebar-foreground/70"
+                        )}
+                    >
+                        <MessageSquare className="h-3.5 w-3.5" />
+                        <span>Sessions</span>
+                        {!showRunners && <div className="absolute bottom-0 inset-x-1 h-[2px] bg-primary rounded-full" />}
+                    </button>
                     <button
                         onClick={onShowRunners}
                         className={cn(
-                            "flex items-center gap-2.5 w-full px-3 py-3 md:py-2 rounded-lg text-sm font-medium transition-colors active:scale-[0.98]",
-                            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
+                            "flex items-center justify-center gap-1.5 px-3 pb-2 text-xs font-medium transition-colors relative",
+                            "focus-visible:outline-none",
                             showRunners
-                                ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                                : "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
+                                ? "text-sidebar-foreground"
+                                : "text-sidebar-foreground/40 hover:text-sidebar-foreground/70"
                         )}
                     >
-                        <HardDrive className={cn("h-4 w-4 flex-shrink-0", showRunners ? "text-primary" : "text-sidebar-foreground/50")} />
+                        <HardDrive className="h-3.5 w-3.5" />
                         <span>Runners</span>
-                        <div className="ml-auto">
-                            <LiveDot state={dotState} />
-                        </div>
+                        <LiveDot state={dotState} />
+                        {showRunners && <div className="absolute bottom-0 inset-x-1 h-[2px] bg-primary rounded-full" />}
                     </button>
                 </div>
 
-                <div className="flex-1 px-2 overflow-y-auto overflow-x-hidden" style={{ paddingBottom: "max(0.5rem, env(safe-area-inset-bottom))" }}>
+                {showRunners && runners && (
+                    <div className="px-2 mt-1 flex-1 flex flex-col gap-0.5 overflow-y-auto overflow-x-hidden" style={{ paddingBottom: "max(0.5rem, env(safe-area-inset-bottom))" }}>
+                        <div className="text-[9px] font-medium text-sidebar-foreground/35 uppercase tracking-widest px-2.5 py-1">
+                            Connected Runners
+                        </div>
+                        {runners.length === 0 ? (
+                            <div className="px-2.5 py-4 text-center">
+                                <p className="text-xs font-medium text-sidebar-foreground/50">No runners connected</p>
+                                <p className="text-[10px] text-sidebar-foreground/30 mt-1">
+                                    Run <code className="font-mono bg-sidebar-accent/50 px-1 py-0.5 rounded text-[9px]">pizzapi runner</code> on your machine.
+                                </p>
+                            </div>
+                        ) : (
+                            runners.map((r) => (
+                                <button
+                                    key={r.runnerId}
+                                    onClick={() => { onSelectRunner?.(r.runnerId); if (window.innerWidth < 768) onClose?.(); }}
+                                    className={cn(
+                                        "flex items-center gap-2.5 w-full px-2.5 py-2 rounded-lg text-left transition-colors",
+                                        selectedRunnerId === r.runnerId
+                                            ? "bg-sidebar-accent border border-sidebar-border"
+                                            : r.isOnline
+                                                ? "hover:bg-sidebar-accent/50 opacity-70"
+                                                : "opacity-30"
+                                    )}
+                                >
+                                    <div className="relative flex-shrink-0">
+                                        <div className={cn(
+                                            "h-[7px] w-[7px] rounded-full",
+                                            r.isOnline ? "bg-green-500 shadow-[0_0_6px_rgba(34,197,94,0.4)]" : "bg-sidebar-foreground/30"
+                                        )} />
+                                    </div>
+                                    <div className="flex-1 min-w-0">
+                                        <div className="text-xs font-semibold truncate">{r.name || "Unnamed Runner"}</div>
+                                        <div className="text-[9px] font-mono text-sidebar-foreground/40 mt-0.5">
+                                            {r.isOnline ? `${r.sessionCount} session${r.sessionCount !== 1 ? "s" : ""}` : "offline"}
+                                        </div>
+                                    </div>
+                                </button>
+                            ))
+                        )}
+                    </div>
+                )}
+
+                {!showRunners && <div className="flex-1 px-2 overflow-y-auto overflow-x-hidden" style={{ paddingBottom: "max(0.5rem, env(safe-area-inset-bottom))" }}>
                     {pinError && (
                         <p role="alert" aria-live="polite" className="px-2 py-2 text-[0.7rem] text-red-400">
                             {pinError}
@@ -1371,7 +1475,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                             </div>
                         );
                     })()}
-                </div>
+                </div>}
             </div>
         </aside>
     );

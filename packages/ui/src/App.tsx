@@ -335,6 +335,61 @@ export function App() {
   const [showApiKeys, setShowApiKeys] = React.useState(false);
   const [apiKeyVersion, setApiKeyVersion] = React.useState(0);
   const [showRunners, setShowRunners] = React.useState(false);
+  const [selectedRunnerId, setSelectedRunnerId] = React.useState<string | null>(null);
+  const [runnersForSidebar, setRunnersForSidebar] = React.useState<Array<{
+    runnerId: string;
+    name: string | null;
+    sessionCount: number;
+    version: string | null;
+    isOnline: boolean;
+  }>>([]);
+  // User-scoped cache key for sidebar runners (prevents cross-account data leakage)
+  const sidebarCacheKey = React.useMemo(() => {
+    const userId = session && typeof session === "object" ? (session as any).user?.id : null;
+    return userId ? `pp-sidebar-runners:${userId}` : null;
+  }, [session]);
+  // Hydrate from cache once we know the user
+  React.useEffect(() => {
+    if (!sidebarCacheKey) return;
+    try {
+      const cached = sessionStorage.getItem(sidebarCacheKey);
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (Array.isArray(parsed)) setRunnersForSidebar(parsed);
+      }
+    } catch { /* ignore */ }
+    // Clean up legacy unscoped key
+    try { sessionStorage.removeItem("pp-sidebar-runners"); } catch { /* ignore */ }
+  }, [sidebarCacheKey]);
+  // Write-through: persist sidebar runners to sessionStorage on every update
+  const setSidebarRunners = React.useCallback((runners: typeof runnersForSidebar) => {
+    setRunnersForSidebar(runners);
+    if (sidebarCacheKey) {
+      try { sessionStorage.setItem(sidebarCacheKey, JSON.stringify(runners)); } catch { /* ignore */ }
+    }
+  }, [sidebarCacheKey]);
+  // Eager fetch: populate sidebar runners immediately on mount (before RunnerManager mounts)
+  React.useEffect(() => {
+    let cancelled = false;
+    void fetch("/api/runners", { credentials: "include" })
+      .then((res) => (res.ok ? res.json() : Promise.reject()))
+      .then((data) => {
+        if (cancelled) return;
+        const list: any[] = Array.isArray(data?.runners) ? data.runners : [];
+        const mapped = list
+          .filter((r) => typeof r?.runnerId === "string" && r.runnerId)
+          .map((r) => ({
+            runnerId: r.runnerId as string,
+            name: (typeof r.name === "string" ? r.name : null) as string | null,
+            sessionCount: (typeof r.sessionCount === "number" ? r.sessionCount : 0) as number,
+            version: (typeof r.version === "string" ? r.version : null) as string | null,
+            isOnline: true,
+          }));
+        setSidebarRunners(mapped);
+      })
+      .catch(() => { /* sidebar will stay with cached/empty data until RunnerManager loads */ });
+    return () => { cancelled = true; };
+  }, [setSidebarRunners]);
   const [showTerminal, setShowTerminal] = React.useState(false);
   const [terminalPosition, setTerminalPosition] = React.useState<"bottom" | "right" | "left">(() => {
     try { return (localStorage.getItem("pp-terminal-position") as "bottom" | "right" | "left") ?? "bottom"; } catch { return "bottom"; }
@@ -3482,7 +3537,7 @@ export function App() {
             onOpenSession={handleOpenSession}
             onNewSession={handleNewSession}
             onClearSelection={handleClearSelection}
-            onShowRunners={() => { setShowRunners(true); setShowApiKeys(false); setActiveSessionId(null); setSidebarOpen(false); }}
+            onShowRunners={() => { setShowRunners(true); setShowApiKeys(false); setActiveSessionId(null); }}
             activeSessionId={activeSessionId}
             showRunners={showRunners}
             activeModel={activeModel}
@@ -3490,6 +3545,10 @@ export function App() {
             onSessionsChange={setLiveSessions}
             onClose={() => setSidebarOpen(false)}
             onEndSession={handleEndSession}
+            runners={runnersForSidebar}
+            selectedRunnerId={selectedRunnerId}
+            onSelectRunner={setSelectedRunnerId}
+            onShowSessions={() => setShowRunners(false)}
           />
         </div>
 
@@ -3659,7 +3718,12 @@ export function App() {
               showTerminal && terminalPosition === "left" && "order-last",
             )}>
               {showRunners ? (
-                <RunnerManager onOpenSession={(id) => { handleOpenSession(id); setShowRunners(false); }} />
+                <RunnerManager
+                    onOpenSession={(id) => { handleOpenSession(id); setShowRunners(false); }}
+                    onRunnersChange={setSidebarRunners}
+                    selectedRunnerId={selectedRunnerId}
+                    onSelectRunner={setSelectedRunnerId}
+                  />
               ) : (
                 <SessionViewer
                   sessionId={activeSessionId}
