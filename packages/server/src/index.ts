@@ -6,7 +6,7 @@ import {
 } from "./sessions/store.js";
 import { deleteRelayEventCaches, initializeRelayRedisCache } from "./sessions/redis.js";
 import { sweepExpiredSessions } from "./ws/sio-registry.js";
-import { sweepExpiredAttachments } from "./attachments/store.js";
+import { sweepExpiredAttachments, rehydrateExtractedAttachments } from "./attachments/store.js";
 import { runAllMigrations } from "./migrations.js";
 
 // Socket.IO imports
@@ -22,6 +22,15 @@ const PORT = parseInt(process.env.PORT ?? "7492");
 
 await runAllMigrations();
 void initializeRelayRedisCache();
+
+// Rehydrate extracted image attachments from SQLite so URLs in persisted
+// session state survive server restarts.
+try {
+    const count = await rehydrateExtractedAttachments();
+    if (count > 0) console.log(`[startup] Rehydrated ${count} extracted image attachment(s) from database.`);
+} catch (err) {
+    console.error("[startup] Failed to rehydrate extracted attachments:", err);
+}
 
 // ── Helpers: convert node:http request/response ↔ fetch API ──────────────
 
@@ -132,6 +141,12 @@ try {
             origin: getTrustedOrigins(),
             credentials: true,
         },
+        // Socket.IO default maxHttpBufferSize is 1 MB, which silently drops
+        // connections when a session state payload exceeds it (e.g., sessions
+        // with embedded screenshots can easily reach 10–50 MB). The transport
+        // close happens with no error surfaced to the user. Bump to 100 MB
+        // as a safety valve so large sessions remain accessible.
+        maxHttpBufferSize: 100 * 1024 * 1024, // 100 MB
         // Generous ping settings to prevent disconnects during heavy agent
         // processing (long bash commands, large file reads, etc.).
         // Defaults are pingInterval=25s, pingTimeout=20s which is too tight

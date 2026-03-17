@@ -591,7 +591,8 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 try {
                     const httpBase = rctx.relayHttpBaseUrl();
                     const key = rctx.apiKey();
-                    const message = await buildUserMessageFromRemoteInput(inputText, attachments, httpBase, key ?? "");
+                    const relaySessionId = rctx.relay?.sessionId;
+                    const message = await buildUserMessageFromRemoteInput(inputText, attachments, httpBase, key ?? "", relaySessionId);
                     pi.sendUserMessage(message as any, deliverAs ? { deliverAs } : undefined);
                 } catch (err) {
                     console.error(`pizzapi: failed to deliver remote input: ${err instanceof Error ? err.message : String(err)}`);

@@ -6,6 +6,58 @@
  */
 
 import type { RemoteInputAttachment } from "./remote-types.js";
+import { saveSessionAttachment } from "./session-attachments.js";
+
+/** MIME types and file extensions recognized as text-based (safe to decode as UTF-8). */
+const TEXT_MIME_PREFIXES = ["text/"];
+const TEXT_MIME_TYPES = new Set([
+    "application/json",
+    "application/xml",
+    "application/yaml",
+    "application/x-yaml",
+    "application/javascript",
+    "application/typescript",
+    "application/x-sh",
+    "application/x-shellscript",
+    "application/sql",
+    "application/graphql",
+    "application/toml",
+    "application/x-toml",
+    "application/xhtml+xml",
+    "application/ld+json",
+]);
+const TEXT_FILE_EXTENSIONS = new Set([
+    ".txt", ".md", ".markdown", ".json", ".jsonl", ".yaml", ".yml",
+    ".xml", ".csv", ".tsv", ".log", ".ini", ".cfg", ".conf", ".toml",
+    ".env", ".sh", ".bash", ".zsh", ".fish",
+    ".js", ".mjs", ".cjs", ".ts", ".mts", ".cts", ".tsx", ".jsx",
+    ".py", ".rb", ".rs", ".go", ".java", ".kt", ".kts", ".scala",
+    ".c", ".h", ".cpp", ".hpp", ".cc", ".cs", ".swift", ".m",
+    ".html", ".htm", ".css", ".scss", ".sass", ".less",
+    ".sql", ".graphql", ".gql",
+    ".r", ".R", ".lua", ".pl", ".pm", ".ex", ".exs", ".erl",
+    ".hs", ".ml", ".mli", ".clj", ".cljs", ".elm", ".dart",
+    ".vue", ".svelte", ".astro",
+    ".dockerfile", ".dockerignore", ".gitignore", ".editorconfig",
+    ".lock", ".prisma", ".proto", ".tf", ".hcl",
+]);
+
+/** Returns true if the MIME type or filename indicates text content. */
+export function isTextMimeType(mimeType: string, filename?: string): boolean {
+    const lower = mimeType.toLowerCase();
+    if (TEXT_MIME_PREFIXES.some((p) => lower.startsWith(p))) return true;
+    if (TEXT_MIME_TYPES.has(lower)) return true;
+
+    // Fall back to file extension when MIME is generic (e.g. application/octet-stream)
+    if (filename) {
+        const dotIdx = filename.lastIndexOf(".");
+        if (dotIdx >= 0) {
+            const ext = filename.slice(dotIdx).toLowerCase();
+            if (TEXT_FILE_EXTENSIONS.has(ext)) return true;
+        }
+    }
+    return false;
+}
 
 export function normalizeRemoteInputAttachments(raw: unknown): RemoteInputAttachment[] {
     if (!Array.isArray(raw)) return [];
@@ -58,6 +110,8 @@ export async function buildUserMessageFromRemoteInput(
     attachments: RemoteInputAttachment[],
     httpBaseUrl: string,
     apiKey: string,
+    /** When provided, attachments are persisted to ~/.pizzapi/session-attachments/{sessionId}/ */
+    sessionId?: string,
 ): Promise<string | unknown[]> {
     if (attachments.length === 0) return text;
 
@@ -86,6 +140,23 @@ export async function buildUserMessageFromRemoteInput(
             }
         }
 
+        // Persist attachment to session-scoped storage.
+        // Awaited (not fire-and-forget) to prevent same-name overwrite races:
+        // saveSessionAttachment deduplicates names by reading the directory,
+        // which is non-atomic; serializing saves prevents two files with the
+        // same sanitized name from clobbering each other.
+        let savedPath: string | null = null;
+        if (dataBase64 && sessionId) {
+            const attachFilename = filename || `attachment-${Date.now()}`;
+            const buf = Buffer.from(dataBase64, "base64");
+            try {
+                const saved = await saveSessionAttachment(sessionId, attachFilename, mediaType, buf);
+                savedPath = saved.filePath;
+            } catch (err) {
+                console.error(`pizzapi: failed to persist attachment: ${err instanceof Error ? err.message : String(err)}`);
+            }
+        }
+
         if (dataBase64 && mediaType.startsWith("image/")) {
             parts.push({
                 type: "image",
@@ -96,7 +167,24 @@ export async function buildUserMessageFromRemoteInput(
         }
 
         const label = filename || mediaType || "attachment";
-        parts.push({ type: "text", text: `[Attachment provided by web client: ${label}]` });
+
+        if (isTextMimeType(mediaType, filename)) {
+            if (savedPath) {
+                // File is saved on the runner — reference by path instead of inlining.
+                parts.push({ type: "text", text: `[Attached file saved to runner: ${savedPath}]` });
+            } else if (dataBase64) {
+                // No session storage available — fall back to inlining.
+                const decoded = Buffer.from(dataBase64, "base64").toString("utf-8");
+                parts.push({ type: "text", text: `--- ${label} ---\n${decoded}\n--- end ${label} ---` });
+            } else {
+                // Attachment bytes unavailable (relay fetch failed or data URL invalid) — keep a
+                // visible placeholder so the agent/user knows the file was sent but not decoded.
+                parts.push({ type: "text", text: `[Attached file: ${label} — content unavailable]` });
+            }
+            continue;
+        }
+
+        parts.push({ type: "text", text: `[Attachment provided by web client: ${label} — binary content not included]` });
     }
 
     return parts.length > 0 ? parts : text;

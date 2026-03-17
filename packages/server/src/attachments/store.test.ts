@@ -38,7 +38,7 @@ describe("attachmentMaxFileSizeBytes", () => {
     test("returns default when env var is not set", () => {
         const original = process.env.PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES;
         delete process.env.PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES;
-        expect(attachmentMaxFileSizeBytes()).toBe(20 * 1024 * 1024); // 20MB
+        expect(attachmentMaxFileSizeBytes()).toBe(30 * 1024 * 1024); // 30MB
         if (original !== undefined) {
             process.env.PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES = original;
         }
@@ -47,7 +47,7 @@ describe("attachmentMaxFileSizeBytes", () => {
     test("returns default for invalid env var", () => {
         const original = process.env.PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES;
         process.env.PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES = "not-a-number";
-        expect(attachmentMaxFileSizeBytes()).toBe(20 * 1024 * 1024);
+        expect(attachmentMaxFileSizeBytes()).toBe(30 * 1024 * 1024);
         if (original !== undefined) {
             process.env.PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES = original;
         } else {

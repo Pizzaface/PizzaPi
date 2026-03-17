@@ -168,6 +168,10 @@ export interface SessionViewerProps {
   onSpawnAgentSession?: (agent: { name: string; description?: string; systemPrompt?: string; tools?: string; disallowedTools?: string }) => void;
   /** Respond to a trigger from a child session */
   onTriggerResponse?: (triggerId: string, response: string, action?: string) => void;
+  /** Optimistically dismiss the pending question panel after a successful response */
+  onQuestionDismiss?: () => void;
+  /** Optimistically dismiss the pending plan panel after a successful response */
+  onPlanDismiss?: () => void;
 }
 
 function formatTokenCount(n: number): string {
@@ -506,7 +510,7 @@ function SessionSkeleton() {
   );
 }
 
-export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, pendingPlan, pluginTrustPrompt, onPluginTrustResponse, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, isCompacting, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], planModeEnabled, runnerId, sessionCwd, onAppendSystemMessage, onSpawnAgentSession, onTriggerResponse }: SessionViewerProps) {
+export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, pendingPlan, pluginTrustPrompt, onPluginTrustResponse, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, isCompacting, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], planModeEnabled, runnerId, sessionCwd, onAppendSystemMessage, onSpawnAgentSession, onTriggerResponse, onQuestionDismiss, onPlanDismiss }: SessionViewerProps) {
   const [input, setInput] = React.useState("");
   // Per-session draft storage so switching sessions preserves unsent text
   const draftsRef = React.useRef<Map<string, string>>(new Map());
@@ -1844,6 +1848,9 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                     setInput("");
                     // Dismiss the push notification — user answered in-app
                     if (sessionId) void dismissNotificationsForSession(sessionId);
+                    // Optimistically dismiss the question panel so it disappears
+                    // immediately instead of waiting for the next heartbeat.
+                    onQuestionDismiss?.();
                     return true;
                   }
                   setComposerError("Failed to send answer.");
@@ -1876,6 +1883,9 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                     setComposerError(null);
                     setInput("");
                     if (sessionId) void dismissNotificationsForSession(sessionId);
+                    // Optimistically dismiss the plan panel so it disappears
+                    // immediately instead of waiting for the next heartbeat.
+                    onPlanDismiss?.();
                     return true;
                   }
                   setComposerError("Failed to send plan response.");
@@ -2195,7 +2205,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
           key={sessionId ?? "__none"}
           onSubmit={handleSubmit}
           maxFiles={8}
-          maxFileSize={20 * 1024 * 1024}
+          maxFileSize={30 * 1024 * 1024}
           disabled={!sessionId || isCompacting}
           onError={(err) => {
             setComposerError(err.message);

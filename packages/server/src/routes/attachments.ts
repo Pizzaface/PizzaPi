@@ -91,7 +91,7 @@ export const handleAttachmentsRoute: RouteHandler = async (req, url) => {
             : await requireSession(req);
         if (identity instanceof Response) return identity;
 
-        const attachment = getStoredAttachment(attachmentId);
+        const attachment = await getStoredAttachment(attachmentId);
         if (!attachment) {
             return Response.json({ error: "Attachment not found" }, { status: 404 });
         }

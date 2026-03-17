@@ -58,6 +58,7 @@ import {
     touchRelaySession,
 } from "../sessions/store.js";
 import { appendRelayEventToCache } from "../sessions/redis.js";
+import { storeAndReplaceImages, storeAndReplaceImagesInEvent } from "./strip-images.js";
 import type { ModelInfo, RunnerSkill, RunnerAgent, SessionInfo, RunnerInfo } from "@pizzapi/protocol";
 
 // ── Socket.IO server reference ──────────────────────────────────────────────
@@ -459,13 +460,26 @@ export async function updateSessionState(sessionId: string, state: unknown): Pro
     const session = await getSession(sessionId);
     if (!session) return;
 
-    const stateObj = state && typeof state === "object" ? (state as Record<string, unknown>) : null;
+    // Extract inline base64 images from messages before storing in Redis.
+    // This can reduce multi-MB payloads to KB-sized state with URL references.
+    // Wrapped in try/catch so a transient I/O failure (disk full, permissions)
+    // falls back to the original state rather than dropping the update entirely.
+    const userId = session.userId ?? "unknown";
+    let strippedState: unknown;
+    try {
+        strippedState = await storeAndReplaceImages(state, sessionId, userId);
+    } catch (err) {
+        console.error("[sio-registry] Image extraction failed, using original state:", err);
+        strippedState = state;
+    }
+
+    const stateObj = strippedState && typeof strippedState === "object" ? (strippedState as Record<string, unknown>) : null;
     const hasSessionName = !!stateObj && Object.prototype.hasOwnProperty.call(stateObj, "sessionName");
     const nextSessionName = hasSessionName ? normalizeSessionName(stateObj?.sessionName) : session.sessionName;
     const sessionNameChanged = nextSessionName !== session.sessionName;
 
     const fields: Partial<RedisSessionData> = {
-        lastState: JSON.stringify(state ?? null),
+        lastState: JSON.stringify(strippedState ?? null),
         sessionName: nextSessionName,
     };
 
@@ -490,7 +504,7 @@ export async function updateSessionState(sessionId: string, state: unknown): Pro
         );
     }
 
-    void recordRelaySessionState(sessionId, state).catch((error) => {
+    void recordRelaySessionState(sessionId, strippedState).catch((error) => {
         console.error("[sio-registry] Failed to persist relay session state:", error);
     });
 }
@@ -545,14 +559,27 @@ export async function publishSessionEvent(sessionId: string, event: unknown): Pr
         await updateSessionFields(sessionId, { expiresAt: nextEphemeralExpiry() });
     }
 
+    // Strip inline base64 images from agent_end events (which carry full
+    // message snapshots) before caching in Redis and broadcasting to viewers.
+    // Wrapped in try/catch so a transient I/O failure falls back to the
+    // original event rather than dropping it (viewers would miss the event).
+    const userId = session?.userId ?? "unknown";
+    let strippedEvent: unknown;
+    try {
+        strippedEvent = await storeAndReplaceImagesInEvent(event, sessionId, userId);
+    } catch (err) {
+        console.error("[sio-registry] Image extraction from event failed, using original event:", err);
+        strippedEvent = event;
+    }
+
     const seq = await incrementSeq(sessionId);
 
-    void appendRelayEventToCache(sessionId, event, { isEphemeral: session?.isEphemeral });
+    void appendRelayEventToCache(sessionId, strippedEvent, { isEphemeral: session?.isEphemeral });
 
     // Broadcast to all viewer sockets in the session room
     io.of("/viewer")
         .to(viewerSessionRoom(sessionId))
-        .emit("event", { event, seq });
+        .emit("event", { event: strippedEvent, seq });
 
     return seq;
 }
@@ -678,7 +705,7 @@ export async function endSharedSession(sessionId: string, reason: string = "Sess
     if (session.runnerId) {
         const runnerSocket = localRunnerSockets.get(session.runnerId);
         if (runnerSocket?.connected) {
-            runnerSocket.emit("session_ended", { sessionId });
+            runnerSocket.emit("session_ended", { sessionId, reason });
         }
     }
 
