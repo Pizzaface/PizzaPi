@@ -14,7 +14,7 @@ import { io } from "socket.io-client";
 import type { HubServerToClientEvents, HubClientToServerEvents } from "@pizzapi/protocol";
 import { formatPathTail } from "@/lib/path";
 import { ProviderIcon } from "@/components/ProviderIcon";
-import { PanelLeftClose, PanelLeftOpen, Plus, X, HardDrive, FolderOpen, CheckSquare, Square, CheckCheck, Trash2, Pin, PinOff, ChevronDown, ChevronRight, MessageSquare } from "lucide-react";
+import { PanelLeftClose, PanelLeftOpen, Plus, X, HardDrive, FolderOpen, CheckSquare, Square, CheckCheck, Trash2, Pin, PinOff, ChevronDown, ChevronRight, MessageSquare, Copy } from "lucide-react";
 import { buildSessionTree, flattenSessionTree, getSessionIndent, getDescendantSessionIds } from "@/lib/session-tree";
 
 interface HubSession {
@@ -83,6 +83,8 @@ export interface SessionSidebarProps {
     onClose?: () => void;
     /** Called when the user confirms ending a session via the swipe gesture */
     onEndSession?: (sessionId: string) => void;
+    /** Called when the user wants to duplicate a session (same runner + working directory) */
+    onDuplicateSession?: (runnerId: string, cwd: string) => void;
     /** Called when the user wants to return from Runners view to Sessions */
     onShowSessions?: () => void;
     /** List of runners to display when showRunners is true */
@@ -177,6 +179,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     onSessionsChange,
     onClose,
     onEndSession,
+    onDuplicateSession,
     runners,
     selectedRunnerId,
     onSelectRunner,
@@ -209,7 +212,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     const [confirmEndSessionId, setConfirmEndSessionId] = React.useState<string | null>(null);
     const [revealedSessionId, setRevealedSessionId] = React.useState<string | null>(null);
     const [swipeOffsets, setSwipeOffsets] = React.useState<Map<string, number>>(new Map());
-    const REVEAL_WIDTH = 132; // px width of the revealed "Pin" + "End" buttons
+    const REVEAL_WIDTH = 198; // px width of the revealed "Duplicate" + "Pin" + "End" buttons
 
     const swipeRef = React.useRef<{
         sessionId: string;
@@ -1078,14 +1081,38 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                     key={s.sessionId}
                                                     className="relative overflow-hidden rounded-lg"
                                                 >
-                                                    {/* "Pin" + "End" actions behind the card — only rendered during swipe/reveal (not in select mode) */}
+                                                    {/* "Duplicate" + "Pin" + "End" actions behind the card — only rendered during swipe/reveal (not in select mode) */}
                                                     {!selectMode && (hasOffset || isRevealed) && <div
                                                         className="absolute inset-y-0 right-0 flex items-stretch rounded-r-lg overflow-hidden"
                                                         style={{ width: REVEAL_WIDTH }}
                                                     >
                                                         <button
                                                             className={cn(
-                                                                "flex flex-col items-center justify-center w-1/2 text-xs font-semibold gap-0.5 bg-blue-500 text-white transition-colors",
+                                                                "flex flex-col items-center justify-center w-1/3 text-xs font-semibold gap-0.5 bg-violet-500 text-white transition-colors",
+                                                                !s.runnerId ? "opacity-60 cursor-not-allowed" : "active:bg-violet-600",
+                                                            )}
+                                                            onClick={(e) => {
+                                                                e.stopPropagation();
+                                                                if (!s.runnerId) return;
+                                                                onDuplicateSession?.(s.runnerId, s.cwd || "");
+                                                                // Close the revealed state
+                                                                setSwipeOffsets((prev) => {
+                                                                    const next = new Map(prev);
+                                                                    next.delete(s.sessionId);
+                                                                    return next;
+                                                                });
+                                                                setRevealedSessionId(null);
+                                                            }}
+                                                            disabled={!s.runnerId}
+                                                            aria-label="Duplicate session"
+                                                            title={s.runnerId ? "New session with same runner & directory" : "No runner info available"}
+                                                        >
+                                                            <Copy className="h-4 w-4" />
+                                                            <span>Duplicate</span>
+                                                        </button>
+                                                        <button
+                                                            className={cn(
+                                                                "flex flex-col items-center justify-center w-1/3 text-xs font-semibold gap-0.5 bg-blue-500 text-white transition-colors",
                                                                 isPinPending ? "opacity-60 cursor-not-allowed" : "active:bg-blue-600",
                                                             )}
                                                             onClick={(e) => {
@@ -1107,7 +1134,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                             <span>{isPinPending ? "Saving" : isPinned ? "Unpin" : "Pin"}</span>
                                                         </button>
                                                         <button
-                                                            className="flex flex-col items-center justify-center w-1/2 pt-1 text-xs font-semibold gap-0.5 bg-red-600 text-white active:bg-red-700 transition-colors"
+                                                            className="flex flex-col items-center justify-center w-1/3 pt-1 text-xs font-semibold gap-0.5 bg-red-600 text-white active:bg-red-700 transition-colors"
                                                             onClick={(e) => {
                                                                 e.stopPropagation();
                                                                 setConfirmEndSessionId(s.sessionId);
