@@ -91,11 +91,19 @@ const GIT_SAFE_SUBCOMMAND_DESTRUCTIVE_OVERRIDES: RegExp[] = [
  * read-only overlay handles filesystem write protection at the OS level.
  */
 const SANDBOX_ONLY_CMD_PATTERNS = [
+    // Process control & privilege escalation
     /^\s*sudo\b/i, /^\s*su\b/i,
     /^\s*kill\b/i, /^\s*pkill\b/i, /^\s*killall\b/i,
     /^\s*reboot\b/i, /^\s*shutdown\b/i,
     /^\s*systemctl\s+(start|stop|restart|enable|disable)/i,
     /^\s*service\s+\S+\s+(start|stop|restart)/i,
+    // Remote / network side effects — sandbox only protects local filesystem
+    /^\s*git\s+push\b/i,
+    /^\s*git\s+remote\s+(add|remove|rename|set-url)\b/i,
+    /^\s*npm\s+publish\b/i,
+    /^\s*npx\b/i,
+    /^\s*docker\s+push\b/i,
+    /^\s*gh\s+(issue|pr|release)\s+(create|edit|close|merge|delete|comment)\b/i,
 ];
 
 /**
@@ -210,9 +218,10 @@ function isDestructiveGitCommand(segment: string): boolean {
  * git am, git bisect, etc.).
  *
  * When `sandboxActive` is true, only non-filesystem side effects are checked
- * (process control, privilege escalation, system management). The OS-level
- * sandbox enforces filesystem write restrictions, so command substitution,
- * output redirection, script interpreters, and `find -exec` are all safe.
+ * (process control, privilege escalation, system management, remote mutations).
+ * The OS-level sandbox enforces filesystem write restrictions, so output
+ * redirection, script interpreters, and `find -exec` are all safe.
+ * Command substitution is still rejected to prevent smuggling blocked commands.
  *
  * When `sandboxActive` is false (default), the full regex battery is applied
  * as the only line of defense against destructive commands.
@@ -224,9 +233,10 @@ export function isDestructiveCommand(command: string, sandboxActive = false): bo
     // The OS sandbox enforces a read-only filesystem overlay. We only need
     // to block non-filesystem side effects that the sandbox doesn't cover.
     if (sandboxActive) {
-        // Multi-line payloads are still rejected — they can smuggle commands
-        // past the per-segment check regardless of sandbox state.
-        if (/\n/.test(command)) return true;
+        // Multi-line payloads and command/backtick/process substitution are
+        // still rejected — they can smuggle commands past the per-segment
+        // check regardless of sandbox state.
+        if (/\$\(|`|\n|<\(|>\(/.test(command)) return true;
 
         const parts = splitShellSegments(command);
         for (const part of parts) {
@@ -566,8 +576,9 @@ export const planModeToggleExtension: ExtensionFactory = (pi) => {
         // Block destructive bash commands in plan mode.
         // When the OS sandbox is active, its read-only overlay enforces
         // filesystem write restrictions — so we only check for non-filesystem
-        // side effects (kill, sudo, systemctl, etc.). When the sandbox is NOT
-        // active, we apply the full regex battery as the only line of defense.
+        // side effects (kill, sudo, systemctl, remote mutations, etc.).
+        // When the sandbox is NOT active, we apply the full regex battery
+        // as the only line of defense.
         if (event.toolName === "bash") {
             const command = (event.input as any).command as string;
             if (isDestructiveCommand(command, isSandboxActive())) {

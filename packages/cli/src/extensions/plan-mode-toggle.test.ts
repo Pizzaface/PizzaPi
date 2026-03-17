@@ -485,17 +485,19 @@ describe("isDestructiveCommand", () => {
 describe("isDestructiveCommand (sandboxActive=true)", () => {
     // ── Commands that SHOULD be allowed with sandbox ─────────────────────
 
-    test("allows command substitution when sandbox active", () => {
-        expect(isDestructiveCommand('echo "$(wc -l < file)"', true)).toBe(false);
-        expect(isDestructiveCommand("ls $(cat filelist.txt)", true)).toBe(false);
+    test("blocks command substitution when sandbox active (prevents smuggling)", () => {
+        expect(isDestructiveCommand('echo "$(wc -l < file)"', true)).toBe(true);
+        expect(isDestructiveCommand("ls $(cat filelist.txt)", true)).toBe(true);
+        expect(isDestructiveCommand("echo $(kill -9 1234)", true)).toBe(true);
     });
 
-    test("allows backtick expansion when sandbox active", () => {
-        expect(isDestructiveCommand("echo `wc -l file`", true)).toBe(false);
+    test("blocks backtick expansion when sandbox active (prevents smuggling)", () => {
+        expect(isDestructiveCommand("echo `wc -l file`", true)).toBe(true);
+        expect(isDestructiveCommand("echo `kill -9 1234`", true)).toBe(true);
     });
 
-    test("allows process substitution when sandbox active", () => {
-        expect(isDestructiveCommand("diff <(cat a.txt) <(cat b.txt)", true)).toBe(false);
+    test("blocks process substitution when sandbox active (prevents smuggling)", () => {
+        expect(isDestructiveCommand("diff <(cat a.txt) <(cat b.txt)", true)).toBe(true);
     });
 
     test("allows output redirection when sandbox active", () => {
@@ -542,9 +544,45 @@ describe("isDestructiveCommand (sandboxActive=true)", () => {
         expect(isDestructiveCommand("pip install requests", true)).toBe(false);
     });
 
-    test("allows git push/commit when sandbox active", () => {
-        expect(isDestructiveCommand("git push", true)).toBe(false);
+    test("blocks git push when sandbox active (remote side effect)", () => {
+        expect(isDestructiveCommand("git push", true)).toBe(true);
+        expect(isDestructiveCommand("git push origin main", true)).toBe(true);
+        expect(isDestructiveCommand("git push --force", true)).toBe(true);
+    });
+
+    test("blocks git remote mutations when sandbox active", () => {
+        expect(isDestructiveCommand("git remote add origin https://x", true)).toBe(true);
+        expect(isDestructiveCommand("git remote remove origin", true)).toBe(true);
+        expect(isDestructiveCommand("git remote set-url origin https://x", true)).toBe(true);
+    });
+
+    test("allows git commit when sandbox active (local-only, OS blocks writes)", () => {
         expect(isDestructiveCommand("git commit -m 'test'", true)).toBe(false);
+    });
+
+    test("blocks npm publish when sandbox active (remote side effect)", () => {
+        expect(isDestructiveCommand("npm publish", true)).toBe(true);
+        expect(isDestructiveCommand("npm publish --tag beta", true)).toBe(true);
+    });
+
+    test("blocks npx when sandbox active (arbitrary code execution)", () => {
+        expect(isDestructiveCommand("npx some-package", true)).toBe(true);
+    });
+
+    test("blocks docker push when sandbox active (remote side effect)", () => {
+        expect(isDestructiveCommand("docker push myimage:latest", true)).toBe(true);
+    });
+
+    test("blocks gh CLI mutations when sandbox active (remote side effect)", () => {
+        expect(isDestructiveCommand("gh issue create --title test", true)).toBe(true);
+        expect(isDestructiveCommand("gh pr merge 123", true)).toBe(true);
+        expect(isDestructiveCommand("gh release create v1.0", true)).toBe(true);
+    });
+
+    test("allows gh CLI read operations when sandbox active", () => {
+        expect(isDestructiveCommand("gh issue list", true)).toBe(false);
+        expect(isDestructiveCommand("gh pr view 123", true)).toBe(false);
+        expect(isDestructiveCommand("gh api /repos", true)).toBe(false);
     });
 
     test("allows editors when sandbox active (OS blocks writes)", () => {
