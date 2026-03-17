@@ -3501,6 +3501,7 @@ export function App() {
             runners={runnersForSidebar}
             selectedRunnerId={selectedRunnerId}
             onSelectRunner={setSelectedRunnerId}
+            onShowSessions={() => setShowRunners(false)}
           />
         </div>
 

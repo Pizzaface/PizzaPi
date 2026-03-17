@@ -14,7 +14,7 @@ import { io } from "socket.io-client";
 import type { HubServerToClientEvents, HubClientToServerEvents } from "@pizzapi/protocol";
 import { formatPathTail } from "@/lib/path";
 import { ProviderIcon } from "@/components/ProviderIcon";
-import { PanelLeftClose, PanelLeftOpen, Plus, X, HardDrive, FolderOpen, CheckSquare, Square, CheckCheck, Trash2, Pin, PinOff, ChevronDown, ChevronRight } from "lucide-react";
+import { PanelLeftClose, PanelLeftOpen, Plus, X, HardDrive, FolderOpen, CheckSquare, Square, CheckCheck, Trash2, Pin, PinOff, ChevronDown, ChevronRight, MessageSquare } from "lucide-react";
 import { buildSessionTree, flattenSessionTree, getSessionIndent, getDescendantSessionIds } from "@/lib/session-tree";
 
 interface HubSession {
@@ -83,6 +83,8 @@ export interface SessionSidebarProps {
     onClose?: () => void;
     /** Called when the user confirms ending a session via the swipe gesture */
     onEndSession?: (sessionId: string) => void;
+    /** Called when the user wants to return from Runners view to Sessions */
+    onShowSessions?: () => void;
     /** List of runners to display when showRunners is true */
     runners?: Array<{
         runnerId: string;
@@ -178,6 +180,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     runners,
     selectedRunnerId,
     onSelectRunner,
+    onShowSessions,
 }: SessionSidebarProps) {
     const [collapsed, setCollapsed] = React.useState(false);
 
@@ -889,12 +892,25 @@ export const SessionSidebar = React.memo(function SessionSidebar({
             )}
 
             <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
-                {/* Runners nav item / Live sessions header */}
-                <div className="px-2 pt-2 pb-1 flex-shrink-0">
+                {/* Sessions / Runners nav tabs */}
+                <div className="px-2 pt-2 pb-1 flex-shrink-0 flex gap-1">
+                    <button
+                        onClick={onShowSessions}
+                        className={cn(
+                            "flex items-center gap-2 flex-1 px-3 py-3 md:py-2 rounded-lg text-sm font-medium transition-colors active:scale-[0.98]",
+                            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
+                            !showRunners
+                                ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                                : "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
+                        )}
+                    >
+                        <MessageSquare className={cn("h-4 w-4 flex-shrink-0", !showRunners ? "text-primary" : "text-sidebar-foreground/50")} />
+                        <span>Sessions</span>
+                    </button>
                     <button
                         onClick={onShowRunners}
                         className={cn(
-                            "flex items-center gap-2.5 w-full px-3 py-3 md:py-2 rounded-lg text-sm font-medium transition-colors active:scale-[0.98]",
+                            "flex items-center gap-2 flex-1 px-3 py-3 md:py-2 rounded-lg text-sm font-medium transition-colors active:scale-[0.98]",
                             "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
                             showRunners
                                 ? "bg-sidebar-accent text-sidebar-accent-foreground"
