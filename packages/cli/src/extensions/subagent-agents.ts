@@ -110,7 +110,14 @@ function loadAgentsFromDir(dir: string, source: "user" | "project"): AgentConfig
             continue;
         }
 
-        const { frontmatter, body } = parseFrontmatter<Record<string, string | boolean | number>>(content);
+        let frontmatter: Record<string, string | boolean | number>;
+        let body: string;
+        try {
+            ({ frontmatter, body } = parseFrontmatter<Record<string, string | boolean | number>>(content));
+        } catch {
+            // Malformed YAML frontmatter — silently skip this file
+            continue;
+        }
 
         const name = String(frontmatter.name ?? "").trim();
         const description = String(frontmatter.description ?? "").trim();
