@@ -114,6 +114,23 @@ describe("discoverAgents", () => {
         expect(nonBuiltin[0].name).toBe("real");
     });
 
+    test("skips .md files with malformed YAML frontmatter", () => {
+        const agentsDir = join(tmpDir, ".pizzapi", "agents");
+        mkdirSync(agentsDir, { recursive: true });
+
+        // Malformed YAML — unbalanced braces, bad indentation, invalid syntax
+        writeFileSync(join(agentsDir, "bad-yaml.md"), `---\nname: {{broken\n  - invalid: [\n---\nBody text`, "utf-8");
+        // Another variant — YAML with tabs in wrong places
+        writeFileSync(join(agentsDir, "bad-yaml2.md"), `---\n\t\tname: bad\n: : :\n---\nBody`, "utf-8");
+        // Valid agent should still be discovered
+        createAgentFile(agentsDir, "good-agent.md", { name: "good", description: "Good agent" }, "Works fine.");
+
+        const result = discoverAgents(tmpDir, "project");
+        const nonBuiltin = result.agents.filter(a => a.filePath !== "(built-in)");
+        expect(nonBuiltin).toHaveLength(1);
+        expect(nonBuiltin[0].name).toBe("good");
+    });
+
     test("handles empty frontmatter body gracefully", () => {
         const agentsDir = join(tmpDir, ".pizzapi", "agents");
         mkdirSync(agentsDir, { recursive: true });
