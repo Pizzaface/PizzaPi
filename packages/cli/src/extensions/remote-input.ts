@@ -140,13 +140,19 @@ export async function buildUserMessageFromRemoteInput(
             }
         }
 
-        // Persist attachment to session-scoped storage (fire-and-forget)
+        // Persist attachment to session-scoped storage.
+        // Awaited (not fire-and-forget) to prevent same-name overwrite races:
+        // saveSessionAttachment deduplicates names by reading the directory,
+        // which is non-atomic; serializing saves prevents two files with the
+        // same sanitized name from clobbering each other.
         if (dataBase64 && sessionId) {
             const attachFilename = filename || `attachment-${Date.now()}`;
             const buf = Buffer.from(dataBase64, "base64");
-            saveSessionAttachment(sessionId, attachFilename, mediaType, buf).catch((err) => {
+            try {
+                await saveSessionAttachment(sessionId, attachFilename, mediaType, buf);
+            } catch (err) {
                 console.error(`pizzapi: failed to persist attachment: ${err instanceof Error ? err.message : String(err)}`);
-            });
+            }
         }
 
         if (dataBase64 && mediaType.startsWith("image/")) {

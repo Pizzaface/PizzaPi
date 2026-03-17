@@ -226,6 +226,24 @@ describe("extractImages", () => {
         expect(result1.extracted[0].attachmentId).toBe(result2.extracted[0].attachmentId);
     });
 
+    test("produces same attachment ID for raw base64 and data URI of same image", () => {
+        const rawBase64 = fakeBase64(50_000);
+        const dataUri = `data:image/png;base64,${rawBase64}`;
+
+        const msgsRaw = [
+            { role: "user", content: [{ type: "image", source: { type: "base64", media_type: "image/png", data: rawBase64 } }] },
+        ];
+        const msgsDataUri = [
+            { role: "user", content: [{ type: "image", source: { type: "base64", media_type: "image/png", data: dataUri } }] },
+        ];
+
+        const resultRaw = extractImages(msgsRaw, "session-1", "user-1");
+        const resultUri = extractImages(msgsDataUri, "session-1", "user-1");
+
+        // Same image bytes, different encoding form → should produce same attachment ID
+        expect(resultRaw.extracted[0].attachmentId).toBe(resultUri.extracted[0].attachmentId);
+    });
+
     test("produces different attachment IDs for different users with same image", () => {
         const largeBase64 = fakeBase64(50_000);
         const messages = [

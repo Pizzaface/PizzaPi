@@ -64,7 +64,10 @@ export function stripDataUriPrefix(data: string): string {
  * downloads enforce ownerUserId matching).
  */
 function contentHash(data: string, userId: string): string {
-    return createHash("sha256").update(userId).update(":").update(data).digest("hex").slice(0, 24);
+    // Strip data URI prefix (if present) so identical images produce the same ID
+    // regardless of whether they arrive as raw base64 or data:...;base64,...
+    const normalized = stripDataUriPrefix(data);
+    return createHash("sha256").update(userId).update(":").update(normalized).digest("hex").slice(0, 24);
 }
 
 // ── Pure extraction logic ────────────────────────────────────────────────────

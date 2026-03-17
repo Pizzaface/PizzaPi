@@ -35,6 +35,15 @@ const uploadRoot = path.resolve(process.env.PIZZAPI_ATTACHMENT_DIR ?? path.join(
 
 const attachments = new Map<string, StoredAttachment>();
 
+/**
+ * Tracks all session IDs that reference each extracted (deduplicated) attachment.
+ * Regular uploads are 1:1 (session → attachment), but extracted images can be
+ * shared across sessions when the same user produces identical image content.
+ * The sweep/rehydration logic uses this to avoid deleting images that are still
+ * referenced by any durable session.
+ */
+const extractedImageSessionRefs = new Map<string, Set<string>>();
+
 export function sanitizeFilename(filename: string): string {
     return filename.replace(/[^a-zA-Z0-9._-]/g, "_");
 }
@@ -93,10 +102,12 @@ export async function deleteStoredAttachment(attachmentId: string): Promise<void
     const record = attachments.get(attachmentId);
     if (!record) return;
     attachments.delete(attachmentId);
+    extractedImageSessionRefs.delete(attachmentId);
     try {
         await rm(record.filePath, { force: true });
     } catch {}
     void removePersistedAttachment(attachmentId).catch(() => {});
+    void removePersistedSessionRefs(attachmentId).catch(() => {});
 }
 
 // ── Extracted image storage ──────────────────────────────────────────────────
@@ -124,12 +135,15 @@ export async function storeExtractedImage(input: {
         const refreshedExpiry = Date.now() + EXTRACTED_IMAGE_TTL_MS;
         existing.expiresAt = new Date(refreshedExpiry).toISOString();
         existing.expiresAtMs = refreshedExpiry;
-        // Always track the latest session so sweep/rehydration durability
-        // checks use the most recent session referencing this image.
+        // Track the latest session on the record (for backward compat / display)
         existing.sessionId = sessionId;
+        // Also track ALL sessions referencing this attachment so sweep doesn't
+        // delete an image that's still used by a durable session.
+        addSessionRef(attachmentId, sessionId);
         void persistExtractedAttachment(existing).catch((err) => {
             console.error("[attachments] Failed to persist refreshed expiry:", err);
         });
+        void persistSessionRef(attachmentId, sessionId).catch(() => {});
         return existing;
     }
 
@@ -164,9 +178,11 @@ export async function storeExtractedImage(input: {
     };
 
     attachments.set(attachmentId, record);
+    addSessionRef(attachmentId, sessionId);
     void persistExtractedAttachment(record).catch((err) => {
         console.error("[attachments] Failed to persist extracted attachment:", err);
     });
+    void persistSessionRef(attachmentId, sessionId).catch(() => {});
     return record;
 }
 
@@ -187,9 +203,9 @@ export async function sweepExpiredAttachments(nowMs: number = Date.now()): Promi
         const expiresAtMs = record.expiresAtMs ?? Date.parse(record.expiresAt);
         if (!Number.isFinite(expiresAtMs) || expiresAtMs > nowMs) continue;
 
-        // If the attachment belongs to a durable (pinned or non-ephemeral) session
-        // that is still alive, renew the TTL instead of deleting.
-        if (record.uploaderUserId === "system" && durableSessionIds.has(record.sessionId)) {
+        // If the attachment is referenced by ANY durable (pinned or non-ephemeral)
+        // session that is still alive, renew the TTL instead of deleting.
+        if (record.uploaderUserId === "system" && hasAnyDurableSessionRef(attachmentId, record.sessionId, durableSessionIds)) {
             const refreshed = nowMs + EXTRACTED_IMAGE_TTL_MS;
             record.expiresAt = new Date(refreshed).toISOString();
             record.expiresAtMs = refreshed;
@@ -227,6 +243,33 @@ async function getDurableSessionIds(): Promise<Set<string>> {
     return new Set(rows.map((r) => r.id));
 }
 
+// ── Session-ref helpers (in-memory) ──────────────────────────────────────────
+
+function addSessionRef(attachmentId: string, sessionId: string): void {
+    let refs = extractedImageSessionRefs.get(attachmentId);
+    if (!refs) {
+        refs = new Set();
+        extractedImageSessionRefs.set(attachmentId, refs);
+    }
+    refs.add(sessionId);
+}
+
+/** Check whether ANY session referencing this attachment is durable. */
+function hasAnyDurableSessionRef(
+    attachmentId: string,
+    fallbackSessionId: string,
+    durableSessionIds: Set<string>,
+): boolean {
+    const refs = extractedImageSessionRefs.get(attachmentId);
+    if (refs) {
+        for (const sid of refs) {
+            if (durableSessionIds.has(sid)) return true;
+        }
+    }
+    // Also check the record's own sessionId as a fallback
+    return durableSessionIds.has(fallbackSessionId);
+}
+
 // ── SQLite persistence for extracted images ──────────────────────────────────
 // Extracted image metadata is persisted to SQLite so it survives server restarts.
 // The in-memory Map remains the hot path; SQLite is written on store and read on boot.
@@ -244,6 +287,53 @@ export async function ensureExtractedAttachmentTable(): Promise<void> {
         .addColumn("createdAt", "text", (col) => col.notNull())
         .addColumn("expiresAt", "text", (col) => col.notNull())
         .addColumn("filePath", "text", (col) => col.notNull())
+        .execute();
+
+    // Junction table: tracks ALL sessions that reference each extracted attachment.
+    // This prevents data loss when the same user produces identical images across
+    // multiple sessions — sweep/rehydration checks the full set of references
+    // rather than a single sessionId.
+    await getKysely().schema
+        .createTable("extracted_attachment_session")
+        .ifNotExists()
+        .addColumn("attachmentId", "text", (col) => col.notNull())
+        .addColumn("sessionId", "text", (col) => col.notNull())
+        .execute();
+
+    // Create a unique index to prevent duplicate (attachmentId, sessionId) pairs
+    await getKysely().schema
+        .createIndex("idx_eas_unique")
+        .ifNotExists()
+        .on("extracted_attachment_session")
+        .columns(["attachmentId", "sessionId"])
+        .unique()
+        .execute();
+}
+
+/** Persist a session reference for an extracted attachment. */
+async function persistSessionRef(attachmentId: string, sessionId: string): Promise<void> {
+    await getKysely()
+        .insertInto("extracted_attachment_session" as any)
+        .values({ attachmentId, sessionId })
+        .onConflict((oc) => oc.columns(["attachmentId", "sessionId"]).doNothing())
+        .execute();
+}
+
+/** Load all session IDs that reference a given extracted attachment from SQLite. */
+async function loadSessionRefsFromDb(attachmentId: string): Promise<string[]> {
+    const rows = await getKysely()
+        .selectFrom("extracted_attachment_session" as any)
+        .select("sessionId")
+        .where("attachmentId", "=", attachmentId)
+        .execute();
+    return rows.map((r: any) => r.sessionId as string);
+}
+
+/** Remove all session references for an attachment from SQLite. */
+async function removePersistedSessionRefs(attachmentId: string): Promise<void> {
+    await getKysely()
+        .deleteFrom("extracted_attachment_session" as any)
+        .where("attachmentId", "=", attachmentId)
         .execute();
 }
 
@@ -297,7 +387,10 @@ export async function rehydrateExtractedAttachments(): Promise<number> {
 
     const toDelete: string[] = [];
     for (const row of expiredRows) {
-        if (durableSessionIds.has(row.sessionId)) {
+        // Check all session refs (from junction table) and the row's own sessionId
+        const rowSessionRefs = await loadSessionRefsFromDb(row.attachmentId);
+        const allRefs = new Set([row.sessionId, ...rowSessionRefs]);
+        if ([...allRefs].some((sid) => durableSessionIds.has(sid))) {
             // Renew TTL for attachments belonging to durable sessions
             const refreshed = new Date(nowMs + EXTRACTED_IMAGE_TTL_MS).toISOString();
             await getKysely()
@@ -313,6 +406,11 @@ export async function rehydrateExtractedAttachments(): Promise<number> {
     if (toDelete.length > 0) {
         await getKysely()
             .deleteFrom("extracted_attachment")
+            .where("attachmentId", "in", toDelete)
+            .execute();
+        // Also clean up session ref junction table entries
+        await getKysely()
+            .deleteFrom("extracted_attachment_session" as any)
             .where("attachmentId", "in", toDelete)
             .execute();
     }
@@ -349,6 +447,13 @@ export async function rehydrateExtractedAttachments(): Promise<number> {
             expiresAtMs,
             filePath: row.filePath,
         });
+
+        // Rehydrate session refs from junction table
+        const sessionRefs = await loadSessionRefsFromDb(row.attachmentId);
+        const refSet = new Set(sessionRefs);
+        refSet.add(row.sessionId); // Ensure the main sessionId is always included
+        extractedImageSessionRefs.set(row.attachmentId, refSet);
+
         loaded++;
     }
 
