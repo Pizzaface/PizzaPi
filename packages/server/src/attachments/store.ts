@@ -156,10 +156,10 @@ export async function storeExtractedImage(input: {
         // Also track ALL sessions referencing this attachment so sweep doesn't
         // delete an image that's still used by a durable session.
         addSessionRef(attachmentId, sessionId);
-        void persistExtractedAttachment(existing).catch((err) => {
+        await persistExtractedAttachment(existing).catch((err) => {
             console.error("[attachments] Failed to persist refreshed expiry:", err);
         });
-        void persistSessionRef(attachmentId, sessionId).catch(() => {});
+        await persistSessionRef(attachmentId, sessionId).catch(() => {});
         return existing;
     }
 
