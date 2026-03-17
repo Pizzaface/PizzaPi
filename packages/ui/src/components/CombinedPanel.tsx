@@ -207,8 +207,8 @@ export function CombinedPanel({
   return (
     <div className={cn("flex flex-col bg-background text-foreground", className)}>
       {/* Tab bar */}
-      <div className="flex items-center border-b border-border bg-muted/50 shrink-0 min-h-[32px]">
-        <div className="flex items-center flex-1 overflow-x-auto gap-0.5 px-1">
+      <div className="flex items-center border-b border-border bg-muted/50 shrink-0 min-h-[32px] overflow-hidden">
+        <div className="flex items-center flex-1 min-w-0 overflow-x-auto gap-0.5 px-1 [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
           {tabs.map((tab) => {
             const isActive = activeTabId === tab.id;
             const hasDrag = !!tab.onDragStart;
