@@ -409,6 +409,12 @@ export async function handleExecFromWeb(
             replyOk();
             setTimeout(() => {
                 if (process.env.PIZZAPI_RUNNER_USAGE_CACHE_PATH) {
+                    // Notify the daemon via IPC before exiting so it can mark this
+                    // session as restarting *before* the relay's session_ended event
+                    // arrives (which can beat child.on("exit") over the network).
+                    // process.send is only defined when the daemon spawned us with an
+                    // IPC channel; the optional call is a no-op in other contexts.
+                    process.send?.({ type: "pre_restart" });
                     process.exit(43);
                     return;
                 }

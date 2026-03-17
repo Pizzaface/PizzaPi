@@ -1645,7 +1645,23 @@ function spawnSession(
 
     const child = spawn(process.execPath, workerArgs, {
         env,
-        stdio: ["ignore", "inherit", "inherit"],
+        // Include an IPC channel (fd[3]) so the worker can send a "pre_restart"
+        // message to the daemon before calling process.exit(43).  This lets us
+        // add the sessionId to restartingSessions *before* the process exits and
+        // before the relay's session_ended event (which travels over Socket.IO) can
+        // arrive — closing the race where session_ended beats child.on("exit") and
+        // incorrectly deletes attachments for a still-live restarting session.
+        stdio: ["ignore", "inherit", "inherit", "ipc"],
+    });
+
+    // Pre-restart IPC signal: the worker sends this before calling process.exit(43).
+    // Marking restartingSessions here (synchronously, while the worker is still
+    // alive) guarantees the guard is set before any relay session_ended event arrives.
+    child.on("message", (msg: unknown) => {
+        if (typeof msg === "object" && msg !== null && (msg as Record<string, unknown>).type === "pre_restart") {
+            restartingSessions.add(sessionId);
+            console.log(`pizzapi runner: session ${sessionId} signaled pre-restart via IPC`);
+        }
     });
 
     child.on("exit", (code, signal) => {
@@ -1655,10 +1671,9 @@ function spawnSession(
             // Restart-in-place: re-spawn immediately without touching attachments.
             // The session continues under the same ID — files saved to
             // ~/.pizzapi/session-attachments/{sessionId} must survive the restart.
-            // Mark the session as restarting BEFORE calling onRestartRequested so that
-            // when the relay's session_ended event arrives (triggered by the new worker's
-            // registerTuiSession tearing down the old connection) the handler knows to
-            // skip teardown.
+            // restartingSessions was already populated via the IPC "pre_restart"
+            // message above; this add is a belt-and-suspenders fallback for the
+            // (unlikely) case where the IPC message was not sent or was lost.
             restartingSessions.add(sessionId);
             console.log(`pizzapi runner: re-spawning session ${sessionId} (worker restart requested)`);
             onRestartRequested();
