@@ -91,7 +91,7 @@ export async function getStoredAttachment(attachmentId: string): Promise<StoredA
 
     const nowMs = Date.now();
     const expiresAtMs = record.expiresAtMs ?? Date.parse(record.expiresAt);
-    if (expiresAtMs <= nowMs) {
+    if (!Number.isFinite(expiresAtMs) || expiresAtMs <= nowMs) {
         // For extracted images (uploaderUserId === "system"), check whether this
         // attachment is referenced by a durable (pinned/non-ephemeral) session
         // before deleting.  Without this, a viewer requesting an expired-but-durable
