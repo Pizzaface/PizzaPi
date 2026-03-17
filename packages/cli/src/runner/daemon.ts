@@ -714,9 +714,13 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             if (entry) {
                 runningSessions.delete(sessionId);
                 console.log(`pizzapi runner: session ${sessionId} ended on relay${entry.adopted ? " (adopted)" : ""}`);
-                // Clean up persisted attachments for this session
-                void cleanupSessionAttachments(sessionId).catch(() => {});
+            } else {
+                console.log(`pizzapi runner: session_ended for unknown/already-removed session ${sessionId}`);
             }
+            // Always clean up persisted attachments regardless of whether the entry is still
+            // present — on a normal exit child.on("exit") fires first and removes the entry,
+            // so by the time session_ended arrives the map is already empty.
+            void cleanupSessionAttachments(sessionId).catch(() => {});
         });
 
         socket.on("list_sessions", () => {
@@ -1630,6 +1634,10 @@ function spawnSession(
     child.on("exit", (code, signal) => {
         runningSessions.delete(sessionId);
         console.log(`pizzapi runner: session ${sessionId} exited (code=${code}, signal=${signal})`);
+        // Clean up persisted attachments — do this here so that on a normal exit
+        // (where child.on("exit") fires before the relay sends session_ended, leaving
+        // runningSessions already empty when session_ended arrives) cleanup is not skipped.
+        void cleanupSessionAttachments(sessionId).catch(() => {});
         // Exit code 43 means the worker requested a restart (e.g. via /restart).
         // Re-spawn it and re-send session_ready so the runner→session link is preserved.
         if (code === 43 && onRestartRequested) {

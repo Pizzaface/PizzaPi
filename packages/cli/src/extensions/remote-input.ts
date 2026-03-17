@@ -176,6 +176,10 @@ export async function buildUserMessageFromRemoteInput(
                 // No session storage available — fall back to inlining.
                 const decoded = Buffer.from(dataBase64, "base64").toString("utf-8");
                 parts.push({ type: "text", text: `--- ${label} ---\n${decoded}\n--- end ${label} ---` });
+            } else {
+                // Attachment bytes unavailable (relay fetch failed or data URL invalid) — keep a
+                // visible placeholder so the agent/user knows the file was sent but not decoded.
+                parts.push({ type: "text", text: `[Attached file: ${label} — content unavailable]` });
             }
             continue;
         }
