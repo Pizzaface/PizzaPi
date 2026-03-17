@@ -462,8 +462,16 @@ export async function updateSessionState(sessionId: string, state: unknown): Pro
 
     // Extract inline base64 images from messages before storing in Redis.
     // This can reduce multi-MB payloads to KB-sized state with URL references.
+    // Wrapped in try/catch so a transient I/O failure (disk full, permissions)
+    // falls back to the original state rather than dropping the update entirely.
     const userId = session.userId ?? "unknown";
-    const strippedState = await storeAndReplaceImages(state, sessionId, userId);
+    let strippedState: unknown;
+    try {
+        strippedState = await storeAndReplaceImages(state, sessionId, userId);
+    } catch (err) {
+        console.error("[sio-registry] Image extraction failed, using original state:", err);
+        strippedState = state;
+    }
 
     const stateObj = strippedState && typeof strippedState === "object" ? (strippedState as Record<string, unknown>) : null;
     const hasSessionName = !!stateObj && Object.prototype.hasOwnProperty.call(stateObj, "sessionName");
@@ -553,8 +561,16 @@ export async function publishSessionEvent(sessionId: string, event: unknown): Pr
 
     // Strip inline base64 images from agent_end events (which carry full
     // message snapshots) before caching in Redis and broadcasting to viewers.
+    // Wrapped in try/catch so a transient I/O failure falls back to the
+    // original event rather than dropping it (viewers would miss the event).
     const userId = session?.userId ?? "unknown";
-    const strippedEvent = await storeAndReplaceImagesInEvent(event, sessionId, userId);
+    let strippedEvent: unknown;
+    try {
+        strippedEvent = await storeAndReplaceImagesInEvent(event, sessionId, userId);
+    } catch (err) {
+        console.error("[sio-registry] Image extraction from event failed, using original event:", err);
+        strippedEvent = event;
+    }
 
     const seq = await incrementSeq(sessionId);
 
