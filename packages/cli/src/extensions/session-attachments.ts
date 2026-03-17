@@ -178,6 +178,7 @@ export async function cleanupSessionAttachments(sessionId: string): Promise<void
     } catch {
         // Directory may not exist — that's fine
     }
+    sessionLocks.delete(sessionId);
 }
 
 /**
