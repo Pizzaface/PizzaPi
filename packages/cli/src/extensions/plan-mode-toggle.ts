@@ -100,8 +100,7 @@ const SANDBOX_ONLY_CMD_PATTERNS = [
     /^\s*systemctl\s+(start|stop|restart|enable|disable)/i,
     /^\s*service\s+\S+\s+(start|stop|restart)/i,
     // Remote / network side effects — sandbox only protects local filesystem
-    /^\s*git\s+push\b/i,
-    /^\s*git\s+remote\s+(add|remove|rename|set-url)\b/i,
+    // (Git commands are handled separately via the GIT_SAFE_SUBCOMMANDS allowlist)
     /^\s*npm\s+publish\b/i,
     /^\s*npx\b/i,
     /^\s*docker\s+push\b/i,
@@ -246,6 +245,16 @@ export function isDestructiveCommand(command: string, sandboxActive = false): bo
             if (!trimmed) continue;
 
             if (SANDBOX_ONLY_CMD_PATTERNS.some((p) => p.test(trimmed))) return true;
+
+            // Git: reuse the same allowlist as the no-sandbox path. Any git
+            // subcommand not on the safe list (send-pack, http-push, etc.)
+            // is treated as destructive — this covers all plumbing commands
+            // that can mutate remotes without enumerating them individually.
+            // Note: we skip DESTRUCTIVE_FLAG_PATTERNS here because the
+            // sandbox handles filesystem writes (redirection, -o, etc.).
+            if (/^\s*git\b/i.test(trimmed)) {
+                if (isDestructiveGitCommand(trimmed)) return true;
+            }
         }
         return false;
     }

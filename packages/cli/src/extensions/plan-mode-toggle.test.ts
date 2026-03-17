@@ -566,8 +566,21 @@ describe("isDestructiveCommand (sandboxActive=true)", () => {
         expect(isDestructiveCommand("git remote set-url origin https://x", true)).toBe(true);
     });
 
-    test("allows git commit when sandbox active (local-only, OS blocks writes)", () => {
-        expect(isDestructiveCommand("git commit -m 'test'", true)).toBe(false);
+    test("blocks git plumbing commands that mutate remotes when sandbox active", () => {
+        expect(isDestructiveCommand("git send-pack origin refs/heads/main", true)).toBe(true);
+        expect(isDestructiveCommand("git receive-pack /path/to/repo", true)).toBe(true);
+        expect(isDestructiveCommand("git http-push https://example.com/repo", true)).toBe(true);
+    });
+
+    test("allows safe git subcommands when sandbox active", () => {
+        expect(isDestructiveCommand("git status", true)).toBe(false);
+        expect(isDestructiveCommand("git log --oneline", true)).toBe(false);
+        expect(isDestructiveCommand("git diff HEAD", true)).toBe(false);
+        expect(isDestructiveCommand("git archive HEAD", true)).toBe(false);
+    });
+
+    test("blocks git commit when sandbox active (not on safe subcommand list)", () => {
+        expect(isDestructiveCommand("git commit -m 'test'", true)).toBe(true);
     });
 
     test("blocks npm publish when sandbox active (remote side effect)", () => {
