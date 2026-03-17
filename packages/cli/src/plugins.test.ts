@@ -1086,6 +1086,54 @@ describe("discoverClaudeInstalledPlugins", () => {
         expect(result[0].description).toBe("v2");
     });
 
+    test("falls back to older installation when newest is not a valid plugin dir", () => {
+        const home = setupHome("fallback");
+        // Create a valid v1 plugin
+        const oldPath = createCachedPlugin(home, "mkt", "flaky", "1.0.0");
+        // Create a v2 directory that exists but isn't a valid plugin dir
+        // (no commands/, hooks/, rules/, skills/, or plugin.json)
+        const newPath = join(home, ".claude", "plugins", "cache", "mkt", "flaky", "2.0.0");
+        mkdirSync(newPath, { recursive: true });
+        writeFileSync(join(newPath, "README.md"), "This is not a plugin");
+
+        writeInstalledPlugins(home, {
+            version: 2,
+            plugins: {
+                "flaky@mkt": [
+                    { scope: "user", installPath: newPath, version: "2.0.0", lastUpdated: "2026-06-01T00:00:00Z" },
+                    { scope: "user", installPath: oldPath, version: "1.0.0", lastUpdated: "2026-01-01T00:00:00Z" },
+                ],
+            },
+        });
+
+        const result = discoverClaudeInstalledPlugins("/tmp");
+        expect(result).toHaveLength(1);
+        expect(result[0].name).toBe("flaky");
+    });
+
+    test("rejects project-scoped plugin when relative path is absolute (cross-drive)", () => {
+        // Simulate cross-drive: projectPath and cwd share no common root.
+        // On POSIX, relative("/a", "/b") returns "../b" (starts with "..").
+        // On Windows cross-drive, relative("C:\\proj", "D:\\work") returns "D:\\work" (absolute).
+        // Both cases should be rejected.
+        const home = setupHome("cross-drive");
+        const path1 = createCachedPlugin(home, "mkt", "cross-drive-plugin", "1.0.0");
+        writeInstalledPlugins(home, {
+            version: 2,
+            plugins: {
+                "cross-drive-plugin@mkt": [{
+                    scope: "project",
+                    projectPath: "/completely/different/root",
+                    installPath: path1,
+                    version: "1.0.0",
+                }],
+            },
+        });
+
+        const result = discoverClaudeInstalledPlugins("/some/other/place");
+        expect(result).toEqual([]);
+    });
+
     test("globalPluginDirs does NOT include ~/.claude/plugins", () => {
         const home = setupHome("dirs-check");
         const dirs = globalPluginDirs();

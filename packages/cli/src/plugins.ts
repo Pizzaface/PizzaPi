@@ -22,7 +22,7 @@
  *   └── scripts/                  # Helper scripts referenced by hooks/commands
  */
 import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { basename, join, relative, resolve } from "node:path";
+import { basename, isAbsolute, join, relative, resolve } from "node:path";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -308,9 +308,11 @@ export function discoverClaudeInstalledPlugins(cwd?: string): DiscoveredPlugin[]
         for (const inst of sorted) {
             // Skip project-scoped plugins that don't match current cwd.
             // Uses path.relative to avoid platform-specific separator issues.
+            // On Windows, cross-drive relative() returns an absolute path, so
+            // we also reject when isAbsolute(rel) is true.
             if (inst.scope === "project" && cwd && inst.projectPath) {
                 const rel = relative(resolve(inst.projectPath), resolve(cwd));
-                if (rel.startsWith("..")) {
+                if (rel.startsWith("..") || isAbsolute(rel)) {
                     continue;
                 }
             }
@@ -327,10 +329,11 @@ export function discoverClaudeInstalledPlugins(cwd?: string): DiscoveredPlugin[]
                     seen.add(plugin.name);
                     plugins.push(plugin);
                 }
+                break; // Successfully parsed — use this installation
             } catch {
-                // Skip unparseable plugins
+                // Unparseable — fall through to try next installation
+                continue;
             }
-            break; // Use first valid installation for this plugin key
         }
     }
 
