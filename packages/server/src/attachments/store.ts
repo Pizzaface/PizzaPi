@@ -115,8 +115,22 @@ export async function storeExtractedImage(input: {
 }): Promise<StoredAttachment> {
     const { attachmentId, sessionId, ownerUserId, mimeType, base64Data } = input;
 
-    // Decode base64 to raw bytes
-    const bytes = Buffer.from(base64Data, "base64");
+    // Deduplicate: if this content-hashed ID already exists, just refresh its
+    // expiry and return the existing record — no need to re-decode/write.
+    const existing = attachments.get(attachmentId);
+    if (existing) {
+        const refreshedExpiry = Date.now() + EXTRACTED_IMAGE_TTL_MS;
+        existing.expiresAt = new Date(refreshedExpiry).toISOString();
+        existing.expiresAtMs = refreshedExpiry;
+        return existing;
+    }
+
+    // Strip data-URI prefix (e.g. "data:image/png;base64,") before decoding.
+    // Upstream image payloads may arrive in data-URI form.
+    const rawB64 = base64Data.includes(",") && base64Data.startsWith("data:")
+        ? base64Data.slice(base64Data.indexOf(",") + 1)
+        : base64Data;
+    const bytes = Buffer.from(rawB64, "base64");
     const ext = mimeType.split("/").pop() ?? "png";
     const filename = `extracted-${attachmentId}.${ext}`;
     const targetPath = path.join(uploadRoot, filename);

@@ -10,6 +10,7 @@
 // effects). The async storeAndReplace() function handles disk I/O.
 // ============================================================================
 
+import { createHash } from "node:crypto";
 import { storeExtractedImage, getExtractedImageUrl } from "../attachments/store.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -38,6 +39,31 @@ export interface ExtractionResult {
 // Don't bother extracting tiny images (icons, avatars) — the overhead of a
 // separate HTTP request isn't worth it. Only extract images > 10 KB.
 const MIN_EXTRACT_SIZE_BYTES = 10 * 1024;
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+/**
+ * Strip the `data:...;base64,` prefix from a data URI string.
+ * Returns the raw base64 portion. If there's no prefix, returns the input unchanged.
+ */
+export function stripDataUriPrefix(data: string): string {
+    const commaIdx = data.indexOf(",");
+    if (commaIdx === -1) return data;
+    // Quick sanity check — a data URI starts with "data:"
+    const head = data.slice(0, commaIdx);
+    if (head.startsWith("data:") && head.includes(";base64")) {
+        return data.slice(commaIdx + 1);
+    }
+    return data;
+}
+
+/**
+ * Produce a deterministic attachment ID from the base64 content so that
+ * the same image in repeated state updates maps to the same stored file.
+ */
+function contentHash(data: string): string {
+    return createHash("sha256").update(data).digest("hex").slice(0, 24);
+}
 
 // ── Pure extraction logic ────────────────────────────────────────────────────
 
@@ -109,7 +135,9 @@ function processMessage(
                     ? source.mediaType
                     : "image/png";
 
-        const attachmentId = crypto.randomUUID();
+        // Use a content-based hash as the attachment ID so repeated
+        // state updates with the same image don't create duplicate files.
+        const attachmentId = contentHash(data);
         extracted.push({ attachmentId, mimeType, base64Data: data, sizeBytes });
         addSaved(data.length); // Save the base64 string length (chars ≈ bytes for ASCII)
 

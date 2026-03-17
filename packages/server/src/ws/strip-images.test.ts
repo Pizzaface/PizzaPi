@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { extractImages, estimateBase64Bytes } from "./strip-images.js";
+import { extractImages, estimateBase64Bytes, stripDataUriPrefix } from "./strip-images.js";
 
 // ── estimateBase64Bytes ──────────────────────────────────────────────────────
 
@@ -206,5 +206,69 @@ describe("extractImages", () => {
         ];
         const result = extractImages(messages, "session-1");
         expect(result.extracted[0].mimeType).toBe("image/png");
+    });
+
+    test("produces deterministic attachment IDs for identical images", () => {
+        const largeBase64 = fakeBase64(50_000);
+        const messages = [
+            {
+                role: "user",
+                content: [
+                    { type: "image", source: { type: "base64", media_type: "image/png", data: largeBase64 } },
+                ],
+            },
+        ];
+
+        const result1 = extractImages(messages, "session-1");
+        const result2 = extractImages(messages, "session-1");
+
+        // Same image content → same attachment ID (content hash)
+        expect(result1.extracted[0].attachmentId).toBe(result2.extracted[0].attachmentId);
+    });
+
+    test("produces different attachment IDs for different images", () => {
+        const img1 = fakeBase64(50_000);
+        const img2 = fakeBase64(60_000); // different size → different content
+        const messages1 = [
+            { role: "user", content: [{ type: "image", source: { type: "base64", media_type: "image/png", data: img1 } }] },
+        ];
+        const messages2 = [
+            { role: "user", content: [{ type: "image", source: { type: "base64", media_type: "image/png", data: img2 } }] },
+        ];
+
+        const result1 = extractImages(messages1, "session-1");
+        const result2 = extractImages(messages2, "session-1");
+
+        expect(result1.extracted[0].attachmentId).not.toBe(result2.extracted[0].attachmentId);
+    });
+});
+
+// ── stripDataUriPrefix ───────────────────────────────────────────────────────
+
+describe("stripDataUriPrefix", () => {
+    test("strips data URI prefix from image data", () => {
+        const raw = "aGVsbG8=";
+        const dataUri = `data:image/png;base64,${raw}`;
+        expect(stripDataUriPrefix(dataUri)).toBe(raw);
+    });
+
+    test("strips data URI with different mime types", () => {
+        const raw = "aGVsbG8=";
+        expect(stripDataUriPrefix(`data:image/jpeg;base64,${raw}`)).toBe(raw);
+        expect(stripDataUriPrefix(`data:image/webp;base64,${raw}`)).toBe(raw);
+    });
+
+    test("returns raw base64 unchanged", () => {
+        const raw = "aGVsbG8=";
+        expect(stripDataUriPrefix(raw)).toBe(raw);
+    });
+
+    test("does not strip non-data-URI strings with commas", () => {
+        const notUri = "some,random,text";
+        expect(stripDataUriPrefix(notUri)).toBe(notUri);
+    });
+
+    test("returns empty string unchanged", () => {
+        expect(stripDataUriPrefix("")).toBe("");
     });
 });
