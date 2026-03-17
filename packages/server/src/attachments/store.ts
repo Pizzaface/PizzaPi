@@ -265,6 +265,7 @@ async function persistExtractedAttachment(record: StoredAttachment): Promise<voi
         .onConflict((oc) =>
             oc.column("attachmentId").doUpdateSet({
                 expiresAt: record.expiresAt,
+                sessionId: record.sessionId,
             }),
         )
         .execute();
