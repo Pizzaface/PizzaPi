@@ -39,6 +39,8 @@ export interface AgentsManagerProps {
     agents: AgentInfo[];
     /** Called when agents change so the parent can update its state */
     onAgentsChange?: (agents: AgentInfo[]) => void;
+    /** When true, render without Collapsible wrapper (for tab/panel use) */
+    bare?: boolean;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -399,7 +401,7 @@ function DeleteAgentDialog({ runnerId, agent, onClose, onDeleted }: DeleteAgentD
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export function AgentsManager({ runnerId, agents: initialAgents, onAgentsChange }: AgentsManagerProps) {
+export function AgentsManager({ runnerId, agents: initialAgents, onAgentsChange, bare }: AgentsManagerProps) {
     const [agents, setAgents] = React.useState<AgentInfo[]>(initialAgents);
     const [open, setOpen] = React.useState(false);
     const [refreshing, setRefreshing] = React.useState(false);
@@ -455,80 +457,97 @@ export function AgentsManager({ runnerId, agents: initialAgents, onAgentsChange 
         setEditorOpen(true);
     };
 
-    return (
-        <>
-            <Collapsible open={open} onOpenChange={setOpen}>
-                <div className="flex items-center justify-between mt-3">
-                    <CollapsibleTrigger className="flex items-center gap-1.5 text-left group/trigger">
-                        <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide">
-                            Agents
-                        </span>
-                        <Badge
-                            variant="secondary"
-                            className="h-4 px-1.5 text-[10px] font-mono rounded-sm"
-                        >
-                            {agents.length}
-                        </Badge>
-                        <ChevronDown
-                            className={cn(
-                                "h-3 w-3 text-muted-foreground/60 transition-transform duration-200",
-                                open && "rotate-180"
-                            )}
-                        />
-                    </CollapsibleTrigger>
+    const actionButtons = (
+        <div className="flex items-center gap-1">
+            <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
+                onClick={handleRefresh}
+                disabled={refreshing}
+                title="Re-scan agents from disk"
+            >
+                <RefreshCw className={cn("h-3 w-3 mr-1", refreshing && "animate-spin")} />
+                Reload
+            </Button>
+            <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
+                onClick={handleNewAgent}
+            >
+                <Plus className="h-3 w-3 mr-1" />
+                New agent
+            </Button>
+        </div>
+    );
 
-                    <div className="flex items-center gap-1">
-                        <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
-                            onClick={handleRefresh}
-                            disabled={refreshing}
-                            title="Re-scan agents from disk"
-                        >
-                            <RefreshCw className={cn("h-3 w-3 mr-1", refreshing && "animate-spin")} />
-                            Reload
-                        </Button>
-                        <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
-                            onClick={handleNewAgent}
-                        >
-                            <Plus className="h-3 w-3 mr-1" />
-                            New agent
-                        </Button>
+    const agentsList = (
+        <div className={cn(bare ? "flex flex-col gap-1.5" : "mt-2 flex flex-col gap-1.5")}>
+            {agents.length === 0 ? (
+                <div className="flex flex-col items-center gap-2 py-5 text-center">
+                    <Bot className="h-5 w-5 text-muted-foreground/40" />
+                    <div className="space-y-0.5">
+                        <p className="text-xs font-medium text-muted-foreground">No agents yet</p>
+                        <p className="text-[11px] text-muted-foreground/60 max-w-[200px]">
+                            Add an agent .md file to{" "}
+                            <span className="font-mono">~/.pizzapi/agents/</span>{" "}
+                            or click &ldquo;New agent&rdquo; above.
+                        </p>
                     </div>
                 </div>
+            ) : (
+                agents.map((agent) => (
+                    <AgentRow
+                        key={agent.name}
+                        agent={agent}
+                        onEdit={handleEdit}
+                        onDelete={handleDeleteRequest}
+                        deleting={pendingDelete === agent.name}
+                    />
+                ))
+            )}
+        </div>
+    );
 
-                <CollapsibleContent>
-                    <div className="mt-2 flex flex-col gap-1.5">
-                        {agents.length === 0 ? (
-                            <div className="flex flex-col items-center gap-2 py-5 text-center">
-                                <Bot className="h-5 w-5 text-muted-foreground/40" />
-                                <div className="space-y-0.5">
-                                    <p className="text-xs font-medium text-muted-foreground">No agents yet</p>
-                                    <p className="text-[11px] text-muted-foreground/60 max-w-[200px]">
-                                        Add an agent .md file to{" "}
-                                        <span className="font-mono">~/.pizzapi/agents/</span>{" "}
-                                        or click &ldquo;New agent&rdquo; above.
-                                    </p>
-                                </div>
-                            </div>
-                        ) : (
-                            agents.map((agent) => (
-                                <AgentRow
-                                    key={agent.name}
-                                    agent={agent}
-                                    onEdit={handleEdit}
-                                    onDelete={handleDeleteRequest}
-                                    deleting={pendingDelete === agent.name}
-                                />
-                            ))
-                        )}
+    return (
+        <>
+            {bare ? (
+                <>
+                    <div className="flex items-center justify-between mb-3">
+                        <h3 className="text-sm font-medium">Agents</h3>
+                        {actionButtons}
                     </div>
-                </CollapsibleContent>
-            </Collapsible>
+                    {agentsList}
+                </>
+            ) : (
+                <Collapsible open={open} onOpenChange={setOpen}>
+                    <div className="flex items-center justify-between mt-3">
+                        <CollapsibleTrigger className="flex items-center gap-1.5 text-left group/trigger">
+                            <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide">
+                                Agents
+                            </span>
+                            <Badge
+                                variant="secondary"
+                                className="h-4 px-1.5 text-[10px] font-mono rounded-sm"
+                            >
+                                {agents.length}
+                            </Badge>
+                            <ChevronDown
+                                className={cn(
+                                    "h-3 w-3 text-muted-foreground/60 transition-transform duration-200",
+                                    open && "rotate-180"
+                                )}
+                            />
+                        </CollapsibleTrigger>
+                        {actionButtons}
+                    </div>
+
+                    <CollapsibleContent>
+                        {agentsList}
+                    </CollapsibleContent>
+                </Collapsible>
+            )}
 
             <AgentEditorDialog
                 runnerId={runnerId}
