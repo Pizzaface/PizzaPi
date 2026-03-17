@@ -720,8 +720,9 @@ export async function sweepExpiredSessions(nowMs: number = Date.now()): Promise<
 const HEARTBEAT_STALE_MS = 2 * 60 * 1000; // 2 minutes
 
 /** Clean up sessions that have no local relay socket and a stale heartbeat. */
-async function sweepOrphanedSessions(nowMs: number): Promise<void> {
+export async function sweepOrphanedSessions(nowMs: number): Promise<void> {
     const allSessions = await getAllSessions();
+    const candidates: Array<{ sessionId: string; lastActivity: number }> = [];
 
     for (const session of allSessions) {
         const { sessionId } = session;
@@ -739,19 +740,38 @@ async function sweepOrphanedSessions(nowMs: number): Promise<void> {
             continue; // Session is active/recent enough, skip remote socket check
         }
 
-        // Session appears stale locally, verify if a relay socket exists on ANY server
-        // ⚡ Bolt: Using the adapter directly prevents an expensive cluster-wide N+1
-        // fetchSockets() call that pulls all socket instances into memory, and avoids
-        // the deprecated allSockets() method.
-        const roomName = relaySessionRoom(sessionId);
-        const relaySockets = await io.of("/relay").adapter.sockets(new Set([roomName]));
-        if (relaySockets.size > 0) continue;
+        candidates.push({ sessionId, lastActivity });
+    }
+
+    if (candidates.length === 0) return;
+
+    // Session appears stale locally, verify if a relay socket exists on ANY server
+    // ⚡ Bolt: Using Promise.allSettled avoids sequential N+1 adapter queries when checking multiple candidates
+    const checks = candidates.map(c => {
+        const roomName = relaySessionRoom(c.sessionId);
+        return io.of("/relay").adapter.sockets(new Set([roomName]));
+    });
+
+    const results = await Promise.allSettled(checks);
+
+    for (let i = 0; i < candidates.length; i++) {
+        const candidate = candidates[i];
+        const result = results[i];
+
+        if (result.status === "rejected") {
+            // If the query failed, err on the side of caution and keep the session alive
+            continue;
+        }
+
+        if (result.status === "fulfilled" && result.value.size > 0) {
+            continue; // Socket exists remotely
+        }
 
         console.log(
-            `[sio-registry] Sweeping orphaned session ${sessionId} ` +
-            `(last activity: ${new Date(lastActivity).toISOString()})`,
+            `[sio-registry] Sweeping orphaned session ${candidate.sessionId} ` +
+            `(last activity: ${new Date(candidate.lastActivity).toISOString()})`,
         );
-        await endSharedSession(sessionId, "Session orphaned (no active relay connection)");
+        await endSharedSession(candidate.sessionId, "Session orphaned (no active relay connection)");
     }
 }
 
