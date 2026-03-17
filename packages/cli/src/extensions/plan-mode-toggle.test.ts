@@ -399,6 +399,27 @@ describe("isDestructiveCommand", () => {
         expect(isDestructiveCommand("git count-objects")).toBe(false);
     });
 
+    test("flags git archive -o/--output (file write)", () => {
+        expect(isDestructiveCommand("git archive -o out.tar HEAD")).toBe(true);
+        expect(isDestructiveCommand("git archive -oout.tar HEAD")).toBe(true);
+        expect(isDestructiveCommand("git archive --output=out.tar HEAD")).toBe(true);
+        expect(isDestructiveCommand("git archive --output out.tar HEAD")).toBe(true);
+    });
+
+    test("allows git archive to stdout (read-only)", () => {
+        expect(isDestructiveCommand("git archive HEAD")).toBe(false);
+        expect(isDestructiveCommand("git archive --format=tar HEAD")).toBe(false);
+    });
+
+    test("allows newly-added read-only git subcommands", () => {
+        expect(isDestructiveCommand("git cherry main")).toBe(false);
+        expect(isDestructiveCommand("git cherry -v main feature")).toBe(false);
+        expect(isDestructiveCommand("git range-diff main~3..main~1 main~2..main")).toBe(false);
+        expect(isDestructiveCommand("git diff-tree HEAD")).toBe(false);
+        expect(isDestructiveCommand("git diff-files")).toBe(false);
+        expect(isDestructiveCommand("git diff-index HEAD")).toBe(false);
+    });
+
     // sort -o file-write bypass
     test("flags sort with -o/--output (file write)", () => {
         expect(isDestructiveCommand("sort -o out.txt input.txt")).toBe(true);
@@ -461,6 +482,187 @@ describe("isDestructiveCommand", () => {
         expect(isDestructiveCommand("make --dry-run")).toBe(false);
         expect(isDestructiveCommand("make -n")).toBe(false);
         expect(isDestructiveCommand("make --just-print")).toBe(false);
+    });
+});
+
+// ── isDestructiveCommand with sandboxActive=true ─────────────────────────────
+//
+// When the OS sandbox is active, only non-filesystem side effects are checked.
+// The sandbox's read-only overlay handles filesystem write protection, so
+// command substitution, output redirection, script interpreters, find -exec,
+// and most filesystem-mutating commands are allowed through.
+
+describe("isDestructiveCommand (sandboxActive=true)", () => {
+    // ── Commands that SHOULD be allowed with sandbox ─────────────────────
+
+    test("blocks command substitution when sandbox active (prevents smuggling)", () => {
+        expect(isDestructiveCommand('echo "$(wc -l < file)"', true)).toBe(true);
+        expect(isDestructiveCommand("ls $(cat filelist.txt)", true)).toBe(true);
+        expect(isDestructiveCommand("echo $(kill -9 1234)", true)).toBe(true);
+    });
+
+    test("blocks backtick expansion when sandbox active (prevents smuggling)", () => {
+        expect(isDestructiveCommand("echo `wc -l file`", true)).toBe(true);
+        expect(isDestructiveCommand("echo `kill -9 1234`", true)).toBe(true);
+    });
+
+    test("blocks process substitution when sandbox active (prevents smuggling)", () => {
+        expect(isDestructiveCommand("diff <(cat a.txt) <(cat b.txt)", true)).toBe(true);
+    });
+
+    test("allows output redirection when sandbox active", () => {
+        expect(isDestructiveCommand("echo foo > /tmp/scratch.txt", true)).toBe(false);
+        expect(isDestructiveCommand("echo foo >> /tmp/log.txt", true)).toBe(false);
+    });
+
+    test("allows find -exec when sandbox active", () => {
+        expect(isDestructiveCommand("find . -name '*.ts' -exec grep foo {} \\;", true)).toBe(false);
+        expect(isDestructiveCommand("find . -type f -exec wc -l {} +", true)).toBe(false);
+    });
+
+    test("allows script interpreters when sandbox active", () => {
+        expect(isDestructiveCommand("python3 analyze.py", true)).toBe(false);
+        expect(isDestructiveCommand("python -c 'print(1+1)'", true)).toBe(false);
+        expect(isDestructiveCommand("node script.js", true)).toBe(false);
+        expect(isDestructiveCommand("ruby script.rb", true)).toBe(false);
+    });
+
+    test("allows make when sandbox active", () => {
+        expect(isDestructiveCommand("make", true)).toBe(false);
+        expect(isDestructiveCommand("make test", true)).toBe(false);
+    });
+
+    test("allows filesystem-mutating commands when sandbox active (OS blocks writes)", () => {
+        expect(isDestructiveCommand("rm file.txt", true)).toBe(false);
+        expect(isDestructiveCommand("mv foo bar", true)).toBe(false);
+        expect(isDestructiveCommand("cp foo bar", true)).toBe(false);
+        expect(isDestructiveCommand("mkdir test", true)).toBe(false);
+        expect(isDestructiveCommand("touch file", true)).toBe(false);
+    });
+
+    test("allows sed -i when sandbox active (OS blocks writes)", () => {
+        expect(isDestructiveCommand("sed -i 's/foo/bar/' file.txt", true)).toBe(false);
+    });
+
+    test("allows curl with -o when sandbox active (OS blocks writes)", () => {
+        expect(isDestructiveCommand("curl -o out.bin https://example.com", true)).toBe(false);
+    });
+
+    test("allows package managers when sandbox active (OS blocks writes)", () => {
+        expect(isDestructiveCommand("npm install", true)).toBe(false);
+        expect(isDestructiveCommand("bun add foo", true)).toBe(false);
+        expect(isDestructiveCommand("pip install requests", true)).toBe(false);
+    });
+
+    test("blocks git push when sandbox active (remote side effect)", () => {
+        expect(isDestructiveCommand("git push", true)).toBe(true);
+        expect(isDestructiveCommand("git push origin main", true)).toBe(true);
+        expect(isDestructiveCommand("git push --force", true)).toBe(true);
+    });
+
+    test("blocks git remote mutations when sandbox active", () => {
+        expect(isDestructiveCommand("git remote add origin https://x", true)).toBe(true);
+        expect(isDestructiveCommand("git remote remove origin", true)).toBe(true);
+        expect(isDestructiveCommand("git remote set-url origin https://x", true)).toBe(true);
+    });
+
+    test("blocks git plumbing commands that mutate remotes when sandbox active", () => {
+        expect(isDestructiveCommand("git send-pack origin refs/heads/main", true)).toBe(true);
+        expect(isDestructiveCommand("git receive-pack /path/to/repo", true)).toBe(true);
+        expect(isDestructiveCommand("git http-push https://example.com/repo", true)).toBe(true);
+    });
+
+    test("allows safe git subcommands when sandbox active", () => {
+        expect(isDestructiveCommand("git status", true)).toBe(false);
+        expect(isDestructiveCommand("git log --oneline", true)).toBe(false);
+        expect(isDestructiveCommand("git diff HEAD", true)).toBe(false);
+        expect(isDestructiveCommand("git archive HEAD", true)).toBe(false);
+    });
+
+    test("blocks git commit when sandbox active (not on safe subcommand list)", () => {
+        expect(isDestructiveCommand("git commit -m 'test'", true)).toBe(true);
+    });
+
+    test("blocks npm publish when sandbox active (remote side effect)", () => {
+        expect(isDestructiveCommand("npm publish", true)).toBe(true);
+        expect(isDestructiveCommand("npm publish --tag beta", true)).toBe(true);
+    });
+
+    test("blocks npx when sandbox active (arbitrary code execution)", () => {
+        expect(isDestructiveCommand("npx some-package", true)).toBe(true);
+    });
+
+    test("blocks docker push when sandbox active (remote side effect)", () => {
+        expect(isDestructiveCommand("docker push myimage:latest", true)).toBe(true);
+    });
+
+    test("blocks gh CLI mutations when sandbox active (remote side effect)", () => {
+        expect(isDestructiveCommand("gh issue create --title test", true)).toBe(true);
+        expect(isDestructiveCommand("gh pr merge 123", true)).toBe(true);
+        expect(isDestructiveCommand("gh release create v1.0", true)).toBe(true);
+    });
+
+    test("allows gh CLI read operations when sandbox active", () => {
+        expect(isDestructiveCommand("gh issue list", true)).toBe(false);
+        expect(isDestructiveCommand("gh pr view 123", true)).toBe(false);
+        expect(isDestructiveCommand("gh api /repos", true)).toBe(false);
+    });
+
+    test("allows editors when sandbox active (OS blocks writes)", () => {
+        expect(isDestructiveCommand("vim file.txt", true)).toBe(false);
+        expect(isDestructiveCommand("nano file.txt", true)).toBe(false);
+    });
+
+    // ── Commands that SHOULD still be blocked with sandbox ───────────────
+
+    test("still blocks sudo when sandbox active", () => {
+        expect(isDestructiveCommand("sudo ls", true)).toBe(true);
+        expect(isDestructiveCommand("sudo rm -rf /", true)).toBe(true);
+    });
+
+    test("still blocks su when sandbox active", () => {
+        expect(isDestructiveCommand("su root", true)).toBe(true);
+    });
+
+    test("still blocks kill/pkill/killall when sandbox active", () => {
+        expect(isDestructiveCommand("kill -9 1234", true)).toBe(true);
+        expect(isDestructiveCommand("pkill node", true)).toBe(true);
+        expect(isDestructiveCommand("killall python", true)).toBe(true);
+    });
+
+    test("still blocks reboot/shutdown when sandbox active", () => {
+        expect(isDestructiveCommand("reboot", true)).toBe(true);
+        expect(isDestructiveCommand("shutdown -h now", true)).toBe(true);
+    });
+
+    test("still blocks systemctl start/stop/restart when sandbox active", () => {
+        expect(isDestructiveCommand("systemctl stop nginx", true)).toBe(true);
+        expect(isDestructiveCommand("systemctl restart docker", true)).toBe(true);
+    });
+
+    test("still blocks service start/stop/restart when sandbox active", () => {
+        expect(isDestructiveCommand("service nginx stop", true)).toBe(true);
+        expect(isDestructiveCommand("service docker restart", true)).toBe(true);
+    });
+
+    test("still blocks multi-line payloads when sandbox active", () => {
+        expect(isDestructiveCommand("ls\nkill 1234", true)).toBe(true);
+        expect(isDestructiveCommand("cat foo\nsudo rm bar", true)).toBe(true);
+    });
+
+    test("still blocks chains containing dangerous commands when sandbox active", () => {
+        expect(isDestructiveCommand("ls && kill 1234", true)).toBe(true);
+        expect(isDestructiveCommand("echo hello; sudo rm -rf /", true)).toBe(true);
+    });
+
+    // ── Read-only commands still allowed (sanity check) ──────────────────
+
+    test("allows read-only commands when sandbox active (unchanged)", () => {
+        expect(isDestructiveCommand("ls -la", true)).toBe(false);
+        expect(isDestructiveCommand("cat foo.txt", true)).toBe(false);
+        expect(isDestructiveCommand("grep -r pattern src/", true)).toBe(false);
+        expect(isDestructiveCommand("git status", true)).toBe(false);
+        expect(isDestructiveCommand("find . -name '*.ts'", true)).toBe(false);
     });
 });
 
