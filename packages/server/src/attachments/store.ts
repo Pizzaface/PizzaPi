@@ -124,6 +124,9 @@ export async function storeExtractedImage(input: {
         const refreshedExpiry = Date.now() + EXTRACTED_IMAGE_TTL_MS;
         existing.expiresAt = new Date(refreshedExpiry).toISOString();
         existing.expiresAtMs = refreshedExpiry;
+        // Always track the latest session so sweep/rehydration durability
+        // checks use the most recent session referencing this image.
+        existing.sessionId = sessionId;
         void persistExtractedAttachment(existing).catch((err) => {
             console.error("[attachments] Failed to persist refreshed expiry:", err);
         });
