@@ -322,6 +322,7 @@ export function RunnerManager({ onOpenSession, onRunnersChange, selectedRunnerId
                 onOpenSession={onOpenSession}
                 onSkillsChange={(rid, skills) => setRunners(prev => prev.map(r => r.runnerId === rid ? { ...r, skills } : r))}
                 onAgentsChange={(rid, agents) => setRunners(prev => prev.map(r => r.runnerId === rid ? { ...r, agents } : r))}
+                onPluginsChange={(rid, plugins) => setRunners(prev => prev.map(r => r.runnerId === rid ? { ...r, plugins } : r))}
             />
 
             {/* New session dialog */}

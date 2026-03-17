@@ -51,6 +51,7 @@ export interface PluginInfo {
 export interface PluginsManagerProps {
     runnerId: string;
     plugins: PluginInfo[];
+    onPluginsChange?: (plugins: PluginInfo[]) => void;
     /** When true, render without Collapsible wrapper (for tab/panel use) */
     bare?: boolean;
 }
@@ -341,7 +342,7 @@ const hookEventMapping: Record<string, string | null> = {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export function PluginsManager({ runnerId, plugins: initialPlugins, bare }: PluginsManagerProps) {
+export function PluginsManager({ runnerId, plugins: initialPlugins, onPluginsChange, bare }: PluginsManagerProps) {
     const [plugins, setPlugins] = React.useState<PluginInfo[]>(initialPlugins);
     const [open, setOpen] = React.useState(false);
     const [refreshing, setRefreshing] = React.useState(false);
@@ -362,7 +363,9 @@ export function PluginsManager({ runnerId, plugins: initialPlugins, bare }: Plug
             if (res.ok) {
                 const data = await res.json();
                 if (Array.isArray(data.plugins)) {
-                    setPlugins(data.plugins);
+                    const updated = data.plugins as PluginInfo[];
+                    setPlugins(updated);
+                    onPluginsChange?.(updated);
                 }
             }
         } catch (err) {

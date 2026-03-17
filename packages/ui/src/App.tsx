@@ -342,18 +342,32 @@ export function App() {
     sessionCount: number;
     version: string | null;
     isOnline: boolean;
-  }>>(() => {
+  }>>([]);
+  // User-scoped cache key for sidebar runners (prevents cross-account data leakage)
+  const sidebarCacheKey = React.useMemo(() => {
+    const userId = session && typeof session === "object" ? (session as any).user?.id : null;
+    return userId ? `pp-sidebar-runners:${userId}` : null;
+  }, [session]);
+  // Hydrate from cache once we know the user
+  React.useEffect(() => {
+    if (!sidebarCacheKey) return;
     try {
-      const cached = sessionStorage.getItem("pp-sidebar-runners");
-      if (cached) { const parsed = JSON.parse(cached); if (Array.isArray(parsed)) return parsed; }
+      const cached = sessionStorage.getItem(sidebarCacheKey);
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (Array.isArray(parsed)) setRunnersForSidebar(parsed);
+      }
     } catch { /* ignore */ }
-    return [];
-  });
+    // Clean up legacy unscoped key
+    try { sessionStorage.removeItem("pp-sidebar-runners"); } catch { /* ignore */ }
+  }, [sidebarCacheKey]);
   // Write-through: persist sidebar runners to sessionStorage on every update
   const setSidebarRunners = React.useCallback((runners: typeof runnersForSidebar) => {
     setRunnersForSidebar(runners);
-    try { sessionStorage.setItem("pp-sidebar-runners", JSON.stringify(runners)); } catch { /* ignore */ }
-  }, []);
+    if (sidebarCacheKey) {
+      try { sessionStorage.setItem(sidebarCacheKey, JSON.stringify(runners)); } catch { /* ignore */ }
+    }
+  }, [sidebarCacheKey]);
   // Eager fetch: populate sidebar runners immediately on mount (before RunnerManager mounts)
   React.useEffect(() => {
     let cancelled = false;

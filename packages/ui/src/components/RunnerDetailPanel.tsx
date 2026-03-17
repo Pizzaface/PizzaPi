@@ -62,6 +62,7 @@ export interface RunnerDetailPanelProps {
     onOpenSession?: (sessionId: string) => void;
     onSkillsChange?: (runnerId: string, skills: SkillInfo[]) => void;
     onAgentsChange?: (runnerId: string, agents: AgentInfo[]) => void;
+    onPluginsChange?: (runnerId: string, plugins: PluginInfo[]) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -239,6 +240,7 @@ export function RunnerDetailPanel({
     onOpenSession,
     onSkillsChange,
     onAgentsChange,
+    onPluginsChange,
 }: RunnerDetailPanelProps) {
     const [activeTab, setActiveTab] = useState<RunnerTab>("sessions");
 
@@ -313,7 +315,14 @@ export function RunnerDetailPanel({
             );
             break;
         case "plugins":
-            tabContent = <PluginsManager runnerId={runner.runnerId} plugins={runner.plugins} bare />;
+            tabContent = (
+                <PluginsManager
+                    runnerId={runner.runnerId}
+                    plugins={runner.plugins}
+                    onPluginsChange={(p) => onPluginsChange?.(runner.runnerId, p)}
+                    bare
+                />
+            );
             break;
         case "sandbox":
             tabContent = <SandboxManager runnerId={runner.runnerId} bare />;
