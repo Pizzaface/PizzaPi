@@ -427,6 +427,7 @@ export async function rehydrateExtractedAttachments(): Promise<number> {
             await access(row.filePath);
         } catch {
             await removePersistedAttachment(row.attachmentId);
+            await removePersistedSessionRefs(row.attachmentId);
             continue;
         }
 
