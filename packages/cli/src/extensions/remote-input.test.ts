@@ -1,4 +1,7 @@
-import { describe, test, expect } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { normalizeRemoteInputAttachments, parseDataUrl, isTextMimeType, buildUserMessageFromRemoteInput } from "./remote-input.js";
 
 describe("remote-input", () => {
@@ -124,7 +127,9 @@ describe("remote-input", () => {
             ]);
         });
 
-        test("decodes text file attachments inline", async () => {
+        // --- Fallback (no sessionId): text files are inlined ---
+
+        test("inlines text file content when no sessionId provided", async () => {
             const content = Buffer.from("hello world").toString("base64");
             const attachments = [{ url: `data:text/plain;base64,${content}`, filename: "notes.txt" }];
             const result = await buildUserMessageFromRemoteInput("see this", attachments, "", "");
@@ -134,7 +139,7 @@ describe("remote-input", () => {
             ]);
         });
 
-        test("decodes JSON attachment via application/json MIME", async () => {
+        test("inlines JSON attachment via application/json MIME when no sessionId", async () => {
             const json = JSON.stringify({ key: "value" });
             const content = Buffer.from(json).toString("base64");
             const attachments = [{ url: `data:application/json;base64,${content}`, filename: "data.json" }];
@@ -144,7 +149,7 @@ describe("remote-input", () => {
             ]);
         });
 
-        test("decodes text file by extension when MIME is generic", async () => {
+        test("inlines text file by extension when MIME is generic and no sessionId", async () => {
             const content = Buffer.from("print('hi')").toString("base64");
             const attachments = [{ url: `data:application/octet-stream;base64,${content}`, filename: "script.py" }];
             const result = await buildUserMessageFromRemoteInput("run this", attachments, "", "");
@@ -152,6 +157,64 @@ describe("remote-input", () => {
                 { type: "text", text: "run this" },
                 { type: "text", text: "--- script.py ---\nprint('hi')\n--- end script.py ---" },
             ]);
+        });
+
+        // --- With sessionId: text files are saved to runner and referenced by path ---
+
+        describe("with sessionId (file saved to runner)", () => {
+            let tmpDir: string;
+
+            beforeEach(() => {
+                tmpDir = mkdtempSync(join(tmpdir(), "pizzapi-remote-input-test-"));
+                process.env.PIZZAPI_SESSION_ATTACHMENTS_DIR = tmpDir;
+            });
+
+            afterEach(() => {
+                delete process.env.PIZZAPI_SESSION_ATTACHMENTS_DIR;
+                try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+            });
+
+            test("references saved path instead of inlining text file content", async () => {
+                const content = Buffer.from("hello world").toString("base64");
+                const attachments = [{ url: `data:text/plain;base64,${content}`, filename: "notes.txt" }];
+                const result = await buildUserMessageFromRemoteInput("see this", attachments, "", "", "test-session-123");
+                expect(result).toEqual([
+                    { type: "text", text: "see this" },
+                    { type: "text", text: expect.stringContaining("[Attached file saved to runner:") },
+                ]);
+                const msg = (result as any[])[1].text as string;
+                expect(msg).toContain("notes.txt");
+                expect(msg).not.toContain("hello world");
+            });
+
+            test("references saved path for markdown files", async () => {
+                const content = Buffer.from("# My Agent\nDoes stuff.").toString("base64");
+                const attachments = [{ url: `data:text/markdown;base64,${content}`, filename: "agent.md" }];
+                const result = await buildUserMessageFromRemoteInput("use this", attachments, "", "", "sess-abc");
+                const parts = result as any[];
+                expect(parts).toHaveLength(2);
+                expect(parts[1].text).toContain("[Attached file saved to runner:");
+                expect(parts[1].text).toContain("agent.md");
+                expect(parts[1].text).not.toContain("My Agent");
+            });
+
+            test("still sends images as base64 image parts even with sessionId", async () => {
+                const attachments = [{ url: "data:image/png;base64,iVBOR" }];
+                const result = await buildUserMessageFromRemoteInput("look", attachments, "", "", "sess-img");
+                expect(result).toEqual([
+                    { type: "text", text: "look" },
+                    { type: "image", mimeType: "image/png", data: "iVBOR" },
+                ]);
+            });
+
+            test("binary files still get placeholder even with sessionId", async () => {
+                const content = Buffer.from([0x50, 0x4b, 0x03, 0x04]).toString("base64");
+                const attachments = [{ url: `data:application/zip;base64,${content}`, filename: "archive.zip" }];
+                const result = await buildUserMessageFromRemoteInput("", attachments, "", "", "sess-bin");
+                expect(result).toEqual([
+                    { type: "text", text: "[Attachment provided by web client: archive.zip — binary content not included]" },
+                ]);
+            });
         });
 
         test("shows binary placeholder for non-text non-image files", async () => {

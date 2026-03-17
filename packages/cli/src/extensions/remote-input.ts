@@ -145,11 +145,13 @@ export async function buildUserMessageFromRemoteInput(
         // saveSessionAttachment deduplicates names by reading the directory,
         // which is non-atomic; serializing saves prevents two files with the
         // same sanitized name from clobbering each other.
+        let savedPath: string | null = null;
         if (dataBase64 && sessionId) {
             const attachFilename = filename || `attachment-${Date.now()}`;
             const buf = Buffer.from(dataBase64, "base64");
             try {
-                await saveSessionAttachment(sessionId, attachFilename, mediaType, buf);
+                const saved = await saveSessionAttachment(sessionId, attachFilename, mediaType, buf);
+                savedPath = saved.filePath;
             } catch (err) {
                 console.error(`pizzapi: failed to persist attachment: ${err instanceof Error ? err.message : String(err)}`);
             }
@@ -166,9 +168,15 @@ export async function buildUserMessageFromRemoteInput(
 
         const label = filename || mediaType || "attachment";
 
-        if (dataBase64 && isTextMimeType(mediaType, filename)) {
-            const decoded = Buffer.from(dataBase64, "base64").toString("utf-8");
-            parts.push({ type: "text", text: `--- ${label} ---\n${decoded}\n--- end ${label} ---` });
+        if (isTextMimeType(mediaType, filename)) {
+            if (savedPath) {
+                // File is saved on the runner — reference by path instead of inlining.
+                parts.push({ type: "text", text: `[Attached file saved to runner: ${savedPath}]` });
+            } else if (dataBase64) {
+                // No session storage available — fall back to inlining.
+                const decoded = Buffer.from(dataBase64, "base64").toString("utf-8");
+                parts.push({ type: "text", text: `--- ${label} ---\n${decoded}\n--- end ${label} ---` });
+            }
             continue;
         }
 
