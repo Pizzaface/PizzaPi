@@ -785,7 +785,36 @@ export const SessionSidebar = React.memo(function SessionSidebar({
             </Dialog>
 
             {/* Sidebar header */}
-            {selectMode ? (
+            {showRunners ? (
+                <div className="flex items-center justify-between px-3 py-2 border-b border-sidebar-border flex-shrink-0">
+                    <div className="flex items-center gap-2">
+                        <Button
+                            variant="ghost"
+                            size="icon"
+                            className="hidden md:inline-flex h-7 w-7 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
+                            onClick={() => setCollapsed(true)}
+                            aria-label="Collapse sidebar"
+                        >
+                            <PanelLeftClose className="h-4 w-4" />
+                        </Button>
+                        <span className="text-[0.7rem] font-semibold uppercase tracking-widest text-sidebar-foreground/60">
+                            Runners
+                        </span>
+                    </div>
+                    <div className="flex items-center gap-1">
+                        <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
+                            onClick={onClose}
+                            aria-label="Close sidebar"
+                            title="Close sidebar"
+                        >
+                            <X className="h-4 w-4" />
+                        </Button>
+                    </div>
+                </div>
+            ) : selectMode ? (
                 <div className="flex items-center justify-between px-3 py-2 border-b border-sidebar-border flex-shrink-0">
                     <div className="flex items-center gap-2">
                         <Button
