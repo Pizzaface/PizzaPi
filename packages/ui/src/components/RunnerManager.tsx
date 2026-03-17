@@ -1,9 +1,7 @@
 import * as React from "react";
 import { Button } from "@/components/ui/button";
-import { RefreshCw, HardDrive, Hash, Loader2, Server, ChevronDown, Plus, FolderOpen, Terminal, Clock, Power, AlertTriangle, X } from "lucide-react";
-import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
-import { formatPathTail } from "@/lib/path";
+import { Plus, FolderOpen, Loader2, RefreshCw, X } from "lucide-react";
 import {
     Dialog,
     DialogContent,
@@ -14,12 +12,12 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { SkillsManager, type SkillInfo } from "@/components/SkillsManager";
-import { AgentsManager, type AgentInfo } from "@/components/AgentsManager";
-import { PluginsManager, type PluginInfo } from "@/components/PluginsManager";
-import { SandboxManager } from "@/components/SandboxManager";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ErrorAlert } from "@/components/ui/error-alert";
+import { RunnerDetailPanel } from "@/components/RunnerDetailPanel";
+import type { SkillInfo } from "@/components/SkillsManager";
+import type { AgentInfo } from "@/components/AgentsManager";
+import type { PluginInfo } from "@/components/PluginsManager";
 
 interface RunnerInfo {
     runnerId: string;
@@ -46,9 +44,18 @@ interface LiveSession {
 
 export interface RunnerManagerProps {
     onOpenSession?: (sessionId: string) => void;
+    onRunnersChange?: (runners: Array<{
+        runnerId: string;
+        name: string | null;
+        sessionCount: number;
+        version: string | null;
+        isOnline: boolean;
+    }>) => void;
+    selectedRunnerId: string | null;
+    onSelectRunner?: (runnerId: string) => void;
 }
 
-export function RunnerManager({ onOpenSession }: RunnerManagerProps) {
+export function RunnerManager({ onOpenSession, onRunnersChange, selectedRunnerId, onSelectRunner }: RunnerManagerProps) {
     const [runners, setRunners] = React.useState<RunnerInfo[]>([]);
     const [sessions, setSessions] = React.useState<LiveSession[]>([]);
     const [loading, setLoading] = React.useState(true);
@@ -130,6 +137,24 @@ export function RunnerManager({ onOpenSession }: RunnerManagerProps) {
             .finally(() => { if (!cancelled) setRecentFoldersLoading(false); });
         return () => { cancelled = true; };
     }, [spawnRunnerId]);
+
+    // Auto-select when there's exactly one runner
+    React.useEffect(() => {
+        if (runners.length === 1 && selectedRunnerId !== runners[0].runnerId) {
+            onSelectRunner?.(runners[0].runnerId);
+        }
+    }, [runners, selectedRunnerId, onSelectRunner]);
+
+    // Notify parent of runner list changes
+    React.useEffect(() => {
+        onRunnersChange?.(runners.map(r => ({
+            runnerId: r.runnerId,
+            name: r.name,
+            sessionCount: r.sessionCount,
+            version: r.version,
+            isOnline: true, // runners from API are always online
+        })));
+    }, [runners, onRunnersChange]);
 
     const handleRestart = async (runnerId: string) => {
         setRestarting((prev) => new Set(prev).add(runnerId));
@@ -249,112 +274,55 @@ export function RunnerManager({ onOpenSession }: RunnerManagerProps) {
         }
     };
 
+    // Loading skeleton
     if (loading && runners.length === 0) {
         return (
-            <div className="flex flex-col gap-6 p-6 max-w-4xl mx-auto w-full animate-in fade-in duration-700">
-                <div className="flex items-start justify-between">
+            <div className="flex flex-col flex-1 p-6 gap-4 animate-in fade-in duration-700">
+                <div className="flex items-center justify-between">
                     <div className="space-y-2">
-                        <Skeleton className="h-8 w-32 rounded-md" />
-                        <Skeleton className="h-4 w-64 rounded-md" />
+                        <Skeleton className="h-6 w-48 rounded-md" />
+                        <Skeleton className="h-3 w-72 rounded-md" />
                     </div>
-                    <Skeleton className="h-8 w-24 rounded-md" />
+                    <div className="flex gap-2">
+                        <Skeleton className="h-8 w-28 rounded-md" />
+                        <Skeleton className="h-8 w-8 rounded-md" />
+                        <Skeleton className="h-8 w-8 rounded-md" />
+                    </div>
                 </div>
-                <div className="flex flex-col gap-4">
-                    {[1, 2].map((i) => (
-                        <div key={i} className="rounded-xl border border-border/40 bg-card p-4 space-y-4">
-                            <div className="flex items-start justify-between gap-3">
-                                <div className="flex items-center gap-3">
-                                    <Skeleton className="h-2 w-2 rounded-full" />
-                                    <div className="space-y-1.5">
-                                        <Skeleton className="h-4 w-32 rounded-md" />
-                                        <Skeleton className="h-3 w-48 rounded-md" />
-                                    </div>
-                                </div>
-                                <div className="flex gap-1.5">
-                                    <Skeleton className="h-7 w-24 rounded-md" />
-                                    <Skeleton className="h-7 w-20 rounded-md" />
-                                </div>
-                            </div>
-                            <div className="border-t border-border/40" />
-                            <div className="flex gap-6">
-                                <Skeleton className="h-4 w-24 rounded-md" />
-                                <Skeleton className="h-4 w-24 rounded-md" />
-                            </div>
-                        </div>
+                <div className="flex gap-4 border-b border-border/40 pb-2">
+                    {[80, 56, 64, 60, 64].map((w, i) => (
+                        <Skeleton key={i} className="h-4 rounded-md" style={{ width: w }} />
+                    ))}
+                </div>
+                <div className="flex flex-col gap-2">
+                    {[1, 2, 3].map((i) => (
+                        <Skeleton key={i} className="h-16 w-full rounded-lg" />
                     ))}
                 </div>
             </div>
         );
     }
 
+    const selectedRunner = runners.find(r => r.runnerId === selectedRunnerId) ?? null;
+    const runnerSessions = sessions.filter(s => s.runnerId === selectedRunnerId);
+
     return (
         <>
-            <div className="flex flex-col gap-6 p-4 sm:p-6 max-w-4xl mx-auto w-full flex-1 overflow-y-auto">
-                {/* Header */}
-                <div className="flex items-start justify-between">
-                    <div className="space-y-0.5">
-                        <h2 className="text-2xl font-semibold tracking-tight">Runners</h2>
-                        <p className="text-sm text-muted-foreground">Manage your remote execution environments.</p>
-                    </div>
-                    <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={fetchData}
-                        disabled={loading}
-                        className="text-muted-foreground hover:text-foreground h-8 px-2.5"
-                    >
-                        <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
-                        <span className="ml-1.5 text-xs">Refresh</span>
-                    </Button>
-                </div>
-
-                {/* Empty state */}
-                {runners.length === 0 ? (
-                    <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-border/60 py-10 px-4 sm:py-16 sm:px-8 gap-4 text-center bg-muted/20">
-                        <div className="rounded-full bg-muted p-3">
-                            <Server className="h-6 w-6 text-muted-foreground" />
-                        </div>
-                        <div className="space-y-1">
-                            <p className="text-sm font-medium">No active runners</p>
-                            <p className="text-xs text-muted-foreground max-w-xs">
-                                Connect a runner by running{" "}
-                                <code className="font-mono bg-muted px-1 py-0.5 rounded text-[11px]">pizzapi runner</code>{" "}
-                                on your machine.
-                            </p>
-                        </div>
-                    </div>
-                ) : (
-                    <div className="flex flex-col gap-3">
-                        {runners.map((runner) => {
-                            const runnerSessions = sessions.filter((s) => s.runnerId === runner.runnerId);
-                            return (
-                                <RunnerCard
-                                    key={runner.runnerId}
-                                    runner={runner}
-                                    sessions={runnerSessions}
-                                    latestVersion={latestVersion}
-                                    isRestarting={restarting.has(runner.runnerId)}
-                                    isStopping={stopping.has(runner.runnerId)}
-                                    onRestart={() => handleRestart(runner.runnerId)}
-                                    onStop={() => handleStop(runner.runnerId)}
-                                    onNewSession={() => handleOpenNewSession(runner.runnerId)}
-                                    onOpenSession={onOpenSession}
-                                    onSkillsChange={(runnerId, updatedSkills) => {
-                                        setRunners((prev) => prev.map((r) =>
-                                            r.runnerId === runnerId ? { ...r, skills: updatedSkills } : r
-                                        ));
-                                    }}
-                                    onAgentsChange={(runnerId, updatedAgents) => {
-                                        setRunners((prev) => prev.map((r) =>
-                                            r.runnerId === runnerId ? { ...r, agents: updatedAgents } : r
-                                        ));
-                                    }}
-                                />
-                            );
-                        })}
-                    </div>
-                )}
-            </div>
+            <RunnerDetailPanel
+                runner={selectedRunner}
+                hasRunners={runners.length > 0}
+                sessions={runnerSessions}
+                latestVersion={latestVersion}
+                isRestarting={restarting.has(selectedRunnerId ?? "")}
+                isStopping={stopping.has(selectedRunnerId ?? "")}
+                isOffline={!selectedRunner}
+                onRestart={() => selectedRunnerId && handleRestart(selectedRunnerId)}
+                onStop={() => selectedRunnerId && handleStop(selectedRunnerId)}
+                onNewSession={() => selectedRunnerId && handleOpenNewSession(selectedRunnerId)}
+                onOpenSession={onOpenSession}
+                onSkillsChange={(rid, skills) => setRunners(prev => prev.map(r => r.runnerId === rid ? { ...r, skills } : r))}
+                onAgentsChange={(rid, agents) => setRunners(prev => prev.map(r => r.runnerId === rid ? { ...r, agents } : r))}
+            />
 
             {/* New session dialog */}
             <Dialog open={spawnRunnerId !== null} onOpenChange={(open) => { if (!open) setSpawnRunnerId(null); }}>
@@ -468,287 +436,5 @@ export function RunnerManager({ onOpenSession }: RunnerManagerProps) {
                 </DialogContent>
             </Dialog>
         </>
-    );
-}
-
-/**
- * Returns true if version a < b using semver ordering.
- * Handles prerelease tags: splits on "-" first, compares core numerically,
- * then treats any prerelease as less than the same core release
- * (e.g. 1.2.3-rc.1 < 1.2.3, but 1.2.3-rc.1 > 1.2.2).
- */
-function semverLt(a: string, b: string): boolean {
-    const parse = (v: string) => {
-        const clean = v.replace(/^v/, "");
-        const [core, pre] = clean.split("-", 2);
-        return { parts: core.split(".").map(Number), pre: pre ?? null };
-    };
-    const pa = parse(a), pb = parse(b);
-    for (let i = 0; i < Math.max(pa.parts.length, pb.parts.length); i++) {
-        const na = pa.parts[i] ?? 0, nb = pb.parts[i] ?? 0;
-        if (isNaN(na) || isNaN(nb)) return false; // unparseable → don't flag
-        if (na < nb) return true;
-        if (na > nb) return false;
-    }
-    // Same core: prerelease < release (e.g. 1.0.0-beta < 1.0.0)
-    if (pa.pre !== null && pb.pre === null) return true;
-    return false;
-}
-
-interface RunnerCardProps {
-    runner: RunnerInfo;
-    sessions: LiveSession[];
-    latestVersion: string | null;
-    isRestarting: boolean;
-    isStopping: boolean;
-    onRestart: () => void;
-    onStop: () => void;
-    onNewSession: () => void;
-    onOpenSession?: (sessionId: string) => void;
-    onSkillsChange?: (runnerId: string, skills: SkillInfo[]) => void;
-    onAgentsChange?: (runnerId: string, agents: AgentInfo[]) => void;
-}
-
-function formatTime(iso: string): string {
-    return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-}
-
-function RunnerCard({ runner, sessions, latestVersion, isRestarting, isStopping, onRestart, onStop, onNewSession, onOpenSession, onSkillsChange, onAgentsChange }: RunnerCardProps) {
-    const [sessionsOpen, setSessionsOpen] = React.useState(true);
-    const isOutdated = !!(runner.version && latestVersion && semverLt(runner.version, latestVersion));
-
-    return (
-        <div className="group relative rounded-xl border border-border/60 bg-card hover:border-border transition-all duration-200 overflow-hidden">
-            {/* Subtle top accent line */}
-            <div className={cn(
-                "absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent to-transparent",
-                isOutdated ? "via-amber-500/40" : "via-green-500/40"
-            )} />
-
-            <div className="p-3 sm:p-4">
-                {/* Top row: name + status + actions */}
-                <div className="flex items-center justify-between gap-3">
-                    <div className="flex items-center gap-3 min-w-0">
-                        {/* Online indicator dot */}
-                        <div className="relative flex-shrink-0">
-                            <div className="h-2.5 w-2.5 rounded-full bg-green-500 shadow-sm" />
-                            <div className="absolute inset-0 h-2.5 w-2.5 rounded-full bg-green-500 animate-ping opacity-40" />
-                        </div>
-                        <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-2">
-                                <p className="font-semibold text-sm leading-none truncate">
-                                    {runner.name || "Unnamed Runner"}
-                                </p>
-                                <span className={cn(
-                                    "inline-flex items-center text-[10px] font-mono px-1.5 py-0.5 rounded-full border leading-none gap-1",
-                                    isOutdated
-                                        ? "bg-amber-500/10 border-amber-500/40 text-amber-600 dark:text-amber-400"
-                                        : !runner.version
-                                            ? "bg-muted/60 border-border/40 text-muted-foreground/50 italic"
-                                            : "bg-muted/60 border-border/40 text-muted-foreground"
-                                )}>
-                                    {isOutdated && <AlertTriangle className="h-2.5 w-2.5" />}
-                                    {runner.version ? `v${runner.version}` : "unknown"}
-                                </span>
-                                {isOutdated && (
-                                    <span className="text-[10px] text-amber-600 dark:text-amber-400">
-                                        Update available (v{latestVersion})
-                                    </span>
-                                )}
-                            </div>
-                            <p className="font-mono text-[10px] text-muted-foreground/60 mt-1 truncate">
-                                {runner.runnerId}
-                            </p>
-                        </div>
-                    </div>
-
-                    <div className="flex items-center gap-1.5 flex-shrink-0">
-                        <Button
-                            variant="outline"
-                            size="sm"
-                            className="h-8 w-8 sm:w-auto px-0 sm:px-3 text-xs border-border/60 hover:border-border hover:bg-accent/50 transition-all shadow-sm"
-                            onClick={onNewSession}
-                            title="New Session"
-                        >
-                            <Plus className="h-4 w-4 sm:h-3.5 sm:w-3.5 sm:mr-1.5" />
-                            <span className="hidden sm:inline">New Session</span>
-                        </Button>
-                        <Button
-                            variant="outline"
-                            size="sm"
-                            className="h-8 w-8 sm:w-auto px-0 sm:px-3 text-xs border-border/60 hover:border-amber-500/40 hover:bg-amber-500/5 hover:text-amber-600 dark:hover:text-amber-400 transition-all"
-                            onClick={onRestart}
-                            disabled={isRestarting || isStopping}
-                            title="Restart Runner"
-                        >
-                            {isRestarting ? (
-                                <Loader2 className="h-3.5 w-3.5 animate-spin sm:mr-1.5" />
-                            ) : (
-                                <RefreshCw className="h-4 w-4 sm:h-3.5 sm:w-3.5 sm:mr-1.5" />
-                            )}
-                            <span className="hidden sm:inline">{isRestarting ? "Restarting…" : "Restart"}</span>
-                        </Button>
-                        <Button
-                            variant="outline"
-                            size="sm"
-                            className="h-8 w-8 sm:w-auto px-0 sm:px-3 text-xs border-border/60 hover:border-red-500/40 hover:bg-red-500/5 hover:text-red-600 dark:hover:text-red-400 transition-all"
-                            onClick={onStop}
-                            disabled={isRestarting || isStopping}
-                            title="Stop Runner"
-                        >
-                            {isStopping ? (
-                                <Loader2 className="h-3.5 w-3.5 animate-spin sm:mr-1.5" />
-                            ) : (
-                                <Power className="h-4 w-4 sm:h-3.5 sm:w-3.5 sm:mr-1.5" />
-                            )}
-                            <span className="hidden sm:inline">{isStopping ? "Stopping…" : "Stop"}</span>
-                        </Button>
-                    </div>
-                </div>
-
-                {/* Divider */}
-                <div className="my-3 border-t border-border/40" />
-
-                {/* Stats row */}
-                <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
-                    <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                        <Hash className="h-3.5 w-3.5 opacity-60" />
-                        <span>
-                            <span className="font-medium text-foreground">{sessions.length}</span>
-                            {" "}Active {sessions.length === 1 ? "Session" : "Sessions"}
-                        </span>
-                    </div>
-                    <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                        <HardDrive className="h-3.5 w-3.5 opacity-60" />
-                        <span>
-                            <span className="font-medium text-foreground">{runner.roots.length}</span>
-                            {" "}{runner.roots.length === 1 ? "Root" : "Roots"}
-                        </span>
-                    </div>
-                </div>
-
-                {/* Roots */}
-                {runner.roots.length > 0 && (
-                    <div className="mt-3 flex flex-wrap gap-1.5">
-                        {runner.roots.map((root, i) => (
-                            <span
-                                key={i}
-                                className="inline-flex items-center font-mono text-[10px] px-1.5 py-0.5 rounded-md bg-muted/60 border border-border/40 text-muted-foreground"
-                            >
-                                {root}
-                            </span>
-                        ))}
-                    </div>
-                )}
-
-                {/* Sessions accordion */}
-                {sessions.length > 0 && (
-                    <div className="mt-3">
-                        <Collapsible open={sessionsOpen} onOpenChange={setSessionsOpen}>
-                            <CollapsibleTrigger className="flex items-center gap-1.5 w-full text-left group/trigger">
-                                <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide">
-                                    Sessions
-                                </span>
-                                <ChevronDown
-                                    className={cn(
-                                        "h-3 w-3 text-muted-foreground/60 transition-transform duration-200",
-                                        sessionsOpen && "rotate-180"
-                                    )}
-                                />
-                            </CollapsibleTrigger>
-                            <CollapsibleContent>
-                                <div className="mt-2 flex flex-col gap-1.5">
-                                    {sessions.map((session) => (
-                                        <SessionRow
-                                            key={session.sessionId}
-                                            session={session}
-                                            onOpen={onOpenSession}
-                                        />
-                                    ))}
-                                </div>
-                            </CollapsibleContent>
-                        </Collapsible>
-                    </div>
-                )}
-
-                {/* Skills manager */}
-                <SkillsManager
-                    runnerId={runner.runnerId}
-                    skills={runner.skills}
-                    onSkillsChange={(updated) => onSkillsChange?.(runner.runnerId, updated)}
-                />
-
-                {/* Agents manager */}
-                <AgentsManager
-                    runnerId={runner.runnerId}
-                    agents={runner.agents}
-                    onAgentsChange={(updated) => onAgentsChange?.(runner.runnerId, updated)}
-                />
-
-                {/* Plugins manager (Claude Code plugin adapter) */}
-                <PluginsManager
-                    runnerId={runner.runnerId}
-                    plugins={runner.plugins}
-                />
-
-                {/* Sandbox manager */}
-                <SandboxManager runnerId={runner.runnerId} />
-            </div>
-        </div>
-    );
-}
-
-interface SessionRowProps {
-    session: LiveSession;
-    onOpen?: (sessionId: string) => void;
-}
-
-function SessionRow({ session, onOpen }: SessionRowProps) {
-    const time = formatTime(session.lastHeartbeatAt ?? session.startedAt);
-    const label = session.sessionName?.trim() || `Session ${session.sessionId.slice(0, 8)}…`;
-    const path = session.cwd ? formatPathTail(session.cwd, 2) : null;
-
-    return (
-        <button
-            type="button"
-            onClick={() => onOpen?.(session.sessionId)}
-            disabled={!onOpen}
-            className={cn(
-                "flex items-center gap-3 w-full text-left px-3 py-2 rounded-lg border border-border/40 bg-muted/30 transition-colors",
-                onOpen ? "hover:bg-muted/60 hover:border-border/70 cursor-pointer" : "cursor-default"
-            )}
-        >
-            {/* Activity dot */}
-            <span
-                className={cn(
-                    "flex-shrink-0 h-1.5 w-1.5 rounded-full",
-                    session.isActive
-                        ? "bg-blue-400 shadow-[0_0_5px_#60a5fa80] animate-pulse"
-                        : "bg-green-500/70"
-                )}
-                title={session.isActive ? "Actively generating" : "Idle"}
-            />
-
-            {/* Label + path */}
-            <div className="flex-1 min-w-0">
-                <div className="flex items-baseline justify-between gap-2 min-w-0">
-                    <span className="text-xs font-medium truncate">{label}</span>
-                    <span className="text-[10px] text-muted-foreground/60 flex-shrink-0 flex items-center gap-1">
-                        <Clock className="h-2.5 w-2.5" />
-                        {time}
-                    </span>
-                </div>
-                {path && (
-                    <span className="flex items-center gap-1 text-[10px] text-muted-foreground/50 font-mono mt-0.5">
-                        <Terminal className="h-2.5 w-2.5 opacity-60" />
-                        {path}
-                    </span>
-                )}
-            </div>
-
-            {onOpen && (
-                <ChevronDown className="h-3 w-3 text-muted-foreground/40 flex-shrink-0 -rotate-90" />
-            )}
-        </button>
     );
 }

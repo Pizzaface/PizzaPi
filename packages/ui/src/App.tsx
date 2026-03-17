@@ -335,6 +335,7 @@ export function App() {
   const [showApiKeys, setShowApiKeys] = React.useState(false);
   const [apiKeyVersion, setApiKeyVersion] = React.useState(0);
   const [showRunners, setShowRunners] = React.useState(false);
+  const [selectedRunnerId, setSelectedRunnerId] = React.useState<string | null>(null);
   const [showTerminal, setShowTerminal] = React.useState(false);
   const [terminalPosition, setTerminalPosition] = React.useState<"bottom" | "right" | "left">(() => {
     try { return (localStorage.getItem("pp-terminal-position") as "bottom" | "right" | "left") ?? "bottom"; } catch { return "bottom"; }
@@ -3659,7 +3660,11 @@ export function App() {
               showTerminal && terminalPosition === "left" && "order-last",
             )}>
               {showRunners ? (
-                <RunnerManager onOpenSession={(id) => { handleOpenSession(id); setShowRunners(false); }} />
+                <RunnerManager
+                    onOpenSession={(id) => { handleOpenSession(id); setShowRunners(false); }}
+                    selectedRunnerId={selectedRunnerId}
+                    onSelectRunner={setSelectedRunnerId}
+                  />
               ) : (
                 <SessionViewer
                   sessionId={activeSessionId}
