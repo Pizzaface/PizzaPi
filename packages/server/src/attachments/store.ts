@@ -176,13 +176,52 @@ export function getExtractedImageUrl(attachmentId: string): string {
 }
 
 export async function sweepExpiredAttachments(nowMs: number = Date.now()): Promise<void> {
+    // Batch-load durable session IDs so we can skip deletion for their attachments.
+    const durableSessionIds = await getDurableSessionIds();
+
     const removals: Promise<void>[] = [];
     for (const [attachmentId, record] of attachments.entries()) {
         const expiresAtMs = record.expiresAtMs ?? Date.parse(record.expiresAt);
         if (!Number.isFinite(expiresAtMs) || expiresAtMs > nowMs) continue;
+
+        // If the attachment belongs to a durable (pinned or non-ephemeral) session
+        // that is still alive, renew the TTL instead of deleting.
+        if (record.uploaderUserId === "system" && durableSessionIds.has(record.sessionId)) {
+            const refreshed = nowMs + EXTRACTED_IMAGE_TTL_MS;
+            record.expiresAt = new Date(refreshed).toISOString();
+            record.expiresAtMs = refreshed;
+            void persistExtractedAttachment(record).catch(() => {});
+            continue;
+        }
+
         removals.push(deleteStoredAttachment(attachmentId));
     }
     await Promise.all(removals);
+}
+
+/**
+ * Return the set of session IDs that are pinned or non-ephemeral (and not yet expired).
+ * Used by the sweep to avoid deleting extracted images that are still reachable.
+ */
+async function getDurableSessionIds(): Promise<Set<string>> {
+    const nowIso = new Date().toISOString();
+    const rows = await getKysely()
+        .selectFrom("relay_session")
+        .select("id")
+        .where((eb) =>
+            eb.or([
+                eb("isPinned", "=", 1),
+                eb.and([
+                    eb("isEphemeral", "=", 0),
+                    eb.or([
+                        eb("expiresAt", "is", null),
+                        eb("expiresAt", ">", nowIso),
+                    ]),
+                ]),
+            ]),
+        )
+        .execute();
+    return new Set(rows.map((r) => r.id));
 }
 
 // ── SQLite persistence for extracted images ──────────────────────────────────
@@ -244,11 +283,35 @@ export async function rehydrateExtractedAttachments(): Promise<number> {
     const nowMs = Date.now();
     const nowIso = new Date(nowMs).toISOString();
 
-    // Delete expired rows first
-    await getKysely()
-        .deleteFrom("extracted_attachment")
+    // Handle expired rows: renew those belonging to durable sessions, delete the rest.
+    const durableSessionIds = await getDurableSessionIds();
+    const expiredRows = await getKysely()
+        .selectFrom("extracted_attachment")
+        .selectAll()
         .where("expiresAt", "<=", nowIso)
         .execute();
+
+    const toDelete: string[] = [];
+    for (const row of expiredRows) {
+        if (durableSessionIds.has(row.sessionId)) {
+            // Renew TTL for attachments belonging to durable sessions
+            const refreshed = new Date(nowMs + EXTRACTED_IMAGE_TTL_MS).toISOString();
+            await getKysely()
+                .updateTable("extracted_attachment")
+                .set({ expiresAt: refreshed })
+                .where("attachmentId", "=", row.attachmentId)
+                .execute();
+        } else {
+            try { await rm(row.filePath, { force: true }); } catch {}
+            toDelete.push(row.attachmentId);
+        }
+    }
+    if (toDelete.length > 0) {
+        await getKysely()
+            .deleteFrom("extracted_attachment")
+            .where("attachmentId", "in", toDelete)
+            .execute();
+    }
 
     const rows = await getKysely()
         .selectFrom("extracted_attachment")
