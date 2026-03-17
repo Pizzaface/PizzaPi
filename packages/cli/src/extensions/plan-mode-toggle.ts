@@ -112,7 +112,7 @@ const SANDBOX_ONLY_CMD_PATTERNS = [
  * These detect operators/flags that cause writes regardless of command name.
  */
 const DESTRUCTIVE_FLAG_PATTERNS = [
-    /(^|[^<0-9])>(?!>)/, />>/,
+    />>/,
     /\bcurl\b.*\s(-o\S|-o\s|--output\b|--output=|-O\b|--remote-name\b|--remote-name-all\b|-D\s|-D\S|--dump-header\b|--dump-header=|-c\s|-c\S|--cookie-jar\b|--cookie-jar=|--trace\b|--trace=|--trace-ascii\b|--trace-ascii=|--libcurl\b|--libcurl=|--stderr\b|--stderr=|--hsts\b|--hsts=|--alt-svc\b|--alt-svc=)/i,
     /\bwget\b.*\s(-O\b|--output-document\b|--output-document=)/i,
     /\bfind\b.*\s-exec(dir)?\b/i, /\bfind\b.*\s-ok(dir)?\b/i, /\bfind\b.*\s-delete\b/i, /\bfind\b.*\s-fprintf\b/i,
@@ -128,6 +128,25 @@ const DESTRUCTIVE_FLAG_PATTERNS = [
     // Build tools (not --dry-run / --just-print / -n)
     /^\s*make\b(?!.*(\s-n\b|\s--dry-run\b|\s--just-print\b))/i,
 ];
+
+const OUTPUT_REDIRECTION_PATTERN = /(^|[^<])(\d*)>(?!>)(?:\s*([^\s;|&]+))?/g;
+
+/**
+ * In no-sandbox mode we block output redirection by default because it can
+ * write to files. The only allowed exception is numeric fd redirection to
+ * `/dev/null` (e.g. `2>/dev/null`), which is a common read-only pattern for
+ * suppressing stderr.
+ */
+function hasUnsafeOutputRedirection(segment: string): boolean {
+    const matches = segment.matchAll(OUTPUT_REDIRECTION_PATTERN);
+    for (const match of matches) {
+        const fd = match[2] ?? "";
+        const target = (match[3] ?? "").replace(/^['"]|['"]$/g, "");
+        const isSafeNullSink = fd.length > 0 && target === "/dev/null";
+        if (!isSafeNullSink) return true;
+    }
+    return false;
+}
 
 /**
  * Split a shell command on chaining operators (&&, ||, ;, |) and check that
@@ -275,14 +294,16 @@ export function isDestructiveCommand(command: string, sandboxActive = false): bo
         // Git: allowlist-based check (stricter than the generic blocklist)
         if (/^\s*git\b/i.test(trimmed)) {
             if (isDestructiveGitCommand(trimmed)) return true;
+            if (hasUnsafeOutputRedirection(trimmed)) return true;
             // Flag-level check still applies (e.g. git diff --output=...)
             if (DESTRUCTIVE_FLAG_PATTERNS.some((p) => p.test(trimmed))) return true;
             continue;
         }
 
         const isCmdDestructive = DESTRUCTIVE_CMD_PATTERNS.some((p) => p.test(trimmed));
+        const hasUnsafeRedirection = hasUnsafeOutputRedirection(trimmed);
         const isFlagDestructive = DESTRUCTIVE_FLAG_PATTERNS.some((p) => p.test(trimmed));
-        if (isCmdDestructive || isFlagDestructive) return true;
+        if (isCmdDestructive || hasUnsafeRedirection || isFlagDestructive) return true;
     }
 
     return false;
