@@ -132,6 +132,12 @@ try {
             origin: getTrustedOrigins(),
             credentials: true,
         },
+        // Socket.IO default maxHttpBufferSize is 1 MB, which silently drops
+        // connections when a session state payload exceeds it (e.g., sessions
+        // with embedded screenshots can easily reach 10–50 MB). The transport
+        // close happens with no error surfaced to the user. Bump to 100 MB
+        // as a safety valve so large sessions remain accessible.
+        maxHttpBufferSize: 100 * 1024 * 1024, // 100 MB
         // Generous ping settings to prevent disconnects during heavy agent
         // processing (long bash commands, large file reads, etc.).
         // Defaults are pingInterval=25s, pingTimeout=20s which is too tight
