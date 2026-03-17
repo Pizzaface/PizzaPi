@@ -336,6 +336,13 @@ export function App() {
   const [apiKeyVersion, setApiKeyVersion] = React.useState(0);
   const [showRunners, setShowRunners] = React.useState(false);
   const [selectedRunnerId, setSelectedRunnerId] = React.useState<string | null>(null);
+  const [runnersForSidebar, setRunnersForSidebar] = React.useState<Array<{
+    runnerId: string;
+    name: string | null;
+    sessionCount: number;
+    version: string | null;
+    isOnline: boolean;
+  }>>([]);
   const [showTerminal, setShowTerminal] = React.useState(false);
   const [terminalPosition, setTerminalPosition] = React.useState<"bottom" | "right" | "left">(() => {
     try { return (localStorage.getItem("pp-terminal-position") as "bottom" | "right" | "left") ?? "bottom"; } catch { return "bottom"; }
@@ -3491,6 +3498,9 @@ export function App() {
             onSessionsChange={setLiveSessions}
             onClose={() => setSidebarOpen(false)}
             onEndSession={handleEndSession}
+            runners={runnersForSidebar}
+            selectedRunnerId={selectedRunnerId}
+            onSelectRunner={setSelectedRunnerId}
           />
         </div>
 
@@ -3662,6 +3672,7 @@ export function App() {
               {showRunners ? (
                 <RunnerManager
                     onOpenSession={(id) => { handleOpenSession(id); setShowRunners(false); }}
+                    onRunnersChange={setRunnersForSidebar}
                     selectedRunnerId={selectedRunnerId}
                     onSelectRunner={setSelectedRunnerId}
                   />
