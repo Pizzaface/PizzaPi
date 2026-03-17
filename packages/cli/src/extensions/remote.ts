@@ -826,7 +826,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                     }
                 }
             }
-            fireSessionComplete(summary, fullOutputPath);
+            fireSessionComplete(summary, fullOutputPath, rctx.wasAborted ? "killed" : "completed");
             if (rctx.isChildSession) {
                 startFollowUpGrace(ctx);
             }
