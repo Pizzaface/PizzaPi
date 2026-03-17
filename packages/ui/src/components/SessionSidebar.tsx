@@ -893,35 +893,35 @@ export const SessionSidebar = React.memo(function SessionSidebar({
 
             <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
                 {/* Sessions / Runners nav tabs */}
-                <div className="px-2 pt-2 pb-1 flex-shrink-0 flex gap-1">
+                <div className="mx-3 mt-2 mb-1 flex-shrink-0 flex border-b border-sidebar-border/50">
                     <button
                         onClick={onShowSessions}
                         className={cn(
-                            "flex items-center gap-2 flex-1 px-3 py-3 md:py-2 rounded-lg text-sm font-medium transition-colors active:scale-[0.98]",
-                            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
+                            "flex items-center justify-center gap-1.5 px-3 pb-2 text-xs font-medium transition-colors relative",
+                            "focus-visible:outline-none",
                             !showRunners
-                                ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                                : "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
+                                ? "text-sidebar-foreground"
+                                : "text-sidebar-foreground/40 hover:text-sidebar-foreground/70"
                         )}
                     >
-                        <MessageSquare className={cn("h-4 w-4 flex-shrink-0", !showRunners ? "text-primary" : "text-sidebar-foreground/50")} />
+                        <MessageSquare className="h-3.5 w-3.5" />
                         <span>Sessions</span>
+                        {!showRunners && <div className="absolute bottom-0 inset-x-1 h-[2px] bg-primary rounded-full" />}
                     </button>
                     <button
                         onClick={onShowRunners}
                         className={cn(
-                            "flex items-center gap-2 flex-1 px-3 py-3 md:py-2 rounded-lg text-sm font-medium transition-colors active:scale-[0.98]",
-                            "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
+                            "flex items-center justify-center gap-1.5 px-3 pb-2 text-xs font-medium transition-colors relative",
+                            "focus-visible:outline-none",
                             showRunners
-                                ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                                : "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
+                                ? "text-sidebar-foreground"
+                                : "text-sidebar-foreground/40 hover:text-sidebar-foreground/70"
                         )}
                     >
-                        <HardDrive className={cn("h-4 w-4 flex-shrink-0", showRunners ? "text-primary" : "text-sidebar-foreground/50")} />
+                        <HardDrive className="h-3.5 w-3.5" />
                         <span>Runners</span>
-                        <div className="ml-auto">
-                            <LiveDot state={dotState} />
-                        </div>
+                        <LiveDot state={dotState} />
+                        {showRunners && <div className="absolute bottom-0 inset-x-1 h-[2px] bg-primary rounded-full" />}
                     </button>
                 </div>
 
