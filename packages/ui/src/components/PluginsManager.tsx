@@ -51,6 +51,8 @@ export interface PluginInfo {
 export interface PluginsManagerProps {
     runnerId: string;
     plugins: PluginInfo[];
+    /** When true, render without Collapsible wrapper (for tab/panel use) */
+    bare?: boolean;
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────
@@ -339,7 +341,7 @@ const hookEventMapping: Record<string, string | null> = {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export function PluginsManager({ runnerId, plugins: initialPlugins }: PluginsManagerProps) {
+export function PluginsManager({ runnerId, plugins: initialPlugins, bare }: PluginsManagerProps) {
     const [plugins, setPlugins] = React.useState<PluginInfo[]>(initialPlugins);
     const [open, setOpen] = React.useState(false);
     const [refreshing, setRefreshing] = React.useState(false);
@@ -370,70 +372,87 @@ export function PluginsManager({ runnerId, plugins: initialPlugins }: PluginsMan
         }
     };
 
+    const rescanButton = (
+        <Button
+            variant="ghost"
+            size="sm"
+            className="h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
+            onClick={handleRefresh}
+            disabled={refreshing}
+        >
+            {refreshing ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+            ) : (
+                <RefreshCw className="h-3 w-3" />
+            )}
+            <span className="ml-1">Rescan</span>
+        </Button>
+    );
+
+    const pluginsList = (
+        <div className={cn(bare ? "flex flex-col gap-1.5" : "mt-2 flex flex-col gap-1.5")}>
+            {plugins.length === 0 ? (
+                <div className="flex flex-col items-center gap-2 py-5 text-center">
+                    <Puzzle className="h-5 w-5 text-muted-foreground/40" />
+                    <div className="space-y-0.5">
+                        <p className="text-xs font-medium text-muted-foreground">No plugins found</p>
+                        <p className="text-[11px] text-muted-foreground/60 max-w-[220px]">
+                            Add Claude Code plugins to{" "}
+                            <span className="font-mono">~/.pizzapi/plugins/</span>{" "}
+                            then click &ldquo;Rescan&rdquo;.
+                        </p>
+                    </div>
+                </div>
+            ) : (
+                plugins.map((plugin) => (
+                    <PluginRow
+                        key={plugin.name}
+                        plugin={plugin}
+                        onClick={() => setSelectedPlugin(plugin)}
+                    />
+                ))
+            )}
+        </div>
+    );
+
     return (
         <>
-            <Collapsible open={open} onOpenChange={setOpen}>
-                <div className="flex items-center justify-between mt-3">
-                    <CollapsibleTrigger className="flex items-center gap-1.5 text-left group/trigger">
-                        <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide">
-                            Claude Plugins
-                        </span>
-                        <Badge
-                            variant="secondary"
-                            className="h-4 px-1.5 text-[10px] font-mono rounded-sm"
-                        >
-                            {plugins.length}
-                        </Badge>
-                        <ChevronDown
-                            className={cn(
-                                "h-3 w-3 text-muted-foreground/60 transition-transform duration-200",
-                                open && "rotate-180"
-                            )}
-                        />
-                    </CollapsibleTrigger>
-
-                    <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
-                        onClick={handleRefresh}
-                        disabled={refreshing}
-                    >
-                        {refreshing ? (
-                            <Loader2 className="h-3 w-3 animate-spin" />
-                        ) : (
-                            <RefreshCw className="h-3 w-3" />
-                        )}
-                        <span className="ml-1">Rescan</span>
-                    </Button>
-                </div>
-
-                <CollapsibleContent>
-                    <div className="mt-2 flex flex-col gap-1.5">
-                        {plugins.length === 0 ? (
-                            <div className="flex flex-col items-center gap-2 py-5 text-center">
-                                <Puzzle className="h-5 w-5 text-muted-foreground/40" />
-                                <div className="space-y-0.5">
-                                    <p className="text-xs font-medium text-muted-foreground">No plugins found</p>
-                                    <p className="text-[11px] text-muted-foreground/60 max-w-[220px]">
-                                        Add Claude Code plugins to{" "}
-                                        <span className="font-mono">~/.pizzapi/plugins/</span>{" "}
-                                        then click &ldquo;Rescan&rdquo;.
-                                    </p>
-                                </div>
-                            </div>
-                        ) : (
-                            plugins.map((plugin) => (
-                                <PluginRow
-                                    key={plugin.name}
-                                    plugin={plugin}
-                                    onClick={() => setSelectedPlugin(plugin)}
-                                />
-                            ))
-                        )}
+            {bare ? (
+                <>
+                    <div className="flex items-center justify-between mb-3">
+                        <h3 className="text-sm font-medium">Claude Plugins</h3>
+                        {rescanButton}
                     </div>
-                </CollapsibleContent>
-            </Collapsible>
+                    {pluginsList}
+                </>
+            ) : (
+                <Collapsible open={open} onOpenChange={setOpen}>
+                    <div className="flex items-center justify-between mt-3">
+                        <CollapsibleTrigger className="flex items-center gap-1.5 text-left group/trigger">
+                            <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide">
+                                Claude Plugins
+                            </span>
+                            <Badge
+                                variant="secondary"
+                                className="h-4 px-1.5 text-[10px] font-mono rounded-sm"
+                            >
+                                {plugins.length}
+                            </Badge>
+                            <ChevronDown
+                                className={cn(
+                                    "h-3 w-3 text-muted-foreground/60 transition-transform duration-200",
+                                    open && "rotate-180"
+                                )}
+                            />
+                        </CollapsibleTrigger>
+                        {rescanButton}
+                    </div>
+
+                    <CollapsibleContent>
+                        {pluginsList}
+                    </CollapsibleContent>
+                </Collapsible>
+            )}
 
             <PluginDetailDialog
                 plugin={selectedPlugin}
