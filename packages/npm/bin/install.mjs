@@ -20,7 +20,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
-import { execSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
@@ -141,21 +141,40 @@ function isGlobalInstall() {
     return false;
 }
 
+/** Run a package manager command safely. */
+function runPmCmd(cmd, args) {
+    const isWin = process.platform === "win32";
+    const result = spawnSync(cmd, args, { stdio: "inherit", env: process.env, shell: isWin });
+    if (result.error) throw result.error;
+    if (result.status !== 0) throw new Error(`Command failed with exit code ${result.status}`);
+}
+
 /** Run package manager install command. */
 function installPlatformPackage(versionSpec, pm, isGlobal) {
+    const isWin = process.platform === "win32";
     if (pm === "yarn") {
-        const cmd = isGlobal ? `yarn global add ${versionSpec}` : `yarn add ${versionSpec}`;
-        execSync(cmd, { stdio: "inherit", env: process.env });
+        const cmd = isWin ? "yarn.cmd" : "yarn";
+        const args = isGlobal ? ["global", "add", versionSpec] : ["add", versionSpec];
+        runPmCmd(cmd, args);
     } else if (pm === "pnpm") {
-        const flag = isGlobal ? " -g" : "";
-        execSync(`pnpm add${flag} ${versionSpec}`, { stdio: "inherit", env: process.env });
+        const cmd = isWin ? "pnpm.cmd" : "pnpm";
+        const args = ["add"];
+        if (isGlobal) args.push("-g");
+        args.push(versionSpec);
+        runPmCmd(cmd, args);
     } else if (pm === "bun") {
-        const flag = isGlobal ? " -g" : "";
-        execSync(`bun add${flag} ${versionSpec}`, { stdio: "inherit", env: process.env });
+        const cmd = isWin ? "bun.exe" : "bun";
+        const args = ["add"];
+        if (isGlobal) args.push("-g");
+        args.push(versionSpec);
+        runPmCmd(cmd, args);
     } else {
         // npm
-        const flag = isGlobal ? " -g" : "";
-        execSync(`npm install${flag} ${versionSpec}`, { stdio: "inherit", env: process.env });
+        const cmd = isWin ? "npm.cmd" : "npm";
+        const args = ["install"];
+        if (isGlobal) args.push("-g");
+        args.push(versionSpec);
+        runPmCmd(cmd, args);
     }
 }
 
@@ -192,8 +211,12 @@ try {
         console.log(`[pizzapi] Version mismatch persists — removing stale package and retrying...`);
         try {
             if (pm === "npm") {
-                const flag = isGlobal ? " -g" : "";
-                execSync(`npm rm${flag} ${pkgName}`, { stdio: "inherit", env: process.env });
+                const isWin = process.platform === "win32";
+                const cmd = isWin ? "npm.cmd" : "npm";
+                const args = ["rm"];
+                if (isGlobal) args.push("-g");
+                args.push(pkgName);
+                runPmCmd(cmd, args);
             }
             installPlatformPackage(versionSpec, pm, isGlobal);
         } catch {}

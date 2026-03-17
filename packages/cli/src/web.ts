@@ -12,7 +12,7 @@
  *   pizza web --help           Show help
  */
 
-import { execSync, spawn } from "child_process";
+import { execFileSync, spawn } from "child_process";
 import { createECDH, randomBytes } from "crypto";
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from "fs";
 import { join } from "path";
@@ -289,8 +289,8 @@ export function saveWebConfig(config: WebConfig): void {
 
 function ensureDocker(): void {
     try {
-        execSync("docker --version", { stdio: "ignore" });
-        execSync("docker compose version", { stdio: "ignore" });
+        execFileSync("docker", ["--version"], { stdio: "ignore" });
+        execFileSync("docker", ["compose", "version"], { stdio: "ignore" });
     } catch {
         console.error(
             "Error: Docker with Compose is required for `pizza web`.\n" +
@@ -326,7 +326,7 @@ function getRepoPath(): string {
     if (existsSync(join(clonedRepo, "Dockerfile"))) {
         console.log("Updating PizzaPi repository...");
         try {
-            execSync("git pull --rebase", { cwd: clonedRepo, stdio: "inherit" });
+            execFileSync("git", ["pull", "--rebase"], { cwd: clonedRepo, stdio: "inherit" });
         } catch {
             console.warn("Warning: Could not update repo, using existing version.");
         }
@@ -336,7 +336,7 @@ function getRepoPath(): string {
     console.log("Cloning PizzaPi repository...");
     mkdirSync(WEB_DIR, { recursive: true });
     try {
-        execSync(`git clone --depth 1 ${REPO_URL} ${clonedRepo}`, { stdio: "inherit" });
+        execFileSync("git", ["clone", "--depth", "1", REPO_URL, clonedRepo], { stdio: "inherit" });
     } catch {
         console.error(
             "Error: Failed to clone the PizzaPi repository.\n\n" +
