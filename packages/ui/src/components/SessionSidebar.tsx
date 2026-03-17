@@ -955,7 +955,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                 </div>
 
                 {showRunners && runners && (
-                    <div className="px-2 mt-1 flex flex-col gap-0.5">
+                    <div className="px-2 mt-1 flex-1 flex flex-col gap-0.5 overflow-y-auto overflow-x-hidden" style={{ paddingBottom: "max(0.5rem, env(safe-area-inset-bottom))" }}>
                         <div className="text-[9px] font-medium text-sidebar-foreground/35 uppercase tracking-widest px-2.5 py-1">
                             Connected Runners
                         </div>
