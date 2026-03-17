@@ -262,7 +262,7 @@ export function TerminalManager({
   return (
     <div className={cn("flex flex-col bg-background", className)}>
       {/* ── Persistent topbar ─────────────────────────────────────────────── */}
-      <div className="flex items-center border-b border-border bg-muted/50 shrink-0 min-h-[36px] md:min-h-[32px]">
+      <div className="flex items-center border-b border-border bg-muted/50 shrink-0 min-h-[36px] md:min-h-[32px] overflow-hidden">
         {/* Mobile: back button */}
         {onClose && (
           <Button
