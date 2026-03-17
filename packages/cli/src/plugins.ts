@@ -45,6 +45,7 @@ function readFileCapped(path: string, maxBytes: number = MAX_PLUGIN_FILE_SIZE): 
     }
 }
 import { homedir } from "node:os";
+import { expandHome } from "./config.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -233,7 +234,7 @@ export function pluginSearchDirs(cwd: string, opts?: { includeProjectLocal?: boo
     if (Array.isArray(opts?.extraDirs)) {
         for (const d of opts!.extraDirs) {
             if (typeof d === "string" && d.trim()) {
-                dirs.push(d.replace(/^~/, homedir()));
+                dirs.push(expandHome(d));
             }
         }
     }

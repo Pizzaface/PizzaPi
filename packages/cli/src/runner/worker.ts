@@ -2,7 +2,7 @@ import { createAgentSession, DefaultResourceLoader } from "@mariozechner/pi-codi
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { BUILTIN_SYSTEM_PROMPT, defaultAgentDir, loadConfig, resolveSandboxConfig, validateSandboxOverride, applyProviderSettingsEnv } from "../config.js";
+import { BUILTIN_SYSTEM_PROMPT, defaultAgentDir, expandHome, loadConfig, resolveSandboxConfig, validateSandboxOverride, applyProviderSettingsEnv } from "../config.js";
 import { buildWorkerSkillPaths } from "../skills.js";
 import { getPluginSkillPaths } from "../extensions/claude-plugins.js";
 import { initSandbox, cleanupSandbox, isSandboxActive } from "@pizzapi/tools";
@@ -52,7 +52,7 @@ async function main(): Promise<void> {
     }
 
     const config = loadConfig(cwd);
-    const agentDir = config.agentDir?.replace(/^~/, homedir()) ?? defaultAgentDir();
+    const agentDir = config.agentDir ? expandHome(config.agentDir) : defaultAgentDir();
     const skipPlugins = process.env.PIZZAPI_NO_PLUGINS === "1";
 
     // ── Provider settings → env vars ───────────────────────────────────────
