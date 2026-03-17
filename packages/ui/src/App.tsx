@@ -2943,6 +2943,13 @@ export function App() {
     setNewSessionOpen(true);
   }, []);
 
+  const handleDuplicateSession = React.useCallback((runnerId: string, cwd: string) => {
+    setSpawnRunnerId(runnerId);
+    setSpawnCwd(cwd);
+    setRecentFolders([]);
+    setNewSessionOpen(true);
+  }, []);
+
   const waitForSessionToGoLive = React.useCallback(async (sessionId: string, timeoutMs: number) => {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
@@ -3559,6 +3566,7 @@ export function App() {
             onSessionsChange={setLiveSessions}
             onClose={() => setSidebarOpen(false)}
             onEndSession={handleEndSession}
+            onDuplicateSession={handleDuplicateSession}
             runners={runnersForSidebar}
             selectedRunnerId={selectedRunnerId}
             onSelectRunner={setSelectedRunnerId}
@@ -3779,6 +3787,7 @@ export function App() {
                   onTriggerResponse={handleTriggerResponse}
                   onQuestionDismiss={() => setPendingQuestion(null)}
                   onPlanDismiss={() => setPendingPlan(null)}
+                  onDuplicateSession={activeSessionInfo?.runnerId ? () => handleDuplicateSession(activeSessionInfo.runnerId!, activeSessionInfo.cwd || "") : undefined}
                 />
               )}
             </div>
