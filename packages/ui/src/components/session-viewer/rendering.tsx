@@ -268,6 +268,7 @@ export function renderContent(
             const source = (b.source && typeof b.source === "object" ? b.source : {}) as Record<string, unknown>;
             const data = typeof b.data === "string" ? b.data : typeof source.data === "string" ? source.data : null;
             const mime = typeof b.mimeType === "string" ? b.mimeType : typeof source.mediaType === "string" ? source.mediaType : "image/png";
+            const url = typeof source.url === "string" ? source.url : null;
 
             if (data) {
               return (
@@ -276,6 +277,20 @@ export function renderContent(
                   src={`data:${mime};base64,${data}`}
                   alt="Message attachment"
                   className="max-h-80 max-w-full rounded border border-border"
+                />
+              );
+            }
+
+            // Extracted images: base64 data was replaced with an attachment URL
+            // by the server to reduce payload size. Load via URL instead.
+            if (url) {
+              return (
+                <img
+                  key={i}
+                  src={url}
+                  alt="Message attachment"
+                  className="max-h-80 max-w-full rounded border border-border"
+                  loading="lazy"
                 />
               );
             }
