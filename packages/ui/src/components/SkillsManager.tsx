@@ -39,6 +39,8 @@ export interface SkillsManagerProps {
     skills: SkillInfo[];
     /** Called when skills change so the parent can update its state */
     onSkillsChange?: (skills: SkillInfo[]) => void;
+    /** When true, render without Collapsible wrapper (for tab/panel use) */
+    bare?: boolean;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -391,7 +393,7 @@ function DeleteSkillDialog({ runnerId, skill, onClose, onDeleted }: DeleteSkillD
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export function SkillsManager({ runnerId, skills: initialSkills, onSkillsChange }: SkillsManagerProps) {
+export function SkillsManager({ runnerId, skills: initialSkills, onSkillsChange, bare }: SkillsManagerProps) {
     const [skills, setSkills] = React.useState<SkillInfo[]>(initialSkills);
     const [open, setOpen] = React.useState(false);
     const [refreshing, setRefreshing] = React.useState(false);
@@ -447,80 +449,97 @@ export function SkillsManager({ runnerId, skills: initialSkills, onSkillsChange 
         setEditorOpen(true);
     };
 
-    return (
-        <>
-            <Collapsible open={open} onOpenChange={setOpen}>
-                <div className="flex items-center justify-between mt-3">
-                    <CollapsibleTrigger className="flex items-center gap-1.5 text-left group/trigger">
-                        <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide">
-                            Agent Skills
-                        </span>
-                        <Badge
-                            variant="secondary"
-                            className="h-4 px-1.5 text-[10px] font-mono rounded-sm"
-                        >
-                            {skills.length}
-                        </Badge>
-                        <ChevronDown
-                            className={cn(
-                                "h-3 w-3 text-muted-foreground/60 transition-transform duration-200",
-                                open && "rotate-180"
-                            )}
-                        />
-                    </CollapsibleTrigger>
+    const actionButtons = (
+        <div className="flex items-center gap-1">
+            <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
+                onClick={handleRefresh}
+                disabled={refreshing}
+                title="Re-scan skills from disk"
+            >
+                <RefreshCw className={cn("h-3 w-3 mr-1", refreshing && "animate-spin")} />
+                Reload
+            </Button>
+            <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
+                onClick={handleNewSkill}
+            >
+                <Plus className="h-3 w-3 mr-1" />
+                New skill
+            </Button>
+        </div>
+    );
 
-                    <div className="flex items-center gap-1">
-                        <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
-                            onClick={handleRefresh}
-                            disabled={refreshing}
-                            title="Re-scan skills from disk"
-                        >
-                            <RefreshCw className={cn("h-3 w-3 mr-1", refreshing && "animate-spin")} />
-                            Reload
-                        </Button>
-                        <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
-                            onClick={handleNewSkill}
-                        >
-                            <Plus className="h-3 w-3 mr-1" />
-                            New skill
-                        </Button>
+    const skillsList = (
+        <div className={cn(bare ? "flex flex-col gap-1.5" : "mt-2 flex flex-col gap-1.5")}>
+            {skills.length === 0 ? (
+                <div className="flex flex-col items-center gap-2 py-5 text-center">
+                    <BookOpen className="h-5 w-5 text-muted-foreground/40" />
+                    <div className="space-y-0.5">
+                        <p className="text-xs font-medium text-muted-foreground">No skills yet</p>
+                        <p className="text-[11px] text-muted-foreground/60 max-w-[200px]">
+                            Add a SKILL.md to{" "}
+                            <span className="font-mono">~/.pizzapi/skills/</span>{" "}
+                            or click &ldquo;New skill&rdquo; above.
+                        </p>
                     </div>
                 </div>
+            ) : (
+                skills.map((skill) => (
+                    <SkillRow
+                        key={skill.name}
+                        skill={skill}
+                        onEdit={handleEdit}
+                        onDelete={handleDeleteRequest}
+                        deleting={pendingDelete === skill.name}
+                    />
+                ))
+            )}
+        </div>
+    );
 
-                <CollapsibleContent>
-                    <div className="mt-2 flex flex-col gap-1.5">
-                        {skills.length === 0 ? (
-                            <div className="flex flex-col items-center gap-2 py-5 text-center">
-                                <BookOpen className="h-5 w-5 text-muted-foreground/40" />
-                                <div className="space-y-0.5">
-                                    <p className="text-xs font-medium text-muted-foreground">No skills yet</p>
-                                    <p className="text-[11px] text-muted-foreground/60 max-w-[200px]">
-                                        Add a SKILL.md to{" "}
-                                        <span className="font-mono">~/.pizzapi/skills/</span>{" "}
-                                        or click &ldquo;New skill&rdquo; above.
-                                    </p>
-                                </div>
-                            </div>
-                        ) : (
-                            skills.map((skill) => (
-                                <SkillRow
-                                    key={skill.name}
-                                    skill={skill}
-                                    onEdit={handleEdit}
-                                    onDelete={handleDeleteRequest}
-                                    deleting={pendingDelete === skill.name}
-                                />
-                            ))
-                        )}
+    return (
+        <>
+            {bare ? (
+                <>
+                    <div className="flex items-center justify-between mb-3">
+                        <h3 className="text-sm font-medium">Agent Skills</h3>
+                        {actionButtons}
                     </div>
-                </CollapsibleContent>
-            </Collapsible>
+                    {skillsList}
+                </>
+            ) : (
+                <Collapsible open={open} onOpenChange={setOpen}>
+                    <div className="flex items-center justify-between mt-3">
+                        <CollapsibleTrigger className="flex items-center gap-1.5 text-left group/trigger">
+                            <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide">
+                                Agent Skills
+                            </span>
+                            <Badge
+                                variant="secondary"
+                                className="h-4 px-1.5 text-[10px] font-mono rounded-sm"
+                            >
+                                {skills.length}
+                            </Badge>
+                            <ChevronDown
+                                className={cn(
+                                    "h-3 w-3 text-muted-foreground/60 transition-transform duration-200",
+                                    open && "rotate-180"
+                                )}
+                            />
+                        </CollapsibleTrigger>
+                        {actionButtons}
+                    </div>
+
+                    <CollapsibleContent>
+                        {skillsList}
+                    </CollapsibleContent>
+                </Collapsible>
+            )}
 
             <SkillEditorDialog
                 runnerId={runnerId}
