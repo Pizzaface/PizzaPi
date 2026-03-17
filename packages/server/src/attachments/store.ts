@@ -85,12 +85,28 @@ export async function storeSessionAttachment(input: {
     return record;
 }
 
-export function getStoredAttachment(attachmentId: string): StoredAttachment | null {
+export async function getStoredAttachment(attachmentId: string): Promise<StoredAttachment | null> {
     const record = attachments.get(attachmentId);
     if (!record) return null;
 
+    const nowMs = Date.now();
     const expiresAtMs = record.expiresAtMs ?? Date.parse(record.expiresAt);
-    if (expiresAtMs <= Date.now()) {
+    if (expiresAtMs <= nowMs) {
+        // For extracted images (uploaderUserId === "system"), check whether this
+        // attachment is referenced by a durable (pinned/non-ephemeral) session
+        // before deleting.  Without this, a viewer requesting an expired-but-durable
+        // attachment races the sweep and permanently removes it on read.
+        if (record.uploaderUserId === "system") {
+            const durableSessionIds = await getDurableSessionIds();
+            if (hasAnyDurableSessionRef(attachmentId, record.sessionId, durableSessionIds)) {
+                // Renew the TTL instead of deleting.
+                const refreshed = nowMs + EXTRACTED_IMAGE_TTL_MS;
+                record.expiresAt = new Date(refreshed).toISOString();
+                record.expiresAtMs = refreshed;
+                void persistExtractedAttachment(record).catch(() => {});
+                return record;
+            }
+        }
         void deleteStoredAttachment(attachmentId);
         return null;
     }
