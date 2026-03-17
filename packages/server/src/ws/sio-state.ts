@@ -750,8 +750,19 @@ export async function scanExpiredSessions(nowMs: number = Date.now()): Promise<s
     const allIds = await r.sMembers(allSessionsKey());
     const expired: string[] = [];
 
+    if (allIds.length === 0) return expired;
+
+    // ⚡ Bolt: Pipeline the hGet requests to avoid N+1 Redis queries
+    const multi = r.multi();
     for (const sessionId of allIds) {
-        const expiresAt = await r.hGet(sessionKey(sessionId), "expiresAt");
+        multi.hGet(sessionKey(sessionId), "expiresAt");
+    }
+    const results = await multi.exec();
+
+    for (let i = 0; i < allIds.length; i++) {
+        const sessionId = allIds[i];
+        const expiresAt = results[i] as string | null;
+
         if (!expiresAt) continue;
 
         const expiresAtMs = Date.parse(expiresAt);

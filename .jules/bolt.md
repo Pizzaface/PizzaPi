@@ -17,3 +17,7 @@
 ## 2025-03-09 - [Optimize high-frequency event stream bottlenecks]
 **Learning:** In high-frequency real-time event streams (like Socket.IO text deltas in `packages/server/src/ws/namespaces/relay.ts`), failing to early-return before executing asynchronous operations (like Redis `getSharedSession` or `getViewerCount`) causes severe systemic N+1 bottlenecks.
 **Action:** Strictly evaluate simple synchronous conditions (like `event.type`) to short-circuit the function before invoking any expensive I/O operations.
+
+## 2025-03-10 - [Batching Socket.IO Adapter and Redis Queries]
+**Learning:** Looping over candidates and making sequential network operations—even lightweight ones like `adapter.sockets` or Redis `hGet`—creates an N+1 performance bottleneck during sweeping processes (e.g., `sweepOrphanedSessions`, `scanExpiredSessions`).
+**Action:** Use concurrent fetching via `Promise.allSettled` for batched Socket.IO adapter queries, and leverage Redis pipelining via `multi()` to execute batched reads in a single network roundtrip, significantly decreasing latency for bulk processing loops.
