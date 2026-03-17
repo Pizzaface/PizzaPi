@@ -3490,7 +3490,7 @@ export function App() {
             onOpenSession={handleOpenSession}
             onNewSession={handleNewSession}
             onClearSelection={handleClearSelection}
-            onShowRunners={() => { setShowRunners(true); setShowApiKeys(false); setActiveSessionId(null); setSidebarOpen(false); }}
+            onShowRunners={() => { setShowRunners(true); setShowApiKeys(false); setActiveSessionId(null); }}
             activeSessionId={activeSessionId}
             showRunners={showRunners}
             activeModel={activeModel}
