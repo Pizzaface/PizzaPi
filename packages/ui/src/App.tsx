@@ -2419,9 +2419,23 @@ export function App() {
       if (activeSessionRef.current !== relaySessionId) return;
       // Server is actively talking to us — reset stale clock.
       lastViewerEventAtRef.current = Date.now();
+      // "Session reconnected" means a new worker registered with the same session ID
+      // (e.g. the user ran /restart in the CLI terminal rather than via the web UI
+      // command bar).  Treat it identically to a UI-initiated restart so the
+      // existing auto-reconnect logic fires when the session comes back live.
+      if (data.reason === "Session reconnected" && restartPendingSessionIdRef.current !== relaySessionId) {
+        restartPendingSessionIdRef.current = relaySessionId;
+        if (restartPendingTimerRef.current) clearTimeout(restartPendingTimerRef.current);
+        restartPendingTimerRef.current = setTimeout(() => {
+          restartPendingSessionIdRef.current = null;
+          restartPendingTimerRef.current = null;
+        }, 60_000);
+      }
       const isRestarting = restartPendingSessionIdRef.current === relaySessionId;
       if (!isRestarting) {
         setViewerStatus(data.reason || "Disconnected");
+      } else {
+        setViewerStatus("Restarting CLI\u2026");
       }
       setPendingQuestion(null);
       setPendingPlan(null);

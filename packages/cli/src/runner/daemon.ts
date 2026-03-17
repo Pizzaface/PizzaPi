@@ -506,6 +506,11 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         const sioUrl = normaliseRelayUrl(relayRaw);
 
         const runningSessions = new Map<string, RunnerSession>();
+        // Sessions currently in the middle of a restart-in-place (exit code 43).
+        // While a sessionId is in this set, the session_ended event arriving from the
+        // relay (triggered when the new worker's registerTuiSession tears down the old
+        // connection) must be ignored — the new worker is already live.
+        const restartingSessions = new Set<string>();
         const runnerName = process.env.PIZZAPI_RUNNER_NAME?.trim() || hostname();
         let runnerId: string | null = null;
         let isFirstConnect = true;
@@ -672,7 +677,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                         ? { prompt: requestedPrompt, model: requestedModel, hiddenModels: requestedHiddenModels, agent: resolvedAgent, parentSessionId: requestedParentSessionId }
                         : { hiddenModels: requestedHiddenModels, agent: resolvedAgent, parentSessionId: requestedParentSessionId }; // Always pass agent + hidden models + parent on restart
                     isFirstSpawn = false;
-                    spawnSession(sessionId, apiKey!, relayRaw, requestedCwd, runningSessions, doSpawn, spawnOpts);
+                    spawnSession(sessionId, apiKey!, relayRaw, requestedCwd, runningSessions, restartingSessions, doSpawn, spawnOpts);
                     socket.emit("session_ready", { sessionId });
                 } catch (err) {
                     socket.emit("session_error", {
@@ -710,6 +715,17 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         socket.on("session_ended", (data: any) => {
             if (isShuttingDown) return;
             const { sessionId } = data;
+
+            // If this session just did a restart-in-place (exit code 43), the relay fires
+            // session_ended when the new worker's registerTuiSession tears down the OLD
+            // connection.  The new worker is already live in runningSessions — don't
+            // delete its entry and don't touch its attachments.
+            if (restartingSessions.has(sessionId)) {
+                restartingSessions.delete(sessionId);
+                console.log(`pizzapi runner: session_ended for ${sessionId} — restarting in place, skipping teardown`);
+                return;
+            }
+
             const entry = runningSessions.get(sessionId);
             if (entry) {
                 runningSessions.delete(sessionId);
@@ -717,9 +733,9 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             } else {
                 console.log(`pizzapi runner: session_ended for unknown/already-removed session ${sessionId}`);
             }
-            // Always clean up persisted attachments regardless of whether the entry is still
-            // present — on a normal exit child.on("exit") fires first and removes the entry,
-            // so by the time session_ended arrives the map is already empty.
+            // Clean up persisted attachments.  For spawned sessions child.on("exit")
+            // already ran cleanup, so this is a no-op (idempotent).  For adopted sessions
+            // (child: null) this is the only cleanup path.
             void cleanupSessionAttachments(sessionId).catch(() => {});
         });
 
@@ -1564,6 +1580,7 @@ function spawnSession(
     relayUrl: string,
     requestedCwd: string | undefined,
     runningSessions: Map<string, RunnerSession>,
+    restartingSessions: Set<string>,
     onRestartRequested?: () => void,
     options?: {
         prompt?: string;
@@ -1634,15 +1651,22 @@ function spawnSession(
     child.on("exit", (code, signal) => {
         runningSessions.delete(sessionId);
         console.log(`pizzapi runner: session ${sessionId} exited (code=${code}, signal=${signal})`);
-        // Clean up persisted attachments — do this here so that on a normal exit
-        // (where child.on("exit") fires before the relay sends session_ended, leaving
-        // runningSessions already empty when session_ended arrives) cleanup is not skipped.
-        void cleanupSessionAttachments(sessionId).catch(() => {});
-        // Exit code 43 means the worker requested a restart (e.g. via /restart).
-        // Re-spawn it and re-send session_ready so the runner→session link is preserved.
         if (code === 43 && onRestartRequested) {
+            // Restart-in-place: re-spawn immediately without touching attachments.
+            // The session continues under the same ID — files saved to
+            // ~/.pizzapi/session-attachments/{sessionId} must survive the restart.
+            // Mark the session as restarting BEFORE calling onRestartRequested so that
+            // when the relay's session_ended event arrives (triggered by the new worker's
+            // registerTuiSession tearing down the old connection) the handler knows to
+            // skip teardown.
+            restartingSessions.add(sessionId);
             console.log(`pizzapi runner: re-spawning session ${sessionId} (worker restart requested)`);
             onRestartRequested();
+        } else {
+            // True termination — clean up persisted attachments now.
+            // session_ended will also arrive later but runningSessions will be empty
+            // by then, so this is the reliable cleanup point for spawned sessions.
+            void cleanupSessionAttachments(sessionId).catch(() => {});
         }
     });
 
