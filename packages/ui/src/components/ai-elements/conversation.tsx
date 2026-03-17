@@ -4,8 +4,8 @@ import type { ComponentProps } from "react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { ArrowDownIcon, DownloadIcon } from "lucide-react";
-import { useCallback } from "react";
+import { ArrowDownIcon, CheckIcon, ClipboardIcon, DownloadIcon } from "lucide-react";
+import { useCallback, useState, useRef } from "react";
 import { StickToBottom, useStickToBottomContext } from "use-stick-to-bottom";
 
 export type ConversationProps = ComponentProps<typeof StickToBottom>;
@@ -162,6 +162,113 @@ export const ConversationDownload = ({
       {...props}
     >
       {children ?? <DownloadIcon className="size-4" />}
+    </Button>
+  );
+};
+
+// --- Clipboard copy ---
+
+export type ConversationCopyProps = Omit<
+  ComponentProps<typeof Button>,
+  "onClick"
+> & {
+  messages: ConversationMessage[];
+  formatMessage?: (message: ConversationMessage, index: number) => string;
+  /** Duration in ms to show the success checkmark (default 2000) */
+  feedbackMs?: number;
+  /** Icon size class (default "size-4") */
+  iconClassName?: string;
+};
+
+export const ConversationCopy = ({
+  messages,
+  formatMessage = defaultFormatMessage,
+  feedbackMs = 2000,
+  iconClassName = "size-4",
+  className,
+  children,
+  ...props
+}: ConversationCopyProps) => {
+  const [copied, setCopied] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+
+  const handleCopy = useCallback(async () => {
+    const markdown = messagesToMarkdown(messages, formatMessage);
+    try {
+      await navigator.clipboard.writeText(markdown);
+      setCopied(true);
+      clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => setCopied(false), feedbackMs);
+    } catch {
+      // Fallback: some browsers block clipboard in non-secure contexts
+      console.warn("Clipboard write failed");
+    }
+  }, [messages, formatMessage, feedbackMs]);
+
+  return (
+    <Button
+      className={cn(
+        "absolute top-4 right-4 rounded-full dark:bg-background dark:hover:bg-muted",
+        className
+      )}
+      onClick={handleCopy}
+      size="icon"
+      type="button"
+      variant="outline"
+      {...props}
+    >
+      {copied
+        ? <CheckIcon className={cn(iconClassName, "text-green-500")} />
+        : (children ?? <ClipboardIcon className={iconClassName} />)}
+    </Button>
+  );
+};
+
+// --- Single-message copy (for per-message hover actions) ---
+
+export type MessageCopyButtonProps = Omit<
+  ComponentProps<typeof Button>,
+  "onClick"
+> & {
+  /** Raw markdown text to copy */
+  text: string;
+  /** Duration in ms to show the success checkmark (default 2000) */
+  feedbackMs?: number;
+};
+
+export const MessageCopyButton = ({
+  text,
+  feedbackMs = 2000,
+  className,
+  children,
+  ...props
+}: MessageCopyButtonProps) => {
+  const [copied, setCopied] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+
+  const handleCopy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => setCopied(false), feedbackMs);
+    } catch {
+      console.warn("Clipboard write failed");
+    }
+  }, [text, feedbackMs]);
+
+  return (
+    <Button
+      className={cn("size-6 p-0 rounded-md", className)}
+      onClick={handleCopy}
+      size="icon"
+      type="button"
+      variant="ghost"
+      title="Copy message"
+      aria-label="Copy message"
+      {...props}
+    >
+      {children ?? (copied ? <CheckIcon className="size-3 text-green-500" /> : <ClipboardIcon className="size-3" />)}
     </Button>
   );
 };

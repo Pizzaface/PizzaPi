@@ -1,8 +1,10 @@
 import * as React from "react";
 
 import {
+  ConversationCopy,
   ConversationDownload,
   ConversationEmptyState,
+  MessageCopyButton,
 } from "@/components/ai-elements/conversation";
 import type { RelayMessage } from "@/components/session-viewer/types";
 import { SessionActionsProvider, type SessionActions } from "@/components/session-viewer/session-actions-context";
@@ -66,7 +68,7 @@ import { MultipleChoiceQuestions } from "@/components/ai-elements/multiple-choic
 import { PlanModePanel, type PlanModeAnswer } from "@/components/ai-elements/plan-mode";
 import { formatAnswersForAgent, type QuestionDisplayMode } from "@/lib/ask-user-questions";
 import { dismissNotificationsForSession } from "@/lib/push";
-import { AlertTriangleIcon, ArrowDownIcon, BookOpen, Bot, CheckCircle2, ChevronsUpDown, Circle, CircleDashed, Copy, Loader2, MessageSquare, OctagonX, PaperclipIcon, Plus, Puzzle, ShieldAlert, Zap, Clock, X, Trash2, TerminalIcon, DownloadIcon, XCircle, FolderTree } from "lucide-react";
+import { AlertTriangleIcon, ArrowDownIcon, BookOpen, Bot, CheckCircle2, ChevronsUpDown, Circle, CircleDashed, ClipboardIcon, Copy, Loader2, MessageSquare, OctagonX, PaperclipIcon, Plus, Puzzle, ShieldAlert, Zap, Clock, X, Trash2, TerminalIcon, DownloadIcon, XCircle, FolderTree } from "lucide-react";
 import { AtMentionPopover } from "@/components/AtMentionPopover";
 import type { Entry as AtMentionEntry } from "@/hooks/useAtMentionFiles";
 import { McpToggleContext, type McpToggleHandler } from "@/components/session-viewer/McpToggleContext";
@@ -427,7 +429,7 @@ const SessionMessageItem = React.memo(({ message, activeToolCalls, agentActive, 
   }
 
   return (
-    <div className="w-full px-4 py-1.5">
+    <div className="group/msg w-full px-4 py-1.5">
       <Message from={toMessageRole(message.role)}>
         <MessageContent
           className={cn(
@@ -442,6 +444,10 @@ const SessionMessageItem = React.memo(({ message, activeToolCalls, agentActive, 
             {message.toolName && <span>• {message.toolName}</span>}
             {message.timestamp && <span>• {new Date(message.timestamp).toLocaleTimeString()}</span>}
             {message.isError && <span className="text-destructive">• Error</span>}
+            <MessageCopyButton
+              text={typeof message.content === "string" ? message.content : JSON.stringify(message.content, null, 2)}
+              className="ml-auto opacity-0 group-hover/msg:opacity-100 transition-opacity"
+            />
           </div>
           {renderContent(
             message.content,
@@ -1614,6 +1620,23 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
               <DownloadIcon className="size-3.5" />
               <span className="hidden sm:inline ml-1">Save</span>
             </ConversationDownload>
+            <ConversationCopy
+              messages={sortedMessages.map((m) => ({
+                role: toMessageRole(m.role),
+                content:
+                  typeof m.content === "string"
+                    ? m.content
+                    : JSON.stringify(m.content, null, 2),
+              }))}
+              className="static top-auto right-auto h-7 w-7 sm:h-7 sm:w-auto sm:px-2.5 sm:text-[0.7rem] border-border bg-background hover:bg-accent hover:text-accent-foreground rounded-md"
+              iconClassName="size-3.5"
+              variant="outline"
+              size="icon"
+              title="Copy conversation as Markdown"
+              aria-label="Copy conversation"
+            >
+              <><ClipboardIcon className="size-3.5" /><span className="hidden sm:inline ml-1">Copy</span></>
+            </ConversationCopy>
             {onDuplicateSession && (
               <Button
                 className="h-7 w-7 sm:h-7 sm:w-auto sm:px-2.5 sm:text-[0.7rem]"
