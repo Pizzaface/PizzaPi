@@ -226,6 +226,25 @@ describe("extractImages", () => {
         expect(result1.extracted[0].attachmentId).toBe(result2.extracted[0].attachmentId);
     });
 
+    test("produces different attachment IDs for different users with same image", () => {
+        const largeBase64 = fakeBase64(50_000);
+        const messages = [
+            {
+                role: "user",
+                content: [
+                    { type: "image", source: { type: "base64", media_type: "image/png", data: largeBase64 } },
+                ],
+            },
+        ];
+
+        const resultA = extractImages(messages, "session-1", "user-alice");
+        const resultB = extractImages(messages, "session-1", "user-bob");
+
+        // Same image but different users → different attachment IDs
+        // (attachment downloads enforce ownerUserId, so sharing across users would 403)
+        expect(resultA.extracted[0].attachmentId).not.toBe(resultB.extracted[0].attachmentId);
+    });
+
     test("produces different attachment IDs for different images", () => {
         const img1 = fakeBase64(50_000);
         const img2 = fakeBase64(60_000); // different size → different content

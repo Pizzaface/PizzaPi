@@ -58,11 +58,13 @@ export function stripDataUriPrefix(data: string): string {
 }
 
 /**
- * Produce a deterministic attachment ID from the base64 content so that
- * the same image in repeated state updates maps to the same stored file.
+ * Produce a deterministic attachment ID from the base64 content and userId
+ * so that the same image in repeated state updates maps to the same stored
+ * file, but different users get separate attachment records (attachment
+ * downloads enforce ownerUserId matching).
  */
-function contentHash(data: string): string {
-    return createHash("sha256").update(data).digest("hex").slice(0, 24);
+function contentHash(data: string, userId: string): string {
+    return createHash("sha256").update(userId).update(":").update(data).digest("hex").slice(0, 24);
 }
 
 // ── Pure extraction logic ────────────────────────────────────────────────────
@@ -87,11 +89,11 @@ export function estimateBase64Bytes(data: string): number {
  * This is a pure function — no I/O. Call storeAndReplaceImages() for the
  * full async pipeline.
  */
-export function extractImages(messages: unknown[], sessionId: string): ExtractionResult {
+export function extractImages(messages: unknown[], sessionId: string, userId: string = "unknown"): ExtractionResult {
     const extracted: ExtractedImage[] = [];
     let savedBytes = 0;
 
-    const processedMessages = messages.map((msg) => processMessage(msg, sessionId, extracted, (bytes) => { savedBytes += bytes; }));
+    const processedMessages = messages.map((msg) => processMessage(msg, sessionId, userId, extracted, (bytes) => { savedBytes += bytes; }));
 
     return { messages: processedMessages, extracted, savedBytes };
 }
@@ -99,6 +101,7 @@ export function extractImages(messages: unknown[], sessionId: string): Extractio
 function processMessage(
     msg: unknown,
     sessionId: string,
+    userId: string,
     extracted: ExtractedImage[],
     addSaved: (bytes: number) => void,
 ): unknown {
@@ -135,9 +138,11 @@ function processMessage(
                     ? source.mediaType
                     : "image/png";
 
-        // Use a content-based hash as the attachment ID so repeated
-        // state updates with the same image don't create duplicate files.
-        const attachmentId = contentHash(data);
+        // Use a content-based hash (scoped to userId) as the attachment ID
+        // so repeated state updates with the same image don't create duplicate
+        // files, but different users get separate records (attachment downloads
+        // enforce ownerUserId matching).
+        const attachmentId = contentHash(data, userId);
         extracted.push({ attachmentId, mimeType, base64Data: data, sizeBytes });
         addSaved(data.length); // Save the base64 string length (chars ≈ bytes for ASCII)
 
@@ -184,7 +189,7 @@ export async function storeAndReplaceImages(
 
     if (!Array.isArray(s.messages) || s.messages.length === 0) return state;
 
-    const result = extractImages(s.messages, sessionId);
+    const result = extractImages(s.messages, sessionId, userId);
     if (result.extracted.length === 0) return state;
 
     // Store all extracted images as attachments (fire concurrently)
@@ -222,7 +227,7 @@ export async function storeAndReplaceImagesInEvent(
 
     if (evt.type !== "agent_end" || !Array.isArray(evt.messages)) return event;
 
-    const result = extractImages(evt.messages, sessionId);
+    const result = extractImages(evt.messages, sessionId, userId);
     if (result.extracted.length === 0) return event;
 
     await Promise.all(
