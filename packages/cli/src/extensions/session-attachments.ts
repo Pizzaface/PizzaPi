@@ -10,7 +10,7 @@
  * Attachments live as long as the session does — no independent TTL.
  */
 
-import { mkdir, rm, readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, rm, readdir, readFile, writeFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
@@ -49,6 +49,21 @@ function sessionDir(sessionId: string): string {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+/**
+ * Per-session mutex to serialize save operations.
+ * Prevents concurrent saves from reading the same directory snapshot and
+ * choosing identical filenames (the readdir→write sequence is non-atomic).
+ */
+const sessionLocks = new Map<string, Promise<void>>();
+
+function withSessionLock<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
+    const prev = sessionLocks.get(sessionId) ?? Promise.resolve();
+    const next = prev.then(fn, fn); // Run fn after previous completes (even on error)
+    // Store the void-typed chain so subsequent callers wait for us
+    sessionLocks.set(sessionId, next.then(() => {}, () => {}));
+    return next;
+}
 
 /** Sanitize a string for use as a filesystem path component. */
 function sanitize(name: string): string {
@@ -90,37 +105,40 @@ export async function saveSessionAttachment(
     mediaType: string,
     data: Buffer,
 ): Promise<SavedAttachment> {
-    const dir = sessionDir(sessionId);
-    await mkdir(dir, { recursive: true });
+    // Serialize saves per session so the readdir→write dedup sequence is atomic.
+    return withSessionLock(sessionId, async () => {
+        const dir = sessionDir(sessionId);
+        await mkdir(dir, { recursive: true });
 
-    // Read existing files for deduplication
-    let existingFiles: Set<string>;
-    try {
-        const entries = await readdir(dir);
-        existingFiles = new Set(entries);
-    } catch {
-        existingFiles = new Set();
-    }
+        // Read existing files for deduplication
+        let existingFiles: Set<string>;
+        try {
+            const entries = await readdir(dir);
+            existingFiles = new Set(entries);
+        } catch {
+            existingFiles = new Set();
+        }
 
-    const safeName = sanitize(filename || "attachment");
-    const storedAs = deduplicateFilename(safeName, existingFiles);
-    const filePath = join(dir, storedAs);
+        const safeName = sanitize(filename || "attachment");
+        const storedAs = deduplicateFilename(safeName, existingFiles);
+        const filePath = join(dir, storedAs);
 
-    await writeFile(filePath, data);
+        await writeFile(filePath, data);
 
-    const meta: AttachmentMeta = {
-        filename,
-        mediaType,
-        size: data.length,
-        savedAt: new Date().toISOString(),
-        storedAs,
-    };
+        const meta: AttachmentMeta = {
+            filename,
+            mediaType,
+            size: data.length,
+            savedAt: new Date().toISOString(),
+            storedAs,
+        };
 
-    // Write sidecar metadata
-    const metaPath = `${filePath}.meta.json`;
-    await writeFile(metaPath, JSON.stringify(meta, null, 2));
+        // Write sidecar metadata
+        const metaPath = `${filePath}.meta.json`;
+        await writeFile(metaPath, JSON.stringify(meta, null, 2));
 
-    return { filePath, meta };
+        return { filePath, meta };
+    });
 }
 
 /**
@@ -168,4 +186,51 @@ export async function cleanupSessionAttachments(sessionId: string): Promise<void
  */
 export function getSessionAttachmentDir(sessionId: string): string {
     return sessionDir(sessionId);
+}
+
+/**
+ * Sweep orphaned session attachment directories.
+ *
+ * Cross-references the directories under the attachment root against a set of
+ * known active session IDs. Any directory whose name doesn't match an active
+ * session is deleted. This handles cleanup after crashes, restarts, or sessions
+ * that ended without a clean shutdown.
+ *
+ * @param activeSessionIds  Set of session IDs that are currently alive
+ * @returns                 Number of orphaned directories removed
+ */
+export async function sweepOrphanedAttachments(activeSessionIds: Set<string>): Promise<number> {
+    const root = getRoot();
+    let entries: string[];
+    try {
+        entries = await readdir(root);
+    } catch {
+        return 0; // Root doesn't exist yet — nothing to sweep
+    }
+
+    let removed = 0;
+    for (const entry of entries) {
+        // Session dirs are sanitized session IDs — check against active set
+        if (activeSessionIds.has(entry)) continue;
+
+        const dirPath = join(root, entry);
+        try {
+            const s = await stat(dirPath);
+            if (!s.isDirectory()) continue;
+        } catch {
+            continue;
+        }
+
+        try {
+            await rm(dirPath, { recursive: true, force: true });
+            removed++;
+        } catch {
+            // Best-effort — skip if removal fails
+        }
+    }
+
+    if (removed > 0) {
+        console.log(`pizzapi: swept ${removed} orphaned session attachment director${removed === 1 ? "y" : "ies"}`);
+    }
+    return removed;
 }

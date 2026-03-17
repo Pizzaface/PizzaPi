@@ -20,6 +20,7 @@ import { fileURLToPath } from "node:url";
 import { io, type Socket } from "socket.io-client";
 import type { RunnerClientToServerEvents, RunnerServerToClientEvents } from "@pizzapi/protocol";
 import { loadGlobalConfig } from "../config.js";
+import { cleanupSessionAttachments, sweepOrphanedAttachments } from "../extensions/session-attachments.js";
 
 interface RunnerSession {
     sessionId: string;
@@ -605,6 +606,10 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     console.log(`pizzapi runner: re-adopted ${adopted} orphaned session(s): ${existingSessions.map((s: any) => s.sessionId.slice(0, 8)).join(", ")}`);
                 }
             }
+
+            // Sweep orphaned session attachment directories — removes dirs for
+            // sessions that ended while the daemon was down or crashed.
+            void sweepOrphanedAttachments(new Set(runningSessions.keys())).catch(() => {});
         });
 
         // ── Session management ────────────────────────────────────────────
@@ -696,6 +701,8 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 runningSessions.delete(sessionId);
                 console.log(`pizzapi runner: killed session ${sessionId}${entry.adopted ? " (adopted)" : ""}`);
                 socket.emit("session_killed", { sessionId });
+                // Clean up persisted attachments for this session
+                void cleanupSessionAttachments(sessionId).catch(() => {});
             }
         });
 
@@ -707,6 +714,8 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             if (entry) {
                 runningSessions.delete(sessionId);
                 console.log(`pizzapi runner: session ${sessionId} ended on relay${entry.adopted ? " (adopted)" : ""}`);
+                // Clean up persisted attachments for this session
+                void cleanupSessionAttachments(sessionId).catch(() => {});
             }
         });
 

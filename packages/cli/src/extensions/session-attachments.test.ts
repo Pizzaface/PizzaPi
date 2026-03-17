@@ -13,6 +13,7 @@ import {
     listSessionAttachments,
     cleanupSessionAttachments,
     getSessionAttachmentDir,
+    sweepOrphanedAttachments,
 } from "./session-attachments.js";
 
 afterEach(() => {
@@ -143,6 +144,74 @@ describe("session-attachments", () => {
         test("returns a path containing the session ID", () => {
             const dir = getSessionAttachmentDir("my-session-id");
             expect(dir).toContain("my-session-id");
+        });
+    });
+
+    describe("concurrent saves (mutex)", () => {
+        test("concurrent saves with same filename produce unique files", async () => {
+            const sessionId = "session-concurrent";
+            const data = Buffer.from("content");
+
+            // Fire multiple saves concurrently with the same filename
+            const results = await Promise.all([
+                saveSessionAttachment(sessionId, "file.txt", "text/plain", data),
+                saveSessionAttachment(sessionId, "file.txt", "text/plain", data),
+                saveSessionAttachment(sessionId, "file.txt", "text/plain", data),
+            ]);
+
+            // Each should have a unique storedAs filename
+            const storedNames = results.map((r) => r.meta.storedAs);
+            const unique = new Set(storedNames);
+            expect(unique.size).toBe(3);
+
+            // All files should exist
+            for (const result of results) {
+                const stored = readFileSync(result.filePath);
+                expect(stored.toString()).toBe("content");
+            }
+        });
+    });
+
+    describe("sweepOrphanedAttachments", () => {
+        test("removes directories for sessions not in active set", async () => {
+            // Create attachments for two sessions
+            await saveSessionAttachment("session-alive", "f.txt", "text/plain", Buffer.from("a"));
+            await saveSessionAttachment("session-dead", "f.txt", "text/plain", Buffer.from("b"));
+
+            // Only session-alive is active
+            const removed = await sweepOrphanedAttachments(new Set(["session-alive"]));
+            expect(removed).toBe(1);
+
+            // session-alive should still exist
+            const alive = await listSessionAttachments("session-alive");
+            expect(alive).toHaveLength(1);
+
+            // session-dead should be gone
+            const dead = await listSessionAttachments("session-dead");
+            expect(dead).toHaveLength(0);
+        });
+
+        test("returns 0 when root directory does not exist", async () => {
+            // Clean up root first
+            rmSync(testRoot, { recursive: true, force: true });
+            const removed = await sweepOrphanedAttachments(new Set());
+            expect(removed).toBe(0);
+        });
+
+        test("removes all directories when no sessions are active", async () => {
+            await saveSessionAttachment("session-x", "f.txt", "text/plain", Buffer.from("x"));
+            await saveSessionAttachment("session-y", "f.txt", "text/plain", Buffer.from("y"));
+
+            const removed = await sweepOrphanedAttachments(new Set());
+            expect(removed).toBe(2);
+        });
+
+        test("no-op when all directories match active sessions", async () => {
+            await saveSessionAttachment("session-a", "f.txt", "text/plain", Buffer.from("a"));
+            await saveSessionAttachment("session-b", "f.txt", "text/plain", Buffer.from("b"));
+
+            const removed = await sweepOrphanedAttachments(new Set(["session-a", "session-b"]));
+            expect(removed).toBe(0);
         });
     });
 });
