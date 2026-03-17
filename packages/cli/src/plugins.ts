@@ -22,7 +22,7 @@
  *   └── scripts/                  # Helper scripts referenced by hooks/commands
  */
 import { existsSync, lstatSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { basename, join, relative, resolve } from "node:path";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -185,14 +185,17 @@ export interface DiscoveredPlugin {
  *
  * These are user-controlled home directories — safe to auto-load because
  * they have the same trust level as ~/.pi/agent/extensions/ or ~/.agents/skills/.
+ *
+ * NOTE: ~/.claude/plugins/ is intentionally excluded here. Claude Code manages
+ * that directory via its marketplace system — plugins are installed into a cache
+ * subdirectory and tracked via installed_plugins.json. We discover those via
+ * discoverClaudeInstalledPlugins() instead of blindly scanning the directory.
  */
 export function globalPluginDirs(): string[] {
     const home = homedir();
     return [
         join(home, ".pizzapi", "plugins"),
         join(home, ".agents", "plugins"),
-        // Claude Code's own plugin locations (read-only discovery)
-        join(home, ".claude", "plugins"),
     ];
 }
 
@@ -235,6 +238,103 @@ export function pluginSearchDirs(cwd: string, opts?: { includeProjectLocal?: boo
         }
     }
     return [...new Set(dirs)];
+}
+
+// ── Claude Code installed plugins ─────────────────────────────────────────────
+
+/**
+ * Represents an entry from Claude Code's installed_plugins.json.
+ */
+export interface ClaudeInstalledPluginEntry {
+    scope: string;
+    installPath: string;
+    version: string;
+    lastUpdated?: string;
+    projectPath?: string;
+}
+
+/**
+ * Discover plugins installed via Claude Code's marketplace system.
+ *
+ * Reads ~/.claude/plugins/installed_plugins.json and parses each plugin
+ * from its cached installPath. Only returns plugins whose installPath
+ * actually exists on disk.
+ *
+ * This replaces the old approach of blindly scanning ~/.claude/plugins/
+ * as a flat directory, which would pick up marketplace catalogs and
+ * ignore the enable/disable state managed by Claude Code.
+ *
+ * @param cwd - Project working directory (used to filter project-scoped plugins)
+ */
+export function discoverClaudeInstalledPlugins(cwd?: string): DiscoveredPlugin[] {
+    // Use process.env.HOME directly (not homedir()) so tests can override it.
+    // homedir() caches the value at process start and ignores env changes.
+    const home = process.env.HOME || homedir();
+    const installedPath = join(home, ".claude", "plugins", "installed_plugins.json");
+
+    if (!existsSync(installedPath)) return [];
+
+    let raw: string;
+    try {
+        raw = readFileSync(installedPath, "utf-8");
+    } catch {
+        return [];
+    }
+
+    let data: { version?: number; plugins?: Record<string, ClaudeInstalledPluginEntry[]> };
+    try {
+        data = JSON.parse(raw);
+    } catch {
+        return [];
+    }
+
+    if (!data.plugins || typeof data.plugins !== "object") return [];
+
+    const plugins: DiscoveredPlugin[] = [];
+    const seen = new Set<string>();
+
+    for (const [_key, installations] of Object.entries(data.plugins)) {
+        if (!Array.isArray(installations) || installations.length === 0) continue;
+
+        // Find the best installation: prefer most recently updated
+        const sorted = [...installations]
+            .filter(inst => inst && typeof inst.installPath === "string" && inst.installPath.length > 0)
+            .sort((a, b) => {
+                const ta = typeof a.lastUpdated === "string" ? new Date(a.lastUpdated).getTime() : 0;
+                const tb = typeof b.lastUpdated === "string" ? new Date(b.lastUpdated).getTime() : 0;
+                return tb - ta;
+            });
+
+        for (const inst of sorted) {
+            // Skip project-scoped plugins that don't match current cwd.
+            // Uses path.relative to avoid platform-specific separator issues.
+            if (inst.scope === "project" && cwd && inst.projectPath) {
+                const rel = relative(resolve(inst.projectPath), resolve(cwd));
+                if (rel.startsWith("..")) {
+                    continue;
+                }
+            }
+
+            const installDir = inst.installPath;
+            if (!existsSync(installDir)) continue;
+
+            // Check it looks like a plugin directory
+            if (!isPluginDir(installDir)) continue;
+
+            try {
+                const plugin = parsePlugin(installDir);
+                if (!seen.has(plugin.name)) {
+                    seen.add(plugin.name);
+                    plugins.push(plugin);
+                }
+            } catch {
+                // Skip unparseable plugins
+            }
+            break; // Use first valid installation for this plugin key
+        }
+    }
+
+    return plugins;
 }
 
 // ── Parsing helpers ───────────────────────────────────────────────────────────
@@ -741,6 +841,12 @@ export function scanPluginsDir(dir: string): DiscoveredPlugin[] {
  * Discover all Claude Code plugins from all search directories.
  * Deduplicates by plugin name (first found wins).
  *
+ * Discovery sources (in precedence order):
+ * 1. PizzaPi plugin dirs (~/.pizzapi/plugins/, ~/.agents/plugins/)
+ * 2. Claude Code installed plugins (from ~/.claude/plugins/installed_plugins.json)
+ * 3. Project-local plugin dirs (if opts.includeProjectLocal)
+ * 4. Extra dirs (if opts.extraDirs)
+ *
  * @param cwd - Project working directory
  * @param opts.includeProjectLocal - If true, include project-local plugin dirs
  *   (default: false — project-local plugins can run arbitrary code)
@@ -751,12 +857,21 @@ export function discoverPlugins(cwd: string, opts?: { includeProjectLocal?: bool
     const seen = new Set<string>();
     const plugins: DiscoveredPlugin[] = [];
 
+    // 1. Scan PizzaPi/agents plugin dirs
     for (const dir of dirs) {
         for (const plugin of scanPluginsDir(dir)) {
             if (!seen.has(plugin.name)) {
                 seen.add(plugin.name);
                 plugins.push(plugin);
             }
+        }
+    }
+
+    // 2. Discover Claude Code marketplace-installed plugins
+    for (const plugin of discoverClaudeInstalledPlugins(cwd)) {
+        if (!seen.has(plugin.name)) {
+            seen.add(plugin.name);
+            plugins.push(plugin);
         }
     }
 

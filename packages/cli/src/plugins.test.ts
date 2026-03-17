@@ -17,6 +17,7 @@ import {
     isPluginDir,
     scanPluginsDir,
     discoverPlugins,
+    discoverClaudeInstalledPlugins,
     pluginSearchDirs,
     globalPluginDirs,
     projectPluginDirs,
@@ -897,5 +898,201 @@ describe("pluginSearchDirs security", () => {
         } finally {
             process.env.HOME = realHome;
         }
+    });
+});
+
+// ── Claude Code installed_plugins.json discovery ──────────────────────────────
+
+describe("discoverClaudeInstalledPlugins", () => {
+    let tmpDir: string;
+    let realHome: string;
+
+    beforeAll(() => {
+        tmpDir = mkdtempSync(join(tmpdir(), "claude-installed-plugins-"));
+        realHome = process.env.HOME!;
+    });
+
+    afterAll(() => {
+        process.env.HOME = realHome;
+        try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+    });
+
+    function setupHome(name: string): string {
+        const home = join(tmpDir, name);
+        mkdirSync(join(home, ".claude", "plugins"), { recursive: true });
+        process.env.HOME = home;
+        return home;
+    }
+
+    function writeInstalledPlugins(home: string, data: unknown): void {
+        writeFileSync(
+            join(home, ".claude", "plugins", "installed_plugins.json"),
+            JSON.stringify(data, null, 2),
+        );
+    }
+
+    function createCachedPlugin(home: string, marketplace: string, name: string, version: string): string {
+        const dir = join(home, ".claude", "plugins", "cache", marketplace, name, version);
+        mkdirSync(join(dir, ".claude-plugin"), { recursive: true });
+        writeFileSync(
+            join(dir, ".claude-plugin", "plugin.json"),
+            JSON.stringify({ name, description: `Test plugin ${name}`, version }),
+        );
+        mkdirSync(join(dir, "commands"), { recursive: true });
+        writeFileSync(join(dir, "commands", "hello.md"), `---\ndescription: Hello from ${name}\n---\n# Hello`);
+        return dir;
+    }
+
+    test("returns empty array when installed_plugins.json does not exist", () => {
+        const home = setupHome("no-file");
+        const result = discoverClaudeInstalledPlugins("/tmp");
+        expect(result).toEqual([]);
+    });
+
+    test("returns empty array for malformed JSON", () => {
+        const home = setupHome("bad-json");
+        writeFileSync(join(home, ".claude", "plugins", "installed_plugins.json"), "not json{{{");
+        const result = discoverClaudeInstalledPlugins("/tmp");
+        expect(result).toEqual([]);
+    });
+
+    test("returns empty array when plugins field is missing", () => {
+        const home = setupHome("no-plugins");
+        writeInstalledPlugins(home, { version: 2 });
+        const result = discoverClaudeInstalledPlugins("/tmp");
+        expect(result).toEqual([]);
+    });
+
+    test("discovers plugins from valid installed_plugins.json", () => {
+        const home = setupHome("valid");
+        const installPath = createCachedPlugin(home, "my-marketplace", "cool-plugin", "1.0.0");
+        writeInstalledPlugins(home, {
+            version: 2,
+            plugins: {
+                "cool-plugin@my-marketplace": [{
+                    scope: "user",
+                    installPath,
+                    version: "1.0.0",
+                    installedAt: "2026-01-15T00:00:00Z",
+                    lastUpdated: "2026-01-15T00:00:00Z",
+                }],
+            },
+        });
+
+        const result = discoverClaudeInstalledPlugins("/tmp");
+        expect(result).toHaveLength(1);
+        expect(result[0].name).toBe("cool-plugin");
+        expect(result[0].commands).toHaveLength(1);
+    });
+
+    test("skips plugins whose installPath does not exist", () => {
+        const home = setupHome("missing-path");
+        writeInstalledPlugins(home, {
+            version: 2,
+            plugins: {
+                "ghost@marketplace": [{
+                    scope: "user",
+                    installPath: join(home, ".claude", "plugins", "cache", "marketplace", "ghost", "1.0.0"),
+                    version: "1.0.0",
+                }],
+            },
+        });
+
+        const result = discoverClaudeInstalledPlugins("/tmp");
+        expect(result).toEqual([]);
+    });
+
+    test("discovers multiple plugins from different marketplaces", () => {
+        const home = setupHome("multi");
+        const path1 = createCachedPlugin(home, "mkt-a", "plugin-a", "1.0.0");
+        const path2 = createCachedPlugin(home, "mkt-b", "plugin-b", "2.0.0");
+        writeInstalledPlugins(home, {
+            version: 2,
+            plugins: {
+                "plugin-a@mkt-a": [{ scope: "user", installPath: path1, version: "1.0.0" }],
+                "plugin-b@mkt-b": [{ scope: "user", installPath: path2, version: "2.0.0" }],
+            },
+        });
+
+        const result = discoverClaudeInstalledPlugins("/tmp");
+        expect(result).toHaveLength(2);
+        const names = result.map(p => p.name).sort();
+        expect(names).toEqual(["plugin-a", "plugin-b"]);
+    });
+
+    test("skips project-scoped plugins that don't match cwd", () => {
+        const home = setupHome("project-scope");
+        const path1 = createCachedPlugin(home, "mkt", "project-plugin", "1.0.0");
+        writeInstalledPlugins(home, {
+            version: 2,
+            plugins: {
+                "project-plugin@mkt": [{
+                    scope: "project",
+                    projectPath: "/some/other/project",
+                    installPath: path1,
+                    version: "1.0.0",
+                }],
+            },
+        });
+
+        // cwd doesn't match projectPath — should be skipped
+        const result = discoverClaudeInstalledPlugins("/Users/me/my-project");
+        expect(result).toEqual([]);
+    });
+
+    test("includes project-scoped plugins that match cwd", () => {
+        const home = setupHome("project-match");
+        const path1 = createCachedPlugin(home, "mkt", "my-project-plugin", "1.0.0");
+        const projectDir = join(tmpDir, "my-real-project");
+        mkdirSync(projectDir, { recursive: true });
+        writeInstalledPlugins(home, {
+            version: 2,
+            plugins: {
+                "my-project-plugin@mkt": [{
+                    scope: "project",
+                    projectPath: projectDir,
+                    installPath: path1,
+                    version: "1.0.0",
+                }],
+            },
+        });
+
+        const result = discoverClaudeInstalledPlugins(projectDir);
+        expect(result).toHaveLength(1);
+        expect(result[0].name).toBe("my-project-plugin");
+    });
+
+    test("prefers most recently updated installation", () => {
+        const home = setupHome("prefer-newest");
+        const oldPath = createCachedPlugin(home, "mkt", "evolving", "1.0.0");
+        const newPath = createCachedPlugin(home, "mkt", "evolving", "2.0.0");
+        // Overwrite the manifest to distinguish versions
+        writeFileSync(
+            join(newPath, ".claude-plugin", "plugin.json"),
+            JSON.stringify({ name: "evolving", description: "v2", version: "2.0.0" }),
+        );
+        writeInstalledPlugins(home, {
+            version: 2,
+            plugins: {
+                "evolving@mkt": [
+                    { scope: "user", installPath: oldPath, version: "1.0.0", lastUpdated: "2026-01-01T00:00:00Z" },
+                    { scope: "user", installPath: newPath, version: "2.0.0", lastUpdated: "2026-06-01T00:00:00Z" },
+                ],
+            },
+        });
+
+        const result = discoverClaudeInstalledPlugins("/tmp");
+        expect(result).toHaveLength(1);
+        expect(result[0].description).toBe("v2");
+    });
+
+    test("globalPluginDirs does NOT include ~/.claude/plugins", () => {
+        const home = setupHome("dirs-check");
+        const dirs = globalPluginDirs();
+        const claudePluginsDir = join(home, ".claude", "plugins");
+        expect(dirs).not.toContain(claudePluginsDir);
+        // Should include pizzapi and agents
+        expect(dirs.some(d => d.includes(".pizzapi"))).toBe(true);
+        expect(dirs.some(d => d.includes(".agents"))).toBe(true);
     });
 });
