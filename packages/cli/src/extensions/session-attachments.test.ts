@@ -213,5 +213,21 @@ describe("session-attachments", () => {
             const removed = await sweepOrphanedAttachments(new Set(["session-a", "session-b"]));
             expect(removed).toBe(0);
         });
+
+        test("preserves directories for active sessions whose IDs contain sanitized characters", async () => {
+            // Session IDs with '/' or ':' get sanitized to '_' when stored as directory names.
+            // The orphan sweep must compare sanitized IDs so that a running session like
+            // "runner/abc:1" (stored as "runner_abc_1") is not falsely treated as an orphan.
+            const rawId = "runner/abc:1";
+            await saveSessionAttachment(rawId, "f.txt", "text/plain", Buffer.from("hi"));
+
+            // Pass the raw (unsanitized) ID as active
+            const removed = await sweepOrphanedAttachments(new Set([rawId]));
+            expect(removed).toBe(0);
+
+            // Directory should still be there
+            const files = await listSessionAttachments(rawId);
+            expect(files).toHaveLength(1);
+        });
     });
 });

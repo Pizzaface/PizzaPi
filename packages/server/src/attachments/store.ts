@@ -17,7 +17,7 @@ export interface StoredAttachment {
 }
 
 const DEFAULT_ATTACHMENT_TTL_MS = 15 * 60 * 1000;
-const DEFAULT_MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024;
+const DEFAULT_MAX_FILE_SIZE_BYTES = 30 * 1024 * 1024;
 /** Extracted images (from session state) persist for 24 hours. */
 const EXTRACTED_IMAGE_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -179,10 +179,14 @@ export async function storeExtractedImage(input: {
 
     attachments.set(attachmentId, record);
     addSessionRef(attachmentId, sessionId);
-    void persistExtractedAttachment(record).catch((err) => {
+    // Await both persists so the record and session reference are durably written
+    // before the caller can store the attachment URL in session state. Without
+    // this, a crash between the file-write and the SQLite commit leaves dangling
+    // /api/attachments/:id URLs in snapshots that can never be rehydrated.
+    await persistExtractedAttachment(record).catch((err) => {
         console.error("[attachments] Failed to persist extracted attachment:", err);
     });
-    void persistSessionRef(attachmentId, sessionId).catch(() => {});
+    await persistSessionRef(attachmentId, sessionId).catch(() => {});
     return record;
 }
 

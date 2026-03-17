@@ -209,10 +209,18 @@ export async function sweepOrphanedAttachments(activeSessionIds: Set<string>): P
         return 0; // Root doesn't exist yet — nothing to sweep
     }
 
+    // Build a set of sanitized active session IDs to match against directory names.
+    // Directory names are produced by sanitize(sessionId), so raw IDs containing
+    // characters normalized by sanitize (e.g. '/' or ':') would never match the
+    // directory name and their live directories would be falsely treated as orphans.
+    const activeSanitized = new Set<string>(
+        [...activeSessionIds].map((id) => sanitize(id))
+    );
+
     let removed = 0;
     for (const entry of entries) {
         // Session dirs are sanitized session IDs — check against active set
-        if (activeSessionIds.has(entry)) continue;
+        if (activeSanitized.has(entry)) continue;
 
         const dirPath = join(root, entry);
         try {

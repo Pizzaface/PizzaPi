@@ -2205,7 +2205,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
           key={sessionId ?? "__none"}
           onSubmit={handleSubmit}
           maxFiles={8}
-          maxFileSize={20 * 1024 * 1024}
+          maxFileSize={30 * 1024 * 1024}
           disabled={!sessionId || isCompacting}
           onError={(err) => {
             setComposerError(err.message);
