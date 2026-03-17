@@ -33,6 +33,9 @@ pizzapi web --port 8080
 # Set extra CORS origins (persisted)
 pizzapi web --origins "https://example.com"
 
+# Use a prebuilt image (e.g. from GitHub Container Registry)
+pizzapi web --image ghcr.io/acme/pizzapi --tag 0.1.32
+
 # Run in the foreground
 pizzapi web --foreground
 
@@ -50,6 +53,13 @@ pizzapi web stop      # Stop the hub
 All settings are persisted in `~/.pizzapi/web/config.json` and applied on every start. CLI flags like `--port` and `--origins` update the config automatically — you only need to pass them once.
 
 Persistent data (SQLite database) is stored in `~/.pizzapi/web/data/`.
+
+If you publish your own server image to GHCR, set it once and it will persist:
+
+```bash
+pizzapi web config set image ghcr.io/<org>/<image>
+pizzapi web config set imageTag latest
+```
 
 <Aside type="tip">
   `pizza web` is ideal for personal use or quick evaluation. For production deployments with custom domains and TLS, see the manual Docker Compose setup below. See the [CLI Reference](/PizzaPi/running/cli-reference/#pizzapi-web) for the full list of commands and config keys. Set `PIZZAPI_PREBUILD_UI=false` if you would rather have Docker perform the UI build.

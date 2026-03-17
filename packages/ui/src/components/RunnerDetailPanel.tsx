@@ -72,6 +72,8 @@ export interface RunnerDetailPanelProps {
     hasRunners: boolean;
     sessions: LiveSession[];
     latestVersion: string | null;
+    hubVersion: string | null;
+    hubImage: string | null;
     isRestarting: boolean;
     isStopping: boolean;
     isOffline?: boolean;
@@ -315,6 +317,8 @@ export function RunnerDetailPanel({
     hasRunners,
     sessions,
     latestVersion,
+    hubVersion,
+    hubImage,
     isRestarting,
     isStopping,
     isOffline,

@@ -41,3 +41,12 @@ export async function getLatestNpmVersion(): Promise<string | null> {
         return cachedVersion;
     }
 }
+
+export function getHubVersionInfo(): { image: string | null; version: string | null } {
+    const image = process.env.PIZZAPI_HUB_IMAGE?.trim();
+    const version = process.env.PIZZAPI_HUB_VERSION?.trim();
+    return {
+        image: image ? image : null,
+        version: version ? version : null,
+    };
+}

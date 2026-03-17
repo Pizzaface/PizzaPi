@@ -6,9 +6,10 @@ import { tmpdir } from "os";
 import {
     extractVapidFromCompose,
     extractSettingsFromCompose,
-    findRepoRoot,
+
     parseArgs,
     resolveBetterAuthSecret,
+    resolveComposeMode,
     resolveMissingProxySettings,
     shouldInstallDependencies,
     shouldRebuildHostUi,
@@ -31,17 +32,15 @@ services:
     restart: unless-stopped
 
   server:
-    build:
-      context: {{REPO_PATH}}
-      dockerfile: Dockerfile
-      args:
+{{SERVER_BUILD_BLOCK}}      args:
         PREBUILT_UI: "{{PREBUILT_UI}}"
-        UI_DIST_HASH: "{{UI_DIST_HASH}}"
-    ports:
+{{SERVER_IMAGE_LINE}}    ports:
       - "{{PORT}}:7492"
     environment:
       - PORT=7492
       - PIZZAPI_REDIS_URL=redis://redis:6379
+      - PIZZAPI_HUB_IMAGE={{HUB_IMAGE}}
+      - PIZZAPI_HUB_VERSION={{HUB_VERSION}}
       - BETTER_AUTH_SECRET={{BETTER_AUTH_SECRET}}
       - VAPID_PUBLIC_KEY={{VAPID_PUBLIC_KEY}}
       - VAPID_PRIVATE_KEY={{VAPID_PRIVATE_KEY}}
@@ -149,7 +148,10 @@ describe("readBooleanEnv", () => {
 });
 
     test("template contains all required placeholders", () => {
-        expect(COMPOSE_TEMPLATE).toContain("{{REPO_PATH}}");
+        expect(COMPOSE_TEMPLATE).toContain("{{SERVER_BUILD_BLOCK}}");
+        expect(COMPOSE_TEMPLATE).toContain("{{SERVER_IMAGE_LINE}}");
+        expect(COMPOSE_TEMPLATE).toContain("{{HUB_IMAGE}}");
+        expect(COMPOSE_TEMPLATE).toContain("{{HUB_VERSION}}");
         expect(COMPOSE_TEMPLATE).toContain("{{PORT}}");
         expect(COMPOSE_TEMPLATE).toContain("{{DATA_DIR}}");
         expect(COMPOSE_TEMPLATE).toContain("{{BETTER_AUTH_SECRET}}");
@@ -163,7 +165,10 @@ describe("readBooleanEnv", () => {
 
     test("template substitution produces valid compose structure", () => {
         const composed = COMPOSE_TEMPLATE
-            .replace(/\{\{REPO_PATH}}/g, "/home/user/.pizzapi/web/repo")
+            .replace(/\{\{SERVER_BUILD_BLOCK}}/g, "    build:\n      context: /home/user/.pizzapi/web/repo\n      dockerfile: Dockerfile\n")
+            .replace(/\{\{SERVER_IMAGE_LINE}}/g, "")
+            .replace(/\{\{HUB_IMAGE}}/g, "local-build")
+            .replace(/\{\{HUB_VERSION}}/g, "local")
             .replace(/\{\{PORT}}/g, "7492")
             .replace(/\{\{DATA_DIR}}/g, "/home/user/.pizzapi/web/data")
             .replace(/\{\{BETTER_AUTH_SECRET}}/g, "Secret123")
@@ -184,7 +189,7 @@ describe("readBooleanEnv", () => {
         expect(composed).toContain("services:");
         expect(composed).toContain("redis:");
         expect(composed).toContain("server:");
-        expect(composed).toContain('context: /home/user/.pizzapi/web/repo');
+        expect(composed).toContain("context: /home/user/.pizzapi/web/repo");
         expect(composed).toContain('"7492:7492"');
         expect(composed).toContain("BETTER_AUTH_SECRET=Secret123");
         expect(composed).toContain("VAPID_PUBLIC_KEY=BTestPublicKey123");
@@ -197,7 +202,10 @@ describe("readBooleanEnv", () => {
 
     test("template with no extra origins produces commented-out line", () => {
         const composed = COMPOSE_TEMPLATE
-            .replace(/\{\{REPO_PATH}}/g, "/repo")
+            .replace(/\{\{SERVER_BUILD_BLOCK}}/g, "    build:\n      context: /repo\n      dockerfile: Dockerfile\n")
+            .replace(/\{\{SERVER_IMAGE_LINE}}/g, "")
+            .replace(/\{\{HUB_IMAGE}}/g, "local-build")
+            .replace(/\{\{HUB_VERSION}}/g, "local")
             .replace(/\{\{PORT}}/g, "7492")
             .replace(/\{\{DATA_DIR}}/g, "/data")
             .replace(/\{\{BETTER_AUTH_SECRET}}/g, "Secret")
@@ -212,6 +220,33 @@ describe("readBooleanEnv", () => {
 
         expect(composed).toContain("# - PIZZAPI_EXTRA_ORIGINS=");
         expect(composed).not.toContain("{{");
+    });
+});
+
+describe("resolveComposeMode", () => {
+    test("returns build mode fields when image is empty", () => {
+        expect(resolveComposeMode("/repo", { image: "", imageTag: "latest" })).toEqual({
+            buildBlock: "    build:\n      context: /repo\n      dockerfile: Dockerfile\n",
+            imageLine: "",
+            hubImage: "local-build",
+            hubVersion: "local",
+        });
+    });
+
+    test("returns image mode fields when image is set", () => {
+        expect(resolveComposeMode("/repo", { image: "ghcr.io/acme/pizzapi", imageTag: "0.1.32" })).toEqual({
+            buildBlock: "",
+            imageLine: "    image: ghcr.io/acme/pizzapi:0.1.32\n",
+            hubImage: "ghcr.io/acme/pizzapi:0.1.32",
+            hubVersion: "0.1.32",
+        });
+    });
+});
+
+describe("parseArgs", () => {
+    test("parses image and tag flags", () => {
+        expect(parseArgs(["--image", "ghcr.io/acme/pizzapi", "--tag", "0.1.32"]))
+            .toEqual({ detach: true, help: false, image: "ghcr.io/acme/pizzapi", tag: "0.1.32" });
     });
 });
 

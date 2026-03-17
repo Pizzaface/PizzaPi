@@ -44,6 +44,8 @@ export function RunnerManager({
     const [restarting, setRestarting] = React.useState<Set<string>>(new Set());
     const [stopping, setStopping] = React.useState<Set<string>>(new Set());
     const [latestVersion, setLatestVersion] = React.useState<string | null>(null);
+    const [hubVersion, setHubVersion] = React.useState<string | null>(null);
+    const [hubImage, setHubImage] = React.useState<string | null>(null);
 
     // Error state for inline error display
     const [error, setError] = React.useState<string | null>(null);
@@ -52,10 +54,15 @@ export function RunnerManager({
     const [stopConfirmRunnerId, setStopConfirmRunnerId] = React.useState<string | null>(null);
 
     // Fetch the latest available version from the server (used by RunnerDetailPanel for update-available badge)
+    // Also fetches hubVersion/hubImage for compose image info display
     React.useEffect(() => {
         fetch("/api/version")
             .then((res) => res.ok ? res.json() : null)
-            .then((data) => { if (data?.version) setLatestVersion(data.version); })
+            .then((data) => {
+                if (data?.version) setLatestVersion(data.version);
+                if (data?.hubVersion) setHubVersion(data.hubVersion);
+                if (data?.hubImage) setHubImage(data.hubImage);
+            })
             .catch(() => {});
     }, []);
 
@@ -259,6 +266,8 @@ export function RunnerManager({
                 hasRunners={runners.length > 0}
                 sessions={runnerSessions}
                 latestVersion={latestVersion}
+                hubVersion={hubVersion}
+                hubImage={hubImage}
                 isRestarting={restarting.has(selectedRunnerId ?? "")}
                 isStopping={stopping.has(selectedRunnerId ?? "")}
                 isOffline={!selectedRunner}

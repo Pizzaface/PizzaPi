@@ -145,6 +145,8 @@ Usage:
 Flags:
   --port <port>       Set the host port (persisted to config.json)
   --origins <list>    Set extra allowed CORS origins (comma-separated, persisted)
+  --image <repo>      Use a prebuilt image repo (e.g. ghcr.io/acme/pizzapi)
+  --tag <tag>         Image tag used with --image (default: latest)
   -f, --foreground    Run in the foreground (don't detach)
   --no-cache          Rebuild Docker image without layer cache
   -h, --help          Show this help
@@ -159,6 +161,8 @@ Configuration (~/.pizzapi/web/config.json):
   port            Host port (default: 7492)
   vapidSubject    VAPID subject for push notifications
   extraOrigins    Extra CORS origins, comma-separated
+  image           Optional Docker image repo (empty = build from source)
+  imageTag        Docker image tag for image mode
 ```
 
 ```bash
@@ -170,6 +174,9 @@ pizzapi web --port 8080
 
 # Set extra CORS origins (persisted)
 pizzapi web --origins "https://example.com,https://other.com"
+
+# Run from a custom GHCR image instead of local source build
+pizzapi web --image ghcr.io/acme/pizzapi --tag 0.1.32
 
 # Run in the foreground (don't detach)
 pizzapi web --foreground
@@ -201,6 +208,8 @@ pizzapi web status
 |------|-------------|
 | `--port <number>` | HTTP port to expose (default: `7492`). Persisted to `config.json`. |
 | `--origins <list>` | Extra CORS origins, comma-separated. Persisted to `config.json`. |
+| `--image <repo>` | Use a prebuilt Docker image repository (for example `ghcr.io/acme/pizzapi`). Persisted to `config.json`. |
+| `--tag <tag>` | Image tag used with `--image` (default `latest`). Persisted to `config.json`. |
 | `--foreground`, `-f` | Run in the foreground instead of detaching |
 | `--help`, `-h` | Show help |
 
@@ -220,6 +229,8 @@ Update a configuration value. Changes are saved to `~/.pizzapi/web/config.json` 
 pizzapi web config set port 9000
 pizzapi web config set extraOrigins "https://example.com"
 pizzapi web config set vapidSubject "mailto:ops@example.com"
+pizzapi web config set image ghcr.io/acme/pizzapi
+pizzapi web config set imageTag 0.1.32
 ```
 
 | Key | Default | Description |
@@ -227,6 +238,8 @@ pizzapi web config set vapidSubject "mailto:ops@example.com"
 | `port` | `7492` | Host port to expose the web UI on |
 | `vapidSubject` | `mailto:admin@pizzapi.local` | VAPID subject for web push notifications |
 | `extraOrigins` | *(none)* | Extra allowed CORS origins, comma-separated |
+| `image` | *(empty)* | Docker image repo for image mode. Empty means build from source. |
+| `imageTag` | `latest` | Docker image tag used with `image`. |
 
 <Aside type="tip">
   CLI flags like `--port` and `--origins` automatically persist to `config.json`, so you only need to pass them once. Use `config set` to change values without starting the server.

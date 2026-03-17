@@ -7,7 +7,7 @@
  * files and eventually 404.
  */
 
-import { getLatestNpmVersion } from "../version.js";
+import { getHubVersionInfo, getLatestNpmVersion } from "../version.js";
 import { serverHealth } from "../health.js";
 import { handleAuthRoute } from "./auth.js";
 import { handleRunnersRoute } from "./runners.js";
@@ -51,8 +51,13 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
     }
 
     if (url.pathname === "/api/version" && req.method === "GET") {
-        const version = await getLatestNpmVersion();
-        return Response.json({ version });
+        const latestVersion = await getLatestNpmVersion();
+        const hub = getHubVersionInfo();
+        return Response.json({
+            version: latestVersion,
+            hubVersion: hub.version,
+            hubImage: hub.image,
+        });
     }
 
     // ── Domain routers ─────────────────────────────────────────────────

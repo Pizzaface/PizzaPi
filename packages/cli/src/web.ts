@@ -37,6 +37,10 @@ export interface WebConfig {
     trustProxy?: boolean;
     /** Number of trusted proxy hops for X-Forwarded-For (persisted). */
     proxyDepth?: number;
+    /** Optional Docker image repository for the server (e.g. ghcr.io/org/pizzapi). */
+    image: string;
+    /** Docker image tag to deploy when image mode is enabled. */
+    imageTag: string;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -165,6 +169,8 @@ const DEFAULT_CONFIG: WebConfig = {
     vapidSubject: "mailto:admin@pizzapi.local",
     extraOrigins: "",
     betterAuthSecret: "",
+    image: "",
+    imageTag: "latest",
 };
 
 /** Settings that can be extracted from an existing compose.yml */
@@ -582,17 +588,15 @@ services:
     restart: unless-stopped
 
   server:
-    build:
-      context: {{REPO_PATH}}
-      dockerfile: Dockerfile
-      args:
+{{SERVER_BUILD_BLOCK}}      args:
         PREBUILT_UI: "{{PREBUILT_UI}}"
-        UI_DIST_HASH: "{{UI_DIST_HASH}}"
-    ports:
+{{SERVER_IMAGE_LINE}}    ports:
       - "{{PORT}}:7492"
     environment:
       - PORT=7492
       - PIZZAPI_REDIS_URL=redis://redis:6379
+      - PIZZAPI_HUB_IMAGE={{HUB_IMAGE}}
+      - PIZZAPI_HUB_VERSION={{HUB_VERSION}}
       - BETTER_AUTH_SECRET={{BETTER_AUTH_SECRET}}
       - VAPID_PUBLIC_KEY={{VAPID_PUBLIC_KEY}}
       - VAPID_PRIVATE_KEY={{VAPID_PRIVATE_KEY}}
@@ -711,24 +715,37 @@ function prebuildUI(repoPath: string): PrebuildResult {
     return { prebuilt: false, rebuilt: false };
 }
 
-/**
- * Write a `.build-stamp` file into dist/ with a unique timestamp.
- * This ensures Docker BuildKit's content-based COPY cache always detects
- * a change when the host prebuild actually ran, even if the Vite output
- * is byte-identical (e.g. only whitespace/comment changes).
- */
-function writeBuildStamp(distDir: string): void {
-    try {
-        writeFileSync(
-            join(distDir, ".build-stamp"),
-            JSON.stringify({ builtAt: new Date().toISOString(), pid: process.pid }) + "\n"
-        );
-    } catch {
-        // Non-fatal — Docker will still detect most changes without it
+export function resolveComposeMode(repoPath: string, config: Pick<WebConfig, "image" | "imageTag">): {
+    buildBlock: string;
+    imageLine: string;
+    hubImage: string;
+    hubVersion: string;
+} {
+    const imageRepo = config.image.trim();
+    if (imageRepo.length === 0) {
+        return {
+            buildBlock: `    build:
+      context: ${repoPath}
+      dockerfile: Dockerfile
+`,
+            imageLine: "",
+            hubImage: "local-build",
+            hubVersion: "local",
+        };
     }
+
+    const imageTag = config.imageTag.trim() || "latest";
+    const imageRef = `${imageRepo}:${imageTag}`;
+    return {
+        buildBlock: "",
+        imageLine: `    image: ${imageRef}
+`,
+        hubImage: imageRef,
+        hubVersion: imageTag,
+    };
 }
 
-function generateComposeFile(repoPath: string, config: WebConfig, prebuiltUi: boolean, uiDistHash?: string): string {
+function generateComposeFile(repoPath: string, config: WebConfig, prebuiltUi: boolean): string {
     const composePath = join(WEB_DIR, "compose.yml");
     mkdirSync(WEB_DIR, { recursive: true });
 
@@ -743,9 +760,13 @@ function generateComposeFile(repoPath: string, config: WebConfig, prebuiltUi: bo
         template = COMPOSE_TEMPLATE;
     }
 
+    const composeMode = resolveComposeMode(repoPath, config);
+
     const extraOriginsLine = config.extraOrigins
-        ? `      - PIZZAPI_EXTRA_ORIGINS=${config.extraOrigins}\n`
-        : `      # - PIZZAPI_EXTRA_ORIGINS=\n`;
+        ? `      - PIZZAPI_EXTRA_ORIGINS=${config.extraOrigins}
+`
+        : `      # - PIZZAPI_EXTRA_ORIGINS=
+`;
 
     // PIZZAPI_TRUST_PROXY: env var overrides config, and gets persisted back.
     // This ensures `PIZZAPI_TRUST_PROXY=true pizza web` is remembered on subsequent runs.
@@ -780,6 +801,10 @@ function generateComposeFile(repoPath: string, config: WebConfig, prebuiltUi: bo
 
     const compose = template
         .replace(/\{\{REPO_PATH}}/g, repoPath)
+        .replace(/\{\{SERVER_BUILD_BLOCK}}/g, composeMode.buildBlock)
+        .replace(/\{\{SERVER_IMAGE_LINE}}/g, composeMode.imageLine)
+        .replace(/\{\{HUB_IMAGE}}/g, composeMode.hubImage)
+        .replace(/\{\{HUB_VERSION}}/g, composeMode.hubVersion)
         .replace(/\{\{PORT}}/g, String(config.port))
         .replace(/\{\{DATA_DIR}}/g, dataDir)
         .replace(/\{\{VAPID_PUBLIC_KEY}}/g, config.vapid.publicKey)
@@ -828,6 +853,8 @@ async function composeExecAsync(composePath: string, args: string[]): Promise<nu
 interface ParsedArgs {
     port?: number;
     origins?: string;
+    image?: string;
+    tag?: string;
     detach: boolean;
     noCache: boolean;
     help: boolean;
@@ -858,6 +885,22 @@ export function parseArgs(args: string[]): ParsedArgs {
             }
             result.origins = next;
             i++;
+        } else if (arg === "--image") {
+            const next = args[i + 1];
+            if (!next || next.startsWith("-")) {
+                console.error("--image requires a value (e.g. ghcr.io/org/pizzapi)");
+                process.exit(1);
+            }
+            result.image = next;
+            i++;
+        } else if (arg === "--tag") {
+            const next = args[i + 1];
+            if (!next || next.startsWith("-")) {
+                console.error("--tag requires a value (e.g. latest or 0.1.32)");
+                process.exit(1);
+            }
+            result.tag = next;
+            i++;
         } else if (arg === "--foreground" || arg === "-f") {
             result.detach = false;
         } else if (arg === "--no-cache") {
@@ -873,40 +916,44 @@ export function parseArgs(args: string[]): ParsedArgs {
 // ─── Help text ────────────────────────────────────────────────────────────────
 
 function printWebHelp(): void {
-    log.info("");
-    log.info(`${c.brand("pizza web")} ${c.dim("— Manage the PizzaPi web hub (server + UI via Docker Compose)")}`);
-    log.info("");
-    log.info(c.label("Commands"));
-    log.info(`  ${c.cmd("pizza web")} ${c.dim("[flags]")}               Start the web hub`);
-    log.info(`  ${c.cmd("pizza web stop")}                  Stop the web hub`);
-    log.info(`  ${c.cmd("pizza web logs")}                  Tail container logs`);
-    log.info(`  ${c.cmd("pizza web status")}                Show container status`);
-    log.info(`  ${c.cmd("pizza web config")}                Show current configuration`);
-    log.info(`  ${c.cmd("pizza web config set")} ${c.dim("<k> <v>")}    Update a config value`);
-    log.info("");
-    log.info(c.label("Flags"));
-    log.info(`  ${c.flag("--port")} ${c.dim("<port>")}       Set the host port ${c.dim("(persisted to config.json)")}`);
-    log.info(`  ${c.flag("--origins")} ${c.dim("<list>")}    Set extra allowed CORS origins ${c.dim("(comma-separated, persisted)")}`);
-    log.info(`  ${c.flag("-f, --foreground")}    Run in the foreground ${c.dim("(don't detach)")}`);
-    log.info(`  ${c.flag("--no-cache")}          Rebuild Docker image without layer cache`);
-    log.info(`  ${c.flag("-h, --help")}          Show this help`);
-    log.info("");
-    log.info(`${c.label("Configuration")} ${c.dim(`(${CONFIG_PATH})`)}`);
-    log.info(`  ${c.accent("port")}            Host port ${c.dim("(default: 7492)")}`);
-    log.info(`  ${c.accent("vapidSubject")}    VAPID subject for push notifications`);
-    log.info(`  ${c.accent("extraOrigins")}    Extra CORS origins, comma-separated`);
-    log.info("");
-    log.info(c.label("Examples"));
-    log.info(`  ${c.dim("pizza web")}                           Start on default port 7492`);
-    log.info(`  ${c.dim("pizza web --port 8080")}               Start on port 8080 (remembered for next time)`);
-    log.info(`  ${c.dim("pizza web config set port 9000")}      Change port without starting`);
-    log.info(`  ${c.dim('pizza web config set extraOrigins "https://example.com"')}`);
-    log.info("");
+    console.log(`
+pizza web — Manage the PizzaPi web hub (server + UI via Docker Compose)
+
+Usage:
+  pizza web [flags]               Start the web hub
+  pizza web stop                  Stop the web hub
+  pizza web logs                  Tail container logs
+  pizza web status                Show container status
+  pizza web config                Show current configuration
+  pizza web config set <k> <v>    Update a config value
+
+Flags:
+  --port <port>       Set the host port (persisted to config.json)
+  --origins <list>    Set extra allowed CORS origins (comma-separated, persisted)
+  --image <repo>      Use a prebuilt Docker image repo (e.g. ghcr.io/org/pizzapi)
+  --tag <tag>         Image tag when --image is set (default: latest)
+  -f, --foreground    Run in the foreground (don't detach)
+  -h, --help          Show this help
+
+Configuration (${CONFIG_PATH}):
+  port            Host port (default: 7492)
+  vapidSubject    VAPID subject for push notifications (default: mailto:admin@pizzapi.local)
+  extraOrigins    Extra CORS origins, comma-separated
+  image           Optional Docker image repo (empty = build from source)
+  imageTag        Docker image tag for image mode (default: latest)
+
+Examples:
+  pizza web                           Start on default port 7492
+  pizza web --port 8080               Start on port 8080 (remembered for next time)
+  pizza web --image ghcr.io/acme/pizzapi --tag 0.1.32
+  pizza web config set port 9000      Change port without starting
+  pizza web config set extraOrigins "https://example.com"
+`.trim());
 }
 
 // ─── Config subcommand ────────────────────────────────────────────────────────
 
-const SETTABLE_KEYS = ["port", "vapidSubject", "extraOrigins"] as const;
+const SETTABLE_KEYS = ["port", "vapidSubject", "extraOrigins", "image", "imageTag"] as const;
 type SettableKey = typeof SETTABLE_KEYS[number];
 
 function runConfigSubcommand(args: string[]): void {
@@ -923,6 +970,8 @@ Settable keys:
   port            Host port (number)
   vapidSubject    VAPID subject for push notifications
   extraOrigins    Extra CORS origins, comma-separated
+  image           Docker image repo (empty = build from source)
+  imageTag        Docker image tag for image mode
 `.trim());
         return;
     }
@@ -931,13 +980,15 @@ Settable keys:
 
     // pizza web config (show)
     if (args.length === 0) {
-        log.info(`PizzaPi Web Config (${CONFIG_PATH}):\n`);
-        log.info(`  port:          ${config.port}`);
-        log.info(`  vapidSubject:  ${config.vapidSubject}`);
-        log.info(`  extraOrigins:  ${config.extraOrigins || "(none)"}`);
-        log.info(`  authSecret:    ${config.betterAuthSecret ? "*".repeat(20) + "..." : "(missing)"}`);
-        log.info(`  vapid.public:  ${config.vapid.publicKey.slice(0, 20)}...`);
-        log.info(`  vapid.private: ${"*".repeat(20)}...`);
+        console.log(`PizzaPi Web Config (${CONFIG_PATH}):\n`);
+        console.log(`  port:          ${config.port}`);
+        console.log(`  vapidSubject:  ${config.vapidSubject}`);
+        console.log(`  extraOrigins:  ${config.extraOrigins || "(none)"}`);
+        console.log(`  image:         ${config.image || "(build from source)"}`);
+        console.log(`  imageTag:      ${config.imageTag}`);
+        console.log(`  authSecret:    ${config.betterAuthSecret ? "*".repeat(20) + "..." : "(missing)"}`);
+        console.log(`  vapid.public:  ${config.vapid.publicKey.slice(0, 20)}...`);
+        console.log(`  vapid.private: ${"*".repeat(20)}...`);
         return;
     }
 
@@ -976,6 +1027,14 @@ Settable keys:
                 process.exit(1);
             }
             config.vapidSubject = value;
+        } else if (key === "image") {
+            config.image = value.trim();
+        } else if (key === "imageTag") {
+            if (!value.trim()) {
+                console.error("imageTag cannot be empty");
+                process.exit(1);
+            }
+            config.imageTag = value.trim();
         } else {
             // extraOrigins: empty string is valid (clears the setting)
             config[key] = value;
@@ -1068,43 +1127,43 @@ export async function runWeb(args: string[]): Promise<void> {
         config.extraOrigins = parsed.origins;
         configChanged = true;
     }
+    if (parsed.image !== undefined && parsed.image !== config.image) {
+        config.image = parsed.image;
+        configChanged = true;
+    }
+    if (parsed.tag !== undefined && parsed.tag !== config.imageTag) {
+        config.imageTag = parsed.tag;
+        configChanged = true;
+    }
     if (configChanged) {
         saveWebConfig(config);
     }
 
-    const repoPath = getRepoPath();
+    const useImageMode = config.image.length > 0;
+    const repoPath = useImageMode ? "" : getRepoPath();
 
-    const useHostPrebuild = readBooleanEnv(process.env.PIZZAPI_PREBUILD_UI, true);
-    if (!useHostPrebuild) {
-        log.info("Skipping host UI pre-build (PIZZAPI_PREBUILD_UI=false).");
+    let prebuiltUi = false;
+    if (!useImageMode) {
+        const useHostPrebuild = readBooleanEnv(process.env.PIZZAPI_PREBUILD_UI, true);
+        if (!useHostPrebuild) {
+            console.log("Skipping host UI pre-build (PIZZAPI_PREBUILD_UI=false).");
+        }
+        // Pre-build UI on the host for much faster Docker builds when enabled.
+        prebuiltUi = useHostPrebuild ? prebuildUI(repoPath) : false;
     }
+    const composePath = generateComposeFile(repoPath, config, prebuiltUi);
 
-    // Pre-build UI on the host for much faster Docker builds when enabled.
-    const prebuildResult: PrebuildResult = useHostPrebuild
-        ? prebuildUI(repoPath)
-        : { prebuilt: false, rebuilt: false };
-    const composePath = generateComposeFile(repoPath, config, prebuildResult.prebuilt, prebuildResult.distHash);
-
-    log.info(`Starting PizzaPi web on port ${config.port}...`);
-    log.info(`  Repo:    ${repoPath}`);
-    log.info(`  Config:  ${CONFIG_PATH}`);
-    log.info("");
-
-    // When the host prebuild actually rebuilt, force-recreate containers so
-    // Docker picks up the new image even if BuildKit's layer cache didn't
-    // detect the change (common on macOS Docker Desktop with virtiofs).
-    const forceRecreate = prebuildResult.rebuilt || parsed.noCache;
-
-    // --no-cache: run a separate `docker compose build --no-cache` first,
-    // because `docker compose up` doesn't support --no-cache directly.
-    if (parsed.noCache) {
-        log.info("Building without cache...");
-        await composeExecAsync(composePath, ["build", "--no-cache"]);
+    console.log(`Starting PizzaPi web on port ${config.port}...`);
+    if (useImageMode) {
+        console.log(`  Image:   ${config.image}:${config.imageTag}`);
+    } else {
+        console.log(`  Repo:    ${repoPath}`);
     }
+    console.log(`  Config:  ${CONFIG_PATH}`);
+    console.log();
 
     if (parsed.detach) {
         const upArgs = ["up", "-d", "--build"];
-        if (forceRecreate) upArgs.push("--force-recreate");
         await composeExecAsync(composePath, upArgs);
         log.info("");
         log.info(`✅ PizzaPi web is running at http://localhost:${config.port}`);
@@ -1115,7 +1174,6 @@ export async function runWeb(args: string[]): Promise<void> {
         log.info("  pizza web config    View configuration");
     } else {
         const upArgs = ["up", "--build"];
-        if (forceRecreate) upArgs.push("--force-recreate");
         await composeExecAsync(composePath, upArgs);
     }
 }
