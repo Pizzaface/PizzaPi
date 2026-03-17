@@ -7,6 +7,57 @@
 
 import type { RemoteInputAttachment } from "./remote-types.js";
 
+/** MIME types and file extensions recognized as text-based (safe to decode as UTF-8). */
+const TEXT_MIME_PREFIXES = ["text/"];
+const TEXT_MIME_TYPES = new Set([
+    "application/json",
+    "application/xml",
+    "application/yaml",
+    "application/x-yaml",
+    "application/javascript",
+    "application/typescript",
+    "application/x-sh",
+    "application/x-shellscript",
+    "application/sql",
+    "application/graphql",
+    "application/toml",
+    "application/x-toml",
+    "application/xhtml+xml",
+    "application/ld+json",
+]);
+const TEXT_FILE_EXTENSIONS = new Set([
+    ".txt", ".md", ".markdown", ".json", ".jsonl", ".yaml", ".yml",
+    ".xml", ".csv", ".tsv", ".log", ".ini", ".cfg", ".conf", ".toml",
+    ".env", ".sh", ".bash", ".zsh", ".fish",
+    ".js", ".mjs", ".cjs", ".ts", ".mts", ".cts", ".tsx", ".jsx",
+    ".py", ".rb", ".rs", ".go", ".java", ".kt", ".kts", ".scala",
+    ".c", ".h", ".cpp", ".hpp", ".cc", ".cs", ".swift", ".m",
+    ".html", ".htm", ".css", ".scss", ".sass", ".less",
+    ".sql", ".graphql", ".gql",
+    ".r", ".R", ".lua", ".pl", ".pm", ".ex", ".exs", ".erl",
+    ".hs", ".ml", ".mli", ".clj", ".cljs", ".elm", ".dart",
+    ".vue", ".svelte", ".astro",
+    ".dockerfile", ".dockerignore", ".gitignore", ".editorconfig",
+    ".lock", ".prisma", ".proto", ".tf", ".hcl",
+]);
+
+/** Returns true if the MIME type or filename indicates text content. */
+export function isTextMimeType(mimeType: string, filename?: string): boolean {
+    const lower = mimeType.toLowerCase();
+    if (TEXT_MIME_PREFIXES.some((p) => lower.startsWith(p))) return true;
+    if (TEXT_MIME_TYPES.has(lower)) return true;
+
+    // Fall back to file extension when MIME is generic (e.g. application/octet-stream)
+    if (filename) {
+        const dotIdx = filename.lastIndexOf(".");
+        if (dotIdx >= 0) {
+            const ext = filename.slice(dotIdx).toLowerCase();
+            if (TEXT_FILE_EXTENSIONS.has(ext)) return true;
+        }
+    }
+    return false;
+}
+
 export function normalizeRemoteInputAttachments(raw: unknown): RemoteInputAttachment[] {
     if (!Array.isArray(raw)) return [];
     return raw
@@ -96,7 +147,14 @@ export async function buildUserMessageFromRemoteInput(
         }
 
         const label = filename || mediaType || "attachment";
-        parts.push({ type: "text", text: `[Attachment provided by web client: ${label}]` });
+
+        if (dataBase64 && isTextMimeType(mediaType, filename)) {
+            const decoded = Buffer.from(dataBase64, "base64").toString("utf-8");
+            parts.push({ type: "text", text: `--- ${label} ---\n${decoded}\n--- end ${label} ---` });
+            continue;
+        }
+
+        parts.push({ type: "text", text: `[Attachment provided by web client: ${label} — binary content not included]` });
     }
 
     return parts.length > 0 ? parts : text;
