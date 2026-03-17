@@ -112,7 +112,7 @@ const SANDBOX_ONLY_CMD_PATTERNS = [
  * These detect operators/flags that cause writes regardless of command name.
  */
 const DESTRUCTIVE_FLAG_PATTERNS = [
-    /(^|[^<])>(?!>)/, />>/,
+    /(^|[^<0-9])>(?!>)/, />>/,
     /\bcurl\b.*\s(-o\S|-o\s|--output\b|--output=|-O\b|--remote-name\b|--remote-name-all\b|-D\s|-D\S|--dump-header\b|--dump-header=|-c\s|-c\S|--cookie-jar\b|--cookie-jar=|--trace\b|--trace=|--trace-ascii\b|--trace-ascii=|--libcurl\b|--libcurl=|--stderr\b|--stderr=|--hsts\b|--hsts=|--alt-svc\b|--alt-svc=)/i,
     /\bwget\b.*\s(-O\b|--output-document\b|--output-document=)/i,
     /\bfind\b.*\s-exec(dir)?\b/i, /\bfind\b.*\s-ok(dir)?\b/i, /\bfind\b.*\s-delete\b/i, /\bfind\b.*\s-fprintf\b/i,

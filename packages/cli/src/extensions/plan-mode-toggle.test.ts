@@ -434,6 +434,16 @@ describe("isDestructiveCommand", () => {
         expect(isDestructiveCommand("echo foo >> file.txt")).toBe(true);
     });
 
+    // file descriptor redirections (stderr, etc.) should be safe
+    test("allows file descriptor redirections like 2>/dev/null", () => {
+        expect(isDestructiveCommand("ls /tmp 2>/dev/null")).toBe(false);
+        expect(isDestructiveCommand("ls /tmp 2> /dev/null")).toBe(false);
+        expect(isDestructiveCommand('ls /nonexistent 2>/dev/null || echo "not found"')).toBe(false);
+        expect(isDestructiveCommand('ls /a/ 2>/dev/null || ls /b/ 2>/dev/null || echo "no dirs"')).toBe(false);
+        // fd 1 (stdout) redirect to /dev/null — still a digit prefix
+        expect(isDestructiveCommand("some-cmd 1>/dev/null")).toBe(false);
+    });
+
     // escaped quote bypass
     test("flags escaped-quote bypass that hides chaining operators", () => {
         expect(isDestructiveCommand('ls \\"; touch /tmp/pwned')).toBe(true);
