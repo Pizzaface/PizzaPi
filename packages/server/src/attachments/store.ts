@@ -349,6 +349,26 @@ async function loadSessionRefsFromDb(attachmentId: string): Promise<string[]> {
     return rows.map((r: any) => r.sessionId as string);
 }
 
+/** Batch-load all session refs for a set of attachment IDs in a single query. */
+async function batchLoadSessionRefsFromDb(attachmentIds: string[]): Promise<Map<string, Set<string>>> {
+    const result = new Map<string, Set<string>>();
+    if (attachmentIds.length === 0) return result;
+    const rows = await getKysely()
+        .selectFrom("extracted_attachment_session" as any)
+        .select(["attachmentId", "sessionId"])
+        .where("attachmentId", "in", attachmentIds)
+        .execute();
+    for (const row of rows as Array<{ attachmentId: string; sessionId: string }>) {
+        let refs = result.get(row.attachmentId);
+        if (!refs) {
+            refs = new Set();
+            result.set(row.attachmentId, refs);
+        }
+        refs.add(row.sessionId);
+    }
+    return result;
+}
+
 /** Remove all session references for an attachment from SQLite. */
 async function removePersistedSessionRefs(attachmentId: string): Promise<void> {
     await getKysely()
@@ -405,10 +425,13 @@ export async function rehydrateExtractedAttachments(): Promise<number> {
         .where("expiresAt", "<=", nowIso)
         .execute();
 
+    // Batch-load all session refs for expired rows in one query.
+    const expiredRefMap = await batchLoadSessionRefsFromDb(expiredRows.map((r) => r.attachmentId));
+
     const toDelete: string[] = [];
     for (const row of expiredRows) {
         // Check all session refs (from junction table) and the row's own sessionId
-        const rowSessionRefs = await loadSessionRefsFromDb(row.attachmentId);
+        const rowSessionRefs = expiredRefMap.get(row.attachmentId) ?? new Set<string>();
         const allRefs = new Set([row.sessionId, ...rowSessionRefs]);
         if ([...allRefs].some((sid) => durableSessionIds.has(sid))) {
             // Renew TTL for attachments belonging to durable sessions
@@ -440,6 +463,9 @@ export async function rehydrateExtractedAttachments(): Promise<number> {
         .selectAll()
         .execute();
 
+    // Batch-load all session refs for active rows in one query.
+    const activeRefMap = await batchLoadSessionRefsFromDb(rows.map((r) => r.attachmentId));
+
     let loaded = 0;
     for (const row of rows) {
         // Skip if file is missing from disk
@@ -470,8 +496,7 @@ export async function rehydrateExtractedAttachments(): Promise<number> {
         });
 
         // Rehydrate session refs from junction table
-        const sessionRefs = await loadSessionRefsFromDb(row.attachmentId);
-        const refSet = new Set(sessionRefs);
+        const refSet = activeRefMap.get(row.attachmentId) ?? new Set<string>();
         refSet.add(row.sessionId); // Ensure the main sessionId is always included
         extractedImageSessionRefs.set(row.attachmentId, refSet);
 
