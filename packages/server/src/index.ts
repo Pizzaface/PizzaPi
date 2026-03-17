@@ -6,7 +6,7 @@ import {
 } from "./sessions/store.js";
 import { deleteRelayEventCaches, initializeRelayRedisCache } from "./sessions/redis.js";
 import { sweepExpiredSessions } from "./ws/sio-registry.js";
-import { sweepExpiredAttachments } from "./attachments/store.js";
+import { sweepExpiredAttachments, rehydrateExtractedAttachments } from "./attachments/store.js";
 import { runAllMigrations } from "./migrations.js";
 
 // Socket.IO imports
@@ -22,6 +22,15 @@ const PORT = parseInt(process.env.PORT ?? "7492");
 
 await runAllMigrations();
 void initializeRelayRedisCache();
+
+// Rehydrate extracted image attachments from SQLite so URLs in persisted
+// session state survive server restarts.
+try {
+    const count = await rehydrateExtractedAttachments();
+    if (count > 0) console.log(`[startup] Rehydrated ${count} extracted image attachment(s) from database.`);
+} catch (err) {
+    console.error("[startup] Failed to rehydrate extracted attachments:", err);
+}
 
 // ── Helpers: convert node:http request/response ↔ fetch API ──────────────
 

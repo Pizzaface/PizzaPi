@@ -1,5 +1,6 @@
-import { mkdir, rm } from "node:fs/promises";
+import { mkdir, rm, access } from "node:fs/promises";
 import path from "node:path";
+import { getKysely } from "../auth.js";
 
 export interface StoredAttachment {
     attachmentId: string;
@@ -95,6 +96,7 @@ export async function deleteStoredAttachment(attachmentId: string): Promise<void
     try {
         await rm(record.filePath, { force: true });
     } catch {}
+    void removePersistedAttachment(attachmentId).catch(() => {});
 }
 
 // ── Extracted image storage ──────────────────────────────────────────────────
@@ -122,6 +124,9 @@ export async function storeExtractedImage(input: {
         const refreshedExpiry = Date.now() + EXTRACTED_IMAGE_TTL_MS;
         existing.expiresAt = new Date(refreshedExpiry).toISOString();
         existing.expiresAtMs = refreshedExpiry;
+        void persistExtractedAttachment(existing).catch((err) => {
+            console.error("[attachments] Failed to persist refreshed expiry:", err);
+        });
         return existing;
     }
 
@@ -156,6 +161,9 @@ export async function storeExtractedImage(input: {
     };
 
     attachments.set(attachmentId, record);
+    void persistExtractedAttachment(record).catch((err) => {
+        console.error("[attachments] Failed to persist extracted attachment:", err);
+    });
     return record;
 }
 
@@ -175,4 +183,107 @@ export async function sweepExpiredAttachments(nowMs: number = Date.now()): Promi
         removals.push(deleteStoredAttachment(attachmentId));
     }
     await Promise.all(removals);
+}
+
+// ── SQLite persistence for extracted images ──────────────────────────────────
+// Extracted image metadata is persisted to SQLite so it survives server restarts.
+// The in-memory Map remains the hot path; SQLite is written on store and read on boot.
+
+export async function ensureExtractedAttachmentTable(): Promise<void> {
+    await getKysely().schema
+        .createTable("extracted_attachment")
+        .ifNotExists()
+        .addColumn("attachmentId", "text", (col) => col.primaryKey())
+        .addColumn("sessionId", "text", (col) => col.notNull())
+        .addColumn("ownerUserId", "text", (col) => col.notNull())
+        .addColumn("filename", "text", (col) => col.notNull())
+        .addColumn("mimeType", "text", (col) => col.notNull())
+        .addColumn("size", "integer", (col) => col.notNull())
+        .addColumn("createdAt", "text", (col) => col.notNull())
+        .addColumn("expiresAt", "text", (col) => col.notNull())
+        .addColumn("filePath", "text", (col) => col.notNull())
+        .execute();
+}
+
+/** Persist an extracted attachment record to SQLite (upsert). */
+async function persistExtractedAttachment(record: StoredAttachment): Promise<void> {
+    await getKysely()
+        .insertInto("extracted_attachment")
+        .values({
+            attachmentId: record.attachmentId,
+            sessionId: record.sessionId,
+            ownerUserId: record.ownerUserId,
+            filename: record.filename,
+            mimeType: record.mimeType,
+            size: record.size,
+            createdAt: record.createdAt,
+            expiresAt: record.expiresAt,
+            filePath: record.filePath,
+        })
+        .onConflict((oc) =>
+            oc.column("attachmentId").doUpdateSet({
+                expiresAt: record.expiresAt,
+            }),
+        )
+        .execute();
+}
+
+/** Remove an extracted attachment record from SQLite. */
+async function removePersistedAttachment(attachmentId: string): Promise<void> {
+    await getKysely()
+        .deleteFrom("extracted_attachment")
+        .where("attachmentId", "=", attachmentId)
+        .execute();
+}
+
+/**
+ * Rehydrate the in-memory attachment registry from SQLite on server startup.
+ * Only loads non-expired records whose files still exist on disk.
+ */
+export async function rehydrateExtractedAttachments(): Promise<number> {
+    const nowMs = Date.now();
+    const nowIso = new Date(nowMs).toISOString();
+
+    // Delete expired rows first
+    await getKysely()
+        .deleteFrom("extracted_attachment")
+        .where("expiresAt", "<=", nowIso)
+        .execute();
+
+    const rows = await getKysely()
+        .selectFrom("extracted_attachment")
+        .selectAll()
+        .execute();
+
+    let loaded = 0;
+    for (const row of rows) {
+        // Skip if file is missing from disk
+        try {
+            await access(row.filePath);
+        } catch {
+            await removePersistedAttachment(row.attachmentId);
+            continue;
+        }
+
+        // Skip if already in memory (shouldn't happen on cold start, but be safe)
+        if (attachments.has(row.attachmentId)) continue;
+
+        const expiresAtMs = Date.parse(row.expiresAt);
+        attachments.set(row.attachmentId, {
+            attachmentId: row.attachmentId,
+            sessionId: row.sessionId,
+            ownerUserId: row.ownerUserId,
+            uploaderUserId: "system",
+            filename: row.filename,
+            mimeType: row.mimeType,
+            size: row.size as number,
+            createdAt: row.createdAt,
+            expiresAt: row.expiresAt,
+            expiresAtMs,
+            filePath: row.filePath,
+        });
+        loaded++;
+    }
+
+    return loaded;
 }

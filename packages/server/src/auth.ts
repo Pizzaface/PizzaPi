@@ -121,6 +121,18 @@ export interface UserHiddenModelTable {
     createdAt: string;
 }
 
+export interface ExtractedAttachmentTable {
+    attachmentId: string;
+    sessionId: string;
+    ownerUserId: string;
+    filename: string;
+    mimeType: string;
+    size: number;
+    createdAt: string;
+    expiresAt: string;
+    filePath: string;
+}
+
 export interface DB {
     user: UserTable;
     session: SessionTable;
@@ -132,6 +144,7 @@ export interface DB {
     push_subscription: PushSubscriptionTable;
     runner_recent_folder: RunnerRecentFolderTable;
     user_hidden_model: UserHiddenModelTable;
+    extracted_attachment: ExtractedAttachmentTable;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
