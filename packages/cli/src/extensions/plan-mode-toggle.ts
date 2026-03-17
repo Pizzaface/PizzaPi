@@ -47,6 +47,10 @@ const GIT_SAFE_SUBCOMMANDS = new Set([
     "ls-files", "ls-tree", "ls-remote", "cat-file", "rev-parse",
     "rev-list", "for-each-ref", "name-rev", "describe", "merge-base",
     "count-objects", "fsck", "verify-commit", "verify-tag", "verify-pack",
+    // Diff plumbing (read-only)
+    "diff-tree", "diff-files", "diff-index",
+    // History / patch inspection (read-only, stdout-only)
+    "archive", "cherry", "range-diff",
     // Misc read-only
     "help", "version", "config", "reflog", "worktree",
 ]);
@@ -76,6 +80,22 @@ const GIT_SAFE_SUBCOMMAND_DESTRUCTIVE_OVERRIDES: RegExp[] = [
     /^\s*git\s+reflog\s+(delete|expire)\b/i,
     // worktree: add/remove/move/repair are mutating; list is safe
     /^\s*git\s+worktree\s+(add|remove|move|repair|lock|unlock)\b/i,
+];
+
+/**
+ * Patterns that are dangerous regardless of filesystem sandbox.
+ * These cause non-filesystem side effects (process control, privilege
+ * escalation, system management) that the OS sandbox does NOT prevent.
+ *
+ * When the sandbox IS active, only these patterns are checked — the sandbox's
+ * read-only overlay handles filesystem write protection at the OS level.
+ */
+const SANDBOX_ONLY_CMD_PATTERNS = [
+    /^\s*sudo\b/i, /^\s*su\b/i,
+    /^\s*kill\b/i, /^\s*pkill\b/i, /^\s*killall\b/i,
+    /^\s*reboot\b/i, /^\s*shutdown\b/i,
+    /^\s*systemctl\s+(start|stop|restart|enable|disable)/i,
+    /^\s*service\s+\S+\s+(start|stop|restart)/i,
 ];
 
 /**
@@ -189,14 +209,36 @@ function isDestructiveGitCommand(segment: string): boolean {
  * is too large to enumerate reliably (git clean, git apply, git restore,
  * git am, git bisect, etc.).
  *
- * This is used as a best-effort advisory check when the OS-level sandbox is
- * not active. When the sandbox IS active, plan mode uses the sandbox's
- * read-only overlay instead (which enforces at the OS level regardless of
- * what command is run).
+ * When `sandboxActive` is true, only non-filesystem side effects are checked
+ * (process control, privilege escalation, system management). The OS-level
+ * sandbox enforces filesystem write restrictions, so command substitution,
+ * output redirection, script interpreters, and `find -exec` are all safe.
+ *
+ * When `sandboxActive` is false (default), the full regex battery is applied
+ * as the only line of defense against destructive commands.
  *
  * @internal Exported for testing only.
  */
-export function isDestructiveCommand(command: string): boolean {
+export function isDestructiveCommand(command: string, sandboxActive = false): boolean {
+    // ── Sandbox-active path: lightweight check ───────────────────────────
+    // The OS sandbox enforces a read-only filesystem overlay. We only need
+    // to block non-filesystem side effects that the sandbox doesn't cover.
+    if (sandboxActive) {
+        // Multi-line payloads are still rejected — they can smuggle commands
+        // past the per-segment check regardless of sandbox state.
+        if (/\n/.test(command)) return true;
+
+        const parts = splitShellSegments(command);
+        for (const part of parts) {
+            const trimmed = part.trim();
+            if (!trimmed) continue;
+
+            if (SANDBOX_ONLY_CMD_PATTERNS.some((p) => p.test(trimmed))) return true;
+        }
+        return false;
+    }
+
+    // ── No-sandbox path: full regex battery ──────────────────────────────
     // Reject command substitution, backtick expansion, process substitution,
     // and multi-line payloads that could smuggle destructive commands past
     // the per-segment check.
@@ -522,13 +564,13 @@ export const planModeToggleExtension: ExtensionFactory = (pi) => {
         }
 
         // Block destructive bash commands in plan mode.
-        // The sandbox read-only overlay enforces filesystem write restrictions,
-        // but non-filesystem side effects (kill, network calls, etc.) are not
-        // blocked by the overlay — so we always check the destructive pattern
-        // regardless of sandbox state.
+        // When the OS sandbox is active, its read-only overlay enforces
+        // filesystem write restrictions — so we only check for non-filesystem
+        // side effects (kill, sudo, systemctl, etc.). When the sandbox is NOT
+        // active, we apply the full regex battery as the only line of defense.
         if (event.toolName === "bash") {
             const command = (event.input as any).command as string;
-            if (isDestructiveCommand(command)) {
+            if (isDestructiveCommand(command, isSandboxActive())) {
                 return {
                     block: true,
                     reason: `Plan mode: command blocked (matches destructive pattern). Use toggle_plan_mode to exit plan mode first.\nCommand: ${command}`,
