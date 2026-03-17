@@ -254,11 +254,73 @@ export interface ClaudeInstalledPluginEntry {
 }
 
 /**
+ * Read `enabledPlugins` from Claude Code settings files and merge them.
+ *
+ * Checks (in precedence order, higher wins):
+ *   1. ~/.claude/settings.json (user-level)
+ *   2. .claude/settings.json (project-level, relative to cwd)
+ *   3. .claude/settings.local.json (project-local overrides)
+ *
+ * Returns a merged map of `"pluginName@marketplace" → boolean`.
+ * If no settings files exist or none contain `enabledPlugins`, returns null.
+ */
+export function readEnabledPlugins(cwd?: string): Record<string, boolean> | null {
+    const home = process.env.HOME || homedir();
+    const candidates: string[] = [
+        join(home, ".claude", "settings.json"),
+    ];
+    if (cwd) {
+        candidates.push(join(cwd, ".claude", "settings.json"));
+        candidates.push(join(cwd, ".claude", "settings.local.json"));
+    }
+
+    let merged: Record<string, boolean> | null = null;
+
+    for (const path of candidates) {
+        if (!existsSync(path)) continue;
+        try {
+            const raw = readFileSync(path, "utf-8");
+            const parsed = JSON.parse(raw);
+            if (parsed.enabledPlugins && typeof parsed.enabledPlugins === "object") {
+                if (!merged) merged = {};
+                // Later files (project-level) override earlier (user-level)
+                for (const [key, value] of Object.entries(parsed.enabledPlugins)) {
+                    if (typeof value === "boolean") {
+                        merged[key] = value;
+                    }
+                }
+            }
+        } catch {
+            // Skip unreadable/unparseable settings files
+        }
+    }
+
+    return merged;
+}
+
+/**
+ * Check if a plugin key (e.g. "my-plugin@marketplace") is enabled
+ * according to the `enabledPlugins` map.
+ *
+ * Rules:
+ * - If enabledPlugins is null (no settings found), all plugins are enabled.
+ * - If the key is explicitly `false`, the plugin is disabled.
+ * - If the key is not listed or is `true`, the plugin is enabled.
+ */
+function isPluginEnabled(key: string, enabledPlugins: Record<string, boolean> | null): boolean {
+    if (!enabledPlugins) return true;
+    return enabledPlugins[key] !== false;
+}
+
+/**
  * Discover plugins installed via Claude Code's marketplace system.
  *
  * Reads ~/.claude/plugins/installed_plugins.json and parses each plugin
  * from its cached installPath. Only returns plugins whose installPath
  * actually exists on disk.
+ *
+ * Also respects the `enabledPlugins` setting from Claude Code's settings
+ * files — plugins explicitly set to `false` are skipped.
  *
  * This replaces the old approach of blindly scanning ~/.claude/plugins/
  * as a flat directory, which would pick up marketplace catalogs and
@@ -290,10 +352,16 @@ export function discoverClaudeInstalledPlugins(cwd?: string): DiscoveredPlugin[]
 
     if (!data.plugins || typeof data.plugins !== "object") return [];
 
+    // Read enabledPlugins from Claude Code settings to respect disabled state
+    const enabledPlugins = readEnabledPlugins(cwd);
+
     const plugins: DiscoveredPlugin[] = [];
     const seen = new Set<string>();
 
     for (const [_key, installations] of Object.entries(data.plugins)) {
+        // Check enabledPlugins — skip plugins explicitly disabled
+        if (!isPluginEnabled(_key, enabledPlugins)) continue;
+
         if (!Array.isArray(installations) || installations.length === 0) continue;
 
         // Find the best installation: prefer most recently updated

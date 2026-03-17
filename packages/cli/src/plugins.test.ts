@@ -18,6 +18,7 @@ import {
     scanPluginsDir,
     discoverPlugins,
     discoverClaudeInstalledPlugins,
+    readEnabledPlugins,
     pluginSearchDirs,
     globalPluginDirs,
     projectPluginDirs,
@@ -1142,5 +1143,179 @@ describe("discoverClaudeInstalledPlugins", () => {
         // Should include pizzapi and agents
         expect(dirs.some(d => d.includes(".pizzapi"))).toBe(true);
         expect(dirs.some(d => d.includes(".agents"))).toBe(true);
+    });
+
+    test("skips plugins disabled via enabledPlugins in settings.json", () => {
+        const home = setupHome("enabled-filter");
+        const pathA = createCachedPlugin(home, "mkt", "plugin-a", "1.0.0");
+        const pathB = createCachedPlugin(home, "mkt", "plugin-b", "1.0.0");
+        const pathC = createCachedPlugin(home, "mkt", "plugin-c", "1.0.0");
+        writeInstalledPlugins(home, {
+            version: 2,
+            plugins: {
+                "plugin-a@mkt": [{ scope: "user", installPath: pathA, version: "1.0.0" }],
+                "plugin-b@mkt": [{ scope: "user", installPath: pathB, version: "1.0.0" }],
+                "plugin-c@mkt": [{ scope: "user", installPath: pathC, version: "1.0.0" }],
+            },
+        });
+        // Write settings with plugin-b disabled
+        writeFileSync(
+            join(home, ".claude", "settings.json"),
+            JSON.stringify({
+                enabledPlugins: {
+                    "plugin-a@mkt": true,
+                    "plugin-b@mkt": false,
+                    // plugin-c not listed → defaults to enabled
+                },
+            }),
+        );
+
+        const result = discoverClaudeInstalledPlugins("/tmp");
+        expect(result).toHaveLength(2);
+        const names = result.map(p => p.name).sort();
+        expect(names).toEqual(["plugin-a", "plugin-c"]);
+    });
+
+    test("project-level settings.json can disable a plugin", () => {
+        const home = setupHome("project-settings");
+        const pathA = createCachedPlugin(home, "mkt", "proj-plugin", "1.0.0");
+        writeInstalledPlugins(home, {
+            version: 2,
+            plugins: {
+                "proj-plugin@mkt": [{ scope: "user", installPath: pathA, version: "1.0.0" }],
+            },
+        });
+        // No user-level enabledPlugins, but project-level disables it
+        const projectDir = join(tmpDir, "proj-disable-test");
+        mkdirSync(join(projectDir, ".claude"), { recursive: true });
+        writeFileSync(
+            join(projectDir, ".claude", "settings.json"),
+            JSON.stringify({ enabledPlugins: { "proj-plugin@mkt": false } }),
+        );
+
+        const result = discoverClaudeInstalledPlugins(projectDir);
+        expect(result).toEqual([]);
+    });
+
+    test("project-local settings.local.json overrides project settings", () => {
+        const home = setupHome("local-override");
+        const pathA = createCachedPlugin(home, "mkt", "override-plugin", "1.0.0");
+        writeInstalledPlugins(home, {
+            version: 2,
+            plugins: {
+                "override-plugin@mkt": [{ scope: "user", installPath: pathA, version: "1.0.0" }],
+            },
+        });
+        const projectDir = join(tmpDir, "local-override-project");
+        mkdirSync(join(projectDir, ".claude"), { recursive: true });
+        // Project settings enable the plugin
+        writeFileSync(
+            join(projectDir, ".claude", "settings.json"),
+            JSON.stringify({ enabledPlugins: { "override-plugin@mkt": true } }),
+        );
+        // But local settings disable it
+        writeFileSync(
+            join(projectDir, ".claude", "settings.local.json"),
+            JSON.stringify({ enabledPlugins: { "override-plugin@mkt": false } }),
+        );
+
+        const result = discoverClaudeInstalledPlugins(projectDir);
+        expect(result).toEqual([]);
+    });
+
+    test("all plugins loaded when no enabledPlugins settings exist", () => {
+        const home = setupHome("no-enabled-plugins");
+        const pathA = createCachedPlugin(home, "mkt", "free-plugin", "1.0.0");
+        writeInstalledPlugins(home, {
+            version: 2,
+            plugins: {
+                "free-plugin@mkt": [{ scope: "user", installPath: pathA, version: "1.0.0" }],
+            },
+        });
+        // No settings.json at all — all plugins should load
+        const result = discoverClaudeInstalledPlugins("/tmp");
+        expect(result).toHaveLength(1);
+        expect(result[0].name).toBe("free-plugin");
+    });
+});
+
+// ── readEnabledPlugins ────────────────────────────────────────────────────────
+
+describe("readEnabledPlugins", () => {
+    let tmpDir: string;
+    let realHome: string;
+
+    beforeAll(() => {
+        tmpDir = mkdtempSync(join(tmpdir(), "enabled-plugins-"));
+        realHome = process.env.HOME!;
+    });
+
+    afterAll(() => {
+        process.env.HOME = realHome;
+        try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
+    });
+
+    test("returns null when no settings files exist", () => {
+        const home = join(tmpDir, "no-settings");
+        mkdirSync(join(home, ".claude"), { recursive: true });
+        process.env.HOME = home;
+        const result = readEnabledPlugins("/nonexistent/project");
+        expect(result).toBeNull();
+    });
+
+    test("reads user-level enabledPlugins", () => {
+        const home = join(tmpDir, "user-level");
+        mkdirSync(join(home, ".claude"), { recursive: true });
+        writeFileSync(
+            join(home, ".claude", "settings.json"),
+            JSON.stringify({ enabledPlugins: { "a@mkt": true, "b@mkt": false } }),
+        );
+        process.env.HOME = home;
+        const result = readEnabledPlugins("/tmp");
+        expect(result).toEqual({ "a@mkt": true, "b@mkt": false });
+    });
+
+    test("merges user and project settings (project wins)", () => {
+        const home = join(tmpDir, "merge-test");
+        mkdirSync(join(home, ".claude"), { recursive: true });
+        writeFileSync(
+            join(home, ".claude", "settings.json"),
+            JSON.stringify({ enabledPlugins: { "a@mkt": true, "b@mkt": false } }),
+        );
+        process.env.HOME = home;
+
+        const projectDir = join(tmpDir, "merge-project");
+        mkdirSync(join(projectDir, ".claude"), { recursive: true });
+        writeFileSync(
+            join(projectDir, ".claude", "settings.json"),
+            JSON.stringify({ enabledPlugins: { "b@mkt": true, "c@mkt": false } }),
+        );
+
+        const result = readEnabledPlugins(projectDir);
+        expect(result).toEqual({ "a@mkt": true, "b@mkt": true, "c@mkt": false });
+    });
+
+    test("ignores non-boolean values in enabledPlugins", () => {
+        const home = join(tmpDir, "non-bool");
+        mkdirSync(join(home, ".claude"), { recursive: true });
+        writeFileSync(
+            join(home, ".claude", "settings.json"),
+            JSON.stringify({ enabledPlugins: { "a@mkt": true, "bad@mkt": "yes", "c@mkt": 123 } }),
+        );
+        process.env.HOME = home;
+        const result = readEnabledPlugins("/tmp");
+        expect(result).toEqual({ "a@mkt": true });
+    });
+
+    test("returns null when settings exist but no enabledPlugins key", () => {
+        const home = join(tmpDir, "no-key");
+        mkdirSync(join(home, ".claude"), { recursive: true });
+        writeFileSync(
+            join(home, ".claude", "settings.json"),
+            JSON.stringify({ hooks: {} }),
+        );
+        process.env.HOME = home;
+        const result = readEnabledPlugins("/tmp");
+        expect(result).toBeNull();
     });
 });
