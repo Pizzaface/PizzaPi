@@ -3763,6 +3763,8 @@ export function App() {
                   onAppendSystemMessage={appendLocalSystemMessage}
                   onSpawnAgentSession={handleSpawnAgentSession}
                   onTriggerResponse={handleTriggerResponse}
+                  onQuestionDismiss={() => setPendingQuestion(null)}
+                  onPlanDismiss={() => setPendingPlan(null)}
                 />
               )}
             </div>
