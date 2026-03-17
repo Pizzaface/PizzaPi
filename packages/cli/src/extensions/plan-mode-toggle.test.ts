@@ -434,6 +434,21 @@ describe("isDestructiveCommand", () => {
         expect(isDestructiveCommand("echo foo >> file.txt")).toBe(true);
     });
 
+    // fd redirections are only safe when numeric fd goes to /dev/null
+    test("allows numeric fd redirections to /dev/null", () => {
+        expect(isDestructiveCommand("ls /tmp 2>/dev/null")).toBe(false);
+        expect(isDestructiveCommand("ls /tmp 2> /dev/null")).toBe(false);
+        expect(isDestructiveCommand('ls /nonexistent 2>/dev/null || echo "not found"')).toBe(false);
+        expect(isDestructiveCommand('ls /a/ 2>/dev/null || ls /b/ 2>/dev/null || echo "no dirs"')).toBe(false);
+        expect(isDestructiveCommand("some-cmd 1>/dev/null")).toBe(false);
+    });
+
+    test("flags numeric fd redirections to files", () => {
+        expect(isDestructiveCommand("echo secret 1>out.txt")).toBe(true);
+        expect(isDestructiveCommand("cmd 2>err.log")).toBe(true);
+        expect(isDestructiveCommand("git status 1>status.txt")).toBe(true);
+    });
+
     // escaped quote bypass
     test("flags escaped-quote bypass that hides chaining operators", () => {
         expect(isDestructiveCommand('ls \\"; touch /tmp/pwned')).toBe(true);
