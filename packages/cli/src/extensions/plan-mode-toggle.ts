@@ -80,6 +80,8 @@ const GIT_SAFE_SUBCOMMAND_DESTRUCTIVE_OVERRIDES: RegExp[] = [
     /^\s*git\s+reflog\s+(delete|expire)\b/i,
     // worktree: add/remove/move/repair are mutating; list is safe
     /^\s*git\s+worktree\s+(add|remove|move|repair|lock|unlock)\b/i,
+    // archive: -o / --output writes to a file instead of stdout
+    /^\s*git\s+archive\b.*\s(-o\s|-o\S|--output\b|--output=)/i,
 ];
 
 /**

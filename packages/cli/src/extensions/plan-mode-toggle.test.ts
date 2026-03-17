@@ -399,9 +399,19 @@ describe("isDestructiveCommand", () => {
         expect(isDestructiveCommand("git count-objects")).toBe(false);
     });
 
-    test("allows newly-added read-only git subcommands", () => {
+    test("flags git archive -o/--output (file write)", () => {
+        expect(isDestructiveCommand("git archive -o out.tar HEAD")).toBe(true);
+        expect(isDestructiveCommand("git archive -oout.tar HEAD")).toBe(true);
+        expect(isDestructiveCommand("git archive --output=out.tar HEAD")).toBe(true);
+        expect(isDestructiveCommand("git archive --output out.tar HEAD")).toBe(true);
+    });
+
+    test("allows git archive to stdout (read-only)", () => {
         expect(isDestructiveCommand("git archive HEAD")).toBe(false);
         expect(isDestructiveCommand("git archive --format=tar HEAD")).toBe(false);
+    });
+
+    test("allows newly-added read-only git subcommands", () => {
         expect(isDestructiveCommand("git cherry main")).toBe(false);
         expect(isDestructiveCommand("git cherry -v main feature")).toBe(false);
         expect(isDestructiveCommand("git range-diff main~3..main~1 main~2..main")).toBe(false);
