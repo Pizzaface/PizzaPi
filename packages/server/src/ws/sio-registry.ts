@@ -763,9 +763,14 @@ export async function sweepOrphanedSessions(nowMs: number): Promise<void> {
             continue;
         }
 
+        // @jules Add a secondary guard immediately before teardown to avoid false positives
+        // caused by race conditions during the deletion loop
         if (result.status === "fulfilled" && result.value.size > 0) {
             continue; // Socket exists remotely
         }
+
+        // Verify locally right before teardown to catch fresh reconnections
+        if (localTuiSockets.has(candidate.sessionId)) continue;
 
         console.log(
             `[sio-registry] Sweeping orphaned session ${candidate.sessionId} ` +
