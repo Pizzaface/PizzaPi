@@ -196,11 +196,15 @@ export async function broadcastToHub(
     data: unknown,
     targetUserId?: string,
 ): Promise<void> {
-    const hubNs = io.of("/hub");
-    if (targetUserId) {
-        hubNs.to(hubUserRoom(targetUserId)).emit(eventName, data);
-    } else {
-        hubNs.to(HUB_ROOM).emit(eventName, data);
+    try {
+        const hubNs = io.of("/hub");
+        if (targetUserId) {
+            hubNs.to(hubUserRoom(targetUserId)).emit(eventName, data);
+        } else {
+            hubNs.to(HUB_ROOM).emit(eventName, data);
+        }
+    } catch (err) {
+        console.warn("[sio-registry] broadcastToHub failed (Redis EPIPE?):", (err as Error)?.message);
     }
 }
 
@@ -408,10 +412,15 @@ export function getLocalTuiSocket(sessionId: string): Socket | undefined {
  */
 export function emitToRelaySession(sessionId: string, eventName: string, data: unknown): boolean {
     if (!io) return false;
-    io.of("/relay")
-        .to(relaySessionRoom(sessionId))
-        .emit(eventName, data);
-    return true;
+    try {
+        io.of("/relay")
+            .to(relaySessionRoom(sessionId))
+            .emit(eventName, data);
+        return true;
+    } catch (err) {
+        console.warn("[sio-registry] emitToRelaySession failed (Redis EPIPE?):", (err as Error)?.message);
+        return false;
+    }
 }
 
 /**
@@ -574,7 +583,10 @@ export async function publishSessionEvent(sessionId: string, event: unknown): Pr
 
     const seq = await incrementSeq(sessionId);
 
-    void appendRelayEventToCache(sessionId, strippedEvent, { isEphemeral: session?.isEphemeral });
+    // Await the cache write so the event is durably stored before we broadcast.
+    // If this also fails (same Redis blip), the event is lost — but at least
+    // we don't falsely claim it was cached when swallowing the broadcast error.
+    await appendRelayEventToCache(sessionId, strippedEvent, { isEphemeral: session?.isEphemeral });
 
     // Broadcast to all viewer sockets in the session room
     try {
@@ -583,8 +595,9 @@ export async function publishSessionEvent(sessionId: string, event: unknown): Pr
             .emit("event", { event: strippedEvent, seq });
     } catch (err) {
         // Redis adapter throws EPIPE when the Redis connection drops mid-broadcast.
-        // The event was already appended to the Redis cache; viewers will catch up
-        // via replay on reconnect, so this is safe to swallow.
+        // The event was awaited into the Redis cache above; viewers will catch up
+        // via replay on reconnect. If the cache write also failed (same blip),
+        // this event is lost — but that's better than crashing the server.
         console.warn("[sio-registry] publishSessionEvent broadcast failed (Redis EPIPE?):", (err as Error)?.message);
     }
 
@@ -694,9 +707,13 @@ export async function endSharedSession(sessionId: string, reason: string = "Sess
     if (!session) return;
 
     // Notify all viewers in the room and disconnect them
-    io.of("/viewer")
-        .to(viewerSessionRoom(sessionId))
-        .emit("disconnected", { reason });
+    try {
+        io.of("/viewer")
+            .to(viewerSessionRoom(sessionId))
+            .emit("disconnected", { reason });
+    } catch (err) {
+        console.warn("[sio-registry] endSharedSession viewer notify failed (Redis EPIPE?):", (err as Error)?.message);
+    }
 
     // Forcefully disconnect viewer sockets from the room
     // Use socketsLeave instead of fetchSockets() + loop to avoid expensive
@@ -843,7 +860,20 @@ export function broadcastToViewers(sessionId: string, eventName: string, data: u
             .to(viewerSessionRoom(sessionId))
             .emit(eventName, data);
     } catch (err) {
-        console.warn("[sio-registry] broadcastToViewers failed (Redis EPIPE?):", (err as Error)?.message);
+        // Redis adapter throws EPIPE when the connection drops mid-broadcast.
+        // Unlike sequenced session events, payloads like exec_result are not
+        // cached in Redis, so viewers can't recover them via replay. Fall back
+        // to local-only delivery so at least viewers connected to this server
+        // instance still receive the event.
+        console.warn("[sio-registry] broadcastToViewers Redis broadcast failed, falling back to local:", (err as Error)?.message);
+        try {
+            io.of("/viewer")
+                .local
+                .to(viewerSessionRoom(sessionId))
+                .emit(eventName, data);
+        } catch {
+            // Local delivery also failed — nothing more we can do.
+        }
     }
 }
 
