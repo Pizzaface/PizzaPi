@@ -395,6 +395,7 @@ export async function handleExecFromWeb(
             }
             replyOk();
             rctx.shuttingDown = true;
+            rctx.wasAborted = true;
             setTimeout(() => {
                 rctx.latestCtx?.shutdown();
             }, 100);
