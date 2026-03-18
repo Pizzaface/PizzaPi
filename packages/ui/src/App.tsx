@@ -800,7 +800,11 @@ export function App() {
 
   // Chunked session delivery: when session_active arrives with chunked:true,
   // messages follow as session_messages_chunk events. This ref tracks state.
+  // The snapshotId ties chunks to their originating session_active so stale
+  // chunks from a previous stream are discarded (e.g. if a new viewer
+  // connects mid-stream and triggers a fresh emitSessionActive).
   const chunkedDeliveryRef = React.useRef<{
+    snapshotId: string;
     totalMessages: number;
     totalChunks: number;
     receivedChunks: number;
@@ -1614,7 +1618,9 @@ export function App() {
       // session_messages_chunk events when the session is large.
       if (isChunked) {
         const totalMessages = typeof (state as any)?.totalMessages === "number" ? (state as any).totalMessages : 0;
+        const snapshotId = typeof (state as any)?.snapshotId === "string" ? (state as any).snapshotId : "";
         chunkedDeliveryRef.current = {
+          snapshotId,
           totalMessages,
           totalChunks: 0, // updated as chunks arrive
           receivedChunks: 0,
@@ -1678,10 +1684,17 @@ export function App() {
     // Large sessions send messages as a series of chunks after the metadata-only
     // session_active event. Each chunk appends to the current messages array.
     if (type === "session_messages_chunk") {
+      const chunkSnapshotId = typeof (evt as any).snapshotId === "string" ? (evt as any).snapshotId : "";
       const chunkMessages = Array.isArray(evt.messages) ? evt.messages as unknown[] : [];
       const isFinal = !!(evt as any).final;
       const totalChunks = typeof (evt as any).totalChunks === "number" ? (evt as any).totalChunks : 0;
       const totalMessages = typeof (evt as any).totalMessages === "number" ? (evt as any).totalMessages : 0;
+
+      // Discard chunks from a stale snapshot stream (e.g. a new viewer
+      // connected mid-stream and triggered a fresh emitSessionActive).
+      if (chunkedDeliveryRef.current && chunkSnapshotId && chunkedDeliveryRef.current.snapshotId !== chunkSnapshotId) {
+        return; // stale chunk — ignore
+      }
 
       const normalizedChunk = normalizeMessages(chunkMessages);
 

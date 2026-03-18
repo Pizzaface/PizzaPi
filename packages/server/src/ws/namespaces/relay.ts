@@ -81,6 +81,21 @@ function augmentMessageThinkingDurations(
 
 const socketAckedSeqs = new Map<string, number>();
 
+// ── Chunked session_active assembly ──────────────────────────────────────────
+// When a worker sends session_active with chunked:true, messages follow as
+// session_messages_chunk events.  We buffer them here and assemble the full
+// lastState after the final chunk so reconnecting viewers get complete data.
+
+interface ChunkedSessionState {
+    snapshotId: string;
+    metadata: Record<string, unknown>; // everything except messages
+    chunks: unknown[][]; // ordered message slices
+    totalChunks: number;
+    receivedChunks: number;
+}
+
+const pendingChunkedStates = new Map<string, ChunkedSessionState>();
+
 type RelaySocket = Socket<
     RelayClientToServerEvents,
     RelayServerToClientEvents,
@@ -293,7 +308,55 @@ export function registerRelayNamespace(io: SocketIOServer): void {
 
             // Cache session_active state so new viewers get an immediate snapshot
             if (event.type === "session_active") {
-                await updateSessionState(sessionId, event.state);
+                const state = event.state as Record<string, unknown> | undefined;
+                if (state?.chunked) {
+                    // Chunked session: store metadata and start accumulating chunks.
+                    // Don't persist incomplete state to lastState — viewers would
+                    // get an empty messages array on reconnect.
+                    const snapshotId = typeof state.snapshotId === "string" ? state.snapshotId : "";
+                    const { messages: _msgs, chunked: _c, snapshotId: _sid, totalMessages: _tm, ...metadata } = state;
+                    pendingChunkedStates.set(sessionId, {
+                        snapshotId,
+                        metadata,
+                        chunks: [],
+                        totalChunks: 0,
+                        receivedChunks: 0,
+                    });
+                    // Touch activity but DON'T update lastState yet
+                    await touchSessionActivity(sessionId);
+                } else {
+                    // Non-chunked: persist immediately (original path)
+                    pendingChunkedStates.delete(sessionId);
+                    await updateSessionState(sessionId, event.state);
+                }
+            } else if (event.type === "session_messages_chunk") {
+                // Accumulate chunk into the pending state.  When the final
+                // chunk arrives, assemble the full state and persist to lastState.
+                const pending = pendingChunkedStates.get(sessionId);
+                const chunkSnapshotId = typeof event.snapshotId === "string" ? event.snapshotId : "";
+                const chunkIndex = typeof event.chunkIndex === "number" ? event.chunkIndex : -1;
+                const chunkMessages = Array.isArray(event.messages) ? event.messages as unknown[] : [];
+                const isFinal = !!event.final;
+                const totalChunks = typeof event.totalChunks === "number" ? event.totalChunks : 0;
+
+                if (pending && pending.snapshotId === chunkSnapshotId && chunkIndex >= 0) {
+                    pending.chunks[chunkIndex] = chunkMessages;
+                    pending.receivedChunks++;
+                    pending.totalChunks = totalChunks;
+
+                    if (isFinal && pending.receivedChunks >= pending.totalChunks) {
+                        // All chunks received — assemble and persist the full state
+                        const allMessages = pending.chunks.flat();
+                        const fullState = { ...pending.metadata, messages: allMessages };
+                        pendingChunkedStates.delete(sessionId);
+                        await updateSessionState(sessionId, fullState);
+                    } else {
+                        await touchSessionActivity(sessionId);
+                    }
+                } else {
+                    // Stale or unmatched chunk — just touch activity
+                    await touchSessionActivity(sessionId);
+                }
             } else if (event.type === "heartbeat") {
                 await updateSessionHeartbeat(sessionId, event);
             } else {
@@ -559,6 +622,7 @@ export function registerRelayNamespace(io: SocketIOServer): void {
                 }
 
                 clearThinkingMaps(sessionId);
+                pendingChunkedStates.delete(sessionId);
                 void clearPushPendingQuestion(sessionId);
                 // Clean up child-index entry so stale memberships don't persist
                 const session = await getSharedSession(sessionId);

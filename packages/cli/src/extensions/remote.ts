@@ -121,13 +121,16 @@ export function needsChunkedDelivery(messages: unknown[]): boolean {
  *
  * Uses setImmediate between chunks to yield the event loop so Socket.IO
  * pings can be answered, preventing transport-close disconnects.
+ *
+ * Each chunk carries a `snapshotId` that matches the session_active event,
+ * so the UI can discard stale chunks from a previous snapshot stream.
  */
-function sendChunkedMessages(rctx: RelayContext, messages: unknown[]): void {
+function sendChunkedMessages(rctx: RelayContext, messages: unknown[], snapshotId: string): void {
     const totalChunks = Math.ceil(messages.length / CHUNK_SIZE);
 
     console.log(
         `pizzapi: session is large (${messages.length} messages, ~${(estimateMessagesSize(messages) / 1024 / 1024).toFixed(0)} MB). ` +
-        `Sending in ${totalChunks} chunks of ≤${CHUNK_SIZE} messages.`,
+        `Sending in ${totalChunks} chunks of ≤${CHUNK_SIZE} messages (snapshot=${snapshotId.slice(0, 8)}).`,
     );
 
     let chunkIndex = 0;
@@ -142,6 +145,7 @@ function sendChunkedMessages(rctx: RelayContext, messages: unknown[]): void {
 
         rctx.forwardEvent({
             type: "session_messages_chunk",
+            snapshotId,
             chunkIndex,
             totalChunks,
             totalMessages: messages.length,
@@ -187,17 +191,21 @@ function emitSessionActive(rctx: RelayContext): void {
     };
 
     if (needsChunkedDelivery(messages)) {
-        // Large session — send metadata-only session_active, then stream chunks
+        // Large session — send metadata-only session_active, then stream chunks.
+        // The snapshotId ties the metadata event to its chunk stream so the UI
+        // can discard stale chunks and the server can assemble the full state.
+        const snapshotId = randomUUID();
         rctx.forwardEvent({
             type: "session_active",
             state: {
                 ...metadata,
                 messages: [], // placeholder — real messages follow as chunks
                 chunked: true,
+                snapshotId,
                 totalMessages: messages.length,
             },
         });
-        sendChunkedMessages(rctx, messages);
+        sendChunkedMessages(rctx, messages, snapshotId);
     } else {
         // Small session — single event (original path)
         rctx.forwardEvent({
