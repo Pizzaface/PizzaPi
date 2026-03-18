@@ -160,7 +160,13 @@ export const triggersExtension: ExtensionFactory = (pi) => {
                     });
                     return { content: [{ type: "text" as const, text: result }], details: null as any };
                 }
-                // ack or any other action — just acknowledge, no message to child
+                // ack or any other action — acknowledge and clean up the child session
+                // Emit cleanup request to the relay so the server tears down the
+                // child session (removes from Redis, notifies runner, frees resources).
+                conn.socket.emit("cleanup_child_session", {
+                    token: conn.token,
+                    childSessionId: pending.sourceSessionId,
+                });
                 return { content: [{ type: "text" as const, text: `Acknowledged session completion from ${pending.sourceSessionId}` }], details: null as any };
             }
 

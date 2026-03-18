@@ -693,6 +693,54 @@ export function registerRelayNamespace(io: SocketIOServer): void {
             }
         });
 
+        // ── cleanup_child_session — parent requests child teardown on ack ────
+        socket.on("cleanup_child_session", async (data) => {
+            const sessionId = socket.data.sessionId;
+            if (!sessionId || data?.token !== socket.data.token) {
+                socket.emit("error", { message: "Invalid token" });
+                return;
+            }
+
+            const childSessionId = data?.childSessionId;
+            if (!childSessionId) {
+                socket.emit("error", { message: "cleanup_child_session requires childSessionId" });
+                return;
+            }
+
+            // Validate the sender is the parent of the target child session
+            const childSession = await getSharedSession(childSessionId);
+            if (!childSession) {
+                // Child already gone — nothing to clean up (idempotent)
+                return;
+            }
+
+            if (childSession.parentSessionId !== sessionId) {
+                socket.emit("error", { message: "Sender is not the parent of the target session" });
+                return;
+            }
+
+            // Validate same user ownership
+            const parentSession = await getSharedSession(sessionId);
+            if (!parentSession?.userId || parentSession.userId !== childSession.userId) {
+                socket.emit("error", { message: "Target session belongs to a different user" });
+                return;
+            }
+
+            console.log(`[sio/relay] cleanup_child_session: parent=${sessionId} child=${childSessionId}`);
+
+            // Disconnect the child's relay socket (triggers session_ended on runner)
+            const childSocket = getLocalTuiSocket(childSessionId);
+            if (childSocket?.connected) {
+                childSocket.disconnect(true);
+            }
+
+            // Clean up child-index entry
+            void removeChildSession(sessionId, childSessionId);
+
+            // End the shared session (Redis, viewers, runner notification)
+            await endSharedSession(childSessionId, "Parent acknowledged completion");
+        });
+
         // ── disconnect ───────────────────────────────────────────────────────
         socket.on("disconnect", async (reason) => {
             console.log(`[sio/relay] disconnected: ${socket.id} (${reason})`);
