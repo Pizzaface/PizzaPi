@@ -1,48 +1,61 @@
 import { describe, test, expect } from "bun:test";
-import { capMessagesPayload } from "./remote.js";
+import { estimateMessagesSize, needsChunkedDelivery } from "./remote.js";
 
-describe("capMessagesPayload", () => {
-    test("returns original array when small", () => {
+describe("estimateMessagesSize", () => {
+    test("returns 2 for empty array", () => {
+        expect(estimateMessagesSize([])).toBe(2);
+    });
+
+    test("estimates size for small messages", () => {
         const msgs = [
             { role: "user", content: "hello" },
             { role: "assistant", content: "hi" },
         ];
-        const result = capMessagesPayload(msgs);
-        expect(result).toBe(msgs); // same reference — no copy
+        const estimated = estimateMessagesSize(msgs);
+        const actual = JSON.stringify(msgs).length;
+        // Should be within 50% of actual (sampling adds overhead estimation)
+        expect(estimated).toBeGreaterThan(actual * 0.5);
+        expect(estimated).toBeLessThan(actual * 2);
     });
 
-    test("returns original for empty array", () => {
-        expect(capMessagesPayload([])).toEqual([]);
-    });
-
-    test("returns original for single message", () => {
-        const msgs = [{ role: "user", content: "x" }];
-        expect(capMessagesPayload(msgs)).toBe(msgs);
-    });
-
-    test("truncates oversized messages array and prepends marker", () => {
-        // Create a large array — each message ~10 KB, 10_000 messages ≈ 100 MB estimated
+    test("estimates size for large messages with reasonable accuracy", () => {
         const bigContent = "x".repeat(10_000);
-        const msgs = Array.from({ length: 10_000 }, (_, i) => ({
+        const msgs = Array.from({ length: 100 }, (_, i) => ({
             role: i % 2 === 0 ? "user" : "assistant",
             content: `${bigContent}-${i}`,
         }));
+        const estimated = estimateMessagesSize(msgs);
+        const actual = JSON.stringify(msgs).length;
+        // Within 50% — sampling is approximate
+        expect(estimated).toBeGreaterThan(actual * 0.5);
+        expect(estimated).toBeLessThan(actual * 2);
+    });
+});
 
-        const result = capMessagesPayload(msgs);
+describe("needsChunkedDelivery", () => {
+    test("returns false for empty array", () => {
+        expect(needsChunkedDelivery([])).toBe(false);
+    });
 
-        // Should be truncated
-        expect(result.length).toBeLessThan(msgs.length);
-        expect(result.length).toBeGreaterThan(1);
+    test("returns false for single message", () => {
+        expect(needsChunkedDelivery([{ role: "user", content: "x" }])).toBe(false);
+    });
 
-        // First element should be the truncation marker
-        const marker = result[0] as { role: string; content: string };
-        expect(marker.role).toBe("system");
-        expect(marker.content).toContain("truncated");
-        expect(marker.content).toContain(String(msgs.length));
+    test("returns false for small messages", () => {
+        const msgs = Array.from({ length: 10 }, (_, i) => ({
+            role: "user",
+            content: `message ${i}`,
+        }));
+        expect(needsChunkedDelivery(msgs)).toBe(false);
+    });
 
-        // Remaining elements should be from the END of the original array
-        const lastOriginal = msgs[msgs.length - 1] as { content: string };
-        const lastResult = result[result.length - 1] as { content: string };
-        expect(lastResult.content).toBe(lastOriginal.content);
+    test("returns true for messages exceeding 10 MB threshold", () => {
+        // Each message ~10 KB, 2000 messages ≈ 20 MB > 10 MB threshold
+        const bigContent = "x".repeat(10_000);
+        const msgs = Array.from({ length: 2000 }, (_, i) => ({
+            role: i % 2 === 0 ? "user" : "assistant",
+            content: `${bigContent}-${i}`,
+        }));
+        expect(needsChunkedDelivery(msgs)).toBe(true);
     });
 });

@@ -62,26 +62,32 @@ import { registerPlanModeTool, consumePendingPlanModeFromWeb, cancelPendingPlanM
 const RELAY_DEFAULT = "ws://localhost:7492";
 const RELAY_STATUS_KEY = "relay";
 
-// ── Payload size guard ───────────────────────────────────────────────────────
+// ── Chunked session_active delivery ──────────────────────────────────────────
 //
 // The server's maxHttpBufferSize is 100 MB. If the serialized session_active
 // event exceeds that, Socket.IO silently kills the WebSocket connection
 // (reason: "transport close") and the client auto-reconnects — causing an
-// infinite boot loop. We cap the messages array BEFORE serialization.
+// infinite boot loop.
 //
-// Strategy: estimate size cheaply via sampling, then truncate from the front
-// (keeping recent messages) if the estimate exceeds the budget.  The UI still
-// gets a usable recent-history snapshot and won't crash the transport.
+// For large sessions we split the payload: session_active carries metadata
+// only (model, name, cwd, todoList, etc.) with `chunked: true`, then the
+// full message history follows as a series of `session_messages_chunk` events
+// sent through the normal event pipeline. The UI assembles them on arrival.
+//
+// Small sessions (< CHUNK_THRESHOLD) use the original single-event path.
 
-/** Maximum estimated bytes for the messages array inside session_active. */
-const SESSION_ACTIVE_MAX_BYTES = 50 * 1024 * 1024; // 50 MB — well under the 100 MB server limit
+/** Estimated payload size (bytes) above which we chunk messages. */
+const CHUNK_THRESHOLD = 10 * 1024 * 1024; // 10 MB
+
+/** Maximum messages per chunk — keeps individual Socket.IO frames reasonable. */
+const CHUNK_SIZE = 200;
 
 /**
- * Estimate the serialized JSON size of an array of messages by sampling.
- * Stringifying the entire array would itself block the event loop for large
- * sessions, so we sample a handful of elements and extrapolate.
+ * Estimate the serialized JSON size of a messages array by sampling.
+ * Full JSON.stringify on a huge array would itself block the event loop,
+ * so we sample a handful of elements and extrapolate.
  */
-function estimateMessagesSize(messages: unknown[]): number {
+export function estimateMessagesSize(messages: unknown[]): number {
     if (messages.length === 0) return 2; // "[]"
     const SAMPLE_COUNT = Math.min(10, messages.length);
     let sampleBytes = 0;
@@ -101,33 +107,107 @@ function estimateMessagesSize(messages: unknown[]): number {
 }
 
 /**
- * Cap the messages array so the session_active payload stays under the
- * transport limit.  Returns the original array when it's small enough,
- * or a truncated tail slice with a synthetic "[truncated]" marker when not.
+ * Check whether a messages array needs chunked delivery.
  */
-export function capMessagesPayload(messages: unknown[]): unknown[] {
-    if (messages.length <= 1) return messages;
+export function needsChunkedDelivery(messages: unknown[]): boolean {
+    if (messages.length <= 1) return false;
+    return estimateMessagesSize(messages) > CHUNK_THRESHOLD;
+}
 
-    const estimated = estimateMessagesSize(messages);
-    if (estimated <= SESSION_ACTIVE_MAX_BYTES) return messages;
-
-    // Estimate how many messages from the end we can keep
-    const ratio = SESSION_ACTIVE_MAX_BYTES / estimated;
-    const keepCount = Math.max(1, Math.floor(messages.length * ratio * 0.9)); // 10% safety margin
-    const truncated = messages.slice(-keepCount);
+/**
+ * Send messages in chunks via the relay event pipeline.
+ * Each chunk is a `session_messages_chunk` event with a slice of messages,
+ * a chunk index, and total chunk count. The final chunk has `final: true`.
+ *
+ * Uses setImmediate between chunks to yield the event loop so Socket.IO
+ * pings can be answered, preventing transport-close disconnects.
+ */
+function sendChunkedMessages(rctx: RelayContext, messages: unknown[]): void {
+    const totalChunks = Math.ceil(messages.length / CHUNK_SIZE);
 
     console.log(
-        `pizzapi: session_active payload too large (~${(estimated / 1024 / 1024).toFixed(0)} MB, ` +
-        `${messages.length} messages). Truncating to last ${keepCount} messages ` +
-        `to stay under ${(SESSION_ACTIVE_MAX_BYTES / 1024 / 1024).toFixed(0)} MB transport limit.`,
+        `pizzapi: session is large (${messages.length} messages, ~${(estimateMessagesSize(messages) / 1024 / 1024).toFixed(0)} MB). ` +
+        `Sending in ${totalChunks} chunks of ≤${CHUNK_SIZE} messages.`,
     );
 
-    // Prepend a synthetic system marker so the UI shows that history was truncated
-    const marker = {
-        role: "system" as const,
-        content: `[Session history truncated — showing last ${keepCount} of ${messages.length} messages. The full conversation is preserved on disk.]`,
+    let chunkIndex = 0;
+
+    function sendNextChunk() {
+        if (!rctx.relay || !rctx.sioSocket?.connected) return; // disconnected mid-stream
+        if (chunkIndex >= totalChunks) return;
+
+        const start = chunkIndex * CHUNK_SIZE;
+        const end = Math.min(start + CHUNK_SIZE, messages.length);
+        const isFinal = chunkIndex === totalChunks - 1;
+
+        rctx.forwardEvent({
+            type: "session_messages_chunk",
+            chunkIndex,
+            totalChunks,
+            totalMessages: messages.length,
+            messages: messages.slice(start, end),
+            final: isFinal,
+        });
+
+        chunkIndex++;
+
+        if (chunkIndex < totalChunks) {
+            // Yield the event loop so Socket.IO can process pings/acks between chunks
+            setImmediate(sendNextChunk);
+        }
+    }
+
+    // Start the first chunk on the next tick so the session_active event
+    // (with chunked: true) is flushed to the socket first.
+    setImmediate(sendNextChunk);
+}
+
+/**
+ * Emit session_active — either as a single event (small sessions) or as
+ * metadata-only + chunked messages (large sessions).
+ *
+ * Returns true if chunked delivery was initiated (caller should NOT send
+ * messages in the session_active payload).
+ */
+function emitSessionActive(rctx: RelayContext): void {
+    if (!rctx.latestCtx) return;
+
+    const { messages, model } = buildSessionContext(
+        rctx.latestCtx.sessionManager.getEntries(),
+        rctx.latestCtx.sessionManager.getLeafId(),
+    );
+
+    const metadata = {
+        model,
+        thinkingLevel: rctx.getCurrentThinkingLevel(),
+        sessionName: rctx.getCurrentSessionName(),
+        cwd: rctx.latestCtx.cwd,
+        availableModels: rctx.getConfiguredModels(),
+        todoList: getCurrentTodoList(),
     };
-    return [marker, ...truncated];
+
+    if (needsChunkedDelivery(messages)) {
+        // Large session — send metadata-only session_active, then stream chunks
+        rctx.forwardEvent({
+            type: "session_active",
+            state: {
+                ...metadata,
+                messages: [], // placeholder — real messages follow as chunks
+                chunked: true,
+                totalMessages: messages.length,
+            },
+        });
+        sendChunkedMessages(rctx, messages);
+    } else {
+        // Small session — single event (original path)
+        rctx.forwardEvent({
+            type: "session_active",
+            state: {
+                ...metadata,
+                messages,
+            },
+        });
+    }
 }
 
 // ── Module-level state for external consumers ────────────────────────────────
@@ -249,18 +329,8 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 rctx.latestCtx.sessionManager.getEntries(),
                 rctx.latestCtx.sessionManager.getLeafId(),
             );
-
-            // Guard: cap the messages payload to prevent oversized session_active
-            // events from exceeding the server's maxHttpBufferSize (100 MB) and
-            // silently killing the WebSocket — which triggers an infinite
-            // connect → transport close → reconnect boot loop.
-            //
-            // Estimate serialized size by sampling — full JSON.stringify on a
-            // huge array is itself expensive and would block the event loop.
-            const cappedMessages = capMessagesPayload(messages);
-
             return {
-                messages: cappedMessages,
+                messages,
                 model,
                 thinkingLevel: rctx.getCurrentThinkingLevel(),
                 sessionName: rctx.getCurrentSessionName(),
@@ -268,6 +338,10 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 availableModels: rctx.getConfiguredModels(),
                 todoList: getCurrentTodoList(),
             };
+        },
+
+        emitSessionActive() {
+            emitSessionActive(rctx);
         },
 
         buildHeartbeat() {
@@ -429,7 +503,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             if (currentSessionName === lastBroadcastSessionName) return;
 
             lastBroadcastSessionName = currentSessionName;
-            rctx.forwardEvent({ type: "session_active", state: rctx.buildSessionState() });
+            emitSessionActive(rctx);
             rctx.forwardEvent(rctx.buildHeartbeat());
         }, 1000);
     }
@@ -461,7 +535,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 message: ok ? undefined : "Model selected, but no valid credentials were found.",
             });
             if (ok) {
-                rctx.forwardEvent({ type: "session_active", state: rctx.buildSessionState() });
+                emitSessionActive(rctx);
             }
         } catch (error) {
             rctx.forwardEvent({
@@ -635,7 +709,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 rctx.isChildSession = false;
             }
 
-            rctx.forwardEvent({ type: "session_active", state: rctx.buildSessionState() });
+            emitSessionActive(rctx);
             void refreshAllUsage();
             startHeartbeat(rctx);
             updateMcpRelayContext();
@@ -651,7 +725,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
 
         sock.on("connected", () => {
             rctx.forwardEvent(rctx.buildCapabilitiesState());
-            rctx.forwardEvent({ type: "session_active", state: rctx.buildSessionState() });
+            emitSessionActive(rctx);
         });
 
         sock.on("input", (data) => {
@@ -837,7 +911,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                   ? "Connected to Relay"
                   : rctx.disconnectedStatusText(),
         );
-        rctx.forwardEvent({ type: "session_active", state: rctx.buildSessionState() });
+        emitSessionActive(rctx);
         rctx.forwardEvent(rctx.buildHeartbeat());
     });
 
@@ -929,7 +1003,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
     pi.on("tool_execution_end", (event) => rctx.forwardEvent(event));
     pi.on("model_select", (event) => {
         rctx.forwardEvent(event);
-        rctx.forwardEvent({ type: "session_active", state: rctx.buildSessionState() });
+        emitSessionActive(rctx);
     });
 
     // ── /remote command ───────────────────────────────────────────────────

@@ -798,6 +798,14 @@ export function App() {
   // messages, otherwise the report gets appended then immediately replaced.
   const sessionHydratedRef = React.useRef(false);
 
+  // Chunked session delivery: when session_active arrives with chunked:true,
+  // messages follow as session_messages_chunk events. This ref tracks state.
+  const chunkedDeliveryRef = React.useRef<{
+    totalMessages: number;
+    totalChunks: number;
+    receivedChunks: number;
+  } | null>(null);
+
   // Capabilities advertised by the runner (commands, models, etc.)
   const [availableCommands, setAvailableCommands] = React.useState<Array<{ name: string; description?: string; source?: string }>>([]);
 
@@ -1583,6 +1591,7 @@ export function App() {
     if (type === "session_active") {
       const state = evt.state as Record<string, unknown> | undefined;
       const rawMessages = Array.isArray(state?.messages) ? (state?.messages as unknown[]) : [];
+      const isChunked = !!(state as any)?.chunked;
       const stateModel = normalizeModel(state?.model);
       const stateModels = Array.isArray(state?.availableModels)
         ? normalizeModelList(state.availableModels as unknown[])
@@ -1601,12 +1610,28 @@ export function App() {
       }
       setAvailableModels(stateModels);
 
+      // Track chunked delivery state — messages arrive as subsequent
+      // session_messages_chunk events when the session is large.
+      if (isChunked) {
+        const totalMessages = typeof (state as any)?.totalMessages === "number" ? (state as any).totalMessages : 0;
+        chunkedDeliveryRef.current = {
+          totalMessages,
+          totalChunks: 0, // updated as chunks arrive
+          receivedChunks: 0,
+        };
+        setViewerStatus(`Loading session (0 of ${totalMessages} messages)…`);
+      } else {
+        chunkedDeliveryRef.current = null;
+      }
+
       // Don't clobber transient statuses with a generic "Connected" when the
       // CLI sends a session_active snapshot right after a command.
-      setViewerStatus((prev) => {
-        if (prev === "Model set" || prev === "Compacting…" || prev.startsWith("Compacted")) return prev;
-        return "Connected";
-      });
+      if (!isChunked) {
+        setViewerStatus((prev) => {
+          if (prev === "Model set" || prev === "Compacting…" || prev.startsWith("Compacted")) return prev;
+          return "Connected";
+        });
+      }
 
       // Don't unconditionally clear pendingQuestion / pendingPlan here.
       // session_active is also emitted for non-session-switch actions (model
@@ -1620,9 +1645,11 @@ export function App() {
       // keeps streaming indicators and Kill buttons visible. The snapshot payload
       // doesn't include explicit active-tool IDs, so we infer them by scanning
       // for toolCall blocks that have no matching toolResult.
-      setActiveToolCalls(detectInFlightTools(normalizedMessages));
+      if (!isChunked) {
+        setActiveToolCalls(detectInFlightTools(normalizedMessages));
+      }
       setIsChangingModel(false);
-      sessionHydratedRef.current = true;
+      sessionHydratedRef.current = !isChunked; // defer until final chunk
 
       // Clear queued messages — the snapshot contains the full conversation
       // including any follow-ups that were consumed by the agent.
@@ -1644,6 +1671,42 @@ export function App() {
         effortLevel: thinkingLevel,
         todoList: stateTodos,
       });
+      return;
+    }
+
+    // ── Chunked message delivery ───────────────────────────────────────────
+    // Large sessions send messages as a series of chunks after the metadata-only
+    // session_active event. Each chunk appends to the current messages array.
+    if (type === "session_messages_chunk") {
+      const chunkMessages = Array.isArray(evt.messages) ? evt.messages as unknown[] : [];
+      const isFinal = !!(evt as any).final;
+      const totalChunks = typeof (evt as any).totalChunks === "number" ? (evt as any).totalChunks : 0;
+      const totalMessages = typeof (evt as any).totalMessages === "number" ? (evt as any).totalMessages : 0;
+
+      const normalizedChunk = normalizeMessages(chunkMessages);
+
+      setMessages((prev) => [...prev, ...normalizedChunk]);
+
+      // Update chunked delivery tracking
+      if (chunkedDeliveryRef.current) {
+        chunkedDeliveryRef.current.receivedChunks++;
+        chunkedDeliveryRef.current.totalChunks = totalChunks;
+        const loaded = chunkedDeliveryRef.current.receivedChunks * 200; // approximate
+        setViewerStatus(`Loading session (${Math.min(loaded, totalMessages)} of ${totalMessages} messages)…`);
+      }
+
+      if (isFinal) {
+        chunkedDeliveryRef.current = null;
+        sessionHydratedRef.current = true;
+        setViewerStatus("Connected");
+
+        // Now that all messages are assembled, detect in-flight tools
+        setMessages((current) => {
+          setActiveToolCalls(detectInFlightTools(current));
+          patchSessionCache({ messages: current });
+          return current;
+        });
+      }
       return;
     }
 
@@ -2333,6 +2396,7 @@ export function App() {
     awaitingSnapshotRef.current = true;
     renderedMcpReportTsRef.current = null;
     sessionHydratedRef.current = false;
+    chunkedDeliveryRef.current = null;
     setActiveSessionId(relaySessionId);
     setViewerStatus("Connecting…");
     setRetryState(null);
