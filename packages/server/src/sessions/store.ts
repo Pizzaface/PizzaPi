@@ -166,7 +166,15 @@ export async function recordRelaySessionStart(input: RelaySessionStartInput): Pr
             runnerId: input.runnerId ?? null,
             runnerName: input.runnerName ?? null,
         })
-        .onConflict((oc) => oc.column("id").doNothing())
+        .onConflict((oc) =>
+            oc.column("id").doUpdateSet({
+                // On reconnect, update runner info (may have been resolved from
+                // a durable association that wasn't available on the first insert).
+                runnerId: input.runnerId ?? null,
+                runnerName: input.runnerName ?? null,
+                lastActiveAt: now,
+            }),
+        )
         .execute();
 }
 
@@ -201,16 +209,36 @@ export async function recordRelaySessionState(sessionId: string, state: unknown)
     await touchRelaySession(sessionId);
 }
 
+/**
+ * Update the runner association for a persisted session.
+ *
+ * Retries briefly when the relay_session row has not been persisted yet
+ * (race between linkSessionToRunner and the fire-and-forget
+ * recordRelaySessionStart insert).
+ */
 export async function updateRelaySessionRunner(
     sessionId: string,
     runnerId: string | null,
     runnerName: string | null,
-): Promise<void> {
-    await getKysely()
-        .updateTable("relay_session")
-        .set({ runnerId, runnerName })
-        .where("id", "=", sessionId)
-        .execute();
+): Promise<boolean> {
+    const MAX_ATTEMPTS = 3;
+    const RETRY_DELAY_MS = 250;
+
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        const result = await getKysely()
+            .updateTable("relay_session")
+            .set({ runnerId, runnerName })
+            .where("id", "=", sessionId)
+            .execute();
+
+        if ((result[0]?.numUpdatedRows ?? 0n) > 0n) return true;
+
+        if (attempt < MAX_ATTEMPTS) {
+            await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
+        }
+    }
+
+    return false;
 }
 
 export async function recordRelaySessionEnd(sessionId: string): Promise<void> {

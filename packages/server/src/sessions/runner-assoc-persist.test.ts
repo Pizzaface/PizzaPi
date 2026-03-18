@@ -180,16 +180,78 @@ describe("runner association persistence", () => {
         expect(found!.endedAt).not.toBeNull();
     });
 
-    it("updateRelaySessionRunner is a no-op for nonexistent session", async () => {
-        // Should not throw
-        await updateRelaySessionRunner("nonexistent-session", "runner-x", "Runner X");
+    it("updateRelaySessionRunner returns false for nonexistent session", async () => {
+        const result = await updateRelaySessionRunner("nonexistent-session", "runner-x", "Runner X");
+        expect(result).toBe(false);
+    });
+
+    it("updateRelaySessionRunner retries and succeeds when row appears after delay (P1 race)", async () => {
+        // Simulate the race: linkSessionToRunner fires before recordRelaySessionStart
+        // has finished its SQLite insert. The retry logic should catch it.
+        const delayedInsert = setTimeout(async () => {
+            await recordRelaySessionStart({
+                sessionId: "s-ra-race",
+                userId: TEST_USER,
+                cwd: "/project",
+                shareUrl: "http://test/s-ra-race",
+                startedAt: new Date().toISOString(),
+                isEphemeral: false,
+                // Note: no runner info — simulating a session that connected
+                // before the runner reported session_ready
+            });
+        }, 300);
+
+        const result = await updateRelaySessionRunner("s-ra-race", "runner-late", "Late Linker");
+        clearTimeout(delayedInsert);
+
+        expect(result).toBe(true);
 
         const row = await getKysely()
             .selectFrom("relay_session")
-            .select("id")
-            .where("id", "=", "nonexistent-session")
+            .select(["runnerId", "runnerName"])
+            .where("id", "=", "s-ra-race")
             .executeTakeFirst();
 
-        expect(row).toBeUndefined();
+        expect(row?.runnerId).toBe("runner-late");
+        expect(row?.runnerName).toBe("Late Linker");
+    });
+
+    it("recordRelaySessionStart updates runner info on reconnect (P2 onConflict)", async () => {
+        // First insert — session created without runner info (pre-migration or no runner)
+        await recordRelaySessionStart({
+            sessionId: "s-ra-reconn",
+            userId: TEST_USER,
+            cwd: "/project",
+            shareUrl: "http://test/s-ra-reconn",
+            startedAt: new Date().toISOString(),
+            isEphemeral: false,
+        });
+
+        const before = await getKysely()
+            .selectFrom("relay_session")
+            .select(["runnerId", "runnerName"])
+            .where("id", "=", "s-ra-reconn")
+            .executeTakeFirst();
+        expect(before?.runnerId).toBeNull();
+
+        // Second insert — session reconnects with durable runner association
+        await recordRelaySessionStart({
+            sessionId: "s-ra-reconn",
+            userId: TEST_USER,
+            cwd: "/project",
+            shareUrl: "http://test/s-ra-reconn",
+            startedAt: new Date().toISOString(),
+            isEphemeral: false,
+            runnerId: "runner-reconn",
+            runnerName: "Reconnected Runner",
+        });
+
+        const after = await getKysely()
+            .selectFrom("relay_session")
+            .select(["runnerId", "runnerName"])
+            .where("id", "=", "s-ra-reconn")
+            .executeTakeFirst();
+        expect(after?.runnerId).toBe("runner-reconn");
+        expect(after?.runnerName).toBe("Reconnected Runner");
     });
 });
