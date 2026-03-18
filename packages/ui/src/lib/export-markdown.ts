@@ -223,6 +223,16 @@ function formatMessage(message: RelayMessage): string | null {
     const name = message.toolName || "Unknown tool";
     const parts: string[] = [`### 🔧 ${name}`];
 
+    // Thinking hoisted onto tool messages by grouping
+    if (message.thinking) {
+      const duration = message.thinkingDuration
+        ? ` (${message.thinkingDuration}s)`
+        : "";
+      parts.push(
+        `<details>\n<summary>💭 Thinking${duration}</summary>\n\n${message.thinking}\n\n</details>`,
+      );
+    }
+
     if (message.toolInput != null) {
       const input = formatToolInput(message.toolInput);
       if (input) parts.push(input);
@@ -233,6 +243,37 @@ function formatMessage(message: RelayMessage): string | null {
 
     if (message.isError && message.content) {
       parts.push(`> ⚠️ Tool returned an error`);
+    }
+
+    // Subagent details — extract per-agent task/response pairs
+    if (message.details && typeof message.details === "object") {
+      const det = message.details as {
+        mode?: string;
+        results?: Array<{
+          agent?: string;
+          task?: string;
+          messages?: Array<{ role: string; content: unknown }>;
+          exitCode?: number;
+          errorMessage?: string;
+        }>;
+      };
+      if (Array.isArray(det.results) && det.results.length > 0) {
+        for (const r of det.results) {
+          const agentName = r.agent || "subagent";
+          const lines: string[] = [`#### 🤖 ${agentName}`];
+          if (r.task) lines.push(`**Task:** ${r.task}`);
+          // Extract last assistant message as the response
+          const lastAssistant = r.messages
+            ?.filter((m) => m.role === "assistant")
+            .pop();
+          if (lastAssistant) {
+            const responseText = contentToString(lastAssistant.content);
+            if (responseText) lines.push(`**Response:**\n${responseText}`);
+          }
+          if (r.errorMessage) lines.push(`> ⚠️ ${r.errorMessage}`);
+          parts.push(lines.join("\n\n"));
+        }
+      }
     }
 
     return parts.length > 1 ? parts.join("\n\n") : null;

@@ -461,6 +461,61 @@ describe("exportToMarkdown", () => {
     expect(md).toContain("> **System:** Simple system message");
   });
 
+  test("tool message with hoisted thinking renders details block", () => {
+    const md = exportToMarkdown([
+      msg({
+        role: "tool",
+        toolName: "Bash",
+        toolInput: { command: "ls" },
+        content: "file1\nfile2",
+        thinking: "Let me list the files",
+        thinkingDuration: 2,
+      }),
+    ]);
+    expect(md).toContain("### 🔧 Bash");
+    expect(md).toContain("<details>");
+    expect(md).toContain("💭 Thinking (2s)");
+    expect(md).toContain("Let me list the files");
+    expect(md).toContain("file1");
+  });
+
+  test("subagent tool with details renders per-agent results", () => {
+    const md = exportToMarkdown([
+      msg({
+        role: "toolResult",
+        toolName: "subagent",
+        content: "Parallel: 2/2 done",
+        details: {
+          mode: "parallel",
+          results: [
+            {
+              agent: "researcher",
+              task: "Find the bug",
+              messages: [
+                { role: "user", content: "Find the bug" },
+                { role: "assistant", content: [{ type: "text", text: "Found it in app.tsx line 42" }] },
+              ],
+              exitCode: 0,
+            },
+            {
+              agent: "fixer",
+              task: "Fix the bug",
+              messages: [
+                { role: "assistant", content: [{ type: "text", text: "Fixed and tested" }] },
+              ],
+              exitCode: 0,
+            },
+          ],
+        },
+      }),
+    ]);
+    expect(md).toContain("#### 🤖 researcher");
+    expect(md).toContain("**Task:** Find the bug");
+    expect(md).toContain("Found it in app.tsx line 42");
+    expect(md).toContain("#### 🤖 fixer");
+    expect(md).toContain("Fixed and tested");
+  });
+
   test("failed send_message turn shows error state", () => {
     const md = exportToMarkdown([
       msg({
