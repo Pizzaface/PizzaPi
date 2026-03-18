@@ -47,6 +47,8 @@ interface PinnedSession {
     isEphemeral: boolean;
     expiresAt: string | null;
     isPinned: boolean;
+    runnerId: string | null;
+    runnerName: string | null;
 }
 
 function isPinnedSession(value: unknown): value is PinnedSession {
@@ -1465,6 +1467,11 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                         <span className="text-[0.65rem] text-sidebar-foreground/30 truncate" title={p.cwd}>
                                                             {formatPathTail(p.cwd, 2)}
                                                         </span>
+                                                        {p.runnerName && (
+                                                            <span className="text-[0.6rem] text-sidebar-foreground/25 truncate max-w-[6rem]" title={p.runnerName}>
+                                                                · {p.runnerName}
+                                                            </span>
+                                                        )}
                                                         <span className="text-[0.6rem] text-sidebar-foreground/25">· ended</span>
                                                     </div>
                                                 </div>

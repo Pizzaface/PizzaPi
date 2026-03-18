@@ -35,6 +35,8 @@ export interface RelaySessionStartInput {
     shareUrl: string;
     startedAt: string;
     isEphemeral: boolean;
+    runnerId?: string | null;
+    runnerName?: string | null;
 }
 
 export interface PersistedRelaySessionSnapshot {
@@ -60,6 +62,8 @@ export interface PersistedRelaySessionSummary {
     isEphemeral: boolean;
     expiresAt: string | null;
     isPinned: boolean;
+    runnerId: string | null;
+    runnerName: string | null;
 }
 
 export async function ensureRelaySessionTables(): Promise<void> {
@@ -77,6 +81,8 @@ export async function ensureRelaySessionTables(): Promise<void> {
         .addColumn("isEphemeral", "integer", (col) => col.notNull().defaultTo(1))
         .addColumn("expiresAt", "text")
         .addColumn("isPinned", "integer", (col) => col.notNull().defaultTo(0))
+        .addColumn("runnerId", "text")
+        .addColumn("runnerName", "text")
         .execute();
 
     // Migration: add isPinned column to existing tables
@@ -88,6 +94,32 @@ export async function ensureRelaySessionTables(): Promise<void> {
     } catch (error) {
         if (!isDuplicateColumnError(error, "isPinned")) {
             console.error("[sessions/store] Failed to migrate relay_session.isPinned:", error);
+            throw error;
+        }
+    }
+
+    // Migration: add runnerId column to existing tables
+    try {
+        await getKysely().schema
+            .alterTable("relay_session")
+            .addColumn("runnerId", "text")
+            .execute();
+    } catch (error) {
+        if (!isDuplicateColumnError(error, "runnerId")) {
+            console.error("[sessions/store] Failed to migrate relay_session.runnerId:", error);
+            throw error;
+        }
+    }
+
+    // Migration: add runnerName column to existing tables
+    try {
+        await getKysely().schema
+            .alterTable("relay_session")
+            .addColumn("runnerName", "text")
+            .execute();
+    } catch (error) {
+        if (!isDuplicateColumnError(error, "runnerName")) {
+            console.error("[sessions/store] Failed to migrate relay_session.runnerName:", error);
             throw error;
         }
     }
@@ -131,6 +163,8 @@ export async function recordRelaySessionStart(input: RelaySessionStartInput): Pr
             isEphemeral: input.isEphemeral ? 1 : 0,
             expiresAt: input.isEphemeral ? ephemeralExpiryIso(new Date(now).getTime()) : null,
             isPinned: 0,
+            runnerId: input.runnerId ?? null,
+            runnerName: input.runnerName ?? null,
         })
         .onConflict((oc) => oc.column("id").doNothing())
         .execute();
@@ -165,6 +199,18 @@ export async function recordRelaySessionState(sessionId: string, state: unknown)
         .execute();
 
     await touchRelaySession(sessionId);
+}
+
+export async function updateRelaySessionRunner(
+    sessionId: string,
+    runnerId: string | null,
+    runnerName: string | null,
+): Promise<void> {
+    await getKysely()
+        .updateTable("relay_session")
+        .set({ runnerId, runnerName })
+        .where("id", "=", sessionId)
+        .execute();
 }
 
 export async function recordRelaySessionEnd(sessionId: string): Promise<void> {
@@ -255,6 +301,8 @@ export async function listPersistedRelaySessionsForUser(
             "isEphemeral",
             "expiresAt",
             "isPinned",
+            "runnerId",
+            "runnerName",
         ])
         .where("userId", "=", userId)
         .where((eb) =>
@@ -281,6 +329,8 @@ export async function listPersistedRelaySessionsForUser(
         isEphemeral: row.isEphemeral === 1,
         expiresAt: row.expiresAt,
         isPinned: row.isPinned === 1,
+        runnerId: row.runnerId ?? null,
+        runnerName: row.runnerName ?? null,
     }));
 }
 
@@ -301,6 +351,8 @@ export async function listPinnedRelaySessionsForUser(
             "isEphemeral",
             "expiresAt",
             "isPinned",
+            "runnerId",
+            "runnerName",
         ])
         .where("userId", "=", userId)
         .where("isPinned", "=", 1)
@@ -317,6 +369,8 @@ export async function listPinnedRelaySessionsForUser(
         isEphemeral: row.isEphemeral === 1,
         expiresAt: row.expiresAt,
         isPinned: true,
+        runnerId: row.runnerId ?? null,
+        runnerName: row.runnerName ?? null,
     }));
 }
 

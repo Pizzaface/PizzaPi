@@ -88,6 +88,8 @@ export interface RelaySessionTable {
     isEphemeral: number;
     expiresAt: string | null;
     isPinned: number;
+    runnerId: string | null;
+    runnerName: string | null;
 }
 
 export interface RelaySessionStateTable {
