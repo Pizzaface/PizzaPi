@@ -4,6 +4,8 @@ import { join } from "node:path";
 import type { ExtensionFactory } from "@mariozechner/pi-coding-agent";
 import { loadConfig } from "../config.js";
 import { getRelaySessionId } from "./remote.js";
+import { buildProviderUsage, refreshAllUsage } from "./remote-provider-usage.js";
+import { formatProviderUsage, getUsageKey, normalizeUsageKeys } from "./format-usage.js";
 
 /** Minimal Component that renders nothing — keeps the tool call invisible in the TUI. */
 const silent = { render: (_width: number): string[] => [], invalidate: () => {} };
@@ -280,6 +282,10 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
                 byProvider.set(providerKey, list);
             }
 
+            // Ensure usage cache is populated (reads runner cache file or fetches live)
+            await refreshAllUsage();
+            const providerUsage = buildProviderUsage();
+
             const lines: string[] = [
                 `${models.length} model(s) — ${availableModels.length} with credentials\n`,
             ];
@@ -295,6 +301,10 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
                     ].filter(Boolean).join(", ");
                     lines.push(`  ${m.id}  (${m.name})  [${flags}]`);
                 }
+                // Append usage/quota info for this provider if available
+                const usageKey = getUsageKey(provider);
+                const usageData = usageKey ? providerUsage[usageKey] : undefined;
+                for (const line of formatProviderUsage(usageData)) lines.push(line);
                 lines.push("");
             }
 
@@ -308,9 +318,12 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
                 maxTokens: m.maxTokens,
             }));
 
+            // Re-key providerUsage so keys match models[*].provider names
+            const normalizedUsage = normalizeUsageKeys(providerUsage, byProvider.keys());
+
             return {
                 content: [{ type: "text" as const, text: lines.join("\n").trimEnd() }],
-                details: { models: details } as any,
+                details: { models: details, providerUsage: normalizedUsage } as any,
             };
         },
 
