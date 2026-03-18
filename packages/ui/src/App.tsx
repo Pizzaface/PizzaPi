@@ -1183,12 +1183,23 @@ export function App() {
         pendingDeltaRef.current = new Map();
         setMessages((prev) => {
           let result = prev;
+          let keyMap: Map<string, number> | null = null;
+
           for (const { raw: pendingRaw, key } of pending.values()) {
             let msg = toRelayMessage(pendingRaw, key);
             if (!msg) continue;
 
+            // Lazily initialize the map of existing keys to indices to convert
+            // O(N*M) lookups into O(N+M)
+            if (keyMap === null) {
+              keyMap = new Map();
+              for (let i = 0; i < result.length; i++) {
+                keyMap.set(result[i].key, i);
+              }
+            }
+
             // Try to find an existing message by key
-            let idx = result.findIndex((m) => m.key === msg!.key);
+            let idx = keyMap.get(msg.key) ?? -1;
 
             // Heuristic: if not found, and it's a fallback key (streaming),
             // and the last message is itself a no-timestamp streaming partial
@@ -1215,6 +1226,7 @@ export function App() {
             } else {
               if (result === prev) result = prev.slice();
               result.push(msg);
+              keyMap.set(msg.key, result.length - 1); // keep map updated for subsequent pending items
             }
           }
           return result;
@@ -1238,16 +1250,27 @@ export function App() {
       pendingToolStreamRef.current = new Map();
       setMessages((prev) => {
         let result = prev;
+        let keyMap: Map<string, number> | null = null;
+
         for (const [, raw] of pending) {
           const msg = toRelayMessage(raw, "tool-stream");
           if (!msg) continue;
-          const idx = result.findIndex((m) => m.key === msg.key);
+
+          if (keyMap === null) {
+            keyMap = new Map();
+            for (let i = 0; i < result.length; i++) {
+              keyMap.set(result[i].key, i);
+            }
+          }
+
+          const idx = keyMap.get(msg.key) ?? -1;
           if (idx >= 0) {
             if (result === prev) result = prev.slice();
             result[idx] = msg;
           } else {
             if (result === prev) result = prev.slice();
             result.push(msg);
+            keyMap.set(msg.key, result.length - 1); // keep map updated
           }
         }
         return result;
