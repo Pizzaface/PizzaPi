@@ -15,7 +15,7 @@ import type { HubServerToClientEvents, HubClientToServerEvents } from "@pizzapi/
 import { formatPathTail } from "@/lib/path";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { PanelLeftClose, PanelLeftOpen, Plus, X, HardDrive, FolderOpen, CheckSquare, Square, CheckCheck, Trash2, Pin, PinOff, ChevronDown, ChevronRight, MessageSquare, Copy } from "lucide-react";
-import { buildSessionTree, flattenSessionTree, getSessionIndent, getDescendantSessionIds } from "@/lib/session-tree";
+import { buildSessionTree, flattenSessionTree, getSessionIndent, getDescendantSessionIds, getGroupCwd } from "@/lib/session-tree";
 
 interface HubSession {
     sessionId: string;
@@ -660,14 +660,22 @@ export const SessionSidebar = React.memo(function SessionSidebar({
         }
 
         // Step 3: for every runner, split sessions into per-cwd project groups.
+        // Child sessions (spawned in worktrees or with a parentSessionId) are
+        // collapsed under the same project group as their root ancestor.
         const result: RunnerGroup[] = [];
         for (const [key, { label, sessions }] of runnerMap) {
             const isLocal = key === "__local__";
+
+            // Build a lookup map so getGroupCwd can follow parent chains
+            const runnerSessionMap = new Map<string, HubSession>(
+                sessions.map((s) => [s.sessionId, s]),
+            );
+
             const cwdMap = new Map<string, HubSession[]>();
             for (const s of sessions) {
-                const cwd = s.cwd || "";
-                if (!cwdMap.has(cwd)) cwdMap.set(cwd, []);
-                cwdMap.get(cwd)!.push(s);
+                const groupCwd = getGroupCwd(s, runnerSessionMap);
+                if (!cwdMap.has(groupCwd)) cwdMap.set(groupCwd, []);
+                cwdMap.get(groupCwd)!.push(s);
             }
 
             const projects: ProjectGroup[] = Array.from(cwdMap.entries()).map(([cwd, cwdSessions]) => ({
@@ -1348,6 +1356,21 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                                     {timeLabel}
                                                                 </span>
                                                             </div>
+                                                            {/* Worktree badge — shown when cwd is inside a .worktrees/ directory */}
+                                                            {(() => {
+                                                                const cwd = s.cwd || "";
+                                                                const match = cwd.match(/\/\.worktrees\/([^/]+)/);
+                                                                return match ? (
+                                                                    <div className="flex items-center gap-1 mt-0.5">
+                                                                        <span
+                                                                            className="text-[0.55rem] bg-amber-500/15 text-amber-400/80 px-1 py-0.5 rounded font-mono leading-none truncate max-w-[8rem]"
+                                                                            title={`Worktree: ${match[1]}`}
+                                                                        >
+                                                                            {match[1]}
+                                                                        </span>
+                                                                    </div>
+                                                                ) : null;
+                                                            })()}
                                                             {(s.userName || (showCwd && s.cwd)) && (
                                                                 <div className="flex items-center gap-1 mt-0.5 min-w-0">
                                                                     {s.userName && (
