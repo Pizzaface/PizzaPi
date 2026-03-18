@@ -22,6 +22,7 @@ import {
     updateSessionHeartbeat,
     touchSessionActivity,
     publishSessionEvent,
+    broadcastSessionEventToViewers,
     endSharedSession,
     getViewerCount,
     broadcastToViewers,
@@ -446,8 +447,16 @@ export function registerRelayNamespace(io: SocketIOServer): void {
                 clearThinkingMaps(sessionId);
             }
 
-            // Publish to viewers via Redis cache + Socket.IO rooms
-            await publishSessionEvent(sessionId, eventToPublish);
+            // For session_messages_chunk, broadcast to viewers WITHOUT caching.
+            // Chunks are transient and only needed during active hydration;
+            // the final assembled snapshot is cached separately when assembly
+            // completes. Caching all chunks causes Redis bloat on large sessions.
+            if (event.type === "session_messages_chunk") {
+                await broadcastSessionEventToViewers(sessionId, eventToPublish);
+            } else {
+                // Publish to viewers via Redis cache + Socket.IO rooms
+                await publishSessionEvent(sessionId, eventToPublish);
+            }
 
             // Track push-pending state for AskUserQuestion (awaited to ensure
             // set/clear ordering; only runs for AskUserQuestion start/end events).

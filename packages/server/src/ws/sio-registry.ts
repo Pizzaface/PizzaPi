@@ -605,6 +605,30 @@ export async function touchSessionActivity(sessionId: string): Promise<void> {
 }
 
 /**
+ * Broadcast a session event to viewers WITHOUT caching to Redis.
+ * Used for transient events like session_messages_chunk that are only
+ * needed during active streaming and would bloat the Redis cache.
+ */
+export async function broadcastSessionEventToViewers(sessionId: string, event: unknown): Promise<void> {
+    const seq = await incrementSeq(sessionId);
+    try {
+        io.of("/viewer")
+            .to(viewerSessionRoom(sessionId))
+            .emit("event", { event, seq });
+    } catch (err) {
+        console.warn("[sio-registry] broadcastSessionEventToViewers failed:", (err as Error)?.message);
+        try {
+            io.of("/viewer")
+                .local
+                .to(viewerSessionRoom(sessionId))
+                .emit("event", { event, seq });
+        } catch {
+            // Local delivery also failed — event may be lost but won't break cache
+        }
+    }
+}
+
+/**
  * Publish a session event to viewers via Socket.IO rooms.
  *
  * 1. Increment seq in Redis

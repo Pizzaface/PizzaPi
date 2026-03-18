@@ -146,22 +146,12 @@ function extractAssistantText(msg: RelayMessage): string {
   return text;
 }
 
-function normalizeMessages(rawMessages: unknown[], keyOffset = 0): RelayMessage[] {
-  const all = rawMessages
-    .map((m, i) => toRelayMessage(m, `snapshot-${keyOffset + i}`))
-    .filter((m): m is RelayMessage => m !== null);
-
-  // Drop no-timestamp assistant messages that are superseded by a later
-  // timestamped assistant message. Two messages are considered the same turn
-  // when they share at least one toolCallId, OR when the no-timestamp message
-  // is immediately followed by a timestamped one (the original heuristic).
-  //
-  // This prevents streaming partials saved alongside the final message from
-  // producing duplicate rows (e.g. thinking blocks appearing below tool cards).
-
+/** Deduplicate assistant messages within a list. Removes no-timestamp partials
+ * that are superseded by timestamped finals, even across chunk boundaries. */
+function deduplicateMessages(messages: RelayMessage[]): RelayMessage[] {
   // Build a set of toolCallIds referenced by any timestamped assistant message.
   const timestampedToolCallIds = new Set<string>();
-  for (const msg of all) {
+  for (const msg of messages) {
     if (msg.role === "assistant" && msg.timestamp !== undefined) {
       for (const id of getAssistantToolCallIds(msg)) {
         timestampedToolCallIds.add(id);
@@ -170,12 +160,12 @@ function normalizeMessages(rawMessages: unknown[], keyOffset = 0): RelayMessage[
   }
 
   const dropIndices = new Set<number>();
-  for (let i = 0; i < all.length; i++) {
-    const cur = all[i];
+  for (let i = 0; i < messages.length; i++) {
+    const cur = messages[i];
     if (cur.role !== "assistant" || cur.timestamp !== undefined) continue;
 
     // Original heuristic: immediately followed by a timestamped assistant message.
-    const next = all[i + 1];
+    const next = messages[i + 1];
     if (next?.role === "assistant" && next.timestamp !== undefined) {
       dropIndices.add(i);
       continue;
@@ -195,8 +185,8 @@ function normalizeMessages(rawMessages: unknown[], keyOffset = 0): RelayMessage[
     if (ids.length === 0) {
       const curText = extractAssistantText(cur);
       if (curText) {
-        for (let j = i + 1; j < all.length; j++) {
-          const candidate = all[j];
+        for (let j = i + 1; j < messages.length; j++) {
+          const candidate = messages[j];
           if (candidate.role !== "assistant" || candidate.timestamp === undefined) continue;
           const candidateText = extractAssistantText(candidate);
           if (candidateText && candidateText.startsWith(curText)) {
@@ -208,8 +198,16 @@ function normalizeMessages(rawMessages: unknown[], keyOffset = 0): RelayMessage[
     }
   }
 
-  if (dropIndices.size === 0) return all;
-  return all.filter((_, i) => !dropIndices.has(i));
+  if (dropIndices.size === 0) return messages;
+  return messages.filter((_, i) => !dropIndices.has(i));
+}
+
+function normalizeMessages(rawMessages: unknown[], keyOffset = 0): RelayMessage[] {
+  const all = rawMessages
+    .map((m, i) => toRelayMessage(m, `snapshot-${keyOffset + i}`))
+    .filter((m): m is RelayMessage => m !== null);
+
+  return deduplicateMessages(all);
 }
 
 interface ConfiguredModelInfo {
@@ -1716,9 +1714,14 @@ export function App() {
       }
 
       const keyOffset = chunkedDeliveryRef.current?.loadedMessages ?? 0;
-      const normalizedChunk = normalizeMessages(chunkMessages, keyOffset);
+      // Convert messages but skip dedupe—we'll dedupe the full list when assembly completes.
+      // This prevents cross-chunk duplicates where a partial message in one chunk and
+      // its final timestamped version in another chunk would both survive per-chunk dedupe.
+      const convertedChunk = chunkMessages
+        .map((m, i) => toRelayMessage(m, `snapshot-${keyOffset + i}`))
+        .filter((m): m is RelayMessage => m !== null);
 
-      setMessages((prev) => [...prev, ...normalizedChunk]);
+      setMessages((prev) => [...prev, ...convertedChunk]);
 
       // Update chunked delivery tracking
       if (chunkedDeliveryRef.current) {
@@ -1735,11 +1738,15 @@ export function App() {
         sessionHydratedRef.current = true;
         setViewerStatus("Connected");
 
-        // Now that all messages are assembled, detect in-flight tools
+        // Now that all messages are assembled, run global dedupe to remove
+        // cross-chunk duplicates (e.g., partial messages from one chunk and
+        // their final timestamped versions from another). This prevents
+        // duplicate assistant/tool content from appearing in large-session reloads.
         setMessages((current) => {
-          setActiveToolCalls(detectInFlightTools(current));
-          patchSessionCache({ messages: current });
-          return current;
+          const deduped = deduplicateMessages(current);
+          setActiveToolCalls(detectInFlightTools(deduped));
+          patchSessionCache({ messages: deduped });
+          return deduped;
         });
       }
       return;
