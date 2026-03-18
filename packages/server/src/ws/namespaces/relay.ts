@@ -26,6 +26,7 @@ import {
     getViewerCount,
     broadcastToViewers,
 } from "../sio-registry.js";
+import { appendRelayEventToCache } from "../../sessions/redis.js";
 import {
     setPushPendingQuestion,
     clearPushPendingQuestion,
@@ -391,13 +392,19 @@ export function registerRelayNamespace(io: SocketIOServer): void {
                         pendingChunkedStates.delete(sessionId);
                         await updateSessionState(sessionId, fullState);
 
-                        // Publish a full session_active to the Redis replay cache
+                        // Append a full session_active to the Redis replay cache
                         // so that findLatestSnapshotEvent() finds the assembled
                         // state instead of the metadata-only SA from chunk start.
-                        await publishSessionEvent(sessionId, {
+                        // We do NOT use publishSessionEvent() here because that
+                        // would broadcast the full assembled state as a single
+                        // oversized frame to all viewers — the same transport
+                        // issue chunking was designed to avoid.  Viewers already
+                        // have the complete data from the chunk stream.
+                        const session = await getSharedSession(sessionId);
+                        await appendRelayEventToCache(sessionId, {
                             type: "session_active",
                             state: fullState,
-                        });
+                        }, { isEphemeral: session?.isEphemeral });
                     } else {
                         await touchSessionActivity(sessionId);
                     }

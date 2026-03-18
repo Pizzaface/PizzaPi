@@ -385,6 +385,21 @@ export function registerViewerNamespace(io: SocketIOServer): void {
                 socket.emit("event", { event: JSON.parse(session.lastHeartbeat), seq: lastSeq });
             } catch {}
         }
+        // Join the room BEFORE sending snapshots or notifying the runner,
+        // so the viewer is already receiving live events when the runner
+        // responds to the "connected" notification with a fresh snapshot.
+        // Without this, a fast runner response can publish session_active
+        // and early chunks before addViewer() completes, causing the
+        // viewer to miss the restart snapshot.
+        const ok = await addViewer(sessionId, socket);
+        if (!ok) {
+            socket.emit("disconnected", { reason: "Session ended" });
+            // Use disconnect() (not true) so the client can still auto-reconnect;
+            // the session may have just cycled and will come back shortly.
+            socket.disconnect();
+            return;
+        }
+
         if (session.lastState) {
             try {
                 socket.emit("event", { event: { type: "session_active", state: JSON.parse(session.lastState) }, seq: lastSeq });
@@ -397,17 +412,6 @@ export function registerViewerNamespace(io: SocketIOServer): void {
             // The runner re-emits a fresh snapshot on the "connected" event
             // below, which will properly restart chunked delivery.
             await sendLatestSnapshotFromCache(socket, sessionId);
-        }
-
-        // NOW join the room for live events — any missed events between
-        // snapshot read and this point will be caught by gap detection.
-        const ok = await addViewer(sessionId, socket);
-        if (!ok) {
-            socket.emit("disconnected", { reason: "Session ended" });
-            // Use disconnect() (not true) so the client can still auto-reconnect;
-            // the session may have just cycled and will come back shortly.
-            socket.disconnect();
-            return;
         }
     });
 }
