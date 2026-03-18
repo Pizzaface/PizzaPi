@@ -447,11 +447,18 @@ export function registerRelayNamespace(io: SocketIOServer): void {
                 clearThinkingMaps(sessionId);
             }
 
-            // For session_messages_chunk, broadcast to viewers WITHOUT caching.
-            // Chunks are transient and only needed during active hydration;
-            // the final assembled snapshot is cached separately when assembly
-            // completes. Caching all chunks causes Redis bloat on large sessions.
-            if (event.type === "session_messages_chunk") {
+            // For session_messages_chunk and chunked session_active, broadcast
+            // to viewers WITHOUT caching.  Chunks are transient and only needed
+            // during active hydration; the final assembled snapshot is cached
+            // separately when assembly completes.  The metadata-only chunked
+            // session_active must also skip the cache — if the stream is
+            // interrupted before the final chunk, the replay path would find
+            // this empty-messages snapshot and show a blank transcript instead
+            // of the last durable state.
+            const isChunkedSessionActive =
+                event.type === "session_active" &&
+                !!(event.state as Record<string, unknown> | undefined)?.chunked;
+            if (event.type === "session_messages_chunk" || isChunkedSessionActive) {
                 await broadcastSessionEventToViewers(sessionId, eventToPublish);
             } else {
                 // Publish to viewers via Redis cache + Socket.IO rooms
