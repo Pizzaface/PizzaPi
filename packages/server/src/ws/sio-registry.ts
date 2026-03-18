@@ -287,9 +287,19 @@ export async function registerTuiSession(
     const collabMode = opts.collabMode !== false;
     const sessionName = normalizeSessionName(opts.sessionName);
 
-    // If session already exists, end it first (reconnect)
+    // If session already exists, end it first (reconnect).
+    // IMPORTANT: Clear the old socket's sessionId BEFORE ending the session
+    // to prevent a race where the old socket's disconnect handler fires after
+    // the new session is created and kills it.  Without this, Socket.IO
+    // reconnects create a kill loop: new socket registers → old socket's
+    // deferred disconnect fires → endSharedSession kills the new session →
+    // Socket.IO reconnects → repeat.
     const existing = await getSession(sessionId);
     if (existing) {
+        const oldSocket = localTuiSockets.get(sessionId);
+        if (oldSocket && oldSocket !== socket) {
+            oldSocket.data.sessionId = undefined;
+        }
         await endSharedSession(sessionId, "Session reconnected");
     }
 
