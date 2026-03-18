@@ -62,6 +62,74 @@ import { registerPlanModeTool, consumePendingPlanModeFromWeb, cancelPendingPlanM
 const RELAY_DEFAULT = "ws://localhost:7492";
 const RELAY_STATUS_KEY = "relay";
 
+// ── Payload size guard ───────────────────────────────────────────────────────
+//
+// The server's maxHttpBufferSize is 100 MB. If the serialized session_active
+// event exceeds that, Socket.IO silently kills the WebSocket connection
+// (reason: "transport close") and the client auto-reconnects — causing an
+// infinite boot loop. We cap the messages array BEFORE serialization.
+//
+// Strategy: estimate size cheaply via sampling, then truncate from the front
+// (keeping recent messages) if the estimate exceeds the budget.  The UI still
+// gets a usable recent-history snapshot and won't crash the transport.
+
+/** Maximum estimated bytes for the messages array inside session_active. */
+const SESSION_ACTIVE_MAX_BYTES = 50 * 1024 * 1024; // 50 MB — well under the 100 MB server limit
+
+/**
+ * Estimate the serialized JSON size of an array of messages by sampling.
+ * Stringifying the entire array would itself block the event loop for large
+ * sessions, so we sample a handful of elements and extrapolate.
+ */
+function estimateMessagesSize(messages: unknown[]): number {
+    if (messages.length === 0) return 2; // "[]"
+    const SAMPLE_COUNT = Math.min(10, messages.length);
+    let sampleBytes = 0;
+    const step = Math.max(1, Math.floor(messages.length / SAMPLE_COUNT));
+    let sampled = 0;
+    for (let i = 0; i < messages.length && sampled < SAMPLE_COUNT; i += step) {
+        try {
+            sampleBytes += JSON.stringify(messages[i]).length;
+        } catch {
+            sampleBytes += 1024; // fallback estimate for unserializable entries
+        }
+        sampled++;
+    }
+    const avgBytes = sampleBytes / sampled;
+    // Add ~15% overhead for array commas, brackets, and event wrapper fields
+    return Math.ceil(avgBytes * messages.length * 1.15);
+}
+
+/**
+ * Cap the messages array so the session_active payload stays under the
+ * transport limit.  Returns the original array when it's small enough,
+ * or a truncated tail slice with a synthetic "[truncated]" marker when not.
+ */
+export function capMessagesPayload(messages: unknown[]): unknown[] {
+    if (messages.length <= 1) return messages;
+
+    const estimated = estimateMessagesSize(messages);
+    if (estimated <= SESSION_ACTIVE_MAX_BYTES) return messages;
+
+    // Estimate how many messages from the end we can keep
+    const ratio = SESSION_ACTIVE_MAX_BYTES / estimated;
+    const keepCount = Math.max(1, Math.floor(messages.length * ratio * 0.9)); // 10% safety margin
+    const truncated = messages.slice(-keepCount);
+
+    console.log(
+        `pizzapi: session_active payload too large (~${(estimated / 1024 / 1024).toFixed(0)} MB, ` +
+        `${messages.length} messages). Truncating to last ${keepCount} messages ` +
+        `to stay under ${(SESSION_ACTIVE_MAX_BYTES / 1024 / 1024).toFixed(0)} MB transport limit.`,
+    );
+
+    // Prepend a synthetic system marker so the UI shows that history was truncated
+    const marker = {
+        role: "system" as const,
+        content: `[Session history truncated — showing last ${keepCount} of ${messages.length} messages. The full conversation is preserved on disk.]`,
+    };
+    return [marker, ...truncated];
+}
+
 // ── Module-level state for external consumers ────────────────────────────────
 let _ctx: RelayContext | null = null;
 
@@ -181,8 +249,18 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 rctx.latestCtx.sessionManager.getEntries(),
                 rctx.latestCtx.sessionManager.getLeafId(),
             );
+
+            // Guard: cap the messages payload to prevent oversized session_active
+            // events from exceeding the server's maxHttpBufferSize (100 MB) and
+            // silently killing the WebSocket — which triggers an infinite
+            // connect → transport close → reconnect boot loop.
+            //
+            // Estimate serialized size by sampling — full JSON.stringify on a
+            // huge array is itself expensive and would block the event loop.
+            const cappedMessages = capMessagesPayload(messages);
+
             return {
-                messages,
+                messages: cappedMessages,
                 model,
                 thinkingLevel: rctx.getCurrentThinkingLevel(),
                 sessionName: rctx.getCurrentSessionName(),
