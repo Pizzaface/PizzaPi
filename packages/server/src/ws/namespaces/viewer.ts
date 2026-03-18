@@ -14,6 +14,7 @@ import type {
     ViewerSocketData,
 } from "@pizzapi/protocol";
 import { sessionCookieAuthMiddleware } from "./auth.js";
+import { getPendingChunkedSnapshot } from "./relay.js";
 import {
     getSharedSession,
     addViewer,
@@ -378,8 +379,23 @@ export function registerViewerNamespace(io: SocketIOServer): void {
                 socket.emit("event", { event: { type: "session_active", state: JSON.parse(session.lastState) }, seq: lastSeq });
             } catch {}
         } else {
-            // No in-memory state — fall back to event cache
-            await sendLatestSnapshotFromCache(socket, sessionId);
+            // No persisted lastState — check if a chunked delivery is in
+            // progress and send the partially assembled snapshot so the viewer
+            // has *something* to display while the runner re-sends a fresh
+            // snapshot (triggered by the viewer "connected" event below).
+            const pending = getPendingChunkedSnapshot(sessionId);
+            if (pending && pending.messages.length > 0) {
+                socket.emit("event", {
+                    event: {
+                        type: "session_active",
+                        state: { ...pending.metadata, messages: pending.messages },
+                    },
+                    seq: lastSeq,
+                });
+            } else {
+                // No in-memory state — fall back to event cache
+                await sendLatestSnapshotFromCache(socket, sessionId);
+            }
         }
 
         // NOW join the room for live events — any missed events between

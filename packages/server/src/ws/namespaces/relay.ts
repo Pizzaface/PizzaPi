@@ -96,6 +96,24 @@ interface ChunkedSessionState {
 
 const pendingChunkedStates = new Map<string, ChunkedSessionState>();
 
+/**
+ * Get the partially assembled snapshot for a session that's mid-chunked-delivery.
+ * Returns metadata + chunks received so far, or null if no chunked delivery is active.
+ */
+export function getPendingChunkedSnapshot(sessionId: string): { metadata: Record<string, unknown>; messages: unknown[]; snapshotId: string; totalMessages: number; receivedChunks: number; totalChunks: number } | null {
+    const pending = pendingChunkedStates.get(sessionId);
+    if (!pending) return null;
+    const messages = pending.chunks.flat();
+    return {
+        metadata: pending.metadata,
+        messages,
+        snapshotId: pending.snapshotId,
+        totalMessages: (pending.metadata as any).totalMessages ?? messages.length,
+        receivedChunks: pending.receivedChunks,
+        totalChunks: pending.totalChunks,
+    };
+}
+
 type RelaySocket = Socket<
     RelayClientToServerEvents,
     RelayServerToClientEvents,

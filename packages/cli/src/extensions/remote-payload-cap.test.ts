@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { estimateMessagesSize, needsChunkedDelivery, computeChunkBoundaries } from "./remote.js";
+import { estimateMessagesSize, needsChunkedDelivery, computeChunkBoundaries, capOversizedMessages } from "./remote.js";
 
 describe("estimateMessagesSize", () => {
     test("returns 2 for empty array", () => {
@@ -59,8 +59,14 @@ describe("needsChunkedDelivery", () => {
         expect(needsChunkedDelivery([])).toBe(false);
     });
 
-    test("returns false for single message", () => {
+    test("returns false for single small message", () => {
         expect(needsChunkedDelivery([{ role: "user", content: "x" }])).toBe(false);
+    });
+
+    test("returns true for single oversized message", () => {
+        // One message > 10 MB threshold
+        const huge = "x".repeat(15_000_000);
+        expect(needsChunkedDelivery([{ role: "user", content: huge }])).toBe(true);
     });
 
     test("returns false for small messages", () => {
@@ -134,5 +140,46 @@ describe("computeChunkBoundaries", () => {
         // First starts at 0, last ends at length
         expect(boundaries[0][0]).toBe(0);
         expect(boundaries[boundaries.length - 1][1]).toBe(500);
+    });
+});
+
+describe("capOversizedMessages", () => {
+    test("returns same array when all messages are small", () => {
+        const msgs = [
+            { role: "user", content: "hello" },
+            { role: "assistant", content: "hi" },
+        ];
+        const result = capOversizedMessages(msgs);
+        expect(result).toBe(msgs); // same reference — no copy
+    });
+
+    test("truncates messages exceeding 50 MB", () => {
+        const hugeContent = "x".repeat(55_000_000); // ~55 MB
+        const msgs = [
+            { role: "user", content: "hello" },
+            { role: "assistant", content: hugeContent },
+        ];
+        const result = capOversizedMessages(msgs);
+
+        // Should be a new array (copied)
+        expect(result).not.toBe(msgs);
+        // First message unchanged
+        expect(result[0]).toBe(msgs[0]);
+        // Second message truncated
+        const truncated = result[1] as Record<string, unknown>;
+        expect(typeof truncated.content).toBe("string");
+        expect((truncated.content as string).length).toBeLessThan(1000);
+        expect((truncated.content as string)).toContain("truncated");
+        expect(truncated.role).toBe("assistant");
+    });
+
+    test("preserves message metadata when truncating", () => {
+        const hugeContent = "x".repeat(55_000_000);
+        const msgs = [{ role: "assistant", content: hugeContent, toolName: "bash", key: "abc" }];
+        const result = capOversizedMessages(msgs);
+        const truncated = result[0] as Record<string, unknown>;
+        expect(truncated.role).toBe("assistant");
+        expect(truncated.toolName).toBe("bash");
+        expect(truncated.key).toBe("abc");
     });
 });

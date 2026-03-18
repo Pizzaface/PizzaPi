@@ -92,6 +92,14 @@ const CHUNK_SIZE = 200;
 const CHUNK_BYTE_LIMIT = 8 * 1024 * 1024; // 8 MB per chunk
 
 /**
+ * Hard cap for a single message's serialized size.  Messages exceeding this
+ * are truncated before chunking so that no individual chunk frame can exceed
+ * the server's maxHttpBufferSize (100 MB).  We set this well below the
+ * transport cap to leave room for event wrapper overhead.
+ */
+const MAX_MESSAGE_SIZE = 50 * 1024 * 1024; // 50 MB
+
+/**
  * Estimate the serialized JSON size of a messages array by summing per-message
  * sizes.  We stringify each message individually rather than the whole array
  * to avoid allocating a single 100 MB+ string.  This catches outlier-heavy
@@ -115,7 +123,7 @@ export function estimateMessagesSize(messages: unknown[]): number {
  * Check whether a messages array needs chunked delivery.
  */
 export function needsChunkedDelivery(messages: unknown[]): boolean {
-    if (messages.length <= 1) return false;
+    if (messages.length === 0) return false;
     return estimateMessagesSize(messages) > CHUNK_THRESHOLD;
 }
 
@@ -130,6 +138,37 @@ export function needsChunkedDelivery(messages: unknown[]): boolean {
  * Each chunk carries a `snapshotId` that matches the session_active event,
  * so the UI can discard stale chunks from a previous snapshot stream.
  */
+/**
+ * Cap any individual message whose serialized size exceeds MAX_MESSAGE_SIZE.
+ * Returns a new array (only copies if truncation was needed).  Truncated
+ * messages have their `content` replaced with a notice so the viewer knows
+ * data was elided.
+ */
+export function capOversizedMessages(messages: unknown[]): unknown[] {
+    let copied = false;
+    let result = messages;
+
+    for (let i = 0; i < messages.length; i++) {
+        const size = JSON.stringify(messages[i]).length;
+        if (size > MAX_MESSAGE_SIZE) {
+            if (!copied) {
+                result = [...messages];
+                copied = true;
+            }
+            const msg = messages[i] as Record<string, unknown>;
+            result[i] = {
+                ...msg,
+                content: `[Content truncated: original message was ~${(size / 1024 / 1024).toFixed(0)} MB, exceeding the ${(MAX_MESSAGE_SIZE / 1024 / 1024).toFixed(0)} MB transport safety limit]`,
+            };
+            console.warn(
+                `pizzapi: message ${i} truncated (~${(size / 1024 / 1024).toFixed(0)} MB exceeds ${(MAX_MESSAGE_SIZE / 1024 / 1024).toFixed(0)} MB cap).`,
+            );
+        }
+    }
+
+    return result;
+}
+
 /**
  * Pre-compute chunk boundaries using both message count and byte size limits.
  * Returns an array of [start, end) index pairs.
@@ -164,7 +203,8 @@ export function computeChunkBoundaries(messages: unknown[]): Array<[number, numb
     return boundaries;
 }
 
-function sendChunkedMessages(rctx: RelayContext, messages: unknown[], snapshotId: string): void {
+function sendChunkedMessages(rctx: RelayContext, rawMessages: unknown[], snapshotId: string): void {
+    const messages = capOversizedMessages(rawMessages);
     const chunks = computeChunkBoundaries(messages);
     const totalChunks = chunks.length;
 
@@ -259,12 +299,13 @@ function emitSessionActive(rctx: RelayContext): void {
     } else {
         // Small session — single event (original path).
         // Cancel any in-flight chunked sender since we're replacing with a full snapshot.
+        // Still cap individual oversized messages to avoid transport failures.
         activeChunkedSnapshotId = null;
         rctx.forwardEvent({
             type: "session_active",
             state: {
                 ...metadata,
-                messages,
+                messages: capOversizedMessages(messages),
             },
         });
     }
