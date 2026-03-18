@@ -530,6 +530,34 @@ describe("exportToMarkdown", () => {
     expect(md).not.toContain("**→ Sent**");
   });
 
+  test("streaming wrapper {content, details} is unwrapped for tool output", () => {
+    const md = exportToMarkdown([
+      msg({
+        role: "tool",
+        toolName: "subagent",
+        toolInput: { agent: "task", task: "do stuff" },
+        content: {
+          content: [{ type: "text", text: "Partial result from agent" }],
+          details: { mode: "single", results: [] },
+        },
+      }),
+    ]);
+    expect(md).toContain("Partial result from agent");
+    expect(md).not.toContain('"content"');
+  });
+
+  test("trigger comment prefixes are stripped from exported messages", () => {
+    const md = exportToMarkdown([
+      msg({
+        role: "user",
+        content: "<!-- trigger:abc-123 -->\nThe child session completed successfully.",
+      }),
+    ]);
+    expect(md).toContain("The child session completed successfully.");
+    expect(md).not.toContain("<!-- trigger");
+    expect(md).not.toContain("abc-123");
+  });
+
   test("output ends with trailing newline", () => {
     const md = exportToMarkdown([msg({ role: "user", content: "hi" })]);
     expect(md.endsWith("\n")).toBe(true);

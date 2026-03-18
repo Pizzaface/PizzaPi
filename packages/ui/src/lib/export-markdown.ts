@@ -43,10 +43,13 @@ function extractWebSearch(block: Record<string, unknown>): string | null {
   return null;
 }
 
+/** Strip `<!-- trigger:ID -->` prefixes injected by linked-session triggers. */
+const TRIGGER_PREFIX_RE = /^<!--\s*trigger:[\w-]+\s*-->\n?/;
+
 /** Stringify unknown content into a readable string. */
 function contentToString(content: unknown): string {
   if (content == null) return "";
-  if (typeof content === "string") return content;
+  if (typeof content === "string") return content.replace(TRIGGER_PREFIX_RE, "");
   // Anthropic-style content blocks: [{type:"text", text:"..."}, {type:"thinking", thinking:"..."}, ...]
   if (Array.isArray(content)) {
     const parts: string[] = [];
@@ -132,11 +135,12 @@ function toolContentToString(content: unknown): string {
     }
     if (parts.length > 0) return parts.join("\n\n");
   }
-  // Object with .text or .content property (common for MCP tool results)
+  // Object with .text or .content property (common for MCP tool results and streaming wrappers)
   if (content && typeof content === "object" && !Array.isArray(content)) {
     const obj = content as Record<string, unknown>;
     if (typeof obj.text === "string") return obj.text;
-    if (typeof obj.content === "string") return obj.content;
+    // .content can be a string or a nested array (streaming wrapper shape: { content, details })
+    if (obj.content != null) return toolContentToString(obj.content);
   }
   // Fallback: JSON stringify
   return JSON.stringify(content, null, 2);
