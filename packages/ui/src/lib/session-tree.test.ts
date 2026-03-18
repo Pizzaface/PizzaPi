@@ -4,6 +4,7 @@ import {
   flattenSessionTree,
   getSessionIndent,
   getDescendantSessionIds,
+  getGroupCwd,
   type HubSession,
 } from "./session-tree";
 
@@ -205,6 +206,90 @@ describe("session-tree", () => {
 
     test("handles large depth values", () => {
       expect(getSessionIndent(10)).toBe(160);
+    });
+  });
+
+  describe("getGroupCwd", () => {
+    const makeSession = (id: string, cwd: string, parentId?: string): HubSession => ({
+      sessionId: id,
+      shareUrl: `http://localhost/session/${id}`,
+      cwd,
+      startedAt: new Date().toISOString(),
+      parentSessionId: parentId ?? null,
+    });
+
+    const makeMap = (...sessions: HubSession[]) =>
+      new Map(sessions.map((s) => [s.sessionId, s]));
+
+    test("returns own cwd when no parent and no worktree", () => {
+      const s = makeSession("a", "/projects/foo");
+      expect(getGroupCwd(s, makeMap(s))).toBe("/projects/foo");
+    });
+
+    test("follows parentSessionId and returns parent cwd", () => {
+      const parent = makeSession("parent", "/projects/foo");
+      const child = makeSession("child", "/projects/bar", "parent");
+      const map = makeMap(parent, child);
+      expect(getGroupCwd(child, map)).toBe("/projects/foo");
+    });
+
+    test("follows multi-level parent chain to root cwd", () => {
+      const root = makeSession("root", "/projects/root");
+      const mid = makeSession("mid", "/projects/mid", "root");
+      const leaf = makeSession("leaf", "/projects/leaf", "mid");
+      const map = makeMap(root, mid, leaf);
+      expect(getGroupCwd(leaf, map)).toBe("/projects/root");
+    });
+
+    test("returns own cwd when parentSessionId not in map", () => {
+      const s = makeSession("orphan", "/projects/orphan", "nonexistent");
+      expect(getGroupCwd(s, makeMap(s))).toBe("/projects/orphan");
+    });
+
+    test("worktree detection: groups child under repo root when root session exists", () => {
+      const root = makeSession("root", "/projects/foo");
+      const wt = makeSession("wt", "/projects/foo/.worktrees/fix-bar");
+      const map = makeMap(root, wt);
+      expect(getGroupCwd(wt, map)).toBe("/projects/foo");
+    });
+
+    test("worktree detection: no match when root session absent", () => {
+      const wt = makeSession("wt", "/projects/foo/.worktrees/fix-bar");
+      expect(getGroupCwd(wt, makeMap(wt))).toBe("/projects/foo/.worktrees/fix-bar");
+    });
+
+    test("parentSessionId takes priority over worktree detection", () => {
+      const explicitParent = makeSession("explicit-parent", "/projects/explicit");
+      const root = makeSession("root", "/projects/foo");
+      const child = makeSession("child", "/projects/foo/.worktrees/fix-bar", "explicit-parent");
+      const map = makeMap(explicitParent, root, child);
+      // Should follow parentSessionId, not worktree detection
+      expect(getGroupCwd(child, map)).toBe("/projects/explicit");
+    });
+
+    test("worktree path with nested subdir still finds root", () => {
+      const root = makeSession("root", "/projects/foo");
+      const wt = makeSession("wt", "/projects/foo/.worktrees/my-branch/subdir");
+      const map = makeMap(root, wt);
+      expect(getGroupCwd(wt, map)).toBe("/projects/foo");
+    });
+
+    test("handles cycle in parent chain without infinite loop", () => {
+      const a = makeSession("a", "/projects/a", "b");
+      const b = makeSession("b", "/projects/b", "a");
+      const map = makeMap(a, b);
+      // Should return something without looping (either a's or b's cwd)
+      const result = getGroupCwd(a, map);
+      expect(["/projects/a", "/projects/b"]).toContain(result);
+    });
+
+    test("multiple worktree sessions all group under the same root", () => {
+      const root = makeSession("root", "/projects/foo");
+      const wt1 = makeSession("wt1", "/projects/foo/.worktrees/branch-1");
+      const wt2 = makeSession("wt2", "/projects/foo/.worktrees/branch-2");
+      const map = makeMap(root, wt1, wt2);
+      expect(getGroupCwd(wt1, map)).toBe("/projects/foo");
+      expect(getGroupCwd(wt2, map)).toBe("/projects/foo");
     });
   });
 

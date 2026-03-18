@@ -152,6 +152,54 @@ export function getSessionIndent(depth: number): number {
 }
 
 /**
+ * Determine the canonical project-group cwd for a session so that child sessions
+ * spawned in git worktrees appear under the same project folder as their parent.
+ *
+ * Resolution order:
+ *  1. Follow parentSessionId chain → use the root ancestor's cwd.
+ *  2. Worktree subdir detection — if cwd contains `/.worktrees/` and another
+ *     session in the provided map owns the prefix, use that prefix.
+ *  3. Fall back to the session's own cwd.
+ *
+ * @param session     The session to resolve a group cwd for.
+ * @param sessionMap  Map of sessionId → HubSession covering all sessions in the
+ *                    same runner group (used to follow parent chains and detect
+ *                    worktree prefixes).
+ * @param visited     Internal cycle-guard; callers should omit this.
+ */
+export function getGroupCwd(
+  session: HubSession,
+  sessionMap: Map<string, HubSession>,
+  visited = new Set<string>(),
+): string {
+  if (visited.has(session.sessionId)) return session.cwd || "";
+  visited.add(session.sessionId);
+
+  // Priority 1: follow parentSessionId up to the root
+  if (session.parentSessionId) {
+    const parent = sessionMap.get(session.parentSessionId);
+    if (parent) {
+      return getGroupCwd(parent, sessionMap, visited);
+    }
+  }
+
+  // Priority 2: worktree subdirectory detection
+  const cwd = session.cwd || "";
+  const worktreeMarker = "/.worktrees/";
+  const idx = cwd.indexOf(worktreeMarker);
+  if (idx !== -1) {
+    const potentialRoot = cwd.substring(0, idx);
+    for (const other of sessionMap.values()) {
+      if (other.sessionId !== session.sessionId && (other.cwd || "") === potentialRoot) {
+        return potentialRoot;
+      }
+    }
+  }
+
+  return cwd;
+}
+
+/**
  * Get all descendant session IDs for a given session (children, grandchildren, etc.).
  * Searches through the flat sessions list by following parentSessionId references.
  */
