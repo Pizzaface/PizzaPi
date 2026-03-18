@@ -175,6 +175,9 @@ export async function recordRelaySessionStart(input: RelaySessionStartInput): Pr
                 runnerId: input.runnerId != null ? input.runnerId : eb.ref("relay_session.runnerId"),
                 runnerName: input.runnerName != null ? input.runnerName : eb.ref("relay_session.runnerName"),
                 lastActiveAt: now,
+                // Clear endedAt on reconnect so the session is considered
+                // active again (e.g. for getActiveRelaySessionUserId).
+                endedAt: null,
             })),
         )
         .execute();

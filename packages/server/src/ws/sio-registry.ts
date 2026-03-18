@@ -57,7 +57,6 @@ import {
     recordRelaySessionState,
     touchRelaySession,
     updateRelaySessionRunner,
-    getActiveRelaySessionUserId,
     getRelaySessionUserId,
 } from "../sessions/store.js";
 import { appendRelayEventToCache } from "../sessions/redis.js";
@@ -320,14 +319,12 @@ export async function registerTuiSession(
     if (resolvedParentSessionId) {
         const parentSession = await getSession(resolvedParentSessionId);
         if (!parentSession) {
-            // Redis miss — check SQLite as a fallback, but only if the
-            // parent session has not ended.  An ended parent will never
-            // deliver triggers, so keeping the link would block
-            // AskUserQuestion / plan_review fallback in the child.
-            const sqliteUserId = await getActiveRelaySessionUserId(resolvedParentSessionId);
-            if (!sqliteUserId || sqliteUserId !== userId) {
-                resolvedParentSessionId = null;
-            }
+            // Redis miss means the parent is not connected — clear the link
+            // so the child falls back to normal viewer/TUI interaction
+            // instead of sending triggers to a dead parent ID.  The child
+            // CLI will re-send parentSessionId on its next reconnect; if
+            // the parent is back by then the link is restored naturally.
+            resolvedParentSessionId = null;
         } else if (parentSession.userId !== userId) {
             resolvedParentSessionId = null;
         }
