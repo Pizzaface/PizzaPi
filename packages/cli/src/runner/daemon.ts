@@ -1,4 +1,4 @@
-import { spawn, exec, execFile, execSync, type ChildProcess } from "node:child_process";
+import { spawn, exec, execFile, execFileSync, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 
 const execAsync = promisify(exec);
@@ -1506,12 +1506,13 @@ export function isPidRunning(pid: number): boolean {
         if (process.platform === "win32") {
             // On Windows, use WMIC to inspect the process command line.
             // wmic is available on Windows 7+ and returns the full command line.
-            cmd = execSync(
-                `wmic process where "ProcessId=${pid}" get CommandLine /format:list`,
+            cmd = execFileSync(
+                "wmic",
+                ["process", "where", `ProcessId=${pid}`, "get", "CommandLine", "/format:list"],
                 { encoding: "utf-8", timeout: 5000 },
             ).trim();
         } else {
-            cmd = execSync(`ps -p ${pid} -o command=`, { encoding: "utf-8", timeout: 3000 }).trim();
+            cmd = execFileSync("ps", ["-p", String(pid), "-o", "command="], { encoding: "utf-8", timeout: 3000 }).trim();
         }
         // Match against known runner process patterns:
         //   - "bun ... runner"          (dev: bun packages/cli/src/index.ts runner)
