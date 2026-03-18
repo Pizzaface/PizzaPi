@@ -17,6 +17,7 @@ import {
     listPersistedRelaySessionsForUser,
     listPinnedRelaySessionsForUser,
     pinRelaySession,
+    getRelaySessionUserId,
 } from "./store.js";
 
 const TEST_USER = "test-user-runner-assoc";
@@ -188,7 +189,13 @@ describe("runner association persistence", () => {
     it("updateRelaySessionRunner retries and succeeds when row appears after delay (P1 race)", async () => {
         // Simulate the race: linkSessionToRunner fires before recordRelaySessionStart
         // has finished its SQLite insert. The retry logic should catch it.
-        const delayedInsert = setTimeout(async () => {
+        //
+        // Use a short 50 ms delay (well within the first 250 ms retry window) so
+        // the test doesn't depend on wall-clock scheduling that varies on loaded CI
+        // runners. The original 300 ms could race past all three retry attempts on
+        // a slow machine where JS timers are coalesced or delayed.
+        const insertPromise = (async () => {
+            await new Promise<void>((r) => setTimeout(r, 50));
             await recordRelaySessionStart({
                 sessionId: "s-ra-race",
                 userId: TEST_USER,
@@ -199,10 +206,10 @@ describe("runner association persistence", () => {
                 // Note: no runner info — simulating a session that connected
                 // before the runner reported session_ready
             });
-        }, 300);
+        })();
 
         const result = await updateRelaySessionRunner("s-ra-race", "runner-late", "Late Linker");
-        clearTimeout(delayedInsert);
+        await insertPromise; // ensure insert completed (also cleans up any pending promises)
 
         expect(result).toBe(true);
 
@@ -253,5 +260,60 @@ describe("runner association persistence", () => {
             .executeTakeFirst();
         expect(after?.runnerId).toBe("runner-reconn");
         expect(after?.runnerName).toBe("Reconnected Runner");
+    });
+
+    it("recordRelaySessionStart does NOT null out runner info on reconnect without runner data", async () => {
+        // First insert — session created with runner info
+        await recordRelaySessionStart({
+            sessionId: "s-ra-null-guard",
+            userId: TEST_USER,
+            cwd: "/project",
+            shareUrl: "http://test/s-ra-null-guard",
+            startedAt: new Date().toISOString(),
+            isEphemeral: false,
+            runnerId: "runner-original",
+            runnerName: "Original Runner",
+        });
+
+        // Second insert — reconnect without any runner association (Redis key expired,
+        // session predates the association feature, etc.)
+        // The existing runner info must NOT be overwritten with null.
+        await recordRelaySessionStart({
+            sessionId: "s-ra-null-guard",
+            userId: TEST_USER,
+            cwd: "/project",
+            shareUrl: "http://test/s-ra-null-guard",
+            startedAt: new Date().toISOString(),
+            isEphemeral: false,
+            // runnerId / runnerName intentionally omitted (undefined → null)
+        });
+
+        const row = await getKysely()
+            .selectFrom("relay_session")
+            .select(["runnerId", "runnerName"])
+            .where("id", "=", "s-ra-null-guard")
+            .executeTakeFirst();
+
+        expect(row?.runnerId).toBe("runner-original");
+        expect(row?.runnerName).toBe("Original Runner");
+    });
+
+    it("getRelaySessionUserId returns userId for existing session", async () => {
+        await recordRelaySessionStart({
+            sessionId: "s-ra-uid",
+            userId: TEST_USER,
+            cwd: "/project",
+            shareUrl: "http://test/s-ra-uid",
+            startedAt: new Date().toISOString(),
+            isEphemeral: false,
+        });
+
+        const uid = await getRelaySessionUserId("s-ra-uid");
+        expect(uid).toBe(TEST_USER);
+    });
+
+    it("getRelaySessionUserId returns null for nonexistent session", async () => {
+        const uid = await getRelaySessionUserId("nonexistent-uid-session");
+        expect(uid).toBeNull();
     });
 });

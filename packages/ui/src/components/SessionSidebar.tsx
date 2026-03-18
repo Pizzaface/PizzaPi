@@ -1467,9 +1467,9 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                         <span className="text-[0.65rem] text-sidebar-foreground/30 truncate" title={p.cwd}>
                                                             {formatPathTail(p.cwd, 2)}
                                                         </span>
-                                                        {p.runnerName && (
-                                                            <span className="text-[0.6rem] text-sidebar-foreground/25 truncate max-w-[6rem]" title={p.runnerName}>
-                                                                · {p.runnerName}
+                                                        {(p.runnerName || p.runnerId) && (
+                                                            <span className="text-[0.6rem] text-sidebar-foreground/25 truncate max-w-[6rem]" title={p.runnerName ?? `Runner ${p.runnerId}`}>
+                                                                · {p.runnerName || `Runner ${p.runnerId?.slice(0, 8)}…`}
                                                             </span>
                                                         )}
                                                         <span className="text-[0.6rem] text-sidebar-foreground/25">· ended</span>

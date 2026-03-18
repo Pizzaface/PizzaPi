@@ -57,6 +57,7 @@ import {
     recordRelaySessionState,
     touchRelaySession,
     updateRelaySessionRunner,
+    getRelaySessionUserId,
 } from "../sessions/store.js";
 import { appendRelayEventToCache } from "../sessions/redis.js";
 import { storeAndReplaceImages, storeAndReplaceImagesInEvent } from "./strip-images.js";
@@ -313,9 +314,17 @@ export async function registerTuiSession(
     // Validate parent session exists and belongs to the same user.
     // If the parent disconnected or the ID is stale, clear it to avoid
     // dangling trigger flows that would time out.
+    // Fall back to SQLite when Redis has no record (e.g. relay restarted and
+    // the parent's Redis key has expired) so that parent links survive restarts.
     if (resolvedParentSessionId) {
         const parentSession = await getSession(resolvedParentSessionId);
-        if (!parentSession || parentSession.userId !== userId) {
+        if (!parentSession) {
+            // Redis miss — check SQLite as a fallback
+            const sqliteUserId = await getRelaySessionUserId(resolvedParentSessionId);
+            if (!sqliteUserId || sqliteUserId !== userId) {
+                resolvedParentSessionId = null;
+            }
+        } else if (parentSession.userId !== userId) {
             resolvedParentSessionId = null;
         }
     }
