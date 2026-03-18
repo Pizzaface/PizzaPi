@@ -96,7 +96,14 @@ function sendCumulativeEventAck(socket: RelaySocket, seq: number): void {
 
     const sessionId = socket.data.sessionId;
     if (sessionId) {
-        socket.emit("event_ack", { sessionId, seq: next });
+        try {
+            socket.emit("event_ack", { sessionId, seq: next });
+        } catch (err) {
+            // Redis adapter can throw EPIPE when the Redis connection is temporarily
+            // closed. Log and swallow — the ack is best-effort and the TUI will
+            // resend any un-acked events on reconnect.
+            console.warn("[sio/relay] sendCumulativeEventAck emit failed (Redis EPIPE?):", (err as Error)?.message);
+        }
     }
 }
 
