@@ -40,6 +40,7 @@ import type { ConversationTrigger } from "./triggers/types.js";
 import { messageBus } from "./session-message-bus.js";
 import { io, type Socket } from "socket.io-client";
 import type { RelayClientToServerEvents, RelayServerToClientEvents } from "@pizzapi/protocol";
+import { RELAY_BACKOFF_DEFAULTS } from "../backoff.js";
 
 // ── Extracted modules ────────────────────────────────────────────────────────
 import type {
@@ -779,9 +780,14 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             {
                 auth: { apiKey: key },
                 transports: ["websocket"],
+                // Exponential backoff with ±25% jitter. Socket.IO doubles the
+                // delay on each reconnection attempt (up to reconnectionDelayMax)
+                // and applies randomizationFactor as a ±fraction of each delay.
                 reconnection: true,
-                reconnectionDelay: 1000,
-                reconnectionDelayMax: 30_000,
+                reconnectionAttempts: Infinity,
+                reconnectionDelay: RELAY_BACKOFF_DEFAULTS.baseMs,       // 1 s base
+                reconnectionDelayMax: RELAY_BACKOFF_DEFAULTS.maxMs,     // 30 s cap
+                randomizationFactor: RELAY_BACKOFF_DEFAULTS.jitterFactor, // ±25%
             },
         );
         rctx.sioSocket = sock;
