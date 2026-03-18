@@ -157,10 +157,31 @@ export function capOversizedMessages(messages: unknown[]): unknown[] {
                 copied = true;
             }
             const msg = messages[i] as Record<string, unknown>;
-            result[i] = {
-                ...msg,
-                content: `[Content truncated: original message was ~${(size / 1024 / 1024).toFixed(0)} MB, exceeding the ${(MAX_MESSAGE_SIZE / 1024 / 1024).toFixed(0)} MB transport safety limit]`,
-            };
+            const truncationNotice = `[Content truncated: original message was ~${(size / 1024 / 1024).toFixed(0)} MB, exceeding the ${(MAX_MESSAGE_SIZE / 1024 / 1024).toFixed(0)} MB transport safety limit]`;
+
+            // First pass: replace content
+            let capped: Record<string, unknown> = { ...msg, content: truncationNotice };
+
+            // If the message is still oversized after replacing content, the
+            // bulk is in other fields (e.g. subagent `details` carrying full
+            // child results[].messages arrays).  Strip large non-essential
+            // fields until we're under the cap.
+            const largeFieldCandidates = ["details", "toolResult", "metadata"];
+            for (const field of largeFieldCandidates) {
+                const cappedSize = Buffer.byteLength(JSON.stringify(capped), "utf8");
+                if (cappedSize <= MAX_MESSAGE_SIZE) break;
+                if (field in capped && capped[field] != null) {
+                    const fieldSize = Buffer.byteLength(JSON.stringify(capped[field]), "utf8");
+                    if (fieldSize > 1024) { // only strip fields > 1 KB
+                        capped = {
+                            ...capped,
+                            [field]: `[${field} truncated: ~${(fieldSize / 1024 / 1024).toFixed(1)} MB]`,
+                        };
+                    }
+                }
+            }
+
+            result[i] = capped;
             console.warn(
                 `pizzapi: message ${i} truncated (~${(size / 1024 / 1024).toFixed(0)} MB exceeds ${(MAX_MESSAGE_SIZE / 1024 / 1024).toFixed(0)} MB cap).`,
             );

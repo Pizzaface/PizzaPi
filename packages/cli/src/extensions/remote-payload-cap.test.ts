@@ -182,4 +182,16 @@ describe("capOversizedMessages", () => {
         expect(truncated.toolName).toBe("bash");
         expect(truncated.key).toBe("abc");
     });
+
+    test("caps oversized details field when content alone is not enough", () => {
+        // Small content but huge details (e.g. subagent results)
+        const hugeDetails = { results: [{ messages: Array.from({ length: 5000 }, (_, i) => ({ role: "assistant", content: "x".repeat(11_000) })) }] };
+        const msgs = [{ role: "assistant", content: "done", details: hugeDetails }];
+        const result = capOversizedMessages(msgs);
+        const truncated = result[0] as Record<string, unknown>;
+        expect(typeof truncated.details).toBe("string");
+        expect((truncated.details as string)).toContain("truncated");
+        // Content should also be replaced with truncation notice
+        expect((truncated.content as string)).toContain("truncated");
+    });
 });
