@@ -1104,15 +1104,12 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                         className="absolute inset-y-0 right-0 flex items-stretch rounded-r-lg overflow-hidden"
                                                         style={{ width: REVEAL_WIDTH }}
                                                     >
+                                                        {s.runnerId && (
                                                         <button
-                                                            className={cn(
-                                                                "flex flex-col items-center justify-center w-1/3 text-xs font-semibold gap-0.5 bg-violet-500 text-white transition-colors",
-                                                                !s.runnerId ? "opacity-60 cursor-not-allowed" : "active:bg-violet-600",
-                                                            )}
+                                                            className="flex flex-col items-center justify-center flex-1 text-xs font-semibold gap-0.5 bg-violet-500 text-white active:bg-violet-600 transition-colors"
                                                             onClick={(e) => {
                                                                 e.stopPropagation();
-                                                                if (!s.runnerId) return;
-                                                                onDuplicateSession?.(s.runnerId, s.cwd || "");
+                                                                onDuplicateSession?.(s.runnerId!, s.cwd || "");
                                                                 // Close the revealed state
                                                                 setSwipeOffsets((prev) => {
                                                                     const next = new Map(prev);
@@ -1121,16 +1118,16 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                                 });
                                                                 setRevealedSessionId(null);
                                                             }}
-                                                            disabled={!s.runnerId}
                                                             aria-label="Duplicate session"
-                                                            title={s.runnerId ? "New session with same runner & directory" : "No runner info available"}
+                                                            title="New session with same runner & directory"
                                                         >
                                                             <Copy className="h-4 w-4" />
                                                             <span>Duplicate</span>
                                                         </button>
+                                                        )}
                                                         <button
                                                             className={cn(
-                                                                "flex flex-col items-center justify-center w-1/3 text-xs font-semibold gap-0.5 bg-blue-500 text-white transition-colors",
+                                                                "flex flex-col items-center justify-center flex-1 text-xs font-semibold gap-0.5 bg-blue-500 text-white transition-colors",
                                                                 isPinPending ? "opacity-60 cursor-not-allowed" : "active:bg-blue-600",
                                                             )}
                                                             onClick={(e) => {
@@ -1152,7 +1149,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                             <span>{isPinPending ? "Saving" : isPinned ? "Unpin" : "Pin"}</span>
                                                         </button>
                                                         <button
-                                                            className="flex flex-col items-center justify-center w-1/3 pt-1 text-xs font-semibold gap-0.5 bg-red-600 text-white active:bg-red-700 transition-colors"
+                                                            className="flex flex-col items-center justify-center flex-1 pt-1 text-xs font-semibold gap-0.5 bg-red-600 text-white active:bg-red-700 transition-colors"
                                                             onClick={(e) => {
                                                                 e.stopPropagation();
                                                                 setConfirmEndSessionId(s.sessionId);
