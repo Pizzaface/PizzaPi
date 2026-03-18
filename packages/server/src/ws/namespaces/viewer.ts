@@ -320,8 +320,8 @@ export function registerViewerNamespace(io: SocketIOServer): void {
                 const childSocket = getLocalTuiSocket(targetSessionId);
                 if (childSocket) {
                     childSocket.emit("trigger_response" as string, triggerPayload);
-                } else {
-                    emitToRelaySession(targetSessionId, "trigger_response", triggerPayload);
+                } else if (!emitToRelaySession(targetSessionId, "trigger_response", triggerPayload)) {
+                    socket.emit("error", { message: `Failed to deliver trigger response to child session ${targetSessionId}` });
                 }
                 return;
             }
@@ -336,8 +336,8 @@ export function registerViewerNamespace(io: SocketIOServer): void {
             const tuiSocket = getLocalTuiSocket(sessionId);
             if (tuiSocket) {
                 tuiSocket.emit("trigger_response" as string, triggerPayloadForParent);
-            } else {
-                emitToRelaySession(sessionId, "trigger_response", triggerPayloadForParent);
+            } else if (!emitToRelaySession(sessionId, "trigger_response", triggerPayloadForParent)) {
+                socket.emit("error", { message: `Failed to deliver trigger response to session ${sessionId}` });
             }
         });
 

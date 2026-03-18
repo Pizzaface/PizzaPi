@@ -204,7 +204,20 @@ export async function broadcastToHub(
             hubNs.to(HUB_ROOM).emit(eventName, data);
         }
     } catch (err) {
-        console.warn("[sio-registry] broadcastToHub failed (Redis EPIPE?):", (err as Error)?.message);
+        // Redis adapter publishes before local fan-out, so EPIPE drops the
+        // event for local sockets too. Fall back to local-only delivery so
+        // browsers on this server still get session_added/session_removed.
+        console.warn("[sio-registry] broadcastToHub failed, falling back to local:", (err as Error)?.message);
+        try {
+            const hubNs = io.of("/hub");
+            if (targetUserId) {
+                hubNs.local.to(hubUserRoom(targetUserId)).emit(eventName, data);
+            } else {
+                hubNs.local.to(HUB_ROOM).emit(eventName, data);
+            }
+        } catch {
+            // Local delivery also failed — nothing more we can do.
+        }
     }
 }
 
@@ -418,8 +431,19 @@ export function emitToRelaySession(sessionId: string, eventName: string, data: u
             .emit(eventName, data);
         return true;
     } catch (err) {
-        console.warn("[sio-registry] emitToRelaySession failed (Redis EPIPE?):", (err as Error)?.message);
-        return false;
+        // Redis adapter publishes before local fan-out, so EPIPE drops the
+        // event for local sockets too. Fall back to local-only delivery so
+        // callers on this server (e.g. MCP OAuth callbacks) still work.
+        console.warn("[sio-registry] emitToRelaySession failed, falling back to local:", (err as Error)?.message);
+        try {
+            io.of("/relay")
+                .local
+                .to(relaySessionRoom(sessionId))
+                .emit(eventName, data);
+            return true;
+        } catch {
+            return false;
+        }
     }
 }
 
@@ -712,7 +736,15 @@ export async function endSharedSession(sessionId: string, reason: string = "Sess
             .to(viewerSessionRoom(sessionId))
             .emit("disconnected", { reason });
     } catch (err) {
-        console.warn("[sio-registry] endSharedSession viewer notify failed (Redis EPIPE?):", (err as Error)?.message);
+        console.warn("[sio-registry] endSharedSession viewer notify failed, falling back to local:", (err as Error)?.message);
+        try {
+            io.of("/viewer")
+                .local
+                .to(viewerSessionRoom(sessionId))
+                .emit("disconnected", { reason });
+        } catch {
+            // Local delivery also failed.
+        }
     }
 
     // Forcefully disconnect viewer sockets from the room
