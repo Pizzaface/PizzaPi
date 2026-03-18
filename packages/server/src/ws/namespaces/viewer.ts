@@ -213,11 +213,10 @@ export function registerViewerNamespace(io: SocketIOServer): void {
         // once — the concurrent async work widens the race window).
 
         // ── connected — viewer greeting, notify TUI ─────────────────────────
+        // Use emitToRelaySession for cluster-wide reach — the runner may
+        // be on a different server node in multi-node deployments.
         socket.on("connected", () => {
-            const tuiSocket = getLocalTuiSocket(sessionId);
-            if (tuiSocket) {
-                tuiSocket.emit("connected" as string, {});
-            }
+            emitToRelaySession(sessionId, "connected" as string, {});
         });
 
         // ── resync — send fresh snapshot ─────────────────────────────────────

@@ -27,6 +27,7 @@ import {
     broadcastToViewers,
 } from "../sio-registry.js";
 import { appendRelayEventToCache } from "../../sessions/redis.js";
+import { storeAndReplaceImagesInEvent } from "../strip-images.js";
 import {
     setPushPendingQuestion,
     clearPushPendingQuestion,
@@ -400,11 +401,23 @@ export function registerRelayNamespace(io: SocketIOServer): void {
                         // oversized frame to all viewers — the same transport
                         // issue chunking was designed to avoid.  Viewers already
                         // have the complete data from the chunk stream.
+                        // Strip inline images before caching to keep the cache
+                        // entry small and consistent with publishSessionEvent's
+                        // image-stripping pipeline.
                         const session = await getSharedSession(sessionId);
-                        await appendRelayEventToCache(sessionId, {
-                            type: "session_active",
-                            state: fullState,
-                        }, { isEphemeral: session?.isEphemeral });
+                        const userId = session?.userId ?? "unknown";
+                        const snapshotEvent = { type: "session_active" as const, state: fullState };
+                        let eventToCache: unknown = snapshotEvent;
+                        try {
+                            eventToCache = await storeAndReplaceImagesInEvent(
+                                snapshotEvent, sessionId, userId,
+                            );
+                        } catch {
+                            // Fall back to original if image stripping fails
+                        }
+                        await appendRelayEventToCache(sessionId, eventToCache, {
+                            isEphemeral: session?.isEphemeral,
+                        });
                     } else {
                         await touchSessionActivity(sessionId);
                     }

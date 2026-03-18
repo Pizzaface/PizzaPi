@@ -146,9 +146,9 @@ function extractAssistantText(msg: RelayMessage): string {
   return text;
 }
 
-function normalizeMessages(rawMessages: unknown[]): RelayMessage[] {
+function normalizeMessages(rawMessages: unknown[], keyOffset = 0): RelayMessage[] {
   const all = rawMessages
-    .map((m, i) => toRelayMessage(m, `snapshot-${i}`))
+    .map((m, i) => toRelayMessage(m, `snapshot-${keyOffset + i}`))
     .filter((m): m is RelayMessage => m !== null);
 
   // Drop no-timestamp assistant messages that are superseded by a later
@@ -808,6 +808,7 @@ export function App() {
     totalMessages: number;
     totalChunks: number;
     receivedChunks: number;
+    loadedMessages: number; // cumulative count for fallback key offset
   } | null>(null);
 
   // Track the last completed snapshot ID so we can reject stale chunks that
@@ -1630,6 +1631,7 @@ export function App() {
           totalMessages,
           totalChunks: 0, // updated as chunks arrive
           receivedChunks: 0,
+          loadedMessages: 0,
         };
         setViewerStatus(`Loading session (0 of ${totalMessages} messages)…`);
       } else {
@@ -1713,15 +1715,17 @@ export function App() {
         }
       }
 
-      const normalizedChunk = normalizeMessages(chunkMessages);
+      const keyOffset = chunkedDeliveryRef.current?.loadedMessages ?? 0;
+      const normalizedChunk = normalizeMessages(chunkMessages, keyOffset);
 
       setMessages((prev) => [...prev, ...normalizedChunk]);
 
       // Update chunked delivery tracking
       if (chunkedDeliveryRef.current) {
         chunkedDeliveryRef.current.receivedChunks++;
+        chunkedDeliveryRef.current.loadedMessages += chunkMessages.length;
         chunkedDeliveryRef.current.totalChunks = totalChunks;
-        const loaded = chunkedDeliveryRef.current.receivedChunks * 200; // approximate
+        const loaded = chunkedDeliveryRef.current.loadedMessages;
         setViewerStatus(`Loading session (${Math.min(loaded, totalMessages)} of ${totalMessages} messages)…`);
       }
 
