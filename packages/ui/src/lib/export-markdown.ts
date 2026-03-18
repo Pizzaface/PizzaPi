@@ -99,12 +99,22 @@ function contentToString(content: unknown): string {
   return String(content);
 }
 
+/**
+ * Pick a fence delimiter that doesn't collide with content.
+ * If the text contains ```, use a longer fence (````` or more).
+ */
+function safeFence(text: string, lang = ""): string {
+  let fence = "```";
+  while (text.includes(fence)) fence += "`";
+  return `${fence}${lang}\n${text}\n${fence}`;
+}
+
 /** Pretty-print tool input as a JSON code block. */
 function formatToolInput(input: unknown): string {
   if (input == null) return "";
   const json =
     typeof input === "string" ? input : JSON.stringify(input, null, 2);
-  return "**Input:**\n```json\n" + json + "\n```";
+  return "**Input:**\n" + safeFence(json, "json");
 }
 
 /** Extract text from tool content (Anthropic-style arrays or plain strings). */
@@ -136,13 +146,16 @@ function formatToolOutput(content: unknown): string {
       ? text.slice(0, TOOL_OUTPUT_MAX) +
         `\n\n[truncated — ${text.length} chars total]`
       : text;
-  return "**Output:**\n```\n" + truncated + "\n```";
+  return "**Output:**\n" + safeFence(truncated);
 }
 
 /** Render a single sub-agent turn. */
 function formatSubAgentTurn(turn: SubAgentTurn): string {
   switch (turn.type) {
     case "sent":
+      if (turn.isError) {
+        return `> **⚠️ Send failed** to ${turn.sessionId}:\n> ${turn.message.split("\n").join("\n> ")}`;
+      }
       return `> **→ Sent** to ${turn.sessionId}:\n> ${turn.message.split("\n").join("\n> ")}`;
     case "received":
       return `> **← Received** from ${turn.fromSessionId}:\n> ${turn.message.split("\n").join("\n> ")}`;

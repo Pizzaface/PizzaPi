@@ -399,6 +399,37 @@ describe("exportToMarkdown", () => {
     expect(md).toContain("path_\\(1\\)");
   });
 
+  test("tool output containing triple backticks uses longer fence", () => {
+    const contentWithFence = "Here is code:\n```js\nconsole.log('hi');\n```\nEnd.";
+    const md = exportToMarkdown([
+      msg({
+        role: "tool",
+        toolName: "Read",
+        toolInput: { path: "readme.md" },
+        content: contentWithFence,
+      }),
+    ]);
+    // Should contain a longer fence (at least ````)
+    expect(md).toContain("````");
+    // The original triple backtick content should be intact
+    expect(md).toContain("```js");
+    expect(md).toContain("console.log('hi');");
+  });
+
+  test("failed send_message turn shows error state", () => {
+    const md = exportToMarkdown([
+      msg({
+        role: "subAgentConversation",
+        subAgentTurns: [
+          { type: "sent", sessionId: "abc", message: "Error: sessionId is required.", isStreaming: false, isError: true },
+        ],
+      }),
+    ]);
+    expect(md).toContain("**⚠️ Send failed** to abc");
+    expect(md).toContain("Error: sessionId is required.");
+    expect(md).not.toContain("**→ Sent**");
+  });
+
   test("output ends with trailing newline", () => {
     const md = exportToMarkdown([msg({ role: "user", content: "hi" })]);
     expect(md.endsWith("\n")).toBe(true);
