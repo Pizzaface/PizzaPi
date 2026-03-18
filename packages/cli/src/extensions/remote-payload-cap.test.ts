@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { estimateMessagesSize, needsChunkedDelivery } from "./remote.js";
+import { estimateMessagesSize, needsChunkedDelivery, computeChunkBoundaries } from "./remote.js";
 
 describe("estimateMessagesSize", () => {
     test("returns 2 for empty array", () => {
@@ -79,5 +79,60 @@ describe("needsChunkedDelivery", () => {
             content: `${bigContent}-${i}`,
         }));
         expect(needsChunkedDelivery(msgs)).toBe(true);
+    });
+});
+
+describe("computeChunkBoundaries", () => {
+    test("returns single chunk for small messages", () => {
+        const msgs = Array.from({ length: 5 }, (_, i) => ({ role: "user", content: `msg ${i}` }));
+        const boundaries = computeChunkBoundaries(msgs);
+        expect(boundaries).toEqual([[0, 5]]);
+    });
+
+    test("splits by message count at CHUNK_SIZE (200)", () => {
+        const msgs = Array.from({ length: 450 }, (_, i) => ({ role: "user", content: `m${i}` }));
+        const boundaries = computeChunkBoundaries(msgs);
+        // 200 + 200 + 50 = 3 chunks
+        expect(boundaries).toEqual([[0, 200], [200, 400], [400, 450]]);
+    });
+
+    test("splits by byte size when messages are large", () => {
+        // 10 messages each ~2 MB — byte limit is 8 MB, so should get ~3 chunks
+        const bigContent = "x".repeat(2_000_000);
+        const msgs = Array.from({ length: 10 }, (_, i) => ({ role: "user", content: `${bigContent}-${i}` }));
+        const boundaries = computeChunkBoundaries(msgs);
+
+        // Should have more than 1 chunk (byte limit forces splits)
+        expect(boundaries.length).toBeGreaterThan(1);
+
+        // All messages should be covered
+        const total = boundaries.reduce((sum, [s, e]) => sum + (e - s), 0);
+        expect(total).toBe(10);
+
+        // Each chunk should have ≤4 messages (each ~2 MB, limit 8 MB)
+        for (const [start, end] of boundaries) {
+            expect(end - start).toBeLessThanOrEqual(4);
+        }
+    });
+
+    test("handles single message larger than byte limit", () => {
+        // One message > 8 MB — must still produce a chunk (safety: advance by 1)
+        const hugeContent = "x".repeat(10_000_000);
+        const msgs = [{ role: "user", content: hugeContent }];
+        const boundaries = computeChunkBoundaries(msgs);
+        expect(boundaries).toEqual([[0, 1]]);
+    });
+
+    test("covers all messages without gaps", () => {
+        const msgs = Array.from({ length: 500 }, (_, i) => ({ role: "user", content: `message-${i}` }));
+        const boundaries = computeChunkBoundaries(msgs);
+
+        // No gaps: each chunk starts where the previous ended
+        for (let i = 1; i < boundaries.length; i++) {
+            expect(boundaries[i][0]).toBe(boundaries[i - 1][1]);
+        }
+        // First starts at 0, last ends at length
+        expect(boundaries[0][0]).toBe(0);
+        expect(boundaries[boundaries.length - 1][1]).toBe(500);
     });
 });

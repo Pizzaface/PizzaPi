@@ -83,6 +83,15 @@ const CHUNK_THRESHOLD = 10 * 1024 * 1024; // 10 MB
 const CHUNK_SIZE = 200;
 
 /**
+ * Maximum estimated byte size per chunk.  Even if a chunk has fewer than
+ * CHUNK_SIZE messages, it will be split if the cumulative byte size exceeds
+ * this limit.  This prevents a handful of huge messages (e.g. large tool
+ * outputs or inline images) from producing a single oversized frame that
+ * exceeds the server's maxHttpBufferSize (100 MB).
+ */
+const CHUNK_BYTE_LIMIT = 8 * 1024 * 1024; // 8 MB per chunk
+
+/**
  * Estimate the serialized JSON size of a messages array by summing per-message
  * sizes.  We stringify each message individually rather than the whole array
  * to avoid allocating a single 100 MB+ string.  This catches outlier-heavy
@@ -121,12 +130,47 @@ export function needsChunkedDelivery(messages: unknown[]): boolean {
  * Each chunk carries a `snapshotId` that matches the session_active event,
  * so the UI can discard stale chunks from a previous snapshot stream.
  */
+/**
+ * Pre-compute chunk boundaries using both message count and byte size limits.
+ * Returns an array of [start, end) index pairs.
+ */
+export function computeChunkBoundaries(messages: unknown[]): Array<[number, number]> {
+    const boundaries: Array<[number, number]> = [];
+    let start = 0;
+
+    while (start < messages.length) {
+        let end = start;
+        let chunkBytes = 0;
+
+        while (end < messages.length && (end - start) < CHUNK_SIZE) {
+            const msgSize = JSON.stringify(messages[end]).length;
+            // If adding this message would exceed the byte limit AND we already
+            // have at least one message in the chunk, break here.
+            if (chunkBytes + msgSize > CHUNK_BYTE_LIMIT && end > start) {
+                break;
+            }
+            chunkBytes += msgSize;
+            end++;
+        }
+
+        // Safety: always advance by at least 1 to avoid infinite loop on a
+        // single message larger than the byte limit.
+        if (end === start) end = start + 1;
+
+        boundaries.push([start, end]);
+        start = end;
+    }
+
+    return boundaries;
+}
+
 function sendChunkedMessages(rctx: RelayContext, messages: unknown[], snapshotId: string): void {
-    const totalChunks = Math.ceil(messages.length / CHUNK_SIZE);
+    const chunks = computeChunkBoundaries(messages);
+    const totalChunks = chunks.length;
 
     console.log(
         `pizzapi: session is large (${messages.length} messages, ~${(estimateMessagesSize(messages) / 1024 / 1024).toFixed(0)} MB). ` +
-        `Sending in ${totalChunks} chunks of ≤${CHUNK_SIZE} messages (snapshot=${snapshotId.slice(0, 8)}).`,
+        `Sending in ${totalChunks} chunks (snapshot=${snapshotId.slice(0, 8)}).`,
     );
 
     let chunkIndex = 0;
@@ -134,9 +178,10 @@ function sendChunkedMessages(rctx: RelayContext, messages: unknown[], snapshotId
     function sendNextChunk() {
         if (!rctx.relay || !rctx.sioSocket?.connected) return; // disconnected mid-stream
         if (chunkIndex >= totalChunks) return;
+        // A newer emitSessionActive() superseded this sender — stop.
+        if (activeChunkedSnapshotId !== snapshotId) return;
 
-        const start = chunkIndex * CHUNK_SIZE;
-        const end = Math.min(start + CHUNK_SIZE, messages.length);
+        const [start, end] = chunks[chunkIndex];
         const isFinal = chunkIndex === totalChunks - 1;
 
         rctx.forwardEvent({
@@ -161,6 +206,13 @@ function sendChunkedMessages(rctx: RelayContext, messages: unknown[], snapshotId
     // (with chunked: true) is flushed to the socket first.
     setImmediate(sendNextChunk);
 }
+
+/**
+ * Tracks the snapshotId of the currently active chunked sender so that
+ * `sendChunkedMessages` can bail out if a newer emitSessionActive() fires
+ * before the previous one finishes draining.
+ */
+let activeChunkedSnapshotId: string | null = null;
 
 /**
  * Emit session_active — either as a single event (small sessions) or as
@@ -191,6 +243,8 @@ function emitSessionActive(rctx: RelayContext): void {
         // The snapshotId ties the metadata event to its chunk stream so the UI
         // can discard stale chunks and the server can assemble the full state.
         const snapshotId = randomUUID();
+        // Cancel any in-flight chunked sender from a previous call.
+        activeChunkedSnapshotId = snapshotId;
         rctx.forwardEvent({
             type: "session_active",
             state: {
@@ -203,7 +257,9 @@ function emitSessionActive(rctx: RelayContext): void {
         });
         sendChunkedMessages(rctx, messages, snapshotId);
     } else {
-        // Small session — single event (original path)
+        // Small session — single event (original path).
+        // Cancel any in-flight chunked sender since we're replacing with a full snapshot.
+        activeChunkedSnapshotId = null;
         rctx.forwardEvent({
             type: "session_active",
             state: {

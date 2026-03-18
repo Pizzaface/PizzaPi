@@ -810,6 +810,10 @@ export function App() {
     receivedChunks: number;
   } | null>(null);
 
+  // Track the last completed snapshot ID so we can reject stale chunks that
+  // arrive after the ref has been cleared (e.g. from a superseded sender).
+  const lastCompletedSnapshotRef = React.useRef<string | null>(null);
+
   // Capabilities advertised by the runner (commands, models, etc.)
   const [availableCommands, setAvailableCommands] = React.useState<Array<{ name: string; description?: string; source?: string }>>([]);
 
@@ -1323,13 +1327,15 @@ export function App() {
       awaitingSnapshotRef.current = false;
     }
 
-    // While awaiting the initial snapshot, skip streaming delta events.
-    // They'd render briefly and then be replaced when the snapshot arrives,
-    // causing visible "jumping".  This also covers tool execution events —
+    // While awaiting the initial snapshot OR during chunked hydration, skip
+    // streaming delta events.  They'd render briefly and then be replaced
+    // when the snapshot arrives, causing visible "jumping".  During chunked
+    // delivery, live events can interleave with historical chunks and produce
+    // an out-of-order transcript.  This also covers tool execution events —
     // without this guard, tool_execution_update partials can write synthetic
     // toolResult messages into state before the snapshot hydrates the real
     // conversation, producing orphan/duplicate tool output on reconnect.
-    if (awaitingSnapshotRef.current) {
+    if (awaitingSnapshotRef.current || chunkedDeliveryRef.current) {
       if (
         type === "message_update" || type === "message_start" || type === "message_end" || type === "turn_end" ||
         type === "tool_execution_start" || type === "tool_execution_update" || type === "tool_execution_end"
@@ -1690,10 +1696,18 @@ export function App() {
       const totalChunks = typeof (evt as any).totalChunks === "number" ? (evt as any).totalChunks : 0;
       const totalMessages = typeof (evt as any).totalMessages === "number" ? (evt as any).totalMessages : 0;
 
-      // Discard chunks from a stale snapshot stream (e.g. a new viewer
-      // connected mid-stream and triggered a fresh emitSessionActive).
-      if (chunkedDeliveryRef.current && chunkSnapshotId && chunkedDeliveryRef.current.snapshotId !== chunkSnapshotId) {
-        return; // stale chunk — ignore
+      // Discard chunks from a stale snapshot stream.  Two cases:
+      // 1) A newer snapshot is actively loading (ref is non-null, IDs differ).
+      // 2) A snapshot already completed (ref is null) but late chunks from
+      //    the superseded sender are still draining — reject if the ID
+      //    doesn't match the last completed snapshot.
+      if (chunkSnapshotId) {
+        if (chunkedDeliveryRef.current && chunkedDeliveryRef.current.snapshotId !== chunkSnapshotId) {
+          return; // stale chunk — a newer snapshot is loading
+        }
+        if (!chunkedDeliveryRef.current && lastCompletedSnapshotRef.current && lastCompletedSnapshotRef.current !== chunkSnapshotId) {
+          return; // stale chunk — arrived after a newer snapshot completed
+        }
       }
 
       const normalizedChunk = normalizeMessages(chunkMessages);
@@ -1709,6 +1723,7 @@ export function App() {
       }
 
       if (isFinal) {
+        lastCompletedSnapshotRef.current = chunkSnapshotId || null;
         chunkedDeliveryRef.current = null;
         sessionHydratedRef.current = true;
         setViewerStatus("Connected");
@@ -2410,6 +2425,7 @@ export function App() {
     renderedMcpReportTsRef.current = null;
     sessionHydratedRef.current = false;
     chunkedDeliveryRef.current = null;
+    lastCompletedSnapshotRef.current = null;
     setActiveSessionId(relaySessionId);
     setViewerStatus("Connecting…");
     setRetryState(null);
