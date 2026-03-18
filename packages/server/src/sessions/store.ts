@@ -257,6 +257,22 @@ export async function getRelaySessionUserId(sessionId: string): Promise<string |
     return row?.userId ?? null;
 }
 
+/**
+ * Returns the userId for a relay session only if the session has NOT ended.
+ * Used for parent-link validation: a child should not adopt a parent that
+ * has already ended, because triggers sent to that parent will never be
+ * delivered and will block AskUserQuestion / plan_review fallback.
+ */
+export async function getActiveRelaySessionUserId(sessionId: string): Promise<string | null> {
+    const row = await getKysely()
+        .selectFrom("relay_session")
+        .select("userId")
+        .where("id", "=", sessionId)
+        .where("endedAt", "is", null)
+        .executeTakeFirst();
+    return row?.userId ?? null;
+}
+
 export async function recordRelaySessionEnd(sessionId: string): Promise<void> {
     const nowIso = new Date().toISOString();
     const newExpiry = ephemeralExpiryIso();

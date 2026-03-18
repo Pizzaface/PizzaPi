@@ -57,6 +57,7 @@ import {
     recordRelaySessionState,
     touchRelaySession,
     updateRelaySessionRunner,
+    getActiveRelaySessionUserId,
     getRelaySessionUserId,
 } from "../sessions/store.js";
 import { appendRelayEventToCache } from "../sessions/redis.js";
@@ -319,8 +320,11 @@ export async function registerTuiSession(
     if (resolvedParentSessionId) {
         const parentSession = await getSession(resolvedParentSessionId);
         if (!parentSession) {
-            // Redis miss — check SQLite as a fallback
-            const sqliteUserId = await getRelaySessionUserId(resolvedParentSessionId);
+            // Redis miss — check SQLite as a fallback, but only if the
+            // parent session has not ended.  An ended parent will never
+            // deliver triggers, so keeping the link would block
+            // AskUserQuestion / plan_review fallback in the child.
+            const sqliteUserId = await getActiveRelaySessionUserId(resolvedParentSessionId);
             if (!sqliteUserId || sqliteUserId !== userId) {
                 resolvedParentSessionId = null;
             }
