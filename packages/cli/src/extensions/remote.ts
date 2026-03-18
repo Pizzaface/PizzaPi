@@ -107,6 +107,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         isAgentActive: false,
         isCompacting: false,
         shuttingDown: false,
+        wasAborted: false,
         sessionStartedAt: null,
         lastRetryableError: null,
 
@@ -419,7 +420,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         }
     }
 
-    function fireSessionComplete(summary?: string, fullOutputPath?: string) {
+    function fireSessionComplete(summary?: string, fullOutputPath?: string, exitReason?: "completed" | "killed" | "error") {
         if (sessionCompleteFired) return;
         if (!rctx.isChildSession || !rctx.parentSessionId || !rctx.relay || !rctx.sioSocket?.connected) return;
         sessionCompleteFired = true;
@@ -432,7 +433,8 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 targetSessionId: rctx.parentSessionId,
                 payload: {
                     summary: summary ?? "Session completed",
-                    exitCode: 0,
+                    exitCode: exitReason === "killed" ? 130 : exitReason === "error" ? 1 : 0,
+                    exitReason: exitReason ?? "completed",
                     ...(fullOutputPath ? { fullOutputPath } : {}),
                 },
                 deliverAs: "followUp" as const,
@@ -763,6 +765,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
 
     pi.on("turn_start", (event) => {
         sessionCompleteFired = false;
+        rctx.wasAborted = false;
         clearFollowUpGrace();
         rctx.forwardEvent(event);
     });
@@ -773,7 +776,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         stopHeartbeat();
         stopSessionNameSync();
         _ctx = null;
-        fireSessionComplete();
+        fireSessionComplete(undefined, undefined, rctx.wasAborted ? "killed" : "completed");
         disconnect();
     });
 
@@ -823,7 +826,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                     }
                 }
             }
-            fireSessionComplete(summary, fullOutputPath);
+            fireSessionComplete(summary, fullOutputPath, rctx.wasAborted ? "killed" : "completed");
             if (rctx.isChildSession) {
                 startFollowUpGrace(ctx);
             }

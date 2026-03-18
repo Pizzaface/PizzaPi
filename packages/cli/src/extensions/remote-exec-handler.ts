@@ -117,6 +117,7 @@ export async function handleExecFromWeb(
                 replyErr("No active session");
                 return;
             }
+            rctx.wasAborted = true;
             rctx.latestCtx.abort();
             replyOk();
             rctx.forwardEvent(rctx.buildHeartbeat());
@@ -394,6 +395,7 @@ export async function handleExecFromWeb(
             }
             replyOk();
             rctx.shuttingDown = true;
+            rctx.wasAborted = true;
             setTimeout(() => {
                 rctx.latestCtx?.shutdown();
             }, 100);
