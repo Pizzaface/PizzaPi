@@ -390,6 +390,14 @@ export function registerRelayNamespace(io: SocketIOServer): void {
                         const fullState = { ...pending.metadata, messages: allMessages };
                         pendingChunkedStates.delete(sessionId);
                         await updateSessionState(sessionId, fullState);
+
+                        // Publish a full session_active to the Redis replay cache
+                        // so that findLatestSnapshotEvent() finds the assembled
+                        // state instead of the metadata-only SA from chunk start.
+                        await publishSessionEvent(sessionId, {
+                            type: "session_active",
+                            state: fullState,
+                        });
                     } else {
                         await touchSessionActivity(sessionId);
                     }

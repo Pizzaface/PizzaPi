@@ -229,12 +229,11 @@ export function registerViewerNamespace(io: SocketIOServer): void {
             // a partial non-chunked SA (which would set lastCompletedSnapshotRef
             // and cause the UI to reject all subsequent chunks from the
             // still-active stream).
+            // Use emitToRelaySession for cluster-wide reach — the runner may
+            // be on a different server node in multi-node deployments.
             const session = await getSharedSession(sessionId);
             if (!session?.lastState) {
-                const tuiSocket = getLocalTuiSocket(sessionId);
-                if (tuiSocket) {
-                    tuiSocket.emit("connected" as string, {});
-                }
+                emitToRelaySession(sessionId, "connected" as string, {});
             }
         });
 
