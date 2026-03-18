@@ -560,7 +560,10 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             // Runner registration only advertises global plugins.
             // Project-local plugins are session-scoped — they're discovered
             // per-session via list_plugins with an explicit cwd.
-            const plugins = scanAllPluginInfo(process.cwd(), { includeProjectLocal: false });
+            // Pass undefined as cwd so that discoverClaudeInstalledPlugins
+            // skips project-scoped marketplace plugins and readEnabledPlugins
+            // only reads user-level settings (not project-local overrides).
+            const plugins = scanAllPluginInfo(undefined, { includeProjectLocal: false });
             socket.emit("register_runner", {
                 runnerId: identity.runnerId,
                 runnerSecret: identity.runnerSecret,
@@ -1129,11 +1132,13 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 socket.emit("plugins_list", { plugins: [], requestId, ok: false, message: "cwd outside allowed workspace roots" });
                 return;
             }
-            const scanCwd = rawCwd ?? process.cwd();
             // Only include project-local plugins when an explicit session cwd
             // was provided AND it's within allowed workspace roots. Without an
             // explicit cwd this is a runner-level query — only global plugins.
-            const includeLocal = !!rawCwd && isCwdAllowed(scanCwd);
+            // When rawCwd is absent, pass undefined so marketplace discovery
+            // skips project-scoped plugins and respects only user-level settings.
+            const scanCwd = rawCwd ?? undefined;
+            const includeLocal = !!rawCwd && isCwdAllowed(rawCwd);
             const plugins = scanAllPluginInfo(scanCwd, { includeProjectLocal: includeLocal });
             // Echo scoped flag so the server can skip cache updates for per-session scans
             socket.emit("plugins_list", { plugins, requestId, ...(rawCwd ? { scoped: true } : {}) });
