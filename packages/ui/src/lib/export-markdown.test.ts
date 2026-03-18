@@ -26,11 +26,11 @@ describe("exportToMarkdown", () => {
         role: "assistant",
         content: "The answer is 42",
         thinking: "Let me think about this...",
-        thinkingDuration: 1500,
+        thinkingDuration: 3,
       }),
     ]);
     expect(md).toContain("<details>");
-    expect(md).toContain("💭 Thinking (1500ms)");
+    expect(md).toContain("💭 Thinking (3s)");
     expect(md).toContain("Let me think about this...");
     expect(md).toContain("</details>");
     expect(md).toContain("The answer is 42");
@@ -331,6 +331,50 @@ describe("exportToMarkdown", () => {
     expect(md).toContain("📎 **Search results:**");
     expect(md).toContain("[Bun Docs](https://bun.sh/docs)");
     expect(md).toContain("[Bun Test](https://bun.sh/docs/test)");
+  });
+
+  test("tool output with Anthropic content blocks extracts text", () => {
+    const md = exportToMarkdown([
+      msg({
+        role: "tool",
+        toolName: "spawn_session",
+        toolInput: { prompt: "do something" },
+        content: [
+          { type: "text", text: "Session spawned successfully." },
+          { type: "text", text: "Session ID: abc-123" },
+        ],
+      }),
+    ]);
+    expect(md).toContain("Session spawned successfully.");
+    expect(md).toContain("Session ID: abc-123");
+    // Should NOT contain raw JSON
+    expect(md).not.toContain('"type"');
+  });
+
+  test("image blocks render placeholder or URL", () => {
+    const md = exportToMarkdown([
+      msg({
+        role: "user",
+        content: [
+          { type: "text", text: "What's in this image?" },
+          { type: "image", source: { type: "base64", media_type: "image/png", data: "..." } },
+        ],
+      }),
+    ]);
+    expect(md).toContain("What's in this image?");
+    expect(md).toContain("🖼️ *[Image attachment]*");
+  });
+
+  test("image blocks with URL render as markdown image", () => {
+    const md = exportToMarkdown([
+      msg({
+        role: "user",
+        content: [
+          { type: "image", source: { type: "url", url: "https://example.com/img.png" } },
+        ],
+      }),
+    ]);
+    expect(md).toContain("![image](https://example.com/img.png)");
   });
 
   test("web search results escape special markdown chars in title/url", () => {

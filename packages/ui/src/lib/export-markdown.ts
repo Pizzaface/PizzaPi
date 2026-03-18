@@ -33,8 +33,8 @@ function extractWebSearch(block: Record<string, unknown>): string | null {
       : [];
     if (results.length > 0) {
       const lines = results.map((r) => {
-        const title = (r.title ?? "").replace(/[\[\]]/g, "\\$&");
-        const url = (r.url ?? "").replace(/[()]/g, "\\$&");
+        const title = (r.title ?? "").replace(/\\/g, "\\\\").replace(/[\[\]]/g, "\\$&");
+        const url = (r.url ?? "").replace(/\\/g, "\\\\").replace(/[()]/g, "\\$&");
         return `- [${title}](${url})`;
       });
       return `📎 **Search results:**\n${lines.join("\n")}`;
@@ -71,6 +71,19 @@ function contentToString(content: unknown): string {
         continue;
       }
 
+      // Image blocks — preserve a reference since we can't inline binary data
+      if (b.type === "image") {
+        const src = typeof b.source === "object" && b.source !== null
+          ? (b.source as Record<string, unknown>)
+          : null;
+        if (src?.type === "url" && typeof src.url === "string") {
+          parts.push(`![image](${src.url})`);
+        } else {
+          parts.push("🖼️ *[Image attachment]*");
+        }
+        continue;
+      }
+
       // Regular text blocks
       if (typeof b.text === "string" && b.text) {
         parts.push(b.text);
@@ -94,10 +107,29 @@ function formatToolInput(input: unknown): string {
   return "**Input:**\n```json\n" + json + "\n```";
 }
 
+/** Extract text from tool content (Anthropic-style arrays or plain strings). */
+function toolContentToString(content: unknown): string {
+  if (content == null) return "";
+  if (typeof content === "string") return content;
+  // Anthropic-style content blocks: [{type:"text", text:"..."}, ...]
+  if (Array.isArray(content)) {
+    const parts: string[] = [];
+    for (const block of content) {
+      if (!block || typeof block !== "object") continue;
+      const b = block as Record<string, unknown>;
+      if (typeof b.text === "string") parts.push(b.text);
+      else if (typeof b.content === "string") parts.push(b.content);
+    }
+    if (parts.length > 0) return parts.join("\n\n");
+  }
+  // Fallback: JSON stringify
+  return JSON.stringify(content, null, 2);
+}
+
 /** Format tool output, truncating if too long. */
 function formatToolOutput(content: unknown): string {
   if (content == null) return "";
-  const text = typeof content === "string" ? content : JSON.stringify(content, null, 2);
+  const text = toolContentToString(content);
   if (!text) return "";
   const truncated =
     text.length > TOOL_OUTPUT_MAX
@@ -149,7 +181,7 @@ function formatMessage(message: RelayMessage): string | null {
     // Thinking block
     if (message.thinking) {
       const duration = message.thinkingDuration
-        ? ` (${message.thinkingDuration}ms)`
+        ? ` (${message.thinkingDuration}s)`
         : "";
       parts.push(
         `<details>\n<summary>💭 Thinking${duration}</summary>\n\n${message.thinking}\n\n</details>`,
