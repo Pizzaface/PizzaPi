@@ -205,6 +205,9 @@ function HooksList({ hooks }: { hooks?: RunnerHook[] }) {
 
     return (
         <div className="flex flex-col gap-2">
+            <p className="text-[11px] text-muted-foreground/50 px-1">
+                Global hooks only — project-local hooks vary per session working directory.
+            </p>
             {hooks.map((hook) => (
                 <div
                     key={hook.type}
