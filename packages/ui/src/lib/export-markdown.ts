@@ -132,6 +132,12 @@ function toolContentToString(content: unknown): string {
     }
     if (parts.length > 0) return parts.join("\n\n");
   }
+  // Object with .text or .content property (common for MCP tool results)
+  if (content && typeof content === "object" && !Array.isArray(content)) {
+    const obj = content as Record<string, unknown>;
+    if (typeof obj.text === "string") return obj.text;
+    if (typeof obj.content === "string") return obj.content;
+  }
   // Fallback: JSON stringify
   return JSON.stringify(content, null, 2);
 }
@@ -255,6 +261,11 @@ function formatMessage(message: RelayMessage): string | null {
   if (role === "system") {
     const text = contentToString(message.content);
     if (!text) return null;
+    // If content is structured (contains code fences), use a heading instead
+    // of blockquote to avoid broken markdown
+    if (text.includes("```")) {
+      return `### ⚙️ System\n\n${text}`;
+    }
     return `> **System:** ${text.split("\n").join("\n> ")}`;
   }
 

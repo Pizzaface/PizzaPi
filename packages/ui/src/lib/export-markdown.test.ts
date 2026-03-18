@@ -416,6 +416,51 @@ describe("exportToMarkdown", () => {
     expect(md).toContain("console.log('hi');");
   });
 
+  test("object-shaped tool result extracts .text property", () => {
+    const md = exportToMarkdown([
+      msg({
+        role: "tool",
+        toolName: "mcp_tool",
+        toolInput: { query: "test" },
+        content: { text: "Tool result text here" },
+      }),
+    ]);
+    expect(md).toContain("Tool result text here");
+    expect(md).not.toContain('"text"');
+  });
+
+  test("object-shaped tool result extracts .content property", () => {
+    const md = exportToMarkdown([
+      msg({
+        role: "tool",
+        toolName: "mcp_tool",
+        toolInput: {},
+        content: { content: "MCP result content" },
+      }),
+    ]);
+    expect(md).toContain("MCP result content");
+    expect(md).not.toContain('"content"');
+  });
+
+  test("system messages with structured content use heading not blockquote", () => {
+    const md = exportToMarkdown([
+      msg({
+        role: "system",
+        content: { type: "command_result", data: { plugins: ["a", "b"] } },
+      }),
+    ]);
+    expect(md).toContain("### ⚙️ System");
+    // Should NOT have blockquote prefix on code fence lines
+    expect(md).not.toMatch(/^> ```/m);
+  });
+
+  test("simple system messages still use blockquote", () => {
+    const md = exportToMarkdown([
+      msg({ role: "system", content: "Simple system message" }),
+    ]);
+    expect(md).toContain("> **System:** Simple system message");
+  });
+
   test("failed send_message turn shows error state", () => {
     const md = exportToMarkdown([
       msg({
