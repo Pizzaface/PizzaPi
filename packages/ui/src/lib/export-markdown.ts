@@ -94,10 +94,10 @@ function contentToString(content: unknown): string {
     }
     if (parts.length > 0) return parts.join("\n\n");
     // Fallback: stringify the array if no recognized blocks
-    return "```json\n" + JSON.stringify(content, null, 2) + "\n```";
+    return safeFence(JSON.stringify(content, null, 2), "json");
   }
   if (typeof content === "object") {
-    return "```json\n" + JSON.stringify(content, null, 2) + "\n```";
+    return safeFence(JSON.stringify(content, null, 2), "json");
   }
   return String(content);
 }

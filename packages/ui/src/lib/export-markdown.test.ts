@@ -558,6 +558,21 @@ describe("exportToMarkdown", () => {
     expect(md).not.toContain("abc-123");
   });
 
+  test("contentToString fallback uses safeFence when content contains backticks", () => {
+    // If an unrecognized object contains triple backticks, the fence must be longer
+    const md = exportToMarkdown([
+      msg({
+        role: "tool",
+        toolName: "some_tool",
+        toolInput: "x",
+        content: { weird: "has ```json inside" },
+      }),
+    ]);
+    // The output section should use a longer fence (````) not the default (```)
+    expect(md).toMatch(/^````$/m);
+    expect(md).toContain("has ```json inside");
+  });
+
   test("output ends with trailing newline", () => {
     const md = exportToMarkdown([msg({ role: "user", content: "hi" })]);
     expect(md.endsWith("\n")).toBe(true);
