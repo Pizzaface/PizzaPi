@@ -376,10 +376,15 @@ export function discoverClaudeInstalledPlugins(cwd?: string): DiscoveredPlugin[]
 
         for (const inst of sorted) {
             // Skip project-scoped plugins that don't match current cwd.
+            // When cwd is undefined (runner-level / global-only scan), ALL
+            // project-scoped plugins are excluded — there is no project context.
             // Uses path.relative to avoid platform-specific separator issues.
             // On Windows, cross-drive relative() returns an absolute path, so
             // we also reject when isAbsolute(rel) is true.
-            if (inst.scope === "project" && cwd && inst.projectPath) {
+            if (inst.scope === "project") {
+                if (!cwd || !inst.projectPath) {
+                    continue;
+                }
                 const rel = relative(resolve(inst.projectPath), resolve(cwd));
                 if (rel.startsWith("..") || isAbsolute(rel)) {
                     continue;
