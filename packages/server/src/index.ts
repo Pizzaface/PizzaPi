@@ -9,6 +9,20 @@ import { sweepExpiredSessions } from "./ws/sio-registry.js";
 import { sweepExpiredAttachments, rehydrateExtractedAttachments } from "./attachments/store.js";
 import { runAllMigrations } from "./migrations.js";
 
+// ── Process-level safety net ─────────────────────────────────────────────────
+// The Socket.IO Redis adapter can throw EPIPE synchronously when the Redis
+// connection drops mid-broadcast. We catch any that slip through call-site
+// try/catches so the server never exits on a transient Redis disconnect.
+process.on("uncaughtException", (err: Error) => {
+    if ((err as NodeJS.ErrnoException).code === "EPIPE") {
+        console.warn("[process] Caught EPIPE (Redis connection dropped) — ignoring:", err.message);
+        return;
+    }
+    // Re-throw anything that isn't an EPIPE so genuine bugs still surface.
+    console.error("[process] Uncaught exception:", err);
+    process.exit(1);
+});
+
 // Socket.IO imports
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { Server as SocketIOServer } from "socket.io";

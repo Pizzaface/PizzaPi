@@ -577,9 +577,16 @@ export async function publishSessionEvent(sessionId: string, event: unknown): Pr
     void appendRelayEventToCache(sessionId, strippedEvent, { isEphemeral: session?.isEphemeral });
 
     // Broadcast to all viewer sockets in the session room
-    io.of("/viewer")
-        .to(viewerSessionRoom(sessionId))
-        .emit("event", { event: strippedEvent, seq });
+    try {
+        io.of("/viewer")
+            .to(viewerSessionRoom(sessionId))
+            .emit("event", { event: strippedEvent, seq });
+    } catch (err) {
+        // Redis adapter throws EPIPE when the Redis connection drops mid-broadcast.
+        // The event was already appended to the Redis cache; viewers will catch up
+        // via replay on reconnect, so this is safe to swallow.
+        console.warn("[sio-registry] publishSessionEvent broadcast failed (Redis EPIPE?):", (err as Error)?.message);
+    }
 
     return seq;
 }
@@ -831,9 +838,13 @@ export async function removeViewer(sessionId: string, socket: Socket): Promise<v
  * Broadcast data to all viewers of a session via Socket.IO rooms.
  */
 export function broadcastToViewers(sessionId: string, eventName: string, data: unknown): void {
-    io.of("/viewer")
-        .to(viewerSessionRoom(sessionId))
-        .emit(eventName, data);
+    try {
+        io.of("/viewer")
+            .to(viewerSessionRoom(sessionId))
+            .emit(eventName, data);
+    } catch (err) {
+        console.warn("[sio-registry] broadcastToViewers failed (Redis EPIPE?):", (err as Error)?.message);
+    }
 }
 
 /**
