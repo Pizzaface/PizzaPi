@@ -67,7 +67,7 @@ import { MultipleChoiceQuestions } from "@/components/ai-elements/multiple-choic
 import { PlanModePanel, type PlanModeAnswer } from "@/components/ai-elements/plan-mode";
 import { formatAnswersForAgent, type QuestionDisplayMode } from "@/lib/ask-user-questions";
 import { dismissNotificationsForSession } from "@/lib/push";
-import { AlertTriangleIcon, ArrowDownIcon, BookOpen, Bot, CheckCircle2, ChevronsUpDown, Circle, CircleDashed, Copy, Loader2, MessageSquare, OctagonX, PaperclipIcon, Plus, Puzzle, ShieldAlert, Zap, Clock, X, Trash2, TerminalIcon, XCircle, FolderTree } from "lucide-react";
+import { AlertTriangleIcon, ArrowDownIcon, BookOpen, Bot, CheckCircle2, ChevronsUpDown, Circle, CircleDashed, Copy, Loader2, MessageSquare, OctagonX, PaperclipIcon, Pencil, Plus, Puzzle, ShieldAlert, Zap, Clock, X, Trash2, TerminalIcon, XCircle, FolderTree } from "lucide-react";
 import { AtMentionPopover } from "@/components/AtMentionPopover";
 import type { Entry as AtMentionEntry } from "@/hooks/useAtMentionFiles";
 import { McpToggleContext, type McpToggleHandler } from "@/components/session-viewer/McpToggleContext";
@@ -145,6 +145,8 @@ export interface SessionViewerProps {
   messageQueue?: QueuedMessage[];
   /** Remove a single queued message */
   onRemoveQueuedMessage?: (id: string) => void;
+  /** Edit the text of a queued message */
+  onEditQueuedMessage?: (id: string, newText: string) => void;
   /** Clear all queued messages */
   onClearMessageQueue?: () => void;
   /** Toggle the terminal panel */
@@ -517,10 +519,13 @@ function SessionSkeleton() {
   );
 }
 
-export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, pendingPlan, pluginTrustPrompt, onPluginTrustResponse, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, isCompacting, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], planModeEnabled, runnerId, sessionCwd, onAppendSystemMessage, onSpawnAgentSession, onTriggerResponse, onQuestionDismiss, onPlanDismiss, onDuplicateSession }: SessionViewerProps) {
+export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, pendingPlan, pluginTrustPrompt, onPluginTrustResponse, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, isCompacting, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onEditQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], planModeEnabled, runnerId, sessionCwd, onAppendSystemMessage, onSpawnAgentSession, onTriggerResponse, onQuestionDismiss, onPlanDismiss, onDuplicateSession }: SessionViewerProps) {
   const [input, setInput] = React.useState("");
   // Per-session draft storage so switching sessions preserves unsent text
   const draftsRef = React.useRef<Map<string, string>>(new Map());
+  // Inline editing state for queued messages
+  const [editingQueuedId, setEditingQueuedId] = React.useState<string | null>(null);
+  const [editingQueuedText, setEditingQueuedText] = React.useState("");
   const prevSessionIdRef = React.useRef<string | null>(null);
   const [composerError, setComposerError] = React.useState<string | null>(null);
   const [showClearDialog, setShowClearDialog] = React.useState(false);
@@ -1753,33 +1758,105 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
             </div>
             <div className="flex flex-col gap-1">
               {messageQueue.map((qm) => (
-                <div key={qm.id} className="flex items-start gap-2 text-xs group">
-                  <span
-                    className={cn(
-                      "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[0.6rem] font-medium uppercase tracking-wide flex-shrink-0 mt-0.5",
-                      qm.deliverAs === "steer"
-                        ? "bg-amber-500/15 text-amber-500 border border-amber-500/30"
-                        : "bg-blue-500/15 text-blue-500 border border-blue-500/30",
-                    )}
-                  >
-                    {qm.deliverAs === "steer" ? (
-                      <><Zap className="size-2.5" /> Steer</>
-                    ) : (
-                      <><Clock className="size-2.5" /> Follow-up</>
-                    )}
-                  </span>
-                  <span className="truncate flex-1 text-foreground/80 leading-relaxed">{qm.text}</span>
-                  {onRemoveQueuedMessage && (
-                    <button
-                      type="button"
-                      onClick={() => onRemoveQueuedMessage(qm.id)}
-                      className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-all flex-shrink-0 mt-0.5"
-                      title="Remove queued message"
-                      aria-label="Remove queued message"
+                <div key={qm.id} className="flex flex-col gap-1 text-xs group">
+                  <div className="flex items-start gap-2">
+                    <span
+                      className={cn(
+                        "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[0.6rem] font-medium uppercase tracking-wide flex-shrink-0 mt-0.5",
+                        qm.deliverAs === "steer"
+                          ? "bg-amber-500/15 text-amber-500 border border-amber-500/30"
+                          : "bg-blue-500/15 text-blue-500 border border-blue-500/30",
+                      )}
                     >
-                      <X className="size-3" />
-                    </button>
-                  )}
+                      {qm.deliverAs === "steer" ? (
+                        <><Zap className="size-2.5" /> Steer</>
+                      ) : (
+                        <><Clock className="size-2.5" /> Follow-up</>
+                      )}
+                    </span>
+                    {editingQueuedId === qm.id ? (
+                      <div className="flex-1 flex flex-col gap-1">
+                        <textarea
+                          className="w-full resize-none rounded border border-border bg-background px-2 py-1 text-xs text-foreground leading-relaxed focus:outline-none focus:ring-1 focus:ring-ring"
+                          rows={2}
+                          value={editingQueuedText}
+                          onChange={(e) => setEditingQueuedText(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" && !e.shiftKey) {
+                              e.preventDefault();
+                              const trimmed = editingQueuedText.trim();
+                              if (trimmed && onEditQueuedMessage) {
+                                onEditQueuedMessage(qm.id, trimmed);
+                              }
+                              setEditingQueuedId(null);
+                              setEditingQueuedText("");
+                            } else if (e.key === "Escape") {
+                              setEditingQueuedId(null);
+                              setEditingQueuedText("");
+                            }
+                          }}
+                          autoFocus
+                        />
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const trimmed = editingQueuedText.trim();
+                              if (trimmed && onEditQueuedMessage) {
+                                onEditQueuedMessage(qm.id, trimmed);
+                              }
+                              setEditingQueuedId(null);
+                              setEditingQueuedText("");
+                            }}
+                            className="text-[0.65rem] px-1.5 py-0.5 rounded bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
+                          >
+                            Save
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingQueuedId(null);
+                              setEditingQueuedText("");
+                            }}
+                            className="text-[0.65rem] px-1.5 py-0.5 rounded text-muted-foreground hover:text-foreground transition-colors"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <span className="truncate flex-1 text-foreground/80 leading-relaxed">{qm.text}</span>
+                        <div className="flex items-center gap-1 flex-shrink-0 mt-0.5 opacity-0 group-hover:opacity-100 transition-all">
+                          {onEditQueuedMessage && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingQueuedId(qm.id);
+                                setEditingQueuedText(qm.text);
+                              }}
+                              className="text-muted-foreground hover:text-foreground transition-colors"
+                              title="Edit queued message"
+                              aria-label="Edit queued message"
+                            >
+                              <Pencil className="size-3" />
+                            </button>
+                          )}
+                          {onRemoveQueuedMessage && (
+                            <button
+                              type="button"
+                              onClick={() => onRemoveQueuedMessage(qm.id)}
+                              className="text-muted-foreground hover:text-destructive transition-colors"
+                              title="Remove queued message"
+                              aria-label="Remove queued message"
+                            >
+                              <X className="size-3" />
+                            </button>
+                          )}
+                        </div>
+                      </>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>
