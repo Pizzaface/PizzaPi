@@ -83,27 +83,23 @@ const CHUNK_THRESHOLD = 10 * 1024 * 1024; // 10 MB
 const CHUNK_SIZE = 200;
 
 /**
- * Estimate the serialized JSON size of a messages array by sampling.
- * Full JSON.stringify on a huge array would itself block the event loop,
- * so we sample a handful of elements and extrapolate.
+ * Estimate the serialized JSON size of a messages array by summing per-message
+ * sizes.  We stringify each message individually rather than the whole array
+ * to avoid allocating a single 100 MB+ string.  This catches outlier-heavy
+ * distributions (e.g. a few 20 MB tool outputs) that sampling would miss.
  */
 export function estimateMessagesSize(messages: unknown[]): number {
     if (messages.length === 0) return 2; // "[]"
-    const SAMPLE_COUNT = Math.min(10, messages.length);
-    let sampleBytes = 0;
-    const step = Math.max(1, Math.floor(messages.length / SAMPLE_COUNT));
-    let sampled = 0;
-    for (let i = 0; i < messages.length && sampled < SAMPLE_COUNT; i += step) {
+    let totalBytes = 0;
+    for (const msg of messages) {
         try {
-            sampleBytes += JSON.stringify(messages[i]).length;
+            totalBytes += JSON.stringify(msg).length;
         } catch {
-            sampleBytes += 1024; // fallback estimate for unserializable entries
+            totalBytes += 1024; // fallback for unserializable entries
         }
-        sampled++;
     }
-    const avgBytes = sampleBytes / sampled;
-    // Add ~15% overhead for array commas, brackets, and event wrapper fields
-    return Math.ceil(avgBytes * messages.length * 1.15);
+    // Add ~10% overhead for array commas, brackets, and event wrapper fields
+    return Math.ceil(totalBytes * 1.10);
 }
 
 /**

@@ -2495,8 +2495,12 @@ export function App() {
       lastViewerEventAtRef.current = Date.now();
 
       // Detect sequence gaps; request a resync if we missed events.
+      // During chunked delivery, suppress resync — chunks have their own
+      // ordering via chunkIndex/snapshotId and a resync would replace the
+      // partially-loaded messages with an empty lastState (the server
+      // hasn't assembled the full state yet).
       const seq = typeof data.seq === "number" ? data.seq : null;
-      if (seq !== null && lastSeqRef.current !== null) {
+      if (seq !== null && lastSeqRef.current !== null && !chunkedDeliveryRef.current) {
         const expected = lastSeqRef.current + 1;
         if (seq > expected) {
           // Gap detected — request a resync snapshot from the server.

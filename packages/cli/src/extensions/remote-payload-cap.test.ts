@@ -26,9 +26,31 @@ describe("estimateMessagesSize", () => {
         }));
         const estimated = estimateMessagesSize(msgs);
         const actual = JSON.stringify(msgs).length;
-        // Within 50% — sampling is approximate
+        // Within 50% — now iterates all messages, so very accurate
         expect(estimated).toBeGreaterThan(actual * 0.5);
         expect(estimated).toBeLessThan(actual * 2);
+    });
+
+    test("catches outlier-heavy distributions (few very large messages)", () => {
+        // 1000 small messages + 6 x 2MB messages clustered at the end
+        // Old sampling approach could miss these entirely
+        const smallMsgs = Array.from({ length: 1000 }, (_, i) => ({
+            role: "user",
+            content: `msg ${i}`,
+        }));
+        const bigContent = "x".repeat(2_000_000);
+        const bigMsgs = Array.from({ length: 6 }, () => ({
+            role: "assistant",
+            content: bigContent,
+        }));
+        const msgs = [...smallMsgs, ...bigMsgs];
+        const estimated = estimateMessagesSize(msgs);
+        const actual = JSON.stringify(msgs).length;
+        // Must capture the ~12 MB of big messages — estimated should be >10 MB
+        expect(estimated).toBeGreaterThan(10 * 1024 * 1024);
+        // And within reasonable accuracy of actual
+        expect(estimated).toBeGreaterThan(actual * 0.8);
+        expect(estimated).toBeLessThan(actual * 1.5);
     });
 });
 
