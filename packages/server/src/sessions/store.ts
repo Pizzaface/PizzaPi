@@ -35,6 +35,8 @@ export interface RelaySessionStartInput {
     shareUrl: string;
     startedAt: string;
     isEphemeral: boolean;
+    runnerId?: string | null;
+    runnerName?: string | null;
 }
 
 export interface PersistedRelaySessionSnapshot {
@@ -60,6 +62,8 @@ export interface PersistedRelaySessionSummary {
     isEphemeral: boolean;
     expiresAt: string | null;
     isPinned: boolean;
+    runnerId: string | null;
+    runnerName: string | null;
 }
 
 export async function ensureRelaySessionTables(): Promise<void> {
@@ -77,6 +81,8 @@ export async function ensureRelaySessionTables(): Promise<void> {
         .addColumn("isEphemeral", "integer", (col) => col.notNull().defaultTo(1))
         .addColumn("expiresAt", "text")
         .addColumn("isPinned", "integer", (col) => col.notNull().defaultTo(0))
+        .addColumn("runnerId", "text")
+        .addColumn("runnerName", "text")
         .execute();
 
     // Migration: add isPinned column to existing tables
@@ -88,6 +94,32 @@ export async function ensureRelaySessionTables(): Promise<void> {
     } catch (error) {
         if (!isDuplicateColumnError(error, "isPinned")) {
             console.error("[sessions/store] Failed to migrate relay_session.isPinned:", error);
+            throw error;
+        }
+    }
+
+    // Migration: add runnerId column to existing tables
+    try {
+        await getKysely().schema
+            .alterTable("relay_session")
+            .addColumn("runnerId", "text")
+            .execute();
+    } catch (error) {
+        if (!isDuplicateColumnError(error, "runnerId")) {
+            console.error("[sessions/store] Failed to migrate relay_session.runnerId:", error);
+            throw error;
+        }
+    }
+
+    // Migration: add runnerName column to existing tables
+    try {
+        await getKysely().schema
+            .alterTable("relay_session")
+            .addColumn("runnerName", "text")
+            .execute();
+    } catch (error) {
+        if (!isDuplicateColumnError(error, "runnerName")) {
+            console.error("[sessions/store] Failed to migrate relay_session.runnerName:", error);
             throw error;
         }
     }
@@ -131,8 +163,23 @@ export async function recordRelaySessionStart(input: RelaySessionStartInput): Pr
             isEphemeral: input.isEphemeral ? 1 : 0,
             expiresAt: input.isEphemeral ? ephemeralExpiryIso(new Date(now).getTime()) : null,
             isPinned: 0,
+            runnerId: input.runnerId ?? null,
+            runnerName: input.runnerName ?? null,
         })
-        .onConflict((oc) => oc.column("id").doNothing())
+        .onConflict((oc) =>
+            oc.column("id").doUpdateSet((eb) => ({
+                // On reconnect, preserve existing runner info if the incoming data
+                // doesn't carry a runner association (e.g. session predates the
+                // association key or the Redis key has already expired).  Only
+                // overwrite when we actually have a non-null value to write.
+                runnerId: input.runnerId != null ? input.runnerId : eb.ref("relay_session.runnerId"),
+                runnerName: input.runnerName != null ? input.runnerName : eb.ref("relay_session.runnerName"),
+                lastActiveAt: now,
+                // Clear endedAt on reconnect so the session is considered
+                // active again (e.g. for getActiveRelaySessionUserId).
+                endedAt: null,
+            })),
+        )
         .execute();
 }
 
@@ -167,9 +214,82 @@ export async function recordRelaySessionState(sessionId: string, state: unknown)
     await touchRelaySession(sessionId);
 }
 
+/**
+ * Update the runner association for a persisted session.
+ *
+ * Retries briefly when the relay_session row has not been persisted yet
+ * (race between linkSessionToRunner and the fire-and-forget
+ * recordRelaySessionStart insert).
+ */
+export async function updateRelaySessionRunner(
+    sessionId: string,
+    runnerId: string | null,
+    runnerName: string | null,
+): Promise<boolean> {
+    // Use exponential back-off so we tolerate slow
+    // recordRelaySessionStart inserts without giving up too early.
+    const MAX_ATTEMPTS = 5;
+    const INITIAL_DELAY_MS = 200;
+
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        const result = await getKysely()
+            .updateTable("relay_session")
+            .set({ runnerId, runnerName })
+            .where("id", "=", sessionId)
+            .execute();
+
+        if ((result[0]?.numUpdatedRows ?? 0n) > 0n) return true;
+
+        if (attempt < MAX_ATTEMPTS) {
+            const delay = INITIAL_DELAY_MS * Math.pow(2, attempt - 1);
+            await new Promise((resolve) => setTimeout(resolve, delay));
+        }
+    }
+
+    console.warn(
+        `[sessions/store] updateRelaySessionRunner: gave up linking runner ${runnerId} to session ${sessionId} after ${MAX_ATTEMPTS} attempts`,
+    );
+    return false;
+}
+
+/**
+ * Returns the userId stored in SQLite for a given session, or null if the
+ * session has no row.  Used as a Redis fallback when validating parent-session
+ * links after a relay restart (Redis key gone but SQLite record still exists).
+ */
+export async function getRelaySessionUserId(sessionId: string): Promise<string | null> {
+    const row = await getKysely()
+        .selectFrom("relay_session")
+        .select("userId")
+        .where("id", "=", sessionId)
+        .executeTakeFirst();
+    return row?.userId ?? null;
+}
+
+/**
+ * Returns the userId for a relay session only if the session has NOT ended.
+ * Used for parent-link validation: a child should not adopt a parent that
+ * has already ended, because triggers sent to that parent will never be
+ * delivered and will block AskUserQuestion / plan_review fallback.
+ */
+export async function getActiveRelaySessionUserId(sessionId: string): Promise<string | null> {
+    const row = await getKysely()
+        .selectFrom("relay_session")
+        .select("userId")
+        .where("id", "=", sessionId)
+        .where("endedAt", "is", null)
+        .executeTakeFirst();
+    return row?.userId ?? null;
+}
+
 export async function recordRelaySessionEnd(sessionId: string): Promise<void> {
     const nowIso = new Date().toISOString();
     const newExpiry = ephemeralExpiryIso();
+    // Guard against stale end writes: only mark ended if the session has not
+    // been re-started since this end was triggered.  A concurrent
+    // recordRelaySessionStart upsert sets endedAt back to NULL, so if endedAt
+    // is already NULL when this runs, a newer start has landed first and we
+    // must not overwrite it.
     await getKysely()
         .updateTable("relay_session")
         .set((eb) => ({
@@ -183,6 +303,14 @@ export async function recordRelaySessionEnd(sessionId: string): Promise<void> {
                 .end(),
         }))
         .where("id", "=", sessionId)
+        // Only end the session if it hasn't already been re-started
+        // (a reconnect upsert sets endedAt = NULL and updates lastActiveAt).
+        .where((eb) =>
+            eb.or([
+                eb("endedAt", "is not", null),  // already ended — safe to update timestamp
+                eb("lastActiveAt", "<=", nowIso), // not re-started with a newer timestamp
+            ]),
+        )
         .execute();
 }
 
@@ -255,6 +383,8 @@ export async function listPersistedRelaySessionsForUser(
             "isEphemeral",
             "expiresAt",
             "isPinned",
+            "runnerId",
+            "runnerName",
         ])
         .where("userId", "=", userId)
         .where((eb) =>
@@ -281,6 +411,8 @@ export async function listPersistedRelaySessionsForUser(
         isEphemeral: row.isEphemeral === 1,
         expiresAt: row.expiresAt,
         isPinned: row.isPinned === 1,
+        runnerId: row.runnerId ?? null,
+        runnerName: row.runnerName ?? null,
     }));
 }
 
@@ -301,6 +433,8 @@ export async function listPinnedRelaySessionsForUser(
             "isEphemeral",
             "expiresAt",
             "isPinned",
+            "runnerId",
+            "runnerName",
         ])
         .where("userId", "=", userId)
         .where("isPinned", "=", 1)
@@ -317,6 +451,8 @@ export async function listPinnedRelaySessionsForUser(
         isEphemeral: row.isEphemeral === 1,
         expiresAt: row.expiresAt,
         isPinned: true,
+        runnerId: row.runnerId ?? null,
+        runnerName: row.runnerName ?? null,
     }));
 }
 

@@ -47,6 +47,8 @@ interface PinnedSession {
     isEphemeral: boolean;
     expiresAt: string | null;
     isPinned: boolean;
+    runnerId: string | null;
+    runnerName: string | null;
 }
 
 function isPinnedSession(value: unknown): value is PinnedSession {
@@ -598,6 +600,22 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                         : s,
                 ),
             );
+
+            // Also refresh pinned entries so late runner-link updates are not
+            // lost when the session ends and drops out of liveSessions.
+            if (runnerId !== undefined || runnerName !== undefined) {
+                setPinnedSessions((prev) =>
+                    prev.map((p) =>
+                        p.sessionId === sessionId
+                            ? {
+                                  ...p,
+                                  runnerId: runnerId !== undefined ? runnerId : p.runnerId,
+                                  runnerName: runnerName !== undefined ? runnerName : p.runnerName,
+                              }
+                            : p,
+                    ),
+                );
+            }
         });
 
         return () => {
@@ -1465,6 +1483,11 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                         <span className="text-[0.65rem] text-sidebar-foreground/30 truncate" title={p.cwd}>
                                                             {formatPathTail(p.cwd, 2)}
                                                         </span>
+                                                        {(p.runnerName || p.runnerId) && (
+                                                            <span className="text-[0.6rem] text-sidebar-foreground/25 truncate max-w-[6rem]" title={p.runnerName ?? `Runner ${p.runnerId}`}>
+                                                                · {p.runnerName || `Runner ${p.runnerId?.slice(0, 8)}…`}
+                                                            </span>
+                                                        )}
                                                         <span className="text-[0.6rem] text-sidebar-foreground/25">· ended</span>
                                                     </div>
                                                 </div>

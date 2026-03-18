@@ -56,6 +56,8 @@ import {
     recordRelaySessionEnd,
     recordRelaySessionState,
     touchRelaySession,
+    updateRelaySessionRunner,
+    getRelaySessionUserId,
 } from "../sessions/store.js";
 import { appendRelayEventToCache } from "../sessions/redis.js";
 import { storeAndReplaceImages, storeAndReplaceImagesInEvent } from "./strip-images.js";
@@ -329,9 +331,18 @@ export async function registerTuiSession(
     // Validate parent session exists and belongs to the same user.
     // If the parent disconnected or the ID is stale, clear it to avoid
     // dangling trigger flows that would time out.
+    // Fall back to SQLite when Redis has no record (e.g. relay restarted and
+    // the parent's Redis key has expired) so that parent links survive restarts.
     if (resolvedParentSessionId) {
         const parentSession = await getSession(resolvedParentSessionId);
-        if (!parentSession || parentSession.userId !== userId) {
+        if (!parentSession) {
+            // Redis miss means the parent is not connected — clear the link
+            // so the child falls back to normal viewer/TUI interaction
+            // instead of sending triggers to a dead parent ID.  The child
+            // CLI will re-send parentSessionId on its next reconnect; if
+            // the parent is back by then the link is restored naturally.
+            resolvedParentSessionId = null;
+        } else if (parentSession.userId !== userId) {
             resolvedParentSessionId = null;
         }
     }
@@ -381,6 +392,8 @@ export async function registerTuiSession(
         shareUrl,
         startedAt,
         isEphemeral,
+        runnerId,
+        runnerName,
     }).catch((error) => {
         console.error("[sio-registry] Failed to persist relay session start:", error);
     });
@@ -1096,6 +1109,12 @@ export async function linkSessionToRunner(runnerId: string, sessionId: string): 
     // The session hash is deleted on relay disconnect, but this TTL key
     // persists so reconnecting TUI agents can restore their runner link.
     await setRunnerAssociation(sessionId, runnerId, runner.name);
+
+    // Also persist the runner link in SQLite so historical/pinned sessions
+    // retain their runner provenance after the Redis session hash is deleted.
+    void updateRelaySessionRunner(sessionId, runnerId, runner.name).catch((error) => {
+        console.error("[sio-registry] Failed to persist runner link to SQLite:", error);
+    });
 
     const heartbeat = session.lastHeartbeat ? safeJsonParse(session.lastHeartbeat) : null;
 
