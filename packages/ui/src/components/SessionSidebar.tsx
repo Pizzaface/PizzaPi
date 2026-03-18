@@ -600,6 +600,22 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                         : s,
                 ),
             );
+
+            // Also refresh pinned entries so late runner-link updates are not
+            // lost when the session ends and drops out of liveSessions.
+            if (runnerId !== undefined || runnerName !== undefined) {
+                setPinnedSessions((prev) =>
+                    prev.map((p) =>
+                        p.sessionId === sessionId
+                            ? {
+                                  ...p,
+                                  runnerId: runnerId !== undefined ? runnerId : p.runnerId,
+                                  runnerName: runnerName !== undefined ? runnerName : p.runnerName,
+                              }
+                            : p,
+                    ),
+                );
+            }
         });
 
         return () => {
