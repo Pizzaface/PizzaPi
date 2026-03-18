@@ -109,8 +109,10 @@ function enqueueSessionEvent(sessionId: string, fn: () => Promise<void>): void {
     const prev = sessionEventQueues.get(sessionId) ?? Promise.resolve();
     const next = prev.then(fn, fn); // always chain, even on prior rejection
     sessionEventQueues.set(sessionId, next);
-    // Clean up the map entry when the chain settles to avoid unbounded growth
-    next.then(() => {
+    // Clean up the map entry when the chain settles to avoid unbounded growth.
+    // Use .finally() so cleanup runs even if fn rejects (otherwise the map
+    // entry leaks indefinitely on error, causing unbounded memory growth).
+    next.finally(() => {
         if (sessionEventQueues.get(sessionId) === next) {
             sessionEventQueues.delete(sessionId);
         }
