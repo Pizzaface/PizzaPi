@@ -23,6 +23,7 @@ import {
     getLocalTuiSocket,
     emitToRelaySession,
 } from "../sio-registry.js";
+import { getPendingChunkedSnapshot } from "./relay.js";
 import { getPersistedRelaySessionSnapshot } from "../../sessions/store.js";
 import { getCachedRelayEvents } from "../../sessions/redis.js";
 
@@ -408,11 +409,19 @@ export function registerViewerNamespace(io: SocketIOServer): void {
         const freshSession = await getSharedSession(sessionId);
         const freshSeq = await getSessionSeq(sessionId);
 
-        if (freshSession?.lastState) {
+        // If a chunked delivery is in-flight, lastState is stale (chunked
+        // session_active intentionally skips updating it).  Emitting the old
+        // non-chunked snapshot here would overwrite the chunked header the
+        // viewer already received via the room broadcast, clear chunk-tracking
+        // in App.tsx, and cause remaining chunks to be dropped.  Skip it and
+        // let the runner's fresh chunked delivery (triggered by the "connected"
+        // notification below) hydrate the viewer instead.
+        const chunkedPending = getPendingChunkedSnapshot(sessionId);
+        if (freshSession?.lastState && !chunkedPending) {
             try {
                 socket.emit("event", { event: { type: "session_active", state: JSON.parse(freshSession.lastState) }, seq: freshSeq });
             } catch {}
-        } else {
+        } else if (!chunkedPending) {
             // No in-memory state — fall back to event cache.
             // Don't send partial chunked snapshots here — they'd arrive as
             // non-chunked SA events, set lastCompletedSnapshotRef, and cause
