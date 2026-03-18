@@ -511,6 +511,11 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         // relay (triggered when the new worker's registerTuiSession tears down the old
         // connection) must be ignored — the new worker is already live.
         const restartingSessions = new Set<string>();
+        // Sessions we've already handled session_ended for.  Prevents log
+        // spam when the relay fires duplicate session_ended events (e.g. the
+        // orphan sweeper runs after the relay already sent session_ended on
+        // disconnect).  Entries auto-expire after 60 s to avoid unbounded growth.
+        const endedSessionIds = new Set<string>();
         const runnerName = process.env.PIZZAPI_RUNNER_NAME?.trim() || hostname();
         let runnerId: string | null = null;
         let isFirstConnect = true;
@@ -737,10 +742,17 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             const entry = runningSessions.get(sessionId);
             if (entry) {
                 runningSessions.delete(sessionId);
+                endedSessionIds.add(sessionId);
+                setTimeout(() => endedSessionIds.delete(sessionId), 60_000);
                 console.log(`pizzapi runner: session ${sessionId} ended on relay${entry.adopted ? " (adopted)" : ""}`);
-            } else {
+            } else if (!endedSessionIds.has(sessionId)) {
+                // First duplicate — log once then suppress subsequent copies
+                endedSessionIds.add(sessionId);
+                setTimeout(() => endedSessionIds.delete(sessionId), 60_000);
                 console.log(`pizzapi runner: session_ended for unknown/already-removed session ${sessionId}`);
             }
+            // else: duplicate session_ended for a session we already handled — silently ignore
+
             // Clean up persisted attachments.  For spawned sessions child.on("exit")
             // already ran cleanup, so this is a no-op (idempotent).  For adopted sessions
             // (child: null) this is the only cleanup path.
