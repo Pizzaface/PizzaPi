@@ -355,6 +355,10 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
     // so we must eagerly start the server to avoid registering localhost:0.
     if (!this._callbackServer) {
       this._callbackServer = startCallbackServer(this._callbackPort);
+      // Attach a default catch so the 2-minute timeout doesn't cause an
+      // unhandled rejection if nobody ever awaits startCallbackAndWait()
+      // (e.g. auth() returns "AUTHORIZED" without redirecting).
+      this._callbackServer.promise.catch(() => {});
     }
     return `http://localhost:${this._callbackServer.getPort()}/callback`;
   }
@@ -440,10 +444,9 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
         authUrl: url,
         ts: Date.now(),
       });
-      process.stderr.write(`🔐 Authentication required for ${this._serverName} — check web UI\n`);
+      // No stderr — the web UI shows the auth link interactively.
     } else {
       // Local mode: open browser directly
-      process.stderr.write(`\n🔐 Opening browser for ${this._serverName} MCP authentication…\n`);
       openBrowser(url);
     }
   }

@@ -573,7 +573,6 @@ function createStreamableMcpClient(opts: {
     // Use a per-request guard instead of a permanent flag so that token
     // expiry mid-session can trigger re-authentication.
     if (status === 401 && oauthProvider && !oauthInProgress) {
-      process.stderr.write(`🔐 MCP server "${opts.name}" requires authentication…\n`);
       oauthInProgress = true;
 
       try {
@@ -582,17 +581,15 @@ function createStreamableMcpClient(opts: {
         // and the `gh` CLI before starting a full OAuth flow.
         const envToken = await detectEnvironmentToken(opts.url);
         if (envToken) {
-          process.stderr.write(`🔑 Using token from ${envToken.source}\n`);
           oauthProvider.saveTokens({ access_token: envToken.token, token_type: "bearer" });
 
           const retry = await rawRequest(method, params, signal);
           if (retry.response.ok) {
-            process.stderr.write(`✅ Authenticated with ${opts.name}\n`);
             return retry.result;
           }
           // Token didn't work — fall through to OAuth
           oauthProvider.invalidateCredentials("tokens");
-          process.stderr.write(`⚠ Token from ${envToken.source} was rejected, trying OAuth…\n`);
+          process.stderr.write(`⚠ ${opts.name}: token from ${envToken.source} rejected, trying OAuth…\n`);
         }
 
         // ── Strategy 2: Full MCP OAuth 2.1 flow ──────────────────────────
@@ -642,8 +639,6 @@ function createStreamableMcpClient(opts: {
           }
         }
 
-        process.stderr.write(`✅ Authenticated with ${opts.name}\n`);
-
         // Retry the original request with the new token
         const retry = await rawRequest(method, params, signal);
         if (!retry.response.ok) {
@@ -651,11 +646,16 @@ function createStreamableMcpClient(opts: {
         }
         return retry.result;
       } catch (err) {
-        oauthProvider.closeCallback();
         throw new Error(
           `OAuth authentication failed for "${opts.name}": ${err instanceof Error ? err.message : String(err)}`,
         );
       } finally {
+        // Always clean up the callback server — it may have been started
+        // eagerly by the redirectUrl getter even if auth() resolved without
+        // needing a redirect (e.g. tokens were already valid). Without this,
+        // the callback server's 2-minute timeout fires an unhandled rejection
+        // that crashes the CLI.
+        oauthProvider.closeCallback();
         oauthInProgress = false;
       }
     }
