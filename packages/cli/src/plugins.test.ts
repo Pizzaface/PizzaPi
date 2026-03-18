@@ -1041,6 +1041,33 @@ describe("discoverClaudeInstalledPlugins", () => {
         expect(result).toEqual([]);
     });
 
+    test("skips all project-scoped plugins when cwd is undefined (global-only scan)", () => {
+        const home = setupHome("no-cwd-global");
+        const path1 = createCachedPlugin(home, "mkt", "proj-plugin", "1.0.0");
+        const userPath = createCachedPlugin(home, "mkt", "user-plugin", "1.0.0");
+        writeInstalledPlugins(home, {
+            version: 2,
+            plugins: {
+                "proj-plugin@mkt": [{
+                    scope: "project",
+                    projectPath: "/some/project",
+                    installPath: path1,
+                    version: "1.0.0",
+                }],
+                "user-plugin@mkt": [{
+                    scope: "user",
+                    installPath: userPath,
+                    version: "1.0.0",
+                }],
+            },
+        });
+
+        // undefined cwd = global-only: project-scoped excluded, user-scoped included
+        const result = discoverClaudeInstalledPlugins(undefined);
+        expect(result).toHaveLength(1);
+        expect(result[0].name).toBe("user-plugin");
+    });
+
     test("includes project-scoped plugins that match cwd", () => {
         const home = setupHome("project-match");
         const path1 = createCachedPlugin(home, "mkt", "my-project-plugin", "1.0.0");

@@ -224,10 +224,10 @@ export function projectPluginDirs(cwd: string): string[] {
  *   (default: false for security — project-local plugins can run arbitrary code)
  * @param opts.extraDirs - Additional directories to scan (explicitly trusted by user)
  */
-export function pluginSearchDirs(cwd: string, opts?: { includeProjectLocal?: boolean; extraDirs?: string[] }): string[] {
+export function pluginSearchDirs(cwd?: string, opts?: { includeProjectLocal?: boolean; extraDirs?: string[] }): string[] {
     const dirs = [...globalPluginDirs()];
 
-    if (opts?.includeProjectLocal) {
+    if (opts?.includeProjectLocal && cwd) {
         dirs.push(...projectPluginDirs(cwd));
     }
 
@@ -376,10 +376,15 @@ export function discoverClaudeInstalledPlugins(cwd?: string): DiscoveredPlugin[]
 
         for (const inst of sorted) {
             // Skip project-scoped plugins that don't match current cwd.
+            // When cwd is undefined (runner-level / global-only scan), ALL
+            // project-scoped plugins are excluded — there is no project context.
             // Uses path.relative to avoid platform-specific separator issues.
             // On Windows, cross-drive relative() returns an absolute path, so
             // we also reject when isAbsolute(rel) is true.
-            if (inst.scope === "project" && cwd && inst.projectPath) {
+            if (inst.scope === "project") {
+                if (!cwd || !inst.projectPath) {
+                    continue;
+                }
                 const rel = relative(resolve(inst.projectPath), resolve(cwd));
                 if (rel.startsWith("..") || isAbsolute(rel)) {
                     continue;
@@ -924,7 +929,7 @@ export function scanPluginsDir(dir: string): DiscoveredPlugin[] {
  *   (default: false — project-local plugins can run arbitrary code)
  * @param opts.extraDirs - Additional directories to scan
  */
-export function discoverPlugins(cwd: string, opts?: { includeProjectLocal?: boolean; extraDirs?: string[] }): DiscoveredPlugin[] {
+export function discoverPlugins(cwd?: string, opts?: { includeProjectLocal?: boolean; extraDirs?: string[] }): DiscoveredPlugin[] {
     const dirs = pluginSearchDirs(cwd, opts);
     const seen = new Set<string>();
     const plugins: DiscoveredPlugin[] = [];
@@ -1084,6 +1089,6 @@ export function toPluginInfo(plugin: DiscoveredPlugin): PluginInfo {
 /**
  * Scan and return plugin info for all discovered plugins.
  */
-export function scanAllPluginInfo(cwd: string, opts?: { includeProjectLocal?: boolean; extraDirs?: string[] }): PluginInfo[] {
+export function scanAllPluginInfo(cwd?: string, opts?: { includeProjectLocal?: boolean; extraDirs?: string[] }): PluginInfo[] {
     return discoverPlugins(cwd, opts).map(toPluginInfo);
 }
