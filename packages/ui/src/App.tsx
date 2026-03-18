@@ -1662,6 +1662,10 @@ export function App() {
       // for toolCall blocks that have no matching toolResult.
       if (!isChunked) {
         setActiveToolCalls(detectInFlightTools(normalizedMessages));
+      } else {
+        // Clear stale tool call state from before the reconnect so old
+        // streaming badges and Kill buttons don't linger while chunks load.
+        setActiveToolCalls(new Map());
       }
       setIsChangingModel(false);
       sessionHydratedRef.current = !isChunked; // defer until final chunk
@@ -1693,6 +1697,15 @@ export function App() {
     // Large sessions send messages as a series of chunks after the metadata-only
     // session_active event. Each chunk appends to the current messages array.
     if (type === "session_messages_chunk") {
+      // Ignore chunks that arrive before the matching session_active header.
+      // This can happen when a viewer joins mid-stream: the room broadcast
+      // delivers in-flight chunks before the viewer's initial snapshot replay.
+      // Without this guard, chunks are appended to stale/empty state and then
+      // the later metadata-only session_active clears them with setMessages([]).
+      if (awaitingSnapshotRef.current && !chunkedDeliveryRef.current) {
+        return;
+      }
+
       const chunkSnapshotId = typeof (evt as any).snapshotId === "string" ? (evt as any).snapshotId : "";
       const chunkMessages = Array.isArray(evt.messages) ? evt.messages as unknown[] : [];
       const isFinal = !!(evt as any).final;
