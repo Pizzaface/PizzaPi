@@ -432,9 +432,12 @@ export function emitToRelaySession(sessionId: string, eventName: string, data: u
         return true;
     } catch (err) {
         // Redis adapter publishes before local fan-out, so EPIPE drops the
-        // event for local sockets too. Fall back to local-only delivery so
-        // callers on this server (e.g. MCP OAuth callbacks) still work.
+        // event for local sockets too. Fall back to local-only delivery, but
+        // only if the session's TUI socket is actually on this server —
+        // otherwise the local room is empty and returning true would mislead
+        // callers (e.g. MCP OAuth would consume the nonce for a dropped callback).
         console.warn("[sio-registry] emitToRelaySession failed, falling back to local:", (err as Error)?.message);
+        if (!localTuiSockets.has(sessionId)) return false;
         try {
             io.of("/relay")
                 .local
@@ -619,10 +622,19 @@ export async function publishSessionEvent(sessionId: string, event: unknown): Pr
             .emit("event", { event: strippedEvent, seq });
     } catch (err) {
         // Redis adapter throws EPIPE when the Redis connection drops mid-broadcast.
-        // The event was awaited into the Redis cache above; viewers will catch up
-        // via replay on reconnect. If the cache write also failed (same blip),
-        // this event is lost — but that's better than crashing the server.
-        console.warn("[sio-registry] publishSessionEvent broadcast failed (Redis EPIPE?):", (err as Error)?.message);
+        // Fall back to local-only delivery so viewers on this server still receive
+        // the event and its seq — without seeing the new seq they'd never trigger
+        // a resync and would permanently miss this event even though it was cached.
+        console.warn("[sio-registry] publishSessionEvent broadcast failed, falling back to local:", (err as Error)?.message);
+        try {
+            io.of("/viewer")
+                .local
+                .to(viewerSessionRoom(sessionId))
+                .emit("event", { event: strippedEvent, seq });
+        } catch {
+            // Local delivery also failed — event may be lost for connected viewers,
+            // but it's in the cache (if Redis accepted it) for future replay.
+        }
     }
 
     return seq;
