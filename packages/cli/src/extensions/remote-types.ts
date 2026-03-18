@@ -222,6 +222,8 @@ export interface RelayContext {
 
     // State builders
     buildSessionState(): any;
+    /** Emit session_active with automatic chunking for large sessions. */
+    emitSessionActive(): void;
     buildHeartbeat(): any;
     buildCapabilitiesState(): any;
     getConfiguredModels(): RelayModelInfo[];

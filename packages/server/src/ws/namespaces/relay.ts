@@ -22,10 +22,13 @@ import {
     updateSessionHeartbeat,
     touchSessionActivity,
     publishSessionEvent,
+    broadcastSessionEventToViewers,
     endSharedSession,
     getViewerCount,
     broadcastToViewers,
 } from "../sio-registry.js";
+import { appendRelayEventToCache } from "../../sessions/redis.js";
+import { storeAndReplaceImagesInEvent } from "../strip-images.js";
 import {
     setPushPendingQuestion,
     clearPushPendingQuestion,
@@ -80,6 +83,60 @@ function augmentMessageThinkingDurations(
 // Stored outside socket.data because RelaySocketData doesn't include it.
 
 const socketAckedSeqs = new Map<string, number>();
+
+// ── Chunked session_active assembly ──────────────────────────────────────────
+// When a worker sends session_active with chunked:true, messages follow as
+// session_messages_chunk events.  We buffer them here and assemble the full
+// lastState after the final chunk so reconnecting viewers get complete data.
+
+interface ChunkedSessionState {
+    snapshotId: string;
+    metadata: Record<string, unknown>; // everything except messages
+    chunks: unknown[][]; // ordered message slices
+    totalChunks: number;
+    receivedChunks: number;
+}
+
+const pendingChunkedStates = new Map<string, ChunkedSessionState>();
+
+// ── Per-session event serialization ──────────────────────────────────────────
+// The async event handler must process events in arrival order per session.
+// Without serialization, concurrent async handlers (e.g. chunk 0 hitting a
+// Redis round-trip while chunk 1 skips it) can publish chunks out of order,
+// scrambling the viewer's message assembly.
+const sessionEventQueues = new Map<string, Promise<void>>();
+
+function enqueueSessionEvent(sessionId: string, fn: () => Promise<void>): void {
+    const prev = sessionEventQueues.get(sessionId) ?? Promise.resolve();
+    const next = prev.then(fn, fn); // always chain, even on prior rejection
+    sessionEventQueues.set(sessionId, next);
+    // Clean up the map entry when the chain settles to avoid unbounded growth.
+    // Use .finally() so cleanup runs even if fn rejects (otherwise the map
+    // entry leaks indefinitely on error, causing unbounded memory growth).
+    next.finally(() => {
+        if (sessionEventQueues.get(sessionId) === next) {
+            sessionEventQueues.delete(sessionId);
+        }
+    });
+}
+
+/**
+ * Get the partially assembled snapshot for a session that's mid-chunked-delivery.
+ * Returns metadata + chunks received so far, or null if no chunked delivery is active.
+ */
+export function getPendingChunkedSnapshot(sessionId: string): { metadata: Record<string, unknown>; messages: unknown[]; snapshotId: string; totalMessages: number; receivedChunks: number; totalChunks: number } | null {
+    const pending = pendingChunkedStates.get(sessionId);
+    if (!pending) return null;
+    const messages = pending.chunks.flat();
+    return {
+        metadata: pending.metadata,
+        messages,
+        snapshotId: pending.snapshotId,
+        totalMessages: (pending.metadata as any).totalMessages ?? messages.length,
+        receivedChunks: pending.receivedChunks,
+        totalChunks: pending.totalChunks,
+    };
+}
 
 type RelaySocket = Socket<
     RelayClientToServerEvents,
@@ -276,7 +333,7 @@ export function registerRelayNamespace(io: SocketIOServer): void {
         });
 
         // ── event — main event pipeline ──────────────────────────────────────
-        socket.on("event", async (data) => {
+        socket.on("event", (data) => {
             const sessionId = socket.data.sessionId;
             if (!sessionId || data.token !== socket.data.token) {
                 socket.emit("error", { message: "Invalid token" });
@@ -291,9 +348,86 @@ export function registerRelayNamespace(io: SocketIOServer): void {
             const event = data.event as Record<string, unknown> | undefined;
             if (!event) return;
 
+            // Serialize async processing per session to guarantee chunk order.
+            enqueueSessionEvent(sessionId, async () => {
+
             // Cache session_active state so new viewers get an immediate snapshot
             if (event.type === "session_active") {
-                await updateSessionState(sessionId, event.state);
+                const state = event.state as Record<string, unknown> | undefined;
+                if (state?.chunked) {
+                    // Chunked session: store metadata and start accumulating chunks.
+                    // Don't persist incomplete state to lastState — viewers would
+                    // get an empty messages array on reconnect.
+                    const snapshotId = typeof state.snapshotId === "string" ? state.snapshotId : "";
+                    const { messages: _msgs, chunked: _c, snapshotId: _sid, totalMessages: _tm, ...metadata } = state;
+                    pendingChunkedStates.set(sessionId, {
+                        snapshotId,
+                        metadata,
+                        chunks: [],
+                        totalChunks: 0,
+                        receivedChunks: 0,
+                    });
+                    // Touch activity but DON'T update lastState yet
+                    await touchSessionActivity(sessionId);
+                } else {
+                    // Non-chunked: persist immediately (original path)
+                    pendingChunkedStates.delete(sessionId);
+                    await updateSessionState(sessionId, event.state);
+                }
+            } else if (event.type === "session_messages_chunk") {
+                // Accumulate chunk into the pending state.  When the final
+                // chunk arrives, assemble the full state and persist to lastState.
+                const pending = pendingChunkedStates.get(sessionId);
+                const chunkSnapshotId = typeof event.snapshotId === "string" ? event.snapshotId : "";
+                const chunkIndex = typeof event.chunkIndex === "number" ? event.chunkIndex : -1;
+                const chunkMessages = Array.isArray(event.messages) ? event.messages as unknown[] : [];
+                const isFinal = !!event.final;
+                const totalChunks = typeof event.totalChunks === "number" ? event.totalChunks : 0;
+
+                if (pending && pending.snapshotId === chunkSnapshotId && chunkIndex >= 0) {
+                    pending.chunks[chunkIndex] = chunkMessages;
+                    pending.receivedChunks++;
+                    pending.totalChunks = totalChunks;
+
+                    if (isFinal && pending.receivedChunks >= pending.totalChunks) {
+                        // All chunks received — assemble and persist the full state
+                        const allMessages = pending.chunks.flat();
+                        const fullState = { ...pending.metadata, messages: allMessages };
+                        pendingChunkedStates.delete(sessionId);
+                        await updateSessionState(sessionId, fullState);
+
+                        // Append a full session_active to the Redis replay cache
+                        // so that findLatestSnapshotEvent() finds the assembled
+                        // state instead of the metadata-only SA from chunk start.
+                        // We do NOT use publishSessionEvent() here because that
+                        // would broadcast the full assembled state as a single
+                        // oversized frame to all viewers — the same transport
+                        // issue chunking was designed to avoid.  Viewers already
+                        // have the complete data from the chunk stream.
+                        // Strip inline images before caching to keep the cache
+                        // entry small and consistent with publishSessionEvent's
+                        // image-stripping pipeline.
+                        const session = await getSharedSession(sessionId);
+                        const userId = session?.userId ?? "unknown";
+                        const snapshotEvent = { type: "session_active" as const, state: fullState };
+                        let eventToCache: unknown = snapshotEvent;
+                        try {
+                            eventToCache = await storeAndReplaceImagesInEvent(
+                                snapshotEvent, sessionId, userId,
+                            );
+                        } catch {
+                            // Fall back to original if image stripping fails
+                        }
+                        await appendRelayEventToCache(sessionId, eventToCache, {
+                            isEphemeral: session?.isEphemeral,
+                        });
+                    } else {
+                        await touchSessionActivity(sessionId);
+                    }
+                } else {
+                    // Stale or unmatched chunk — just touch activity
+                    await touchSessionActivity(sessionId);
+                }
             } else if (event.type === "heartbeat") {
                 await updateSessionHeartbeat(sessionId, event);
             } else {
@@ -313,8 +447,23 @@ export function registerRelayNamespace(io: SocketIOServer): void {
                 clearThinkingMaps(sessionId);
             }
 
-            // Publish to viewers via Redis cache + Socket.IO rooms
-            await publishSessionEvent(sessionId, eventToPublish);
+            // For session_messages_chunk and chunked session_active, broadcast
+            // to viewers WITHOUT caching.  Chunks are transient and only needed
+            // during active hydration; the final assembled snapshot is cached
+            // separately when assembly completes.  The metadata-only chunked
+            // session_active must also skip the cache — if the stream is
+            // interrupted before the final chunk, the replay path would find
+            // this empty-messages snapshot and show a blank transcript instead
+            // of the last durable state.
+            const isChunkedSessionActive =
+                event.type === "session_active" &&
+                !!(event.state as Record<string, unknown> | undefined)?.chunked;
+            if (event.type === "session_messages_chunk" || isChunkedSessionActive) {
+                await broadcastSessionEventToViewers(sessionId, eventToPublish);
+            } else {
+                // Publish to viewers via Redis cache + Socket.IO rooms
+                await publishSessionEvent(sessionId, eventToPublish);
+            }
 
             // Track push-pending state for AskUserQuestion (awaited to ensure
             // set/clear ordering; only runs for AskUserQuestion start/end events).
@@ -324,6 +473,8 @@ export function registerRelayNamespace(io: SocketIOServer): void {
             }
             // Push notifications (fire-and-forget — not on hot path)
             void checkPushNotifications(sessionId, event);
+
+            }); // end enqueueSessionEvent
         });
 
         // ── session_end ──────────────────────────────────────────────────────
@@ -559,6 +710,7 @@ export function registerRelayNamespace(io: SocketIOServer): void {
                 }
 
                 clearThinkingMaps(sessionId);
+                pendingChunkedStates.delete(sessionId);
                 void clearPushPendingQuestion(sessionId);
                 // Clean up child-index entry so stale memberships don't persist
                 const session = await getSharedSession(sessionId);

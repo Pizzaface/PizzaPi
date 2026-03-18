@@ -146,22 +146,12 @@ function extractAssistantText(msg: RelayMessage): string {
   return text;
 }
 
-function normalizeMessages(rawMessages: unknown[]): RelayMessage[] {
-  const all = rawMessages
-    .map((m, i) => toRelayMessage(m, `snapshot-${i}`))
-    .filter((m): m is RelayMessage => m !== null);
-
-  // Drop no-timestamp assistant messages that are superseded by a later
-  // timestamped assistant message. Two messages are considered the same turn
-  // when they share at least one toolCallId, OR when the no-timestamp message
-  // is immediately followed by a timestamped one (the original heuristic).
-  //
-  // This prevents streaming partials saved alongside the final message from
-  // producing duplicate rows (e.g. thinking blocks appearing below tool cards).
-
+/** Deduplicate assistant messages within a list. Removes no-timestamp partials
+ * that are superseded by timestamped finals, even across chunk boundaries. */
+function deduplicateMessages(messages: RelayMessage[]): RelayMessage[] {
   // Build a set of toolCallIds referenced by any timestamped assistant message.
   const timestampedToolCallIds = new Set<string>();
-  for (const msg of all) {
+  for (const msg of messages) {
     if (msg.role === "assistant" && msg.timestamp !== undefined) {
       for (const id of getAssistantToolCallIds(msg)) {
         timestampedToolCallIds.add(id);
@@ -170,12 +160,12 @@ function normalizeMessages(rawMessages: unknown[]): RelayMessage[] {
   }
 
   const dropIndices = new Set<number>();
-  for (let i = 0; i < all.length; i++) {
-    const cur = all[i];
+  for (let i = 0; i < messages.length; i++) {
+    const cur = messages[i];
     if (cur.role !== "assistant" || cur.timestamp !== undefined) continue;
 
     // Original heuristic: immediately followed by a timestamped assistant message.
-    const next = all[i + 1];
+    const next = messages[i + 1];
     if (next?.role === "assistant" && next.timestamp !== undefined) {
       dropIndices.add(i);
       continue;
@@ -195,8 +185,8 @@ function normalizeMessages(rawMessages: unknown[]): RelayMessage[] {
     if (ids.length === 0) {
       const curText = extractAssistantText(cur);
       if (curText) {
-        for (let j = i + 1; j < all.length; j++) {
-          const candidate = all[j];
+        for (let j = i + 1; j < messages.length; j++) {
+          const candidate = messages[j];
           if (candidate.role !== "assistant" || candidate.timestamp === undefined) continue;
           const candidateText = extractAssistantText(candidate);
           if (candidateText && candidateText.startsWith(curText)) {
@@ -208,8 +198,16 @@ function normalizeMessages(rawMessages: unknown[]): RelayMessage[] {
     }
   }
 
-  if (dropIndices.size === 0) return all;
-  return all.filter((_, i) => !dropIndices.has(i));
+  if (dropIndices.size === 0) return messages;
+  return messages.filter((_, i) => !dropIndices.has(i));
+}
+
+function normalizeMessages(rawMessages: unknown[], keyOffset = 0): RelayMessage[] {
+  const all = rawMessages
+    .map((m, i) => toRelayMessage(m, `snapshot-${keyOffset + i}`))
+    .filter((m): m is RelayMessage => m !== null);
+
+  return deduplicateMessages(all);
 }
 
 interface ConfiguredModelInfo {
@@ -798,6 +796,23 @@ export function App() {
   // messages, otherwise the report gets appended then immediately replaced.
   const sessionHydratedRef = React.useRef(false);
 
+  // Chunked session delivery: when session_active arrives with chunked:true,
+  // messages follow as session_messages_chunk events. This ref tracks state.
+  // The snapshotId ties chunks to their originating session_active so stale
+  // chunks from a previous stream are discarded (e.g. if a new viewer
+  // connects mid-stream and triggers a fresh emitSessionActive).
+  const chunkedDeliveryRef = React.useRef<{
+    snapshotId: string;
+    totalMessages: number;
+    totalChunks: number;
+    receivedChunks: number;
+    loadedMessages: number; // cumulative count for fallback key offset
+  } | null>(null);
+
+  // Track the last completed snapshot ID so we can reject stale chunks that
+  // arrive after the ref has been cleared (e.g. from a superseded sender).
+  const lastCompletedSnapshotRef = React.useRef<string | null>(null);
+
   // Capabilities advertised by the runner (commands, models, etc.)
   const [availableCommands, setAvailableCommands] = React.useState<Array<{ name: string; description?: string; source?: string }>>([]);
 
@@ -1307,17 +1322,24 @@ export function App() {
     // Clear the snapshot guard when we receive a state-setting event.
     // These events replace the entire message list, so any pre-snapshot
     // deltas that snuck through are harmless (they'll be overwritten).
-    if (type === "session_active" || type === "agent_end" || type === "heartbeat") {
+    // NOTE: heartbeat must NOT clear this flag — the server sends heartbeat
+    // before addViewer() completes (viewer.ts:383-395), so clearing on HB
+    // would drop the guard before the viewer is in the room, allowing
+    // in-flight chunks or deltas to be accepted and then overwritten by
+    // the later snapshot header.
+    if (type === "session_active" || type === "agent_end") {
       awaitingSnapshotRef.current = false;
     }
 
-    // While awaiting the initial snapshot, skip streaming delta events.
-    // They'd render briefly and then be replaced when the snapshot arrives,
-    // causing visible "jumping".  This also covers tool execution events —
+    // While awaiting the initial snapshot OR during chunked hydration, skip
+    // streaming delta events.  They'd render briefly and then be replaced
+    // when the snapshot arrives, causing visible "jumping".  During chunked
+    // delivery, live events can interleave with historical chunks and produce
+    // an out-of-order transcript.  This also covers tool execution events —
     // without this guard, tool_execution_update partials can write synthetic
     // toolResult messages into state before the snapshot hydrates the real
     // conversation, producing orphan/duplicate tool output on reconnect.
-    if (awaitingSnapshotRef.current) {
+    if (awaitingSnapshotRef.current || chunkedDeliveryRef.current) {
       if (
         type === "message_update" || type === "message_start" || type === "message_end" || type === "turn_end" ||
         type === "tool_execution_start" || type === "tool_execution_update" || type === "tool_execution_end"
@@ -1583,6 +1605,7 @@ export function App() {
     if (type === "session_active") {
       const state = evt.state as Record<string, unknown> | undefined;
       const rawMessages = Array.isArray(state?.messages) ? (state?.messages as unknown[]) : [];
+      const isChunked = !!(state as any)?.chunked;
       const stateModel = normalizeModel(state?.model);
       const stateModels = Array.isArray(state?.availableModels)
         ? normalizeModelList(state.availableModels as unknown[])
@@ -1601,12 +1624,34 @@ export function App() {
       }
       setAvailableModels(stateModels);
 
+      // Track chunked delivery state — messages arrive as subsequent
+      // session_messages_chunk events when the session is large.
+      if (isChunked) {
+        const totalMessages = typeof (state as any)?.totalMessages === "number" ? (state as any).totalMessages : 0;
+        const snapshotId = typeof (state as any)?.snapshotId === "string" ? (state as any).snapshotId : "";
+        chunkedDeliveryRef.current = {
+          snapshotId,
+          totalMessages,
+          totalChunks: 0, // updated as chunks arrive
+          receivedChunks: 0,
+          loadedMessages: 0,
+        };
+        setViewerStatus(`Loading session (0 of ${totalMessages} messages)…`);
+      } else {
+        chunkedDeliveryRef.current = null;
+        // Mark that we have a complete non-chunked snapshot so any stale
+        // chunks from a superseded chunked sender are rejected.
+        lastCompletedSnapshotRef.current = "non-chunked";
+      }
+
       // Don't clobber transient statuses with a generic "Connected" when the
       // CLI sends a session_active snapshot right after a command.
-      setViewerStatus((prev) => {
-        if (prev === "Model set" || prev === "Compacting…" || prev.startsWith("Compacted")) return prev;
-        return "Connected";
-      });
+      if (!isChunked) {
+        setViewerStatus((prev) => {
+          if (prev === "Model set" || prev === "Compacting…" || prev.startsWith("Compacted")) return prev;
+          return "Connected";
+        });
+      }
 
       // Don't unconditionally clear pendingQuestion / pendingPlan here.
       // session_active is also emitted for non-session-switch actions (model
@@ -1620,9 +1665,15 @@ export function App() {
       // keeps streaming indicators and Kill buttons visible. The snapshot payload
       // doesn't include explicit active-tool IDs, so we infer them by scanning
       // for toolCall blocks that have no matching toolResult.
-      setActiveToolCalls(detectInFlightTools(normalizedMessages));
+      if (!isChunked) {
+        setActiveToolCalls(detectInFlightTools(normalizedMessages));
+      } else {
+        // Clear stale tool call state from before the reconnect so old
+        // streaming badges and Kill buttons don't linger while chunks load.
+        setActiveToolCalls(new Map());
+      }
       setIsChangingModel(false);
-      sessionHydratedRef.current = true;
+      sessionHydratedRef.current = !isChunked; // defer until final chunk
 
       // Clear queued messages — the snapshot contains the full conversation
       // including any follow-ups that were consumed by the agent.
@@ -1644,6 +1695,78 @@ export function App() {
         effortLevel: thinkingLevel,
         todoList: stateTodos,
       });
+      return;
+    }
+
+    // ── Chunked message delivery ───────────────────────────────────────────
+    // Large sessions send messages as a series of chunks after the metadata-only
+    // session_active event. Each chunk appends to the current messages array.
+    if (type === "session_messages_chunk") {
+      // Ignore chunks that arrive before the matching session_active header.
+      // This can happen when a viewer joins mid-stream: the room broadcast
+      // delivers in-flight chunks before the viewer's initial snapshot replay.
+      // Without this guard, chunks are appended to stale/empty state and then
+      // the later metadata-only session_active clears them with setMessages([]).
+      if (awaitingSnapshotRef.current && !chunkedDeliveryRef.current) {
+        return;
+      }
+
+      const chunkSnapshotId = typeof (evt as any).snapshotId === "string" ? (evt as any).snapshotId : "";
+      const chunkMessages = Array.isArray(evt.messages) ? evt.messages as unknown[] : [];
+      const isFinal = !!(evt as any).final;
+      const totalChunks = typeof (evt as any).totalChunks === "number" ? (evt as any).totalChunks : 0;
+      const totalMessages = typeof (evt as any).totalMessages === "number" ? (evt as any).totalMessages : 0;
+
+      // Discard chunks from a stale snapshot stream.  Two cases:
+      // 1) A newer snapshot is actively loading (ref is non-null, IDs differ).
+      // 2) A snapshot already completed (ref is null) but late chunks from
+      //    the superseded sender are still draining — reject if the ID
+      //    doesn't match the last completed snapshot.
+      if (chunkSnapshotId) {
+        if (chunkedDeliveryRef.current && chunkedDeliveryRef.current.snapshotId !== chunkSnapshotId) {
+          return; // stale chunk — a newer snapshot is loading
+        }
+        if (!chunkedDeliveryRef.current && lastCompletedSnapshotRef.current && lastCompletedSnapshotRef.current !== chunkSnapshotId) {
+          return; // stale chunk — arrived after a newer snapshot completed
+        }
+      }
+
+      const keyOffset = chunkedDeliveryRef.current?.loadedMessages ?? 0;
+      // Convert messages but skip dedupe—we'll dedupe the full list when assembly completes.
+      // This prevents cross-chunk duplicates where a partial message in one chunk and
+      // its final timestamped version in another chunk would both survive per-chunk dedupe.
+      const convertedChunk = chunkMessages
+        .map((m, i) => toRelayMessage(m, `snapshot-${keyOffset + i}`))
+        .filter((m): m is RelayMessage => m !== null);
+
+      setMessages((prev) => [...prev, ...convertedChunk]);
+
+      // Update chunked delivery tracking
+      if (chunkedDeliveryRef.current) {
+        chunkedDeliveryRef.current.receivedChunks++;
+        chunkedDeliveryRef.current.loadedMessages += chunkMessages.length;
+        chunkedDeliveryRef.current.totalChunks = totalChunks;
+        const loaded = chunkedDeliveryRef.current.loadedMessages;
+        setViewerStatus(`Loading session (${Math.min(loaded, totalMessages)} of ${totalMessages} messages)…`);
+      }
+
+      if (isFinal) {
+        lastCompletedSnapshotRef.current = chunkSnapshotId || null;
+        chunkedDeliveryRef.current = null;
+        sessionHydratedRef.current = true;
+        setViewerStatus("Connected");
+
+        // Now that all messages are assembled, run global dedupe to remove
+        // cross-chunk duplicates (e.g., partial messages from one chunk and
+        // their final timestamped versions from another). This prevents
+        // duplicate assistant/tool content from appearing in large-session reloads.
+        setMessages((current) => {
+          const deduped = deduplicateMessages(current);
+          setActiveToolCalls(detectInFlightTools(deduped));
+          patchSessionCache({ messages: deduped });
+          return deduped;
+        });
+      }
       return;
     }
 
@@ -2333,6 +2456,8 @@ export function App() {
     awaitingSnapshotRef.current = true;
     renderedMcpReportTsRef.current = null;
     sessionHydratedRef.current = false;
+    chunkedDeliveryRef.current = null;
+    lastCompletedSnapshotRef.current = null;
     setActiveSessionId(relaySessionId);
     setViewerStatus("Connecting…");
     setRetryState(null);
@@ -2418,6 +2543,11 @@ export function App() {
       lastViewerEventAtRef.current = Date.now();
 
       // Detect sequence gaps; request a resync if we missed events.
+      // This is safe during chunked delivery because the server's resync
+      // handler now falls back to getPendingChunkedSnapshot() when lastState
+      // hasn't been assembled yet, and the resync response is a non-chunked
+      // session_active that sets lastCompletedSnapshotRef, rejecting any
+      // subsequently arriving stale chunks.
       const seq = typeof data.seq === "number" ? data.seq : null;
       if (seq !== null && lastSeqRef.current !== null) {
         const expected = lastSeqRef.current + 1;

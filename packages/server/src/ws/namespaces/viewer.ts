@@ -23,6 +23,7 @@ import {
     getLocalTuiSocket,
     emitToRelaySession,
 } from "../sio-registry.js";
+import { getPendingChunkedSnapshot } from "./relay.js";
 import { getPersistedRelaySessionSnapshot } from "../../sessions/store.js";
 import { getCachedRelayEvents } from "../../sessions/redis.js";
 
@@ -213,16 +214,27 @@ export function registerViewerNamespace(io: SocketIOServer): void {
         // once — the concurrent async work widens the race window).
 
         // ── connected — viewer greeting, notify TUI ─────────────────────────
+        // Use emitToRelaySession for cluster-wide reach — the runner may
+        // be on a different server node in multi-node deployments.
         socket.on("connected", () => {
-            const tuiSocket = getLocalTuiSocket(sessionId);
-            if (tuiSocket) {
-                tuiSocket.emit("connected" as string, {});
-            }
+            emitToRelaySession(sessionId, "connected" as string, {});
         });
 
         // ── resync — send fresh snapshot ─────────────────────────────────────
         socket.on("resync", async () => {
             await sendSnapshotToViewer(sessionId, socket);
+
+            // If no lastState was available (e.g. mid-chunked-delivery),
+            // ask the runner to re-emit a fresh snapshot rather than sending
+            // a partial non-chunked SA (which would set lastCompletedSnapshotRef
+            // and cause the UI to reject all subsequent chunks from the
+            // still-active stream).
+            // Use emitToRelaySession for cluster-wide reach — the runner may
+            // be on a different server node in multi-node deployments.
+            const session = await getSharedSession(sessionId);
+            if (!session?.lastState) {
+                emitToRelaySession(sessionId, "connected" as string, {});
+            }
         });
 
         // ── input — collab mode: forward user input to TUI ──────────────────
@@ -373,17 +385,12 @@ export function registerViewerNamespace(io: SocketIOServer): void {
                 socket.emit("event", { event: JSON.parse(session.lastHeartbeat), seq: lastSeq });
             } catch {}
         }
-        if (session.lastState) {
-            try {
-                socket.emit("event", { event: { type: "session_active", state: JSON.parse(session.lastState) }, seq: lastSeq });
-            } catch {}
-        } else {
-            // No in-memory state — fall back to event cache
-            await sendLatestSnapshotFromCache(socket, sessionId);
-        }
-
-        // NOW join the room for live events — any missed events between
-        // snapshot read and this point will be caught by gap detection.
+        // Join the room BEFORE sending snapshots or notifying the runner,
+        // so the viewer is already receiving live events when the runner
+        // responds to the "connected" notification with a fresh snapshot.
+        // Without this, a fast runner response can publish session_active
+        // and early chunks before addViewer() completes, causing the
+        // viewer to miss the restart snapshot.
         const ok = await addViewer(sessionId, socket);
         if (!ok) {
             socket.emit("disconnected", { reason: "Session ended" });
@@ -391,6 +398,37 @@ export function registerViewerNamespace(io: SocketIOServer): void {
             // the session may have just cycled and will come back shortly.
             socket.disconnect();
             return;
+        }
+
+        // Re-fetch session state and seq AFTER addViewer() to avoid emitting
+        // stale data. Between the initial fetch and here, the runner may have
+        // published a newer session_active (especially for chunked delivery).
+        // Using the old lastState + old lastSeq would overwrite the fresh
+        // snapshot and rewind lastSeqRef on the client, triggering a bogus
+        // resync on actively changing sessions.
+        const freshSession = await getSharedSession(sessionId);
+        const freshSeq = await getSessionSeq(sessionId);
+
+        // If a chunked delivery is in-flight, lastState is stale (chunked
+        // session_active intentionally skips updating it).  Emitting the old
+        // non-chunked snapshot here would overwrite the chunked header the
+        // viewer already received via the room broadcast, clear chunk-tracking
+        // in App.tsx, and cause remaining chunks to be dropped.  Skip it and
+        // let the runner's fresh chunked delivery (triggered by the "connected"
+        // notification below) hydrate the viewer instead.
+        const chunkedPending = getPendingChunkedSnapshot(sessionId);
+        if (freshSession?.lastState && !chunkedPending) {
+            try {
+                socket.emit("event", { event: { type: "session_active", state: JSON.parse(freshSession.lastState) }, seq: freshSeq });
+            } catch {}
+        } else if (!chunkedPending) {
+            // No in-memory state — fall back to event cache.
+            // Don't send partial chunked snapshots here — they'd arrive as
+            // non-chunked SA events, set lastCompletedSnapshotRef, and cause
+            // the UI to reject subsequent chunks from the active stream.
+            // The runner re-emits a fresh snapshot on the "connected" event
+            // below, which will properly restart chunked delivery.
+            await sendLatestSnapshotFromCache(socket, sessionId);
         }
     });
 }

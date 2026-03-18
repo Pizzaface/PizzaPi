@@ -175,7 +175,7 @@ export async function handleExecFromWeb(
             }
             api.setThinkingLevel(level);
             replyOk({ thinkingLevel: api.getThinkingLevel() });
-            rctx.forwardEvent({ type: "session_active", state: rctx.buildSessionState() });
+            rctx.emitSessionActive();
             return;
         }
 
@@ -203,7 +203,7 @@ export async function handleExecFromWeb(
             }
 
             replyOk({ thinkingLevel: appliedLevel });
-            rctx.forwardEvent({ type: "session_active", state: rctx.buildSessionState() });
+            rctx.emitSessionActive();
             return;
         }
 
@@ -269,7 +269,7 @@ export async function handleExecFromWeb(
                 rctx.lastRetryableError = null;
                 rctx.isCompacting = false;
                 replyOk(result ?? null);
-                rctx.forwardEvent({ type: "session_active", state: rctx.buildSessionState() });
+                rctx.emitSessionActive();
                 rctx.forwardEvent(rctx.buildHeartbeat());
             } catch (err) {
                 rctx.isCompacting = false;
@@ -287,9 +287,8 @@ export async function handleExecFromWeb(
             await rctx.pi.setSessionName(req.name);
 
             callbacks.markSessionNameBroadcasted();
-            const state = rctx.buildSessionState();
-            replyOk({ sessionName: state?.sessionName ?? null });
-            rctx.forwardEvent({ type: "session_active", state });
+            replyOk({ sessionName: rctx.getCurrentSessionName() ?? null });
+            rctx.emitSessionActive();
             rctx.forwardEvent(rctx.buildHeartbeat());
             return;
         }
@@ -363,7 +362,7 @@ export async function handleExecFromWeb(
                 return;
             }
             replyOk({ session: toResumeSessionSummary(target) });
-            rctx.forwardEvent({ type: "session_active", state: rctx.buildSessionState() });
+            rctx.emitSessionActive();
             rctx.forwardEvent(rctx.buildHeartbeat());
             return;
         }
@@ -384,7 +383,7 @@ export async function handleExecFromWeb(
                 return;
             }
             replyOk();
-            rctx.forwardEvent({ type: "session_active", state: rctx.buildSessionState() });
+            rctx.emitSessionActive();
             return;
         }
 
