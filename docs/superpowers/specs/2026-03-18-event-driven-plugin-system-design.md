@@ -135,7 +135,10 @@ interface TriggerAction {
   prompt?: string;              // supports {event.*} interpolation
   cwd?: string;
   agent?: string;               // agent definition name
-  sessionId?: string;           // for "inject" — target session
+  sessionId?: string;           // REQUIRED for "inject" — target session ID or name
+  // When type is "inject", sessionId must be provided.
+  // If the target session is not found (disconnected/dead), the event
+  // falls through to the next matching trigger or dead letter log.
 }
 ```
 
@@ -153,6 +156,8 @@ interface TriggerAction {
 | | Runner → Plugin | POST requests (`POST /control`) |
 
 Both transports use identical JSON-RPC 2.0 messages.
+
+**HTTP transport topology:** The **plugin hosts** the HTTP server. The runner is the client — it connects to the plugin's SSE endpoint (`GET {url}/events`) and sends control messages via `POST {url}/control`. This mirrors MCP's streamable-http where the server (plugin) hosts and the client (runner) connects. The `url` in config points to the plugin's base URL.
 
 ### Handshake
 
@@ -212,6 +217,8 @@ Both transports use identical JSON-RPC 2.0 messages.
   }
 }
 ```
+
+> **Note on `context`:** The `context` field is `Record<string, unknown>` — plugins define whatever keys make sense for their domain. The matching system uses dot-path resolution, so `"context.repo": "Pizzaface/PizzaPi"` works regardless of what keys a plugin uses.
 
 ### Control Messages (Runner → Plugin)
 
@@ -279,13 +286,7 @@ interface PluginEvent {
   id: string;
   timestamp: string;
   payload: Record<string, unknown>;
-  context?: {
-    repo?: string;
-    pr?: number;
-    issue?: number;
-    channel?: string;
-    path?: string;
-  };
+  context?: Record<string, unknown>;  // plugin-defined routing hints (e.g. { repo, pr, channel })
 }
 
 interface PluginError {
@@ -383,13 +384,13 @@ Flat dot-path equality against event fields:
 
 All keys in `match` must be present and equal in the event. Missing keys in the event = no match. No regex or glob in v1.
 
+**Match value types:** Only primitives — `string | number | boolean`. Arrays and nested objects in `match` are not supported. The dot-path resolves into the event structure (e.g., `"context.repo"` looks up `event.context.repo`), and the resolved value must strictly equal the match value.
+
 ### Routing Priority
 
-1. **Session triggers** — most recently registered wins if multiple match
-2. **Runner triggers** — first matching rule wins (config order)
-3. **Dead letter log** — no match, event logged for debugging
-
-If both a session trigger and a runner trigger match, session trigger wins (the session explicitly asked for this event).
+1. **Session triggers** — if multiple session triggers match, **all matching sessions receive the event** (fan-out). This is intentional: two sessions watching the same PR both get notified.
+2. **Runner triggers** — first matching rule wins (config order). Runner triggers fire **only if no session trigger matched** — session triggers take priority.
+3. **Dead letter log** — no match from either tier, event logged for debugging.
 
 ### Actions
 
@@ -468,14 +469,20 @@ Events are injected as conversation input using the same mechanism as `tell_chil
 <!-- event:github-pr:comment_created -->
 📩 Event from github-pr: comment_created
 
-**Repo:** Pizzaface/PizzaPi
-**PR:** #42
-**Author:** reviewer
-**Body:**
-Can you fix the null check on line 87?
+**context:**
+```json
+{"repo":"Pizzaface/PizzaPi","pr":42}
 ```
 
-The agent processes it like any other user message.
+**payload:**
+```json
+{"author":"reviewer","body":"Can you fix the null check on line 87?"}
+```
+```
+
+The delivery format is generic — `context` and `payload` are serialized as JSON blocks from the `PluginEvent`. No per-plugin rendering in v1. The agent processes it like any other user message and extracts what it needs.
+
+If a runner trigger has a `prompt` template with `{event.*}` interpolation, the rendered prompt replaces the generic format above. This allows trigger authors to produce human-readable messages for specific use cases.
 
 ### CLI Mode (Local Sessions)
 
@@ -495,7 +502,12 @@ Mirror MCP server management:
 
 ```bash
 pizza plugin list                    # List event sources and status
-pizza plugin add <name> [opts]       # Add a new event source
+
+# Add a new event source (stdio)
+pizza plugin add <name> --transport stdio --command <cmd> [--args "arg1,arg2"] [--env "KEY=val"]
+# Add a new event source (http)
+pizza plugin add <name> --transport http --url <url> [--header "Key: Value"]
+
 pizza plugin remove <name>           # Remove an event source
 pizza plugin enable <name>           # Enable (set disabled: false)
 pizza plugin disable <name>          # Disable (set disabled: true)
@@ -609,3 +621,5 @@ Runner shutdown:
 - Cross-runner event routing
 - Plugin marketplace / registry
 - Web UI extension rendering for events (integrate with WqK3N8Ft later)
+- **`backfill` capability**: declared in the handshake for forward-compatibility, but no control message or behavior is defined in v1. Plugins that support backfill should advertise it; the runner will use it in a future version to request missed events after reconnect.
+- **`subscribe`/`unsubscribe` semantics**: the control messages are defined in the protocol, but v1 does not send them automatically. They exist for plugins that want to support scope narrowing. Future versions may send `subscribe` when the first trigger for a source is registered.

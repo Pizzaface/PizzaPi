@@ -96,6 +96,25 @@ interface ChunkedSessionState {
 
 const pendingChunkedStates = new Map<string, ChunkedSessionState>();
 
+// ── Per-session event serialization ──────────────────────────────────────────
+// The async event handler must process events in arrival order per session.
+// Without serialization, concurrent async handlers (e.g. chunk 0 hitting a
+// Redis round-trip while chunk 1 skips it) can publish chunks out of order,
+// scrambling the viewer's message assembly.
+const sessionEventQueues = new Map<string, Promise<void>>();
+
+function enqueueSessionEvent(sessionId: string, fn: () => Promise<void>): void {
+    const prev = sessionEventQueues.get(sessionId) ?? Promise.resolve();
+    const next = prev.then(fn, fn); // always chain, even on prior rejection
+    sessionEventQueues.set(sessionId, next);
+    // Clean up the map entry when the chain settles to avoid unbounded growth
+    next.then(() => {
+        if (sessionEventQueues.get(sessionId) === next) {
+            sessionEventQueues.delete(sessionId);
+        }
+    });
+}
+
 /**
  * Get the partially assembled snapshot for a session that's mid-chunked-delivery.
  * Returns metadata + chunks received so far, or null if no chunked delivery is active.
@@ -309,7 +328,7 @@ export function registerRelayNamespace(io: SocketIOServer): void {
         });
 
         // ── event — main event pipeline ──────────────────────────────────────
-        socket.on("event", async (data) => {
+        socket.on("event", (data) => {
             const sessionId = socket.data.sessionId;
             if (!sessionId || data.token !== socket.data.token) {
                 socket.emit("error", { message: "Invalid token" });
@@ -323,6 +342,9 @@ export function registerRelayNamespace(io: SocketIOServer): void {
 
             const event = data.event as Record<string, unknown> | undefined;
             if (!event) return;
+
+            // Serialize async processing per session to guarantee chunk order.
+            enqueueSessionEvent(sessionId, async () => {
 
             // Cache session_active state so new viewers get an immediate snapshot
             if (event.type === "session_active") {
@@ -405,6 +427,8 @@ export function registerRelayNamespace(io: SocketIOServer): void {
             }
             // Push notifications (fire-and-forget — not on hot path)
             void checkPushNotifications(sessionId, event);
+
+            }); // end enqueueSessionEvent
         });
 
         // ── session_end ──────────────────────────────────────────────────────
