@@ -18,9 +18,56 @@ import {
 import { join, dirname, relative, basename, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { io, type Socket } from "socket.io-client";
-import type { RunnerClientToServerEvents, RunnerServerToClientEvents } from "@pizzapi/protocol";
-import { loadGlobalConfig } from "../config.js";
+import type { RunnerClientToServerEvents, RunnerServerToClientEvents, RunnerHook } from "@pizzapi/protocol";
+import { loadGlobalConfig, type HooksConfig } from "../config.js";
 import { cleanupSessionAttachments, sweepOrphanedAttachments } from "../extensions/session-attachments.js";
+
+/**
+ * Summarise the active hooks from a HooksConfig for display in the web UI.
+ * Returns one entry per hook type that has at least one configured command.
+ * Scripts are represented by the basename of the first token in the command string.
+ */
+export function extractHookSummary(hooks?: HooksConfig): RunnerHook[] {
+    if (!hooks) return [];
+    const result: RunnerHook[] = [];
+
+    // Matcher-based hooks (PreToolUse / PostToolUse)
+    for (const type of ["PreToolUse", "PostToolUse"] as const) {
+        const matchers = hooks[type] ?? [];
+        const scripts: string[] = [];
+        for (const m of matchers) {
+            for (const h of m.hooks) {
+                const cmd = h.command.trim().split(/\s+/)[0];
+                if (cmd) scripts.push(basename(cmd));
+            }
+        }
+        if (scripts.length > 0) result.push({ type, scripts });
+    }
+
+    // Entry-based hooks
+    const entryTypes = [
+        "Input",
+        "BeforeAgentStart",
+        "UserBash",
+        "SessionBeforeSwitch",
+        "SessionBeforeFork",
+        "SessionShutdown",
+        "SessionBeforeCompact",
+        "SessionBeforeTree",
+        "ModelSelect",
+    ] as const;
+    for (const type of entryTypes) {
+        const entries = (hooks[type] as { command: string }[] | undefined) ?? [];
+        const scripts: string[] = [];
+        for (const h of entries) {
+            const cmd = h.command.trim().split(/\s+/)[0];
+            if (cmd) scripts.push(basename(cmd));
+        }
+        if (scripts.length > 0) result.push({ type, scripts });
+    }
+
+    return result;
+}
 
 interface RunnerSession {
     sessionId: string;
@@ -564,6 +611,8 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             // skips project-scoped marketplace plugins and readEnabledPlugins
             // only reads user-level settings (not project-local overrides).
             const plugins = scanAllPluginInfo(undefined, { includeProjectLocal: false });
+            const globalConfig = loadGlobalConfig();
+            const hooks = extractHookSummary(globalConfig.hooks);
             socket.emit("register_runner", {
                 runnerId: identity.runnerId,
                 runnerSecret: identity.runnerSecret,
@@ -572,6 +621,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 skills,
                 agents,
                 plugins,
+                hooks,
                 version: cliVersion,
             });
         };

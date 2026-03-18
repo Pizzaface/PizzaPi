@@ -30,6 +30,14 @@ export interface ModelInfo {
   name?: string;
 }
 
+/** A summary of a single hook type active on the runner */
+export interface RunnerHook {
+  /** Hook lifecycle type (e.g. "PreToolUse", "PostToolUse", "Input") */
+  type: string;
+  /** Script basenames configured for this hook type */
+  scripts: string[];
+}
+
 /** Runner daemon metadata */
 export interface RunnerInfo {
   runnerId: string;
@@ -39,6 +47,7 @@ export interface RunnerInfo {
   skills: RunnerSkill[];
   agents: RunnerAgent[];
   plugins?: RunnerPlugin[];
+  hooks?: RunnerHook[];
   version: string | null;
 }
 

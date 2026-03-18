@@ -61,7 +61,7 @@ import {
 } from "../sessions/store.js";
 import { appendRelayEventToCache } from "../sessions/redis.js";
 import { storeAndReplaceImages, storeAndReplaceImagesInEvent } from "./strip-images.js";
-import type { ModelInfo, RunnerSkill, RunnerAgent, SessionInfo, RunnerInfo } from "@pizzapi/protocol";
+import type { ModelInfo, RunnerSkill, RunnerAgent, SessionInfo, RunnerInfo, RunnerHook } from "@pizzapi/protocol";
 
 // ── Socket.IO server reference ──────────────────────────────────────────────
 
@@ -987,6 +987,7 @@ export interface RegisterRunnerOpts {
     skills?: RunnerSkill[];
     agents?: RunnerAgent[];
     plugins?: unknown[];
+    hooks?: RunnerHook[];
     userId?: string | null;
     userName?: string | null;
     version?: string | null;
@@ -1039,6 +1040,16 @@ export async function registerRunner(
             .filter((p): p is Record<string, unknown> => p !== null)
         : [];
 
+    const hooks = Array.isArray(opts.hooks)
+        ? opts.hooks.filter(
+              (h): h is RunnerHook =>
+                  h !== null &&
+                  typeof h === "object" &&
+                  typeof (h as RunnerHook).type === "string" &&
+                  Array.isArray((h as RunnerHook).scripts),
+          )
+        : [];
+
     const runnerData: RedisRunnerData = {
         runnerId,
         userId: opts.userId ?? null,
@@ -1048,6 +1059,7 @@ export async function registerRunner(
         skills: JSON.stringify(skills),
         agents: JSON.stringify(agents),
         plugins: JSON.stringify(plugins),
+        hooks: JSON.stringify(hooks),
         version: typeof opts.version === "string" ? opts.version : null,
     };
 
@@ -1218,6 +1230,7 @@ export async function getRunners(filterUserId?: string): Promise<RunnerInfo[]> {
             skills: safeJsonParse(r.skills) ?? [],
             agents: safeJsonParse(r.agents ?? "[]") ?? [],
             plugins: safeJsonParse(r.plugins ?? "[]") ?? [],
+            hooks: safeJsonParse(r.hooks ?? "[]") ?? [],
             version: r.version ?? null,
         });
     }

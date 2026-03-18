@@ -17,13 +17,19 @@ import {
     Terminal,
     ChevronRight,
     Server,
+    Webhook,
 } from "lucide-react";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-export type RunnerTab = "sessions" | "skills" | "agents" | "plugins" | "sandbox";
+export type RunnerTab = "sessions" | "skills" | "agents" | "plugins" | "sandbox" | "hooks";
+
+interface RunnerHook {
+    type: string;
+    scripts: string[];
+}
 
 interface RunnerInfo {
     runnerId: string;
@@ -33,6 +39,7 @@ interface RunnerInfo {
     skills: SkillInfo[];
     agents: AgentInfo[];
     plugins: PluginInfo[];
+    hooks?: RunnerHook[];
     version: string | null;
 }
 
@@ -172,14 +179,72 @@ function SessionsList({
 }
 
 // ---------------------------------------------------------------------------
+// HooksList
+// ---------------------------------------------------------------------------
+
+function HooksList({ hooks }: { hooks?: RunnerHook[] }) {
+    if (!hooks || hooks.length === 0) {
+        return (
+            <div className="flex flex-col items-center justify-center py-10 gap-3 text-center">
+                <div className="rounded-full bg-muted p-3">
+                    <Webhook className="h-5 w-5 text-muted-foreground" />
+                </div>
+                <div className="space-y-1">
+                    <p className="text-sm font-medium text-muted-foreground">No active hooks</p>
+                    <p className="text-xs text-muted-foreground/60 max-w-xs">
+                        Configure hooks in{" "}
+                        <code className="font-mono bg-muted px-1 py-0.5 rounded text-[11px]">
+                            ~/.pizzapi/config.json
+                        </code>{" "}
+                        under the <code className="font-mono bg-muted px-1 py-0.5 rounded text-[11px]">hooks</code> key.
+                    </p>
+                </div>
+            </div>
+        );
+    }
+
+    return (
+        <div className="flex flex-col gap-2">
+            {hooks.map((hook) => (
+                <div
+                    key={hook.type}
+                    className="flex flex-col gap-1.5 rounded-lg border border-border/40 bg-muted/20 px-3 py-2.5"
+                >
+                    {/* Hook type badge */}
+                    <div className="flex items-center gap-2">
+                        <span className="inline-flex items-center gap-1 text-[10px] font-mono font-semibold px-1.5 py-0.5 rounded bg-blue-500/10 border border-blue-500/20 text-blue-300">
+                            <Webhook className="h-2.5 w-2.5" />
+                            {hook.type}
+                        </span>
+                    </div>
+
+                    {/* Script names */}
+                    <div className="flex flex-wrap gap-1.5 pl-0.5">
+                        {hook.scripts.map((script, i) => (
+                            <span
+                                key={i}
+                                className="text-[11px] font-mono bg-muted/60 px-2 py-0.5 rounded border border-border/30 text-muted-foreground"
+                            >
+                                {script}
+                            </span>
+                        ))}
+                    </div>
+                </div>
+            ))}
+        </div>
+    );
+}
+
+// ---------------------------------------------------------------------------
 // TabBar
 // ---------------------------------------------------------------------------
 
-const TABS: { key: RunnerTab; label: string; countKey?: "skills" | "agents" | "plugins" }[] = [
+const TABS: { key: RunnerTab; label: string; countKey?: "skills" | "agents" | "plugins" | "hooks" }[] = [
     { key: "sessions", label: "Sessions" },
     { key: "skills", label: "Skills", countKey: "skills" },
     { key: "agents", label: "Agents", countKey: "agents" },
     { key: "plugins", label: "Plugins", countKey: "plugins" },
+    { key: "hooks", label: "Hooks", countKey: "hooks" },
     { key: "sandbox", label: "Sandbox" },
 ];
 
@@ -196,7 +261,8 @@ function TabBar({
         <div className="flex gap-1 border-b border-border/40">
             {TABS.map((tab) => {
                 const isActive = activeTab === tab.key;
-                const count = tab.countKey ? runner[tab.countKey].length : null;
+                const countSource = tab.countKey ? runner[tab.countKey] : null;
+                const count = countSource != null ? (Array.isArray(countSource) ? countSource.length : 0) : null;
                 return (
                     <button
                         key={tab.key}
@@ -323,6 +389,9 @@ export function RunnerDetailPanel({
                     bare
                 />
             );
+            break;
+        case "hooks":
+            tabContent = <HooksList hooks={runner.hooks} />;
             break;
         case "sandbox":
             tabContent = <SandboxManager runnerId={runner.runnerId} bare />;
