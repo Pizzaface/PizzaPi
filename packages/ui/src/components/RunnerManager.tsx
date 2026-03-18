@@ -19,6 +19,11 @@ import type { SkillInfo } from "@/components/SkillsManager";
 import type { AgentInfo } from "@/components/AgentsManager";
 import type { PluginInfo } from "@/components/PluginsManager";
 
+interface RunnerHook {
+    type: string;
+    scripts: string[];
+}
+
 interface RunnerInfo {
     runnerId: string;
     name: string | null;
@@ -27,6 +32,7 @@ interface RunnerInfo {
     skills: SkillInfo[];
     agents: AgentInfo[];
     plugins: PluginInfo[];
+    hooks?: RunnerHook[];
     version: string | null;
 }
 
@@ -88,6 +94,7 @@ export function RunnerManager({ onOpenSession, onRunnersChange, selectedRunnerId
                     skills: Array.isArray(r.skills) ? r.skills : [],
                     agents: Array.isArray(r.agents) ? r.agents : [],
                     plugins: Array.isArray(r.plugins) ? r.plugins : [],
+                    hooks: Array.isArray(r.hooks) ? r.hooks : [],
                     version: r.version ?? null,
                 })));
             }

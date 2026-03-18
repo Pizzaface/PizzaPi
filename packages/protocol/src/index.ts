@@ -12,6 +12,7 @@ export type {
   RunnerSkill,
   RunnerAgent,
   RunnerPlugin,
+  RunnerHook,
   Attachment,
 } from "./shared.js";
 
