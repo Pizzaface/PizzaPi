@@ -3,8 +3,16 @@
 import type { ComponentProps } from "react";
 
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import type { RelayMessage } from "@/components/session-viewer/types";
+import { exportToMarkdown } from "@/lib/export-markdown";
 import { cn } from "@/lib/utils";
-import { ArrowDownIcon, CheckIcon, ClipboardIcon, DownloadIcon } from "lucide-react";
+import { ArrowDownIcon, CheckIcon, ClipboardIcon, DownloadIcon, ShareIcon } from "lucide-react";
 import { useCallback, useState, useRef } from "react";
 import { StickToBottom, useStickToBottomContext } from "use-stick-to-bottom";
 
@@ -100,44 +108,42 @@ export const ConversationScrollButton = ({
   );
 };
 
-export interface ConversationMessage {
-  role: "user" | "assistant" | "system" | "data" | "tool";
-  content: string;
-}
+// --- Conversation Export (dropdown: copy to clipboard / download as file) ---
 
-export type ConversationDownloadProps = Omit<
+export type ConversationExportProps = Omit<
   ComponentProps<typeof Button>,
   "onClick"
 > & {
-  messages: ConversationMessage[];
+  messages: RelayMessage[];
   filename?: string;
-  formatMessage?: (message: ConversationMessage, index: number) => string;
+  /** Duration in ms to show the success checkmark (default 2000) */
+  feedbackMs?: number;
 };
 
-const defaultFormatMessage = (message: ConversationMessage): string => {
-  const roleLabel =
-    message.role.charAt(0).toUpperCase() + message.role.slice(1);
-  return `**${roleLabel}:** ${message.content}`;
-};
-
-export const messagesToMarkdown = (
-  messages: ConversationMessage[],
-  formatMessage: (
-    message: ConversationMessage,
-    index: number
-  ) => string = defaultFormatMessage
-): string => messages.map((msg, i) => formatMessage(msg, i)).join("\n\n");
-
-export const ConversationDownload = ({
+export const ConversationExport = ({
   messages,
   filename = "conversation.md",
-  formatMessage = defaultFormatMessage,
+  feedbackMs = 2000,
   className,
-  children,
   ...props
-}: ConversationDownloadProps) => {
+}: ConversationExportProps) => {
+  const [copied, setCopied] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+
+  const handleCopy = useCallback(async () => {
+    const markdown = exportToMarkdown(messages);
+    try {
+      await navigator.clipboard.writeText(markdown);
+      setCopied(true);
+      clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => setCopied(false), feedbackMs);
+    } catch {
+      console.warn("Clipboard write failed");
+    }
+  }, [messages, feedbackMs]);
+
   const handleDownload = useCallback(() => {
-    const markdown = messagesToMarkdown(messages, formatMessage);
+    const markdown = exportToMarkdown(messages);
     const blob = new Blob([markdown], { type: "text/markdown" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -147,80 +153,42 @@ export const ConversationDownload = ({
     link.click();
     link.remove();
     URL.revokeObjectURL(url);
-  }, [messages, filename, formatMessage]);
+  }, [messages, filename]);
 
   return (
-    <Button
-      className={cn(
-        "absolute top-4 right-4 rounded-full dark:bg-background dark:hover:bg-muted",
-        className
-      )}
-      onClick={handleDownload}
-      size="icon"
-      type="button"
-      variant="outline"
-      {...props}
-    >
-      {children ?? <DownloadIcon className="size-4" />}
-    </Button>
-  );
-};
-
-// --- Clipboard copy ---
-
-export type ConversationCopyProps = Omit<
-  ComponentProps<typeof Button>,
-  "onClick"
-> & {
-  messages: ConversationMessage[];
-  formatMessage?: (message: ConversationMessage, index: number) => string;
-  /** Duration in ms to show the success checkmark (default 2000) */
-  feedbackMs?: number;
-  /** Icon size class (default "size-4") */
-  iconClassName?: string;
-};
-
-export const ConversationCopy = ({
-  messages,
-  formatMessage = defaultFormatMessage,
-  feedbackMs = 2000,
-  iconClassName = "size-4",
-  className,
-  children,
-  ...props
-}: ConversationCopyProps) => {
-  const [copied, setCopied] = useState(false);
-  const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
-
-  const handleCopy = useCallback(async () => {
-    const markdown = messagesToMarkdown(messages, formatMessage);
-    try {
-      await navigator.clipboard.writeText(markdown);
-      setCopied(true);
-      clearTimeout(timerRef.current);
-      timerRef.current = setTimeout(() => setCopied(false), feedbackMs);
-    } catch {
-      // Fallback: some browsers block clipboard in non-secure contexts
-      console.warn("Clipboard write failed");
-    }
-  }, [messages, formatMessage, feedbackMs]);
-
-  return (
-    <Button
-      className={cn(
-        "absolute top-4 right-4 rounded-full dark:bg-background dark:hover:bg-muted",
-        className
-      )}
-      onClick={handleCopy}
-      size="icon"
-      type="button"
-      variant="outline"
-      {...props}
-    >
-      {copied
-        ? <CheckIcon className={cn(iconClassName, "text-green-500")} />
-        : (children ?? <ClipboardIcon className={iconClassName} />)}
-    </Button>
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          className={cn(
+            "absolute top-4 right-4 rounded-full dark:bg-background dark:hover:bg-muted",
+            className,
+          )}
+          size="icon"
+          type="button"
+          variant="outline"
+          title="Export conversation"
+          aria-label="Export conversation"
+          {...props}
+        >
+          {copied ? (
+            <CheckIcon className="size-3.5 text-green-500" />
+          ) : (
+            <ShareIcon className="size-3.5" />
+          )}
+          <span className="hidden sm:inline ml-1">Export</span>
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuItem onSelect={handleCopy}>
+          <ClipboardIcon className="size-3.5 mr-2" />
+          Copy to Clipboard
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={handleDownload}>
+          <DownloadIcon className="size-3.5 mr-2" />
+          Download as File
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 };
 
