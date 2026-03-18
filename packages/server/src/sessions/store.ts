@@ -167,13 +167,15 @@ export async function recordRelaySessionStart(input: RelaySessionStartInput): Pr
             runnerName: input.runnerName ?? null,
         })
         .onConflict((oc) =>
-            oc.column("id").doUpdateSet({
-                // On reconnect, update runner info (may have been resolved from
-                // a durable association that wasn't available on the first insert).
-                runnerId: input.runnerId ?? null,
-                runnerName: input.runnerName ?? null,
+            oc.column("id").doUpdateSet((eb) => ({
+                // On reconnect, preserve existing runner info if the incoming data
+                // doesn't carry a runner association (e.g. session predates the
+                // association key or the Redis key has already expired).  Only
+                // overwrite when we actually have a non-null value to write.
+                runnerId: input.runnerId != null ? input.runnerId : eb.ref("relay_session.runnerId"),
+                runnerName: input.runnerName != null ? input.runnerName : eb.ref("relay_session.runnerName"),
                 lastActiveAt: now,
-            }),
+            })),
         )
         .execute();
 }
@@ -239,6 +241,20 @@ export async function updateRelaySessionRunner(
     }
 
     return false;
+}
+
+/**
+ * Returns the userId stored in SQLite for a given session, or null if the
+ * session has no row.  Used as a Redis fallback when validating parent-session
+ * links after a relay restart (Redis key gone but SQLite record still exists).
+ */
+export async function getRelaySessionUserId(sessionId: string): Promise<string | null> {
+    const row = await getKysely()
+        .selectFrom("relay_session")
+        .select("userId")
+        .where("id", "=", sessionId)
+        .executeTakeFirst();
+    return row?.userId ?? null;
 }
 
 export async function recordRelaySessionEnd(sessionId: string): Promise<void> {
