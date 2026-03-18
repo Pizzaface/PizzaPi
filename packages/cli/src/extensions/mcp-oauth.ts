@@ -444,7 +444,8 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
         authUrl: url,
         ts: Date.now(),
       });
-      // No stderr — the web UI shows the auth link interactively.
+      // Inform the user in case no web viewer is currently attached.
+      process.stderr.write(`🔐 ${this._serverName} requires authentication — check web UI\n`);
     } else {
       // Local mode: open browser directly
       openBrowser(url);
