@@ -105,6 +105,61 @@ Respond with \`respond_to_trigger\` using trigger ID \`err123\`.`;
       expect(parsed.message).toBe("Command execution failed: file not found");
     });
 
+    test("session_error with 'errored:' in error message is NOT mis-routed to session_complete", () => {
+      // If a session_error message body contains "errored:" or "was killed:", it must
+      // still be parsed as session_error, not session_complete.
+      const body = `⚠️ Child "build-task" encountered an error:
+Build errored: exit code 1
+
+Respond with \`respond_to_trigger\` using trigger ID \`err456\`.`;
+
+      const parsed = parseTriggerBody(body);
+      expect(parsed.type).toBe("session_error");
+      expect(parsed.childName).toBe("build-task");
+      expect(parsed.message).toContain("Build errored: exit code 1");
+    });
+
+    test("session_error with 'was killed:' in error message is NOT mis-routed to session_complete", () => {
+      const body = `⚠️ Child "deploy-task" encountered an error:
+Process was killed: signal SIGTERM
+
+Respond with \`respond_to_trigger\` using trigger ID \`err789\`.`;
+
+      const parsed = parseTriggerBody(body);
+      expect(parsed.type).toBe("session_error");
+    });
+
+    test("session_complete with fullOutputPath is parsed and returned", () => {
+      const body = `🔗 Child "long-task" completed:
+Exit reason: completed
+---
+Analysis finished. 42 files processed.
+
+📄 Full output saved to: /tmp/session-abc123/output.txt
+(Use the Read tool to access the complete output if the above is insufficient.)
+
+Respond with \`respond_to_trigger\` using trigger ID \`comp999\`.
+Use respond_to_trigger with action: "ack" to acknowledge completion.`;
+
+      const parsed = parseTriggerBody(body);
+      expect(parsed.type).toBe("session_complete");
+      expect(parsed.message).toBe("Analysis finished. 42 files processed.");
+      expect(parsed.fullOutputPath).toBe("/tmp/session-abc123/output.txt");
+    });
+
+    test("session_complete without fullOutputPath has undefined fullOutputPath", () => {
+      const body = `🔗 Child "short-task" completed:
+Exit reason: completed
+---
+Done.
+
+Respond with \`respond_to_trigger\` using trigger ID \`comp000\`.`;
+
+      const parsed = parseTriggerBody(body);
+      expect(parsed.type).toBe("session_complete");
+      expect(parsed.fullOutputPath).toBeUndefined();
+    });
+
     test("detects escalate trigger type", () => {
       const body = `🚨 Trigger escalated from child "needs-approval":
 This requires special permission to proceed.

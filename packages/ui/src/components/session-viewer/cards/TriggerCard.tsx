@@ -222,10 +222,12 @@ function SessionCompleteCard({
   childName,
   message,
   exitReason,
+  fullOutputPath,
 }: {
   childName?: string;
   message?: string;
   exitReason?: "completed" | "killed" | "error";
+  fullOutputPath?: string;
 }) {
   const reason = exitReason ?? "completed";
   const icon = reason === "killed"
@@ -250,6 +252,15 @@ function SessionCompleteCard({
       {message && (
         <ToolCardSection>
           <p className="text-sm text-zinc-200 whitespace-pre-wrap">{message}</p>
+        </ToolCardSection>
+      )}
+
+      {fullOutputPath && (
+        <ToolCardSection>
+          <p className="text-xs text-zinc-400">
+            📄 Full output saved to:{" "}
+            <span className="font-mono text-zinc-300 break-all">{fullOutputPath}</span>
+          </p>
         </ToolCardSection>
       )}
     </ToolCardShell>
@@ -361,6 +372,7 @@ export function TriggerCard({
           childName={parsed.childName}
           message={parsed.message}
           exitReason={parsed.exitReason}
+          fullOutputPath={parsed.fullOutputPath}
         />
       );
     case "session_error":

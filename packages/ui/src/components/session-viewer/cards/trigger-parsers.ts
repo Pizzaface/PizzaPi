@@ -13,6 +13,7 @@ export interface ParsedTrigger {
   message?: string;
   reason?: string;
   exitReason?: "completed" | "killed" | "error";
+  fullOutputPath?: string;
 }
 
 export function parseTriggerBody(body: string): ParsedTrigger {
@@ -24,11 +25,14 @@ export function parseTriggerBody(body: string): ParsedTrigger {
   if (body.includes("submitted a plan for review")) {
     return parsePlanReview(body);
   }
-  if (body.includes("completed:") || body.includes("was killed:") || body.includes("errored:")) {
-    return parseSessionComplete(body);
-  }
+  // Check session_error BEFORE session_complete so that error messages containing
+  // "errored:" or "was killed:" in their body text are not mis-routed.
   if (body.includes("encountered an error:")) {
     return parseSessionError(body);
+  }
+  // Anchor the match to the opening line to avoid false positives from summary text.
+  if (/^🔗 Child "[^"]+" (?:completed|was killed|errored):/.test(body)) {
+    return parseSessionComplete(body);
   }
   if (body.includes("Trigger escalated")) {
     return parseEscalateTrigger(body);
@@ -91,7 +95,11 @@ function parseSessionComplete(body: string): ParsedTrigger {
   const fallbackMatch = !summaryMatch ? body.match(/(?:completed|was killed|errored):\n(.+?)(?=\n\n(?:Respond with|Use respond_to_trigger|Acknowledge)|$)/s) : null;
   const message = (summaryMatch ?? fallbackMatch)?.[1]?.trim();
 
-  return { type: "session_complete", childName, message, exitReason };
+  // Capture the "📄 Full output saved to: <path>" line if present.
+  const fullOutputPathMatch = body.match(/📄 Full output saved to: (.+)/);
+  const fullOutputPath = fullOutputPathMatch?.[1]?.trim();
+
+  return { type: "session_complete", childName, message, exitReason, fullOutputPath };
 }
 
 function parseSessionError(body: string): ParsedTrigger {
