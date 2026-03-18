@@ -4,8 +4,8 @@ import { join } from "node:path";
 import type { ExtensionFactory } from "@mariozechner/pi-coding-agent";
 import { loadConfig } from "../config.js";
 import { getRelaySessionId } from "./remote.js";
-import { buildProviderUsage } from "./remote-provider-usage.js";
-import { formatProviderUsage, getUsageKey } from "./format-usage.js";
+import { buildProviderUsage, refreshAllUsage } from "./remote-provider-usage.js";
+import { formatProviderUsage, getUsageKey, normalizeUsageKeys } from "./format-usage.js";
 
 /** Minimal Component that renders nothing — keeps the tool call invisible in the TUI. */
 const silent = { render: (_width: number): string[] => [], invalidate: () => {} };
@@ -282,7 +282,8 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
                 byProvider.set(providerKey, list);
             }
 
-            // Grab cached provider usage data (non-blocking — uses whatever is cached)
+            // Ensure usage cache is populated (reads runner cache file or fetches live)
+            await refreshAllUsage();
             const providerUsage = buildProviderUsage();
 
             const lines: string[] = [
@@ -317,9 +318,12 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
                 maxTokens: m.maxTokens,
             }));
 
+            // Re-key providerUsage so keys match models[*].provider names
+            const normalizedUsage = normalizeUsageKeys(providerUsage, byProvider.keys());
+
             return {
                 content: [{ type: "text" as const, text: lines.join("\n").trimEnd() }],
-                details: { models: details, providerUsage } as any,
+                details: { models: details, providerUsage: normalizedUsage } as any,
             };
         },
 

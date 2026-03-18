@@ -33,3 +33,39 @@ const PROVIDER_USAGE_KEY_MAP: Record<string, string> = {
 export function getUsageKey(providerKey: string): string | undefined {
     return PROVIDER_USAGE_KEY_MAP[providerKey];
 }
+
+/**
+ * Build a reverse map from usage keys back to display provider names.
+ * Given a set of provider names seen in the model registry, returns a map
+ * from internal usage key → display provider key.
+ *
+ * Example: given providers {"google", "openai", "anthropic"}, returns
+ * { "google-gemini-cli": "google", "openai-codex": "openai", "anthropic": "anthropic" }
+ */
+export function buildUsageKeyToProviderMap(providerNames: Iterable<string>): Record<string, string> {
+    const reverse: Record<string, string> = {};
+    for (const name of providerNames) {
+        const usageKey = PROVIDER_USAGE_KEY_MAP[name];
+        if (usageKey && !reverse[usageKey]) {
+            reverse[usageKey] = name;
+        }
+    }
+    return reverse;
+}
+
+/**
+ * Re-key a providerUsage record so that keys match the provider names
+ * seen in the model registry (e.g. "google" instead of "google-gemini-cli").
+ */
+export function normalizeUsageKeys(
+    raw: Record<string, import("./remote-types.js").ProviderUsageData>,
+    providerNames: Iterable<string>,
+): Record<string, import("./remote-types.js").ProviderUsageData> {
+    const keyMap = buildUsageKeyToProviderMap(providerNames);
+    const out: Record<string, import("./remote-types.js").ProviderUsageData> = {};
+    for (const [usageKey, data] of Object.entries(raw)) {
+        const displayKey = keyMap[usageKey] ?? usageKey;
+        out[displayKey] = data;
+    }
+    return out;
+}
