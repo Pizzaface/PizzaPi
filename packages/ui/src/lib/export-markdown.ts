@@ -32,7 +32,11 @@ function extractWebSearch(block: Record<string, unknown>): string | null {
         )
       : [];
     if (results.length > 0) {
-      const lines = results.map((r) => `- [${r.title}](${r.url})`);
+      const lines = results.map((r) => {
+        const title = (r.title ?? "").replace(/[\[\]]/g, "\\$&");
+        const url = (r.url ?? "").replace(/[()]/g, "\\$&");
+        return `- [${title}](${url})`;
+      });
       return `📎 **Search results:**\n${lines.join("\n")}`;
     }
   }

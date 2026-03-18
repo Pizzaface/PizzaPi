@@ -13,7 +13,7 @@ import type { RelayMessage } from "@/components/session-viewer/types";
 import { exportToMarkdown } from "@/lib/export-markdown";
 import { cn } from "@/lib/utils";
 import { ArrowDownIcon, CheckIcon, ClipboardIcon, DownloadIcon, ShareIcon } from "lucide-react";
-import { useCallback, useState, useRef } from "react";
+import { useCallback, useEffect, useState, useRef } from "react";
 import { StickToBottom, useStickToBottomContext } from "use-stick-to-bottom";
 
 export type ConversationProps = ComponentProps<typeof StickToBottom>;
@@ -129,6 +129,10 @@ export const ConversationExport = ({
 }: ConversationExportProps) => {
   const [copied, setCopied] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
+
+  useEffect(() => {
+    return () => clearTimeout(timerRef.current);
+  }, []);
 
   const handleCopy = useCallback(async () => {
     const markdown = exportToMarkdown(messages);

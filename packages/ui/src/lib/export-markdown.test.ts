@@ -333,6 +333,28 @@ describe("exportToMarkdown", () => {
     expect(md).toContain("[Bun Test](https://bun.sh/docs/test)");
   });
 
+  test("web search results escape special markdown chars in title/url", () => {
+    const md = exportToMarkdown([
+      msg({
+        role: "assistant",
+        content: [
+          {
+            type: "text",
+            text: "",
+            _webSearchResult: {
+              tool_use_id: "tu_1",
+              content: [
+                { type: "web_search_result", title: "Title with [brackets]", url: "https://example.com/path_(1)" },
+              ],
+            },
+          },
+        ],
+      }),
+    ]);
+    expect(md).toContain("\\[brackets\\]");
+    expect(md).toContain("path_\\(1\\)");
+  });
+
   test("output ends with trailing newline", () => {
     const md = exportToMarkdown([msg({ role: "user", content: "hi" })]);
     expect(md.endsWith("\n")).toBe(true);
