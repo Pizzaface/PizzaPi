@@ -1322,7 +1322,12 @@ export function App() {
     // Clear the snapshot guard when we receive a state-setting event.
     // These events replace the entire message list, so any pre-snapshot
     // deltas that snuck through are harmless (they'll be overwritten).
-    if (type === "session_active" || type === "agent_end" || type === "heartbeat") {
+    // NOTE: heartbeat must NOT clear this flag — the server sends heartbeat
+    // before addViewer() completes (viewer.ts:383-395), so clearing on HB
+    // would drop the guard before the viewer is in the room, allowing
+    // in-flight chunks or deltas to be accepted and then overwritten by
+    // the later snapshot header.
+    if (type === "session_active" || type === "agent_end") {
       awaitingSnapshotRef.current = false;
     }
 
