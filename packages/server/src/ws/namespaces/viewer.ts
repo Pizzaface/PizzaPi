@@ -224,6 +224,21 @@ export function registerViewerNamespace(io: SocketIOServer): void {
         // ── resync — send fresh snapshot ─────────────────────────────────────
         socket.on("resync", async () => {
             await sendSnapshotToViewer(sessionId, socket);
+
+            // If no lastState was available (e.g. mid-chunked-delivery),
+            // fall back to the partially assembled snapshot from pending chunks.
+            const session = await getSharedSession(sessionId);
+            if (!session?.lastState) {
+                const pending = getPendingChunkedSnapshot(sessionId);
+                if (pending && pending.messages.length > 0) {
+                    socket.emit("event", {
+                        event: {
+                            type: "session_active",
+                            state: { ...pending.metadata, messages: pending.messages },
+                        },
+                    });
+                }
+            }
         });
 
         // ── input — collab mode: forward user input to TUI ──────────────────

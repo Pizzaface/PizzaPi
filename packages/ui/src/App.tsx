@@ -1634,6 +1634,9 @@ export function App() {
         setViewerStatus(`Loading session (0 of ${totalMessages} messages)…`);
       } else {
         chunkedDeliveryRef.current = null;
+        // Mark that we have a complete non-chunked snapshot so any stale
+        // chunks from a superseded chunked sender are rejected.
+        lastCompletedSnapshotRef.current = "non-chunked";
       }
 
       // Don't clobber transient statuses with a generic "Connected" when the
@@ -2511,12 +2514,13 @@ export function App() {
       lastViewerEventAtRef.current = Date.now();
 
       // Detect sequence gaps; request a resync if we missed events.
-      // During chunked delivery, suppress resync — chunks have their own
-      // ordering via chunkIndex/snapshotId and a resync would replace the
-      // partially-loaded messages with an empty lastState (the server
-      // hasn't assembled the full state yet).
+      // This is safe during chunked delivery because the server's resync
+      // handler now falls back to getPendingChunkedSnapshot() when lastState
+      // hasn't been assembled yet, and the resync response is a non-chunked
+      // session_active that sets lastCompletedSnapshotRef, rejecting any
+      // subsequently arriving stale chunks.
       const seq = typeof data.seq === "number" ? data.seq : null;
-      if (seq !== null && lastSeqRef.current !== null && !chunkedDeliveryRef.current) {
+      if (seq !== null && lastSeqRef.current !== null) {
         const expected = lastSeqRef.current + 1;
         if (seq > expected) {
           // Gap detected — request a resync snapshot from the server.

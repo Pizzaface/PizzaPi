@@ -100,17 +100,18 @@ const CHUNK_BYTE_LIMIT = 8 * 1024 * 1024; // 8 MB per chunk
 const MAX_MESSAGE_SIZE = 50 * 1024 * 1024; // 50 MB
 
 /**
- * Estimate the serialized JSON size of a messages array by summing per-message
- * sizes.  We stringify each message individually rather than the whole array
- * to avoid allocating a single 100 MB+ string.  This catches outlier-heavy
- * distributions (e.g. a few 20 MB tool outputs) that sampling would miss.
+ * Estimate the serialized wire size (in bytes) of a messages array.
+ * We stringify each message individually rather than the whole array
+ * to avoid allocating a single 100 MB+ string.  Uses Buffer.byteLength
+ * for accurate UTF-8 byte counts (JSON.stringify().length counts UTF-16
+ * code units, which underestimates multibyte content like emoji/CJK by 2-4x).
  */
 export function estimateMessagesSize(messages: unknown[]): number {
     if (messages.length === 0) return 2; // "[]"
     let totalBytes = 0;
     for (const msg of messages) {
         try {
-            totalBytes += JSON.stringify(msg).length;
+            totalBytes += Buffer.byteLength(JSON.stringify(msg), "utf8");
         } catch {
             totalBytes += 1024; // fallback for unserializable entries
         }
@@ -149,7 +150,7 @@ export function capOversizedMessages(messages: unknown[]): unknown[] {
     let result = messages;
 
     for (let i = 0; i < messages.length; i++) {
-        const size = JSON.stringify(messages[i]).length;
+        const size = Buffer.byteLength(JSON.stringify(messages[i]), "utf8");
         if (size > MAX_MESSAGE_SIZE) {
             if (!copied) {
                 result = [...messages];
@@ -182,7 +183,7 @@ export function computeChunkBoundaries(messages: unknown[]): Array<[number, numb
         let chunkBytes = 0;
 
         while (end < messages.length && (end - start) < CHUNK_SIZE) {
-            const msgSize = JSON.stringify(messages[end]).length;
+            const msgSize = Buffer.byteLength(JSON.stringify(messages[end]), "utf8");
             // If adding this message would exceed the byte limit AND we already
             // have at least one message in the chunk, break here.
             if (chunkBytes + msgSize > CHUNK_BYTE_LIMIT && end > start) {
