@@ -2953,6 +2953,10 @@ export function App() {
     setMessageQueue((prev) => prev.filter((m) => m.id !== id));
   }, []);
 
+  const editQueuedMessage = React.useCallback((id: string, newText: string) => {
+    setMessageQueue((prev) => prev.map((m) => m.id === id ? { ...m, text: newText } : m));
+  }, []);
+
   /** Remove a queued message whose text matches an incoming user message from the stream. */
   const removeQueuedMessageByContent = React.useCallback((rawMessage: unknown) => {
     if (!rawMessage || typeof rawMessage !== "object") return;
@@ -3926,6 +3930,7 @@ export function App() {
                   retryState={retryState}
                   messageQueue={messageQueue}
                   onRemoveQueuedMessage={removeQueuedMessage}
+                  onEditQueuedMessage={editQueuedMessage}
                   onClearMessageQueue={clearMessageQueue}
                   onToggleTerminal={() => setShowTerminal((v) => !v)}
                   showTerminalButton
