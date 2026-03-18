@@ -399,9 +399,18 @@ export function registerViewerNamespace(io: SocketIOServer): void {
             return;
         }
 
-        if (session.lastState) {
+        // Re-fetch session state and seq AFTER addViewer() to avoid emitting
+        // stale data. Between the initial fetch and here, the runner may have
+        // published a newer session_active (especially for chunked delivery).
+        // Using the old lastState + old lastSeq would overwrite the fresh
+        // snapshot and rewind lastSeqRef on the client, triggering a bogus
+        // resync on actively changing sessions.
+        const freshSession = await getSharedSession(sessionId);
+        const freshSeq = await getSessionSeq(sessionId);
+
+        if (freshSession?.lastState) {
             try {
-                socket.emit("event", { event: { type: "session_active", state: JSON.parse(session.lastState) }, seq: lastSeq });
+                socket.emit("event", { event: { type: "session_active", state: JSON.parse(freshSession.lastState) }, seq: freshSeq });
             } catch {}
         } else {
             // No in-memory state — fall back to event cache.
