@@ -557,8 +557,10 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         const emitRegister = () => {
             const skills = scanGlobalSkills();
             const agents = scanGlobalAgents();
-            // Only include project-local plugins if daemon cwd is within allowed roots
-            const plugins = scanAllPluginInfo(process.cwd(), { includeProjectLocal: isCwdAllowed(process.cwd()) });
+            // Runner registration only advertises global plugins.
+            // Project-local plugins are session-scoped — they're discovered
+            // per-session via list_plugins with an explicit cwd.
+            const plugins = scanAllPluginInfo(process.cwd(), { includeProjectLocal: false });
             socket.emit("register_runner", {
                 runnerId: identity.runnerId,
                 runnerSecret: identity.runnerSecret,
@@ -1128,9 +1130,10 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 return;
             }
             const scanCwd = rawCwd ?? process.cwd();
-            // Only include project-local plugins if the scan cwd is within allowed roots.
-            // If daemon started outside workspace roots, avoid leaking local plugin metadata.
-            const includeLocal = isCwdAllowed(scanCwd);
+            // Only include project-local plugins when an explicit session cwd
+            // was provided AND it's within allowed workspace roots. Without an
+            // explicit cwd this is a runner-level query — only global plugins.
+            const includeLocal = !!rawCwd && isCwdAllowed(scanCwd);
             const plugins = scanAllPluginInfo(scanCwd, { includeProjectLocal: includeLocal });
             // Echo scoped flag so the server can skip cache updates for per-session scans
             socket.emit("plugins_list", { plugins, requestId, ...(rawCwd ? { scoped: true } : {}) });
