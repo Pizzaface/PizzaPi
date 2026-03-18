@@ -741,6 +741,15 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
 
             const entry = runningSessions.get(sessionId);
             if (entry) {
+                // If the child process is still alive, don't remove the entry —
+                // the worker will reconnect to the relay and re-register.
+                // Removing it here would orphan the child process (can't be
+                // killed, can't be resumed).
+                const childAlive = entry.child && !entry.child.killed && entry.child.exitCode === null;
+                if (childAlive) {
+                    console.log(`pizzapi runner: session_ended for ${sessionId} but worker still alive — keeping entry for reconnect`);
+                    return;
+                }
                 runningSessions.delete(sessionId);
                 endedSessionIds.add(sessionId);
                 setTimeout(() => endedSessionIds.delete(sessionId), 60_000);
