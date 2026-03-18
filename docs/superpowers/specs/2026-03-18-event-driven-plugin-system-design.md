@@ -126,7 +126,7 @@ type EventSourceConfig = StdioEventSource | HttpEventSource;
 interface RunnerTrigger {
   name: string;
   source: string;               // event source name
-  match: Record<string, unknown>; // flat dot-path equality matching
+  match: Record<string, string | number | boolean>; // flat dot-path equality, primitives only
   action: TriggerAction;
 }
 
@@ -135,10 +135,13 @@ interface TriggerAction {
   prompt?: string;              // supports {event.*} interpolation
   cwd?: string;
   agent?: string;               // agent definition name
-  sessionId?: string;           // REQUIRED for "inject" — target session ID or name
-  // When type is "inject", sessionId must be provided.
-  // If the target session is not found (disconnected/dead), the event
-  // falls through to the next matching trigger or dead letter log.
+  sessionTag?: string;           // REQUIRED for "inject" — target session tag
+  // When type is "inject", sessionTag must be provided. Sessions opt in
+  // to receiving injected events by setting a tag (e.g., "pr-bot") via
+  // the register_trigger tool or at spawn time. The runner matches by tag,
+  // not by ephemeral session ID, so runner triggers survive session restarts.
+  // If no session with the matching tag is found, the event falls through
+  // to the next matching trigger or dead letter log.
 }
 ```
 
@@ -157,7 +160,11 @@ interface TriggerAction {
 
 Both transports use identical JSON-RPC 2.0 messages.
 
-**HTTP transport topology:** The **plugin hosts** the HTTP server. The runner is the client — it connects to the plugin's SSE endpoint (`GET {url}/events`) and sends control messages via `POST {url}/control`. This mirrors MCP's streamable-http where the server (plugin) hosts and the client (runner) connects. The `url` in config points to the plugin's base URL.
+**HTTP transport topology:** The **plugin hosts** the HTTP server. The runner is the client — it connects to the plugin's SSE endpoint and sends control messages via POST. This mirrors MCP's streamable-http where the server (plugin) hosts and the client (runner) connects. The `url` in config points to the plugin's base URL.
+
+**Fixed HTTP paths (required for all HTTP transport plugins):**
+- `GET {url}/events` — SSE event stream
+- `POST {url}/control` — JSON-RPC 2.0 control messages (initialize, subscribe, shutdown)
 
 ### Handshake
 
@@ -223,7 +230,11 @@ Both transports use identical JSON-RPC 2.0 messages.
 ### Control Messages (Runner → Plugin)
 
 ```jsonc
-// Subscribe (narrow event scope)
+// Subscribe (narrow event scope) — RESERVED FOR FUTURE USE
+// Defined in the protocol for forward-compatibility. The v1 runner does NOT
+// send these messages. Plugin authors MAY implement them but SHOULD NOT
+// depend on receiving them. Future versions will send subscribe when the
+// first trigger for a source is registered.
 {
   "jsonrpc": "2.0",
   "id": 2,
@@ -233,7 +244,7 @@ Both transports use identical JSON-RPC 2.0 messages.
   }
 }
 
-// Unsubscribe
+// Unsubscribe — RESERVED FOR FUTURE USE (same as subscribe)
 {
   "jsonrpc": "2.0",
   "id": 3,
@@ -389,7 +400,7 @@ All keys in `match` must be present and equal in the event. Missing keys in the 
 ### Routing Priority
 
 1. **Session triggers** — if multiple session triggers match, **all matching sessions receive the event** (fan-out). This is intentional: two sessions watching the same PR both get notified.
-2. **Runner triggers** — first matching rule wins (config order). Runner triggers fire **only if no session trigger matched** — session triggers take priority.
+2. **Runner triggers** — **all matching rules fire** (fan-out, same as session triggers). Multiple runner triggers can react to the same event (e.g., spawn a review session AND log to Slack). Runner triggers fire **only if no session trigger matched** — session triggers take priority. **Rationale:** A session that explicitly registers for an event has claimed ownership — it's actively working on that context (e.g., an agent watching PR #42). Runner triggers are the default automation; session triggers are the override. This prevents duplicate work (runner spawning a new session for an event an existing session already handles).
 3. **Dead letter log** — no match from either tier, event logged for debugging.
 
 ### Actions
@@ -484,6 +495,8 @@ The delivery format is generic — `context` and `payload` are serialized as JSO
 
 If a runner trigger has a `prompt` template with `{event.*}` interpolation, the rendered prompt replaces the generic format above. This allows trigger authors to produce human-readable messages for specific use cases.
 
+**Interpolation behavior:** `{event.payload.body}` resolves via dot-path into the event object. If the path doesn't resolve (field missing), it renders as an empty string. Nested objects render as JSON. This is intentionally simple — no conditionals, no loops, no expressions.
+
 ### CLI Mode (Local Sessions)
 
 Same tools work with constraints:
@@ -491,6 +504,7 @@ Same tools work with constraints:
 - CLI manages its own event source processes
 - Session must stay alive — if it exits, triggers die
 - No `spawn` action — events always inject into the current session
+- **Config validation:** If `plugins.json` contains runner triggers with `"type": "spawn"`, they are ignored in CLI mode with a warning logged at startup: `"Trigger '{name}' uses spawn action — ignored in CLI mode (no runner)"`. Runner triggers with `"type": "inject"` are also ignored in CLI mode — the CLI session uses session triggers (registered via tools) exclusively.
 
 ---
 
@@ -517,6 +531,9 @@ pizza plugin restart <name>          # Restart
 pizza plugin status <name>           # Details: config, status, event counts
 pizza plugin logs <name>             # View plugin logs
 pizza plugin logs <name> --follow    # Tail logs
+
+# Trigger management is manual (edit plugins.json) in v1.
+# CLI trigger commands (pizza trigger list/add/remove) are future scope.
 ```
 
 ### `disabled` Flag
@@ -585,7 +602,7 @@ Runner shutdown:
 | `initialize` times out (5s) | Mark errored, apply restart policy. |
 | Plugin sends `fatal: true` error | Disconnect, don't restart. Surface in runner UI. |
 | Event matches dead session trigger | Clean up stale registration, fall through to runner triggers. |
-| Event matches but session is busy | Queue event. Max 10 per session, oldest dropped. |
+| Event matches but session is busy | Queue event (FIFO). Max 10 per session, **newest dropped** when full — preserves earliest context. Warning log: `"Event {id} dropped for session {sessionId}: queue full"`. |
 
 ### Session Trigger Cleanup
 
@@ -613,6 +630,13 @@ Runner shutdown:
 - Runner dashboard UI for event source status
 - Error handling, restart policies, observability logs
 - At least one reference plugin implementation (GitHub PR comments)
+
+### Notes
+
+- **Config hot-reload:** Changes to `plugins.json` require a runner restart in v1. No file watching.
+- **Security model:** Plugins are trusted — stdio plugins run with the runner's permissions, HTTP plugins receive whatever headers are configured. No sandboxing in v1. This is the same trust model as MCP servers.
+- **Protocol version mismatch:** If the plugin responds to `initialize` with a `protocolVersion` the runner doesn't support, the runner logs a warning and disconnects. The plugin should be updated.
+- **`context` vs `payload` guidance for plugin authors:** `context` contains routing hints — fields that triggers match against (e.g., repo, PR number, channel). `payload` contains the full event body passed to the agent. Some fields may appear in both — that's fine.
 
 ### Out of scope (future)
 - Agent-side plugin management (start/stop from within sessions)
