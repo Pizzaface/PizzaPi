@@ -547,6 +547,17 @@ export function registerRelayNamespace(io: SocketIOServer): void {
             console.log(`[sio/relay] disconnected: ${socket.id} (${reason})`);
             const sessionId = socket.data.sessionId;
             if (sessionId) {
+                // If a newer socket already re-registered this session (reconnect),
+                // don't tear down the new session.  registerTuiSession clears our
+                // sessionId as a primary guard, but this check is defense-in-depth
+                // for any remaining race windows.
+                const currentSocket = getLocalTuiSocket(sessionId);
+                if (currentSocket && currentSocket !== socket) {
+                    console.log(`[sio/relay] disconnect for ${socket.id} — session ${sessionId} already owned by ${currentSocket.id}, skipping teardown`);
+                    socketAckedSeqs.delete(socket.id);
+                    return;
+                }
+
                 clearThinkingMaps(sessionId);
                 void clearPushPendingQuestion(sessionId);
                 // Clean up child-index entry so stale memberships don't persist

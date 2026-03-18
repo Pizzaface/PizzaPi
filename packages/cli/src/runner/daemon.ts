@@ -514,8 +514,11 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         // Sessions we've already handled session_ended for.  Prevents log
         // spam when the relay fires duplicate session_ended events (e.g. the
         // orphan sweeper runs after the relay already sent session_ended on
-        // disconnect).  Entries auto-expire after 60 s to avoid unbounded growth.
+        // disconnect).  Entries auto-expire after 5 min — must be comfortably
+        // longer than the relay's sweep interval (default 60 s) to avoid
+        // re-logging on the next sweep cycle.
         const endedSessionIds = new Set<string>();
+        const ENDED_SESSION_TTL_MS = 5 * 60_000;
         const runnerName = process.env.PIZZAPI_RUNNER_NAME?.trim() || hostname();
         let runnerId: string | null = null;
         let isFirstConnect = true;
@@ -741,23 +744,25 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
 
             const entry = runningSessions.get(sessionId);
             if (entry) {
-                // If the child process is still alive, don't remove the entry —
-                // the worker will reconnect to the relay and re-register.
-                // Removing it here would orphan the child process (can't be
-                // killed, can't be resumed).
+                // If the child process is still alive AND this is a transient
+                // relay disconnect (not an expiry/orphan sweep), keep the entry
+                // so the worker can reconnect.  For server-initiated cleanup
+                // (expired/orphaned), always honor the removal — the session
+                // is legitimately dead and the worker should exit on its own.
                 const childAlive = entry.child && !entry.child.killed && entry.child.exitCode === null;
-                if (childAlive) {
+                const isTransientDisconnect = !reason || reason === "Session ended";
+                if (childAlive && isTransientDisconnect) {
                     console.log(`pizzapi runner: session_ended for ${sessionId} but worker still alive — keeping entry for reconnect`);
                     return;
                 }
                 runningSessions.delete(sessionId);
                 endedSessionIds.add(sessionId);
-                setTimeout(() => endedSessionIds.delete(sessionId), 60_000);
-                console.log(`pizzapi runner: session ${sessionId} ended on relay${entry.adopted ? " (adopted)" : ""}`);
+                setTimeout(() => endedSessionIds.delete(sessionId), ENDED_SESSION_TTL_MS);
+                console.log(`pizzapi runner: session ${sessionId} ended on relay${entry.adopted ? " (adopted)" : ""}${reason ? ` (${reason})` : ""}`);
             } else if (!endedSessionIds.has(sessionId)) {
                 // First duplicate — log once then suppress subsequent copies
                 endedSessionIds.add(sessionId);
-                setTimeout(() => endedSessionIds.delete(sessionId), 60_000);
+                setTimeout(() => endedSessionIds.delete(sessionId), ENDED_SESSION_TTL_MS);
                 console.log(`pizzapi runner: session_ended for unknown/already-removed session ${sessionId}`);
             }
             // else: duplicate session_ended for a session we already handled — silently ignore
