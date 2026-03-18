@@ -274,6 +274,65 @@ describe("exportToMarkdown", () => {
     expect(md).toContain("**📭 No messages**");
   });
 
+  test("inline thinking blocks in content array are rendered", () => {
+    const md = exportToMarkdown([
+      msg({
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "Let me reason about this..." },
+          { type: "text", text: "Here is my answer." },
+        ],
+      }),
+    ]);
+    expect(md).toContain("<details>");
+    expect(md).toContain("💭 Thinking");
+    expect(md).toContain("Let me reason about this...");
+    expect(md).toContain("</details>");
+    expect(md).toContain("Here is my answer.");
+  });
+
+  test("web search query metadata is preserved", () => {
+    const md = exportToMarkdown([
+      msg({
+        role: "assistant",
+        content: [
+          {
+            type: "text",
+            text: "",
+            _serverToolUse: { id: "tu_1", name: "web_search", input: { query: "bun test runner" } },
+          },
+          { type: "text", text: "Based on my search..." },
+        ],
+      }),
+    ]);
+    expect(md).toContain("🔍 **Web search:** bun test runner");
+    expect(md).toContain("Based on my search...");
+  });
+
+  test("web search results metadata is preserved", () => {
+    const md = exportToMarkdown([
+      msg({
+        role: "assistant",
+        content: [
+          {
+            type: "text",
+            text: "",
+            _webSearchResult: {
+              tool_use_id: "tu_1",
+              content: [
+                { type: "web_search_result", title: "Bun Docs", url: "https://bun.sh/docs" },
+                { type: "web_search_result", title: "Bun Test", url: "https://bun.sh/docs/test" },
+              ],
+            },
+          },
+        ],
+      }),
+    ]);
+    expect(md).toContain("📎 **Search results:**");
+    expect(md).toContain("[Bun Docs](https://bun.sh/docs)");
+    expect(md).toContain("[Bun Test](https://bun.sh/docs/test)");
+  });
+
   test("output ends with trailing newline", () => {
     const md = exportToMarkdown([msg({ role: "user", content: "hi" })]);
     expect(md.endsWith("\n")).toBe(true);

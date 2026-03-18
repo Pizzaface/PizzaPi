@@ -10,23 +10,70 @@ import type { RelayMessage, SubAgentTurn } from "@/components/session-viewer/typ
 /** Maximum characters for tool output before truncation. */
 const TOOL_OUTPUT_MAX = 5000;
 
+/** Extract web-search metadata from an Anthropic content block, if present. */
+function extractWebSearch(block: Record<string, unknown>): string | null {
+  // Server tool use (query)
+  if (block._serverToolUse) {
+    const meta = block._serverToolUse as { input?: { query?: string } };
+    const query = meta.input?.query;
+    if (query) return `🔍 **Web search:** ${query}`;
+  }
+  // Web search results
+  if (block._webSearchResult) {
+    const meta = block._webSearchResult as {
+      content?: Array<{ type: string; title?: string; url?: string }>;
+    };
+    const results = Array.isArray(meta.content)
+      ? meta.content.filter(
+          (r) =>
+            r.type === "web_search_result" &&
+            typeof r.title === "string" &&
+            typeof r.url === "string",
+        )
+      : [];
+    if (results.length > 0) {
+      const lines = results.map((r) => `- [${r.title}](${r.url})`);
+      return `📎 **Search results:**\n${lines.join("\n")}`;
+    }
+  }
+  return null;
+}
+
 /** Stringify unknown content into a readable string. */
 function contentToString(content: unknown): string {
   if (content == null) return "";
   if (typeof content === "string") return content;
-  // Anthropic-style content blocks: [{type:"text", text:"..."}, ...]
+  // Anthropic-style content blocks: [{type:"text", text:"..."}, {type:"thinking", thinking:"..."}, ...]
   if (Array.isArray(content)) {
-    const texts = content
-      .filter(
-        (block): block is { type: string; text: string } =>
-          typeof block === "object" &&
-          block !== null &&
-          "text" in block &&
-          typeof (block as Record<string, unknown>).text === "string",
-      )
-      .map((block) => block.text);
-    if (texts.length > 0) return texts.join("\n\n");
-    // Fallback: stringify the array
+    const parts: string[] = [];
+    for (const block of content) {
+      if (typeof block !== "object" || block === null) continue;
+      const b = block as Record<string, unknown>;
+
+      // Inline thinking blocks (not yet hoisted to message.thinking)
+      if (b.type === "thinking" && typeof b.thinking === "string" && b.thinking) {
+        parts.push(
+          `<details>\n<summary>💭 Thinking</summary>\n\n${b.thinking}\n\n</details>`,
+        );
+        continue;
+      }
+
+      // Web search metadata on text blocks
+      const webSearch = extractWebSearch(b);
+      if (webSearch) {
+        parts.push(webSearch);
+        // Also include any text content on the same block
+        if (typeof b.text === "string" && b.text) parts.push(b.text);
+        continue;
+      }
+
+      // Regular text blocks
+      if (typeof b.text === "string" && b.text) {
+        parts.push(b.text);
+      }
+    }
+    if (parts.length > 0) return parts.join("\n\n");
+    // Fallback: stringify the array if no recognized blocks
     return "```json\n" + JSON.stringify(content, null, 2) + "\n```";
   }
   if (typeof content === "object") {
