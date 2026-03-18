@@ -93,6 +93,44 @@ Respond with \`respond_to_trigger\` using trigger ID \`xyz789\`.`;
       expect(parsed.message).toBe("All tests passed successfully.");
     });
 
+    test("handles legacy session_complete format with 'was killed:' title — exitReason is killed", () => {
+      // Legacy format: no "Exit reason:" line, verb in title must be used to infer exitReason.
+      const body = `🔗 Child "test-task" was killed:
+Session terminated by user.
+
+Respond with \`respond_to_trigger\` using trigger ID \`xyz789\`.`;
+
+      const parsed = parseTriggerBody(body);
+      expect(parsed.type).toBe("session_complete");
+      expect(parsed.childName).toBe("test-task");
+      expect(parsed.exitReason).toBe("killed");
+    });
+
+    test("handles legacy session_complete format with 'errored:' title — exitReason is error", () => {
+      const body = `🔗 Child "test-task" errored:
+Build failed with exit code 1.
+
+Respond with \`respond_to_trigger\` using trigger ID \`xyz789\`.`;
+
+      const parsed = parseTriggerBody(body);
+      expect(parsed.type).toBe("session_complete");
+      expect(parsed.childName).toBe("test-task");
+      expect(parsed.exitReason).toBe("error");
+    });
+
+    test("legacy session_complete with 'completed' title is not mis-inferred as killed when summary mentions another killed child", () => {
+      // Summary text mentioning another child being killed must not affect the exitReason
+      // of the outer (completed) trigger.
+      const body = `🔗 Child "main" completed:
+Process finished. Child "worker" was killed: by system.
+
+Respond with \`respond_to_trigger\` using trigger ID \`xyz789\`.`;
+
+      const parsed = parseTriggerBody(body);
+      expect(parsed.type).toBe("session_complete");
+      expect(parsed.exitReason).toBe("completed");
+    });
+
     test("detects session_error trigger type", () => {
       const body = `⚠️ Child "failed-task" encountered an error:
 Command execution failed: file not found
@@ -103,6 +141,24 @@ Respond with \`respond_to_trigger\` using trigger ID \`err123\`.`;
       expect(parsed.type).toBe("session_error");
       expect(parsed.childName).toBe("failed-task");
       expect(parsed.message).toBe("Command execution failed: file not found");
+    });
+
+    test("session_complete whose summary mentions 'encountered an error:' is NOT mis-routed to session_error", () => {
+      // A child can include a phrase like "the previous attempt encountered an error: ..."
+      // in its completion summary. parseTriggerBody must still return session_complete.
+      const body = `🔗 Child "fixer-task" completed:
+Exit reason: completed
+---
+The previous attempt encountered an error: file not found, but it is now fixed.
+
+Respond with \`respond_to_trigger\` using trigger ID \`fix123\`.
+Use respond_to_trigger with action: "ack" to acknowledge completion.`;
+
+      const parsed = parseTriggerBody(body);
+      expect(parsed.type).toBe("session_complete");
+      expect(parsed.childName).toBe("fixer-task");
+      expect(parsed.exitReason).toBe("completed");
+      expect(parsed.message).toContain("encountered an error");
     });
 
     test("session_error with 'errored:' in error message is NOT mis-routed to session_complete", () => {

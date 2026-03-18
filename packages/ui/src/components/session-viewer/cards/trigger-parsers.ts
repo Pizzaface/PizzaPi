@@ -25,14 +25,16 @@ export function parseTriggerBody(body: string): ParsedTrigger {
   if (body.includes("submitted a plan for review")) {
     return parsePlanReview(body);
   }
-  // Check session_error BEFORE session_complete so that error messages containing
-  // "errored:" or "was killed:" in their body text are not mis-routed.
-  if (body.includes("encountered an error:")) {
-    return parseSessionError(body);
-  }
-  // Anchor the match to the opening line to avoid false positives from summary text.
+  // Anchor session_complete to the first line BEFORE checking for "encountered an error:"
+  // because session_complete summaries can contain that phrase in their body text,
+  // which would otherwise cause a false positive match for session_error.
   if (/^🔗 Child "[^"]+" (?:completed|was killed|errored):/.test(body)) {
     return parseSessionComplete(body);
+  }
+  // Anchor session_error to the first line as well, so that summary text embedded
+  // in other trigger types (e.g. session_complete) cannot trigger a false match.
+  if (/^⚠️ Child "[^"]+" encountered an error:/.test(body)) {
+    return parseSessionError(body);
   }
   if (body.includes("Trigger escalated")) {
     return parseEscalateTrigger(body);
@@ -85,9 +87,19 @@ function parseSessionComplete(body: string): ParsedTrigger {
   const childMatch = body.match(/Child "([^"]+)" (?:completed|was killed|errored):/);
   const childName = childMatch?.[1];
 
-  // Parse exitReason from "Exit reason: completed|killed|error" line
+  // Parse exitReason from "Exit reason: completed|killed|error" line (new format).
+  // Fall back to inferring it from the title verb for legacy messages that lack that line.
   const exitReasonMatch = body.match(/Exit reason: (completed|killed|error)/);
-  const exitReason = (exitReasonMatch?.[1] as "completed" | "killed" | "error") ?? "completed";
+  let exitReason: "completed" | "killed" | "error";
+  if (exitReasonMatch?.[1]) {
+    exitReason = exitReasonMatch[1] as "completed" | "killed" | "error";
+  } else if (/^🔗 Child "[^"]+" was killed:/.test(body)) {
+    exitReason = "killed";
+  } else if (/^🔗 Child "[^"]+" errored:/.test(body)) {
+    exitReason = "error";
+  } else {
+    exitReason = "completed";
+  }
 
   // Summary follows the "---" separator
   const summaryMatch = body.match(/---\n(.+?)(?=\n\n(?:📄|Respond with|Use respond_to_trigger|Acknowledge)|$)/s);
