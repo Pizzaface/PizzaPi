@@ -226,8 +226,10 @@ export async function updateRelaySessionRunner(
     runnerId: string | null,
     runnerName: string | null,
 ): Promise<boolean> {
-    const MAX_ATTEMPTS = 3;
-    const RETRY_DELAY_MS = 250;
+    // Use exponential back-off so we tolerate slow
+    // recordRelaySessionStart inserts without giving up too early.
+    const MAX_ATTEMPTS = 5;
+    const INITIAL_DELAY_MS = 200;
 
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
         const result = await getKysely()
@@ -239,10 +241,14 @@ export async function updateRelaySessionRunner(
         if ((result[0]?.numUpdatedRows ?? 0n) > 0n) return true;
 
         if (attempt < MAX_ATTEMPTS) {
-            await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
+            const delay = INITIAL_DELAY_MS * Math.pow(2, attempt - 1);
+            await new Promise((resolve) => setTimeout(resolve, delay));
         }
     }
 
+    console.warn(
+        `[sessions/store] updateRelaySessionRunner: gave up linking runner ${runnerId} to session ${sessionId} after ${MAX_ATTEMPTS} attempts`,
+    );
     return false;
 }
 
@@ -279,6 +285,11 @@ export async function getActiveRelaySessionUserId(sessionId: string): Promise<st
 export async function recordRelaySessionEnd(sessionId: string): Promise<void> {
     const nowIso = new Date().toISOString();
     const newExpiry = ephemeralExpiryIso();
+    // Guard against stale end writes: only mark ended if the session has not
+    // been re-started since this end was triggered.  A concurrent
+    // recordRelaySessionStart upsert sets endedAt back to NULL, so if endedAt
+    // is already NULL when this runs, a newer start has landed first and we
+    // must not overwrite it.
     await getKysely()
         .updateTable("relay_session")
         .set((eb) => ({
@@ -292,6 +303,14 @@ export async function recordRelaySessionEnd(sessionId: string): Promise<void> {
                 .end(),
         }))
         .where("id", "=", sessionId)
+        // Only end the session if it hasn't already been re-started
+        // (a reconnect upsert sets endedAt = NULL and updates lastActiveAt).
+        .where((eb) =>
+            eb.or([
+                eb("endedAt", "is not", null),  // already ended — safe to update timestamp
+                eb("lastActiveAt", "<=", nowIso), // not re-started with a newer timestamp
+            ]),
+        )
         .execute();
 }
 
