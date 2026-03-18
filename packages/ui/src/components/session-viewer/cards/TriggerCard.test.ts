@@ -185,6 +185,28 @@ Respond with \`respond_to_trigger\` using trigger ID \`err789\`.`;
       expect(parsed.type).toBe("session_error");
     });
 
+    test("session_complete summary containing '📄 Generated files:' is NOT truncated at the emoji", () => {
+      // The summary regex must stop only at the specific '📄 Full output saved to:' footer,
+      // not at arbitrary 📄 lines that appear in the child's summary text.
+      const body = `🔗 Child "builder" completed:
+Exit reason: completed
+---
+Build succeeded.
+
+📄 Generated files:
+- dist/index.js
+- dist/index.css
+
+Respond with \`respond_to_trigger\` using trigger ID \`build123\`.
+Use respond_to_trigger with action: "ack" to acknowledge completion.`;
+
+      const parsed = parseTriggerBody(body);
+      expect(parsed.type).toBe("session_complete");
+      expect(parsed.message).toContain("📄 Generated files:");
+      expect(parsed.message).toContain("dist/index.js");
+      expect(parsed.fullOutputPath).toBeUndefined();
+    });
+
     test("session_complete with fullOutputPath is parsed and returned", () => {
       const body = `🔗 Child "long-task" completed:
 Exit reason: completed

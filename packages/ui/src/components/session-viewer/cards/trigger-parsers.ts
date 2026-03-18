@@ -101,8 +101,10 @@ function parseSessionComplete(body: string): ParsedTrigger {
     exitReason = "completed";
   }
 
-  // Summary follows the "---" separator
-  const summaryMatch = body.match(/---\n(.+?)(?=\n\n(?:📄|Respond with|Use respond_to_trigger|Acknowledge)|$)/s);
+  // Summary follows the "---" separator.
+  // Stop only at the *specific* footer "📄 Full output saved to:" — not at any arbitrary
+  // 📄 that might appear in the child's summary text (e.g. "📄 Generated files:").
+  const summaryMatch = body.match(/---\n(.+?)(?=\n\n(?:📄 Full output saved to:|Respond with|Use respond_to_trigger|Acknowledge)|$)/s);
   // Fall back to old format (no "Exit reason:" line)
   const fallbackMatch = !summaryMatch ? body.match(/(?:completed|was killed|errored):\n(.+?)(?=\n\n(?:Respond with|Use respond_to_trigger|Acknowledge)|$)/s) : null;
   const message = (summaryMatch ?? fallbackMatch)?.[1]?.trim();
