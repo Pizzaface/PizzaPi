@@ -225,14 +225,20 @@ export function registerViewerNamespace(io: SocketIOServer): void {
 
         // ── resync — send fresh snapshot ─────────────────────────────────────
         socket.on("resync", async () => {
-            // If a chunked delivery is in-flight, skip sendSnapshotToViewer()
-            // entirely.  That helper unconditionally emits lastState (the previous
-            // completed non-chunked snapshot), which would clear chunkedDeliveryRef
-            // on the client and cause all remaining session_messages_chunk events
-            // from the active stream to be dropped.  Ask the runner for a fresh
-            // chunked delivery instead — it will arrive in-order via the room.
-            // Use emitToRelaySession for cluster-wide reach — the runner may
-            // be on a different server node in multi-node deployments.
+            // If a chunked delivery is in-flight on this node, skip
+            // sendSnapshotToViewer() entirely — that helper unconditionally
+            // emits lastState (the previous completed non-chunked snapshot),
+            // which would clear chunkedDeliveryRef on the client and cause all
+            // remaining session_messages_chunk events from the active stream to
+            // be dropped.  Ask the runner for a fresh chunked delivery instead;
+            // it will arrive in-order via the room broadcast.
+            //
+            // Note: getPendingChunkedSnapshot() reads node-local in-memory state.
+            // In a multi-node deployment this returns null when the delivery is
+            // managed by a different server node.  In that case we fall through to
+            // sendSnapshotToViewer(), which is the same behaviour as before this
+            // guard was added — a degraded-but-safe fallback for a deployment
+            // topology PizzaPi doesn't formally support.
             const resyncChunkedPending = getPendingChunkedSnapshot(sessionId);
             if (resyncChunkedPending) {
                 emitToRelaySession(sessionId, "connected" as string, {});
@@ -446,20 +452,15 @@ export function registerViewerNamespace(io: SocketIOServer): void {
             // The runner re-emits a fresh snapshot on the "connected" event
             // below, which will properly restart chunked delivery.
             await sendLatestSnapshotFromCache(socket, sessionId);
-        } else {
-            // Chunked delivery is in-flight.  The client acks the server's
-            // "connected" packet immediately (App.tsx: socket.emit("connected")),
-            // which fires the socket.on("connected") handler above and triggers
-            // the runner to re-emit a fresh snapshot via emitToRelaySession().
-            // However that notification races addViewer(): if the runner responds
-            // before the viewer has joined the broadcast room, the viewer misses
-            // the snapshot entirely and sits on an empty transcript.
-            //
-            // Re-trigger the runner now that addViewer() has completed and the
-            // viewer is guaranteed to be in the room, so the fresh chunked
-            // delivery is received.  Use emitToRelaySession for cluster-wide
-            // reach — the runner may be on a different server node.
-            emitToRelaySession(sessionId, "connected" as string, {});
         }
+        // Note: when chunkedPending is true we intentionally do NOT re-trigger
+        // emitToRelaySession("connected") here.  That would cause emitSessionActive()
+        // on the runner to broadcast a fresh session_active (with messages: []) to
+        // the entire room, clearing all existing viewers' transcripts.  The
+        // sequence-gap detection on the client handles the race: if the new viewer
+        // missed the initial chunked snapshot (because it arrived before addViewer
+        // ran), the next event with a higher seq will trigger a resync request,
+        // which the resync handler routes through the runner's fresh chunked
+        // delivery path (see socket.on("resync") above).
     });
 }
