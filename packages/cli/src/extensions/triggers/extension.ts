@@ -167,7 +167,7 @@ export const triggersExtension: ExtensionFactory = (pi) => {
                 // relay rejects the request (auth, ownership), we keep the trigger
                 // so the agent can retry or escalate.
                 const cleanupResult = await new Promise<{ ok: boolean; error?: string }>((resolve) => {
-                    const timeout = setTimeout(() => resolve({ ok: true }), 10_000); // fire-and-forget after 10s
+                    const timeout = setTimeout(() => resolve({ ok: false, error: "Cleanup ack timed out" }), 10_000);
                     conn.socket.emit("cleanup_child_session", {
                         token: conn.token,
                         childSessionId: pending.sourceSessionId,

@@ -928,24 +928,48 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             // For session_complete triggers, handle cleanup the same way
             // as respond_to_trigger in the triggers extension — escalated
             // replies from the human viewer must also clean up the child.
+            // Keep the trigger pending until delivery is confirmed so the
+            // human can retry if it fails.
             if (pending.type === "session_complete") {
                 const action = data.action ?? "ack";
                 if (action === "followUp") {
-                    // Deliver follow-up as agent input to resume the child
+                    // Deliver follow-up as agent input to resume the child.
+                    // Listen for session_message_error to detect failures.
+                    const childId = pending.sourceSessionId;
+                    let delivered = false;
+                    const onError = (err: { targetSessionId: string; error: string }) => {
+                        if (err.targetSessionId === childId) {
+                            rctx.sioSocket!.off("session_message_error" as any, onError);
+                            // Delivery failed — keep trigger for retry
+                        }
+                    };
+                    rctx.sioSocket.on("session_message_error" as any, onError);
                     rctx.sioSocket.emit("session_message", {
                         token: rctx.relay.token,
-                        targetSessionId: pending.sourceSessionId,
+                        targetSessionId: childId,
                         message: data.response,
                         deliverAs: "input",
                     });
+                    // Clean up error listener after 3s and assume success
+                    setTimeout(() => {
+                        rctx.sioSocket?.off("session_message_error" as any, onError);
+                        if (!delivered) {
+                            delivered = true;
+                            receivedTriggers.delete(data.triggerId);
+                        }
+                    }, 3000);
                 } else {
-                    // ack — emit cleanup request to tear down the child
+                    // ack — emit cleanup request with ack callback
                     rctx.sioSocket.emit("cleanup_child_session", {
                         token: rctx.relay.token,
                         childSessionId: pending.sourceSessionId,
+                    }, (result: { ok: boolean; error?: string }) => {
+                        if (result?.ok) {
+                            receivedTriggers.delete(data.triggerId);
+                        }
+                        // On failure, trigger stays — human can retry
                     });
                 }
-                receivedTriggers.delete(data.triggerId);
                 return;
             }
 
