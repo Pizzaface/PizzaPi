@@ -11,6 +11,46 @@ import {
 } from "../attachments/store.js";
 import type { RouteHandler } from "./types.js";
 
+/**
+ * Percent-encode a filename per RFC 5987.
+ *
+ * `encodeURIComponent` leaves `'`, `(`, `)`, `*`, and `!` unencoded, but
+ * RFC 5987 uses `'` as a delimiter (`charset'language'value`) so those
+ * characters must be encoded manually to avoid mis-parsing.
+ */
+export function rfc5987Encode(value: string): string {
+    return encodeURIComponent(value)
+        .replace(/'/g, "%27")
+        .replace(/\(/g, "%28")
+        .replace(/\)/g, "%29")
+        .replace(/\*/g, "%2A");
+}
+
+/**
+ * Build a Content-Disposition header value safe for Bun's header validation.
+ *
+ * Bun rejects header values with non-ASCII characters (e.g. macOS screenshot
+ * filenames that contain U+202F NARROW NO-BREAK SPACE before "AM"/"PM").
+ * We produce both an ASCII-safe `filename` and an RFC 5987 `filename*` with
+ * the full UTF-8 name percent-encoded.
+ */
+export function buildContentDisposition(rawFilename: string, mode: "inline" | "attachment" = "inline"): string {
+    const asciiFallback = rawFilename.replace(/[^\x20-\x7E]/g, "_").replace(/["\\]/g, "_");
+    const encodedName = rfc5987Encode(rawFilename);
+    return `${mode}; filename="${asciiFallback}"; filename*=UTF-8''${encodedName}`;
+}
+
+/**
+ * Percent-encode a filename for use in an HTTP header value.
+ *
+ * Uses full percent-encoding so the original Unicode filename can be
+ * recovered by the consumer (the runner decodes it). This preserves
+ * filenames like `résumé.txt` or `截图.png` across the wire.
+ */
+export function encodeHeaderFilename(value: string): string {
+    return rfc5987Encode(value);
+}
+
 export const handleAttachmentsRoute: RouteHandler = async (req, url) => {
     // ── Upload: POST /api/sessions/:id/attachments ─────────────────────
     if (
@@ -104,9 +144,9 @@ export const handleAttachmentsRoute: RouteHandler = async (req, url) => {
             headers: {
                 "content-type": attachment.mimeType,
                 "content-length": String(attachment.size),
-                "content-disposition": `inline; filename="${attachment.filename.replace(/\"/g, "")}"`,
+                "content-disposition": buildContentDisposition(attachment.filename),
                 "x-attachment-id": attachment.attachmentId,
-                "x-attachment-filename": attachment.filename,
+                "x-attachment-filename": encodeHeaderFilename(attachment.filename),
             },
         });
     }
