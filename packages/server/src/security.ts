@@ -107,18 +107,51 @@ export function cwdMatchesRoots(roots: string[], cwd: string): boolean {
 }
 
 /**
+ * Check if an IP address is private/loopback (indicating likely reverse proxy setup).
+ */
+function isPrivateOrLoopbackIp(ip: string): boolean {
+    // Loopback
+    if (ip === "127.0.0.1" || ip === "::1" || ip === "localhost") return true;
+    // IPv4 private ranges
+    if (ip.startsWith("10.")) return true;
+    if (ip.startsWith("172.") && /^172\.([1-2][0-9]|3[0-1])\./.test(ip)) return true;
+    if (ip.startsWith("192.168.")) return true;
+    // IPv4 link-local
+    if (ip.startsWith("169.254.")) return true;
+    // IPv6 unique local
+    if (ip.startsWith("fc") || ip.startsWith("fd")) return true;
+    // IPv6 link-local
+    if (ip.startsWith("fe80")) return true;
+    return false;
+}
+
+/**
  * Securely extracts the client IP address from a Fetch Request.
- * Relies on `x-pizzapi-client-ip` which is populated securely by the server
- * from the underlying TCP connection, preventing client spoofing.
- * If PIZZAPI_TRUST_PROXY is 'true', it will also trust the `x-forwarded-for` header.
+ *
+ * In direct connections: Uses `x-pizzapi-client-ip` set by the Node.js adapter
+ * from the TCP connection's remoteAddress, preventing client spoofing.
+ *
+ * In reverse proxy setups (common deployment): Detects when remoteAddress is
+ * a private/loopback IP and safely trusts `x-forwarded-for` as the real client IP.
+ *
+ * The `PIZZAPI_TRUST_PROXY` env var can explicitly enable/disable proxy mode
+ * for advanced setups (e.g. proxies that don't preserve loopback addresses).
  */
 export function getClientIp(req: Request): string {
-    const trustProxy = process.env.PIZZAPI_TRUST_PROXY === "true";
+    const clientIp = req.headers.get("x-pizzapi-client-ip") || "unknown";
+    
+    // Trust x-forwarded-for only when explicitly enabled OR when remoteAddress
+    // suggests we're behind a reverse proxy (private/loopback IP).
+    const trustProxy =
+        process.env.PIZZAPI_TRUST_PROXY === "true" ||
+        (clientIp !== "unknown" && isPrivateOrLoopbackIp(clientIp));
+
     if (trustProxy) {
         const forwardedFor = req.headers.get("x-forwarded-for");
         if (forwardedFor) {
-            return forwardedFor.split(",")[0]?.trim() || "unknown";
+            return forwardedFor.split(",")[0]?.trim() || clientIp;
         }
     }
-    return req.headers.get("x-pizzapi-client-ip") || "unknown";
+
+    return clientIp;
 }
