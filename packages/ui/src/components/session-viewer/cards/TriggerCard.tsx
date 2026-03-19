@@ -65,6 +65,9 @@ function AskUserQuestionCard({
       if (result !== false) {
         setSubmitted(true);
       }
+      // Return the result so MultipleChoiceQuestions can detect send failures
+      // and re-enable the submit button immediately instead of waiting for the 10-second timeout.
+      return result;
     },
     [triggerId, onRespond, submitted],
   );
