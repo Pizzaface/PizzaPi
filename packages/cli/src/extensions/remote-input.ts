@@ -113,7 +113,15 @@ export async function loadAttachmentFromRelay(
     const rawFilename = response.headers.get("x-attachment-filename") ?? undefined;
     // The server percent-encodes this header to survive Bun's ASCII-only
     // header validation. Decode it to recover the original Unicode filename.
-    const filename = rawFilename ? decodeURIComponent(rawFilename) : undefined;
+    let filename: string | undefined;
+    if (rawFilename) {
+        try {
+            filename = decodeURIComponent(rawFilename);
+        } catch {
+            // Malformed percent-encoding — use the raw value as-is
+            filename = rawFilename;
+        }
+    }
     const dataBase64 = Buffer.from(await response.arrayBuffer()).toString("base64");
 
     return { mediaType, filename, dataBase64 };
