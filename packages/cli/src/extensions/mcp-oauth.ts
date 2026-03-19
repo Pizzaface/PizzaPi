@@ -216,6 +216,11 @@ export type McpOAuthOptions = {
   onAuthStart?: (authUrl: string) => void;
   /** Callback when auth completes. */
   onAuthComplete?: () => void;
+  /**
+   * When true, waitForRelayContext() defers its fallback timeout until
+   * markRelayWaitAnchorReady() is called.
+   */
+  deferRelayWaitTimeoutUntilAnchor?: boolean;
 };
 
 /**
@@ -263,6 +268,15 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
   /** Callbacks waiting for relay context to become available. */
   private _relayReadyResolvers: Array<() => void> = [];
 
+  /** Whether waitForRelayContext timeout is deferred until anchor is marked ready. */
+  private _deferRelayWaitTimeoutUntilAnchor: boolean;
+
+  /** Whether the timeout anchor has been opened (session_start reached). */
+  private _relayWaitAnchorReady: boolean;
+
+  /** Waiters to notify when the timeout anchor is opened. */
+  private _relayWaitAnchorResolvers: Array<() => void> = [];
+
   /** Nonce for the current auth flow (relay mode). */
   private _currentNonce: string | null = null;
 
@@ -275,6 +289,8 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
     this._callbackPort = opts.callbackPort ?? 0;
     this._onAuthStart = opts.onAuthStart;
     this._onAuthComplete = opts.onAuthComplete;
+    this._deferRelayWaitTimeoutUntilAnchor = opts.deferRelayWaitTimeoutUntilAnchor === true;
+    this._relayWaitAnchorReady = !this._deferRelayWaitTimeoutUntilAnchor;
     this._persisted = loadPersistedAuth(this._serverUrl);
   }
 
@@ -317,27 +333,75 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
   }
 
   /**
+   * Open the timeout anchor for waitForRelayContext().
+   *
+   * When deferRelayWaitTimeoutUntilAnchor is enabled, this starts the
+   * fallback timeout window for all currently waiting callers.
+   */
+  markRelayWaitAnchorReady(): void {
+    if (this._relayWaitAnchorReady) return;
+    this._relayWaitAnchorReady = true;
+    const resolvers = this._relayWaitAnchorResolvers.splice(0);
+    for (const resolve of resolvers) resolve();
+  }
+
+  /**
    * Wait for relay context to become available (e.g. during startup when
    * MCP init races ahead of the relay connection).
    *
    * Returns immediately if relay context is already set, otherwise waits
    * up to `timeoutMs` before resolving (caller falls back to local mode).
+   *
+   * If deferRelayWaitTimeoutUntilAnchor is enabled, timeout counting begins
+   * only after markRelayWaitAnchorReady() is called.
    */
   waitForRelayContext(timeoutMs: number = 15_000): Promise<void> {
     if (this._relayContext) return Promise.resolve();
     return new Promise<void>((resolve) => {
-      const timer = setTimeout(() => {
-        // Timeout — remove from waiters and resolve so caller falls back to local mode
+      let finished = false;
+      let timer: ReturnType<typeof setTimeout> | null = null;
+
+      const cleanup = () => {
         const idx = this._relayReadyResolvers.indexOf(wrappedResolve);
         if (idx >= 0) this._relayReadyResolvers.splice(idx, 1);
-        resolve();
-      }, timeoutMs);
+        const anchorIdx = this._relayWaitAnchorResolvers.indexOf(startTimeout);
+        if (anchorIdx >= 0) this._relayWaitAnchorResolvers.splice(anchorIdx, 1);
+        if (timer) {
+          clearTimeout(timer);
+          timer = null;
+        }
+      };
 
-      const wrappedResolve = () => {
-        clearTimeout(timer);
+      const finish = () => {
+        if (finished) return;
+        finished = true;
+        cleanup();
         resolve();
       };
+
+      const wrappedResolve = () => {
+        finish();
+      };
+
+      const startTimeout = () => {
+        if (finished || timer || timeoutMs <= 0) return;
+        timer = setTimeout(() => {
+          finish();
+        }, timeoutMs);
+      };
+
       this._relayReadyResolvers.push(wrappedResolve);
+
+      if (timeoutMs <= 0) {
+        finish();
+        return;
+      }
+
+      if (!this._deferRelayWaitTimeoutUntilAnchor || this._relayWaitAnchorReady) {
+        startTimeout();
+      } else {
+        this._relayWaitAnchorResolvers.push(startTimeout);
+      }
     });
   }
 

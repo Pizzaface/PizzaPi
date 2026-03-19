@@ -765,6 +765,28 @@ export type McpConfig = {
 /** Track active OAuth providers so the relay context can be injected later. */
 const activeOAuthProviders: PizzaPiOAuthProvider[] = [];
 
+/**
+ * Controls whether newly created OAuth providers defer relay wait timeout
+ * counting until markOAuthRelayWaitAnchorReady() is called.
+ */
+let deferOAuthRelayWaitTimeoutUntilAnchor = false;
+
+/** Configure timeout anchoring behavior for subsequently created providers. */
+export function setDeferOAuthRelayWaitTimeoutUntilAnchor(enabled: boolean): void {
+  deferOAuthRelayWaitTimeoutUntilAnchor = enabled;
+}
+
+/**
+ * Mark the relay wait timeout anchor as ready on all active OAuth providers.
+ * Used by the MCP extension at session_start so timeout counting begins when
+ * the relay has had a chance to register.
+ */
+export function markOAuthRelayWaitAnchorReady(): void {
+  for (const provider of activeOAuthProviders) {
+    provider.markRelayWaitAnchorReady();
+  }
+}
+
 /** Get all active OAuth providers (used by the MCP extension to inject relay context). */
 export function getOAuthProviders(): PizzaPiOAuthProvider[] {
   return activeOAuthProviders;
@@ -863,7 +885,11 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
       );
     } else if (s.transport === "streamable") {
       if (!isMcpDomainAllowed(s.url, s.name)) continue;
-      const provider = new PizzaPiOAuthProvider({ serverUrl: s.url, serverName: s.name });
+      const provider = new PizzaPiOAuthProvider({
+        serverUrl: s.url,
+        serverName: s.name,
+        deferRelayWaitTimeoutUntilAnchor: deferOAuthRelayWaitTimeoutUntilAnchor,
+      });
       activeOAuthProviders.push(provider);
       clients.push(
         createStreamableMcpClient({
@@ -914,7 +940,11 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
         (d.type === "http" && d.transport === undefined);
 
       if (useStreamable) {
-        const provider = new PizzaPiOAuthProvider({ serverUrl: d.url, serverName: name });
+        const provider = new PizzaPiOAuthProvider({
+          serverUrl: d.url,
+          serverName: name,
+          deferRelayWaitTimeoutUntilAnchor: deferOAuthRelayWaitTimeoutUntilAnchor,
+        });
         activeOAuthProviders.push(provider);
         clients.push(createStreamableMcpClient({
           name,

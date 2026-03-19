@@ -2,7 +2,15 @@ import type { ExtensionFactory } from "@mariozechner/pi-coding-agent";
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import { loadConfig, toggleMcpServer, globalConfigDir, type PizzaPiConfig } from "../config.js";
-import { registerMcpTools, type McpConfig, type McpServerInitResult, type McpRegistrationResult, getOAuthProviders } from "./mcp.js";
+import {
+  registerMcpTools,
+  type McpConfig,
+  type McpServerInitResult,
+  type McpRegistrationResult,
+  getOAuthProviders,
+  setDeferOAuthRelayWaitTimeoutUntilAnchor,
+  markOAuthRelayWaitAnchorReady,
+} from "./mcp.js";
 import { setMcpBridge } from "./mcp-bridge.js";
 import type { RelayContext } from "./mcp-oauth.js";
 
@@ -536,11 +544,14 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
   // loading and relay connection setup.
   //
   // We do NOT await load() here, so the factory completes immediately and
-  // other extension factories continue loading.  Non-OAuth servers (stdio
-  // like godmother) will complete their handshake while other factories load.
-  // OAuth servers that need the relay will block inside waitForRelayContext()
-  // until session_start fires and the relay connects — no deadlock because
-  // we're not blocking the factory.
+  // other extension factories continue loading. Non-OAuth servers (stdio like
+  // godmother) complete their handshake while other factories load.
+  //
+  // For OAuth streamable servers, defer the relay wait timeout window until
+  // session_start so a long startup/registration path doesn't consume the
+  // 15s fallback budget before the relay can publish context.
+  setDeferOAuthRelayWaitTimeoutUntilAnchor(true);
+
   let eagerLoadPromise: Promise<McpSnapshot | null> | null = null;
   try {
     eagerLoadPromise = load().catch((err) => {
@@ -554,6 +565,11 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
 
   // ── session_start: await eager load + report timing to TUI/web UI ────────
   pi.on?.("session_start", async (_event: any, ctx: any) => {
+    // Anchor relay wait timeout to session_start; any OAuth waiters created
+    // during eager init begin their fallback window now.
+    setDeferOAuthRelayWaitTimeoutUntilAnchor(false);
+    markOAuthRelayWaitAnchorReady();
+
     try {
       if (eagerLoadPromise) {
         const result = await eagerLoadPromise;
