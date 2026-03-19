@@ -634,6 +634,8 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     setCommandQuery("");
     setCommandHighlightedIndex(0);
     setAtMentionOpen(false);
+    // Reset delivery mode to followUp so it doesn't persist across sessions
+    setDeliveryMode("followUp");
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally reading `input` at transition time only
   }, [sessionId]);
 
