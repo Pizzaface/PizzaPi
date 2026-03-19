@@ -86,6 +86,7 @@ function simulateCleanupDispatch(opts: {
     childSession: FakeSession;
     parentSessionId: string;
     childSessionId: string;
+    hasRelayRecipient: boolean;
     emitToRunner: (runnerId: string, event: string, data: unknown) => void;
     emitToRelaySession: (sessionId: string, event: string, data: unknown) => void;
     removeChildSession: (parentId: string, childId: string) => void;
@@ -115,8 +116,15 @@ function simulateCleanupDispatch(opts: {
     opts.removeChildSession(opts.parentSessionId, opts.childSessionId);
     record.removeChildSessionCalled = true;
 
-    // 4. endSharedSession is intentionally NOT called here
-    // (left to child's disconnect handler)
+    // 4. If no relay socket remains anywhere in the cluster, there is no
+    // disconnect handler left to finish teardown, so end it immediately.
+    if (!opts.hasRelayRecipient) {
+        opts.endSharedSession(opts.childSessionId, "Parent acknowledged completion");
+        record.endSharedSessionCalled = true;
+        return record;
+    }
+
+    // Otherwise leave teardown to the child's disconnect handler.
     record.endSharedSessionCalled = false;
 
     return record;
@@ -299,6 +307,7 @@ describe("cleanup_child_session — dispatch", () => {
             childSession,
             parentSessionId: PARENT_ID,
             childSessionId: CHILD_ID,
+            hasRelayRecipient: true,
             emitToRunner: (runnerId, event, data: any) => {
                 if (event === "kill_session") emittedKills.push({ runnerId, sessionId: data.sessionId });
             },
@@ -320,6 +329,7 @@ describe("cleanup_child_session — dispatch", () => {
             childSession,
             parentSessionId: PARENT_ID,
             childSessionId: CHILD_ID,
+            hasRelayRecipient: true,
             emitToRunner: () => {},
             emitToRelaySession: (sessionId, event, data: any) => {
                 broadcasts.push({ sessionId, event, command: data.command });
@@ -341,6 +351,7 @@ describe("cleanup_child_session — dispatch", () => {
             childSession,
             parentSessionId: PARENT_ID,
             childSessionId: CHILD_ID,
+            hasRelayRecipient: true,
             emitToRunner: () => {},
             emitToRelaySession: () => {},
             removeChildSession: (p, c) => removed.push([p, c]),
@@ -358,6 +369,7 @@ describe("cleanup_child_session — dispatch", () => {
             childSession,
             parentSessionId: PARENT_ID,
             childSessionId: CHILD_ID,
+            hasRelayRecipient: true,
             emitToRunner: () => {},
             emitToRelaySession: () => {},
             removeChildSession: () => {},
@@ -379,6 +391,7 @@ describe("cleanup_child_session — dispatch", () => {
             childSession: childNoRunner,
             parentSessionId: PARENT_ID,
             childSessionId: CHILD_ID,
+            hasRelayRecipient: true,
             emitToRunner: (_runnerId, event, data: any) => {
                 if (event === "kill_session") emittedKills.push(data.sessionId);
             },
@@ -389,5 +402,23 @@ describe("cleanup_child_session — dispatch", () => {
 
         expect(record.killSessionSent).toBe(false);
         expect(emittedKills).toHaveLength(0);
+    });
+
+    it("calls endSharedSession immediately when no relay socket remains", () => {
+        const endCalls: Array<{ id: string; reason: string }> = [];
+
+        const record = simulateCleanupDispatch({
+            childSession,
+            parentSessionId: PARENT_ID,
+            childSessionId: CHILD_ID,
+            hasRelayRecipient: false,
+            emitToRunner: () => {},
+            emitToRelaySession: () => {},
+            removeChildSession: () => {},
+            endSharedSession: (id, reason) => endCalls.push({ id, reason }),
+        });
+
+        expect(record.endSharedSessionCalled).toBe(true);
+        expect(endCalls).toEqual([{ id: CHILD_ID, reason: "Parent acknowledged completion" }]);
     });
 });

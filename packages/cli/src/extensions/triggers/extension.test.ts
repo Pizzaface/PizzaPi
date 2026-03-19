@@ -16,15 +16,20 @@ interface EmittedEvent {
     data: unknown;
 }
 
-function createMockSocket() {
+function createMockSocket(opts?: { failSessionMessage?: boolean }) {
     const emitted: EmittedEvent[] = [];
     const listeners = new Map<string, ((...args: any[]) => void)[]>();
 
     return {
         emitted,
         socket: {
-            emit(event: string, data: unknown) {
+            emit(event: string, data: any) {
                 emitted.push({ event, data });
+                if (event === "session_message" && opts?.failSessionMessage) {
+                    for (const handler of listeners.get("session_message_error") ?? []) {
+                        handler({ targetSessionId: data.targetSessionId, error: "Target session not found or not connected" });
+                    }
+                }
             },
             on(event: string, handler: (...args: any[]) => void) {
                 const handlers = listeners.get(event) ?? [];
@@ -65,18 +70,36 @@ async function simulateRespondToTrigger(
     }
 
     if (pending.type === "session_complete") {
-        receivedTriggers.delete(params.triggerId);
         const action = params.action ?? "ack";
         if (action === "followUp") {
-            // Deliver as agent input (not testing the full async path here)
-            conn.socket.emit("session_message", {
-                token: conn.token,
-                targetSessionId: pending.sourceSessionId,
-                message: params.response,
-                deliverAs: "input",
+            const result = await new Promise<{ ok: boolean; text: string }>((resolve) => {
+                const timeout = setTimeout(() => {
+                    conn.socket.off("session_message_error", onError);
+                    resolve({ ok: true, text: `Follow-up sent to child ${pending.sourceSessionId}` });
+                }, 0);
+
+                const onError = (err: { targetSessionId: string; error: string }) => {
+                    if (err.targetSessionId === pending.sourceSessionId) {
+                        clearTimeout(timeout);
+                        conn.socket.off("session_message_error", onError);
+                        resolve({ ok: false, text: `Error sending follow-up to child ${pending.sourceSessionId}: ${err.error}` });
+                    }
+                };
+                conn.socket.on("session_message_error", onError);
+
+                conn.socket.emit("session_message", {
+                    token: conn.token,
+                    targetSessionId: pending.sourceSessionId,
+                    message: params.response,
+                    deliverAs: "input",
+                });
             });
-            return { text: `Follow-up sent to child ${pending.sourceSessionId}` };
+            if (result.ok) {
+                receivedTriggers.delete(params.triggerId);
+            }
+            return { text: result.text };
         }
+        receivedTriggers.delete(params.triggerId);
         // ack — emit cleanup request (matches extension.ts implementation)
         conn.socket.emit("cleanup_child_session", {
             token: conn.token,
@@ -162,6 +185,20 @@ describe("respond_to_trigger — session_complete cleanup", () => {
         expect(messageEvents).toHaveLength(1);
         expect((messageEvents[0].data as any).targetSessionId).toBe("child-session-follow");
         expect((messageEvents[0].data as any).message).toBe("Please fix tests");
+        expect(receivedTriggers.has("trigger-3")).toBe(false);
+    });
+
+    it("keeps a session_complete followUp trigger pending when delivery fails", async () => {
+        const conn = createMockSocket({ failSessionMessage: true });
+        trackReceivedTrigger("trigger-3b", "child-session-follow", "session_complete");
+
+        const result = await simulateRespondToTrigger(
+            { triggerId: "trigger-3b", response: "Please fix tests", action: "followUp" },
+            conn,
+        );
+
+        expect(result!.text).toContain("Error sending follow-up to child child-session-follow");
+        expect(receivedTriggers.has("trigger-3b")).toBe(true);
     });
 
     it("does NOT emit cleanup for non-session_complete triggers", async () => {

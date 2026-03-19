@@ -135,17 +135,17 @@ export const triggersExtension: ExtensionFactory = (pi) => {
                     // Deliver as agent input so it starts a new turn in the child.
                     // Wait for session_message_error to detect delivery failures.
                     const childId = pending.sourceSessionId;
-                    const result = await new Promise<string>((resolve) => {
+                    const result = await new Promise<{ ok: boolean; text: string }>((resolve) => {
                         const timeout = setTimeout(() => {
                             conn.socket.off("session_message_error", onError);
-                            resolve(`Follow-up sent to child ${childId}`);
+                            resolve({ ok: true, text: `Follow-up sent to child ${childId}` });
                         }, 3000);
 
                         const onError = (err: { targetSessionId: string; error: string }) => {
                             if (err.targetSessionId === childId) {
                                 clearTimeout(timeout);
                                 conn.socket.off("session_message_error", onError);
-                                resolve(`Error sending follow-up to child ${childId}: ${err.error}`);
+                                resolve({ ok: false, text: `Error sending follow-up to child ${childId}: ${err.error}` });
                             }
                         };
                         conn.socket.on("session_message_error", onError);
@@ -157,8 +157,10 @@ export const triggersExtension: ExtensionFactory = (pi) => {
                             deliverAs: "input",
                         });
                     });
-                    receivedTriggers.delete(params.triggerId);
-                    return { content: [{ type: "text" as const, text: result }], details: null as any };
+                    if (result.ok) {
+                        receivedTriggers.delete(params.triggerId);
+                    }
+                    return { content: [{ type: "text" as const, text: result.text }], details: null as any };
                 }
                 // ack or any other action — acknowledge and clean up the child session
                 // Emit cleanup request to the relay so the server tears down the

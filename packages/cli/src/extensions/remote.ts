@@ -934,13 +934,14 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 const action = data.action ?? "ack";
                 if (action === "followUp") {
                     // Deliver follow-up as agent input to resume the child.
-                    // Listen for session_message_error to detect failures.
+                    // Keep the trigger pending if delivery fails so the human
+                    // can retry instead of losing the follow-up.
                     const childId = pending.sourceSessionId;
-                    let delivered = false;
+                    let failed = false;
                     const onError = (err: { targetSessionId: string; error: string }) => {
                         if (err.targetSessionId === childId) {
+                            failed = true;
                             rctx.sioSocket!.off("session_message_error" as any, onError);
-                            // Delivery failed — keep trigger for retry
                         }
                     };
                     rctx.sioSocket.on("session_message_error" as any, onError);
@@ -950,11 +951,12 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                         message: data.response,
                         deliverAs: "input",
                     });
-                    // Clean up error listener after 3s and assume success
+                    // After a short window without an error, consider delivery
+                    // successful and clear the trigger. On failure it stays
+                    // pending for retry.
                     setTimeout(() => {
                         rctx.sioSocket?.off("session_message_error" as any, onError);
-                        if (!delivered) {
-                            delivered = true;
+                        if (!failed) {
                             receivedTriggers.delete(data.triggerId);
                         }
                     }, 3000);

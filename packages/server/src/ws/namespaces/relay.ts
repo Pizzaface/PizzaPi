@@ -754,18 +754,31 @@ export function registerRelayNamespace(io: SocketIOServer): void {
                 command: "end_session",
             });
 
+            const relaySockets = await io.of("/relay").in(`session:${childSessionId}`).fetchSockets();
+            const hasRelayRecipient = relaySockets.length > 0;
+
             // Clean up child-index entry
             void removeChildSession(sessionId, childSessionId);
 
-            // Do NOT call endSharedSession here.  The child will disconnect
-            // momentarily (from the SIGTERM or exec above), and its disconnect
-            // handler on whichever node hosts the child's relay socket will
-            // call endSharedSession there — where localRunnerSockets has the
-            // correct runner socket.  Calling it here first would delete the
-            // Redis record before that node can process the disconnect, turning
-            // its endSharedSession into a no-op and leaving adopted-session
-            // entries stranded in runningSessions on the remote runner.
-            // If the child is already gone the orphan sweeper handles cleanup.
+            if (!hasRelayRecipient) {
+                // No relay socket is currently joined for this child anywhere in
+                // the cluster, so there is no disconnect handler left to finish
+                // cleanup. Complete teardown now so acknowledged children don't
+                // linger in Redis/sidebar until the orphan sweeper runs.
+                await endSharedSession(childSessionId, "Parent acknowledged completion");
+                if (typeof ack === "function") ack({ ok: true });
+                return;
+            }
+
+            // Do NOT call endSharedSession here when a relay recipient exists.
+            // The child will disconnect momentarily (from the SIGTERM or exec
+            // above), and its disconnect handler on whichever node hosts the
+            // child's relay socket will call endSharedSession there — where the
+            // correct local runner socket is available for adopted-session
+            // cleanup. Calling it here first would delete the Redis record
+            // before that node can process the disconnect, turning its
+            // endSharedSession into a no-op and leaving adopted-session entries
+            // stranded in runningSessions on the remote runner.
 
             if (typeof ack === "function") ack({ ok: true });
         });
