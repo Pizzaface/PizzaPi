@@ -241,10 +241,17 @@ export function registerViewerNamespace(io: SocketIOServer): void {
             // topology PizzaPi doesn't formally support.
             const resyncChunkedPending = getPendingChunkedSnapshot(sessionId);
             if (resyncChunkedPending) {
-                if (!emitToRelaySession(sessionId, "connected" as string, {})) {
-                    // Relay delivery failed — fall back to sending snapshot directly
-                    await sendSnapshotToViewer(sessionId, socket);
-                }
+                // A chunked delivery is in-flight on this node.  DON'T request
+                // a room-wide re-emit via emitToRelaySession("connected") —
+                // that triggers emitSessionActive() on the runner which
+                // broadcasts to ALL viewers, resetting every watcher's
+                // transcript even though only this one viewer needed recovery.
+                //
+                // Instead, no-op: this viewer is already in the broadcast room
+                // and will receive the remaining session_messages_chunk events.
+                // Once the final chunk assembles into a complete snapshot and
+                // updateSessionState() runs, the viewer can resync again if
+                // needed and will get the fully-assembled lastState.
                 return;
             }
 
