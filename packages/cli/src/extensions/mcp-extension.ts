@@ -32,8 +32,8 @@ type EffectiveMcpServer = McpServerConfigEntry & {
 type McpConfigInspection = {
   global: McpConfigFileState;
   project: McpConfigFileState;
-  effectivePreferredSource: "global" | "project" | "none";
-  effectiveCompatibilitySource: "global" | "project" | "none";
+  effectivePreferredSource: "global" | "project" | "both" | "none";
+  effectiveCompatibilitySource: "global" | "project" | "both" | "none";
   effectiveServers: EffectiveMcpServer[];
   /** Server names disabled via disabledMcpServers in global and/or project config. */
   disabledServers: string[];
@@ -174,39 +174,63 @@ function inspectMcpConfig(cwd: string): McpConfigInspection {
   const global = parseConfigFile("global", globalPath);
   const project = parseConfigFile("project", projectPath);
 
-  const effectivePreferredSource: "global" | "project" | "none" = project.hasMcpKey
-    ? "project"
-    : global.hasMcpKey
-      ? "global"
-      : "none";
+  // Determine effective sources — "both" when both scopes define the key
+  const effectivePreferredSource: "global" | "project" | "both" | "none" =
+    global.hasMcpKey && project.hasMcpKey
+      ? "both"
+      : project.hasMcpKey
+        ? "project"
+        : global.hasMcpKey
+          ? "global"
+          : "none";
 
-  const effectiveCompatibilitySource: "global" | "project" | "none" = project.hasMcpServersKey
-    ? "project"
-    : global.hasMcpServersKey
-      ? "global"
-      : "none";
+  const effectiveCompatibilitySource: "global" | "project" | "both" | "none" =
+    global.hasMcpServersKey && project.hasMcpServersKey
+      ? "both"
+      : project.hasMcpServersKey
+        ? "project"
+        : global.hasMcpServersKey
+          ? "global"
+          : "none";
 
   const effectiveServers: EffectiveMcpServer[] = [];
 
+  // mcp.servers (preferred format): merge by server name, project wins on conflicts
   if (effectivePreferredSource !== "none") {
-    const source = effectivePreferredSource === "project" ? project : global;
-    for (const entry of source.preferredServers) {
-      effectiveServers.push({
-        ...entry,
-        scope: source.scope,
-        sourcePath: source.path,
-      });
+    if (effectivePreferredSource === "both") {
+      // Merge: start with global, project overwrites by name
+      const serverMap = new Map<string, EffectiveMcpServer>();
+      for (const entry of global.preferredServers) {
+        serverMap.set(entry.name, { ...entry, scope: "global", sourcePath: global.path });
+      }
+      for (const entry of project.preferredServers) {
+        serverMap.set(entry.name, { ...entry, scope: "project", sourcePath: project.path });
+      }
+      effectiveServers.push(...serverMap.values());
+    } else {
+      const source = effectivePreferredSource === "project" ? project : global;
+      for (const entry of source.preferredServers) {
+        effectiveServers.push({ ...entry, scope: source.scope, sourcePath: source.path });
+      }
     }
   }
 
+  // mcpServers (compatibility format): merge by server name, project wins on conflicts
   if (effectiveCompatibilitySource !== "none") {
-    const source = effectiveCompatibilitySource === "project" ? project : global;
-    for (const entry of source.compatibilityServers) {
-      effectiveServers.push({
-        ...entry,
-        scope: source.scope,
-        sourcePath: source.path,
-      });
+    if (effectiveCompatibilitySource === "both") {
+      const serverMap = new Map<string, EffectiveMcpServer>();
+      for (const entry of global.compatibilityServers) {
+        serverMap.set(entry.name, { ...entry, scope: "global", sourcePath: global.path });
+      }
+      for (const entry of project.compatibilityServers) {
+        serverMap.set(entry.name, { ...entry, scope: "project", sourcePath: project.path });
+      }
+      effectiveServers.push(...serverMap.values());
+    } else {
+      const source = effectiveCompatibilitySource === "project" ? project : global;
+      for (const entry of source.compatibilityServers) {
+        effectiveServers.push({ ...entry, scope: source.scope, sourcePath: source.path });
+      }
     }
   }
 

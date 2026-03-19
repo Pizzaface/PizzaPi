@@ -2,6 +2,11 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join, resolve } from "path";
 
+/** Check if a value is a plain object (not null, not an array). */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+    return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
 /** A single hook entry — a shell command to run at a lifecycle point. */
 export interface HookEntry {
     /** Shell command to execute. Receives JSON on stdin. */
@@ -904,6 +909,37 @@ export function loadConfig(cwd: string = process.cwd()): PizzaPiConfig {
             global.sandbox ?? {},
             project.sandbox ?? {},
         );
+    }
+
+    // Deep-merge mcpServers (Claude Code compatibility format) from both scopes.
+    // Project entries win on name conflicts, but global servers are preserved.
+    // mcpServers is not in the PizzaPiConfig type — it flows through as untyped JSON.
+    const globalMcpServers = isPlainObject((global as any).mcpServers) ? (global as any).mcpServers : undefined;
+    const projectMcpServers = isPlainObject((project as any).mcpServers) ? (project as any).mcpServers : undefined;
+    if (globalMcpServers || projectMcpServers) {
+        (config as any).mcpServers = { ...globalMcpServers, ...projectMcpServers };
+    }
+
+    // Deep-merge mcp.servers (preferred array format) from both scopes.
+    // Project entries win on name conflicts (matched by server name).
+    const globalMcp = isPlainObject((global as any).mcp) ? (global as any).mcp : undefined;
+    const projectMcp = isPlainObject((project as any).mcp) ? (project as any).mcp : undefined;
+    if (globalMcp || projectMcp) {
+        const globalServers: any[] = Array.isArray(globalMcp?.servers) ? globalMcp.servers : [];
+        const projectServers: any[] = Array.isArray(projectMcp?.servers) ? projectMcp.servers : [];
+        // Build a map keyed by server name — project entries overwrite global ones
+        const serverMap = new Map<string, any>();
+        for (const s of globalServers) {
+            if (isPlainObject(s) && typeof s.name === "string") serverMap.set(s.name, s);
+        }
+        for (const s of projectServers) {
+            if (isPlainObject(s) && typeof s.name === "string") serverMap.set(s.name, s);
+        }
+        (config as any).mcp = {
+            ...globalMcp,
+            ...projectMcp,
+            servers: [...serverMap.values()],
+        };
     }
 
     // Merge disabledMcpServers from both scopes (union).

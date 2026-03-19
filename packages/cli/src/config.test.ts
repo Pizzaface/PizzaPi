@@ -412,6 +412,174 @@ describe("validateSandboxOverride", () => {
   });
 });
 
+// ── loadConfig mcpServers deep-merge ──────────────────────────────────────────
+
+describe("loadConfig mcpServers deep-merge", () => {
+  let tempDir: string;
+  let globalDir: string;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), "pizzapi-mcp-merge-"));
+    globalDir = join(tempDir, "global-pizzapi");
+    mkdirSync(globalDir, { recursive: true });
+    _setGlobalConfigDir(globalDir);
+  });
+
+  afterEach(() => {
+    _setGlobalConfigDir(null);
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  test("global-only mcpServers passes through", () => {
+    writeFileSync(
+      join(globalDir, "config.json"),
+      JSON.stringify({
+        mcpServers: {
+          godmother: { command: "godmother", args: ["serve"] },
+          tavily: { command: "tavily-mcp" },
+        },
+      }),
+    );
+
+    const projectDir = join(tempDir, "project");
+    mkdirSync(join(projectDir, ".pizzapi"), { recursive: true });
+    writeFileSync(join(projectDir, ".pizzapi", "config.json"), JSON.stringify({}));
+
+    const config = loadConfig(projectDir) as any;
+    expect(Object.keys(config.mcpServers)).toEqual(["godmother", "tavily"]);
+    expect(config.mcpServers.godmother.command).toBe("godmother");
+  });
+
+  test("project-only mcpServers passes through", () => {
+    writeFileSync(join(globalDir, "config.json"), JSON.stringify({}));
+
+    const projectDir = join(tempDir, "project");
+    mkdirSync(join(projectDir, ".pizzapi"), { recursive: true });
+    writeFileSync(
+      join(projectDir, ".pizzapi", "config.json"),
+      JSON.stringify({
+        mcpServers: {
+          playwright: { command: "npx", args: ["@playwright/mcp"] },
+        },
+      }),
+    );
+
+    const config = loadConfig(projectDir) as any;
+    expect(Object.keys(config.mcpServers)).toEqual(["playwright"]);
+  });
+
+  test("both defined: servers merge, project wins on name conflicts", () => {
+    writeFileSync(
+      join(globalDir, "config.json"),
+      JSON.stringify({
+        mcpServers: {
+          godmother: { command: "godmother", args: ["serve"] },
+          shared: { command: "global-version" },
+        },
+      }),
+    );
+
+    const projectDir = join(tempDir, "project");
+    mkdirSync(join(projectDir, ".pizzapi"), { recursive: true });
+    writeFileSync(
+      join(projectDir, ".pizzapi", "config.json"),
+      JSON.stringify({
+        mcpServers: {
+          playwright: { command: "npx", args: ["@playwright/mcp"] },
+          shared: { command: "project-version" },
+        },
+      }),
+    );
+
+    const config = loadConfig(projectDir) as any;
+    // All three servers should be present
+    expect(new Set(Object.keys(config.mcpServers))).toEqual(
+      new Set(["godmother", "shared", "playwright"]),
+    );
+    // Global-only server preserved
+    expect(config.mcpServers.godmother.command).toBe("godmother");
+    // Project-only server present
+    expect(config.mcpServers.playwright.command).toBe("npx");
+    // Conflict: project wins
+    expect(config.mcpServers.shared.command).toBe("project-version");
+  });
+
+  test("mcp.servers (preferred format) merges by server name", () => {
+    writeFileSync(
+      join(globalDir, "config.json"),
+      JSON.stringify({
+        mcp: {
+          servers: [
+            { name: "godmother", transport: "stdio", command: "godmother" },
+            { name: "shared", transport: "stdio", command: "global-ver" },
+          ],
+        },
+      }),
+    );
+
+    const projectDir = join(tempDir, "project");
+    mkdirSync(join(projectDir, ".pizzapi"), { recursive: true });
+    writeFileSync(
+      join(projectDir, ".pizzapi", "config.json"),
+      JSON.stringify({
+        mcp: {
+          servers: [
+            { name: "playwright", transport: "stdio", command: "npx" },
+            { name: "shared", transport: "stdio", command: "project-ver" },
+          ],
+        },
+      }),
+    );
+
+    const config = loadConfig(projectDir) as any;
+    const names = config.mcp.servers.map((s: any) => s.name);
+    expect(new Set(names)).toEqual(new Set(["godmother", "shared", "playwright"]));
+    const shared = config.mcp.servers.find((s: any) => s.name === "shared");
+    expect(shared.command).toBe("project-ver");
+  });
+
+  test("one has mcpServers, other has mcp.servers — both formats load", () => {
+    writeFileSync(
+      join(globalDir, "config.json"),
+      JSON.stringify({
+        mcpServers: {
+          godmother: { command: "godmother", args: ["serve"] },
+        },
+      }),
+    );
+
+    const projectDir = join(tempDir, "project");
+    mkdirSync(join(projectDir, ".pizzapi"), { recursive: true });
+    writeFileSync(
+      join(projectDir, ".pizzapi", "config.json"),
+      JSON.stringify({
+        mcp: {
+          servers: [
+            { name: "playwright", transport: "stdio", command: "npx" },
+          ],
+        },
+      }),
+    );
+
+    const config = loadConfig(projectDir) as any;
+    // mcpServers from global
+    expect(config.mcpServers.godmother.command).toBe("godmother");
+    // mcp.servers from project
+    expect(config.mcp.servers[0].name).toBe("playwright");
+  });
+
+  test("neither config has mcpServers — no key added", () => {
+    writeFileSync(join(globalDir, "config.json"), JSON.stringify({ apiKey: "test" }));
+
+    const projectDir = join(tempDir, "project");
+    mkdirSync(join(projectDir, ".pizzapi"), { recursive: true });
+    writeFileSync(join(projectDir, ".pizzapi", "config.json"), JSON.stringify({}));
+
+    const config = loadConfig(projectDir) as any;
+    expect(config.mcpServers).toBeUndefined();
+  });
+});
+
 // ── saveGlobalConfig ──────────────────────────────────────────────────────────
 
 describe("saveGlobalConfig", () => {
