@@ -916,15 +916,14 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             // parent doesn't want triggers, it should spawn with linked: false.
             trackReceivedTrigger(trigger.triggerId, trigger.sourceSessionId, trigger.type);
             const rendered = renderTrigger(trigger);
-            // Strip HTML comment containing structured questions before sending to the parent agent.
-            // The HTML comment is intended for web UIs to parse rich trigger questions,
-            // but it should not appear in the parent agent's prompt (for CLI/TUI sessions
-            // where HTML comments are not hidden and would appear as plain text).
-            const renderedForParent = rendered
-              .replace(/<!-- questions64:[^>]+ -->\n?/g, "")
-              .replace(/<!-- questions:[^>]* -->\n?/g, "");
+            // Keep the <!-- questions64:... --> HTML comment in the message sent
+            // to the parent session. The web UI needs it to render rich trigger
+            // cards (checkbox, ranked, multi-question steppers). The base64
+            // encoding keeps the comment compact and avoids noisy JSON in the
+            // parent's prompt. For CLI/TUI agents, HTML comments are minimal
+            // overhead in the raw text.
             const deliverAs = trigger.deliverAs === "followUp" ? "followUp" as const : "steer" as const;
-            pi.sendUserMessage(renderedForParent, { deliverAs });
+            pi.sendUserMessage(rendered, { deliverAs });
         });
 
         sock.on("trigger_response" as any, (data: { triggerId: string; response: string; action?: string; targetSessionId?: string }) => {

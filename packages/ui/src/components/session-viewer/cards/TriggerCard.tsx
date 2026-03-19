@@ -24,7 +24,7 @@ export type { ParsedTrigger } from "./trigger-parsers";
 export interface TriggerCardProps {
   triggerId: string;
   body: string;
-  onRespond?: (triggerId: string, response: string, action?: string) => boolean | void;
+  onRespond?: (triggerId: string, response: string, action?: string) => boolean | void | Promise<boolean>;
   isResponding?: boolean;
 }
 
@@ -44,7 +44,7 @@ function AskUserQuestionCard({
   question?: string;
   options?: string[];
   questions?: ParsedTriggerQuestion[];
-  onRespond?: (triggerId: string, response: string) => boolean | void;
+  onRespond?: (triggerId: string, response: string) => boolean | void | Promise<boolean>;
   isResponding?: boolean;
 }) {
   const [selectedOption, setSelectedOption] = React.useState<string>("");
@@ -56,18 +56,20 @@ function AskUserQuestionCard({
   const hasStructuredQuestions = questions && questions.length > 0;
 
   const handleMultiChoiceSubmit = React.useCallback(
-    (answers: MultipleChoiceAnswers): Promise<boolean | void> => {
-      if (submitted) return Promise.resolve();
+    async (answers: MultipleChoiceAnswers): Promise<boolean | void> => {
+      if (submitted) return;
       const text = formatAnswersForAgent(answers);
       const result = onRespond?.(triggerId, text);
+      // Await the result — onRespond may return a Promise<boolean> when
+      // using ack-based delivery (e.g. socket.timeout().emit with ack).
+      const resolved = await Promise.resolve(result);
       // Only mark as submitted if the response was actually sent.
-      // onRespond returns false when the socket is disconnected.
-      if (result === false) {
+      // onRespond returns false when the socket is disconnected or ack times out.
+      if (resolved === false) {
         // Return false so MultipleChoiceQuestions re-enables the submit button immediately
-        return Promise.resolve(false);
+        return false;
       }
       setSubmitted(true);
-      return Promise.resolve();
     },
     [triggerId, onRespond, submitted],
   );
@@ -189,7 +191,7 @@ function PlanReviewCard({
   childName?: string;
   planTitle?: string;
   planSteps?: Array<{ title: string; description?: string }>;
-  onRespond?: (triggerId: string, response: string, action: string) => boolean | void;
+  onRespond?: (triggerId: string, response: string, action: string) => boolean | void | Promise<boolean>;
   isResponding?: boolean;
 }) {
   return (

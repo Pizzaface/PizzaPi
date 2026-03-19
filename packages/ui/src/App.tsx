@@ -3186,12 +3186,12 @@ export function App() {
   }, [spawningSession, spawnRunnerId, spawnCwd, handleOpenSession, waitForSessionToGoLive]);
 
   // ── Respond to a trigger from a child session ─────────────────────────────
-  const handleTriggerResponse = React.useCallback((triggerId: string, response: string, action?: string, sourceSessionId?: string): boolean => {
+  const handleTriggerResponse = React.useCallback((triggerId: string, response: string, action?: string, sourceSessionId?: string): Promise<boolean> => {
     const socket = viewerWsRef.current;
     const sessionId = activeSessionRef.current;
     if (!socket || !socket.connected || !sessionId) {
       setViewerStatus("Not connected to a live session");
-      return false;
+      return Promise.resolve(false);
     }
 
     // Use the child's sourceSessionId (extracted from the trigger comment) as
@@ -3199,13 +3199,27 @@ export function App() {
     // bypassing the parent's in-memory receivedTriggers map. This makes
     // delivery resilient to parent reconnects/resumes where the map is gone.
     // Falls back to the parent session ID for legacy triggers without source.
-    socket.emit("trigger_response", {
-      triggerId,
-      response,
-      ...(action ? { action } : {}),
-      targetSessionId: sourceSessionId ?? sessionId,
+    return new Promise<boolean>((resolve) => {
+      let resolved = false;
+      // Send with Socket.IO ack — server only acks on successful delivery.
+      socket.emit("trigger_response", {
+        triggerId,
+        response,
+        ...(action ? { action } : {}),
+        targetSessionId: sourceSessionId ?? sessionId,
+      }, () => {
+        // Server acknowledged successful delivery
+        if (!resolved) { resolved = true; resolve(true); }
+      });
+      // If no ack arrives within 5s, treat as a failed delivery
+      setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          setViewerStatus("Trigger response may not have been delivered — try again");
+          resolve(false);
+        }
+      }, 5000);
     });
-    return true;
   }, []);
 
   // ── Spawn a new session as a specific agent ─────────────────────────────

@@ -101,7 +101,7 @@ export function renderContent(
   thinkingDuration?: number,
   subAgentTurns?: SubAgentTurn[],
   details?: unknown,
-  onTriggerResponse?: (triggerId: string, response: string, action?: string, sourceSessionId?: string) => boolean | void,
+  onTriggerResponse?: (triggerId: string, response: string, action?: string, sourceSessionId?: string) => boolean | void | Promise<boolean>,
 ) {
   // Structured command result cards (MCP, plugins, skills)
   if (role === "system" && isCommandResult(content)) {
