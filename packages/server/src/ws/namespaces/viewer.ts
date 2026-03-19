@@ -241,7 +241,10 @@ export function registerViewerNamespace(io: SocketIOServer): void {
             // topology PizzaPi doesn't formally support.
             const resyncChunkedPending = getPendingChunkedSnapshot(sessionId);
             if (resyncChunkedPending) {
-                emitToRelaySession(sessionId, "connected" as string, {});
+                if (!emitToRelaySession(sessionId, "connected" as string, {})) {
+                    // Relay delivery failed — fall back to sending snapshot directly
+                    await sendSnapshotToViewer(sessionId, socket);
+                }
                 return;
             }
 
