@@ -754,8 +754,15 @@ export function registerRelayNamespace(io: SocketIOServer): void {
             // Clean up child-index entry
             void removeChildSession(sessionId, childSessionId);
 
-            // End the shared session (Redis, viewers, runner notification)
-            await endSharedSession(childSessionId, "Parent acknowledged completion");
+            // Do NOT call endSharedSession here.  The child will disconnect
+            // momentarily (from the SIGTERM or exec above), and its disconnect
+            // handler on whichever node hosts the child's relay socket will
+            // call endSharedSession there — where localRunnerSockets has the
+            // correct runner socket.  Calling it here first would delete the
+            // Redis record before that node can process the disconnect, turning
+            // its endSharedSession into a no-op and leaving adopted-session
+            // entries stranded in runningSessions on the remote runner.
+            // If the child is already gone the orphan sweeper handles cleanup.
         });
 
         // ── disconnect ───────────────────────────────────────────────────────
