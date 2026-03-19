@@ -46,7 +46,8 @@ interface SessionActiveEvent extends Record<string, unknown> {
     state: unknown;
 }
 
-function isAgentEndEvent(evt: unknown): evt is AgentEndEvent {
+/** @internal — exported for unit tests only */
+export function isAgentEndEvent(evt: unknown): evt is AgentEndEvent {
     return (
         typeof evt === "object" &&
         evt !== null &&
@@ -57,7 +58,8 @@ function isAgentEndEvent(evt: unknown): evt is AgentEndEvent {
     );
 }
 
-function isSessionActiveEvent(evt: unknown): evt is SessionActiveEvent {
+/** @internal — exported for unit tests only */
+export function isSessionActiveEvent(evt: unknown): evt is SessionActiveEvent {
     return (
         typeof evt === "object" &&
         evt !== null &&
@@ -71,8 +73,9 @@ function isSessionActiveEvent(evt: unknown): evt is SessionActiveEvent {
 /**
  * Scan cached events from newest to oldest, looking for the latest
  * full-state snapshot (agent_end with messages, or session_active with state).
+ * @internal — exported for unit tests only
  */
-function findLatestSnapshotEvent(cachedEvents: unknown[]): Record<string, unknown> | null {
+export function findLatestSnapshotEvent(cachedEvents: unknown[]): Record<string, unknown> | null {
     for (let i = cachedEvents.length - 1; i >= 0; i--) {
         const raw = cachedEvents[i];
         if (isAgentEndEvent(raw)) return raw;
@@ -222,6 +225,20 @@ export function registerViewerNamespace(io: SocketIOServer): void {
 
         // ── resync — send fresh snapshot ─────────────────────────────────────
         socket.on("resync", async () => {
+            // If a chunked delivery is in-flight, skip sendSnapshotToViewer()
+            // entirely.  That helper unconditionally emits lastState (the previous
+            // completed non-chunked snapshot), which would clear chunkedDeliveryRef
+            // on the client and cause all remaining session_messages_chunk events
+            // from the active stream to be dropped.  Ask the runner for a fresh
+            // chunked delivery instead — it will arrive in-order via the room.
+            // Use emitToRelaySession for cluster-wide reach — the runner may
+            // be on a different server node in multi-node deployments.
+            const resyncChunkedPending = getPendingChunkedSnapshot(sessionId);
+            if (resyncChunkedPending) {
+                emitToRelaySession(sessionId, "connected" as string, {});
+                return;
+            }
+
             await sendSnapshotToViewer(sessionId, socket);
 
             // If no lastState was available (e.g. mid-chunked-delivery),
@@ -429,6 +446,20 @@ export function registerViewerNamespace(io: SocketIOServer): void {
             // The runner re-emits a fresh snapshot on the "connected" event
             // below, which will properly restart chunked delivery.
             await sendLatestSnapshotFromCache(socket, sessionId);
+        } else {
+            // Chunked delivery is in-flight.  The client acks the server's
+            // "connected" packet immediately (App.tsx: socket.emit("connected")),
+            // which fires the socket.on("connected") handler above and triggers
+            // the runner to re-emit a fresh snapshot via emitToRelaySession().
+            // However that notification races addViewer(): if the runner responds
+            // before the viewer has joined the broadcast room, the viewer misses
+            // the snapshot entirely and sits on an empty transcript.
+            //
+            // Re-trigger the runner now that addViewer() has completed and the
+            // viewer is guaranteed to be in the room, so the fresh chunked
+            // delivery is received.  Use emitToRelaySession for cluster-wide
+            // reach — the runner may be on a different server node.
+            emitToRelaySession(sessionId, "connected" as string, {});
         }
     });
 }
