@@ -226,23 +226,24 @@ describe("getClientIp", () => {
         expect(getClientIp(req)).toBe("198.51.100.1");
     });
 
-    test("uses right-most XFF entry to prevent client spoofing via prepended hops", () => {
+    test("uses left-most XFF entry as the original client IP in multi-hop chains", () => {
         delete process.env.PIZZAPI_TRUST_PROXY;
-        // Simulates nginx $proxy_add_x_forwarded_for: client sends "X-Forwarded-For: 1.2.3.4",
-        // nginx appends real client IP → "1.2.3.4, 203.0.113.50"
+        // Standard reverse proxy behavior: creates fresh X-Forwarded-For header(s)
+        // In multi-proxy chains: X-Forwarded-For: <client-ip>, <proxy-1>, <proxy-2>, ...
+        // The left-most is the original client IP.
         const req = makeReq({
             "x-pizzapi-client-ip": "127.0.0.1",
-            "x-forwarded-for": "1.2.3.4, 203.0.113.50",
+            "x-forwarded-for": "203.0.113.50, 198.51.100.5",
         });
-        // Must return right-most (proxy-appended) IP, NOT the spoofed left-most
+        // Return left-most (original client)
         expect(getClientIp(req)).toBe("203.0.113.50");
     });
 
-    test("uses right-most XFF entry with TRUST_PROXY=true", () => {
+    test("uses left-most XFF entry with TRUST_PROXY=true", () => {
         process.env.PIZZAPI_TRUST_PROXY = "true";
         const req = makeReq({
             "x-pizzapi-client-ip": "172.17.0.1",
-            "x-forwarded-for": "10.0.0.1, 203.0.113.99",
+            "x-forwarded-for": "203.0.113.99, 10.0.0.1",
         });
         expect(getClientIp(req)).toBe("203.0.113.99");
     });

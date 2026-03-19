@@ -92,13 +92,14 @@ These variables control which subsystems are loaded by runner-spawned worker ses
 | `BETTER_AUTH_SECRET` | Secret key used by better-auth for session signing. **Must be set in production.** | — |
 | `BETTER_AUTH_BASE_URL` | Base URL that better-auth uses for its own endpoints. | `http://localhost:<PORT>` |
 
-### Rate Limiting
+### Rate Limiting & Security
 
 | Variable | Description | Default |
 |---|---|---|
 | `PIZZAPI_API_KEY_RATE_LIMIT_ENABLED` | Enable rate limiting on API-key-authenticated requests (`true` / `false`). | `false` |
 | `PIZZAPI_API_KEY_RATE_LIMIT_MAX_REQUESTS` | Maximum number of requests allowed per time window. | `10` |
 | `PIZZAPI_API_KEY_RATE_LIMIT_TIME_WINDOW_MS` | Length of the rate-limit sliding window in milliseconds. | `86400000` (24 h) |
+| `PIZZAPI_TRUST_PROXY` | Enable reverse proxy header handling for rate limiting and client IP detection. Set to `true` when the server is behind a non-loopback reverse proxy (e.g. Docker bridge network, Caddy, nginx). Loopback proxies (127.0.0.1, ::1) are auto-detected without this setting. Set to `false` to disable proxy detection entirely. See [Self-Hosting](/PizzaPi/guides/self-hosting/#reverse-proxy-configuration) for details. | `unset` (auto-detect loopback only) |
 
 ### Attachments
 

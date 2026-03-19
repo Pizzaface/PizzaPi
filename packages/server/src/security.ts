@@ -146,32 +146,36 @@ function isLoopbackIp(rawIp: string): boolean {
  *
  * The `PIZZAPI_TRUST_PROXY` env var can explicitly enable/disable proxy mode:
  * - Set to "true" for non-loopback proxies (e.g. Docker bridge networks)
- * - Set to "false" to disable auto-detection entirely
+ * - Set to "false" to disable proxy detection entirely (overrides auto-detection)
  */
 export function getClientIp(req: Request): string {
     const clientIp = req.headers.get("x-pizzapi-client-ip") || "unknown";
     
     // PIZZAPI_TRUST_PROXY is a three-state toggle:
-    //   "true"  → always trust x-forwarded-for
-    //   "false" → never trust x-forwarded-for (disables auto-detection)
-    //   unset   → auto-detect based on whether remoteAddress is loopback
+    //   "true"  → always trust x-forwarded-for (for non-loopback proxies like Docker bridge)
+    //   "false" → never trust x-forwarded-for, even for loopback (disables auto-detection)
+    //   unset   → auto-detect: trust x-forwarded-for only if directly connected to loopback
     const envTrustProxy = process.env.PIZZAPI_TRUST_PROXY?.toLowerCase();
     const trustProxy =
         envTrustProxy === "true" ||
         (envTrustProxy !== "false" && clientIp !== "unknown" && isLoopbackIp(clientIp));
+    // Note: If envTrustProxy === "false", the second condition is skipped and trustProxy stays false.
 
     if (trustProxy) {
         const forwardedFor = req.headers.get("x-forwarded-for");
         if (forwardedFor) {
-            // Use the RIGHT-MOST entry, not the left-most. Standard reverse proxies
-            // (nginx, Caddy, etc.) append the real client IP to any existing
-            // X-Forwarded-For header, so the format is:
-            //   X-Forwarded-For: <client-supplied>, ..., <real-client-ip>
-            // Taking the left-most value would let clients spoof their IP by sending
-            // a crafted X-Forwarded-For header. The right-most entry is the one
-            // added by our directly-connected trusted proxy.
+            // Use the LEFT-MOST entry (the original client IP). Standard reverse proxies
+            // (nginx, Caddy, etc.) prepend the real client IP to the X-Forwarded-For
+            // header on first connection, and then append their own IP on subsequent
+            // connections in a chain. The format in single-proxy setups is:
+            //   X-Forwarded-For: <original-client-ip>
+            // Or in multi-proxy setups:
+            //   X-Forwarded-For: <original-client-ip>, <first-proxy>, <second-proxy>, ...
+            // Taking the left-most value is safe when we trust the directly-connected
+            // proxy, because the proxy never appends a client-supplied X-Forwarded-For;
+            // it creates a fresh one with the real client.
             const parts = forwardedFor.split(",");
-            return parts[parts.length - 1]?.trim() || clientIp;
+            return parts[0]?.trim() || clientIp;
         }
     }
 

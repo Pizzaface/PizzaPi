@@ -208,6 +208,45 @@ cp packages/server/auth.db packages/server/auth.db.backup
 
 ---
 
+## Reverse Proxy Configuration
+
+When PizzaPi runs behind a reverse proxy (like Caddy, nginx, or Traefik in Docker), the server needs to trust proxy headers to correctly identify the real client IP for rate limiting and other security features.
+
+### Loopback Proxies (Auto-Detected)
+
+If your reverse proxy is on the **same host** (loopback / 127.0.0.1) — which is typical for Docker Compose on a single machine — no configuration is needed. The server auto-detects this and safely trusts `X-Forwarded-For` headers.
+
+Example: Docker Compose with Caddy locally → PizzaPi on localhost:7492
+
+```bash
+# No env var needed — auto-detected as loopback
+docker compose -f docker/compose.yml up -d
+```
+
+### Non-Loopback Proxies
+
+If your reverse proxy is on a **different host or Docker bridge network** (e.g. Traefik on a Docker overlay network, or a cloud load balancer), set `PIZZAPI_TRUST_PROXY=true`:
+
+```yaml
+# docker/compose.override.yml
+services:
+  server:
+    environment:
+      PIZZAPI_TRUST_PROXY: "true"
+```
+
+Or as a direct variable:
+
+```bash
+PIZZAPI_TRUST_PROXY=true pizzapi web
+```
+
+<Aside type="caution">
+  Only set `PIZZAPI_TRUST_PROXY=true` if you have a reverse proxy in front of PizzaPi. Enabling this without a proxy allows clients to spoof their IP address and bypass rate limiting.
+</Aside>
+
+---
+
 ## HTTPS with Caddy
 
 Caddy automatically provisions TLS certificates via Let's Encrypt:
