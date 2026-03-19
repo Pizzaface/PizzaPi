@@ -46,7 +46,7 @@ export const ConversationContent = ({
   ...props
 }: ConversationContentProps) => (
   <StickToBottom.Content
-    className={cn("flex flex-col gap-8 p-4", className)}
+    className={cn("flex flex-col gap-8 p-4 min-h-full justify-end", className)}
     {...props}
   />
 );
