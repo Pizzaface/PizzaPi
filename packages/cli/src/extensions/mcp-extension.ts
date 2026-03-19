@@ -398,6 +398,10 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
   // Stash the last registration result so session_start can build reports.
   let lastRegistrationResult: McpRegistrationResult | null = null;
 
+  // Abort/cancel token for in-flight MCP loads. Replaced on session_shutdown
+  // so stale eager init work cannot repopulate clients for a new session.
+  let loadLifecycleController = new AbortController();
+
   async function load(): Promise<McpSnapshot> {
     const mergedConfig = loadConfig(process.cwd()) as PizzaPiConfig & McpConfig;
     const inspection = inspectMcpConfig(process.cwd());
@@ -410,7 +414,22 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
     // already connected — without this, providers fall back to local OAuth.
     // During initial session_start, currentRelayContext is null (relay hasn't
     // connected yet) and providers use waitForRelayContext() as before.
-    const res = await registerMcpTools(pi, mergedConfig, currentRelayContext);
+    const lifecycleAtLoadStart = loadLifecycleController;
+    const res = await registerMcpTools(pi, mergedConfig, currentRelayContext, lifecycleAtLoadStart.signal);
+
+    // If this load belongs to an old session lifecycle (or the lifecycle was
+    // aborted), discard it so a late eager init cannot repopulate clients
+    // after session_shutdown.
+    if (lifecycleAtLoadStart !== loadLifecycleController || lifecycleAtLoadStart.signal.aborted) {
+      for (const client of res.clients) {
+        try {
+          client.close();
+        } catch {
+          // ignore best-effort shutdown errors
+        }
+      }
+      throw new Error("MCP load aborted due session lifecycle change");
+    }
 
     for (const client of activeClients) {
       try {
@@ -555,8 +574,12 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
   let eagerLoadPromise: Promise<McpSnapshot | null> | null = null;
   try {
     eagerLoadPromise = load().catch((err) => {
-      // Don't crash the factory — session_start will handle diagnostics
-      console.warn(`pizzapi: MCP eager init failed, will retry in session_start: ${err instanceof Error ? err.message : String(err)}`);
+      // Don't crash the factory — session_start will handle diagnostics.
+      // Ignore expected aborts when session lifecycle changes.
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!/aborted/i.test(msg)) {
+        console.warn(`pizzapi: MCP eager init failed, will retry in session_start: ${msg}`);
+      }
       return null;
     });
   } catch {
@@ -751,6 +774,11 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
   });
 
   pi.on?.("session_shutdown", () => {
+    // Cancel any in-flight eager/background MCP load so stale completion can't
+    // repopulate active clients after shutdown.
+    loadLifecycleController.abort();
+    loadLifecycleController = new AbortController();
+
     for (const client of activeClients) {
       try {
         client.close();
@@ -759,6 +787,7 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
       }
     }
     activeClients = [];
+    lastRegistrationResult = null;
     setMcpBridge(null);
   });
 };
