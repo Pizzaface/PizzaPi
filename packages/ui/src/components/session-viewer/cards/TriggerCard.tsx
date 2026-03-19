@@ -24,7 +24,7 @@ export type { ParsedTrigger } from "./trigger-parsers";
 export interface TriggerCardProps {
   triggerId: string;
   body: string;
-  onRespond?: (triggerId: string, response: string, action?: string) => void;
+  onRespond?: (triggerId: string, response: string, action?: string) => boolean | void;
   isResponding?: boolean;
 }
 
@@ -44,7 +44,7 @@ function AskUserQuestionCard({
   question?: string;
   options?: string[];
   questions?: ParsedTriggerQuestion[];
-  onRespond?: (triggerId: string, response: string) => void;
+  onRespond?: (triggerId: string, response: string) => boolean | void;
   isResponding?: boolean;
 }) {
   const [selectedOption, setSelectedOption] = React.useState<string>("");
@@ -58,9 +58,13 @@ function AskUserQuestionCard({
   const handleMultiChoiceSubmit = React.useCallback(
     (answers: MultipleChoiceAnswers) => {
       if (submitted) return;
-      setSubmitted(true);
       const text = formatAnswersForAgent(answers);
-      onRespond?.(triggerId, text);
+      const result = onRespond?.(triggerId, text);
+      // Only mark as submitted if the response was actually sent.
+      // onRespond returns false when the socket is disconnected.
+      if (result !== false) {
+        setSubmitted(true);
+      }
     },
     [triggerId, onRespond, submitted],
   );
@@ -182,7 +186,7 @@ function PlanReviewCard({
   childName?: string;
   planTitle?: string;
   planSteps?: Array<{ title: string; description?: string }>;
-  onRespond?: (triggerId: string, response: string, action: string) => void;
+  onRespond?: (triggerId: string, response: string, action: string) => boolean | void;
   isResponding?: boolean;
 }) {
   return (

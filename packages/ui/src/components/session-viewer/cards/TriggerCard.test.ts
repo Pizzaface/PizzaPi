@@ -376,6 +376,25 @@ Respond with \`respond_to_trigger\` using trigger ID \`brk123\`.`;
       expect(parsed.options).toEqual(["Yes", "No"]);
     });
 
+    test("unescapes --> in embedded JSON questions (registry escapes it as --\\>)", () => {
+      // The trigger renderer escapes "-->" as "--\>" to avoid breaking the HTML comment.
+      // The parser must reverse this before JSON.parse.
+      const raw = `[{"question":"Use --> in code?","options":["Yes","No"]}]`;
+      const escaped = raw.replace(/-->/g, "--\\>");
+      const body = `🔗 Child "escape-child" asks:
+<!-- questions:${escaped} -->
+> Use --> in code?
+Options: 1. Yes  2. No
+
+Respond with \`respond_to_trigger\` using trigger ID \`esc123\`.`;
+
+      const parsed = parseTriggerBody(body);
+      expect(parsed.type).toBe("ask_user_question");
+      expect(parsed.questions).toHaveLength(1);
+      expect(parsed.questions![0].question).toBe("Use --> in code?");
+      expect(parsed.questions![0].options).toEqual(["Yes", "No"]);
+    });
+
     test("ignores questions with missing question field in embedded JSON", () => {
       const questions = [
         { question: "Valid?", options: ["Yes"] },

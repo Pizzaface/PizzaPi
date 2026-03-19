@@ -37,8 +37,10 @@ const askUserQuestionRenderer: TriggerRenderer = {
         const questions = Array.isArray(trigger.payload.questions)
             ? trigger.payload.questions
             : undefined;
+        // Escape "-->" in the serialized JSON so it can't prematurely close
+        // the HTML comment.  The UI parser reverses this before JSON.parse().
         const questionsBlock = questions
-            ? `<!-- questions:${JSON.stringify(questions)} -->\n`
+            ? `<!-- questions:${JSON.stringify(questions).replace(/-->/g, "--\\>")} -->\n`
             : "";
 
         const lines = [`🔗 Child "${name}" asks:`, questionsBlock + `> ${question}`];

@@ -170,7 +170,7 @@ export interface SessionViewerProps {
   /** Spawn a new session configured as a specific agent */
   onSpawnAgentSession?: (agent: { name: string; description?: string; systemPrompt?: string; tools?: string; disallowedTools?: string }) => void;
   /** Respond to a trigger from a child session */
-  onTriggerResponse?: (triggerId: string, response: string, action?: string) => void;
+  onTriggerResponse?: (triggerId: string, response: string, action?: string) => boolean | void;
   /** Optimistically dismiss the pending question panel after a successful response */
   onQuestionDismiss?: () => void;
   /** Optimistically dismiss the pending plan panel after a successful response */
@@ -346,7 +346,7 @@ const SessionMessageItem = React.memo(({ message, activeToolCalls, agentActive, 
   activeToolCalls?: Map<string, string>;
   agentActive?: boolean;
   isLast: boolean;
-  onTriggerResponse?: (triggerId: string, response: string, action?: string) => void;
+  onTriggerResponse?: (triggerId: string, response: string, action?: string) => boolean | void;
 }) => {
   // System messages with structured command result data render as standalone cards
   if (message.role === "system" && isCommandResult(message.content)) {

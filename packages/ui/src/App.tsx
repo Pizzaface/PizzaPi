@@ -3186,12 +3186,12 @@ export function App() {
   }, [spawningSession, spawnRunnerId, spawnCwd, handleOpenSession, waitForSessionToGoLive]);
 
   // ── Respond to a trigger from a child session ─────────────────────────────
-  const handleTriggerResponse = React.useCallback((triggerId: string, response: string, action?: string) => {
+  const handleTriggerResponse = React.useCallback((triggerId: string, response: string, action?: string): boolean => {
     const socket = viewerWsRef.current;
     const sessionId = activeSessionRef.current;
     if (!socket || !socket.connected || !sessionId) {
       setViewerStatus("Not connected to a live session");
-      return;
+      return false;
     }
 
     socket.emit("trigger_response", {
@@ -3200,6 +3200,7 @@ export function App() {
       ...(action ? { action } : {}),
       targetSessionId: sessionId,
     });
+    return true;
   }, []);
 
   // ── Spawn a new session as a specific agent ─────────────────────────────
