@@ -600,7 +600,7 @@ function createStreamableMcpClient(opts: {
         // which is unreachable when running remotely. Waiting here gives the
         // relay connection time to establish so OAuth uses the server callback
         // URL instead. Falls back to local mode after the timeout.
-        await oauthProvider.waitForRelayContext();
+        await oauthProvider.waitForRelayContext(15_000, signal);
 
         const { auth, extractWWWAuthenticateParams } = await import(
           "@modelcontextprotocol/sdk/client/auth.js"

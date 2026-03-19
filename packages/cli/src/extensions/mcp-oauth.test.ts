@@ -184,6 +184,47 @@ describe("PizzaPiOAuthProvider", () => {
             expect(results).toContain(3);
         });
 
+        test("resolves immediately when signal is already aborted", async () => {
+            const provider = createProvider();
+            const ac = new AbortController();
+            ac.abort();
+
+            const start = Date.now();
+            await provider.waitForRelayContext(5000, ac.signal);
+            expect(Date.now() - start).toBeLessThan(100);
+        });
+
+        test("resolves when signal is aborted while waiting", async () => {
+            const provider = createProvider();
+            const ac = new AbortController();
+            let resolved = false;
+
+            const waitPromise = provider.waitForRelayContext(5000, ac.signal).then(() => {
+                resolved = true;
+            });
+
+            // Not resolved yet — no context, no abort, no timeout
+            await new Promise((r) => setTimeout(r, 50));
+            expect(resolved).toBe(false);
+
+            // Abort should resolve immediately
+            ac.abort();
+            await waitPromise;
+            expect(resolved).toBe(true);
+        });
+
+        test("abort cleans up relay ready resolvers", async () => {
+            const provider = createProvider();
+            const ac = new AbortController();
+
+            const waitPromise = provider.waitForRelayContext(5000, ac.signal);
+            ac.abort();
+            await waitPromise;
+
+            // Setting context after abort should not cause issues
+            provider.relayContext = createMockRelayContext();
+        });
+
         test("setting context to null does not resolve waiters", async () => {
             const provider = createProvider();
             let resolved = false;

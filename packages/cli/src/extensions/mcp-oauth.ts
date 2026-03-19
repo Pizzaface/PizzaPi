@@ -355,8 +355,9 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
    * If deferRelayWaitTimeoutUntilAnchor is enabled, timeout counting begins
    * only after markRelayWaitAnchorReady() is called.
    */
-  waitForRelayContext(timeoutMs: number = 15_000): Promise<void> {
+  waitForRelayContext(timeoutMs: number = 15_000, signal?: AbortSignal): Promise<void> {
     if (this._relayContext) return Promise.resolve();
+    if (signal?.aborted) return Promise.resolve();
     return new Promise<void>((resolve) => {
       let finished = false;
       let timer: ReturnType<typeof setTimeout> | null = null;
@@ -370,6 +371,7 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
           clearTimeout(timer);
           timer = null;
         }
+        signal?.removeEventListener("abort", onAbort);
       };
 
       const finish = () => {
@@ -377,6 +379,10 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
         finished = true;
         cleanup();
         resolve();
+      };
+
+      const onAbort = () => {
+        finish();
       };
 
       const wrappedResolve = () => {
@@ -391,6 +397,7 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
       };
 
       this._relayReadyResolvers.push(wrappedResolve);
+      signal?.addEventListener("abort", onAbort, { once: true });
 
       if (timeoutMs <= 0) {
         finish();
