@@ -76,6 +76,17 @@ describe("pi-coding-agent patch application", () => {
         expect(source).toContain("PATCH(pizzapi)");
     });
 
+    test("agent-session.js: retryable error regex includes JSON parse errors", async () => {
+        const source = await Bun.file(
+            piCodingAgentPath("dist/core/agent-session.js"),
+        ).text();
+
+        // The patch adds JSON parse error patterns to the retryable error regex
+        expect(source).toContain("PATCH(pizzapi): add JSON parse errors to retryable patterns");
+        expect(source).toContain("json.?parse.?error");
+        expect(source).toContain("unexpected.?end.?of.?json");
+    });
+
     test("interactive-mode.js: version check call is removed from run()", async () => {
         const source = await Bun.file(
             piCodingAgentPath("dist/modes/interactive/interactive-mode.js"),
@@ -129,6 +140,30 @@ describe("pi-coding-agent patched runtime behavior", () => {
         const runtime = createExtensionRuntime();
 
         await expect(runtime.switchSession("/some/path")).rejects.toThrow(/not initialized/i);
+    });
+
+    test("retryable error regex matches JSON parse errors from truncated streams", async () => {
+        // Extract the regex from the patched source and verify it matches
+        // the actual error messages that Bun/JavaScriptCore produces.
+        const source = await Bun.file(
+            piCodingAgentPath("dist/core/agent-session.js"),
+        ).text();
+
+        // Find the regex pattern in the source
+        const match = source.match(/return (\/overloaded.*?\/i)\.test\(err\)/);
+        expect(match).not.toBeNull();
+        const regex = eval(match![1]); // Safe: we're evaluating a known regex literal from our own patched code
+
+        // Bun/JavaScriptCore format
+        expect(regex.test("JSON Parse error: Expected '}'")).toBe(true);
+        expect(regex.test("JSON Parse error: Unexpected end of input")).toBe(true);
+        // V8/Node format
+        expect(regex.test("Unexpected end of JSON input")).toBe(true);
+        // Ensure existing patterns still match
+        expect(regex.test("overloaded_error")).toBe(true);
+        expect(regex.test("rate limit exceeded")).toBe(true);
+        expect(regex.test("Error 529: overloaded")).toBe(true);
+        expect(regex.test("fetch failed")).toBe(true);
     });
 
     test("runtime.newSession/switchSession are assignable (runner can bind them)", async () => {

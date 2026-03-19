@@ -6,7 +6,7 @@ every `bun install` — no postinstall script is needed.
 
 ## @mariozechner/pi-coding-agent@0.58.3
 
-**Purpose:** Two changes:
+**Purpose:** Four changes:
 
 1. **Session control on extension API:** Expose `newSession()` and
    `switchSession()` on the extension runtime so the PizzaPi remote extension
@@ -19,6 +19,11 @@ every `bun install` — no postinstall script is needed.
 3. **Auth path display:** Show the actual auth path from the model registry
    instead of the hardcoded default, so the login message is accurate when
    PizzaPi overrides the auth file location.
+
+4. **Retryable JSON parse errors:** Add `json.?parse.?error` and
+   `unexpected.?end.?of.?json` to the retryable error regex so transient
+   Anthropic SSE stream truncations are automatically retried instead of
+   showing an opaque ERROR badge to the user.
 
 **Why this is needed:** Upstream `ExtensionAPI` only exposes session control
 methods on `ExtensionCommandContext`, which is only available inside registered
@@ -37,6 +42,7 @@ work from anywhere in the extension.
 | `dist/modes/interactive/interactive-mode.js` — `run()` | Removes `checkForNewVersion()` call |
 | `dist/modes/interactive/interactive-mode.js` | Removes `checkForNewVersion()` and `showNewVersionNotification()` methods |
 | `dist/modes/interactive/interactive-mode.js` — login flow | Uses `authStorage.storage?.authPath` instead of `getAuthPath()` |
+| `dist/core/agent-session.js` — `_isRetryableError()` | Adds `json.?parse.?error\|unexpected.?end.?of.?json` to the retryable error regex |
 
 **Tests:** `packages/cli/src/patches.test.ts` verifies both patch application
 (source inspection) and functional behavior (runtime method stubs, assignment,

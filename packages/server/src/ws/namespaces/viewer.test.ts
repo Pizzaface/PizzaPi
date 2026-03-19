@@ -1,0 +1,128 @@
+// ============================================================================
+// viewer.test.ts — Unit tests for pure helper functions in viewer.ts
+//
+// The socket event handlers (resync, connect) require a full socket.io + Redis
+// stack and are covered by integration tests.  This file tests the pure
+// snapshot-scanning helpers that have no I/O dependencies.
+// ============================================================================
+
+import { describe, test, expect } from "bun:test";
+import { isAgentEndEvent, isSessionActiveEvent, findLatestSnapshotEvent } from "./viewer.js";
+
+// ── isAgentEndEvent ──────────────────────────────────────────────────────────
+
+describe("isAgentEndEvent", () => {
+    test("returns true for a valid agent_end event", () => {
+        expect(isAgentEndEvent({ type: "agent_end", messages: [] })).toBe(true);
+        expect(isAgentEndEvent({ type: "agent_end", messages: [{ role: "user" }] })).toBe(true);
+    });
+
+    test("returns false for missing or wrong type", () => {
+        expect(isAgentEndEvent({ type: "session_active", messages: [] })).toBe(false);
+        expect(isAgentEndEvent({ messages: [] })).toBe(false);
+        expect(isAgentEndEvent({ type: "agent_end" })).toBe(false);
+    });
+
+    test("returns false when messages is not an array", () => {
+        expect(isAgentEndEvent({ type: "agent_end", messages: "not-an-array" })).toBe(false);
+        expect(isAgentEndEvent({ type: "agent_end", messages: null })).toBe(false);
+    });
+
+    test("returns false for non-objects", () => {
+        expect(isAgentEndEvent(null)).toBe(false);
+        expect(isAgentEndEvent(undefined)).toBe(false);
+        expect(isAgentEndEvent("string")).toBe(false);
+        expect(isAgentEndEvent(42)).toBe(false);
+    });
+});
+
+// ── isSessionActiveEvent ─────────────────────────────────────────────────────
+
+describe("isSessionActiveEvent", () => {
+    test("returns true for a valid session_active event", () => {
+        expect(isSessionActiveEvent({ type: "session_active", state: {} })).toBe(true);
+        expect(isSessionActiveEvent({ type: "session_active", state: { messages: [] } })).toBe(true);
+        expect(isSessionActiveEvent({ type: "session_active", state: 0 })).toBe(true); // falsy but defined
+    });
+
+    test("returns false for missing or wrong type", () => {
+        expect(isSessionActiveEvent({ type: "agent_end", state: {} })).toBe(false);
+        expect(isSessionActiveEvent({ state: {} })).toBe(false);
+    });
+
+    test("returns false when state is missing", () => {
+        expect(isSessionActiveEvent({ type: "session_active" })).toBe(false);
+    });
+
+    test("returns false when state is undefined", () => {
+        expect(isSessionActiveEvent({ type: "session_active", state: undefined })).toBe(false);
+    });
+
+    test("returns false for non-objects", () => {
+        expect(isSessionActiveEvent(null)).toBe(false);
+        expect(isSessionActiveEvent(undefined)).toBe(false);
+        expect(isSessionActiveEvent("string")).toBe(false);
+    });
+});
+
+// ── findLatestSnapshotEvent ──────────────────────────────────────────────────
+
+describe("findLatestSnapshotEvent", () => {
+    test("returns null for empty array", () => {
+        expect(findLatestSnapshotEvent([])).toBeNull();
+    });
+
+    test("returns null when no snapshot event exists", () => {
+        const events = [
+            { type: "tool_use", id: "1" },
+            { type: "text_delta", text: "hello" },
+        ];
+        expect(findLatestSnapshotEvent(events)).toBeNull();
+    });
+
+    test("finds a session_active event", () => {
+        const sa = { type: "session_active", state: { messages: [] } };
+        expect(findLatestSnapshotEvent([{ type: "tool_use" }, sa])).toBe(sa);
+    });
+
+    test("finds an agent_end event", () => {
+        const ae = { type: "agent_end", messages: [{ role: "user" }] };
+        expect(findLatestSnapshotEvent([{ type: "other" }, ae])).toBe(ae);
+    });
+
+    test("returns the LATEST snapshot (searches newest-to-oldest)", () => {
+        const older = { type: "session_active", state: { messages: [1] } };
+        const newer = { type: "session_active", state: { messages: [1, 2] } };
+        expect(findLatestSnapshotEvent([older, newer])).toBe(newer);
+    });
+
+    test("prefers agent_end over session_active when agent_end is newer", () => {
+        const sa = { type: "session_active", state: {} };
+        const ae = { type: "agent_end", messages: [] };
+        expect(findLatestSnapshotEvent([sa, ae])).toBe(ae);
+    });
+
+    test("returns session_active when it is newer than agent_end", () => {
+        const ae = { type: "agent_end", messages: [] };
+        const sa = { type: "session_active", state: {} };
+        expect(findLatestSnapshotEvent([ae, sa])).toBe(sa);
+    });
+
+    test("skips non-snapshot events between snapshot events", () => {
+        const older = { type: "session_active", state: { messages: [1] } };
+        const noise = { type: "tool_use", id: "x" };
+        const newer = { type: "agent_end", messages: [{ role: "assistant" }] };
+        expect(findLatestSnapshotEvent([older, noise, newer])).toBe(newer);
+    });
+
+    test("ignores invalid agent_end events (missing messages)", () => {
+        const invalid = { type: "agent_end" }; // no messages field
+        const valid = { type: "session_active", state: {} };
+        expect(findLatestSnapshotEvent([valid, invalid])).toBe(valid);
+    });
+
+    test("handles a single snapshot event", () => {
+        const sa = { type: "session_active", state: {} };
+        expect(findLatestSnapshotEvent([sa])).toBe(sa);
+    });
+});

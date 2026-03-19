@@ -1,3 +1,21 @@
+diff --git a/node_modules/@mariozechner/pi-coding-agent/.bun-tag-337ecc0e082ff23b b/.bun-tag-337ecc0e082ff23b
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+diff --git a/dist/core/agent-session.js b/dist/core/agent-session.js
+index a9d04699e9b49fa7dafcddc3a15250916e393eff..7cdc9d7e841ad80981b5dda67e1f5e9898c5274c 100644
+--- a/dist/core/agent-session.js
++++ b/dist/core/agent-session.js
+@@ -1865,7 +1865,9 @@ export class AgentSession {
+             return false;
+         const err = message.errorMessage;
+         // Match: overloaded_error, rate limit, 429, 500, 502, 503, 504, service unavailable, connection errors, fetch failed, terminated, retry delay exceeded
+-        return /overloaded|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|connection.?error|connection.?refused|other side closed|fetch failed|upstream.?connect|reset before headers|terminated|retry delay/i.test(err);
++        // PATCH(pizzapi): add JSON parse errors to retryable patterns — these occur
++        // when the Anthropic SSE stream is truncated mid-event (transient network issue).
++        return /overloaded|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|connection.?error|connection.?refused|other side closed|fetch failed|upstream.?connect|reset before headers|terminated|retry delay|json.?parse.?error|unexpected.?end.?of.?json/i.test(err);
+     }
+     /**
+      * Handle retryable errors with exponential backoff.
 diff --git a/dist/core/extensions/loader.js b/dist/core/extensions/loader.js
 index dbea1bc1410bd76d125251b5c74b431e5a2c0c60..e1c571f5369f6e75a549bbc485861683a0f2a9b5 100644
 --- a/dist/core/extensions/loader.js

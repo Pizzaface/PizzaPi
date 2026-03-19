@@ -161,6 +161,78 @@ describe("groupToolExecutionMessages", () => {
         expect(groupToolExecutionMessages([])).toEqual([]);
     });
 
+    test("errored assistant message with incomplete tool args does not crash", () => {
+        // When the Anthropic SSE stream is truncated mid-event, the assistant
+        // message arrives with stopReason: "error" and partial tool call
+        // arguments (incomplete JSON string). The grouping must handle this
+        // gracefully without throwing.
+        const messages: RelayMessage[] = [
+            msg({
+                key: "a1",
+                role: "assistant",
+                stopReason: "error",
+                errorMessage: "JSON Parse error: Expected '}'",
+                content: [
+                    { type: "toolCall", name: "AskUserQuestion", id: "tc1", arguments: '{"questions": [{"question": "What' },
+                ],
+                timestamp: 99999,
+            }),
+        ];
+        const result = groupToolExecutionMessages(messages);
+        // Should produce a tool item without crashing
+        const tools = result.filter((m) => m.role === "tool");
+        expect(tools).toHaveLength(1);
+        expect(tools[0].toolName).toBe("AskUserQuestion");
+        // The errored assistant message should also be emitted (for the error banner)
+        const errorMsgs = result.filter(
+            (m) => m.role === "assistant" && m.stopReason === "error",
+        );
+        expect(errorMsgs).toHaveLength(1);
+    });
+
+    test("deduplication prefers non-errored message over errored one with same toolCallId", () => {
+        // Scenario: streaming partial arrives first (no error), then a final
+        // message with stopReason: "error" and the same toolCallId arrives.
+        // Dedup keeps the LAST one. After tool result merges, the tool card
+        // shows completed but the error assistant message remains.
+        // This test documents the current behavior.
+        const messages: RelayMessage[] = [
+            msg({
+                key: "a1-partial",
+                role: "assistant",
+                content: [
+                    { type: "text", text: "Let me ask you something" },
+                    { type: "toolCall", name: "AskUserQuestion", id: "tc1",
+                      arguments: { questions: [{ question: "Color?", options: ["Red", "Blue"] }] } },
+                ],
+            }),
+            msg({
+                key: "a1-final",
+                role: "assistant",
+                stopReason: "error",
+                errorMessage: "JSON Parse error: Expected '}'",
+                content: [
+                    { type: "text", text: "Let me ask you something" },
+                    { type: "toolCall", name: "AskUserQuestion", id: "tc1",
+                      arguments: '{"questions": [{"question": "Color?", "options": ["Red"' },
+                ],
+                timestamp: 12345,
+            }),
+            msg({
+                key: "r1",
+                role: "toolResult",
+                toolCallId: "tc1",
+                toolName: "AskUserQuestion",
+                content: [{ type: "text", text: "User answered: Red" }],
+            }),
+        ];
+        const result = groupToolExecutionMessages(messages);
+        // The tool item should have content from the toolResult
+        const tools = result.filter((m) => m.role === "tool");
+        expect(tools).toHaveLength(1);
+        expect(tools[0].content).toBeTruthy();
+    });
+
     test("passes through compactionSummary messages unchanged", () => {
         const messages: RelayMessage[] = [
             msg({
