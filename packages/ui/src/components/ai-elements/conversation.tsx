@@ -100,23 +100,43 @@ export function useConversationScrollRef() {
  * Renders nothing visible — sits inside a `<Conversation>` tree and extends
  * the auto-follow zone from `use-stick-to-bottom`'s built-in 70 px to
  * {@link NEAR_BOTTOM_THRESHOLD_PX} (200 px).  When the scrollable content
- * grows (streaming tokens, expanding tool outputs, etc.) and the user is
- * within the wider threshold, this component calls `scrollToBottom()` so the
- * view stays pinned.
+ * grows (streaming tokens, expanding tool outputs, etc.) and the user was
+ * within the wider threshold *before* the resize, this component calls
+ * `scrollToBottom()` so the view stays pinned.
+ *
+ * Importantly, the near-bottom state is tracked *continuously* via a scroll
+ * listener rather than measured after a resize.  This prevents large content
+ * jumps (e.g. a tool result taller than 200 px) from breaking auto-follow:
+ * the pre-resize state is already captured, so the ResizeObserver can act on
+ * it regardless of how much content was added.
  */
 export function WideNearBottomStick() {
   const { scrollRef, scrollToBottom } = useStickToBottomContext();
+  const wasNearBottomRef = useRef(false);
 
   useEffect(() => {
     const scroller = scrollRef.current;
     if (!scroller) return;
 
+    // Continuously track whether the user is within the near-bottom zone.
+    // This captures the *pre-resize* state so the ResizeObserver below can
+    // decide correctly even when a single content addition exceeds the
+    // threshold distance.
+    const updateNearBottom = () => {
+      const distance =
+        scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+      wasNearBottomRef.current = distance <= NEAR_BOTTOM_THRESHOLD_PX;
+    };
+
+    // Initialise from current scroll position.
+    updateNearBottom();
+
+    scroller.addEventListener("scroll", updateNearBottom, { passive: true });
+
     // Observe the scroll container itself — its scrollHeight changes when
     // children grow (streaming) even if no DOM nodes are added/removed.
     const observer = new ResizeObserver(() => {
-      const distance =
-        scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
-      if (distance > 0 && distance <= NEAR_BOTTOM_THRESHOLD_PX) {
+      if (wasNearBottomRef.current) {
         scrollToBottom("instant");
       }
     });
@@ -129,7 +149,10 @@ export function WideNearBottomStick() {
     // Also observe the scroller itself in case it resizes (viewport change).
     observer.observe(scroller);
 
-    return () => observer.disconnect();
+    return () => {
+      scroller.removeEventListener("scroll", updateNearBottom);
+      observer.disconnect();
+    };
   }, [scrollRef, scrollToBottom]);
 
   return null;
