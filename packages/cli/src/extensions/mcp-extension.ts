@@ -13,6 +13,7 @@ import {
 } from "./mcp.js";
 import { setMcpBridge } from "./mcp-bridge.js";
 import type { RelayContext } from "./mcp-oauth.js";
+import { waitForRelayRegistration } from "./remote.js";
 
 type McpServerConfigEntry = {
   name: string;
@@ -588,10 +589,17 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
 
   // ── session_start: await eager load + report timing to TUI/web UI ────────
   pi.on?.("session_start", async (_event: any, ctx: any) => {
-    // Anchor relay wait timeout to session_start; any OAuth waiters created
-    // during eager init begin their fallback window now.
+    // Anchor relay wait timeout to relay registration, not session_start.
+    // The relay context is only published after the Socket.IO `registered`
+    // round-trip (remote.ts), which can happen well after session_start.
+    // Starting the 15s fallback timer here would still consume the budget
+    // before the relay is actually usable in slow-tunnel / cold-relay scenarios.
     setDeferOAuthRelayWaitTimeoutUntilAnchor(false);
-    markOAuthRelayWaitAnchorReady();
+    // Wait for the relay to finish registration (or timeout after 10s if
+    // relay is unreachable), then open the fallback window for OAuth waiters.
+    void waitForRelayRegistration().then(() => {
+      markOAuthRelayWaitAnchorReady();
+    });
 
     try {
       if (eagerLoadPromise) {

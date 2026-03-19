@@ -602,6 +602,14 @@ function createStreamableMcpClient(opts: {
         // URL instead. Falls back to local mode after the timeout.
         await oauthProvider.waitForRelayContext(15_000, signal);
 
+        // If the signal was aborted while waiting (e.g., session shutdown),
+        // bail out instead of falling through to the OAuth flow. Without this
+        // check, a stale eager init would open a local OAuth flow and keep
+        // eagerLoadPromise alive until the callback timeout.
+        if (signal?.aborted) {
+          throw new Error("MCP OAuth aborted: session shut down during relay wait");
+        }
+
         const { auth, extractWWWAuthenticateParams } = await import(
           "@modelcontextprotocol/sdk/client/auth.js"
         );
