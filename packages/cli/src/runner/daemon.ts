@@ -22,7 +22,7 @@ import type { RunnerClientToServerEvents, RunnerServerToClientEvents, RunnerHook
 import { loadGlobalConfig, defaultAgentDir, expandHome, type HooksConfig } from "../config.js";
 import { AuthStorage } from "@mariozechner/pi-coding-agent";
 import { cleanupSessionAttachments, sweepOrphanedAttachments } from "../extensions/session-attachments.js";
-import { getOAuthAccessToken, parseGeminiQuotaCredential } from "./usage-auth.js";
+import { getRefreshedOAuthToken, parseGeminiQuotaCredential } from "./usage-auth.js";
 
 /**
  * Summarise the active hooks from a HooksConfig for display in the web UI.
@@ -283,8 +283,7 @@ async function fetchAnthropicUsageData(): Promise<ProviderUsageData | null> {
     let token: string | null;
     try {
         const authStorage = createRunnerAuthStorage();
-        const credential = authStorage.get("anthropic");
-        token = getOAuthAccessToken(credential);
+        token = await getRefreshedOAuthToken(authStorage, "anthropic");
     } catch (err: any) {
         console.warn(`pizzapi runner: failed to get Anthropic credentials: ${err?.message ?? String(err)}`);
         return null;
@@ -395,8 +394,7 @@ async function fetchCodexUsageData(): Promise<ProviderUsageData | null> {
     let token: string | null;
     try {
         const authStorage = createRunnerAuthStorage();
-        const credential = authStorage.get("openai-codex");
-        token = getOAuthAccessToken(credential);
+        token = await getRefreshedOAuthToken(authStorage, "openai-codex");
     } catch (err: any) {
         console.warn(`pizzapi runner: failed to get OpenAI Codex credentials: ${err?.message ?? String(err)}`);
         return null;
