@@ -1,6 +1,9 @@
 import * as React from "react";
 
 import {
+  Conversation,
+  ConversationContent,
+  ConversationScrollButton,
   ConversationEmptyState,
   ConversationExport,
   MessageCopyButton,
@@ -1359,22 +1362,19 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     [messages],
   );
 
-  // Stable sort: messages with a timestamp come first (ordered by timestamp);
-  // messages with no timestamp are placed at the absolute end in their original
-  // relative order. This prevents timestampless messages (e.g. synthesised tool
-  // cards, streaming partials) from appearing in the middle of a conversation.
+  // Stable insertion-order-preserving sort: messages with timestamps sort
+  // chronologically, messages without timestamps (Infinity) go to the end,
+  // and messages with the same timestamp keep their original relative order.
+  // This prevents DOM reordering when messages transition from no-timestamp
+  // to having a timestamp (e.g., when a tool result arrives).
   const sortedMessages = React.useMemo(() => {
-    const withTs: RelayMessage[] = [];
-    const withoutTs: RelayMessage[] = [];
-    for (const msg of groupedMessages) {
-      if (msg.timestamp != null) {
-        withTs.push(msg);
-      } else {
-        withoutTs.push(msg);
-      }
-    }
-    withTs.sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
-    return [...withTs, ...withoutTs];
+    return groupedMessages.slice().sort((a, b) => {
+      const aTs = a.timestamp ?? Infinity;
+      const bTs = b.timestamp ?? Infinity;
+      if (aTs !== bTs) return aTs - bTs;
+      // Preserve original order for same/missing timestamps
+      return 0;
+    });
   }, [groupedMessages]);
 
   const visibleMessages = React.useMemo(
@@ -1391,11 +1391,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
 
   const PAGE_SIZE = 50;
 
-  const scrollRef = React.useRef<HTMLDivElement | null>(null);
-  const contentRef = React.useRef<HTMLDivElement | null>(null);
   const sentinelRef = React.useRef<HTMLDivElement | null>(null);
-  const [isNearBottom, setIsNearBottom] = React.useState(true);
-  const isNearBottomRef = React.useRef(true);
   const [renderedCount, setRenderedCount] = React.useState(PAGE_SIZE);
 
   // Reset window when session or message list changes significantly.
@@ -1409,46 +1405,18 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
   );
   const hasMore = visibleMessages.length > renderedCount;
 
-  const updateNearBottomState = React.useCallback(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    const nearBottom = distanceFromBottom < 200;
-    isNearBottomRef.current = nearBottom;
-    setIsNearBottom(nearBottom);
-  }, []);
-
-  const scrollToBottom = React.useCallback((behavior: "auto" | "smooth" = "auto") => {
-    const el = scrollRef.current;
-    if (!el) return;
-    el.scrollTo({ top: el.scrollHeight, behavior });
-  }, []);
-
-  // ResizeObserver: when the scroll content grows in height (e.g. during thinking/
-  // streaming where message count stays the same), keep pinned to the bottom.
-  // We calculate distance directly instead of relying on isNearBottomRef, which
-  // can be flipped to false by a scroll event that fires between the content
-  // resize and this callback (race condition).
-  React.useEffect(() => {
-    const content = contentRef.current;
-    const scroller = scrollRef.current;
-    if (!content || !scroller) return;
-    const observer = new ResizeObserver(() => {
-      const distance = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
-      if (distance < 200 || isNearBottomRef.current) {
-        scrollToBottom("auto");
-      }
-    });
-    observer.observe(content);
-    return () => observer.disconnect();
-  }, [scrollToBottom]);
-
   // When the sentinel at the top enters the viewport, load the previous page
   // while preserving the scroll position so the view doesn't jump.
+  // We find the scroll container from the DOM since StickToBottom doesn't expose it directly.
   React.useEffect(() => {
     const sentinel = sentinelRef.current;
-    const scroller = scrollRef.current;
-    if (!sentinel || !scroller || !hasMore) return;
+    if (!sentinel || !hasMore) return;
+
+    // Find the scroll container (StickToBottom's parent div with overflow-y-auto)
+    const scroller = document.querySelector<HTMLDivElement>(
+      '[role="log"][class*="overflow-y"]'
+    );
+    if (!scroller) return;
 
     const observer = new IntersectionObserver(
       ([entry]) => {
@@ -1466,24 +1434,6 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     observer.observe(sentinel);
     return () => observer.disconnect();
   }, [hasMore]);
-
-  // On session change, jump to bottom immediately.
-  React.useEffect(() => {
-    if (!sessionId) return;
-    requestAnimationFrame(() => {
-      scrollToBottom("auto");
-      updateNearBottomState();
-    });
-  }, [sessionId, scrollToBottom, updateNearBottomState]);
-
-  // When new messages arrive and we're near the bottom, keep pinned.
-  React.useEffect(() => {
-    if (!isNearBottom) return;
-    requestAnimationFrame(() => {
-      scrollToBottom("auto");
-      updateNearBottomState();
-    });
-  }, [visibleMessages, isNearBottom, scrollToBottom, updateNearBottomState]);
 
   return (
     <SessionActionsProvider value={sessionActions}>
@@ -1693,46 +1643,28 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
             />
           )
         ) : (
-          <>
-            <div
-              ref={scrollRef}
-              className="h-full overflow-y-auto overflow-x-hidden"
-              onScroll={updateNearBottomState}
-            >
-              <div ref={contentRef} className="w-full py-2 flex flex-col min-h-full justify-end">
-                {/* Sentinel: scrolling up to this triggers loading older messages */}
-                <div ref={sentinelRef} className="h-px" />
-                {hasMore && (
-                  <div className="py-2 text-center text-xs text-muted-foreground">
-                    Scroll up for older messages
-                  </div>
-                )}
-                {renderedMessages.map((message, index) => (
-                  <SessionMessageItem
-                    key={message.key}
-                    message={message}
-                    activeToolCalls={activeToolCalls}
-                    agentActive={agentActive}
-                    isLast={index === renderedMessages.length - 1}
-                    onTriggerResponse={onTriggerResponse}
-                  />
-                ))}
-              </div>
-            </div>
-
-            {!isNearBottom && (
-              <Button
-                className="absolute bottom-4 left-[50%] -translate-x-1/2 rounded-full"
-                onClick={() => scrollToBottom("smooth")}
-                size="icon"
-                type="button"
-                variant="outline"
-                aria-label="Scroll to bottom"
-              >
-                <ArrowDownIcon className="size-4" />
-              </Button>
-            )}
-          </>
+          <Conversation key={sessionId}>
+            <ConversationContent className="w-full py-2">
+              {/* Sentinel: scrolling up to this triggers loading older messages */}
+              <div ref={sentinelRef} className="h-px" />
+              {hasMore && (
+                <div className="py-2 text-center text-xs text-muted-foreground">
+                  Scroll up for older messages
+                </div>
+              )}
+              {renderedMessages.map((message, index) => (
+                <SessionMessageItem
+                  key={message.key}
+                  message={message}
+                  activeToolCalls={activeToolCalls}
+                  agentActive={agentActive}
+                  isLast={index === renderedMessages.length - 1}
+                  onTriggerResponse={onTriggerResponse}
+                />
+              ))}
+            </ConversationContent>
+            <ConversationScrollButton />
+          </Conversation>
         )}
       </div>
 
