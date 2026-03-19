@@ -19,8 +19,10 @@ import { join, dirname, relative, basename, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { io, type Socket } from "socket.io-client";
 import type { RunnerClientToServerEvents, RunnerServerToClientEvents, RunnerHook } from "@pizzapi/protocol";
-import { loadGlobalConfig, type HooksConfig } from "../config.js";
+import { loadGlobalConfig, loadConfig, defaultAgentDir, expandHome, type HooksConfig } from "../config.js";
+import { AuthStorage } from "@mariozechner/pi-coding-agent";
 import { cleanupSessionAttachments, sweepOrphanedAttachments } from "../extensions/session-attachments.js";
+import { getRefreshedOAuthToken, parseGeminiQuotaCredential } from "./usage-auth.js";
 
 /**
  * Summarise the active hooks from a HooksConfig for display in the web UI.
@@ -260,25 +262,69 @@ const ANTHROPIC_USAGE_REFRESH_INTERVAL = 15 * 60 * 1000;
 let _usageRefreshTimer: ReturnType<typeof setInterval> | null = null;
 let _lastAnthropicUsage: { data: ProviderUsageData | null; fetchedAt: number } | null = null;
 
+/**
+ * Tracks CWDs of active worker sessions so usage fetches can probe
+ * project-local agentDir overrides when the daemon runs from a different directory.
+ * Map: cwd → set of sessionIds using that cwd.
+ */
+const _activeSessionCwds = new Map<string, Set<string>>();
+
+function trackSessionCwd(sessionId: string, cwd: string): void {
+    if (!_activeSessionCwds.has(cwd)) _activeSessionCwds.set(cwd, new Set());
+    _activeSessionCwds.get(cwd)!.add(sessionId);
+}
+
+function untrackSessionCwd(sessionId: string, cwd: string): void {
+    const sessions = _activeSessionCwds.get(cwd);
+    if (!sessions) return;
+    sessions.delete(sessionId);
+    if (sessions.size === 0) _activeSessionCwds.delete(cwd);
+}
+
 function runnerUsageCacheFilePath(): string {
     return join(homedir(), ".pizzapi", "usage-cache.json");
 }
 
-/** Read auth.json from the default PizzaPi home (same file used by remote.ts). */
-function readRunnerAuthJson(): Record<string, unknown> {
-    try {
-        const authPath = join(homedir(), ".pizzapi", "auth.json");
-        if (!existsSync(authPath)) return {};
-        return JSON.parse(readFileSync(authPath, "utf-8")) as Record<string, unknown>;
-    } catch {
-        return {};
+/**
+ * Returns all unique AuthStorage instances known to the daemon:
+ * the daemon's own startup CWD first, followed by any CWD registered by active
+ * worker sessions that maps to a different auth.json (e.g. a project-specific
+ * agentDir override).  Results are deduplicated by resolved auth.json path so
+ * the same file is never probed twice.
+ *
+ * Usage fetch functions iterate this list and use the first storage that
+ * yields valid credentials, ensuring that sessions spawned in projects with
+ * their own agentDir overrides are covered even when the daemon was started
+ * from a different directory.
+ */
+function getKnownAuthStorages(): AuthStorage[] {
+    const seen = new Set<string>();
+    const result: AuthStorage[] = [];
+    const cwds = [process.cwd(), ..._activeSessionCwds.keys()];
+    for (const cwd of cwds) {
+        const config = loadConfig(cwd);
+        const agentDir = config.agentDir ? expandHome(config.agentDir) : defaultAgentDir();
+        const authPath = join(agentDir, "auth.json");
+        if (!seen.has(authPath)) {
+            seen.add(authPath);
+            result.push(AuthStorage.create(authPath));
+        }
     }
+    return result;
 }
 
 async function fetchAnthropicUsageData(): Promise<ProviderUsageData | null> {
-    const auth = readRunnerAuthJson();
-    const token = (auth as any)?.anthropic?.access;
-    if (!token || typeof token !== "string") return null;
+    let token: string | null = null;
+    try {
+        for (const authStorage of getKnownAuthStorages()) {
+            token = await getRefreshedOAuthToken(authStorage, "anthropic");
+            if (token) break;
+        }
+    } catch (err: any) {
+        console.warn(`pizzapi runner: failed to get Anthropic credentials: ${err?.message ?? String(err)}`);
+        return null;
+    }
+    if (!token) return null;
     try {
         const res = await fetch("https://api.anthropic.com/api/oauth/usage", {
             headers: {
@@ -331,21 +377,29 @@ async function getRunnerAnthropicUsageData(opts: { force?: boolean } = {}): Prom
 }
 
 async function fetchGeminiUsageData(): Promise<ProviderUsageData | null> {
-    const auth = readRunnerAuthJson();
-    const rawCred = (auth as any)?.["google-gemini-cli"];
-    if (!rawCred) return null;
-    let token: string;
-    let projectId: string;
+    let token: string | undefined;
+    let projectId: string | undefined;
     try {
-        const parsed = (typeof rawCred === "string"
-            ? JSON.parse(rawCred)
-            : rawCred) as { token?: string; projectId?: string };
-        if (!parsed.token || !parsed.projectId) return null;
-        token = parsed.token;
-        projectId = parsed.projectId;
-    } catch {
+        for (const authStorage of getKnownAuthStorages()) {
+            // AuthStorage.getApiKey handles OAuth token refresh and returns
+            // JSON.stringify({ token, projectId }) via the provider's getApiKey().
+            // Use parseGeminiQuotaCredential to validate the result — API-key
+            // credentials return a plain string that fails JSON.parse, so we
+            // must not short-circuit on the first truthy raw value; we need to
+            // confirm it is a valid OAuth Gemini credential before stopping.
+            const raw = await authStorage.getApiKey("google-gemini-cli");
+            const cred = parseGeminiQuotaCredential(raw);
+            if (cred) {
+                token = cred.token;
+                projectId = cred.projectId;
+                break;
+            }
+        }
+    } catch (err: any) {
+        console.warn(`pizzapi runner: failed to get Google credentials: ${err?.message ?? String(err)}`);
         return null;
     }
+    if (!token || !projectId) return null;
     try {
         const endpoint = process.env["CODE_ASSIST_ENDPOINT"] ?? "https://cloudcode-pa.googleapis.com";
         const version = process.env["CODE_ASSIST_API_VERSION"] ?? "v1internal";
@@ -375,9 +429,17 @@ async function fetchGeminiUsageData(): Promise<ProviderUsageData | null> {
 }
 
 async function fetchCodexUsageData(): Promise<ProviderUsageData | null> {
-    const auth = readRunnerAuthJson();
-    const token = (auth as any)?.["openai-codex"]?.access;
-    if (!token || typeof token !== "string") return null;
+    let token: string | null = null;
+    try {
+        for (const authStorage of getKnownAuthStorages()) {
+            token = await getRefreshedOAuthToken(authStorage, "openai-codex");
+            if (token) break;
+        }
+    } catch (err: any) {
+        console.warn(`pizzapi runner: failed to get OpenAI Codex credentials: ${err?.message ?? String(err)}`);
+        return null;
+    }
+    if (!token) return null;
     try {
         const res = await fetch("https://chatgpt.com/backend-api/wham/usage", {
             headers: { Authorization: `Bearer ${token}` },
@@ -1689,6 +1751,10 @@ function spawnSession(
         throw new Error(`Session already running: ${sessionId}`);
     }
 
+    // Resolve the effective cwd for this session now so we can register it for
+    // usage auth lookups and clean it up on exit without re-deriving it.
+    const effectiveCwd = requestedCwd ?? process.cwd();
+
     if (!isCwdAllowed(requestedCwd)) {
         throw new Error(`Requested cwd is outside allowed workspace root(s): ${requestedCwd}`);
     }
@@ -1757,8 +1823,13 @@ function spawnSession(
         }
     });
 
+    // Register this session's cwd so usage fetches can probe its project-local
+    // agentDir override (if any).  Cleaned up on exit below.
+    trackSessionCwd(sessionId, effectiveCwd);
+
     child.on("exit", (code, signal) => {
         runningSessions.delete(sessionId);
+        untrackSessionCwd(sessionId, effectiveCwd);
         console.log(`pizzapi runner: session ${sessionId} exited (code=${code}, signal=${signal})`);
         if (code === 43 && onRestartRequested) {
             // Restart-in-place: re-spawn immediately without touching attachments.
