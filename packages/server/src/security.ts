@@ -163,7 +163,15 @@ export function getClientIp(req: Request): string {
     if (trustProxy) {
         const forwardedFor = req.headers.get("x-forwarded-for");
         if (forwardedFor) {
-            return forwardedFor.split(",")[0]?.trim() || clientIp;
+            // Use the RIGHT-MOST entry, not the left-most. Standard reverse proxies
+            // (nginx, Caddy, etc.) append the real client IP to any existing
+            // X-Forwarded-For header, so the format is:
+            //   X-Forwarded-For: <client-supplied>, ..., <real-client-ip>
+            // Taking the left-most value would let clients spoof their IP by sending
+            // a crafted X-Forwarded-For header. The right-most entry is the one
+            // added by our directly-connected trusted proxy.
+            const parts = forwardedFor.split(",");
+            return parts[parts.length - 1]?.trim() || clientIp;
         }
     }
 

@@ -226,6 +226,27 @@ describe("getClientIp", () => {
         expect(getClientIp(req)).toBe("198.51.100.1");
     });
 
+    test("uses right-most XFF entry to prevent client spoofing via prepended hops", () => {
+        delete process.env.PIZZAPI_TRUST_PROXY;
+        // Simulates nginx $proxy_add_x_forwarded_for: client sends "X-Forwarded-For: 1.2.3.4",
+        // nginx appends real client IP → "1.2.3.4, 203.0.113.50"
+        const req = makeReq({
+            "x-pizzapi-client-ip": "127.0.0.1",
+            "x-forwarded-for": "1.2.3.4, 203.0.113.50",
+        });
+        // Must return right-most (proxy-appended) IP, NOT the spoofed left-most
+        expect(getClientIp(req)).toBe("203.0.113.50");
+    });
+
+    test("uses right-most XFF entry with TRUST_PROXY=true", () => {
+        process.env.PIZZAPI_TRUST_PROXY = "true";
+        const req = makeReq({
+            "x-pizzapi-client-ip": "172.17.0.1",
+            "x-forwarded-for": "10.0.0.1, 203.0.113.99",
+        });
+        expect(getClientIp(req)).toBe("203.0.113.99");
+    });
+
     test("does NOT auto-trust XFF for private (non-loopback) IPs like 192.168.x.x", () => {
         delete process.env.PIZZAPI_TRUST_PROXY;
         const req = makeReq({
