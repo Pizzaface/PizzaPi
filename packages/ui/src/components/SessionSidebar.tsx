@@ -1360,7 +1360,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                                 return match ? (
                                                                     <div className="flex items-center gap-1 mt-0.5">
                                                                         <span
-                                                                            className="text-[0.55rem] bg-amber-500/15 text-amber-400/80 px-1 py-0.5 rounded font-mono leading-none truncate max-w-[8rem]"
+                                                                            className="text-[0.55rem] bg-amber-500/15 text-amber-400/80 px-1 py-0.5 rounded font-mono leading-none truncate max-w-full"
                                                                             title={`Worktree: ${match[1]}`}
                                                                         >
                                                                             {match[1]}
