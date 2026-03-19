@@ -247,12 +247,15 @@ export function registerViewerNamespace(io: SocketIOServer): void {
                 // broadcasts to ALL viewers, resetting every watcher's
                 // transcript even though only this one viewer needed recovery.
                 //
-                // Instead, no-op: this viewer is already in the broadcast room
-                // and will receive the remaining session_messages_chunk events.
-                // Once the final chunk assembles into a complete snapshot and
-                // updateSessionState() runs, the viewer can resync again if
-                // needed and will get the fully-assembled lastState.
-                return;
+                // Fall through to sendSnapshotToViewer() below instead.  This
+                // sends the previous completed (non-chunked) lastState — it's
+                // slightly stale but gives the viewer a complete transcript.
+                // The non-chunked SA will set lastCompletedSnapshotRef on the
+                // client, which rejects remaining chunks from the in-flight
+                // delivery.  That's acceptable: the viewer has a working
+                // transcript, and the next session_active (from normal agent
+                // activity or a later resync after the chunked delivery
+                // finishes) will bring them fully up to date.
             }
 
             await sendSnapshotToViewer(sessionId, socket);
