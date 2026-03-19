@@ -343,19 +343,13 @@ export function registerViewerNamespace(io: SocketIOServer): void {
         // Route directly to the child session via its relay socket,
         // bypassing the parent CLI. This avoids depending on an in-memory
         // handler in the parent to forward the response.
-        socket.on("trigger_response", async (data, ack) => {
+        socket.on("trigger_response", async (data) => {
             const { triggerId, response, action, targetSessionId } = data ?? {};
-            if (!triggerId || !response) {
-                if (typeof ack === "function") ack();
-                return;
-            }
+            if (!triggerId || !response) return;
 
             // Require collab mode — same gate as input/exec/model_set
             const currentSession = await getSharedSession(sessionId);
-            if (!currentSession?.collabMode) {
-                if (typeof ack === "function") ack();
-                return;
-            }
+            if (!currentSession?.collabMode) return;
 
             // If targetSessionId is explicitly provided, route to that child.
             // Validate ownership: the target session must belong to the same user.
@@ -363,7 +357,6 @@ export function registerViewerNamespace(io: SocketIOServer): void {
                 const targetSession = await getSharedSession(targetSessionId);
                 if (!targetSession || targetSession.userId !== viewerUserId) {
                     // Target session doesn't exist or belongs to a different user — ignore.
-                    if (typeof ack === "function") ack();
                     return;
                 }
                 const triggerPayload = {
@@ -375,12 +368,8 @@ export function registerViewerNamespace(io: SocketIOServer): void {
                 const childSocket = getLocalTuiSocket(targetSessionId);
                 if (childSocket) {
                     childSocket.emit("trigger_response" as string, triggerPayload);
-                    if (typeof ack === "function") ack();
                 } else if (!emitToRelaySession(targetSessionId, "trigger_response", triggerPayload)) {
                     socket.emit("error", { message: `Failed to deliver trigger response to child session ${targetSessionId}` });
-                } else {
-                    // emitToRelaySession succeeded
-                    if (typeof ack === "function") ack();
                 }
                 return;
             }
@@ -395,12 +384,8 @@ export function registerViewerNamespace(io: SocketIOServer): void {
             const tuiSocket = getLocalTuiSocket(sessionId);
             if (tuiSocket) {
                 tuiSocket.emit("trigger_response" as string, triggerPayloadForParent);
-                if (typeof ack === "function") ack();
             } else if (!emitToRelaySession(sessionId, "trigger_response", triggerPayloadForParent)) {
                 socket.emit("error", { message: `Failed to deliver trigger response to session ${sessionId}` });
-            } else {
-                // emitToRelaySession succeeded
-                if (typeof ack === "function") ack();
             }
         });
 

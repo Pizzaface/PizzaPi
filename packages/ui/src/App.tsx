@@ -3199,16 +3199,11 @@ export function App() {
     // bypassing the parent's in-memory receivedTriggers map. This makes
     // delivery resilient to parent reconnects/resumes where the map is gone.
     // Falls back to the parent session ID for legacy triggers without source.
-    socket.timeout(5000).emit("trigger_response", {
+    socket.emit("trigger_response", {
       triggerId,
       response,
       ...(action ? { action } : {}),
       targetSessionId: sourceSessionId ?? sessionId,
-    }, (err: Error | null) => {
-      if (err) {
-        // Server didn't acknowledge within timeout — surface to user
-        setViewerStatus("Trigger response may not have been delivered");
-      }
     });
     return true;
   }, []);
