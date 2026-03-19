@@ -20,6 +20,10 @@ services:
       # Disable new signups after the first user has registered (default: true)
       # Set to false to allow unlimited registrations.
       # - PIZZAPI_DISABLE_SIGNUP_AFTER_FIRST_USER=true
+      # Trust X-Forwarded-For from reverse proxies for rate limiting.
+      # Required when the proxy connects via a Docker bridge network (non-loopback).
+      # Loopback (127.0.0.1) proxies are auto-detected without this setting.
+      # - PIZZAPI_TRUST_PROXY=true
     volumes:
       - pizzapi-data:/app/data
     depends_on:

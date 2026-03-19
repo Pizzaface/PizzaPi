@@ -226,10 +226,47 @@ describe("getClientIp", () => {
         expect(getClientIp(req)).toBe("198.51.100.1");
     });
 
-    test("auto-detects reverse proxy for IPv4-mapped private IPs (::ffff:192.168.x.x)", () => {
+    test("does NOT auto-trust XFF for private (non-loopback) IPs like 192.168.x.x", () => {
+        delete process.env.PIZZAPI_TRUST_PROXY;
+        const req = makeReq({
+            "x-pizzapi-client-ip": "192.168.1.1",
+            "x-forwarded-for": "198.51.100.1",
+        });
+        // Private IPs are NOT auto-trusted — they could be direct LAN clients
+        expect(getClientIp(req)).toBe("192.168.1.1");
+    });
+
+    test("does NOT auto-trust XFF for IPv4-mapped private IPs (::ffff:192.168.x.x)", () => {
         delete process.env.PIZZAPI_TRUST_PROXY;
         const req = makeReq({
             "x-pizzapi-client-ip": "::ffff:192.168.1.1",
+            "x-forwarded-for": "198.51.100.1",
+        });
+        expect(getClientIp(req)).toBe("::ffff:192.168.1.1");
+    });
+
+    test("does NOT auto-trust XFF for 10.x.x.x private IPs", () => {
+        delete process.env.PIZZAPI_TRUST_PROXY;
+        const req = makeReq({
+            "x-pizzapi-client-ip": "10.0.0.1",
+            "x-forwarded-for": "198.51.100.1",
+        });
+        expect(getClientIp(req)).toBe("10.0.0.1");
+    });
+
+    test("does NOT auto-trust XFF for Docker bridge IPs (172.17.x.x)", () => {
+        delete process.env.PIZZAPI_TRUST_PROXY;
+        const req = makeReq({
+            "x-pizzapi-client-ip": "172.17.0.1",
+            "x-forwarded-for": "198.51.100.1",
+        });
+        expect(getClientIp(req)).toBe("172.17.0.1");
+    });
+
+    test("PIZZAPI_TRUST_PROXY=true allows XFF trust for Docker bridge IPs", () => {
+        process.env.PIZZAPI_TRUST_PROXY = "true";
+        const req = makeReq({
+            "x-pizzapi-client-ip": "172.17.0.1",
             "x-forwarded-for": "198.51.100.1",
         });
         expect(getClientIp(req)).toBe("198.51.100.1");
@@ -244,7 +281,7 @@ describe("getClientIp", () => {
         expect(getClientIp(req)).toBe("198.51.100.1");
     });
 
-    test("PIZZAPI_TRUST_PROXY=false disables auto-detection for private IPs", () => {
+    test("PIZZAPI_TRUST_PROXY=false disables auto-detection for loopback IPs", () => {
         process.env.PIZZAPI_TRUST_PROXY = "false";
         const req = makeReq({
             "x-pizzapi-client-ip": "127.0.0.1",

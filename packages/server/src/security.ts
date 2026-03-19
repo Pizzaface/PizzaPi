@@ -118,24 +118,19 @@ function normalizeIp(ip: string): string {
 }
 
 /**
- * Check if an IP address is private/loopback (indicating likely reverse proxy setup).
+ * Check if an IP address is loopback (indicating a reverse proxy on the same host).
  * Handles IPv4-mapped IPv6 addresses (e.g. ::ffff:127.0.0.1) via normalizeIp().
+ *
+ * SECURITY NOTE: Only loopback is safe for auto-detection. Broader private ranges
+ * (10.x, 172.16-31.x, 192.168.x) are NOT auto-trusted because the server may be
+ * directly accessible on the LAN (e.g. Docker published on 0.0.0.0), where direct
+ * clients also arrive with private IPs. Trusting XFF from those would let any LAN
+ * client spoof their rate-limit key. Operators behind a non-loopback proxy (e.g.
+ * Docker bridge network) should set PIZZAPI_TRUST_PROXY=true explicitly.
  */
-function isPrivateOrLoopbackIp(rawIp: string): boolean {
+function isLoopbackIp(rawIp: string): boolean {
     const ip = normalizeIp(rawIp);
-    // Loopback
-    if (ip === "127.0.0.1" || ip === "::1" || ip === "localhost") return true;
-    // IPv4 private ranges
-    if (ip.startsWith("10.")) return true;
-    if (ip.startsWith("172.") && /^172\.([1-2][0-9]|3[0-1])\./.test(ip)) return true;
-    if (ip.startsWith("192.168.")) return true;
-    // IPv4 link-local
-    if (ip.startsWith("169.254.")) return true;
-    // IPv6 unique local
-    if (ip.startsWith("fc") || ip.startsWith("fd")) return true;
-    // IPv6 link-local
-    if (ip.startsWith("fe80")) return true;
-    return false;
+    return ip === "127.0.0.1" || ip === "::1" || ip === "localhost";
 }
 
 /**
@@ -145,10 +140,13 @@ function isPrivateOrLoopbackIp(rawIp: string): boolean {
  * from the TCP connection's remoteAddress, preventing client spoofing.
  *
  * In reverse proxy setups (common deployment): Detects when remoteAddress is
- * a private/loopback IP and safely trusts `x-forwarded-for` as the real client IP.
+ * loopback (127.0.0.1 / ::1) and safely trusts `x-forwarded-for` as the real
+ * client IP. Only loopback is auto-detected — broader private ranges are not
+ * trusted because the server may be directly accessible on the LAN.
  *
- * The `PIZZAPI_TRUST_PROXY` env var can explicitly enable/disable proxy mode
- * for advanced setups (e.g. proxies that don't preserve loopback addresses).
+ * The `PIZZAPI_TRUST_PROXY` env var can explicitly enable/disable proxy mode:
+ * - Set to "true" for non-loopback proxies (e.g. Docker bridge networks)
+ * - Set to "false" to disable auto-detection entirely
  */
 export function getClientIp(req: Request): string {
     const clientIp = req.headers.get("x-pizzapi-client-ip") || "unknown";
@@ -156,11 +154,11 @@ export function getClientIp(req: Request): string {
     // PIZZAPI_TRUST_PROXY is a three-state toggle:
     //   "true"  → always trust x-forwarded-for
     //   "false" → never trust x-forwarded-for (disables auto-detection)
-    //   unset   → auto-detect based on whether remoteAddress is private/loopback
+    //   unset   → auto-detect based on whether remoteAddress is loopback
     const envTrustProxy = process.env.PIZZAPI_TRUST_PROXY?.toLowerCase();
     const trustProxy =
         envTrustProxy === "true" ||
-        (envTrustProxy !== "false" && clientIp !== "unknown" && isPrivateOrLoopbackIp(clientIp));
+        (envTrustProxy !== "false" && clientIp !== "unknown" && isLoopbackIp(clientIp));
 
     if (trustProxy) {
         const forwardedFor = req.headers.get("x-forwarded-for");
