@@ -371,7 +371,7 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
           clearTimeout(timer);
           timer = null;
         }
-        signal?.removeEventListener("abort", onAbort);
+
       };
 
       const finish = () => {
@@ -381,9 +381,6 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
         resolve();
       };
 
-      const onAbort = () => {
-        finish();
-      };
 
       const wrappedResolve = () => {
         finish();
@@ -397,7 +394,7 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
       };
 
       this._relayReadyResolvers.push(wrappedResolve);
-      signal?.addEventListener("abort", onAbort, { once: true });
+
 
       if (timeoutMs <= 0) {
         finish();
