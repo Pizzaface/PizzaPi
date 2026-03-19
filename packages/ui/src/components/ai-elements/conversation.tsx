@@ -16,6 +16,15 @@ import { ArrowDownIcon, CheckIcon, ClipboardIcon, DownloadIcon, ShareIcon } from
 import { useCallback, useEffect, useState, useRef } from "react";
 import { StickToBottom, useStickToBottomContext } from "use-stick-to-bottom";
 
+/**
+ * Default distance-from-bottom (in px) within which auto-follow remains
+ * active during streaming / content resizes.  `use-stick-to-bottom` uses a
+ * hardcoded 70 px threshold internally; this wider value preserves the UX of
+ * the original custom scroller, where users within 200 px of the bottom were
+ * still considered "pinned".
+ */
+const NEAR_BOTTOM_THRESHOLD_PX = 200;
+
 export type ConversationProps = ComponentProps<typeof StickToBottom>;
 
 export const Conversation = ({ className, ...props }: ConversationProps) => (
@@ -85,6 +94,45 @@ export const ConversationEmptyState = ({
 export function useConversationScrollRef() {
   const { scrollRef } = useStickToBottomContext();
   return scrollRef;
+}
+
+/**
+ * Renders nothing visible — sits inside a `<Conversation>` tree and extends
+ * the auto-follow zone from `use-stick-to-bottom`'s built-in 70 px to
+ * {@link NEAR_BOTTOM_THRESHOLD_PX} (200 px).  When the scrollable content
+ * grows (streaming tokens, expanding tool outputs, etc.) and the user is
+ * within the wider threshold, this component calls `scrollToBottom()` so the
+ * view stays pinned.
+ */
+export function WideNearBottomStick() {
+  const { scrollRef, scrollToBottom } = useStickToBottomContext();
+
+  useEffect(() => {
+    const scroller = scrollRef.current;
+    if (!scroller) return;
+
+    // Observe the scroll container itself — its scrollHeight changes when
+    // children grow (streaming) even if no DOM nodes are added/removed.
+    const observer = new ResizeObserver(() => {
+      const distance =
+        scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+      if (distance > 0 && distance <= NEAR_BOTTOM_THRESHOLD_PX) {
+        scrollToBottom("instant");
+      }
+    });
+
+    // Observe the first (and usually only) child — this is the content
+    // wrapper whose height actually changes during streaming.
+    for (const child of Array.from(scroller.children)) {
+      observer.observe(child);
+    }
+    // Also observe the scroller itself in case it resizes (viewport change).
+    observer.observe(scroller);
+
+    return () => observer.disconnect();
+  }, [scrollRef, scrollToBottom]);
+
+  return null;
 }
 
 export type ConversationScrollButtonProps = ComponentProps<typeof Button>;

@@ -4,6 +4,7 @@ import {
   Conversation,
   ConversationContent,
   ConversationScrollButton,
+  WideNearBottomStick,
   ConversationEmptyState,
   ConversationExport,
   MessageCopyButton,
@@ -1678,6 +1679,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                 />
               ))}
             </ConversationContent>
+            <WideNearBottomStick />
             <ConversationScrollButton />
           </Conversation>
         )}
