@@ -160,13 +160,13 @@ export const initialPromptExtension: ExtensionFactory = (pi) => {
         }
 
         // Send the initial prompt as a user message.
-        // Use a small delay to ensure the relay connection is established and
-        // the session is fully initialized before sending the prompt.
+        // Defer to next tick so relay connect (initiated during session_start)
+        // can complete. Previous hardcoded 1s delay was unnecessarily long.
         if (initialPrompt) {
             setTimeout(() => {
                 console.log(`pizzapi worker: sending initial prompt (${initialPrompt.length} chars)`);
                 pi.sendUserMessage(initialPrompt);
-            }, 1000);
+            }, 0);
         }
     });
 };
