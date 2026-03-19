@@ -235,7 +235,7 @@ services:
       PIZZAPI_TRUST_PROXY: "true"
 ```
 
-Or as a direct variable:
+Or pass the variable when launching with `pizzapi web` (it will be forwarded to the Docker container):
 
 ```bash
 PIZZAPI_TRUST_PROXY=true pizzapi web
@@ -244,6 +244,27 @@ PIZZAPI_TRUST_PROXY=true pizzapi web
 <Aside type="caution">
   Only set `PIZZAPI_TRUST_PROXY=true` if you have a reverse proxy in front of PizzaPi. Enabling this without a proxy allows clients to spoof their IP address and bypass rate limiting.
 </Aside>
+
+### Multi-Proxy Chains
+
+By default, PizzaPi uses the **rightmost** `X-Forwarded-For` entry — the IP appended by the directly-connected proxy. This is safe against client spoofing for single-proxy setups.
+
+If you have **multiple trusted proxy hops** (e.g. CDN → nginx → PizzaPi), set `PIZZAPI_PROXY_DEPTH` to the number of trusted proxies:
+
+```yaml
+# docker/compose.override.yml — CDN + local proxy = 2 hops
+services:
+  server:
+    environment:
+      PIZZAPI_TRUST_PROXY: "true"
+      PIZZAPI_PROXY_DEPTH: "2"
+```
+
+| Depth | Use case | XFF entry used |
+|-------|----------|----------------|
+| `1` (default) | Single proxy (Caddy, nginx, Traefik) | Rightmost |
+| `2` | CDN + local proxy | Second from right |
+| `N` | N trusted hops | Nth from right |
 
 ---
 

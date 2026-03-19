@@ -375,7 +375,7 @@ services:
       - VAPID_PUBLIC_KEY={{VAPID_PUBLIC_KEY}}
       - VAPID_PRIVATE_KEY={{VAPID_PRIVATE_KEY}}
       - VAPID_SUBJECT={{VAPID_SUBJECT}}
-{{EXTRA_ORIGINS_LINE}}    volumes:
+{{EXTRA_ORIGINS_LINE}}{{TRUST_PROXY_LINE}}    volumes:
       - {{DATA_DIR}}:/app/data:Z
     depends_on:
       - redis
@@ -401,6 +401,12 @@ function generateComposeFile(repoPath: string, config: WebConfig): string {
         ? `      - PIZZAPI_EXTRA_ORIGINS=${config.extraOrigins}\n`
         : `      # - PIZZAPI_EXTRA_ORIGINS=\n`;
 
+    // Pass PIZZAPI_TRUST_PROXY through to the container if set in the environment
+    const trustProxy = process.env.PIZZAPI_TRUST_PROXY;
+    const trustProxyLine = trustProxy
+        ? `      - PIZZAPI_TRUST_PROXY=${trustProxy}\n`
+        : `      # - PIZZAPI_TRUST_PROXY=\n`;
+
     const compose = template
         .replace(/\{\{REPO_PATH}}/g, repoPath)
         .replace(/\{\{PORT}}/g, String(config.port))
@@ -409,7 +415,8 @@ function generateComposeFile(repoPath: string, config: WebConfig): string {
         .replace(/\{\{VAPID_PRIVATE_KEY}}/g, config.vapid.privateKey)
         .replace(/\{\{VAPID_SUBJECT}}/g, config.vapidSubject)
         .replace(/\{\{BETTER_AUTH_SECRET}}/g, config.betterAuthSecret)
-        .replace(/\{\{EXTRA_ORIGINS_LINE}}/g, extraOriginsLine);
+        .replace(/\{\{EXTRA_ORIGINS_LINE}}/g, extraOriginsLine)
+        .replace(/\{\{TRUST_PROXY_LINE}}/g, trustProxyLine);
 
     // Only write if changed
     const existing = existsSync(composePath) ? readFileSync(composePath, "utf-8") : null;

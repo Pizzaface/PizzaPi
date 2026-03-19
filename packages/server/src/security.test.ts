@@ -187,10 +187,13 @@ describe("getClientIp", () => {
     const makeReq = (headers: Record<string, string>) =>
         new Request("http://localhost/test", { headers });
 
-    const originalEnv = process.env.PIZZAPI_TRUST_PROXY;
+    const originalTrustProxy = process.env.PIZZAPI_TRUST_PROXY;
+    const originalProxyDepth = process.env.PIZZAPI_PROXY_DEPTH;
     afterAll(() => {
-        if (originalEnv === undefined) delete process.env.PIZZAPI_TRUST_PROXY;
-        else process.env.PIZZAPI_TRUST_PROXY = originalEnv;
+        if (originalTrustProxy === undefined) delete process.env.PIZZAPI_TRUST_PROXY;
+        else process.env.PIZZAPI_TRUST_PROXY = originalTrustProxy;
+        if (originalProxyDepth === undefined) delete process.env.PIZZAPI_PROXY_DEPTH;
+        else process.env.PIZZAPI_PROXY_DEPTH = originalProxyDepth;
     });
 
     test("returns x-pizzapi-client-ip for direct connections", () => {
@@ -226,26 +229,53 @@ describe("getClientIp", () => {
         expect(getClientIp(req)).toBe("198.51.100.1");
     });
 
-    test("uses left-most XFF entry as the original client IP in multi-hop chains", () => {
+    test("uses right-most XFF entry to prevent client spoofing (single proxy)", () => {
         delete process.env.PIZZAPI_TRUST_PROXY;
-        // Standard reverse proxy behavior: creates fresh X-Forwarded-For header(s)
-        // In multi-proxy chains: X-Forwarded-For: <client-ip>, <proxy-1>, <proxy-2>, ...
-        // The left-most is the original client IP.
+        delete process.env.PIZZAPI_PROXY_DEPTH;
+        // nginx $proxy_add_x_forwarded_for appends $remote_addr to any existing header:
+        //   Client sends: X-Forwarded-For: 1.2.3.4 (spoofed)
+        //   Proxy appends: X-Forwarded-For: 1.2.3.4, 203.0.113.50 (real client IP)
+        // Right-most is the proxy-appended real client IP.
         const req = makeReq({
             "x-pizzapi-client-ip": "127.0.0.1",
-            "x-forwarded-for": "203.0.113.50, 198.51.100.5",
+            "x-forwarded-for": "1.2.3.4, 203.0.113.50",
         });
-        // Return left-most (original client)
         expect(getClientIp(req)).toBe("203.0.113.50");
     });
 
-    test("uses left-most XFF entry with TRUST_PROXY=true", () => {
+    test("uses right-most XFF entry with TRUST_PROXY=true", () => {
         process.env.PIZZAPI_TRUST_PROXY = "true";
+        delete process.env.PIZZAPI_PROXY_DEPTH;
         const req = makeReq({
             "x-pizzapi-client-ip": "172.17.0.1",
             "x-forwarded-for": "203.0.113.99, 10.0.0.1",
         });
-        expect(getClientIp(req)).toBe("203.0.113.99");
+        // Right-most entry (10.0.0.1) is the proxy-appended real client
+        expect(getClientIp(req)).toBe("10.0.0.1");
+    });
+
+    test("PIZZAPI_PROXY_DEPTH=2 uses second-from-right for multi-proxy chains", () => {
+        process.env.PIZZAPI_TRUST_PROXY = "true";
+        process.env.PIZZAPI_PROXY_DEPTH = "2";
+        // CDN → nginx → PizzaPi:
+        //   XFF: <spoofed>, <real-client>, <CDN-IP>
+        // depth=2 → parts[length - 2] = real-client
+        const req = makeReq({
+            "x-pizzapi-client-ip": "172.17.0.1",
+            "x-forwarded-for": "1.2.3.4, 203.0.113.50, 198.51.100.5",
+        });
+        expect(getClientIp(req)).toBe("203.0.113.50");
+        delete process.env.PIZZAPI_PROXY_DEPTH;
+    });
+
+    test("single-entry XFF returns that entry regardless of depth", () => {
+        delete process.env.PIZZAPI_TRUST_PROXY;
+        delete process.env.PIZZAPI_PROXY_DEPTH;
+        const req = makeReq({
+            "x-pizzapi-client-ip": "127.0.0.1",
+            "x-forwarded-for": "203.0.113.50",
+        });
+        expect(getClientIp(req)).toBe("203.0.113.50");
     });
 
     test("does NOT auto-trust XFF for private (non-loopback) IPs like 192.168.x.x", () => {

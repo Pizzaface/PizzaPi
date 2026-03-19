@@ -164,18 +164,23 @@ export function getClientIp(req: Request): string {
     if (trustProxy) {
         const forwardedFor = req.headers.get("x-forwarded-for");
         if (forwardedFor) {
-            // Use the LEFT-MOST entry (the original client IP). Standard reverse proxies
-            // (nginx, Caddy, etc.) prepend the real client IP to the X-Forwarded-For
-            // header on first connection, and then append their own IP on subsequent
-            // connections in a chain. The format in single-proxy setups is:
-            //   X-Forwarded-For: <original-client-ip>
-            // Or in multi-proxy setups:
-            //   X-Forwarded-For: <original-client-ip>, <first-proxy>, <second-proxy>, ...
-            // Taking the left-most value is safe when we trust the directly-connected
-            // proxy, because the proxy never appends a client-supplied X-Forwarded-For;
-            // it creates a fresh one with the real client.
-            const parts = forwardedFor.split(",");
-            return parts[0]?.trim() || clientIp;
+            // Use the RIGHT-MOST entry by default. Standard reverse proxies like nginx
+            // (with $proxy_add_x_forwarded_for) APPEND $remote_addr to any existing
+            // client-supplied X-Forwarded-For header, producing:
+            //   X-Forwarded-For: <client-spoofed-value>, <real-client-ip>
+            // Taking the left-most value would return the spoofed address. The right-most
+            // entry is the one appended by the directly-connected trusted proxy and is
+            // safe for single-proxy deployments (the most common case).
+            //
+            // For multi-proxy chains (e.g. CDN → nginx → PizzaPi), the right-most entry
+            // is the intermediate proxy, not the original client. Use PIZZAPI_PROXY_DEPTH
+            // to specify how many trusted proxy hops exist:
+            //   depth=1 (default): single proxy — use right-most
+            //   depth=2: two proxies — use second-from-right (original client)
+            const parts = forwardedFor.split(",").map(s => s.trim()).filter(Boolean);
+            const depth = Math.max(1, parseInt(process.env.PIZZAPI_PROXY_DEPTH || "1", 10) || 1);
+            const index = Math.max(0, parts.length - depth);
+            return parts[index] || clientIp;
         }
     }
 
