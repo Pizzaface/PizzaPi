@@ -307,13 +307,14 @@ Use respond_to_trigger with action: "approve" to accept, "cancel" to reject, or 
 
     // ── Structured questions (rich trigger format) ────────────────────────
 
-    test("parses embedded structured questions JSON from trigger body", () => {
+    test("parses base64-encoded structured questions from trigger body", () => {
       const questions = [
         { question: "Pick a color", options: ["Red", "Blue"], type: "radio" },
         { question: "Select features", options: ["Auth", "API", "UI"], type: "checkbox" },
       ];
+      const encoded = btoa(JSON.stringify(questions));
       const body = `🔗 Child "rich-child" asks:
-<!-- questions:${JSON.stringify(questions)} -->
+<!-- questions64:${encoded} -->
 > Pick a color; Select features
 Options: 1. Red  2. Blue  3. Auth  4. API  5. UI
 
@@ -332,12 +333,13 @@ Respond with \`respond_to_trigger\` using trigger ID \`rich123\`.`;
       expect(parsed.options).toContain("Red");
     });
 
-    test("parses ranked question type from embedded JSON", () => {
+    test("parses ranked question type from base64-encoded JSON", () => {
       const questions = [
         { question: "Prioritize tasks", options: ["Fix bug", "Add feature", "Write docs"], type: "ranked" },
       ];
+      const encoded = btoa(JSON.stringify(questions));
       const body = `🔗 Child "ranker" asks:
-<!-- questions:${JSON.stringify(questions)} -->
+<!-- questions64:${encoded} -->
 > Prioritize tasks
 Options: 1. Fix bug  2. Add feature  3. Write docs
 
@@ -347,6 +349,23 @@ Respond with \`respond_to_trigger\` using trigger ID \`rank123\`.`;
       expect(parsed.type).toBe("ask_user_question");
       expect(parsed.questions).toHaveLength(1);
       expect(parsed.questions![0].type).toBe("ranked");
+    });
+
+    test("parses legacy raw JSON questions format (backward compat)", () => {
+      const questions = [
+        { question: "Pick a color", options: ["Red", "Blue"], type: "radio" },
+      ];
+      const body = `🔗 Child "legacy-rich" asks:
+<!-- questions:${JSON.stringify(questions)} -->
+> Pick a color
+Options: 1. Red  2. Blue
+
+Respond with \`respond_to_trigger\` using trigger ID \`legrich123\`.`;
+
+      const parsed = parseTriggerBody(body);
+      expect(parsed.type).toBe("ask_user_question");
+      expect(parsed.questions).toHaveLength(1);
+      expect(parsed.questions![0].question).toBe("Pick a color");
     });
 
     test("falls back to legacy parsing when embedded JSON is absent", () => {
@@ -376,9 +395,8 @@ Respond with \`respond_to_trigger\` using trigger ID \`brk123\`.`;
       expect(parsed.options).toEqual(["Yes", "No"]);
     });
 
-    test("unescapes -- sequences in embedded JSON questions (registry escapes them as __DASH__)", () => {
-      // The trigger renderer escapes all "--" sequences as "__DASH__" to avoid breaking the HTML comment.
-      // The parser must reverse this before JSON.parse.
+    test("legacy format: unescapes __DASH__ sequences in embedded JSON questions", () => {
+      // Legacy format used __DASH__ escaping for "--" sequences.
       const raw = `[{"question":"Use --> in code?","options":["Yes","No"]}]`;
       const escaped = raw.replace(/--/g, "__DASH__");
       const body = `🔗 Child "escape-child" asks:
@@ -395,13 +413,30 @@ Respond with \`respond_to_trigger\` using trigger ID \`esc123\`.`;
       expect(parsed.questions![0].options).toEqual(["Yes", "No"]);
     });
 
+    test("base64 format handles special characters like --> without issues", () => {
+      const questions = [{ question: "Use --> in code?", options: ["Yes", "No"] }];
+      const encoded = btoa(JSON.stringify(questions));
+      const body = `🔗 Child "b64-child" asks:
+<!-- questions64:${encoded} -->
+> Use --> in code?
+Options: 1. Yes  2. No
+
+Respond with \`respond_to_trigger\` using trigger ID \`b64123\`.`;
+
+      const parsed = parseTriggerBody(body);
+      expect(parsed.type).toBe("ask_user_question");
+      expect(parsed.questions).toHaveLength(1);
+      expect(parsed.questions![0].question).toBe("Use --> in code?");
+    });
+
     test("ignores questions with missing question field in embedded JSON", () => {
       const questions = [
         { question: "Valid?", options: ["Yes"] },
         { options: ["orphan"] },  // missing question field
       ];
+      const encoded = btoa(JSON.stringify(questions));
       const body = `🔗 Child "filter-child" asks:
-<!-- questions:${JSON.stringify(questions)} -->
+<!-- questions64:${encoded} -->
 > Valid?
 Options: 1. Yes
 

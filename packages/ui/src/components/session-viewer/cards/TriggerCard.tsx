@@ -56,15 +56,18 @@ function AskUserQuestionCard({
   const hasStructuredQuestions = questions && questions.length > 0;
 
   const handleMultiChoiceSubmit = React.useCallback(
-    (answers: MultipleChoiceAnswers) => {
-      if (submitted) return;
+    (answers: MultipleChoiceAnswers): Promise<boolean | void> => {
+      if (submitted) return Promise.resolve();
       const text = formatAnswersForAgent(answers);
       const result = onRespond?.(triggerId, text);
       // Only mark as submitted if the response was actually sent.
       // onRespond returns false when the socket is disconnected.
-      if (result !== false) {
-        setSubmitted(true);
+      if (result === false) {
+        // Return false so MultipleChoiceQuestions re-enables the submit button immediately
+        return Promise.resolve(false);
       }
+      setSubmitted(true);
+      return Promise.resolve();
     },
     [triggerId, onRespond, submitted],
   );

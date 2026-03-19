@@ -31,17 +31,16 @@ const askUserQuestionRenderer: TriggerRenderer = {
             ? (trigger.payload.options as string[])
             : [];
 
-        // Embed structured questions data as an HTML comment so the web UI
-        // can render rich multi-question / checkbox / ranked triggers.
-        // CLI agents see only the human-readable text below the comment.
+        // Embed structured questions as a base64-encoded HTML comment so the
+        // web UI can render rich multi-question / checkbox / ranked triggers.
+        // Base64 avoids "-->" breaking the comment and keeps the raw JSON out
+        // of the parent agent's prompt (CLI agents see only the human-readable
+        // text below the comment).
         const questions = Array.isArray(trigger.payload.questions)
             ? trigger.payload.questions
             : undefined;
-        // Escape all "--" sequences in the serialized JSON so they can't
-        // prematurely close the HTML comment or trigger quirks-mode parsing.
-        // The UI parser reverses this before JSON.parse().
         const questionsBlock = questions
-            ? `<!-- questions:${JSON.stringify(questions).replace(/--/g, "__DASH__")} -->\n`
+            ? `<!-- questions64:${btoa(JSON.stringify(questions))} -->\n`
             : "";
 
         const lines = [`🔗 Child "${name}" asks:`, questionsBlock + `> ${question}`];

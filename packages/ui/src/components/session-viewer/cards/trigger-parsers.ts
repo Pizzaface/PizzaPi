@@ -66,15 +66,18 @@ function parsAskUserQuestion(body: string): ParsedTrigger {
         .filter(Boolean)
     : [];
 
-  // Extract structured questions from embedded JSON comment if present.
-  // Format: <!-- questions:[...] -->
+  // Extract structured questions from embedded HTML comment if present.
+  // Current format: <!-- questions64:<base64> --> (base64-encoded JSON)
+  // Legacy format:  <!-- questions:<json> -->     (raw or __DASH__-escaped JSON)
   let questions: ParsedTriggerQuestion[] | undefined;
-  const jsonMatch = body.match(/<!-- questions:(.*?) -->/);
-  if (jsonMatch?.[1]) {
+  const b64Match = body.match(/<!-- questions64:([\w+/=]+) -->/);
+  const jsonMatch = !b64Match ? body.match(/<!-- questions:(.*?) -->/) : null;
+  const rawJson = b64Match?.[1]
+    ? atob(b64Match[1])
+    : jsonMatch?.[1]?.replace(/__DASH__/g, "--") ?? null;
+  if (rawJson) {
     try {
-      // Reverse the "__DASH__" escape applied by the trigger renderer
-      // (which escapes all "--" to avoid breaking HTML comment parsing)
-      const parsed = JSON.parse(jsonMatch[1].replace(/__DASH__/g, "--"));
+      const parsed = JSON.parse(rawJson);
       if (Array.isArray(parsed) && parsed.length > 0) {
         questions = parsed
           .filter((q: any) => q && typeof q === "object" && typeof q.question === "string")
