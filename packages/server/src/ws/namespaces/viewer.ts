@@ -375,10 +375,13 @@ export function registerViewerNamespace(io: SocketIOServer): void {
                 const childSocket = getLocalTuiSocket(targetSessionId);
                 if (childSocket) {
                     childSocket.emit("trigger_response" as string, triggerPayload);
+                    if (typeof ack === "function") ack();
                 } else if (!emitToRelaySession(targetSessionId, "trigger_response", triggerPayload)) {
                     socket.emit("error", { message: `Failed to deliver trigger response to child session ${targetSessionId}` });
+                } else {
+                    // emitToRelaySession succeeded
+                    if (typeof ack === "function") ack();
                 }
-                if (typeof ack === "function") ack();
                 return;
             }
 
@@ -392,10 +395,13 @@ export function registerViewerNamespace(io: SocketIOServer): void {
             const tuiSocket = getLocalTuiSocket(sessionId);
             if (tuiSocket) {
                 tuiSocket.emit("trigger_response" as string, triggerPayloadForParent);
+                if (typeof ack === "function") ack();
             } else if (!emitToRelaySession(sessionId, "trigger_response", triggerPayloadForParent)) {
                 socket.emit("error", { message: `Failed to deliver trigger response to session ${sessionId}` });
+            } else {
+                // emitToRelaySession succeeded
+                if (typeof ack === "function") ack();
             }
-            if (typeof ack === "function") ack();
         });
 
         // ── disconnect ───────────────────────────────────────────────────────
