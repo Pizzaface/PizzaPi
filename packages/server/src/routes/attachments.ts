@@ -11,6 +11,28 @@ import {
 } from "../attachments/store.js";
 import type { RouteHandler } from "./types.js";
 
+/**
+ * Build a Content-Disposition header value safe for Bun's header validation.
+ *
+ * Bun rejects header values with non-ASCII characters (e.g. macOS screenshot
+ * filenames that contain U+202F NARROW NO-BREAK SPACE before "AM"/"PM").
+ * We produce both an ASCII-safe `filename` and an RFC 5987 `filename*` with
+ * the full UTF-8 name percent-encoded.
+ */
+export function buildContentDisposition(rawFilename: string, mode: "inline" | "attachment" = "inline"): string {
+    const asciiFallback = rawFilename.replace(/[^\x20-\x7E]/g, "_").replace(/["\\]/g, "_");
+    const encodedName = encodeURIComponent(rawFilename);
+    return `${mode}; filename="${asciiFallback}"; filename*=UTF-8''${encodedName}`;
+}
+
+/**
+ * Sanitize a filename for use in an HTTP header value.
+ * Replaces non-ASCII characters with "?" to avoid Bun header validation errors.
+ */
+export function sanitizeHeaderValue(value: string): string {
+    return value.replace(/[^\x20-\x7E]/g, "?");
+}
+
 export const handleAttachmentsRoute: RouteHandler = async (req, url) => {
     // ── Upload: POST /api/sessions/:id/attachments ─────────────────────
     if (
@@ -104,9 +126,9 @@ export const handleAttachmentsRoute: RouteHandler = async (req, url) => {
             headers: {
                 "content-type": attachment.mimeType,
                 "content-length": String(attachment.size),
-                "content-disposition": `inline; filename="${attachment.filename.replace(/\"/g, "")}"`,
+                "content-disposition": buildContentDisposition(attachment.filename),
                 "x-attachment-id": attachment.attachmentId,
-                "x-attachment-filename": attachment.filename,
+                "x-attachment-filename": sanitizeHeaderValue(attachment.filename),
             },
         });
     }

@@ -92,11 +92,22 @@ export async function loadAttachmentFromRelay(
     httpBaseUrl: string,
     apiKey: string,
 ): Promise<{ mediaType: string; filename?: string; dataBase64: string } | null> {
-    const response = await fetch(`${httpBaseUrl}/api/attachments/${encodeURIComponent(attachmentId)}`, {
-        headers: { "x-api-key": apiKey },
-    });
+    const url = `${httpBaseUrl}/api/attachments/${encodeURIComponent(attachmentId)}`;
+    let response: Response;
+    try {
+        response = await fetch(url, {
+            headers: { "x-api-key": apiKey },
+        });
+    } catch (err) {
+        console.error(`pizzapi: attachment fetch failed (network error): ${url} — ${err instanceof Error ? err.message : String(err)}`);
+        return null;
+    }
 
-    if (!response.ok) return null;
+    if (!response.ok) {
+        const body = await response.text().catch(() => "");
+        console.error(`pizzapi: attachment fetch failed: ${response.status} ${response.statusText} — ${url}${body ? ` — ${body}` : ""}`);
+        return null;
+    }
 
     const mediaType = (response.headers.get("content-type") || "application/octet-stream").split(";")[0].trim();
     const filename = response.headers.get("x-attachment-filename") ?? undefined;
