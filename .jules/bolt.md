@@ -1,0 +1,4 @@
+
+## 2025-03-19 - Use native disconnectSockets over socketsLeave loops
+**Learning:** Using `socketsLeave` followed by a custom loop to cleanup sockets or relying on `fetchSockets` triggers expensive operations across the Redis cluster adapter. Socket.IO's native `.disconnectSockets()` achieves forceful disconnection of all clients in a room without the N+1 network overhead. When multiplexing namespaces, passing `true` to `.disconnectSockets()` tears down the entire Engine.IO connection, dropping unrelated namespace sockets (like `/hub` and `/terminal`).
+**Action:** When tearing down sessions, use `.disconnectSockets()` (without `true`) instead of `socketsLeave()` to properly tear down sockets while avoiding closing the underlying multiplexed Engine.IO connection that other namespaces rely on.
