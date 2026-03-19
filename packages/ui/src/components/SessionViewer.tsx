@@ -1665,8 +1665,8 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
             />
           )
         ) : (
-          <Conversation key={sessionId}>
-            <ConversationContent className="w-full py-2">
+          <Conversation key={sessionId} className="overflow-x-hidden">
+            <ConversationContent className="w-full gap-0 p-0 py-2">
               <PaginationSentinel hasMore={hasMore} onLoadMore={loadMoreMessages} />
               {renderedMessages.map((message, index) => (
                 <SessionMessageItem
