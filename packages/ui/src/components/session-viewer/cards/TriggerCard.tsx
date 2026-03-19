@@ -15,6 +15,9 @@ import {
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { parseTriggerBody } from "./trigger-parsers";
+import type { ParsedTriggerQuestion } from "./trigger-parsers";
+import { MultipleChoiceQuestions, type MultipleChoiceAnswers } from "@/components/ai-elements/multiple-choice";
+import { formatAnswersForAgent } from "@/lib/ask-user-questions";
 export { parseTriggerBody } from "./trigger-parsers";
 export type { ParsedTrigger } from "./trigger-parsers";
 
@@ -32,6 +35,7 @@ function AskUserQuestionCard({
   childName,
   question,
   options,
+  questions,
   onRespond,
   isResponding,
 }: {
@@ -39,12 +43,27 @@ function AskUserQuestionCard({
   childName?: string;
   question?: string;
   options?: string[];
+  questions?: ParsedTriggerQuestion[];
   onRespond?: (triggerId: string, response: string) => void;
   isResponding?: boolean;
 }) {
   const [selectedOption, setSelectedOption] = React.useState<string>("");
   const [freeText, setFreeText] = React.useState<string>("");
+  const [submitted, setSubmitted] = React.useState(false);
   const hasOptions = options && options.length > 0;
+
+  // Use rich multi-question UI when structured questions are available
+  const hasStructuredQuestions = questions && questions.length > 0;
+
+  const handleMultiChoiceSubmit = React.useCallback(
+    (answers: MultipleChoiceAnswers) => {
+      if (submitted) return;
+      setSubmitted(true);
+      const text = formatAnswersForAgent(answers);
+      onRespond?.(triggerId, text);
+    },
+    [triggerId, onRespond, submitted],
+  );
 
   return (
     <ToolCardShell>
@@ -58,72 +77,92 @@ function AskUserQuestionCard({
         </ToolCardTitle>
       </ToolCardHeader>
 
-      {question && (
+      {/* Rich multi-question UI (radio / checkbox / ranked stepper) */}
+      {hasStructuredQuestions && (
         <ToolCardSection>
-          <p className="text-sm text-zinc-200">{question}</p>
-        </ToolCardSection>
-      )}
-
-      {hasOptions && (
-        <ToolCardSection>
-          <div className="space-y-2">
-            {options.map((option, i) => (
-              <button
-                key={i}
-                onClick={() => {
-                  setSelectedOption(option);
-                  onRespond?.(triggerId, option);
-                }}
-                disabled={isResponding}
-                className={cn(
-                  "w-full text-left px-3 py-2 rounded-md border text-sm transition-colors",
-                  selectedOption === option
-                    ? "border-blue-500 bg-blue-500/20 text-blue-300"
-                    : "border-zinc-700 bg-zinc-800/40 text-zinc-300 hover:bg-zinc-800/60 hover:border-zinc-600",
-                  isResponding && "opacity-50 cursor-not-allowed"
-                )}
-              >
-                {option}
-              </button>
-            ))}
-          </div>
-        </ToolCardSection>
-      )}
-
-      {/* Free-text input for open-ended questions (no options) */}
-      {!hasOptions && (
-        <ToolCardSection>
-          <div className="flex gap-2">
-            <input
-              type="text"
-              value={freeText}
-              onChange={(e) => setFreeText(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && freeText.trim()) {
-                  onRespond?.(triggerId, freeText.trim());
-                }
-              }}
-              disabled={isResponding}
-              placeholder="Type your response…"
-              className={cn(
-                "flex-1 px-3 py-2 rounded-md border text-sm bg-zinc-800/40 text-zinc-200",
-                "border-zinc-700 placeholder:text-zinc-500 focus:outline-none focus:border-blue-500",
-                isResponding && "opacity-50 cursor-not-allowed"
-              )}
+          {submitted ? (
+            <p className="text-sm text-zinc-400 italic">Response submitted.</p>
+          ) : (
+            <MultipleChoiceQuestions
+              questions={questions}
+              promptKey={triggerId}
+              onSubmit={handleMultiChoiceSubmit}
             />
-            <Button
-              size="sm"
-              variant="default"
-              onClick={() => {
-                if (freeText.trim()) onRespond?.(triggerId, freeText.trim());
-              }}
-              disabled={isResponding || !freeText.trim()}
-              className="bg-blue-600 hover:bg-blue-700"
-            >
-              <Send className="size-3.5" />
-            </Button>
-          </div>
+          )}
         </ToolCardSection>
+      )}
+
+      {/* Legacy single-question UI: shown only when no structured questions */}
+      {!hasStructuredQuestions && (
+        <>
+          {question && (
+            <ToolCardSection>
+              <p className="text-sm text-zinc-200">{question}</p>
+            </ToolCardSection>
+          )}
+
+          {hasOptions && (
+            <ToolCardSection>
+              <div className="space-y-2">
+                {options.map((option, i) => (
+                  <button
+                    key={i}
+                    onClick={() => {
+                      setSelectedOption(option);
+                      onRespond?.(triggerId, option);
+                    }}
+                    disabled={isResponding}
+                    className={cn(
+                      "w-full text-left px-3 py-2 rounded-md border text-sm transition-colors",
+                      selectedOption === option
+                        ? "border-blue-500 bg-blue-500/20 text-blue-300"
+                        : "border-zinc-700 bg-zinc-800/40 text-zinc-300 hover:bg-zinc-800/60 hover:border-zinc-600",
+                      isResponding && "opacity-50 cursor-not-allowed"
+                    )}
+                  >
+                    {option}
+                  </button>
+                ))}
+              </div>
+            </ToolCardSection>
+          )}
+
+          {/* Free-text input for open-ended questions (no options) */}
+          {!hasOptions && (
+            <ToolCardSection>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={freeText}
+                  onChange={(e) => setFreeText(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && freeText.trim()) {
+                      onRespond?.(triggerId, freeText.trim());
+                    }
+                  }}
+                  disabled={isResponding}
+                  placeholder="Type your response…"
+                  className={cn(
+                    "flex-1 px-3 py-2 rounded-md border text-sm bg-zinc-800/40 text-zinc-200",
+                    "border-zinc-700 placeholder:text-zinc-500 focus:outline-none focus:border-blue-500",
+                    isResponding && "opacity-50 cursor-not-allowed"
+                  )}
+                />
+                <Button
+                  size="sm"
+                  variant="default"
+                  onClick={() => {
+                    if (freeText.trim()) onRespond?.(triggerId, freeText.trim());
+                  }}
+                  disabled={isResponding || !freeText.trim()}
+                  className="bg-blue-600 hover:bg-blue-700"
+                >
+                  <Send className="size-3.5" />
+                </Button>
+              </div>
+            </ToolCardSection>
+          )}
+        </>
       )}
     </ToolCardShell>
   );
@@ -351,6 +390,7 @@ export function TriggerCard({
           childName={parsed.childName}
           question={parsed.question}
           options={parsed.options}
+          questions={parsed.questions}
           onRespond={onRespond}
           isResponding={isResponding}
         />

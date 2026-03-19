@@ -304,5 +304,93 @@ Use respond_to_trigger with action: "approve" to accept, "cancel" to reject, or 
       // Ensure instructions are NOT absorbed into last step
       expect(parsed.planSteps?.[1].description).toBeUndefined();
     });
+
+    // ── Structured questions (rich trigger format) ────────────────────────
+
+    test("parses embedded structured questions JSON from trigger body", () => {
+      const questions = [
+        { question: "Pick a color", options: ["Red", "Blue"], type: "radio" },
+        { question: "Select features", options: ["Auth", "API", "UI"], type: "checkbox" },
+      ];
+      const body = `🔗 Child "rich-child" asks:
+<!-- questions:${JSON.stringify(questions)} -->
+> Pick a color; Select features
+Options: 1. Red  2. Blue  3. Auth  4. API  5. UI
+
+Respond with \`respond_to_trigger\` using trigger ID \`rich123\`.`;
+
+      const parsed = parseTriggerBody(body);
+      expect(parsed.type).toBe("ask_user_question");
+      expect(parsed.childName).toBe("rich-child");
+      expect(parsed.questions).toHaveLength(2);
+      expect(parsed.questions![0].question).toBe("Pick a color");
+      expect(parsed.questions![0].options).toEqual(["Red", "Blue"]);
+      expect(parsed.questions![1].question).toBe("Select features");
+      expect(parsed.questions![1].type).toBe("checkbox");
+      expect(parsed.questions![1].options).toEqual(["Auth", "API", "UI"]);
+      // Legacy fields still populated for backward compat
+      expect(parsed.options).toContain("Red");
+    });
+
+    test("parses ranked question type from embedded JSON", () => {
+      const questions = [
+        { question: "Prioritize tasks", options: ["Fix bug", "Add feature", "Write docs"], type: "ranked" },
+      ];
+      const body = `🔗 Child "ranker" asks:
+<!-- questions:${JSON.stringify(questions)} -->
+> Prioritize tasks
+Options: 1. Fix bug  2. Add feature  3. Write docs
+
+Respond with \`respond_to_trigger\` using trigger ID \`rank123\`.`;
+
+      const parsed = parseTriggerBody(body);
+      expect(parsed.type).toBe("ask_user_question");
+      expect(parsed.questions).toHaveLength(1);
+      expect(parsed.questions![0].type).toBe("ranked");
+    });
+
+    test("falls back to legacy parsing when embedded JSON is absent", () => {
+      const body = `🔗 Child "legacy-child" asks:
+> What do you prefer?
+Options: 1. Option A  2. Option B
+
+Respond with \`respond_to_trigger\` using trigger ID \`leg123\`.`;
+
+      const parsed = parseTriggerBody(body);
+      expect(parsed.type).toBe("ask_user_question");
+      expect(parsed.questions).toBeUndefined();
+      expect(parsed.options).toEqual(["Option A", "Option B"]);
+    });
+
+    test("falls back gracefully when embedded JSON is malformed", () => {
+      const body = `🔗 Child "broken-child" asks:
+<!-- questions:{invalid json} -->
+> What?
+Options: 1. Yes  2. No
+
+Respond with \`respond_to_trigger\` using trigger ID \`brk123\`.`;
+
+      const parsed = parseTriggerBody(body);
+      expect(parsed.type).toBe("ask_user_question");
+      expect(parsed.questions).toBeUndefined();
+      expect(parsed.options).toEqual(["Yes", "No"]);
+    });
+
+    test("ignores questions with missing question field in embedded JSON", () => {
+      const questions = [
+        { question: "Valid?", options: ["Yes"] },
+        { options: ["orphan"] },  // missing question field
+      ];
+      const body = `🔗 Child "filter-child" asks:
+<!-- questions:${JSON.stringify(questions)} -->
+> Valid?
+Options: 1. Yes
+
+Respond with \`respond_to_trigger\` using trigger ID \`flt123\`.`;
+
+      const parsed = parseTriggerBody(body);
+      expect(parsed.questions).toHaveLength(1);
+      expect(parsed.questions![0].question).toBe("Valid?");
+    });
   });
 });

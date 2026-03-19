@@ -3,11 +3,20 @@
  * Extracted from TriggerCard.tsx so tests can import without JSX dependencies.
  */
 
+/** Structured question from a child AskUserQuestion trigger. */
+export interface ParsedTriggerQuestion {
+  question: string;
+  options: string[];
+  type?: "radio" | "checkbox" | "ranked";
+}
+
 export interface ParsedTrigger {
   type: "ask_user_question" | "plan_review" | "session_complete" | "session_error" | "escalate" | "unknown";
   childName?: string;
   question?: string;
   options?: string[];
+  /** Structured questions array (multi-question, checkbox, ranked support). */
+  questions?: ParsedTriggerQuestion[];
   planTitle?: string;
   planSteps?: Array<{ title: string; description?: string }>;
   message?: string;
@@ -57,7 +66,29 @@ function parsAskUserQuestion(body: string): ParsedTrigger {
         .filter(Boolean)
     : [];
 
-  return { type: "ask_user_question", childName, question, options };
+  // Extract structured questions from embedded JSON comment if present.
+  // Format: <!-- questions:[...] -->
+  let questions: ParsedTriggerQuestion[] | undefined;
+  const jsonMatch = body.match(/<!-- questions:(.*?) -->/);
+  if (jsonMatch?.[1]) {
+    try {
+      const parsed = JSON.parse(jsonMatch[1]);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        questions = parsed
+          .filter((q: any) => q && typeof q === "object" && typeof q.question === "string")
+          .map((q: any) => ({
+            question: q.question,
+            options: Array.isArray(q.options) ? q.options.filter((o: any) => typeof o === "string") : [],
+            ...(q.type === "checkbox" || q.type === "ranked" ? { type: q.type } : {}),
+          }));
+        if (questions.length === 0) questions = undefined;
+      }
+    } catch {
+      // Malformed JSON — fall back to legacy parsing
+    }
+  }
+
+  return { type: "ask_user_question", childName, question, options, questions };
 }
 
 function parsePlanReview(body: string): ParsedTrigger {

@@ -31,7 +31,17 @@ const askUserQuestionRenderer: TriggerRenderer = {
             ? (trigger.payload.options as string[])
             : [];
 
-        const lines = [`🔗 Child "${name}" asks:`, `> ${question}`];
+        // Embed structured questions data as an HTML comment so the web UI
+        // can render rich multi-question / checkbox / ranked triggers.
+        // CLI agents see only the human-readable text below the comment.
+        const questions = Array.isArray(trigger.payload.questions)
+            ? trigger.payload.questions
+            : undefined;
+        const questionsBlock = questions
+            ? `<!-- questions:${JSON.stringify(questions)} -->\n`
+            : "";
+
+        const lines = [`🔗 Child "${name}" asks:`, questionsBlock + `> ${question}`];
         if (options.length > 0) {
             lines.push(`Options: ${options.map((o, i) => `${i + 1}. ${o}`).join("  ")}`);
         }
