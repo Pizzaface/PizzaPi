@@ -72,8 +72,9 @@ function parsAskUserQuestion(body: string): ParsedTrigger {
   const jsonMatch = body.match(/<!-- questions:(.*?) -->/);
   if (jsonMatch?.[1]) {
     try {
-      // Reverse the "--\>" escape applied by the trigger renderer
-      const parsed = JSON.parse(jsonMatch[1].replace(/--\\>/g, "-->"));
+      // Reverse the "__DASH__" escape applied by the trigger renderer
+      // (which escapes all "--" to avoid breaking HTML comment parsing)
+      const parsed = JSON.parse(jsonMatch[1].replace(/__DASH__/g, "--"));
       if (Array.isArray(parsed) && parsed.length > 0) {
         questions = parsed
           .filter((q: any) => q && typeof q === "object" && typeof q.question === "string")

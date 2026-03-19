@@ -376,11 +376,11 @@ Respond with \`respond_to_trigger\` using trigger ID \`brk123\`.`;
       expect(parsed.options).toEqual(["Yes", "No"]);
     });
 
-    test("unescapes --> in embedded JSON questions (registry escapes it as --\\>)", () => {
-      // The trigger renderer escapes "-->" as "--\>" to avoid breaking the HTML comment.
+    test("unescapes -- sequences in embedded JSON questions (registry escapes them as __DASH__)", () => {
+      // The trigger renderer escapes all "--" sequences as "__DASH__" to avoid breaking the HTML comment.
       // The parser must reverse this before JSON.parse.
       const raw = `[{"question":"Use --> in code?","options":["Yes","No"]}]`;
-      const escaped = raw.replace(/-->/g, "--\\>");
+      const escaped = raw.replace(/--/g, "__DASH__");
       const body = `🔗 Child "escape-child" asks:
 <!-- questions:${escaped} -->
 > Use --> in code?
