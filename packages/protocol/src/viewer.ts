@@ -86,7 +86,7 @@ export interface ViewerClientToServerEvents {
     response: string;
     action?: string;
     targetSessionId: string;
-  }, ack?: () => void) => void;
+  }, ack: () => void) => void;
 }
 
 // ---------------------------------------------------------------------------
