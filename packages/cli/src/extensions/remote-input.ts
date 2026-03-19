@@ -110,7 +110,10 @@ export async function loadAttachmentFromRelay(
     }
 
     const mediaType = (response.headers.get("content-type") || "application/octet-stream").split(";")[0].trim();
-    const filename = response.headers.get("x-attachment-filename") ?? undefined;
+    const rawFilename = response.headers.get("x-attachment-filename") ?? undefined;
+    // The server percent-encodes this header to survive Bun's ASCII-only
+    // header validation. Decode it to recover the original Unicode filename.
+    const filename = rawFilename ? decodeURIComponent(rawFilename) : undefined;
     const dataBase64 = Buffer.from(await response.arrayBuffer()).toString("base64");
 
     return { mediaType, filename, dataBase64 };

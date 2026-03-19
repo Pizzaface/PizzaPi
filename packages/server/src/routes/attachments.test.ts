@@ -1,5 +1,36 @@
 import { describe, test, expect } from "bun:test";
-import { buildContentDisposition, sanitizeHeaderValue } from "./attachments";
+import { buildContentDisposition, encodeHeaderFilename, rfc5987Encode } from "./attachments";
+
+describe("rfc5987Encode", () => {
+    test("encodes basic special characters", () => {
+        expect(rfc5987Encode("hello world")).toBe("hello%20world");
+    });
+
+    test("encodes apostrophe (RFC 5987 delimiter)", () => {
+        expect(rfc5987Encode("O'Reilly")).toBe("O%27Reilly");
+    });
+
+    test("encodes parentheses and asterisk", () => {
+        expect(rfc5987Encode("file (1).txt")).toBe("file%20%281%29.txt");
+        expect(rfc5987Encode("file*.txt")).toBe("file%2A.txt");
+    });
+
+    test("encodes non-ASCII characters", () => {
+        expect(rfc5987Encode("résumé.pdf")).toContain("%C3%A9");
+    });
+
+    test("round-trips through decodeURIComponent", () => {
+        const names = [
+            "O'Reilly résumé (1).png",
+            "Screenshot 2026-03-19 at 2.02.18\u202FPM.png",
+            "截图_2026.png",
+            "file*.txt",
+        ];
+        for (const name of names) {
+            expect(decodeURIComponent(rfc5987Encode(name))).toBe(name);
+        }
+    });
+});
 
 describe("buildContentDisposition", () => {
     test("handles plain ASCII filenames", () => {
@@ -16,7 +47,6 @@ describe("buildContentDisposition", () => {
     });
 
     test("handles macOS screenshot filenames with U+202F narrow no-break space", () => {
-        // macOS uses U+202F (NARROW NO-BREAK SPACE) before AM/PM in screenshot filenames
         const filename = "Screenshot 2026-03-19 at 2.02.18\u202FPM.png";
         const result = buildContentDisposition(filename);
         // ASCII fallback should replace U+202F with underscore
@@ -58,6 +88,19 @@ describe("buildContentDisposition", () => {
         expect(r.headers.get("content-disposition")).toBeTruthy();
     });
 
+    test("handles filenames with apostrophes (RFC 5987 delimiter)", () => {
+        const filename = "O'Reilly résumé (1).png";
+        const result = buildContentDisposition(filename);
+        // Apostrophe must be percent-encoded in filename* to avoid
+        // being interpreted as the charset/language separator
+        expect(result).toContain("%27");
+        // Parentheses must also be encoded
+        expect(result).toContain("%28");
+        expect(result).toContain("%29");
+        const r = new Response("", { headers: { "content-disposition": result } });
+        expect(r.headers.get("content-disposition")).toBeTruthy();
+    });
+
     test("supports attachment mode", () => {
         const result = buildContentDisposition("file.pdf", "attachment");
         expect(result).toStartWith("attachment;");
@@ -69,27 +112,44 @@ describe("buildContentDisposition", () => {
     });
 });
 
-describe("sanitizeHeaderValue", () => {
-    test("preserves ASCII printable characters", () => {
-        expect(sanitizeHeaderValue("hello world")).toBe("hello world");
-        expect(sanitizeHeaderValue("file-name_v2.txt")).toBe("file-name_v2.txt");
+describe("encodeHeaderFilename", () => {
+    test("preserves ASCII alphanumeric and safe characters", () => {
+        const result = encodeHeaderFilename("photo.png");
+        expect(result).toBe("photo.png");
+        const r = new Response("", { headers: { "x-filename": result } });
+        expect(r.headers.get("x-filename")).toBe(result);
     });
 
-    test("replaces non-ASCII characters with ?", () => {
-        expect(sanitizeHeaderValue("file\u202Fname.txt")).toBe("file?name.txt");
-        expect(sanitizeHeaderValue("résumé.pdf")).toBe("r?sum?.pdf");
-    });
-
-    test("handles macOS screenshot names", () => {
-        const name = "Screenshot 2026-03-19 at 2.02.18\u202FPM.png";
-        const result = sanitizeHeaderValue(name);
-        expect(result).toBe("Screenshot 2026-03-19 at 2.02.18?PM.png");
+    test("percent-encodes non-ASCII characters", () => {
+        const result = encodeHeaderFilename("résumé.pdf");
+        expect(result).not.toContain("é");
+        expect(result).toContain("%C3%A9");
+        // Must round-trip
+        expect(decodeURIComponent(result)).toBe("résumé.pdf");
         // Must not throw in a header
         const r = new Response("", { headers: { "x-filename": result } });
         expect(r.headers.get("x-filename")).toBe(result);
     });
 
+    test("handles macOS screenshot names and round-trips", () => {
+        const name = "Screenshot 2026-03-19 at 2.02.18\u202FPM.png";
+        const result = encodeHeaderFilename(name);
+        // Must not throw in a header
+        const r = new Response("", { headers: { "x-filename": result } });
+        expect(r.headers.get("x-filename")).toBe(result);
+        // Must round-trip
+        expect(decodeURIComponent(result)).toBe(name);
+    });
+
+    test("handles CJK filenames and round-trips", () => {
+        const name = "截图_2026.png";
+        const result = encodeHeaderFilename(name);
+        const r = new Response("", { headers: { "x-filename": result } });
+        expect(r.headers.get("x-filename")).toBe(result);
+        expect(decodeURIComponent(result)).toBe(name);
+    });
+
     test("preserves empty string", () => {
-        expect(sanitizeHeaderValue("")).toBe("");
+        expect(encodeHeaderFilename("")).toBe("");
     });
 });

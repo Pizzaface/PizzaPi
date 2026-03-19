@@ -12,6 +12,21 @@ import {
 import type { RouteHandler } from "./types.js";
 
 /**
+ * Percent-encode a filename per RFC 5987.
+ *
+ * `encodeURIComponent` leaves `'`, `(`, `)`, `*`, and `!` unencoded, but
+ * RFC 5987 uses `'` as a delimiter (`charset'language'value`) so those
+ * characters must be encoded manually to avoid mis-parsing.
+ */
+export function rfc5987Encode(value: string): string {
+    return encodeURIComponent(value)
+        .replace(/'/g, "%27")
+        .replace(/\(/g, "%28")
+        .replace(/\)/g, "%29")
+        .replace(/\*/g, "%2A");
+}
+
+/**
  * Build a Content-Disposition header value safe for Bun's header validation.
  *
  * Bun rejects header values with non-ASCII characters (e.g. macOS screenshot
@@ -21,16 +36,19 @@ import type { RouteHandler } from "./types.js";
  */
 export function buildContentDisposition(rawFilename: string, mode: "inline" | "attachment" = "inline"): string {
     const asciiFallback = rawFilename.replace(/[^\x20-\x7E]/g, "_").replace(/["\\]/g, "_");
-    const encodedName = encodeURIComponent(rawFilename);
+    const encodedName = rfc5987Encode(rawFilename);
     return `${mode}; filename="${asciiFallback}"; filename*=UTF-8''${encodedName}`;
 }
 
 /**
- * Sanitize a filename for use in an HTTP header value.
- * Replaces non-ASCII characters with "?" to avoid Bun header validation errors.
+ * Percent-encode a filename for use in an HTTP header value.
+ *
+ * Uses full percent-encoding so the original Unicode filename can be
+ * recovered by the consumer (the runner decodes it). This preserves
+ * filenames like `résumé.txt` or `截图.png` across the wire.
  */
-export function sanitizeHeaderValue(value: string): string {
-    return value.replace(/[^\x20-\x7E]/g, "?");
+export function encodeHeaderFilename(value: string): string {
+    return rfc5987Encode(value);
 }
 
 export const handleAttachmentsRoute: RouteHandler = async (req, url) => {
@@ -128,7 +146,7 @@ export const handleAttachmentsRoute: RouteHandler = async (req, url) => {
                 "content-length": String(attachment.size),
                 "content-disposition": buildContentDisposition(attachment.filename),
                 "x-attachment-id": attachment.attachmentId,
-                "x-attachment-filename": sanitizeHeaderValue(attachment.filename),
+                "x-attachment-filename": encodeHeaderFilename(attachment.filename),
             },
         });
     }
