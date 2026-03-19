@@ -280,15 +280,16 @@ function createRunnerAuthStorage(): AuthStorage {
 }
 
 async function fetchAnthropicUsageData(): Promise<ProviderUsageData | null> {
-    let token: string | undefined;
+    let token: string | null;
     try {
         const authStorage = createRunnerAuthStorage();
-        token = await authStorage.getApiKey("anthropic");
+        const credential = authStorage.get("anthropic");
+        token = getOAuthAccessToken(credential);
     } catch (err: any) {
         console.warn(`pizzapi runner: failed to get Anthropic credentials: ${err?.message ?? String(err)}`);
         return null;
     }
-    if (!token || typeof token !== "string") return null;
+    if (!token) return null;
     try {
         const res = await fetch("https://api.anthropic.com/api/oauth/usage", {
             headers: {
@@ -391,15 +392,16 @@ async function fetchGeminiUsageData(): Promise<ProviderUsageData | null> {
 }
 
 async function fetchCodexUsageData(): Promise<ProviderUsageData | null> {
-    let token: string | undefined;
+    let token: string | null;
     try {
         const authStorage = createRunnerAuthStorage();
-        token = await authStorage.getApiKey("openai-codex");
+        const credential = authStorage.get("openai-codex");
+        token = getOAuthAccessToken(credential);
     } catch (err: any) {
         console.warn(`pizzapi runner: failed to get OpenAI Codex credentials: ${err?.message ?? String(err)}`);
         return null;
     }
-    if (!token || typeof token !== "string") return null;
+    if (!token) return null;
     try {
         const res = await fetch("https://chatgpt.com/backend-api/wham/usage", {
             headers: { Authorization: `Bearer ${token}` },
