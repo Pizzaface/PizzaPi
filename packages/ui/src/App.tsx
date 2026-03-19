@@ -3194,11 +3194,16 @@ export function App() {
       return false;
     }
 
-    socket.emit("trigger_response", {
+    socket.timeout(5000).emit("trigger_response", {
       triggerId,
       response,
       ...(action ? { action } : {}),
       targetSessionId: sessionId,
+    }, (err: Error | null) => {
+      if (err) {
+        // Server didn't acknowledge within timeout — surface to user
+        setViewerStatus("Trigger response may not have been delivered");
+      }
     });
     return true;
   }, []);

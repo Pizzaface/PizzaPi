@@ -343,13 +343,19 @@ export function registerViewerNamespace(io: SocketIOServer): void {
         // Route directly to the child session via its relay socket,
         // bypassing the parent CLI. This avoids depending on an in-memory
         // handler in the parent to forward the response.
-        socket.on("trigger_response", async (data) => {
+        socket.on("trigger_response", async (data, ack) => {
             const { triggerId, response, action, targetSessionId } = data ?? {};
-            if (!triggerId || !response) return;
+            if (!triggerId || !response) {
+                if (typeof ack === "function") ack();
+                return;
+            }
 
             // Require collab mode — same gate as input/exec/model_set
             const currentSession = await getSharedSession(sessionId);
-            if (!currentSession?.collabMode) return;
+            if (!currentSession?.collabMode) {
+                if (typeof ack === "function") ack();
+                return;
+            }
 
             // If targetSessionId is explicitly provided, route to that child.
             // Validate ownership: the target session must belong to the same user.
@@ -357,6 +363,7 @@ export function registerViewerNamespace(io: SocketIOServer): void {
                 const targetSession = await getSharedSession(targetSessionId);
                 if (!targetSession || targetSession.userId !== viewerUserId) {
                     // Target session doesn't exist or belongs to a different user — ignore.
+                    if (typeof ack === "function") ack();
                     return;
                 }
                 const triggerPayload = {
@@ -371,6 +378,7 @@ export function registerViewerNamespace(io: SocketIOServer): void {
                 } else if (!emitToRelaySession(targetSessionId, "trigger_response", triggerPayload)) {
                     socket.emit("error", { message: `Failed to deliver trigger response to child session ${targetSessionId}` });
                 }
+                if (typeof ack === "function") ack();
                 return;
             }
 
@@ -387,6 +395,7 @@ export function registerViewerNamespace(io: SocketIOServer): void {
             } else if (!emitToRelaySession(sessionId, "trigger_response", triggerPayloadForParent)) {
                 socket.emit("error", { message: `Failed to deliver trigger response to session ${sessionId}` });
             }
+            if (typeof ack === "function") ack();
         });
 
         // ── disconnect ───────────────────────────────────────────────────────

@@ -446,5 +446,24 @@ Respond with \`respond_to_trigger\` using trigger ID \`flt123\`.`;
       expect(parsed.questions).toHaveLength(1);
       expect(parsed.questions![0].question).toBe("Valid?");
     });
+
+    test("parses UTF-8 content (emoji, CJK, smart quotes) from base64-encoded questions", () => {
+      const questions = [
+        { question: "Choisissez l'option 🎉", options: ["日本語", "中文", "\u201csmart quotes\u201d"], type: "radio" },
+      ];
+      // Encode as UTF-8 base64 (same as server-side Buffer.from(..., 'utf-8').toString('base64'))
+      const encoded = btoa(String.fromCharCode(...new TextEncoder().encode(JSON.stringify(questions))));
+      const body = `🔗 Child "utf8-child" asks:
+<!-- questions64:${encoded} -->
+> Choisissez l'option 🎉
+
+Respond with \`respond_to_trigger\` using trigger ID \`utf8-123\`.`;
+
+      const parsed = parseTriggerBody(body);
+      expect(parsed.type).toBe("ask_user_question");
+      expect(parsed.questions).toHaveLength(1);
+      expect(parsed.questions![0].question).toBe("Choisissez l'option 🎉");
+      expect(parsed.questions![0].options).toEqual(["日本語", "中文", "\u201csmart quotes\u201d"]);
+    });
   });
 });

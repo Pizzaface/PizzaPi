@@ -73,7 +73,7 @@ function parsAskUserQuestion(body: string): ParsedTrigger {
   const b64Match = body.match(/<!-- questions64:([\w+/=]+) -->/);
   const jsonMatch = !b64Match ? body.match(/<!-- questions:(.*?) -->/) : null;
   const rawJson = b64Match?.[1]
-    ? atob(b64Match[1])
+    ? new TextDecoder().decode(Uint8Array.from(atob(b64Match[1]), (c) => c.charCodeAt(0)))
     : jsonMatch?.[1]?.replace(/__DASH__/g, "--") ?? null;
   if (rawJson) {
     try {

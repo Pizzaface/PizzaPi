@@ -40,7 +40,7 @@ const askUserQuestionRenderer: TriggerRenderer = {
             ? trigger.payload.questions
             : undefined;
         const questionsBlock = questions
-            ? `<!-- questions64:${btoa(JSON.stringify(questions))} -->\n`
+            ? `<!-- questions64:${Buffer.from(JSON.stringify(questions), "utf-8").toString("base64")} -->\n`
             : "";
 
         const lines = [`🔗 Child "${name}" asks:`, questionsBlock + `> ${question}`];
