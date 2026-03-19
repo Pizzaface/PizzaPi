@@ -1,4 +1,5 @@
 import type { ExtensionFactory } from "@mariozechner/pi-coding-agent";
+import { waitForRelayRegistration } from "./remote.js";
 
 /**
  * InitialPrompt extension — handles one-time model selection, initial prompt
@@ -160,13 +161,14 @@ export const initialPromptExtension: ExtensionFactory = (pi) => {
         }
 
         // Send the initial prompt as a user message.
-        // Defer to next tick so relay connect (initiated during session_start)
-        // can complete. Previous hardcoded 1s delay was unnecessarily long.
+        // Wait for relay registration so triggers from the first turn
+        // (AskUserQuestion, plan_mode, session_complete) are delivered
+        // to the parent. Falls back after 10s if relay never connects.
         if (initialPrompt) {
-            setTimeout(() => {
+            waitForRelayRegistration(10_000).then(() => {
                 console.log(`pizzapi worker: sending initial prompt (${initialPrompt.length} chars)`);
                 pi.sendUserMessage(initialPrompt);
-            }, 0);
+            });
         }
     });
 };

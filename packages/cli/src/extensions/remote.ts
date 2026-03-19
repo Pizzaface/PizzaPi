@@ -358,6 +358,41 @@ export function getRelaySessionId(): string | null {
     return _ctx?.relaySessionId ?? process.env.PIZZAPI_SESSION_ID ?? null;
 }
 
+// ── Relay registration gate ──────────────────────────────────────────────────
+// Allows other extensions (e.g. initial-prompt) to wait until the relay has
+// registered before taking actions that depend on trigger delivery.
+let _relayRegisteredResolve: (() => void) | null = null;
+let _relayRegisteredPromise: Promise<void> | null = null;
+
+/** Reset the registration gate (called at the start of each connection attempt). */
+function resetRelayRegistrationGate(): void {
+    _relayRegisteredPromise = new Promise<void>((resolve) => {
+        _relayRegisteredResolve = resolve;
+    });
+}
+
+/** Signal that the relay has registered (called from the `registered` handler). */
+function signalRelayRegistered(): void {
+    _relayRegisteredResolve?.();
+    _relayRegisteredResolve = null;
+}
+
+/**
+ * Wait for the relay to complete registration, with a timeout fallback.
+ * Resolves immediately if the relay is already registered or was skipped.
+ * Falls back after `timeoutMs` so the caller isn't blocked forever if the
+ * relay connection fails.
+ */
+export function waitForRelayRegistration(timeoutMs: number = 10_000): Promise<void> {
+    // Already registered or relay was never initialized
+    if (_ctx?.relay) return Promise.resolve();
+    if (!_relayRegisteredPromise) return Promise.resolve();
+    return Promise.race([
+        _relayRegisteredPromise,
+        new Promise<void>((resolve) => setTimeout(resolve, timeoutMs)),
+    ]);
+}
+
 // ── Extension factory ────────────────────────────────────────────────────────
 
 export const remoteExtension: ExtensionFactory = (pi) => {
@@ -791,10 +826,12 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             },
         );
         rctx.sioSocket = sock;
+        resetRelayRegistrationGate();
 
         // ── Connection lifecycle ──────────────────────────────────────────
 
         sock.on("connect", () => {
+            resetRelayRegistrationGate();
             sock.emit("register", {
                 sessionId: rctx.relaySessionId,
                 cwd: process.cwd(),
@@ -842,6 +879,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             void refreshAllUsage();
             startHeartbeat(rctx);
             updateMcpRelayContext();
+            signalRelayRegistered();
         });
 
         // ── Incoming events from server ───────────────────────────────────
