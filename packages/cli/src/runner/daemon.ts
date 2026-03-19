@@ -19,7 +19,8 @@ import { join, dirname, relative, basename, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { io, type Socket } from "socket.io-client";
 import type { RunnerClientToServerEvents, RunnerServerToClientEvents, RunnerHook } from "@pizzapi/protocol";
-import { loadGlobalConfig, type HooksConfig } from "../config.js";
+import { loadGlobalConfig, defaultAgentDir, type HooksConfig } from "../config.js";
+import { AuthStorage } from "@mariozechner/pi-coding-agent";
 import { cleanupSessionAttachments, sweepOrphanedAttachments } from "../extensions/session-attachments.js";
 
 /**
@@ -264,20 +265,19 @@ function runnerUsageCacheFilePath(): string {
     return join(homedir(), ".pizzapi", "usage-cache.json");
 }
 
-/** Read auth.json from the default PizzaPi home (same file used by remote.ts). */
-function readRunnerAuthJson(): Record<string, unknown> {
-    try {
-        const authPath = join(homedir(), ".pizzapi", "auth.json");
-        if (!existsSync(authPath)) return {};
-        return JSON.parse(readFileSync(authPath, "utf-8")) as Record<string, unknown>;
-    } catch {
-        return {};
-    }
+/**
+ * Create an AuthStorage instance for the runner daemon.
+ * Uses the same auth.json as worker sessions so token refreshes are shared.
+ * AuthStorage handles OAuth token refresh + file-locked writes automatically.
+ */
+function createRunnerAuthStorage(): AuthStorage {
+    const agentDir = defaultAgentDir();
+    return AuthStorage.create(join(agentDir, "auth.json"));
 }
 
 async function fetchAnthropicUsageData(): Promise<ProviderUsageData | null> {
-    const auth = readRunnerAuthJson();
-    const token = (auth as any)?.anthropic?.access;
+    const authStorage = createRunnerAuthStorage();
+    const token = await authStorage.getApiKey("anthropic");
     if (!token || typeof token !== "string") return null;
     try {
         const res = await fetch("https://api.anthropic.com/api/oauth/usage", {
@@ -331,18 +331,17 @@ async function getRunnerAnthropicUsageData(opts: { force?: boolean } = {}): Prom
 }
 
 async function fetchGeminiUsageData(): Promise<ProviderUsageData | null> {
-    const auth = readRunnerAuthJson();
-    const rawCred = (auth as any)?.["google-gemini-cli"];
-    if (!rawCred) return null;
+    const authStorage = createRunnerAuthStorage();
+    // AuthStorage.getApiKey handles OAuth token refresh and returns
+    // JSON.stringify({ token, projectId }) via the provider's getApiKey().
+    const raw = await authStorage.getApiKey("google-gemini-cli");
+    if (!raw) return null;
     let token: string;
     let projectId: string;
     try {
-        const parsed = (typeof rawCred === "string"
-            ? JSON.parse(rawCred)
-            : rawCred) as { token?: string; access?: string; projectId?: string };
-        const accessToken = parsed.token ?? parsed.access;
-        if (!accessToken || !parsed.projectId) return null;
-        token = accessToken;
+        const parsed = JSON.parse(raw) as { token?: string; projectId?: string };
+        if (!parsed.token || !parsed.projectId) return null;
+        token = parsed.token;
         projectId = parsed.projectId;
     } catch {
         return null;
@@ -376,8 +375,8 @@ async function fetchGeminiUsageData(): Promise<ProviderUsageData | null> {
 }
 
 async function fetchCodexUsageData(): Promise<ProviderUsageData | null> {
-    const auth = readRunnerAuthJson();
-    const token = (auth as any)?.["openai-codex"]?.access;
+    const authStorage = createRunnerAuthStorage();
+    const token = await authStorage.getApiKey("openai-codex");
     if (!token || typeof token !== "string") return null;
     try {
         const res = await fetch("https://chatgpt.com/backend-api/wham/usage", {
