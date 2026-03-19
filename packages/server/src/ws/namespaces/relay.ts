@@ -735,52 +735,57 @@ export function registerRelayNamespace(io: SocketIOServer): void {
 
             console.log(`[sio/relay] cleanup_child_session: parent=${sessionId} child=${childSessionId}`);
 
-            // Terminate the child process via two complementary paths:
-            //
-            // 1. kill_session → runner (cluster-wide via emitToRunner):
-            //    sends SIGTERM to the OS process.  Reaches runners on any
-            //    cluster node through the Redis adapter.
-            if (childSession.runnerId) {
-                emitToRunner(childSession.runnerId, "kill_session", { sessionId: childSessionId });
-            }
+            try {
+                // Terminate the child process via two complementary paths:
+                //
+                // 1. kill_session → runner (cluster-wide via emitToRunner):
+                //    sends SIGTERM to the OS process.  Reaches runners on any
+                //    cluster node through the Redis adapter.
+                if (childSession.runnerId) {
+                    emitToRunner(childSession.runnerId, "kill_session", { sessionId: childSessionId });
+                }
 
-            // 2. exec end_session → child relay socket (cluster-wide via Redis
-            //    adapter room broadcast).  Reaches the child on any node and
-            //    causes it to clear its follow-up grace timer and shut down
-            //    cleanly.  If the runner already sent SIGTERM in step 1 the
-            //    exec arrives to an already-exiting worker (benign no-op).
-            emitToRelaySession(childSessionId, "exec", {
-                id: `cleanup-${childSessionId}-${Date.now()}`,
-                command: "end_session",
-            });
+                // 2. exec end_session → child relay socket (cluster-wide via Redis
+                //    adapter room broadcast).  Reaches the child on any node and
+                //    causes it to clear its follow-up grace timer and shut down
+                //    cleanly.  If the runner already sent SIGTERM in step 1 the
+                //    exec arrives to an already-exiting worker (benign no-op).
+                emitToRelaySession(childSessionId, "exec", {
+                    id: `cleanup-${childSessionId}-${Date.now()}`,
+                    command: "end_session",
+                });
 
-            const relaySockets = await io.of("/relay").in(`session:${childSessionId}`).fetchSockets();
-            const hasRelayRecipient = relaySockets.length > 0;
+                const relaySockets = await io.of("/relay").in(`session:${childSessionId}`).fetchSockets();
+                const hasRelayRecipient = relaySockets.length > 0;
 
-            // Clean up child-index entry
-            void removeChildSession(sessionId, childSessionId);
+                // Clean up child-index entry
+                void removeChildSession(sessionId, childSessionId);
 
-            if (!hasRelayRecipient) {
-                // No relay socket is currently joined for this child anywhere in
-                // the cluster, so there is no disconnect handler left to finish
-                // cleanup. Complete teardown now so acknowledged children don't
-                // linger in Redis/sidebar until the orphan sweeper runs.
-                await endSharedSession(childSessionId, "Parent acknowledged completion");
+                if (!hasRelayRecipient) {
+                    // No relay socket is currently joined for this child anywhere in
+                    // the cluster, so there is no disconnect handler left to finish
+                    // cleanup. Complete teardown now so acknowledged children don't
+                    // linger in Redis/sidebar until the orphan sweeper runs.
+                    await endSharedSession(childSessionId, "Parent acknowledged completion");
+                    if (typeof ack === "function") ack({ ok: true });
+                    return;
+                }
+
+                // Do NOT call endSharedSession here when a relay recipient exists.
+                // The child will disconnect momentarily (from the SIGTERM or exec
+                // above), and its disconnect handler on whichever node hosts the
+                // child's relay socket will call endSharedSession there — where the
+                // correct local runner socket is available for adopted-session
+                // cleanup. Calling it here first would delete the Redis record
+                // before that node can process the disconnect, turning its
+                // endSharedSession into a no-op and leaving adopted-session entries
+                // stranded in runningSessions on the remote runner.
+
                 if (typeof ack === "function") ack({ ok: true });
-                return;
+            } catch (err: any) {
+                console.error(`[sio/relay] cleanup_child_session failed: parent=${sessionId} child=${childSessionId}`, err);
+                if (typeof ack === "function") ack({ ok: false, error: err?.message ?? "Internal error" });
             }
-
-            // Do NOT call endSharedSession here when a relay recipient exists.
-            // The child will disconnect momentarily (from the SIGTERM or exec
-            // above), and its disconnect handler on whichever node hosts the
-            // child's relay socket will call endSharedSession there — where the
-            // correct local runner socket is available for adopted-session
-            // cleanup. Calling it here first would delete the Redis record
-            // before that node can process the disconnect, turning its
-            // endSharedSession into a no-op and leaving adopted-session entries
-            // stranded in runningSessions on the remote runner.
-
-            if (typeof ack === "function") ack({ ok: true });
         });
 
         // ── disconnect ───────────────────────────────────────────────────────
