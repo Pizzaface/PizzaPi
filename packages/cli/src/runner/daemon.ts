@@ -19,7 +19,7 @@ import { join, dirname, relative, basename, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { io, type Socket } from "socket.io-client";
 import type { RunnerClientToServerEvents, RunnerServerToClientEvents, RunnerHook } from "@pizzapi/protocol";
-import { loadGlobalConfig, defaultAgentDir, expandHome, type HooksConfig } from "../config.js";
+import { loadGlobalConfig, loadConfig, defaultAgentDir, expandHome, type HooksConfig } from "../config.js";
 import { AuthStorage } from "@mariozechner/pi-coding-agent";
 import { cleanupSessionAttachments, sweepOrphanedAttachments } from "../extensions/session-attachments.js";
 import { getRefreshedOAuthToken, parseGeminiQuotaCredential } from "./usage-auth.js";
@@ -269,12 +269,12 @@ function runnerUsageCacheFilePath(): string {
 /**
  * Create an AuthStorage instance for the runner daemon.
  * Uses the same auth.json as worker sessions so token refreshes are shared.
- * Respects the `agentDir` config override so the daemon reads from the same
- * location as the CLI/worker path (see remote-provider-usage.ts).
+ * Uses `loadConfig(process.cwd())` — the same merged config that worker
+ * sessions read — so project-level `agentDir` overrides are respected.
  * AuthStorage handles OAuth token refresh + file-locked writes automatically.
  */
 function createRunnerAuthStorage(): AuthStorage {
-    const config = loadGlobalConfig();
+    const config = loadConfig(process.cwd());
     const agentDir = config.agentDir ? expandHome(config.agentDir) : defaultAgentDir();
     return AuthStorage.create(join(agentDir, "auth.json"));
 }
