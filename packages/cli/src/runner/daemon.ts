@@ -377,29 +377,29 @@ async function getRunnerAnthropicUsageData(opts: { force?: boolean } = {}): Prom
 }
 
 async function fetchGeminiUsageData(): Promise<ProviderUsageData | null> {
-    let raw: string | undefined;
+    let token: string | undefined;
+    let projectId: string | undefined;
     try {
         for (const authStorage of getKnownAuthStorages()) {
             // AuthStorage.getApiKey handles OAuth token refresh and returns
             // JSON.stringify({ token, projectId }) via the provider's getApiKey().
-            raw = await authStorage.getApiKey("google-gemini-cli");
-            if (raw) break;
+            // Use parseGeminiQuotaCredential to validate the result — API-key
+            // credentials return a plain string that fails JSON.parse, so we
+            // must not short-circuit on the first truthy raw value; we need to
+            // confirm it is a valid OAuth Gemini credential before stopping.
+            const raw = await authStorage.getApiKey("google-gemini-cli");
+            const cred = parseGeminiQuotaCredential(raw);
+            if (cred) {
+                token = cred.token;
+                projectId = cred.projectId;
+                break;
+            }
         }
     } catch (err: any) {
         console.warn(`pizzapi runner: failed to get Google credentials: ${err?.message ?? String(err)}`);
         return null;
     }
-    if (!raw) return null;
-    let token: string;
-    let projectId: string;
-    try {
-        const parsed = JSON.parse(raw) as { token?: string; projectId?: string };
-        if (!parsed.token || !parsed.projectId) return null;
-        token = parsed.token;
-        projectId = parsed.projectId;
-    } catch {
-        return null;
-    }
+    if (!token || !projectId) return null;
     try {
         const endpoint = process.env["CODE_ASSIST_ENDPOINT"] ?? "https://cloudcode-pa.googleapis.com";
         const version = process.env["CODE_ASSIST_API_VERSION"] ?? "v1internal";
