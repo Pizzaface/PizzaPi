@@ -67,7 +67,7 @@ Two config formats are supported:
   </TabItem>
 </Tabs>
 
-Project-local config overrides global config **by top-level key**. If your project `.pizzapi/config.json` defines `mcpServers`, it replaces the entire global `mcpServers` object — the two are not merged. To use a global server alongside project-specific ones, redeclare it in the project config.
+Project-local and global MCP servers are **deep-merged** — servers from both scopes are combined. If a server with the same name appears in both configs, the project-local definition wins. Global-only servers are preserved alongside project-specific ones, so you don't need to redeclare them.
 
 See the [Configuration guide](/PizzaPi/customization/configuration/) for full details on config file loading and precedence.
 
