@@ -39,6 +39,8 @@ import { buildPizzaPiExtensionFactories } from "../extensions/factories.js";
  *   PIZZAPI_RELAY_URL    Relay base URL (http(s)://... or ws(s)://...)
  */
 async function main(): Promise<void> {
+    console.time("[boot] total");
+
     const args = process.argv.slice(2);
     const cwdFlagIdx = args.indexOf("--cwd");
     const cwdFromArgs = cwdFlagIdx !== -1 && args[cwdFlagIdx + 1] ? args[cwdFlagIdx + 1] : undefined;
@@ -51,15 +53,18 @@ async function main(): Promise<void> {
         process.exit(1);
     }
 
+    console.time("[boot] config");
     const config = loadConfig(cwd);
     const agentDir = config.agentDir ? expandHome(config.agentDir) : defaultAgentDir();
     const skipPlugins = process.env.PIZZAPI_NO_PLUGINS === "1";
 
     // ── Provider settings → env vars ───────────────────────────────────────
     applyProviderSettingsEnv(config);
+    console.timeEnd("[boot] config");
 
     // ── Sandbox initialization ─────────────────────────────────────────────
     // Must happen before any tools execute (including MCP init via extensions).
+    console.time("[boot] sandbox");
     const sandboxConfig = resolveSandboxConfig(cwd, config);
 
     // PIZZAPI_SANDBOX / PIZZAPI_NO_SANDBOX env var overrides.
@@ -92,6 +97,7 @@ async function main(): Promise<void> {
     } else if (sandboxConfig.mode !== "none") {
         console.warn("pizzapi worker: sandbox was requested but is not active (platform unsupported or init failed)");
     }
+    console.timeEnd("[boot] sandbox");
 
     // ── Agent session config ───────────────────────────────────────────────
     // When spawned "as" an agent, these env vars carry the agent definition.
@@ -115,6 +121,7 @@ async function main(): Promise<void> {
         }
     }
 
+    console.time("[boot] resource-loader");
     const loader = new DefaultResourceLoader({
         cwd,
         agentDir,
@@ -142,14 +149,18 @@ async function main(): Promise<void> {
         }),
     });
     await loader.reload();
+    console.timeEnd("[boot] resource-loader");
 
+    console.time("[boot] create-session");
     const { session } = await createAgentSession({
         cwd,
         agentDir,
         resourceLoader: loader,
     });
+    console.timeEnd("[boot] create-session");
 
     // Bind extensions in headless mode (no UI context)
+    console.time("[boot] bind-extensions");
     await session.bindExtensions({
         commandContextActions: {
             waitForIdle: () => session.agent.waitForIdle(),
@@ -191,9 +202,11 @@ async function main(): Promise<void> {
             forwardCliError(err.error, err.extensionPath);
         },
     });
+    console.timeEnd("[boot] bind-extensions");
 
     const sessionId = process.env.PIZZAPI_SESSION_ID;
-    console.log(`pizzapi worker: started (cwd=${cwd}${sessionId ? `, sessionId=${sessionId}` : ""}${agentName ? `, agent=${agentName}` : ""})`);
+    console.timeEnd("[boot] total");
+    console.log(`pizzapi worker: boot complete (cwd=${cwd}${sessionId ? `, sessionId=${sessionId}` : ""})`);
 
     const shutdown = async () => {
         try {
