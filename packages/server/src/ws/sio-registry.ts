@@ -97,6 +97,39 @@ function terminalRoom(terminalId: string): string {
     return `terminal:${terminalId}`;
 }
 
+/**
+ * Room that a runner socket joins on the /runner namespace.
+ * Enables cluster-wide emission to a specific runner via the Redis adapter,
+ * so session_ended can reach the correct runner regardless of which relay node
+ * handles the cleanup request.
+ */
+function runnerRoom(runnerId: string): string {
+    return `runner:${runnerId}`;
+}
+
+/** Export for use in cleanup paths that need cluster-wide runner notification. */
+export function emitToRunner(runnerId: string, eventName: string, data: unknown): void {
+    if (!io) return;
+    // Primary path: cluster-wide via per-runner room (joined on registration).
+    // Reaches runners on any relay node through the Redis adapter.
+    try {
+        io.of("/runner")
+            .to(runnerRoom(runnerId))
+            .emit(eventName, data);
+    } catch (err) {
+        console.warn("[sio-registry] emitToRunner room emit failed:", (err as Error)?.message);
+    }
+    // Compatibility fallback: direct local socket emit.
+    // Handles runners on this node that haven't joined the room yet
+    // (e.g. older daemon versions during a rolling deploy, or runners that
+    // connected before this server was upgraded).  The daemon's handler is
+    // idempotent via endedSessionIds, so double-delivery is safe.
+    const local = localRunnerSockets.get(runnerId);
+    if (local?.connected) {
+        try { local.emit(eventName, data); } catch { /* best-effort */ }
+    }
+}
+
 // ── Local socket references (per-server, NOT shared via Redis) ──────────────
 
 /** TUI relay sockets: sessionId → Socket on /relay namespace. */
@@ -817,11 +850,11 @@ export async function endSharedSession(sessionId: string, reason: string = "Sess
 
     // Notify the runner daemon so it can clean up its runningSessions map
     // (especially important for adopted sessions after a daemon restart).
+    // emitToRunner uses the per-runner room (joined on registration) so the
+    // event reaches the correct runner via the Redis adapter even when it is
+    // connected to a different relay node than the one calling this function.
     if (session.runnerId) {
-        const runnerSocket = localRunnerSockets.get(session.runnerId);
-        if (runnerSocket?.connected) {
-            runnerSocket.emit("session_ended", { sessionId, reason });
-        }
+        emitToRunner(session.runnerId, "session_ended", { sessionId, reason });
     }
 
     // Delete from Redis
@@ -1065,6 +1098,10 @@ export async function registerRunner(
 
     await setRunner(runnerId, runnerData);
     localRunnerSockets.set(runnerId, socket);
+
+    // Join a per-runner room so cluster-wide emits can reach this runner via
+    // the Redis adapter (see emitToRunner / endSharedSession).
+    await socket.join(runnerRoom(runnerId));
 
     return runnerId;
 }

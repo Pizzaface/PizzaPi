@@ -924,6 +924,57 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             if (!data?.triggerId) return;
             const pending = receivedTriggers.get(data.triggerId);
             if (!pending || !rctx.relay || !rctx.sioSocket?.connected) return;
+
+            // For session_complete triggers, handle cleanup the same way
+            // as respond_to_trigger in the triggers extension — escalated
+            // replies from the human viewer must also clean up the child.
+            // Keep the trigger pending until delivery is confirmed so the
+            // human can retry if it fails.
+            if (pending.type === "session_complete") {
+                const action = data.action ?? "ack";
+                if (action === "followUp") {
+                    // Deliver follow-up as agent input to resume the child.
+                    // Keep the trigger pending if delivery fails so the human
+                    // can retry instead of losing the follow-up.
+                    const childId = pending.sourceSessionId;
+                    let failed = false;
+                    const onError = (err: { targetSessionId: string; error: string }) => {
+                        if (err.targetSessionId === childId) {
+                            failed = true;
+                            rctx.sioSocket!.off("session_message_error" as any, onError);
+                        }
+                    };
+                    rctx.sioSocket.on("session_message_error" as any, onError);
+                    rctx.sioSocket.emit("session_message", {
+                        token: rctx.relay.token,
+                        targetSessionId: childId,
+                        message: data.response,
+                        deliverAs: "input",
+                    });
+                    // After a short window without an error, consider delivery
+                    // successful and clear the trigger. On failure it stays
+                    // pending for retry.
+                    setTimeout(() => {
+                        rctx.sioSocket?.off("session_message_error" as any, onError);
+                        if (!failed) {
+                            receivedTriggers.delete(data.triggerId);
+                        }
+                    }, 3000);
+                } else {
+                    // ack — emit cleanup request with ack callback
+                    rctx.sioSocket.emit("cleanup_child_session", {
+                        token: rctx.relay.token,
+                        childSessionId: pending.sourceSessionId,
+                    }, (result: { ok: boolean; error?: string }) => {
+                        if (result?.ok) {
+                            receivedTriggers.delete(data.triggerId);
+                        }
+                        // On failure, trigger stays — human can retry
+                    });
+                }
+                return;
+            }
+
             rctx.sioSocket.emit("trigger_response" as any, {
                 token: rctx.relay.token,
                 triggerId: data.triggerId,

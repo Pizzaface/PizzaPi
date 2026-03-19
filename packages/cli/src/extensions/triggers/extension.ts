@@ -130,23 +130,22 @@ export const triggersExtension: ExtensionFactory = (pi) => {
             // - "ack": just acknowledge, no message to child
             // - "followUp": deliver as input message to resume the child (like tell_child)
             if (pending.type === "session_complete") {
-                receivedTriggers.delete(params.triggerId);
                 const action = params.action ?? "ack";
                 if (action === "followUp") {
                     // Deliver as agent input so it starts a new turn in the child.
                     // Wait for session_message_error to detect delivery failures.
                     const childId = pending.sourceSessionId;
-                    const result = await new Promise<string>((resolve) => {
+                    const result = await new Promise<{ ok: boolean; text: string }>((resolve) => {
                         const timeout = setTimeout(() => {
                             conn.socket.off("session_message_error", onError);
-                            resolve(`Follow-up sent to child ${childId}`);
+                            resolve({ ok: true, text: `Follow-up sent to child ${childId}` });
                         }, 3000);
 
                         const onError = (err: { targetSessionId: string; error: string }) => {
                             if (err.targetSessionId === childId) {
                                 clearTimeout(timeout);
                                 conn.socket.off("session_message_error", onError);
-                                resolve(`Error sending follow-up to child ${childId}: ${err.error}`);
+                                resolve({ ok: false, text: `Error sending follow-up to child ${childId}: ${err.error}` });
                             }
                         };
                         conn.socket.on("session_message_error", onError);
@@ -158,9 +157,32 @@ export const triggersExtension: ExtensionFactory = (pi) => {
                             deliverAs: "input",
                         });
                     });
-                    return { content: [{ type: "text" as const, text: result }], details: null as any };
+                    if (result.ok) {
+                        receivedTriggers.delete(params.triggerId);
+                    }
+                    return { content: [{ type: "text" as const, text: result.text }], details: null as any };
                 }
-                // ack or any other action — just acknowledge, no message to child
+                // ack or any other action — acknowledge and clean up the child session
+                // Emit cleanup request to the relay so the server tears down the
+                // child session (removes from Redis, notifies runner, frees resources).
+                // Wait for the server's ack before clearing the trigger — if the
+                // relay rejects the request (auth, ownership), we keep the trigger
+                // so the agent can retry or escalate.
+                const cleanupResult = await new Promise<{ ok: boolean; error?: string }>((resolve) => {
+                    const timeout = setTimeout(() => resolve({ ok: false, error: "Cleanup ack timed out" }), 10_000);
+                    conn.socket.emit("cleanup_child_session", {
+                        token: conn.token,
+                        childSessionId: pending.sourceSessionId,
+                    }, (result: { ok: boolean; error?: string }) => {
+                        clearTimeout(timeout);
+                        resolve(result ?? { ok: true });
+                    });
+                });
+                if (!cleanupResult.ok) {
+                    // Don't delete the trigger — agent can retry
+                    return { content: [{ type: "text" as const, text: `Failed to clean up child session ${pending.sourceSessionId}: ${cleanupResult.error ?? "unknown error"}` }], details: null as any };
+                }
+                receivedTriggers.delete(params.triggerId);
                 return { content: [{ type: "text" as const, text: `Acknowledged session completion from ${pending.sourceSessionId}` }], details: null as any };
             }
 
