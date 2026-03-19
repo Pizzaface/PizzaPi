@@ -3186,7 +3186,7 @@ export function App() {
   }, [spawningSession, spawnRunnerId, spawnCwd, handleOpenSession, waitForSessionToGoLive]);
 
   // ── Respond to a trigger from a child session ─────────────────────────────
-  const handleTriggerResponse = React.useCallback((triggerId: string, response: string, action?: string): boolean => {
+  const handleTriggerResponse = React.useCallback((triggerId: string, response: string, action?: string, sourceSessionId?: string): boolean => {
     const socket = viewerWsRef.current;
     const sessionId = activeSessionRef.current;
     if (!socket || !socket.connected || !sessionId) {
@@ -3194,11 +3194,16 @@ export function App() {
       return false;
     }
 
+    // Use the child's sourceSessionId (extracted from the trigger comment) as
+    // targetSessionId so the server can route directly to the child session,
+    // bypassing the parent's in-memory receivedTriggers map. This makes
+    // delivery resilient to parent reconnects/resumes where the map is gone.
+    // Falls back to the parent session ID for legacy triggers without source.
     socket.timeout(5000).emit("trigger_response", {
       triggerId,
       response,
       ...(action ? { action } : {}),
-      targetSessionId: sessionId,
+      targetSessionId: sourceSessionId ?? sessionId,
     }, (err: Error | null) => {
       if (err) {
         // Server didn't acknowledge within timeout — surface to user

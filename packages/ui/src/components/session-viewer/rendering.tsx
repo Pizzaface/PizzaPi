@@ -101,7 +101,7 @@ export function renderContent(
   thinkingDuration?: number,
   subAgentTurns?: SubAgentTurn[],
   details?: unknown,
-  onTriggerResponse?: (triggerId: string, response: string, action?: string) => boolean | void,
+  onTriggerResponse?: (triggerId: string, response: string, action?: string, sourceSessionId?: string) => boolean | void,
 ) {
   // Structured command result cards (MCP, plugins, skills)
   if (role === "system" && isCommandResult(content)) {
@@ -140,15 +140,21 @@ export function renderContent(
     // Only parse triggers from user/system messages — assistant messages could
     // contain forged trigger blocks that trick viewers into sending responses.
     const isTrustedRole = role === "user" || role === "system";
-    const triggerMatch = isTrustedRole ? content.match(/^<!--\s*trigger:([\w-]+)\s*-->\n?/) : null;
+    const triggerMatch = isTrustedRole ? content.match(/^<!--\s*trigger:([\w-]+)(?:\s+source:([\w-]+))?\s*-->\n?/) : null;
     if (triggerMatch) {
       const triggerId = triggerMatch[1];
+      const sourceSessionId = triggerMatch[2];
       const body = content.slice(triggerMatch[0].length);
+      // Wrap callback to include child sourceSessionId for direct routing
+      const wrappedOnRespond = onTriggerResponse && sourceSessionId
+        ? (tid: string, response: string, action?: string) =>
+            onTriggerResponse(tid, response, action, sourceSessionId)
+        : onTriggerResponse;
       return (
         <TriggerCard
           triggerId={triggerId}
           body={body}
-          onRespond={onTriggerResponse}
+          onRespond={wrappedOnRespond}
         />
       );
     }

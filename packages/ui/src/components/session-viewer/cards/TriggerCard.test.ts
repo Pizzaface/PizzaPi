@@ -395,6 +395,21 @@ Respond with \`respond_to_trigger\` using trigger ID \`brk123\`.`;
       expect(parsed.options).toEqual(["Yes", "No"]);
     });
 
+    test("falls back gracefully when base64 is invalid (truncated/corrupted)", () => {
+      // Invalid base64 that matches the regex but throws on atob()
+      const body = `🔗 Child "corrupt-child" asks:
+<!-- questions64:notvalidbase64padding -->
+> What?
+Options: 1. Yes  2. No
+
+Respond with \`respond_to_trigger\` using trigger ID \`corrupt123\`.`;
+
+      const parsed = parseTriggerBody(body);
+      expect(parsed.type).toBe("ask_user_question");
+      expect(parsed.questions).toBeUndefined();
+      expect(parsed.options).toEqual(["Yes", "No"]);
+    });
+
     test("legacy format: unescapes __DASH__ sequences in embedded JSON questions", () => {
       // Legacy format used __DASH__ escaping for "--" sequences.
       const raw = `[{"question":"Use --> in code?","options":["Yes","No"]}]`;

@@ -43,8 +43,8 @@ function extractWebSearch(block: Record<string, unknown>): string | null {
   return null;
 }
 
-/** Strip `<!-- trigger:ID -->` prefixes injected by linked-session triggers. */
-const TRIGGER_PREFIX_RE = /^<!--\s*trigger:[\w-]+\s*-->\n?/;
+/** Strip `<!-- trigger:ID [source:ID] -->` prefixes injected by linked-session triggers. */
+const TRIGGER_PREFIX_RE = /^<!--\s*trigger:[\w-]+(?:\s+source:[\w-]+)?\s*-->\n?/;
 
 /** Stringify unknown content into a readable string. */
 function contentToString(content: unknown): string {

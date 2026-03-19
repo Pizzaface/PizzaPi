@@ -203,7 +203,7 @@ export function renderTrigger(trigger: ConversationTrigger): string {
     const body = renderer
         ? renderer.render(trigger)
         : `🔗 Child "${displayName(trigger)}" sent unknown trigger "${trigger.type}". Payload: ${JSON.stringify(trigger.payload)}`;
-    return `<!-- trigger:${trigger.triggerId} -->\n${body}`;
+    return `<!-- trigger:${trigger.triggerId} source:${trigger.sourceSessionId} -->\n${body}`;
 }
 
 /** Parse a response using the trigger type's parser, if available. */

@@ -21,7 +21,7 @@ describe("renderTrigger", () => {
     it("prefixes output with trigger ID metadata comment", () => {
         const trigger = makeTrigger({ payload: { question: "Pick one", options: ["A", "B"] } });
         const result = renderTrigger(trigger);
-        expect(result).toStartWith("<!-- trigger:trigger-001 -->");
+        expect(result).toStartWith("<!-- trigger:trigger-001 source:child-abc-123 -->");
     });
 
     describe("ask_user_question", () => {
