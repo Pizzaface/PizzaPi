@@ -19,7 +19,7 @@ import { join, dirname, relative, basename, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { io, type Socket } from "socket.io-client";
 import type { RunnerClientToServerEvents, RunnerServerToClientEvents, RunnerHook } from "@pizzapi/protocol";
-import { loadGlobalConfig, defaultAgentDir, type HooksConfig } from "../config.js";
+import { loadGlobalConfig, defaultAgentDir, expandHome, type HooksConfig } from "../config.js";
 import { AuthStorage } from "@mariozechner/pi-coding-agent";
 import { cleanupSessionAttachments, sweepOrphanedAttachments } from "../extensions/session-attachments.js";
 
@@ -268,16 +268,25 @@ function runnerUsageCacheFilePath(): string {
 /**
  * Create an AuthStorage instance for the runner daemon.
  * Uses the same auth.json as worker sessions so token refreshes are shared.
+ * Respects the `agentDir` config override so the daemon reads from the same
+ * location as the CLI/worker path (see remote-provider-usage.ts).
  * AuthStorage handles OAuth token refresh + file-locked writes automatically.
  */
 function createRunnerAuthStorage(): AuthStorage {
-    const agentDir = defaultAgentDir();
+    const config = loadGlobalConfig();
+    const agentDir = config.agentDir ? expandHome(config.agentDir) : defaultAgentDir();
     return AuthStorage.create(join(agentDir, "auth.json"));
 }
 
 async function fetchAnthropicUsageData(): Promise<ProviderUsageData | null> {
-    const authStorage = createRunnerAuthStorage();
-    const token = await authStorage.getApiKey("anthropic");
+    let token: string | undefined;
+    try {
+        const authStorage = createRunnerAuthStorage();
+        token = await authStorage.getApiKey("anthropic");
+    } catch (err: any) {
+        console.warn(`pizzapi runner: failed to get Anthropic credentials: ${err?.message ?? String(err)}`);
+        return null;
+    }
     if (!token || typeof token !== "string") return null;
     try {
         const res = await fetch("https://api.anthropic.com/api/oauth/usage", {
@@ -331,10 +340,16 @@ async function getRunnerAnthropicUsageData(opts: { force?: boolean } = {}): Prom
 }
 
 async function fetchGeminiUsageData(): Promise<ProviderUsageData | null> {
-    const authStorage = createRunnerAuthStorage();
-    // AuthStorage.getApiKey handles OAuth token refresh and returns
-    // JSON.stringify({ token, projectId }) via the provider's getApiKey().
-    const raw = await authStorage.getApiKey("google-gemini-cli");
+    let raw: string | undefined;
+    try {
+        const authStorage = createRunnerAuthStorage();
+        // AuthStorage.getApiKey handles OAuth token refresh and returns
+        // JSON.stringify({ token, projectId }) via the provider's getApiKey().
+        raw = await authStorage.getApiKey("google-gemini-cli");
+    } catch (err: any) {
+        console.warn(`pizzapi runner: failed to get Google credentials: ${err?.message ?? String(err)}`);
+        return null;
+    }
     if (!raw) return null;
     let token: string;
     let projectId: string;
@@ -375,8 +390,14 @@ async function fetchGeminiUsageData(): Promise<ProviderUsageData | null> {
 }
 
 async function fetchCodexUsageData(): Promise<ProviderUsageData | null> {
-    const authStorage = createRunnerAuthStorage();
-    const token = await authStorage.getApiKey("openai-codex");
+    let token: string | undefined;
+    try {
+        const authStorage = createRunnerAuthStorage();
+        token = await authStorage.getApiKey("openai-codex");
+    } catch (err: any) {
+        console.warn(`pizzapi runner: failed to get OpenAI Codex credentials: ${err?.message ?? String(err)}`);
+        return null;
+    }
     if (!token || typeof token !== "string") return null;
     try {
         const res = await fetch("https://chatgpt.com/backend-api/wham/usage", {
