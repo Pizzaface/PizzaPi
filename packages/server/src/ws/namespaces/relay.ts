@@ -19,6 +19,7 @@ import {
     getLocalTuiSocket,
     getLocalRunnerSocket,
     emitToRelaySession,
+    emitToRunner,
     updateSessionState,
     updateSessionHeartbeat,
     touchSessionActivity,
@@ -731,14 +732,11 @@ export function registerRelayNamespace(io: SocketIOServer): void {
 
             // Terminate the child process via two complementary paths:
             //
-            // 1. kill_session → runner: sends SIGTERM to the OS process.
-            //    This is the fastest path but is local-only — if the child's
-            //    runner is on a different cluster node the socket is undefined.
+            // 1. kill_session → runner (cluster-wide via emitToRunner):
+            //    sends SIGTERM to the OS process.  Reaches runners on any
+            //    cluster node through the Redis adapter.
             if (childSession.runnerId) {
-                const runnerSocket = getLocalRunnerSocket(childSession.runnerId);
-                if (runnerSocket?.connected) {
-                    runnerSocket.emit("kill_session", { sessionId: childSessionId });
-                }
+                emitToRunner(childSession.runnerId, "kill_session", { sessionId: childSessionId });
             }
 
             // 2. exec end_session → child relay socket (cluster-wide via Redis

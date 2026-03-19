@@ -70,7 +70,7 @@ function validateCleanupChildSession(opts: {
 // ── Dispatch decisions after successful validation ────────────────────────────
 //
 // After validation passes, the handler:
-//   a) emits kill_session to the runner socket (if local and connected)
+//   a) emits kill_session cluster-wide via emitToRunner
 //   b) broadcasts exec end_session to the child's relay socket room
 //   c) calls removeChildSession
 //   d) does NOT call endSharedSession (left to the child's disconnect handler)
@@ -86,7 +86,7 @@ function simulateCleanupDispatch(opts: {
     childSession: FakeSession;
     parentSessionId: string;
     childSessionId: string;
-    getRunnerSocket: (runnerId: string) => { connected: boolean; emit: (event: string, data: unknown) => void } | undefined;
+    emitToRunner: (runnerId: string, event: string, data: unknown) => void;
     emitToRelaySession: (sessionId: string, event: string, data: unknown) => void;
     removeChildSession: (parentId: string, childId: string) => void;
     endSharedSession: (sessionId: string, reason: string) => void;
@@ -98,13 +98,10 @@ function simulateCleanupDispatch(opts: {
         endSharedSessionCalled: false,
     };
 
-    // 1. kill_session → runner (local only)
+    // 1. kill_session → runner (cluster-wide via emitToRunner)
     if (opts.childSession.runnerId) {
-        const runnerSocket = opts.getRunnerSocket(opts.childSession.runnerId);
-        if (runnerSocket?.connected) {
-            runnerSocket.emit("kill_session", { sessionId: opts.childSessionId });
-            record.killSessionSent = true;
-        }
+        opts.emitToRunner(opts.childSession.runnerId, "kill_session", { sessionId: opts.childSessionId });
+        record.killSessionSent = true;
     }
 
     // 2. exec end_session → relay socket (cluster-wide broadcast)
@@ -295,55 +292,25 @@ describe("cleanup_child_session — dispatch", () => {
         runnerId: "runner-local",
     };
 
-    it("emits kill_session when local runner socket is connected", () => {
-        const emittedKills: string[] = [];
-        const localSocket = {
-            connected: true,
-            emit(event: string, data: any) {
-                if (event === "kill_session") emittedKills.push(data.sessionId);
-            },
-        };
+    it("emits kill_session cluster-wide via emitToRunner", () => {
+        const emittedKills: Array<{ runnerId: string; sessionId: string }> = [];
 
         const record = simulateCleanupDispatch({
             childSession,
             parentSessionId: PARENT_ID,
             childSessionId: CHILD_ID,
-            getRunnerSocket: () => localSocket,
+            emitToRunner: (runnerId, event, data: any) => {
+                if (event === "kill_session") emittedKills.push({ runnerId, sessionId: data.sessionId });
+            },
             emitToRelaySession: () => {},
             removeChildSession: () => {},
             endSharedSession: () => {},
         });
 
         expect(record.killSessionSent).toBe(true);
-        expect(emittedKills).toContain(CHILD_ID);
-    });
-
-    it("skips kill_session when runner socket is not local", () => {
-        const record = simulateCleanupDispatch({
-            childSession,
-            parentSessionId: PARENT_ID,
-            childSessionId: CHILD_ID,
-            getRunnerSocket: () => undefined, // runner on another node
-            emitToRelaySession: () => {},
-            removeChildSession: () => {},
-            endSharedSession: () => {},
-        });
-
-        expect(record.killSessionSent).toBe(false);
-    });
-
-    it("skips kill_session when runner socket is disconnected", () => {
-        const record = simulateCleanupDispatch({
-            childSession,
-            parentSessionId: PARENT_ID,
-            childSessionId: CHILD_ID,
-            getRunnerSocket: () => ({ connected: false, emit: () => {} }),
-            emitToRelaySession: () => {},
-            removeChildSession: () => {},
-            endSharedSession: () => {},
-        });
-
-        expect(record.killSessionSent).toBe(false);
+        expect(emittedKills).toHaveLength(1);
+        expect(emittedKills[0].runnerId).toBe("runner-local");
+        expect(emittedKills[0].sessionId).toBe(CHILD_ID);
     });
 
     it("always broadcasts exec end_session (cluster-wide)", () => {
@@ -353,7 +320,7 @@ describe("cleanup_child_session — dispatch", () => {
             childSession,
             parentSessionId: PARENT_ID,
             childSessionId: CHILD_ID,
-            getRunnerSocket: () => undefined,
+            emitToRunner: () => {},
             emitToRelaySession: (sessionId, event, data: any) => {
                 broadcasts.push({ sessionId, event, command: data.command });
             },
@@ -374,7 +341,7 @@ describe("cleanup_child_session — dispatch", () => {
             childSession,
             parentSessionId: PARENT_ID,
             childSessionId: CHILD_ID,
-            getRunnerSocket: () => undefined,
+            emitToRunner: () => {},
             emitToRelaySession: () => {},
             removeChildSession: (p, c) => removed.push([p, c]),
             endSharedSession: () => {},
@@ -391,7 +358,7 @@ describe("cleanup_child_session — dispatch", () => {
             childSession,
             parentSessionId: PARENT_ID,
             childSessionId: CHILD_ID,
-            getRunnerSocket: () => undefined,
+            emitToRunner: () => {},
             emitToRelaySession: () => {},
             removeChildSession: () => {},
             endSharedSession: (id) => endCalls.push(id),
@@ -407,18 +374,14 @@ describe("cleanup_child_session — dispatch", () => {
             runnerId: null,
         };
         const emittedKills: string[] = [];
-        const fakeSocket = {
-            connected: true,
-            emit(event: string, data: any) {
-                if (event === "kill_session") emittedKills.push(data.sessionId);
-            },
-        };
 
         const record = simulateCleanupDispatch({
             childSession: childNoRunner,
             parentSessionId: PARENT_ID,
             childSessionId: CHILD_ID,
-            getRunnerSocket: () => fakeSocket,
+            emitToRunner: (_runnerId, event, data: any) => {
+                if (event === "kill_session") emittedKills.push(data.sessionId);
+            },
             emitToRelaySession: () => {},
             removeChildSession: () => {},
             endSharedSession: () => {},
