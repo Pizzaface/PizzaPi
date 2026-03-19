@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeAll, afterAll } from "bun:test";
-import { RateLimiter, isValidEmail, isValidPassword, cwdMatchesRoots } from "./security";
+import { RateLimiter, isValidEmail, isValidPassword, cwdMatchesRoots, getClientIp } from "./security";
 
 describe("RateLimiter", () => {
     test("allows requests within limit", () => {
@@ -180,5 +180,91 @@ describe("isValidPassword", () => {
         expect(cwdMatchesRoots([root], "/home/user/project/")).toBe(true);
         expect(cwdMatchesRoots(["/home/user/project/"], "/home/user/project")).toBe(true);
         expect(cwdMatchesRoots(["/home/user/project/"], "/home/user/project/src")).toBe(true);
+    });
+});
+
+describe("getClientIp", () => {
+    const makeReq = (headers: Record<string, string>) =>
+        new Request("http://localhost/test", { headers });
+
+    const originalEnv = process.env.PIZZAPI_TRUST_PROXY;
+    afterAll(() => {
+        if (originalEnv === undefined) delete process.env.PIZZAPI_TRUST_PROXY;
+        else process.env.PIZZAPI_TRUST_PROXY = originalEnv;
+    });
+
+    test("returns x-pizzapi-client-ip for direct connections", () => {
+        delete process.env.PIZZAPI_TRUST_PROXY;
+        const req = makeReq({ "x-pizzapi-client-ip": "203.0.113.50" });
+        expect(getClientIp(req)).toBe("203.0.113.50");
+    });
+
+    test("does not trust x-forwarded-for for public IPs", () => {
+        delete process.env.PIZZAPI_TRUST_PROXY;
+        const req = makeReq({
+            "x-pizzapi-client-ip": "203.0.113.50",
+            "x-forwarded-for": "198.51.100.1",
+        });
+        expect(getClientIp(req)).toBe("203.0.113.50");
+    });
+
+    test("auto-detects reverse proxy when remoteAddress is 127.0.0.1", () => {
+        delete process.env.PIZZAPI_TRUST_PROXY;
+        const req = makeReq({
+            "x-pizzapi-client-ip": "127.0.0.1",
+            "x-forwarded-for": "198.51.100.1",
+        });
+        expect(getClientIp(req)).toBe("198.51.100.1");
+    });
+
+    test("auto-detects reverse proxy when remoteAddress is IPv4-mapped ::ffff:127.0.0.1", () => {
+        delete process.env.PIZZAPI_TRUST_PROXY;
+        const req = makeReq({
+            "x-pizzapi-client-ip": "::ffff:127.0.0.1",
+            "x-forwarded-for": "198.51.100.1",
+        });
+        expect(getClientIp(req)).toBe("198.51.100.1");
+    });
+
+    test("auto-detects reverse proxy for IPv4-mapped private IPs (::ffff:192.168.x.x)", () => {
+        delete process.env.PIZZAPI_TRUST_PROXY;
+        const req = makeReq({
+            "x-pizzapi-client-ip": "::ffff:192.168.1.1",
+            "x-forwarded-for": "198.51.100.1",
+        });
+        expect(getClientIp(req)).toBe("198.51.100.1");
+    });
+
+    test("PIZZAPI_TRUST_PROXY=true forces XFF trust even for public IPs", () => {
+        process.env.PIZZAPI_TRUST_PROXY = "true";
+        const req = makeReq({
+            "x-pizzapi-client-ip": "203.0.113.50",
+            "x-forwarded-for": "198.51.100.1",
+        });
+        expect(getClientIp(req)).toBe("198.51.100.1");
+    });
+
+    test("PIZZAPI_TRUST_PROXY=false disables auto-detection for private IPs", () => {
+        process.env.PIZZAPI_TRUST_PROXY = "false";
+        const req = makeReq({
+            "x-pizzapi-client-ip": "127.0.0.1",
+            "x-forwarded-for": "198.51.100.1",
+        });
+        expect(getClientIp(req)).toBe("127.0.0.1");
+    });
+
+    test("PIZZAPI_TRUST_PROXY=false disables auto-detection for loopback", () => {
+        process.env.PIZZAPI_TRUST_PROXY = "false";
+        const req = makeReq({
+            "x-pizzapi-client-ip": "::ffff:127.0.0.1",
+            "x-forwarded-for": "198.51.100.1",
+        });
+        expect(getClientIp(req)).toBe("::ffff:127.0.0.1");
+    });
+
+    test("returns 'unknown' when no headers present", () => {
+        delete process.env.PIZZAPI_TRUST_PROXY;
+        const req = makeReq({});
+        expect(getClientIp(req)).toBe("unknown");
     });
 });

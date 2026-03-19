@@ -107,9 +107,22 @@ export function cwdMatchesRoots(roots: string[], cwd: string): boolean {
 }
 
 /**
- * Check if an IP address is private/loopback (indicating likely reverse proxy setup).
+ * Strip IPv4-mapped IPv6 prefix (e.g. "::ffff:127.0.0.1" → "127.0.0.1").
+ * Node frequently reports IPv4 peers as mapped IPv6 addresses on dual-stack listeners.
  */
-function isPrivateOrLoopbackIp(ip: string): boolean {
+function normalizeIp(ip: string): string {
+    if (ip.startsWith("::ffff:")) {
+        return ip.slice(7);
+    }
+    return ip;
+}
+
+/**
+ * Check if an IP address is private/loopback (indicating likely reverse proxy setup).
+ * Handles IPv4-mapped IPv6 addresses (e.g. ::ffff:127.0.0.1) via normalizeIp().
+ */
+function isPrivateOrLoopbackIp(rawIp: string): boolean {
+    const ip = normalizeIp(rawIp);
     // Loopback
     if (ip === "127.0.0.1" || ip === "::1" || ip === "localhost") return true;
     // IPv4 private ranges
@@ -140,11 +153,14 @@ function isPrivateOrLoopbackIp(ip: string): boolean {
 export function getClientIp(req: Request): string {
     const clientIp = req.headers.get("x-pizzapi-client-ip") || "unknown";
     
-    // Trust x-forwarded-for only when explicitly enabled OR when remoteAddress
-    // suggests we're behind a reverse proxy (private/loopback IP).
+    // PIZZAPI_TRUST_PROXY is a three-state toggle:
+    //   "true"  → always trust x-forwarded-for
+    //   "false" → never trust x-forwarded-for (disables auto-detection)
+    //   unset   → auto-detect based on whether remoteAddress is private/loopback
+    const envTrustProxy = process.env.PIZZAPI_TRUST_PROXY?.toLowerCase();
     const trustProxy =
-        process.env.PIZZAPI_TRUST_PROXY === "true" ||
-        (clientIp !== "unknown" && isPrivateOrLoopbackIp(clientIp));
+        envTrustProxy === "true" ||
+        (envTrustProxy !== "false" && clientIp !== "unknown" && isPrivateOrLoopbackIp(clientIp));
 
     if (trustProxy) {
         const forwardedFor = req.headers.get("x-forwarded-for");
