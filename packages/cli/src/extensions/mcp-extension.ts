@@ -531,20 +531,40 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
   // (relay context's waitForCallback delegates here).
   (bridge as any)._pendingOAuthCallbacks = pendingOAuthCallbacks;
 
-  // NOTE: MCP initialization is deferred to session_start (below) rather than
-  // running here in the factory.  Extension factories are awaited sequentially
-  // by pi, and session_start only fires AFTER all factories complete.  If an
-  // MCP server needs OAuth during init, the OAuth provider must wait for the
-  // relay connection (which happens asynchronously during session_start).
-  // Running load() here would deadlock: the relay can't connect because
-  // session_start hasn't fired, and session_start can't fire because load()
-  // is blocking the factory.  By deferring to session_start, the relay
-  // connection can establish in parallel while MCP servers initialize.
+  // Start MCP initialization eagerly — kick off server spawning and
+  // handshakes immediately so they overlap with other extension factory
+  // loading and relay connection setup.
+  //
+  // We do NOT await load() here, so the factory completes immediately and
+  // other extension factories continue loading.  Non-OAuth servers (stdio
+  // like godmother) will complete their handshake while other factories load.
+  // OAuth servers that need the relay will block inside waitForRelayContext()
+  // until session_start fires and the relay connects — no deadlock because
+  // we're not blocking the factory.
+  let eagerLoadPromise: Promise<McpSnapshot | null> | null = null;
+  try {
+    eagerLoadPromise = load().catch((err) => {
+      // Don't crash the factory — session_start will handle diagnostics
+      console.warn(`pizzapi: MCP eager init failed, will retry in session_start: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    });
+  } catch {
+    // Swallow synchronous errors from load() setup
+  }
 
-  // ── session_start: load MCP tools + report timing to TUI/web UI ──────────
+  // ── session_start: await eager load + report timing to TUI/web UI ────────
   pi.on?.("session_start", async (_event: any, ctx: any) => {
     try {
-      await load();
+      if (eagerLoadPromise) {
+        const result = await eagerLoadPromise;
+        eagerLoadPromise = null;
+        if (!result) {
+          // Eager load failed — retry now that relay is connected
+          await load();
+        }
+      } else {
+        await load();
+      }
     } catch {
       // Swallow — user can diagnose via /mcp.
     }
