@@ -22,6 +22,7 @@ import type { RunnerClientToServerEvents, RunnerServerToClientEvents, RunnerHook
 import { loadGlobalConfig, defaultAgentDir, expandHome, type HooksConfig } from "../config.js";
 import { AuthStorage } from "@mariozechner/pi-coding-agent";
 import { cleanupSessionAttachments, sweepOrphanedAttachments } from "../extensions/session-attachments.js";
+import { getOAuthAccessToken, parseGeminiQuotaCredential } from "./usage-auth.js";
 
 /**
  * Summarise the active hooks from a HooksConfig for display in the web UI.
