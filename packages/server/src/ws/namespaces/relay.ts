@@ -696,16 +696,18 @@ export function registerRelayNamespace(io: SocketIOServer): void {
         });
 
         // ── cleanup_child_session — parent requests child teardown on ack ────
-        socket.on("cleanup_child_session", async (data) => {
+        socket.on("cleanup_child_session", async (data, ack) => {
             const sessionId = socket.data.sessionId;
             if (!sessionId || data?.token !== socket.data.token) {
                 socket.emit("error", { message: "Invalid token" });
+                if (typeof ack === "function") ack({ ok: false, error: "Invalid token" });
                 return;
             }
 
             const childSessionId = data?.childSessionId;
             if (!childSessionId) {
                 socket.emit("error", { message: "cleanup_child_session requires childSessionId" });
+                if (typeof ack === "function") ack({ ok: false, error: "cleanup_child_session requires childSessionId" });
                 return;
             }
 
@@ -713,11 +715,13 @@ export function registerRelayNamespace(io: SocketIOServer): void {
             const childSession = await getSharedSession(childSessionId);
             if (!childSession) {
                 // Child already gone — nothing to clean up (idempotent)
+                if (typeof ack === "function") ack({ ok: true });
                 return;
             }
 
             if (childSession.parentSessionId !== sessionId) {
                 socket.emit("error", { message: "Sender is not the parent of the target session" });
+                if (typeof ack === "function") ack({ ok: false, error: "Sender is not the parent of the target session" });
                 return;
             }
 
@@ -725,6 +729,7 @@ export function registerRelayNamespace(io: SocketIOServer): void {
             const parentSession = await getSharedSession(sessionId);
             if (!parentSession?.userId || parentSession.userId !== childSession.userId) {
                 socket.emit("error", { message: "Target session belongs to a different user" });
+                if (typeof ack === "function") ack({ ok: false, error: "Target session belongs to a different user" });
                 return;
             }
 
@@ -761,6 +766,8 @@ export function registerRelayNamespace(io: SocketIOServer): void {
             // its endSharedSession into a no-op and leaving adopted-session
             // entries stranded in runningSessions on the remote runner.
             // If the child is already gone the orphan sweeper handles cleanup.
+
+            if (typeof ack === "function") ack({ ok: true });
         });
 
         // ── disconnect ───────────────────────────────────────────────────────

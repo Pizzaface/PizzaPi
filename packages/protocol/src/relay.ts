@@ -83,7 +83,7 @@ export interface RelayClientToServerEvents {
   cleanup_child_session: (data: {
     token: string;
     childSessionId: string;
-  }) => void;
+  }, ack?: (result: { ok: boolean; error?: string }) => void) => void;
 }
 
 // ---------------------------------------------------------------------------

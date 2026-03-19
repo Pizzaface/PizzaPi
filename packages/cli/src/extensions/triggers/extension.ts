@@ -130,7 +130,6 @@ export const triggersExtension: ExtensionFactory = (pi) => {
             // - "ack": just acknowledge, no message to child
             // - "followUp": deliver as input message to resume the child (like tell_child)
             if (pending.type === "session_complete") {
-                receivedTriggers.delete(params.triggerId);
                 const action = params.action ?? "ack";
                 if (action === "followUp") {
                     // Deliver as agent input so it starts a new turn in the child.
@@ -158,15 +157,30 @@ export const triggersExtension: ExtensionFactory = (pi) => {
                             deliverAs: "input",
                         });
                     });
+                    receivedTriggers.delete(params.triggerId);
                     return { content: [{ type: "text" as const, text: result }], details: null as any };
                 }
                 // ack or any other action — acknowledge and clean up the child session
                 // Emit cleanup request to the relay so the server tears down the
                 // child session (removes from Redis, notifies runner, frees resources).
-                conn.socket.emit("cleanup_child_session", {
-                    token: conn.token,
-                    childSessionId: pending.sourceSessionId,
+                // Wait for the server's ack before clearing the trigger — if the
+                // relay rejects the request (auth, ownership), we keep the trigger
+                // so the agent can retry or escalate.
+                const cleanupResult = await new Promise<{ ok: boolean; error?: string }>((resolve) => {
+                    const timeout = setTimeout(() => resolve({ ok: true }), 10_000); // fire-and-forget after 10s
+                    conn.socket.emit("cleanup_child_session", {
+                        token: conn.token,
+                        childSessionId: pending.sourceSessionId,
+                    }, (result: { ok: boolean; error?: string }) => {
+                        clearTimeout(timeout);
+                        resolve(result ?? { ok: true });
+                    });
                 });
+                if (!cleanupResult.ok) {
+                    // Don't delete the trigger — agent can retry
+                    return { content: [{ type: "text" as const, text: `Failed to clean up child session ${pending.sourceSessionId}: ${cleanupResult.error ?? "unknown error"}` }], details: null as any };
+                }
+                receivedTriggers.delete(params.triggerId);
                 return { content: [{ type: "text" as const, text: `Acknowledged session completion from ${pending.sourceSessionId}` }], details: null as any };
             }
 
