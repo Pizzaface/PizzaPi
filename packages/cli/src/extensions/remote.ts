@@ -924,6 +924,31 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             if (!data?.triggerId) return;
             const pending = receivedTriggers.get(data.triggerId);
             if (!pending || !rctx.relay || !rctx.sioSocket?.connected) return;
+
+            // For session_complete triggers, handle cleanup the same way
+            // as respond_to_trigger in the triggers extension — escalated
+            // replies from the human viewer must also clean up the child.
+            if (pending.type === "session_complete") {
+                const action = data.action ?? "ack";
+                if (action === "followUp") {
+                    // Deliver follow-up as agent input to resume the child
+                    rctx.sioSocket.emit("session_message", {
+                        token: rctx.relay.token,
+                        targetSessionId: pending.sourceSessionId,
+                        message: data.response,
+                        deliverAs: "input",
+                    });
+                } else {
+                    // ack — emit cleanup request to tear down the child
+                    rctx.sioSocket.emit("cleanup_child_session", {
+                        token: rctx.relay.token,
+                        childSessionId: pending.sourceSessionId,
+                    });
+                }
+                receivedTriggers.delete(data.triggerId);
+                return;
+            }
+
             rctx.sioSocket.emit("trigger_response" as any, {
                 token: rctx.relay.token,
                 triggerId: data.triggerId,
