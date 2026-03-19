@@ -12,11 +12,11 @@ import type { ConversationTrigger } from "./types.js";
 
 // Duplicate trigger message parsing from UI package (can't cross-import packages)
 // Matches: <!-- trigger:ID --> or <!-- trigger:ID source:sessionID -->
-const TRIGGER_PREFIX_RE = /^<!--\s*trigger:([\w-]+)(?:\s+source:[\w-]+)?\s*-->\n?/;
-function parseTriggerMessage(text: string): { triggerId: string; body: string } | null {
+const TRIGGER_PREFIX_RE = /^<!--\s*trigger:([\w-]+)(?:\s+source:([\w-]+))?\s*-->\n?/;
+function parseTriggerMessage(text: string): { triggerId: string; sourceSessionId?: string; body: string } | null {
     const match = text.match(TRIGGER_PREFIX_RE);
     if (!match) return null;
-    return { triggerId: match[1], body: text.slice(match[0].length) };
+    return { triggerId: match[1], sourceSessionId: match[2], body: text.slice(match[0].length) };
 }
 function isTriggerMessage(text: string): boolean {
     return TRIGGER_PREFIX_RE.test(text);
@@ -54,6 +54,7 @@ describe("trigger routing flow", () => {
             const parsed = parseTriggerMessage(rendered);
             expect(parsed).not.toBeNull();
             expect(parsed!.triggerId).toBe("trigger-abc-123");
+            expect(parsed!.sourceSessionId).toBe("child-session-1");
             expect(parsed!.body).toContain("Which database?");
         });
 
