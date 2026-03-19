@@ -27,6 +27,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { defaultStatePath } from "./daemon.js";
+import { setLogComponent, logInfo, logError } from "./logger.js";
 
 const RESTART_DELAY_BASE = 2_000;  // 2 s
 const RESTART_DELAY_MAX  = 60_000; // 60 s
@@ -91,7 +92,8 @@ export async function runSupervisor(_args: string[] = []): Promise<number> {
         // Best-effort — the daemon will create the file if it doesn't exist.
     }
 
-    console.log("pizzapi supervisor: starting runner daemon as subprocess…");
+    setLogComponent("supervisor");
+    logInfo("starting runner daemon as subprocess…");
 
     while (true) {
         const exitCode = await new Promise<number>((resolve) => {
@@ -106,7 +108,7 @@ export async function runSupervisor(_args: string[] = []): Promise<number> {
             });
 
             child.on("error", (err) => {
-                console.error("pizzapi supervisor: failed to spawn daemon child:", err);
+                logError(`failed to spawn daemon child: ${err}`);
                 resolve(1);
             });
         });
@@ -114,31 +116,31 @@ export async function runSupervisor(_args: string[] = []): Promise<number> {
         child = null;
 
         if (isShuttingDown) {
-            console.log("pizzapi supervisor: shutdown requested — exiting.");
+            logInfo("shutdown requested — exiting.");
             return 0;
         }
 
         if (exitCode === 0) {
-            console.log("pizzapi supervisor: daemon exited cleanly.");
+            logInfo("daemon exited cleanly.");
             return 0;
         }
 
         if (exitCode === 42) {
             // Daemon requested a self-restart (e.g. via /restart command).
-            console.log("pizzapi supervisor: daemon requested restart — re-spawning immediately…");
+            logInfo("daemon requested restart — re-spawning immediately…");
             restartDelay = RESTART_DELAY_BASE; // reset back-off
             continue;
         }
 
         // Crash or unexpected exit — apply back-off then restart.
-        console.error(
-            `pizzapi supervisor: daemon exited with code ${exitCode}. ` +
+        logError(
+            `daemon exited with code ${exitCode}. ` +
             `Restarting in ${(restartDelay / 1000).toFixed(0)}s…`
         );
         await new Promise((r) => setTimeout(r, restartDelay));
         restartDelay = Math.min(restartDelay * 2, RESTART_DELAY_MAX);
 
         if (isShuttingDown) return 0;
-        console.log("pizzapi supervisor: re-spawning daemon…");
+        logInfo("re-spawning daemon…");
     }
 }

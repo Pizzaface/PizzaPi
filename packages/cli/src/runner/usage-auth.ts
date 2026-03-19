@@ -1,4 +1,5 @@
 import type { AuthStorage } from "@mariozechner/pi-coding-agent";
+import { logAuth } from "./logger.js";
 
 export type RunnerAuthRecord = Record<string, unknown>;
 
@@ -41,8 +42,31 @@ export async function getRefreshedOAuthToken(authStorage: AuthStorage, providerI
         return getOAuthAccessToken(raw);
     }
 
+    // Snapshot pre-refresh state for diagnostic logging
+    const preExpires = typeof raw.expires === "number" ? raw.expires : 0;
+    const preAccessPrefix = typeof raw.access === "string" ? raw.access.slice(0, 8) : "?";
+    const wasExpired = Date.now() >= preExpires;
+
     // Use getApiKey() which handles OAuth token refresh + locking.
     const token = await authStorage.getApiKey(providerId);
+
+    // Log if a refresh actually occurred (access token changed)
+    const postRaw = authStorage.get(providerId);
+    if (isRecord(postRaw) && postRaw.type === "oauth") {
+        const postAccessPrefix = typeof postRaw.access === "string" ? postRaw.access.slice(0, 8) : "?";
+        const postExpires = typeof postRaw.expires === "number" ? postRaw.expires : 0;
+        if (preAccessPrefix !== postAccessPrefix) {
+            logAuth("token-refreshed", {
+                provider: providerId,
+                wasExpired: wasExpired ? "yes" : "no",
+                oldExpiresIn: `${Math.round((preExpires - Date.now()) / 1000)}s`,
+                newExpiresIn: `${Math.round((postExpires - Date.now()) / 1000)}s`,
+                oldTokenPrefix: preAccessPrefix,
+                newTokenPrefix: postAccessPrefix,
+            });
+        }
+    }
+
     return typeof token === "string" && token.trim().length > 0 ? token : null;
 }
 
