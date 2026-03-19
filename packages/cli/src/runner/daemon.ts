@@ -339,9 +339,10 @@ async function fetchGeminiUsageData(): Promise<ProviderUsageData | null> {
     try {
         const parsed = (typeof rawCred === "string"
             ? JSON.parse(rawCred)
-            : rawCred) as { token?: string; projectId?: string };
-        if (!parsed.token || !parsed.projectId) return null;
-        token = parsed.token;
+            : rawCred) as { token?: string; access?: string; projectId?: string };
+        const accessToken = parsed.token ?? parsed.access;
+        if (!accessToken || !parsed.projectId) return null;
+        token = accessToken;
         projectId = parsed.projectId;
     } catch {
         return null;
