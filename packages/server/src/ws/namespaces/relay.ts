@@ -17,6 +17,7 @@ import {
     registerTuiSession,
     getSharedSession,
     getLocalTuiSocket,
+    getLocalRunnerSocket,
     emitToRelaySession,
     updateSessionState,
     updateSessionHeartbeat,
@@ -728,11 +729,27 @@ export function registerRelayNamespace(io: SocketIOServer): void {
 
             console.log(`[sio/relay] cleanup_child_session: parent=${sessionId} child=${childSessionId}`);
 
-            // Disconnect the child's relay socket (triggers session_ended on runner)
-            const childSocket = getLocalTuiSocket(childSessionId);
-            if (childSocket?.connected) {
-                childSocket.disconnect(true);
+            // Terminate the child process via two complementary paths:
+            //
+            // 1. kill_session → runner: sends SIGTERM to the OS process.
+            //    This is the fastest path but is local-only — if the child's
+            //    runner is on a different cluster node the socket is undefined.
+            if (childSession.runnerId) {
+                const runnerSocket = getLocalRunnerSocket(childSession.runnerId);
+                if (runnerSocket?.connected) {
+                    runnerSocket.emit("kill_session", { sessionId: childSessionId });
+                }
             }
+
+            // 2. exec end_session → child relay socket (cluster-wide via Redis
+            //    adapter room broadcast).  Reaches the child on any node and
+            //    causes it to clear its follow-up grace timer and shut down
+            //    cleanly.  If the runner already sent SIGTERM in step 1 the
+            //    exec arrives to an already-exiting worker (benign no-op).
+            emitToRelaySession(childSessionId, "exec", {
+                id: `cleanup-${childSessionId}-${Date.now()}`,
+                command: "end_session",
+            });
 
             // Clean up child-index entry
             void removeChildSession(sessionId, childSessionId);
