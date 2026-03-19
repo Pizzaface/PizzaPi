@@ -7,6 +7,7 @@ import {
   ConversationEmptyState,
   ConversationExport,
   MessageCopyButton,
+  useConversationScrollRef,
 } from "@/components/ai-elements/conversation";
 import type { RelayMessage } from "@/components/session-viewer/types";
 import { SessionActionsProvider, type SessionActions } from "@/components/session-viewer/session-actions-context";
@@ -70,7 +71,7 @@ import { MultipleChoiceQuestions } from "@/components/ai-elements/multiple-choic
 import { PlanModePanel, type PlanModeAnswer } from "@/components/ai-elements/plan-mode";
 import { formatAnswersForAgent, type QuestionDisplayMode } from "@/lib/ask-user-questions";
 import { dismissNotificationsForSession } from "@/lib/push";
-import { AlertTriangleIcon, ArrowDownIcon, BookOpen, Bot, CheckCircle2, ChevronsUpDown, Circle, CircleDashed, Copy, Loader2, MessageSquare, OctagonX, PaperclipIcon, Pencil, Plus, Puzzle, ShieldAlert, Zap, Clock, X, Trash2, TerminalIcon, XCircle, FolderTree } from "lucide-react";
+import { AlertTriangleIcon, BookOpen, Bot, CheckCircle2, ChevronsUpDown, Circle, CircleDashed, Copy, Loader2, MessageSquare, OctagonX, PaperclipIcon, Pencil, Plus, Puzzle, ShieldAlert, Zap, Clock, X, Trash2, TerminalIcon, XCircle, FolderTree } from "lucide-react";
 import { AtMentionPopover } from "@/components/AtMentionPopover";
 import type { Entry as AtMentionEntry } from "@/hooks/useAtMentionFiles";
 import { McpToggleContext, type McpToggleHandler } from "@/components/session-viewer/McpToggleContext";
@@ -500,6 +501,53 @@ const SessionMessageItem = React.memo(({ message, activeToolCalls, agentActive, 
 
   return true;
 });
+
+/**
+ * Renders a 1px sentinel at the top of the message list and sets up an
+ * IntersectionObserver to load older messages when the user scrolls up.
+ *
+ * Must be rendered inside a <Conversation> (StickToBottom) so it can access
+ * the real scroll container via useConversationScrollRef(). Because it lives
+ * inside <Conversation key={sessionId}>, it remounts on session switch —
+ * automatically recreating the observer against the new DOM.
+ */
+function PaginationSentinel({ hasMore, onLoadMore }: { hasMore: boolean; onLoadMore: () => void }) {
+  const sentinelRef = React.useRef<HTMLDivElement | null>(null);
+  const scrollRef = useConversationScrollRef();
+
+  React.useEffect(() => {
+    const sentinel = sentinelRef.current;
+    const scroller = scrollRef.current;
+    if (!sentinel || !scroller || !hasMore) return;
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (!entry?.isIntersecting) return;
+        const prevScrollHeight = scroller.scrollHeight;
+        onLoadMore();
+        // After React re-renders with more items, restore scroll position so
+        // the user stays at the same message they were looking at.
+        requestAnimationFrame(() => {
+          scroller.scrollTop += scroller.scrollHeight - prevScrollHeight;
+        });
+      },
+      { root: scroller, threshold: 0 },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [hasMore, onLoadMore, scrollRef]);
+
+  return (
+    <>
+      <div ref={sentinelRef} className="h-px" />
+      {hasMore && (
+        <div className="py-2 text-center text-xs text-muted-foreground">
+          Scroll up for older messages
+        </div>
+      )}
+    </>
+  );
+}
 
 function SessionSkeleton() {
   return (
@@ -1391,7 +1439,6 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
 
   const PAGE_SIZE = 50;
 
-  const sentinelRef = React.useRef<HTMLDivElement | null>(null);
   const [renderedCount, setRenderedCount] = React.useState(PAGE_SIZE);
 
   // Reset window when session or message list changes significantly.
@@ -1405,35 +1452,9 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
   );
   const hasMore = visibleMessages.length > renderedCount;
 
-  // When the sentinel at the top enters the viewport, load the previous page
-  // while preserving the scroll position so the view doesn't jump.
-  // We find the scroll container from the DOM since StickToBottom doesn't expose it directly.
-  React.useEffect(() => {
-    const sentinel = sentinelRef.current;
-    if (!sentinel || !hasMore) return;
-
-    // Find the scroll container (StickToBottom's parent div with overflow-y-auto)
-    const scroller = document.querySelector<HTMLDivElement>(
-      '[role="log"][class*="overflow-y"]'
-    );
-    if (!scroller) return;
-
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        if (!entry?.isIntersecting) return;
-        const prevScrollHeight = scroller.scrollHeight;
-        setRenderedCount((c) => c + PAGE_SIZE);
-        // After React re-renders with more items, restore scroll position so
-        // the user stays at the same message they were looking at.
-        requestAnimationFrame(() => {
-          scroller.scrollTop += scroller.scrollHeight - prevScrollHeight;
-        });
-      },
-      { root: scroller, threshold: 0 },
-    );
-    observer.observe(sentinel);
-    return () => observer.disconnect();
-  }, [hasMore]);
+  const loadMoreMessages = React.useCallback(() => {
+    setRenderedCount((c) => c + PAGE_SIZE);
+  }, []);
 
   return (
     <SessionActionsProvider value={sessionActions}>
@@ -1645,13 +1666,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
         ) : (
           <Conversation key={sessionId}>
             <ConversationContent className="w-full py-2">
-              {/* Sentinel: scrolling up to this triggers loading older messages */}
-              <div ref={sentinelRef} className="h-px" />
-              {hasMore && (
-                <div className="py-2 text-center text-xs text-muted-foreground">
-                  Scroll up for older messages
-                </div>
-              )}
+              <PaginationSentinel hasMore={hasMore} onLoadMore={loadMoreMessages} />
               {renderedMessages.map((message, index) => (
                 <SessionMessageItem
                   key={message.key}

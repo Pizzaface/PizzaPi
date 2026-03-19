@@ -77,6 +77,16 @@ export const ConversationEmptyState = ({
   </div>
 );
 
+/**
+ * Hook to access the StickToBottom scroll container ref from within a
+ * <Conversation> tree. Used by the pagination sentinel to set up an
+ * IntersectionObserver rooted at the actual scrollable element.
+ */
+export function useConversationScrollRef() {
+  const { scrollRef } = useStickToBottomContext();
+  return scrollRef;
+}
+
 export type ConversationScrollButtonProps = ComponentProps<typeof Button>;
 
 export const ConversationScrollButton = ({
