@@ -143,6 +143,7 @@ export function extractSettingsFromCompose(content: string): ExtractedComposeSet
     if (trustProxyMatch?.[1]) {
         const val = trustProxyMatch[1].trim().toLowerCase();
         if (val === "true") result.trustProxy = true;
+        else if (val === "false") result.trustProxy = false;
     }
 
     // Proxy depth setting (active, non-commented line only)
@@ -452,9 +453,11 @@ function generateComposeFile(repoPath: string, config: WebConfig): string {
     // Persist any env-driven changes back to config.json
     saveWebConfig(config);
 
-    const trustProxyLine = config.trustProxy
+    const trustProxyLine = config.trustProxy === true
         ? `      - PIZZAPI_TRUST_PROXY=true\n`
-        : `      # - PIZZAPI_TRUST_PROXY=\n`;
+        : config.trustProxy === false
+            ? `      - PIZZAPI_TRUST_PROXY=false\n`
+            : `      # - PIZZAPI_TRUST_PROXY=\n`;
 
     const proxyDepthLine = config.proxyDepth && config.proxyDepth > 1
         ? `      - PIZZAPI_PROXY_DEPTH=${config.proxyDepth}\n`
