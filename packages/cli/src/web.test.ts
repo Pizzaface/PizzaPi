@@ -279,12 +279,13 @@ describe("resolveComposeMode", () => {
         expect(result.hubVersion).toBe("0.1.32");
     });
 
-    test("embedded mutable tag (latest) still uses if_not_present (tag is already committed)", () => {
-        // An operator who explicitly writes ":latest" in the image field has pinned that ref;
-        // pull_policy is if_not_present because the embedded tag takes precedence.
+    test("embedded mutable tag (latest) uses pull_policy: always", () => {
+        // An operator who writes "ghcr.io/acme/pizzapi:latest" in the image field intends to
+        // track the latest image.  Even though the tag is embedded in the ref, "latest" is a
+        // moving pointer and should be re-pulled on restart so the deployment stays current.
         const result = resolveComposeMode("/repo", { image: "ghcr.io/acme/pizzapi:latest", imageTag: "" });
         expect(result.imageLine).toContain("image: ghcr.io/acme/pizzapi:latest");
-        expect(result.imageLine).toContain("pull_policy: if_not_present");
+        expect(result.imageLine).toContain("pull_policy: always");
     });
 
     test("returns build mode when image is whitespace-only (P3 regression)", () => {

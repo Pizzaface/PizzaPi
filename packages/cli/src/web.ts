@@ -760,11 +760,15 @@ export function resolveComposeMode(repoPath: string, config: Pick<WebConfig, "im
         imageRef = `${imageRepo}:${resolvedTag}`;
     }
 
-    // Use `pull_policy: always` only for mutable tags (latest, main, stable)
-    // to ensure operators get updates. For pinned tags and digests, default to
-    // `if_not_present` so restarts succeed even when the registry is unreachable.
+    // Use `pull_policy: always` for mutable tags (latest, main, stable, …) so
+    // operators automatically receive new images on restart.  An embedded tag
+    // that resolves to a mutable name should also get `always` — the tag is
+    // already baked into the image reference, but the tag still tracks a moving
+    // pointer and needs to be re-pulled.  Digest-pinned references and semver
+    // tags default to `if_not_present` so restarts succeed even when the
+    // registry is unreachable.
     const mutableTags = new Set(["latest", "main", "stable", "dev", "nightly"]);
-    const pullPolicy = !hasDigest && !hasEmbeddedTag && mutableTags.has(resolvedTag) ? "always" : "if_not_present";
+    const pullPolicy = !hasDigest && mutableTags.has(resolvedTag) ? "always" : "if_not_present";
 
     return {
         buildBlock: "",

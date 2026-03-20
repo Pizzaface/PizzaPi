@@ -59,14 +59,34 @@ export async function getLatestNpmVersion(): Promise<string | null> {
     }
 }
 
+/**
+ * Tag values injected by `resolveComposeMode()` that carry no specific build
+ * information — source builds get "local", mutable-tag image deployments get
+ * the tag name itself (e.g. "latest", "main"). For these cases the server's
+ * own package.json version is more useful to operators than the vague label.
+ */
+const VAGUE_VERSIONS = new Set([
+    "local",
+    "local-build",
+    "latest",
+    "main",
+    "stable",
+    "dev",
+    "nightly",
+    "digest",
+]);
+
 export function getHubVersionInfo(): { image: string | null; version: string | null } {
     const image = process.env.PIZZAPI_HUB_IMAGE?.trim();
     const version = process.env.PIZZAPI_HUB_VERSION?.trim();
+    // Prefer the injected version for specific/pinned references (semver tags,
+    // etc.).  For vague labels injected by mutable-tag or source-build paths,
+    // fall back to the local package version so operators see the actual build
+    // number (e.g. "0.1.32") rather than "latest" or "local".
+    const effectiveVersion =
+        version && !VAGUE_VERSIONS.has(version) ? version : LOCAL_PACKAGE_VERSION;
     return {
         image: image ? image : null,
-        // Fall back to the package's own version so deployments that don't go
-        // through `pizza web` (docker/compose.yml, bun run dev) still surface
-        // a meaningful hub version in the UI rather than returning null.
-        version: version ? version : LOCAL_PACKAGE_VERSION,
+        version: effectiveVersion,
     };
 }
