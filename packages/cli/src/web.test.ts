@@ -268,6 +268,32 @@ describe("resolveComposeMode", () => {
         expect(result.imageLine).toContain("image: ghcr.io/acme/pizzapi:latest");
         expect(result.imageLine).toContain("pull_policy: always");
     });
+
+    test("uses embedded tag when image already contains a tag (P2 regression)", () => {
+        // "ghcr.io/acme/pizzapi:0.1.32" must NOT become "ghcr.io/acme/pizzapi:0.1.32:latest"
+        const result = resolveComposeMode("/repo", { image: "ghcr.io/acme/pizzapi:0.1.32", imageTag: "latest" });
+        expect(result.imageLine).toContain("image: ghcr.io/acme/pizzapi:0.1.32");
+        expect(result.imageLine).not.toContain("0.1.32:latest");
+        expect(result.imageLine).toContain("pull_policy: if_not_present");
+        expect(result.hubImage).toBe("ghcr.io/acme/pizzapi:0.1.32");
+        expect(result.hubVersion).toBe("0.1.32");
+    });
+
+    test("embedded mutable tag (latest) still uses if_not_present (tag is already committed)", () => {
+        // An operator who explicitly writes ":latest" in the image field has pinned that ref;
+        // pull_policy is if_not_present because the embedded tag takes precedence.
+        const result = resolveComposeMode("/repo", { image: "ghcr.io/acme/pizzapi:latest", imageTag: "" });
+        expect(result.imageLine).toContain("image: ghcr.io/acme/pizzapi:latest");
+        expect(result.imageLine).toContain("pull_policy: if_not_present");
+    });
+
+    test("returns build mode when image is whitespace-only (P3 regression)", () => {
+        // A whitespace-only image value must NOT flip into image mode
+        const result = resolveComposeMode("/repo", { image: "   ", imageTag: "latest" });
+        expect(result.buildBlock).toContain("context: /repo");
+        expect(result.imageLine).toBe("");
+        expect(result.hubImage).toBe("local-build");
+    });
 });
 
 describe("parseArgs", () => {

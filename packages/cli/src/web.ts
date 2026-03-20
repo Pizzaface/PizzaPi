@@ -737,14 +737,34 @@ export function resolveComposeMode(repoPath: string, config: Pick<WebConfig, "im
     // If the image reference already contains a digest (@sha256:...), use it as-is
     // — appending a tag to a digest reference produces an invalid image ref.
     const hasDigest = imageRepo.includes("@");
-    const imageTag = config.imageTag.trim() || "latest";
-    const imageRef = hasDigest ? imageRepo : `${imageRepo}:${imageTag}`;
+
+    // If the image reference already contains a tag (e.g. "ghcr.io/acme/pizzapi:0.1.32"),
+    // use it as-is — appending another ":tag" would produce an invalid image ref.
+    // A tag is present when the portion after the last "/" contains a ":".
+    const lastSlash = imageRepo.lastIndexOf("/");
+    const afterSlash = lastSlash === -1 ? imageRepo : imageRepo.slice(lastSlash + 1);
+    const colonInLastPart = afterSlash.indexOf(":");
+    const hasEmbeddedTag = !hasDigest && colonInLastPart !== -1;
+
+    let imageRef: string;
+    let resolvedTag: string;
+    if (hasDigest) {
+        imageRef = imageRepo;
+        resolvedTag = "digest";
+    } else if (hasEmbeddedTag) {
+        // Tag already baked in — use as-is, ignore config.imageTag
+        imageRef = imageRepo;
+        resolvedTag = afterSlash.slice(colonInLastPart + 1);
+    } else {
+        resolvedTag = config.imageTag.trim() || "latest";
+        imageRef = `${imageRepo}:${resolvedTag}`;
+    }
 
     // Use `pull_policy: always` only for mutable tags (latest, main, stable)
     // to ensure operators get updates. For pinned tags and digests, default to
     // `if_not_present` so restarts succeed even when the registry is unreachable.
     const mutableTags = new Set(["latest", "main", "stable", "dev", "nightly"]);
-    const pullPolicy = !hasDigest && mutableTags.has(imageTag) ? "always" : "if_not_present";
+    const pullPolicy = !hasDigest && !hasEmbeddedTag && mutableTags.has(resolvedTag) ? "always" : "if_not_present";
 
     return {
         buildBlock: "",
@@ -752,7 +772,7 @@ export function resolveComposeMode(repoPath: string, config: Pick<WebConfig, "im
     pull_policy: ${pullPolicy}
 `,
         hubImage: imageRef,
-        hubVersion: hasDigest ? imageRepo.split("@")[1]?.slice(0, 12) ?? "digest" : imageTag,
+        hubVersion: hasDigest ? imageRepo.split("@")[1]?.slice(0, 12) ?? "digest" : resolvedTag,
     };
 }
 
@@ -1150,7 +1170,7 @@ export async function runWeb(args: string[]): Promise<void> {
         saveWebConfig(config);
     }
 
-    const useImageMode = config.image.length > 0;
+    const useImageMode = config.image.trim().length > 0;
     const repoPath = useImageMode ? "" : getRepoPath();
 
     let prebuiltUi = false;
