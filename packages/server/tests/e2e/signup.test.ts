@@ -13,6 +13,8 @@ import { runAllMigrations } from "../../src/migrations.js";
 import { handleFetch } from "../../src/handler.js";
 import { initStateRedis } from "../../src/ws/sio-state.js";
 
+// Save and restore PIZZAPI_TRUST_PROXY so we don't pollute other test files
+const savedTrustProxy = process.env.PIZZAPI_TRUST_PROXY;
 process.env.PIZZAPI_TRUST_PROXY = "true";
 
 // ── Test setup ────────────────────────────────────────────────────────────────
@@ -44,6 +46,12 @@ beforeAll(async () => {
 });
 
 afterAll(() => {
+    // Restore PIZZAPI_TRUST_PROXY to avoid env pollution across test files
+    if (savedTrustProxy === undefined) {
+        delete process.env.PIZZAPI_TRUST_PROXY;
+    } else {
+        process.env.PIZZAPI_TRUST_PROXY = savedTrustProxy;
+    }
     try { rmSync(tmpDir, { recursive: true, force: true }); } catch {}
 });
 

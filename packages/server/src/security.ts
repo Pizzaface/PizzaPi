@@ -179,7 +179,13 @@ export function getClientIp(req: Request): string {
             //   depth=2: two proxies — use second-from-right (original client)
             const parts = forwardedFor.split(",").map(s => s.trim()).filter(Boolean);
             const depth = Math.max(1, parseInt(process.env.PIZZAPI_PROXY_DEPTH || "1", 10) || 1);
-            const index = Math.max(0, parts.length - depth);
+            // Fail closed: if depth exceeds the number of XFF entries, the chain
+            // is shorter than expected — an upstream proxy may be missing or
+            // misconfigured. Trusting index 0 would let clients spoof their IP.
+            if (depth > parts.length) {
+                return clientIp;
+            }
+            const index = parts.length - depth;
             return parts[index] || clientIp;
         }
     }

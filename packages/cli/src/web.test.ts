@@ -31,7 +31,7 @@ services:
       - VAPID_PUBLIC_KEY={{VAPID_PUBLIC_KEY}}
       - VAPID_PRIVATE_KEY={{VAPID_PRIVATE_KEY}}
       - VAPID_SUBJECT={{VAPID_SUBJECT}}
-{{EXTRA_ORIGINS_LINE}}{{TRUST_PROXY_LINE}}    volumes:
+{{EXTRA_ORIGINS_LINE}}{{TRUST_PROXY_LINE}}{{PROXY_DEPTH_LINE}}    volumes:
       - {{DATA_DIR}}:/app/data:Z
     depends_on:
       - redis
@@ -66,7 +66,8 @@ describe("web.ts compose template", () => {
             .replace(/\{\{VAPID_PRIVATE_KEY}}/g, "TestPrivateKey456")
             .replace(/\{\{VAPID_SUBJECT}}/g, "mailto:admin@pizzapi.local")
             .replace(/\{\{EXTRA_ORIGINS_LINE}}/g, "      - PIZZAPI_EXTRA_ORIGINS=https://example.com\n")
-            .replace(/\{\{TRUST_PROXY_LINE}}/g, "      # - PIZZAPI_TRUST_PROXY=\n");
+            .replace(/\{\{TRUST_PROXY_LINE}}/g, "      # - PIZZAPI_TRUST_PROXY=\n")
+            .replace(/\{\{PROXY_DEPTH_LINE}}/g, "      # - PIZZAPI_PROXY_DEPTH=\n");
 
         // No unsubstituted placeholders remain
         expect(composed).not.toContain("{{");
@@ -96,7 +97,8 @@ describe("web.ts compose template", () => {
             .replace(/\{\{VAPID_PRIVATE_KEY}}/g, "key")
             .replace(/\{\{VAPID_SUBJECT}}/g, "mailto:test@test.com")
             .replace(/\{\{EXTRA_ORIGINS_LINE}}/g, "      # - PIZZAPI_EXTRA_ORIGINS=\n")
-            .replace(/\{\{TRUST_PROXY_LINE}}/g, "      # - PIZZAPI_TRUST_PROXY=\n");
+            .replace(/\{\{TRUST_PROXY_LINE}}/g, "      # - PIZZAPI_TRUST_PROXY=\n")
+            .replace(/\{\{PROXY_DEPTH_LINE}}/g, "      # - PIZZAPI_PROXY_DEPTH=\n");
 
         expect(composed).toContain("# - PIZZAPI_EXTRA_ORIGINS=");
         expect(composed).not.toContain("{{");

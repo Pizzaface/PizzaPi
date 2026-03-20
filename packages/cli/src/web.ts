@@ -31,6 +31,10 @@ export interface WebConfig {
     extraOrigins: string;
     /** Secret key used by better-auth for session signing (persisted). */
     betterAuthSecret: string;
+    /** Whether to trust X-Forwarded-For headers from a reverse proxy (persisted). */
+    trustProxy?: boolean;
+    /** Number of trusted proxy hops for X-Forwarded-For (persisted). */
+    proxyDepth?: number;
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -78,6 +82,8 @@ export interface ExtractedComposeSettings {
     extraOrigins?: string;
     port?: number;
     betterAuthSecret?: string;
+    trustProxy?: boolean;
+    proxyDepth?: number;
 }
 
 /** Extract all user settings from compose.yml content (pure function, exported for testing) */
@@ -130,6 +136,20 @@ export function extractSettingsFromCompose(content: string): ExtractedComposeSet
         if (!isNaN(p) && p > 0 && p <= 65535) {
             result.port = p;
         }
+    }
+
+    // Trust proxy setting (active, non-commented line only)
+    const trustProxyMatch = content.match(/^\s*-\s+PIZZAPI_TRUST_PROXY=(.+)/m);
+    if (trustProxyMatch?.[1]) {
+        const val = trustProxyMatch[1].trim().toLowerCase();
+        if (val === "true") result.trustProxy = true;
+    }
+
+    // Proxy depth setting (active, non-commented line only)
+    const proxyDepthMatch = content.match(/^\s*-\s+PIZZAPI_PROXY_DEPTH=(.+)/m);
+    if (proxyDepthMatch?.[1]) {
+        const val = parseInt(proxyDepthMatch[1].trim(), 10);
+        if (!isNaN(val) && val >= 1) result.proxyDepth = val;
     }
 
     return result;
@@ -207,6 +227,14 @@ function migrateLegacySettings(): Partial<WebConfig> {
                 migrated.betterAuthSecret = extracted.betterAuthSecret;
                 sources.push("compose.yml (betterAuthSecret)");
             }
+            if (extracted.trustProxy != null) {
+                migrated.trustProxy = extracted.trustProxy;
+                sources.push("compose.yml (trustProxy)");
+            }
+            if (extracted.proxyDepth != null) {
+                migrated.proxyDepth = extracted.proxyDepth;
+                sources.push("compose.yml (proxyDepth)");
+            }
         } catch { /* can't read */ }
     }
 
@@ -267,6 +295,8 @@ export function loadWebConfig(): WebConfig {
     if (legacy.vapidSubject) config.vapidSubject = legacy.vapidSubject;
     if (legacy.extraOrigins) config.extraOrigins = legacy.extraOrigins;
     if (legacy.port) config.port = legacy.port;
+    if (legacy.trustProxy != null) config.trustProxy = legacy.trustProxy;
+    if (legacy.proxyDepth != null) config.proxyDepth = legacy.proxyDepth;
 
     if (legacy.betterAuthSecret) {
         config.betterAuthSecret = legacy.betterAuthSecret;
@@ -375,7 +405,7 @@ services:
       - VAPID_PUBLIC_KEY={{VAPID_PUBLIC_KEY}}
       - VAPID_PRIVATE_KEY={{VAPID_PRIVATE_KEY}}
       - VAPID_SUBJECT={{VAPID_SUBJECT}}
-{{EXTRA_ORIGINS_LINE}}{{TRUST_PROXY_LINE}}    volumes:
+{{EXTRA_ORIGINS_LINE}}{{TRUST_PROXY_LINE}}{{PROXY_DEPTH_LINE}}    volumes:
       - {{DATA_DIR}}:/app/data:Z
     depends_on:
       - redis
@@ -401,11 +431,34 @@ function generateComposeFile(repoPath: string, config: WebConfig): string {
         ? `      - PIZZAPI_EXTRA_ORIGINS=${config.extraOrigins}\n`
         : `      # - PIZZAPI_EXTRA_ORIGINS=\n`;
 
-    // Pass PIZZAPI_TRUST_PROXY through to the container if set in the environment
-    const trustProxy = process.env.PIZZAPI_TRUST_PROXY;
-    const trustProxyLine = trustProxy
-        ? `      - PIZZAPI_TRUST_PROXY=${trustProxy}\n`
+    // PIZZAPI_TRUST_PROXY: env var overrides config, and gets persisted back.
+    // This ensures `PIZZAPI_TRUST_PROXY=true pizza web` is remembered on subsequent runs.
+    const envTrustProxy = process.env.PIZZAPI_TRUST_PROXY?.toLowerCase();
+    if (envTrustProxy === "true") {
+        config.trustProxy = true;
+    } else if (envTrustProxy === "false") {
+        config.trustProxy = false;
+    }
+
+    // PIZZAPI_PROXY_DEPTH: env var overrides config, and gets persisted back.
+    const envProxyDepth = process.env.PIZZAPI_PROXY_DEPTH;
+    if (envProxyDepth) {
+        const parsed = parseInt(envProxyDepth, 10);
+        if (!isNaN(parsed) && parsed >= 1) {
+            config.proxyDepth = parsed;
+        }
+    }
+
+    // Persist any env-driven changes back to config.json
+    saveWebConfig(config);
+
+    const trustProxyLine = config.trustProxy
+        ? `      - PIZZAPI_TRUST_PROXY=true\n`
         : `      # - PIZZAPI_TRUST_PROXY=\n`;
+
+    const proxyDepthLine = config.proxyDepth && config.proxyDepth > 1
+        ? `      - PIZZAPI_PROXY_DEPTH=${config.proxyDepth}\n`
+        : `      # - PIZZAPI_PROXY_DEPTH=\n`;
 
     const compose = template
         .replace(/\{\{REPO_PATH}}/g, repoPath)
@@ -416,7 +469,8 @@ function generateComposeFile(repoPath: string, config: WebConfig): string {
         .replace(/\{\{VAPID_SUBJECT}}/g, config.vapidSubject)
         .replace(/\{\{BETTER_AUTH_SECRET}}/g, config.betterAuthSecret)
         .replace(/\{\{EXTRA_ORIGINS_LINE}}/g, extraOriginsLine)
-        .replace(/\{\{TRUST_PROXY_LINE}}/g, trustProxyLine);
+        .replace(/\{\{TRUST_PROXY_LINE}}/g, trustProxyLine)
+        .replace(/\{\{PROXY_DEPTH_LINE}}/g, proxyDepthLine);
 
     // Only write if changed
     const existing = existsSync(composePath) ? readFileSync(composePath, "utf-8") : null;

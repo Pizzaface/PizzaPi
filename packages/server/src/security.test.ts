@@ -268,6 +268,20 @@ describe("getClientIp", () => {
         delete process.env.PIZZAPI_PROXY_DEPTH;
     });
 
+    test("fails closed when PIZZAPI_PROXY_DEPTH exceeds XFF chain length", () => {
+        process.env.PIZZAPI_TRUST_PROXY = "true";
+        process.env.PIZZAPI_PROXY_DEPTH = "3";
+        // Only 2 hops in the chain but depth expects 3 — the chain is shorter
+        // than expected, so we can't safely identify the real client.
+        const req = makeReq({
+            "x-pizzapi-client-ip": "172.17.0.1",
+            "x-forwarded-for": "203.0.113.50, 198.51.100.5",
+        });
+        // Should fall back to direct client IP (fail closed)
+        expect(getClientIp(req)).toBe("172.17.0.1");
+        delete process.env.PIZZAPI_PROXY_DEPTH;
+    });
+
     test("single-entry XFF returns that entry regardless of depth", () => {
         delete process.env.PIZZAPI_TRUST_PROXY;
         delete process.env.PIZZAPI_PROXY_DEPTH;
