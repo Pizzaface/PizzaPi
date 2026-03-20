@@ -1,7 +1,6 @@
-/**
- * Stub for Claude Code bridge session spawning.
- * Real implementation arrives in Plan 2.
- */
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+
 export interface ClaudeCodeSpawnOptions {
   sessionId: string;
   apiKey: string;
@@ -13,10 +12,26 @@ export interface ClaudeCodeSpawnOptions {
   model?: { provider: string; id: string };
 }
 
+const BRIDGE_SCRIPT = join(
+  fileURLToPath(new URL(".", import.meta.url)),
+  "claude-code-bridge.ts",
+);
+
 export function spawnClaudeCodeSession(opts: ClaudeCodeSpawnOptions): void {
-  console.warn(
-    `[claude-code-bridge] spawnClaudeCodeSession called for session ${opts.sessionId} — ` +
-    `not yet implemented. Bridge will not start.`
-  );
-  // TODO(Plan 2): spawn the bridge process here
+  const proc = Bun.spawn(["bun", BRIDGE_SCRIPT], {
+    cwd: opts.cwd ?? process.cwd(),
+    stdin: "ignore",
+    stdout: "inherit",
+    stderr: "inherit",
+    env: {
+      ...process.env,
+      PIZZAPI_SESSION_ID: opts.sessionId,
+      PIZZAPI_WORKER_CWD: opts.cwd ?? process.cwd(),
+      PIZZAPI_API_KEY: opts.apiKey,
+      PIZZAPI_RELAY_URL: opts.relayUrl,
+      ...(opts.parentSessionId ? { PIZZAPI_WORKER_PARENT_SESSION_ID: opts.parentSessionId } : {}),
+    },
+  });
+
+  console.log(`[daemon] spawned Claude Code bridge pid=${proc.pid} session=${opts.sessionId}`);
 }

@@ -1,16 +1,20 @@
-import { test, expect, spyOn } from "bun:test";
-import { spawnClaudeCodeSession } from "./claude-code-bridge-spawn.js";
+import { test, expect, mock } from "bun:test";
 
-test("spawnClaudeCodeSession stub logs a warning and does not throw", () => {
-  const warn = spyOn(console, "warn").mockImplementation(() => {});
+test("spawnClaudeCodeSession does not throw with valid options", async () => {
+  // Mock Bun.spawn to avoid actually spawning a process
+  const origSpawn = Bun.spawn;
+  (Bun as any).spawn = mock(() => ({ pid: 12345, exited: Promise.resolve(0) }));
+
+  const { spawnClaudeCodeSession } = await import("./claude-code-bridge-spawn.js");
+
   expect(() =>
     spawnClaudeCodeSession({
-      sessionId: "test-session-id",
+      sessionId: "test-session",
       apiKey: "test-key",
       relayUrl: "ws://localhost:7492",
       cwd: "/tmp",
     })
   ).not.toThrow();
-  expect(warn).toHaveBeenCalledWith(expect.stringContaining("not yet implemented"));
-  warn.mockRestore();
+
+  (Bun as any).spawn = origSpawn;
 });
