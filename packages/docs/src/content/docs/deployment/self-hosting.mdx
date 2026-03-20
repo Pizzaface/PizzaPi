@@ -225,7 +225,15 @@ docker compose -f docker/compose.yml up -d
 
 ### Non-Loopback Proxies
 
-If your reverse proxy is on a **different host or Docker bridge network** (e.g. Traefik on a Docker overlay network, or a cloud load balancer), set `PIZZAPI_TRUST_PROXY=true`:
+If your reverse proxy is on a **different host or Docker bridge network** (e.g. Traefik on a Docker overlay network, or a cloud load balancer), set `PIZZAPI_TRUST_PROXY=true`.
+
+The simplest approach is to pass the variable inline — it will be forwarded to the Docker container:
+
+```bash
+PIZZAPI_TRUST_PROXY=true pizzapi web
+```
+
+Alternatively, add it to `docker/compose.override.yml` and pass **both** compose files explicitly (Docker only auto-merges `compose.override.yml` when you omit `-f`):
 
 ```yaml
 # docker/compose.override.yml
@@ -235,10 +243,8 @@ services:
       PIZZAPI_TRUST_PROXY: "true"
 ```
 
-Or pass the variable when launching with `pizzapi web` (it will be forwarded to the Docker container):
-
 ```bash
-PIZZAPI_TRUST_PROXY=true pizzapi web
+docker compose -f docker/compose.yml -f docker/compose.override.yml up -d
 ```
 
 <Aside type="caution">
@@ -249,22 +255,37 @@ PIZZAPI_TRUST_PROXY=true pizzapi web
 
 By default, PizzaPi uses the **rightmost** `X-Forwarded-For` entry — the IP appended by the directly-connected proxy. This is safe against client spoofing for single-proxy setups.
 
-If you have **multiple trusted proxy hops** (e.g. CDN → nginx → PizzaPi), set `PIZZAPI_PROXY_DEPTH` to the number of trusted proxies:
+If you have **multiple trusted proxy hops** (e.g. CDN → nginx → PizzaPi), set `PIZZAPI_PROXY_DEPTH` to the number of **intermediate** hops between the outermost trusted proxy and the real client:
+
+```bash
+# CDN + local reverse proxy = 1 intermediate hop
+PIZZAPI_TRUST_PROXY=true PIZZAPI_PROXY_DEPTH=1 pizzapi web
+```
+
+Or with both compose files explicitly (required when using `-f`):
 
 ```yaml
-# docker/compose.override.yml — CDN + local proxy = 2 hops
+# docker/compose.override.yml — CDN + local proxy = 1 intermediate hop
 services:
   server:
     environment:
       PIZZAPI_TRUST_PROXY: "true"
-      PIZZAPI_PROXY_DEPTH: "2"
+      PIZZAPI_PROXY_DEPTH: "1"
 ```
 
-| Depth | Use case | XFF entry used |
+```bash
+docker compose -f docker/compose.yml -f docker/compose.override.yml up -d
+```
+
+| Depth | Topology | XFF entry used |
 |-------|----------|----------------|
-| `1` (default) | Single proxy (Caddy, nginx, Traefik) | Rightmost |
-| `2` | CDN + local proxy | Second from right |
-| `N` | N trusted hops | Nth from right |
+| `0` (default) | Single proxy (Caddy, nginx, Traefik) | Rightmost |
+| `1` | CDN + local proxy (2 total hops) | Second from right |
+| `N` | N+1 total trusted hops | N positions from the right |
+
+:::note
+`PIZZAPI_PROXY_DEPTH` counts **intermediate** hops, not total proxies. A single reverse proxy uses `depth=0` (the default). If in doubt, leave it unset.
+:::
 
 ---
 

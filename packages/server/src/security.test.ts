@@ -250,16 +250,16 @@ describe("getClientIp", () => {
             "x-pizzapi-client-ip": "172.17.0.1",
             "x-forwarded-for": "203.0.113.99, 10.0.0.1",
         });
-        // Right-most entry (10.0.0.1) is the proxy-appended real client
+        // Right-most entry (10.0.0.1) is the proxy-appended real client (depth=0 default)
         expect(getClientIp(req)).toBe("10.0.0.1");
     });
 
-    test("PIZZAPI_PROXY_DEPTH=2 uses second-from-right for multi-proxy chains", () => {
+    test("PIZZAPI_PROXY_DEPTH=1 uses second-from-right for multi-proxy chains", () => {
         process.env.PIZZAPI_TRUST_PROXY = "true";
-        process.env.PIZZAPI_PROXY_DEPTH = "2";
+        process.env.PIZZAPI_PROXY_DEPTH = "1";
         // CDN → nginx → PizzaPi:
         //   XFF: <spoofed>, <real-client>, <CDN-IP>
-        // depth=2 → parts[length - 2] = real-client
+        // depth=1 (1 intermediate hop) → parts[length - 1 - 1] = parts[length - 2] = real-client
         const req = makeReq({
             "x-pizzapi-client-ip": "172.17.0.1",
             "x-forwarded-for": "1.2.3.4, 203.0.113.50, 198.51.100.5",
@@ -271,8 +271,8 @@ describe("getClientIp", () => {
     test("fails closed when PIZZAPI_PROXY_DEPTH exceeds XFF chain length", () => {
         process.env.PIZZAPI_TRUST_PROXY = "true";
         process.env.PIZZAPI_PROXY_DEPTH = "3";
-        // Only 2 hops in the chain but depth expects 3 — the chain is shorter
-        // than expected, so we can't safely identify the real client.
+        // Only 2 hops in the chain but depth expects 3 — depth >= parts.length,
+        // so we can't safely identify the real client.
         const req = makeReq({
             "x-pizzapi-client-ip": "172.17.0.1",
             "x-forwarded-for": "203.0.113.50, 198.51.100.5",
@@ -282,13 +282,29 @@ describe("getClientIp", () => {
         delete process.env.PIZZAPI_PROXY_DEPTH;
     });
 
-    test("single-entry XFF returns that entry regardless of depth", () => {
+    test("fails closed when PIZZAPI_PROXY_DEPTH equals XFF chain length (padding attack)", () => {
+        process.env.PIZZAPI_TRUST_PROXY = "true";
+        process.env.PIZZAPI_PROXY_DEPTH = "2";
+        // Attack: single-proxy setup mis-configured with depth=2.
+        // Attacker pads XFF to exactly 2 entries so parts.length - 2 - 1 would land
+        // on a spoofed left-side value. The strict >= fail-closed catches this.
+        const req = makeReq({
+            "x-pizzapi-client-ip": "172.17.0.1",
+            "x-forwarded-for": "1.2.3.4, 5.6.7.8",
+        });
+        // depth=2 >= parts.length=2 → fail closed to the peer IP
+        expect(getClientIp(req)).toBe("172.17.0.1");
+        delete process.env.PIZZAPI_PROXY_DEPTH;
+    });
+
+    test("single-entry XFF returns that entry (depth=0 default)", () => {
         delete process.env.PIZZAPI_TRUST_PROXY;
         delete process.env.PIZZAPI_PROXY_DEPTH;
         const req = makeReq({
             "x-pizzapi-client-ip": "127.0.0.1",
             "x-forwarded-for": "203.0.113.50",
         });
+        // depth=0 (default): parts.length=1 > depth=0 → proceed, index=0 → client_ip
         expect(getClientIp(req)).toBe("203.0.113.50");
     });
 
@@ -338,15 +354,17 @@ describe("getClientIp", () => {
         expect(getClientIp(req)).toBe("198.51.100.1");
     });
 
-    test("PIZZAPI_TRUST_PROXY=true does NOT trust XFF from public-IP peers (prevents spoofing)", () => {
-        // Security: if the backend port is directly reachable alongside the proxy,
-        // a public-IP client must NOT be able to spoof its IP via XFF.
+    test("PIZZAPI_TRUST_PROXY=true trusts XFF from public-IP peers (explicit cloud LB opt-in)", () => {
+        // When the operator explicitly sets PIZZAPI_TRUST_PROXY=true they are asserting
+        // that all traffic arrives via a trusted proxy — including public cloud load
+        // balancers whose peer address is a public IP.  The explicit opt-in is the
+        // authorization; no additional peer-IP check is applied.
         process.env.PIZZAPI_TRUST_PROXY = "true";
         const req = makeReq({
             "x-pizzapi-client-ip": "203.0.113.50",
             "x-forwarded-for": "198.51.100.1",
         });
-        expect(getClientIp(req)).toBe("203.0.113.50");
+        expect(getClientIp(req)).toBe("198.51.100.1");
     });
 
     test("PIZZAPI_TRUST_PROXY=true trusts XFF from 10.x.x.x peers (private Docker/LAN proxy)", () => {

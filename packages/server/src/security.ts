@@ -173,20 +173,19 @@ function isPrivateOrLoopbackIp(rawIp: string): boolean {
  * trusted because the server may be directly accessible on the LAN.
  *
  * The `PIZZAPI_TRUST_PROXY` env var can explicitly enable/disable proxy mode:
- * - Set to "true" for non-loopback proxies (e.g. Docker bridge networks like 172.x).
- *   XFF is trusted only when the peer is loopback or private — direct connections
- *   from public IPs are never trusted even with this flag, preventing IP spoofing
- *   if the backend port is accidentally exposed alongside the proxy.
+ * - Set to "true" for any proxy setup, including cloud load balancers with public IPs.
+ *   XFF is trusted unconditionally when the operator explicitly opts in. This is the
+ *   right setting for cloud load balancers where the peer IP is a public address.
  * - Set to "false" to disable proxy detection entirely (overrides auto-detection)
  */
 export function getClientIp(req: Request): string {
     const clientIp = req.headers.get("x-pizzapi-client-ip") || "unknown";
     
     // PIZZAPI_TRUST_PROXY is a three-state toggle:
-    //   "true"  → trust x-forwarded-for when peer is loopback OR any private/internal range.
-    //             This enables Docker bridge proxy support (172.x, 10.x, 192.168.x) while
-    //             still refusing to trust XFF from public-IP peers (prevents IP spoofing
-    //             if the backend port is directly reachable by internet clients).
+    //   "true"  → trust x-forwarded-for unconditionally, regardless of peer address.
+    //             Use this when the operator has explicitly configured a reverse proxy
+    //             (including cloud load balancers with public IPs). The operator's
+    //             explicit opt-in is the authorization — no peer-IP check is applied.
     //   "false" → never trust x-forwarded-for, even for loopback (disables auto-detection)
     //   unset   → auto-detect: trust x-forwarded-for only if directly connected to loopback
     const envTrustProxy = process.env.PIZZAPI_TRUST_PROXY?.toLowerCase();
@@ -195,10 +194,9 @@ export function getClientIp(req: Request): string {
         // Explicitly disabled — never trust XFF.
         trustProxy = false;
     } else if (envTrustProxy === "true") {
-        // Explicitly enabled — trust XFF only from private/loopback peers.
-        // This supports Docker bridge proxies (172.x, 10.x) while refusing to trust
-        // XFF from public-IP peers, preventing spoofing if the backend is exposed.
-        trustProxy = clientIp !== "unknown" && isPrivateOrLoopbackIp(clientIp);
+        // Explicitly enabled — trust XFF from any peer. The operator's explicit opt-in
+        // covers all proxy topologies, including cloud load balancers with public IPs.
+        trustProxy = true;
     } else {
         // Auto-detect (default) — only trust XFF from loopback peers.
         // Private ranges are NOT auto-trusted since the server may be LAN-accessible.
@@ -218,18 +216,27 @@ export function getClientIp(req: Request): string {
             //
             // For multi-proxy chains (e.g. CDN → nginx → PizzaPi), the right-most entry
             // is the intermediate proxy, not the original client. Use PIZZAPI_PROXY_DEPTH
-            // to specify how many trusted proxy hops exist:
-            //   depth=1 (default): single proxy — use right-most
-            //   depth=2: two proxies — use second-from-right (original client)
+            // to specify how many intermediate proxy hops sit between the peer and the
+            // original client (0 = no intermediate hops, i.e. a single proxy; default):
+            //   depth=0 (default): single proxy — use right-most entry
+            //   depth=1: two proxies (CDN + local) — use second-from-right
+            //   depth=N: N+1 total proxies — use entry N positions from the right
+            //
+            // Fail-closed: require strictly MORE XFF entries than depth.
+            // When depth >= parts.length the computed index would land on or before the
+            // left-most entry, which a client can freely inject (padding attack): an
+            // attacker who knows the configured depth can pad XFF to exactly `depth`
+            // entries, making parts.length - depth - 1 equal to a spoofed left-side
+            // value. Requiring parts.length > depth ensures at least one
+            // proxy-appended entry sits to the right of the selected position.
+            // A misconfigured depth (set too high) therefore fails closed to the
+            // direct peer IP rather than returning an attacker-controlled value.
             const parts = forwardedFor.split(",").map(s => s.trim()).filter(Boolean);
-            const depth = Math.max(1, parseInt(process.env.PIZZAPI_PROXY_DEPTH || "1", 10) || 1);
-            // Fail closed: if depth exceeds the number of XFF entries, the chain
-            // is shorter than expected — an upstream proxy may be missing or
-            // misconfigured. Trusting index 0 would let clients spoof their IP.
-            if (depth > parts.length) {
+            const depth = Math.max(0, parseInt(process.env.PIZZAPI_PROXY_DEPTH || "0", 10) || 0);
+            if (depth >= parts.length) {
                 return clientIp;
             }
-            const index = parts.length - depth;
+            const index = parts.length - 1 - depth;
             return parts[index] || clientIp;
         }
     }
