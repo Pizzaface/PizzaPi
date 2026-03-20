@@ -338,10 +338,30 @@ describe("getClientIp", () => {
         expect(getClientIp(req)).toBe("198.51.100.1");
     });
 
-    test("PIZZAPI_TRUST_PROXY=true forces XFF trust even for public IPs", () => {
+    test("PIZZAPI_TRUST_PROXY=true does NOT trust XFF from public-IP peers (prevents spoofing)", () => {
+        // Security: if the backend port is directly reachable alongside the proxy,
+        // a public-IP client must NOT be able to spoof its IP via XFF.
         process.env.PIZZAPI_TRUST_PROXY = "true";
         const req = makeReq({
             "x-pizzapi-client-ip": "203.0.113.50",
+            "x-forwarded-for": "198.51.100.1",
+        });
+        expect(getClientIp(req)).toBe("203.0.113.50");
+    });
+
+    test("PIZZAPI_TRUST_PROXY=true trusts XFF from 10.x.x.x peers (private Docker/LAN proxy)", () => {
+        process.env.PIZZAPI_TRUST_PROXY = "true";
+        const req = makeReq({
+            "x-pizzapi-client-ip": "10.0.0.1",
+            "x-forwarded-for": "198.51.100.1",
+        });
+        expect(getClientIp(req)).toBe("198.51.100.1");
+    });
+
+    test("PIZZAPI_TRUST_PROXY=true trusts XFF from 192.168.x.x peers (private proxy)", () => {
+        process.env.PIZZAPI_TRUST_PROXY = "true";
+        const req = makeReq({
+            "x-pizzapi-client-ip": "192.168.1.1",
             "x-forwarded-for": "198.51.100.1",
         });
         expect(getClientIp(req)).toBe("198.51.100.1");

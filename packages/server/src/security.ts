@@ -122,15 +122,43 @@ function normalizeIp(ip: string): string {
  * Handles IPv4-mapped IPv6 addresses (e.g. ::ffff:127.0.0.1) via normalizeIp().
  *
  * SECURITY NOTE: Only loopback is safe for auto-detection. Broader private ranges
- * (10.x, 172.16-31.x, 192.168.x) are NOT auto-trusted because the server may be
- * directly accessible on the LAN (e.g. Docker published on 0.0.0.0), where direct
- * clients also arrive with private IPs. Trusting XFF from those would let any LAN
- * client spoof their rate-limit key. Operators behind a non-loopback proxy (e.g.
+ * (10.x, 172.16-31.x, 192.168.x) are NOT auto-trusted by default because the server
+ * may be directly accessible on the LAN (e.g. Docker published on 0.0.0.0), where
+ * direct clients also arrive with private IPs. Trusting XFF from those would let any
+ * LAN client spoof their rate-limit key. Operators behind a non-loopback proxy (e.g.
  * Docker bridge network) should set PIZZAPI_TRUST_PROXY=true explicitly.
  */
 function isLoopbackIp(rawIp: string): boolean {
     const ip = normalizeIp(rawIp);
     return ip === "127.0.0.1" || ip === "::1" || ip === "localhost";
+}
+
+/**
+ * Check if an IP address is loopback or a private/internal range (RFC 1918 / RFC 4193).
+ * Used when PIZZAPI_TRUST_PROXY=true to validate that XFF is only trusted from
+ * peers that could plausibly be a reverse proxy (not a direct public-internet client).
+ *
+ * This covers:
+ *   - Loopback: 127.x / ::1
+ *   - RFC 1918 private: 10.x, 172.16-31.x, 192.168.x (includes Docker bridge IPs)
+ *   - Link-local: 169.254.x (IPv4) / fe80:: (IPv6)
+ *   - IPv6 unique-local: fc00::/7
+ */
+function isPrivateOrLoopbackIp(rawIp: string): boolean {
+    const ip = normalizeIp(rawIp);
+    // Loopback
+    if (ip === "127.0.0.1" || ip === "::1" || ip === "localhost") return true;
+    // IPv4 private ranges (RFC 1918)
+    if (ip.startsWith("10.")) return true;
+    if (ip.startsWith("172.") && /^172\.(1[6-9]|2\d|3[01])\./.test(ip)) return true;
+    if (ip.startsWith("192.168.")) return true;
+    // IPv4 link-local
+    if (ip.startsWith("169.254.")) return true;
+    // IPv6 unique local (fc00::/7)
+    if (/^f[cd]/i.test(ip)) return true;
+    // IPv6 link-local (fe80::/10)
+    if (/^fe[89ab]/i.test(ip)) return true;
+    return false;
 }
 
 /**
@@ -145,21 +173,37 @@ function isLoopbackIp(rawIp: string): boolean {
  * trusted because the server may be directly accessible on the LAN.
  *
  * The `PIZZAPI_TRUST_PROXY` env var can explicitly enable/disable proxy mode:
- * - Set to "true" for non-loopback proxies (e.g. Docker bridge networks)
+ * - Set to "true" for non-loopback proxies (e.g. Docker bridge networks like 172.x).
+ *   XFF is trusted only when the peer is loopback or private — direct connections
+ *   from public IPs are never trusted even with this flag, preventing IP spoofing
+ *   if the backend port is accidentally exposed alongside the proxy.
  * - Set to "false" to disable proxy detection entirely (overrides auto-detection)
  */
 export function getClientIp(req: Request): string {
     const clientIp = req.headers.get("x-pizzapi-client-ip") || "unknown";
     
     // PIZZAPI_TRUST_PROXY is a three-state toggle:
-    //   "true"  → always trust x-forwarded-for (for non-loopback proxies like Docker bridge)
+    //   "true"  → trust x-forwarded-for when peer is loopback OR any private/internal range.
+    //             This enables Docker bridge proxy support (172.x, 10.x, 192.168.x) while
+    //             still refusing to trust XFF from public-IP peers (prevents IP spoofing
+    //             if the backend port is directly reachable by internet clients).
     //   "false" → never trust x-forwarded-for, even for loopback (disables auto-detection)
     //   unset   → auto-detect: trust x-forwarded-for only if directly connected to loopback
     const envTrustProxy = process.env.PIZZAPI_TRUST_PROXY?.toLowerCase();
-    const trustProxy =
-        envTrustProxy === "true" ||
-        (envTrustProxy !== "false" && clientIp !== "unknown" && isLoopbackIp(clientIp));
-    // Note: If envTrustProxy === "false", the second condition is skipped and trustProxy stays false.
+    let trustProxy: boolean;
+    if (envTrustProxy === "false") {
+        // Explicitly disabled — never trust XFF.
+        trustProxy = false;
+    } else if (envTrustProxy === "true") {
+        // Explicitly enabled — trust XFF only from private/loopback peers.
+        // This supports Docker bridge proxies (172.x, 10.x) while refusing to trust
+        // XFF from public-IP peers, preventing spoofing if the backend is exposed.
+        trustProxy = clientIp !== "unknown" && isPrivateOrLoopbackIp(clientIp);
+    } else {
+        // Auto-detect (default) — only trust XFF from loopback peers.
+        // Private ranges are NOT auto-trusted since the server may be LAN-accessible.
+        trustProxy = clientIp !== "unknown" && isLoopbackIp(clientIp);
+    }
 
     if (trustProxy) {
         const forwardedFor = req.headers.get("x-forwarded-for");
