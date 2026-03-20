@@ -356,9 +356,14 @@ export function registerViewerNamespace(io: SocketIOServer): void {
             // Validate ownership: the target session must belong to the same user.
             if (targetSessionId) {
                 const targetSession = await getSharedSession(targetSessionId);
-                if (!targetSession || targetSession.userId !== viewerUserId) {
-                    // Target session doesn't exist or belongs to a different user — nack.
-                    // Use trigger_error (not error) so the client can correlate by triggerId.
+                if (!targetSession) {
+                    // Target session no longer exists (child exited) — don't ack so the
+                    // UI keeps retry controls visible, and emit trigger_error for feedback.
+                    (socket as any).emit("trigger_error", { message: `Child session ${targetSessionId} is no longer available`, triggerId });
+                    return;
+                }
+                if (targetSession.userId !== viewerUserId) {
+                    // Security: belongs to a different user — nack with trigger_error.
                     (socket as any).emit("trigger_error", { message: `Target session ${targetSessionId} not found or unauthorized`, triggerId });
                     return;
                 }
