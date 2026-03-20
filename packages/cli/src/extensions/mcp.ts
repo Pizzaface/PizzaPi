@@ -654,6 +654,9 @@ function createStreamableMcpClient(opts: {
         }
         return retry.result;
       } catch (err) {
+        // Re-throw abort errors directly so callers can detect cancellation
+        // without parsing the wrapped message.
+        if (err instanceof DOMException && err.name === "AbortError") throw err;
         throw new Error(
           `OAuth authentication failed for "${opts.name}": ${err instanceof Error ? err.message : String(err)}`,
         );
@@ -1228,6 +1231,15 @@ export async function registerMcpTools(
   const liveClients: McpClient[] = [];
 
   for (let i = 0; i < clients.length; i++) {
+    // Re-check abort before registering each server's tools — if abort fired
+    // between the phase-1 check and here, stop early so we don't register
+    // tools that point at clients closeAllClients() already shut down.
+    if (signal?.aborted) {
+      closeAllClients();
+      signal.removeEventListener("abort", closeAllClients);
+      return { ...empty, totalDurationMs: Date.now() - totalStart, serverTimings: initResults };
+    }
+
     const client = clients[i];
     const result = initResults[i];
 

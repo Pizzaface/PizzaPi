@@ -184,33 +184,28 @@ describe("PizzaPiOAuthProvider", () => {
             expect(results).toContain(3);
         });
 
-        test("resolves immediately when signal is already aborted", async () => {
+        test("rejects immediately when signal is already aborted", async () => {
             const provider = createProvider();
             const ac = new AbortController();
             ac.abort();
 
             const start = Date.now();
-            await provider.waitForRelayContext(5000, ac.signal);
+            await expect(provider.waitForRelayContext(5000, ac.signal)).rejects.toThrow("Aborted");
             expect(Date.now() - start).toBeLessThan(100);
         });
 
-        test("resolves when signal is aborted while waiting", async () => {
+        test("rejects when signal is aborted while waiting", async () => {
             const provider = createProvider();
             const ac = new AbortController();
-            let resolved = false;
 
-            const waitPromise = provider.waitForRelayContext(5000, ac.signal).then(() => {
-                resolved = true;
-            });
+            const waitPromise = provider.waitForRelayContext(5000, ac.signal);
 
             // Not resolved yet — no context, no abort, no timeout
             await new Promise((r) => setTimeout(r, 50));
-            expect(resolved).toBe(false);
 
-            // Abort should resolve immediately
+            // Abort should reject immediately
             ac.abort();
-            await waitPromise;
-            expect(resolved).toBe(true);
+            await expect(waitPromise).rejects.toThrow("Aborted");
         });
 
         test("abort cleans up relay ready resolvers", async () => {
@@ -219,7 +214,7 @@ describe("PizzaPiOAuthProvider", () => {
 
             const waitPromise = provider.waitForRelayContext(5000, ac.signal);
             ac.abort();
-            await waitPromise;
+            await expect(waitPromise).rejects.toThrow("Aborted");
 
             // Setting context after abort should not cause issues
             provider.relayContext = createMockRelayContext();

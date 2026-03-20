@@ -357,8 +357,8 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
    */
   waitForRelayContext(timeoutMs: number = 15_000, signal?: AbortSignal): Promise<void> {
     if (this._relayContext) return Promise.resolve();
-    if (signal?.aborted) return Promise.resolve();
-    return new Promise<void>((resolve) => {
+    if (signal?.aborted) return Promise.reject(new DOMException("Aborted", "AbortError"));
+    return new Promise<void>((resolve, reject) => {
       let finished = false;
       let timer: ReturnType<typeof setTimeout> | null = null;
 
@@ -371,8 +371,7 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
           clearTimeout(timer);
           timer = null;
         }
-
-
+        signal?.removeEventListener("abort", onAbort);
       };
 
       const finish = () => {
@@ -382,6 +381,12 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
         resolve();
       };
 
+      const onAbort = () => {
+        if (finished) return;
+        finished = true;
+        cleanup();
+        reject(new DOMException("Aborted", "AbortError"));
+      };
 
 
       const wrappedResolve = () => {
