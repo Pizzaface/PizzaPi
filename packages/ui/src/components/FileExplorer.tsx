@@ -610,6 +610,22 @@ function GitChangesView({
     void fetchStatus();
   }, [fetchStatus]);
 
+  // Intercept Escape when viewing a diff so it closes the diff preview
+  // instead of propagating to SessionViewer's abort handler.
+  React.useEffect(() => {
+    if (!selectedDiff) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        setSelectedDiff(null);
+      }
+    };
+    // Capture phase ensures this fires before SessionViewer's bubble-phase listener
+    document.addEventListener("keydown", handler, true);
+    return () => document.removeEventListener("keydown", handler, true);
+  }, [selectedDiff]);
+
   const viewDiff = React.useCallback(async (filePath: string) => {
     setDiffLoading(true);
     try {
@@ -989,6 +1005,22 @@ export function FileExplorer({ runnerId, cwd, className, onClose, position = "le
   React.useEffect(() => {
     void fetchFiles();
   }, [fetchFiles]);
+
+  // Intercept Escape when viewing a file so it closes the preview
+  // instead of propagating to SessionViewer's abort handler.
+  React.useEffect(() => {
+    if (!viewingFile) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        setViewingFile(null);
+      }
+    };
+    // Capture phase ensures this fires before SessionViewer's bubble-phase listener
+    document.addEventListener("keydown", handler, true);
+    return () => document.removeEventListener("keydown", handler, true);
+  }, [viewingFile]);
 
   // If viewing a file, show the appropriate viewer
   if (viewingFile) {
