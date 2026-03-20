@@ -51,10 +51,20 @@ let seq = 0;
 let currentModel: string | null = null;
 let messages: unknown[] = [];
 
-// Pending AskUserQuestion: tool_use_id → resolve(answer)
-const pendingQuestions = new Map<string, (answer: string) => void>();
-// Pending permission requests: requestId → resolve(decision)
-const pendingPermissions = new Map<string, (decision: "allow" | "deny") => void>();
+// Pending AskUserQuestion: tool_use_id → { resolve, timer }
+const pendingQuestions = new Map<string, { resolve: (answer: string) => void; timer: ReturnType<typeof setTimeout> }>();
+// Pending permission requests: requestId → { resolve, timer }
+const pendingPermissions = new Map<string, { resolve: (decision: "allow" | "deny") => void; timer: ReturnType<typeof setTimeout> }>();
+
+// Generation counter — prevents stale watchClaudeExit from triggering shutdown
+let processGeneration = 0;
+
+function clearPendingState(): void {
+  for (const { timer } of pendingQuestions.values()) clearTimeout(timer);
+  pendingQuestions.clear();
+  for (const { timer } of pendingPermissions.values()) clearTimeout(timer);
+  pendingPermissions.clear();
+}
 
 // ── IPC connected clients ─────────────────────────────────────────────────
 const ipcClients = new Set<NetSocket>();
@@ -264,6 +274,10 @@ async function dispatchMcpTool(tool: string, args: Record<string, unknown>): Pro
 
 // ── Claude subprocess ─────────────────────────────────────────────────────
 function spawnClaude(tmpDirPath: string, resume = false): void {
+  _stdoutBuf = "";  // reset on every spawn
+  processGeneration++;
+  const myGeneration = processGeneration;
+
   const mcpPath = join(tmpDirPath, "mcp.json");
   const hooksPath = join(tmpDirPath, "hooks.json");
 
@@ -298,7 +312,7 @@ function spawnClaude(tmpDirPath: string, resume = false): void {
 
   void readClaudeStdout();
   void readClaudeStderr();
-  void watchClaudeExit(tmpDirPath);
+  void watchClaudeExit(tmpDirPath, myGeneration);
 }
 
 function writeToClaudeStdin(msg: unknown): void {
@@ -335,10 +349,13 @@ async function readClaudeStderr(): Promise<void> {
   }
 }
 
-async function watchClaudeExit(tmpDirPath: string): Promise<void> {
+async function watchClaudeExit(tmpDirPath: string, generation: number): Promise<void> {
   if (!claudeProcess) return;
   const exitCode = await claudeProcess.exited;
   claudeProcess = null;
+
+  // If a newer process has been spawned since, this watcher is stale
+  if (generation !== processGeneration) return;
 
   if (exitCode === 43) {
     console.log("[bridge] Claude exited with code 43 — restarting with --resume");
@@ -400,11 +417,11 @@ function handleControlRequest(requestId: string, toolName: string, toolInput: un
     sendPermissionResponse(requestId, "deny");
   }, 5 * 60 * 1000);
 
-  pendingPermissions.set(requestId, (decision) => {
+  pendingPermissions.set(requestId, { resolve: (decision) => {
     clearTimeout(timer);
     pendingPermissions.delete(requestId);
     sendPermissionResponse(requestId, decision);
-  });
+  }, timer });
 }
 
 function sendPermissionResponse(requestId: string, behavior: "allow" | "deny"): void {
@@ -428,11 +445,11 @@ function handleAskUserQuestion(toolCallId: string, questions: Array<{ question: 
     deliverAskUserAnswer(toolCallId, "");
   }, 5 * 60 * 1000);
 
-  pendingQuestions.set(toolCallId, (answer) => {
+  pendingQuestions.set(toolCallId, { resolve: (answer) => {
     clearTimeout(timer);
     pendingQuestions.delete(toolCallId);
     deliverAskUserAnswer(toolCallId, answer);
-  });
+  }, timer });
 }
 
 function deliverAskUserAnswer(toolCallId: string, answer: string): void {
@@ -525,8 +542,8 @@ function connectRelay(): void {
 
     // If a question is pending, deliver the input as the answer
     if (pendingQuestions.size > 0) {
-      const [_toolCallId, resolve] = [...pendingQuestions.entries()][0];
-      resolve(text);
+      const [_toolCallId, entry] = [...pendingQuestions.entries()][0];
+      entry.resolve(text);
       return;
     }
 
@@ -551,18 +568,21 @@ function connectRelay(): void {
       case "new_session":
         claudeSessionId = randomUUID();
         messages = [];
+        currentModel = null;
+        clearPendingState();
         if (claudeProcess) { try { claudeProcess.kill("SIGTERM"); } catch {} claudeProcess = null; }
         setTimeout(() => { if (tmpDir) spawnClaude(tmpDir); }, 100);
         sock.emit("exec_result", { id: execData.id, ok: true, command: execData.command });
         break;
       case "reload":
+        clearPendingState();
         if (claudeProcess) { try { claudeProcess.kill("SIGTERM"); } catch {} claudeProcess = null; }
         setTimeout(() => { if (tmpDir) spawnClaude(tmpDir, true); }, 100);
         sock.emit("exec_result", { id: execData.id, ok: true, command: execData.command });
         break;
       case "permission_response":
         if (execData.requestId && execData.decision) {
-          pendingPermissions.get(String(execData.requestId))?.(execData.decision as "allow" | "deny");
+          pendingPermissions.get(String(execData.requestId))?.resolve(execData.decision as "allow" | "deny");
         }
         sock.emit("exec_result", { id: execData.id, ok: true, command: execData.command });
         break;
@@ -595,6 +615,8 @@ let shutdownCalled = false;
 async function shutdown(reason: "completed" | "error" | "killed" = "completed"): Promise<void> {
   if (shutdownCalled) return;
   shutdownCalled = true;
+
+  clearPendingState();
 
   if (claudeProcess) {
     try { claudeProcess.kill("SIGTERM"); } catch {}
