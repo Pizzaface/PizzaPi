@@ -14,6 +14,7 @@
  *   PIZZAPI_RELAY_URL, PIZZAPI_WORKER_PARENT_SESSION_ID
  */
 
+import { existsSync } from "node:fs";
 import { mkdtemp, writeFile, rm, chmod } from "node:fs/promises";
 import { join, resolve as resolvePath } from "node:path";
 import { tmpdir } from "node:os";
@@ -25,6 +26,8 @@ import { randomUUID } from "node:crypto";
 import { translateNdjsonLine } from "./claude-code-ndjson.js";
 import { serializeFrame, framesFromBuffer, type PluginMessage, type BridgeMessage } from "./claude-code-ipc.js";
 import { buildSpawnSessionBody } from "./claude-code-spawn-request.js";
+import { renderTrigger } from "../extensions/triggers/registry.js";
+import type { ConversationTrigger } from "../extensions/triggers/types.js";
 import {
   needsChunkedDelivery, capOversizedMessages, computeChunkBoundaries,
 } from "../extensions/remote.js";
@@ -41,8 +44,21 @@ const initialPrompt = process.env.PIZZAPI_WORKER_INITIAL_PROMPT ?? "";
 const initialModelProvider = process.env.PIZZAPI_WORKER_INITIAL_MODEL_PROVIDER?.trim() ?? "";
 const initialModelId = process.env.PIZZAPI_WORKER_INITIAL_MODEL_ID?.trim() ?? "";
 
-// Plugin dir: absolute path to the static plugin directory shipped with the CLI
-const PLUGIN_DIR = resolvePath(new URL("../../claude-code-plugin", import.meta.url).pathname);
+// Plugin dir: absolute path to the static plugin directory shipped with the CLI.
+// The runner may execute from either src/runner/*.ts or dist/runner/*.js, but the
+// plugin assets live under packages/cli/src/claude-code-plugin in this repo.
+const PACKAGE_ROOT = resolvePath(new URL("../..", import.meta.url).pathname);
+const PLUGIN_DIR_CANDIDATES = [
+  join(PACKAGE_ROOT, "src", "claude-code-plugin"),
+  join(PACKAGE_ROOT, "claude-code-plugin"),
+];
+const PLUGIN_DIR: string = (() => {
+  const found = PLUGIN_DIR_CANDIDATES.find((candidate) => existsSync(candidate));
+  if (!found) {
+    throw new Error(`Claude Code plugin directory not found. Looked in: ${PLUGIN_DIR_CANDIDATES.join(", ")}`);
+  }
+  return found;
+})();
 
 // ── State ─────────────────────────────────────────────────────────────────
 let tmpDir: string | null = null;
@@ -57,8 +73,11 @@ let messages: unknown[] = [];
 
 // Pending AskUserQuestion: tool_use_id → { resolve, timer }
 const pendingQuestions = new Map<string, { resolve: (answer: string) => void; timer: ReturnType<typeof setTimeout> }>();
-// Pending permission requests: requestId → { resolve, timer }
+// Pending permission requests: requestId → { resolve: (decision: "allow" | "deny") => void; timer: ReturnType<typeof setTimeout> };
 const pendingPermissions = new Map<string, { resolve: (decision: "allow" | "deny") => void; timer: ReturnType<typeof setTimeout> }>();
+// Pending triggers this session has received from linked children.
+const receivedTriggers = new Map<string, { sourceSessionId: string; type: string; trackedAt: number }>();
+const TRIGGER_TTL_MS = 10 * 60 * 1000;
 
 // Generation counter — prevents stale watchClaudeExit from triggering shutdown
 let processGeneration = 0;
@@ -68,6 +87,29 @@ function clearPendingState(): void {
   pendingQuestions.clear();
   for (const { timer } of pendingPermissions.values()) clearTimeout(timer);
   pendingPermissions.clear();
+}
+
+function trackReceivedTrigger(trigger: ConversationTrigger): void {
+  if (receivedTriggers.has(trigger.triggerId)) return;
+  receivedTriggers.set(trigger.triggerId, {
+    sourceSessionId: trigger.sourceSessionId,
+    type: trigger.type,
+    trackedAt: Date.now(),
+  });
+  const now = Date.now();
+  for (const [id, entry] of receivedTriggers) {
+    if (now - entry.trackedAt > TRIGGER_TTL_MS) receivedTriggers.delete(id);
+  }
+}
+
+function getReceivedTrigger(triggerId: string) {
+  const pending = receivedTriggers.get(triggerId);
+  if (!pending) return null;
+  if (Date.now() - pending.trackedAt > TRIGGER_TTL_MS) {
+    receivedTriggers.delete(triggerId);
+    return null;
+  }
+  return pending;
 }
 
 // ── IPC connected clients ─────────────────────────────────────────────────
@@ -105,8 +147,10 @@ function emitHeartbeat(status?: string): void {
   forwardEvent({
     type: "heartbeat",
     workerType: "claude-code",
+    active: claudeProcess !== null,
     isAgentActive: claudeProcess !== null,
-    ts: new Date().toISOString(),
+    model: currentModel ? { provider: "anthropic", id: currentModel, name: currentModel } : null,
+    ts: Date.now(),
     ...(status ? { status } : {}),
   });
 }
@@ -122,7 +166,7 @@ async function setupTempDir(): Promise<{ ipcSocketPath: string; hooksPath: strin
     hooks: Object.fromEntries(
       ["SessionStart","SessionEnd","PostToolUse","PostToolUseFailure",
        "Stop","SubagentStart","SubagentStop","Notification","UserPromptSubmit","PreCompact"].map(
-        (evt) => [evt, [{ hooks: [{ type: "command", command: `bun ${PLUGIN_DIR}/scripts/hook-handler.ts --ipc ${ipcSocketPath}` }] }]]
+        (evt) => [evt, [{ hooks: [{ type: "command", command: `bun "${PLUGIN_DIR}/scripts/hook-handler.ts" --ipc "${ipcSocketPath}"` }] }]]
       )
     ),
   };
@@ -255,20 +299,20 @@ async function dispatchMcpTool(tool: string, args: Record<string, unknown>): Pro
       return null;
 
     case "pizzapi_respond_to_trigger": {
-      if (!sioSocket?.connected || !relayToken) throw new Error("Not connected");
-      sioSocket.emit("trigger_response", {
-        token: relayToken,
+      await respondToReceivedTrigger({
         triggerId: String(args.triggerId ?? ""),
         response: String(args.response ?? ""),
         ...(args.action ? { action: String(args.action) } : {}),
-        targetSessionId: String(args.targetSessionId ?? ""),
       });
       return "sent";
     }
 
     case "pizzapi_tell_child":
+      await deliverInputMessageToSession(String(args.sessionId ?? ""), String(args.message ?? ""));
+      return "sent";
+
     case "pizzapi_escalate_trigger":
-      forwardEvent({ type: tool, ...args });
+      await escalateReceivedTrigger(String(args.triggerId ?? ""), typeof args.context === "string" ? args.context : undefined);
       return "sent";
 
     case "pizzapi_list_models":
@@ -277,6 +321,105 @@ async function dispatchMcpTool(tool: string, args: Record<string, unknown>): Pro
     default:
       throw new Error(`Unknown PizzaPi tool: ${tool}`);
   }
+}
+
+async function deliverInputMessageToSession(targetSessionId: string, message: string): Promise<void> {
+  if (!targetSessionId) throw new Error("Missing target session ID");
+  if (!sioSocket?.connected || !relayToken) throw new Error("Not connected to relay");
+  const socket = sioSocket;
+  const token = relayToken;
+
+  await new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      socket.off("session_message_error" as any, onError);
+      resolve();
+    }, 3000);
+
+    const onError = (err: { targetSessionId: string; error: string }) => {
+      if (err.targetSessionId !== targetSessionId) return;
+      clearTimeout(timeout);
+      socket.off("session_message_error" as any, onError);
+      reject(new Error(err.error));
+    };
+
+    socket.on("session_message_error" as any, onError);
+    socket.emit("session_message", {
+      token,
+      targetSessionId,
+      message,
+      deliverAs: "input",
+    });
+  });
+}
+
+async function cleanupChildSession(childSessionId: string): Promise<void> {
+  if (!childSessionId) throw new Error("Missing child session ID");
+  if (!sioSocket?.connected || !relayToken) throw new Error("Not connected to relay");
+  const socket = sioSocket;
+  const token = relayToken;
+
+  const result = await new Promise<{ ok: boolean; error?: string }>((resolve) => {
+    const timeout = setTimeout(() => resolve({ ok: false, error: "Cleanup ack timed out" }), 10_000);
+    socket.emit("cleanup_child_session", {
+      token,
+      childSessionId,
+    }, (ack: { ok: boolean; error?: string }) => {
+      clearTimeout(timeout);
+      resolve(ack ?? { ok: true });
+    });
+  });
+
+  if (!result.ok) {
+    throw new Error(result.error ?? `Failed to clean up child session ${childSessionId}`);
+  }
+}
+
+async function respondToReceivedTrigger(data: { triggerId: string; response: string; action?: string }): Promise<void> {
+  if (!data.triggerId) throw new Error("Missing trigger ID");
+  const pending = getReceivedTrigger(data.triggerId);
+  if (!pending) throw new Error(`No pending trigger with ID ${data.triggerId}`);
+  if (!sioSocket?.connected || !relayToken) throw new Error("Not connected to relay");
+
+  if (pending.type === "session_complete") {
+    const action = data.action ?? "ack";
+    if (action === "followUp") {
+      await deliverInputMessageToSession(pending.sourceSessionId, data.response);
+      receivedTriggers.delete(data.triggerId);
+      return;
+    }
+    await cleanupChildSession(pending.sourceSessionId);
+    receivedTriggers.delete(data.triggerId);
+    return;
+  }
+
+  sioSocket.emit("trigger_response", {
+    token: relayToken,
+    triggerId: data.triggerId,
+    response: data.response,
+    ...(data.action ? { action: data.action } : {}),
+    targetSessionId: pending.sourceSessionId,
+  });
+  receivedTriggers.delete(data.triggerId);
+}
+
+async function escalateReceivedTrigger(triggerId: string, context?: string): Promise<void> {
+  const pending = getReceivedTrigger(triggerId);
+  if (!pending) throw new Error(`No pending trigger with ID ${triggerId}`);
+  if (!sioSocket?.connected || !relayToken) throw new Error("Not connected to relay");
+
+  sioSocket.emit("session_trigger" as any, {
+    token: relayToken,
+    trigger: {
+      type: "escalate",
+      sourceSessionId: pending.sourceSessionId,
+      targetSessionId: sessionId,
+      payload: { reason: context ?? "Parent escalated", originalTriggerId: triggerId },
+      deliverAs: "steer" as const,
+      expectsResponse: true,
+      triggerId,
+      ts: new Date().toISOString(),
+    },
+  });
 }
 
 // ── Claude subprocess ─────────────────────────────────────────────────────
@@ -557,6 +700,22 @@ function connectRelay(): void {
     relayToken = data.token;
     emitHeartbeat("Starting Claude Code…");
     emitSessionActive();
+  });
+
+  sock.on("session_trigger" as any, (data: { trigger: ConversationTrigger }) => {
+    const trigger = data?.trigger;
+    if (!trigger) return;
+    trackReceivedTrigger(trigger);
+    writeToClaudeStdin({
+      type: "user",
+      message: { role: "user", content: renderTrigger(trigger) },
+    });
+  });
+
+  sock.on("trigger_response" as any, (data: { triggerId: string; response: string; action?: string }) => {
+    void respondToReceivedTrigger(data).catch((err) => {
+      console.error("[bridge] failed to handle trigger response:", err);
+    });
   });
 
   sock.on("input", (data) => {
