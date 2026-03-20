@@ -304,5 +304,181 @@ Use respond_to_trigger with action: "approve" to accept, "cancel" to reject, or 
       // Ensure instructions are NOT absorbed into last step
       expect(parsed.planSteps?.[1].description).toBeUndefined();
     });
+
+    // ── Structured questions (rich trigger format) ────────────────────────
+
+    test("parses base64-encoded structured questions from trigger body", () => {
+      const questions = [
+        { question: "Pick a color", options: ["Red", "Blue"], type: "radio" },
+        { question: "Select features", options: ["Auth", "API", "UI"], type: "checkbox" },
+      ];
+      const encoded = btoa(JSON.stringify(questions));
+      const body = `🔗 Child "rich-child" asks:
+<!-- questions64:${encoded} -->
+> Pick a color; Select features
+Options: 1. Red  2. Blue  3. Auth  4. API  5. UI
+
+Respond with \`respond_to_trigger\` using trigger ID \`rich123\`.`;
+
+      const parsed = parseTriggerBody(body);
+      expect(parsed.type).toBe("ask_user_question");
+      expect(parsed.childName).toBe("rich-child");
+      expect(parsed.questions).toHaveLength(2);
+      expect(parsed.questions![0].question).toBe("Pick a color");
+      expect(parsed.questions![0].options).toEqual(["Red", "Blue"]);
+      expect(parsed.questions![1].question).toBe("Select features");
+      expect(parsed.questions![1].type).toBe("checkbox");
+      expect(parsed.questions![1].options).toEqual(["Auth", "API", "UI"]);
+      // Legacy fields still populated for backward compat
+      expect(parsed.options).toContain("Red");
+    });
+
+    test("parses ranked question type from base64-encoded JSON", () => {
+      const questions = [
+        { question: "Prioritize tasks", options: ["Fix bug", "Add feature", "Write docs"], type: "ranked" },
+      ];
+      const encoded = btoa(JSON.stringify(questions));
+      const body = `🔗 Child "ranker" asks:
+<!-- questions64:${encoded} -->
+> Prioritize tasks
+Options: 1. Fix bug  2. Add feature  3. Write docs
+
+Respond with \`respond_to_trigger\` using trigger ID \`rank123\`.`;
+
+      const parsed = parseTriggerBody(body);
+      expect(parsed.type).toBe("ask_user_question");
+      expect(parsed.questions).toHaveLength(1);
+      expect(parsed.questions![0].type).toBe("ranked");
+    });
+
+    test("parses legacy raw JSON questions format (backward compat)", () => {
+      const questions = [
+        { question: "Pick a color", options: ["Red", "Blue"], type: "radio" },
+      ];
+      const body = `🔗 Child "legacy-rich" asks:
+<!-- questions:${JSON.stringify(questions)} -->
+> Pick a color
+Options: 1. Red  2. Blue
+
+Respond with \`respond_to_trigger\` using trigger ID \`legrich123\`.`;
+
+      const parsed = parseTriggerBody(body);
+      expect(parsed.type).toBe("ask_user_question");
+      expect(parsed.questions).toHaveLength(1);
+      expect(parsed.questions![0].question).toBe("Pick a color");
+    });
+
+    test("falls back to legacy parsing when embedded JSON is absent", () => {
+      const body = `🔗 Child "legacy-child" asks:
+> What do you prefer?
+Options: 1. Option A  2. Option B
+
+Respond with \`respond_to_trigger\` using trigger ID \`leg123\`.`;
+
+      const parsed = parseTriggerBody(body);
+      expect(parsed.type).toBe("ask_user_question");
+      expect(parsed.questions).toBeUndefined();
+      expect(parsed.options).toEqual(["Option A", "Option B"]);
+    });
+
+    test("falls back gracefully when embedded JSON is malformed", () => {
+      const body = `🔗 Child "broken-child" asks:
+<!-- questions:{invalid json} -->
+> What?
+Options: 1. Yes  2. No
+
+Respond with \`respond_to_trigger\` using trigger ID \`brk123\`.`;
+
+      const parsed = parseTriggerBody(body);
+      expect(parsed.type).toBe("ask_user_question");
+      expect(parsed.questions).toBeUndefined();
+      expect(parsed.options).toEqual(["Yes", "No"]);
+    });
+
+    test("falls back gracefully when base64 is invalid (truncated/corrupted)", () => {
+      // Invalid base64 that matches the regex but throws on atob()
+      const body = `🔗 Child "corrupt-child" asks:
+<!-- questions64:notvalidbase64padding -->
+> What?
+Options: 1. Yes  2. No
+
+Respond with \`respond_to_trigger\` using trigger ID \`corrupt123\`.`;
+
+      const parsed = parseTriggerBody(body);
+      expect(parsed.type).toBe("ask_user_question");
+      expect(parsed.questions).toBeUndefined();
+      expect(parsed.options).toEqual(["Yes", "No"]);
+    });
+
+    test("legacy format: unescapes __DASH__ sequences in embedded JSON questions", () => {
+      // Legacy format used __DASH__ escaping for "--" sequences.
+      const raw = `[{"question":"Use --> in code?","options":["Yes","No"]}]`;
+      const escaped = raw.replace(/--/g, "__DASH__");
+      const body = `🔗 Child "escape-child" asks:
+<!-- questions:${escaped} -->
+> Use --> in code?
+Options: 1. Yes  2. No
+
+Respond with \`respond_to_trigger\` using trigger ID \`esc123\`.`;
+
+      const parsed = parseTriggerBody(body);
+      expect(parsed.type).toBe("ask_user_question");
+      expect(parsed.questions).toHaveLength(1);
+      expect(parsed.questions![0].question).toBe("Use --> in code?");
+      expect(parsed.questions![0].options).toEqual(["Yes", "No"]);
+    });
+
+    test("base64 format handles special characters like --> without issues", () => {
+      const questions = [{ question: "Use --> in code?", options: ["Yes", "No"] }];
+      const encoded = btoa(JSON.stringify(questions));
+      const body = `🔗 Child "b64-child" asks:
+<!-- questions64:${encoded} -->
+> Use --> in code?
+Options: 1. Yes  2. No
+
+Respond with \`respond_to_trigger\` using trigger ID \`b64123\`.`;
+
+      const parsed = parseTriggerBody(body);
+      expect(parsed.type).toBe("ask_user_question");
+      expect(parsed.questions).toHaveLength(1);
+      expect(parsed.questions![0].question).toBe("Use --> in code?");
+    });
+
+    test("ignores questions with missing question field in embedded JSON", () => {
+      const questions = [
+        { question: "Valid?", options: ["Yes"] },
+        { options: ["orphan"] },  // missing question field
+      ];
+      const encoded = btoa(JSON.stringify(questions));
+      const body = `🔗 Child "filter-child" asks:
+<!-- questions64:${encoded} -->
+> Valid?
+Options: 1. Yes
+
+Respond with \`respond_to_trigger\` using trigger ID \`flt123\`.`;
+
+      const parsed = parseTriggerBody(body);
+      expect(parsed.questions).toHaveLength(1);
+      expect(parsed.questions![0].question).toBe("Valid?");
+    });
+
+    test("parses UTF-8 content (emoji, CJK, smart quotes) from base64-encoded questions", () => {
+      const questions = [
+        { question: "Choisissez l'option 🎉", options: ["日本語", "中文", "\u201csmart quotes\u201d"], type: "radio" },
+      ];
+      // Encode as UTF-8 base64 (same as server-side Buffer.from(..., 'utf-8').toString('base64'))
+      const encoded = btoa(String.fromCharCode(...new TextEncoder().encode(JSON.stringify(questions))));
+      const body = `🔗 Child "utf8-child" asks:
+<!-- questions64:${encoded} -->
+> Choisissez l'option 🎉
+
+Respond with \`respond_to_trigger\` using trigger ID \`utf8-123\`.`;
+
+      const parsed = parseTriggerBody(body);
+      expect(parsed.type).toBe("ask_user_question");
+      expect(parsed.questions).toHaveLength(1);
+      expect(parsed.questions![0].question).toBe("Choisissez l'option 🎉");
+      expect(parsed.questions![0].options).toEqual(["日本語", "中文", "\u201csmart quotes\u201d"]);
+    });
   });
 });

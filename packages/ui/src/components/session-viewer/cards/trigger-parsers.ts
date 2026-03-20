@@ -3,11 +3,20 @@
  * Extracted from TriggerCard.tsx so tests can import without JSX dependencies.
  */
 
+/** Structured question from a child AskUserQuestion trigger. */
+export interface ParsedTriggerQuestion {
+  question: string;
+  options: string[];
+  type?: "radio" | "checkbox" | "ranked";
+}
+
 export interface ParsedTrigger {
   type: "ask_user_question" | "plan_review" | "session_complete" | "session_error" | "escalate" | "unknown";
   childName?: string;
   question?: string;
   options?: string[];
+  /** Structured questions array (multi-question, checkbox, ranked support). */
+  questions?: ParsedTriggerQuestion[];
   planTitle?: string;
   planSteps?: Array<{ title: string; description?: string }>;
   message?: string;
@@ -57,7 +66,41 @@ function parsAskUserQuestion(body: string): ParsedTrigger {
         .filter(Boolean)
     : [];
 
-  return { type: "ask_user_question", childName, question, options };
+  // Extract structured questions from embedded metadata.
+  // Current format: questions64:<base64> inside the trigger metadata comment
+  //                 <!-- trigger:ID source:SID questions64:<base64> -->
+  // Legacy format:  <!-- questions64:<base64> --> (separate comment, pre-consolidation)
+  //                 <!-- questions:<json> -->     (raw or __DASH__-escaped JSON)
+  let questions: ParsedTriggerQuestion[] | undefined;
+  const b64Match = body.match(/questions64:([\w+/=]+)/);
+  const jsonMatch = !b64Match ? body.match(/<!-- questions:(.*?) -->/) : null;
+  let rawJson: string | null = null;
+  try {
+    rawJson = b64Match?.[1]
+      ? new TextDecoder().decode(Uint8Array.from(atob(b64Match[1]), (c) => c.charCodeAt(0)))
+      : jsonMatch?.[1]?.replace(/__DASH__/g, "--") ?? null;
+  } catch {
+    // Invalid base64 — fall back to legacy parsing
+  }
+  if (rawJson) {
+    try {
+      const parsed = JSON.parse(rawJson);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        questions = parsed
+          .filter((q: any) => q && typeof q === "object" && typeof q.question === "string")
+          .map((q: any) => ({
+            question: q.question,
+            options: Array.isArray(q.options) ? q.options.filter((o: any) => typeof o === "string") : [],
+            ...(q.type === "checkbox" || q.type === "ranked" ? { type: q.type } : {}),
+          }));
+        if (questions.length === 0) questions = undefined;
+      }
+    } catch {
+      // Malformed JSON — fall back to legacy parsing
+    }
+  }
+
+  return { type: "ask_user_question", childName, question, options, questions };
 }
 
 function parsePlanReview(body: string): ParsedTrigger {

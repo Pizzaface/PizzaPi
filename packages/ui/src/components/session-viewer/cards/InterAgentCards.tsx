@@ -26,13 +26,13 @@ export function truncateSessionId(id: string): string {
 
 // ── Trigger message utilities ────────────────────────────────────────────────
 
-const TRIGGER_PREFIX_RE = /^<!--\s*trigger:([\w-]+)\s*-->\n?/;
+const TRIGGER_PREFIX_RE = /^<!--\s*trigger:([\w-]+)(?:\s+source:([\w-]+))?\s*-->\n?/;
 
-/** Check if a message is a trigger-injected message and extract the trigger ID. */
-export function parseTriggerMessage(text: string): { triggerId: string; body: string } | null {
+/** Check if a message is a trigger-injected message and extract the trigger ID and optional source session ID. */
+export function parseTriggerMessage(text: string): { triggerId: string; sourceSessionId?: string; body: string } | null {
   const match = text.match(TRIGGER_PREFIX_RE);
   if (!match) return null;
-  return { triggerId: match[1], body: text.slice(match[0].length) };
+  return { triggerId: match[1], sourceSessionId: match[2], body: text.slice(match[0].length) };
 }
 
 /** Returns true if the text is a trigger-injected message. */
@@ -46,18 +46,25 @@ export function isTriggerMessage(text: string): boolean {
  */
 export function renderTriggerCard(
   text: string,
-  onRespond?: (triggerId: string, response: string, action?: string) => void,
+  onRespond?: (triggerId: string, response: string, action?: string, sourceSessionId?: string) => void,
   isResponding?: boolean
 ): React.ReactElement | null {
   const parsed = parseTriggerMessage(text);
   if (!parsed) return null;
-  
+
+  // Wrap the callback to include the child's sourceSessionId so the relay
+  // can route the response directly to the child session.
+  const wrappedOnRespond = onRespond && parsed.sourceSessionId
+    ? (triggerId: string, response: string, action?: string) =>
+        onRespond(triggerId, response, action, parsed.sourceSessionId)
+    : onRespond;
+
   return (
     <TriggerCard
       key={parsed.triggerId}
       triggerId={parsed.triggerId}
       body={parsed.body}
-      onRespond={onRespond}
+      onRespond={wrappedOnRespond}
       isResponding={isResponding}
     />
   );

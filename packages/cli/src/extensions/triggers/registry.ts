@@ -191,7 +191,17 @@ export function renderTrigger(trigger: ConversationTrigger): string {
     const body = renderer
         ? renderer.render(trigger)
         : `🔗 Child "${displayName(trigger)}" sent unknown trigger "${trigger.type}". Payload: ${JSON.stringify(trigger.payload)}`;
-    return `<!-- trigger:${trigger.triggerId} -->\n${body}`;
+
+    // Embed structured questions as base64 inside the trigger metadata comment
+    // so the web UI can render rich multi-question / checkbox / ranked triggers
+    // without polluting the agent-facing prompt text with a separate comment.
+    const questions = trigger.type === "ask_user_question" && Array.isArray(trigger.payload.questions)
+        ? trigger.payload.questions
+        : undefined;
+    const q64 = questions
+        ? ` questions64:${Buffer.from(JSON.stringify(questions), "utf-8").toString("base64")}`
+        : "";
+    return `<!-- trigger:${trigger.triggerId} source:${trigger.sourceSessionId}${q64} -->\n${body}`;
 }
 
 /** Parse a response using the trigger type's parser, if available. */

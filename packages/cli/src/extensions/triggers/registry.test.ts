@@ -21,7 +21,7 @@ describe("renderTrigger", () => {
     it("prefixes output with trigger ID metadata comment", () => {
         const trigger = makeTrigger({ payload: { question: "Pick one", options: ["A", "B"] } });
         const result = renderTrigger(trigger);
-        expect(result).toStartWith("<!-- trigger:trigger-001 -->");
+        expect(result).toStartWith("<!-- trigger:trigger-001 source:child-abc-123 -->");
     });
 
     describe("ask_user_question", () => {
@@ -47,6 +47,28 @@ describe("renderTrigger", () => {
             const result = renderTrigger(trigger);
             expect(result).toContain("> What now?");
             expect(result).not.toContain("Options:");
+        });
+
+        it("encodes UTF-8 questions (emoji, CJK) as valid base64 without throwing", () => {
+            const trigger = makeTrigger({
+                type: "ask_user_question",
+                payload: {
+                    question: "Choose 🎉",
+                    options: ["日本語"],
+                    questions: [
+                        { question: "Choose 🎉", options: ["日本語", "中文", "\u201csmart\u201d"], type: "radio" },
+                    ],
+                },
+            });
+            const result = renderTrigger(trigger);
+            // Must contain a valid base64 block in the trigger metadata comment
+            const match = result.match(/questions64:([\w+/=]+)/);
+            expect(match).toBeTruthy();
+            // Round-trip: decode and verify
+            const decoded = Buffer.from(match![1], "base64").toString("utf-8");
+            const parsed = JSON.parse(decoded);
+            expect(parsed[0].question).toBe("Choose 🎉");
+            expect(parsed[0].options).toContain("日本語");
         });
     });
 

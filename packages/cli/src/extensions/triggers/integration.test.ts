@@ -11,7 +11,8 @@ import { trackReceivedTrigger, receivedTriggers } from "./extension.js";
 import type { ConversationTrigger } from "./types.js";
 
 // Duplicate trigger message parsing from UI package (can't cross-import packages)
-const TRIGGER_PREFIX_RE = /^<!--\s*trigger:([\w-]+)\s*-->\n?/;
+// Matches: <!-- trigger:ID --> or <!-- trigger:ID source:sessionID -->
+const TRIGGER_PREFIX_RE = /^<!--\s*trigger:([\w-]+)(?:\s+source:[\w-]+)?\s*-->\n?/;
 function parseTriggerMessage(text: string): { triggerId: string; body: string } | null {
     const match = text.match(TRIGGER_PREFIX_RE);
     if (!match) return null;

@@ -22,6 +22,7 @@ import {
     sendSnapshotToViewer,
     getLocalTuiSocket,
     emitToRelaySession,
+    emitToRelaySessionVerified,
 } from "../sio-registry.js";
 import { getPendingChunkedSnapshot } from "./relay.js";
 import { getPersistedRelaySessionSnapshot } from "../../sessions/store.js";
@@ -343,7 +344,7 @@ export function registerViewerNamespace(io: SocketIOServer): void {
         // Route directly to the child session via its relay socket,
         // bypassing the parent CLI. This avoids depending on an in-memory
         // handler in the parent to forward the response.
-        socket.on("trigger_response", async (data) => {
+        socket.on("trigger_response", async (data: any, ack?: (...args: any[]) => void) => {
             const { triggerId, response, action, targetSessionId } = data ?? {};
             if (!triggerId || !response) return;
 
@@ -356,7 +357,9 @@ export function registerViewerNamespace(io: SocketIOServer): void {
             if (targetSessionId) {
                 const targetSession = await getSharedSession(targetSessionId);
                 if (!targetSession || targetSession.userId !== viewerUserId) {
-                    // Target session doesn't exist or belongs to a different user — ignore.
+                    // Target session doesn't exist or belongs to a different user — nack.
+                    // Use trigger_error (not error) so the client can correlate by triggerId.
+                    (socket as any).emit("trigger_error", { message: `Target session ${targetSessionId} not found or unauthorized`, triggerId });
                     return;
                 }
                 const triggerPayload = {
@@ -364,12 +367,17 @@ export function registerViewerNamespace(io: SocketIOServer): void {
                     response,
                     ...(action ? { action } : {}),
                 };
-                // Try local socket first, fall back to relay room for cross-node delivery
+                // Try local socket first, fall back to relay room for cross-node delivery.
+                // Only ack on successful delivery so the client can distinguish
+                // delivered responses from dropped ones.
                 const childSocket = getLocalTuiSocket(targetSessionId);
                 if (childSocket) {
                     childSocket.emit("trigger_response" as string, triggerPayload);
-                } else if (!emitToRelaySession(targetSessionId, "trigger_response", triggerPayload)) {
-                    socket.emit("error", { message: `Failed to deliver trigger response to child session ${targetSessionId}` });
+                    if (typeof ack === "function") ack();
+                } else if (await emitToRelaySessionVerified(targetSessionId, "trigger_response", triggerPayload)) {
+                    if (typeof ack === "function") ack();
+                } else {
+                    (socket as any).emit("trigger_error", { message: `Failed to deliver trigger response to child session ${targetSessionId}`, triggerId });
                 }
                 return;
             }
@@ -384,8 +392,11 @@ export function registerViewerNamespace(io: SocketIOServer): void {
             const tuiSocket = getLocalTuiSocket(sessionId);
             if (tuiSocket) {
                 tuiSocket.emit("trigger_response" as string, triggerPayloadForParent);
-            } else if (!emitToRelaySession(sessionId, "trigger_response", triggerPayloadForParent)) {
-                socket.emit("error", { message: `Failed to deliver trigger response to session ${sessionId}` });
+                if (typeof ack === "function") ack();
+            } else if (await emitToRelaySessionVerified(sessionId, "trigger_response", triggerPayloadForParent)) {
+                if (typeof ack === "function") ack();
+            } else {
+                (socket as any).emit("trigger_error", { message: `Failed to deliver trigger response to session ${sessionId}`, triggerId });
             }
         });
 

@@ -3186,19 +3186,55 @@ export function App() {
   }, [spawningSession, spawnRunnerId, spawnCwd, handleOpenSession, waitForSessionToGoLive]);
 
   // ── Respond to a trigger from a child session ─────────────────────────────
-  const handleTriggerResponse = React.useCallback((triggerId: string, response: string, action?: string) => {
+  const handleTriggerResponse = React.useCallback((triggerId: string, response: string, action?: string, sourceSessionId?: string): Promise<boolean> => {
     const socket = viewerWsRef.current;
     const sessionId = activeSessionRef.current;
     if (!socket || !socket.connected || !sessionId) {
       setViewerStatus("Not connected to a live session");
-      return;
+      return Promise.resolve(false);
     }
 
-    socket.emit("trigger_response", {
-      triggerId,
-      response,
-      ...(action ? { action } : {}),
-      targetSessionId: sessionId,
+    // Use the child's sourceSessionId (extracted from the trigger comment) as
+    // targetSessionId so the server can route directly to the child session,
+    // bypassing the parent's in-memory receivedTriggers map. This makes
+    // delivery resilient to parent reconnects/resumes where the map is gone.
+    // Falls back to the parent session ID for legacy triggers without source.
+    return new Promise<boolean>((resolve) => {
+      let resolved = false;
+      const settle = (success: boolean, message?: string) => {
+        if (resolved) return;
+        resolved = true;
+        if (message) setViewerStatus(message);
+        errorCleanup();
+        resolve(success);
+      };
+
+      // Listen for trigger_error events — the server emits these immediately
+      // when the target child is missing, unauthorized, or relay delivery fails.
+      // Each error carries its triggerId so concurrent trigger submissions
+      // don't interfere with each other (unlike the shared "error" event).
+      const onTriggerError = (data: any) => {
+        if (data?.triggerId === triggerId) {
+          settle(false, "Trigger delivery failed — try again");
+        }
+      };
+      socket.on("trigger_error" as any, onTriggerError);
+      const errorCleanup = () => { socket.off("trigger_error" as any, onTriggerError); };
+
+      // Send with Socket.IO ack — server only acks on successful delivery.
+      socket.emit("trigger_response", {
+        triggerId,
+        response,
+        ...(action ? { action } : {}),
+        targetSessionId: sourceSessionId ?? sessionId,
+      }, () => {
+        // Server acknowledged successful delivery
+        settle(true);
+      });
+      // If no ack arrives within 5s, treat as a failed delivery
+      setTimeout(() => {
+        settle(false, "Trigger response may not have been delivered — try again");
+      }, 5000);
     });
   }, []);
 

@@ -954,6 +954,10 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             // parent doesn't want triggers, it should spawn with linked: false.
             trackReceivedTrigger(trigger.triggerId, trigger.sourceSessionId, trigger.type);
             const rendered = renderTrigger(trigger);
+            // The trigger metadata line (<!-- trigger:ID source:SID questions64:... -->)
+            // carries structured question data inline so the web UI can render
+            // rich trigger cards. This keeps the agent-facing prompt clean —
+            // no separate HTML comment block is needed.
             const deliverAs = trigger.deliverAs === "followUp" ? "followUp" as const : "steer" as const;
             pi.sendUserMessage(rendered, { deliverAs });
         });

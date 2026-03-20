@@ -78,13 +78,15 @@ export interface ViewerClientToServerEvents {
     [key: string]: unknown;
   }) => void;
 
-  /** Human viewer responds to a pending trigger from a child session */
+  /** Human viewer responds to a pending trigger from a child session.
+   *  Supports Socket.IO ack — server calls the ack callback only on
+   *  successful delivery, so the client can detect failed sends. */
   trigger_response: (data: {
     triggerId: string;
     response: string;
     action?: string;
     targetSessionId: string;
-  }) => void;
+  }, ack?: () => void) => void;
 }
 
 // ---------------------------------------------------------------------------
