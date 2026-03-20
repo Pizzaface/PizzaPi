@@ -86,16 +86,55 @@ export interface ExtractedComposeSettings {
     proxyDepth?: number;
 }
 
+/**
+ * Match an environment variable from compose YAML content.
+ * Supports three formats:
+ *   1. List form: `- KEY=value`
+ *   2. YAML mapping form: `KEY: "value"` or `KEY: value` (indented, inside environment block)
+ *   3. Bare form: `KEY=value` (no prefix, used in simpler/partial compose snippets)
+ * For mapping form, strips surrounding quotes from the value.
+ * Returns null if the key is not found or is commented out.
+ */
+function matchEnvVar(content: string, key: string): string | null {
+    // List form: `- KEY=value` (non-commented)
+    const listRegex = new RegExp(`^\\s*-\\s+${key}=(.+)`, "m");
+    const listMatch = content.match(listRegex);
+    if (listMatch?.[1]) {
+        return listMatch[1].trim();
+    }
+
+    // YAML mapping form: `KEY: "value"` or `KEY: value` (non-commented)
+    // The key must be indented (part of an environment block)
+    const mapRegex = new RegExp(`^\\s+${key}:\\s+(.+)`, "m");
+    const mapMatch = content.match(mapRegex);
+    if (mapMatch?.[1]) {
+        let val = mapMatch[1].trim();
+        // Strip surrounding quotes (both single and double)
+        if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+            val = val.slice(1, -1);
+        }
+        return val;
+    }
+
+    // Bare form fallback: `KEY=value` on a non-commented line (no list/mapping prefix).
+    // Match lines where KEY= appears and the line doesn't start with optional whitespace + #.
+    const bareRegex = new RegExp(`^(?!\\s*#).*${key}=(.+)`, "m");
+    const bareMatch = content.match(bareRegex);
+    if (bareMatch?.[1]) {
+        return bareMatch[1].trim();
+    }
+
+    return null;
+}
+
 /** Extract all user settings from compose.yml content (pure function, exported for testing) */
 export function extractSettingsFromCompose(content: string): ExtractedComposeSettings {
     const result: ExtractedComposeSettings = {};
 
     // VAPID keys
-    const pubMatch = content.match(/VAPID_PUBLIC_KEY=(.+)/);
-    const privMatch = content.match(/VAPID_PRIVATE_KEY=(.+)/);
-    if (pubMatch?.[1] && privMatch?.[1]) {
-        const pub = pubMatch[1].trim();
-        const priv = privMatch[1].trim();
+    const pub = matchEnvVar(content, "VAPID_PUBLIC_KEY");
+    const priv = matchEnvVar(content, "VAPID_PRIVATE_KEY");
+    if (pub && priv) {
         // Skip template placeholders
         if (!pub.startsWith("{{")) {
             result.vapid = { publicKey: pub, privateKey: priv };
@@ -103,30 +142,21 @@ export function extractSettingsFromCompose(content: string): ExtractedComposeSet
     }
 
     // VAPID subject
-    const subjectMatch = content.match(/VAPID_SUBJECT=(.+)/);
-    if (subjectMatch?.[1]) {
-        const val = subjectMatch[1].trim();
-        if (!val.startsWith("{{")) {
-            result.vapidSubject = val;
-        }
+    const subject = matchEnvVar(content, "VAPID_SUBJECT");
+    if (subject && !subject.startsWith("{{")) {
+        result.vapidSubject = subject;
     }
 
     // better-auth secret
-    const secretMatch = content.match(/^\s*(?:-\s+)?BETTER_AUTH_SECRET=(.+)$/m);
-    if (secretMatch?.[1]) {
-        const val = secretMatch[1].trim();
-        if (!val.startsWith("{{")) {
-            result.betterAuthSecret = val;
-        }
+    const secret = matchEnvVar(content, "BETTER_AUTH_SECRET");
+    if (secret && !secret.startsWith("{{")) {
+        result.betterAuthSecret = secret;
     }
 
     // Extra origins (skip commented-out lines)
-    const originsMatch = content.match(/^\s*-\s+PIZZAPI_EXTRA_ORIGINS=(.+)/m);
-    if (originsMatch?.[1]) {
-        const val = originsMatch[1].trim();
-        if (!val.startsWith("{{") && val.length > 0) {
-            result.extraOrigins = val;
-        }
+    const origins = matchEnvVar(content, "PIZZAPI_EXTRA_ORIGINS");
+    if (origins && !origins.startsWith("{{") && origins.length > 0) {
+        result.extraOrigins = origins;
     }
 
     // Port from the host:container mapping (e.g. "8080:7492")
@@ -138,18 +168,18 @@ export function extractSettingsFromCompose(content: string): ExtractedComposeSet
         }
     }
 
-    // Trust proxy setting (active, non-commented line only)
-    const trustProxyMatch = content.match(/^\s*-\s+PIZZAPI_TRUST_PROXY=(.+)/m);
-    if (trustProxyMatch?.[1]) {
-        const val = trustProxyMatch[1].trim().toLowerCase();
-        if (val === "true") result.trustProxy = true;
-        else if (val === "false") result.trustProxy = false;
+    // Trust proxy setting
+    const trustProxyVal = matchEnvVar(content, "PIZZAPI_TRUST_PROXY");
+    if (trustProxyVal) {
+        const lower = trustProxyVal.toLowerCase();
+        if (lower === "true") result.trustProxy = true;
+        else if (lower === "false") result.trustProxy = false;
     }
 
-    // Proxy depth setting (active, non-commented line only)
-    const proxyDepthMatch = content.match(/^\s*-\s+PIZZAPI_PROXY_DEPTH=(.+)/m);
-    if (proxyDepthMatch?.[1]) {
-        const val = parseInt(proxyDepthMatch[1].trim(), 10);
+    // Proxy depth setting
+    const proxyDepthVal = matchEnvVar(content, "PIZZAPI_PROXY_DEPTH");
+    if (proxyDepthVal) {
+        const val = parseInt(proxyDepthVal, 10);
         if (!isNaN(val) && val >= 1) result.proxyDepth = val;
     }
 

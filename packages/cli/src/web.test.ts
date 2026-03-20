@@ -176,6 +176,73 @@ describe("extractSettingsFromCompose", () => {
         const result = extractSettingsFromCompose(content);
         expect(result.port).toBe(9000);
     });
+
+    test("parses YAML mapping syntax for proxy settings (double-quoted)", () => {
+        // This is the format shown in self-hosting docs and produced by standard
+        // YAML tools — the compose.override.yml uses mapping form, not list form.
+        const content = `services:
+  server:
+    environment:
+      PIZZAPI_TRUST_PROXY: "true"
+      PIZZAPI_PROXY_DEPTH: "1"`;
+        const result = extractSettingsFromCompose(content);
+        expect(result.trustProxy).toBe(true);
+        expect(result.proxyDepth).toBe(1);
+    });
+
+    test("parses YAML mapping syntax for proxy settings (single-quoted)", () => {
+        const content = `services:
+  server:
+    environment:
+      PIZZAPI_TRUST_PROXY: 'false'
+      PIZZAPI_PROXY_DEPTH: '2'`;
+        const result = extractSettingsFromCompose(content);
+        expect(result.trustProxy).toBe(false);
+        expect(result.proxyDepth).toBe(2);
+    });
+
+    test("parses YAML mapping syntax for proxy settings (unquoted)", () => {
+        const content = `services:
+  server:
+    environment:
+      PIZZAPI_TRUST_PROXY: true
+      PIZZAPI_PROXY_DEPTH: 1`;
+        const result = extractSettingsFromCompose(content);
+        expect(result.trustProxy).toBe(true);
+        expect(result.proxyDepth).toBe(1);
+    });
+
+    test("parses YAML mapping syntax for all env vars", () => {
+        const content = `services:
+  server:
+    ports:
+      - "8080:7492"
+    environment:
+      VAPID_PUBLIC_KEY: "MapPubKey123"
+      VAPID_PRIVATE_KEY: "MapPrivKey456"
+      VAPID_SUBJECT: "mailto:map@example.com"
+      BETTER_AUTH_SECRET: "MapSecret789"
+      PIZZAPI_EXTRA_ORIGINS: "https://map.example.com"
+      PIZZAPI_TRUST_PROXY: "true"
+      PIZZAPI_PROXY_DEPTH: "2"`;
+        const result = extractSettingsFromCompose(content);
+        expect(result.vapid).toEqual({ publicKey: "MapPubKey123", privateKey: "MapPrivKey456" });
+        expect(result.vapidSubject).toBe("mailto:map@example.com");
+        expect(result.betterAuthSecret).toBe("MapSecret789");
+        expect(result.extraOrigins).toBe("https://map.example.com");
+        expect(result.port).toBe(8080);
+        expect(result.trustProxy).toBe(true);
+        expect(result.proxyDepth).toBe(2);
+    });
+
+    test("list form still takes priority over mapping form", () => {
+        // When both forms exist, list form regex matches first (realistic edge case)
+        const content = `    environment:
+      - PIZZAPI_TRUST_PROXY=true
+      PIZZAPI_TRUST_PROXY: "false"`;
+        const result = extractSettingsFromCompose(content);
+        expect(result.trustProxy).toBe(true);
+    });
 });
 
 describe("extractVapidFromCompose (backward compat)", () => {

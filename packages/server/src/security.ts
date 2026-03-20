@@ -235,9 +235,15 @@ export function getClientIp(req: Request): string {
             const depth = Math.max(0, parseInt(process.env.PIZZAPI_PROXY_DEPTH || "0", 10) || 0);
             const expectedEntries = depth + 1;
 
-            // Fail closed when the chain is shorter than expected.
+            // Fail closed when the chain doesn't match expected topology.
+            //
+            // IMPORTANT: We return "unknown" (not clientIp) on chain-length mismatches.
+            // clientIp is the proxy's shared address — rate-limiting on it would let one
+            // attacker exhaust the bucket and 429 all users behind the same proxy/CDN.
+            // "unknown" is a single shared bucket, but that's preferable to denying
+            // service to all legitimate users sharing a proxy IP.
             if (parts.length < expectedEntries) {
-                return clientIp;
+                return "unknown";
             }
 
             // For depth>0 we require an exact chain length match. Extra left-side entries
@@ -247,7 +253,7 @@ export function getClientIp(req: Request): string {
             // depth=0 remains tolerant of additional left-side entries because the
             // right-most entry is still the one appended by the directly-connected proxy.
             if (depth > 0 && parts.length !== expectedEntries) {
-                return clientIp;
+                return "unknown";
             }
 
             const index = parts.length - 1 - depth;
