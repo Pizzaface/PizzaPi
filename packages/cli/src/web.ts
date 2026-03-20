@@ -715,6 +715,21 @@ function prebuildUI(repoPath: string): PrebuildResult {
     return { prebuilt: false, rebuilt: false };
 }
 
+/**
+ * Truncate a digest string (e.g. "sha256:abcdef0123456789...") to show the
+ * algorithm prefix plus 12 hex characters.  This preserves enough information
+ * to reliably identify a specific image while keeping the display compact.
+ */
+function truncateDigest(digest: string | undefined): string {
+    if (!digest) return "digest";
+    const colonIdx = digest.indexOf(":");
+    if (colonIdx === -1) return digest.slice(0, 19) || "digest";
+    // Keep the algorithm prefix (e.g. "sha256:") plus 12 hex characters
+    const prefix = digest.slice(0, colonIdx + 1);
+    const hex = digest.slice(colonIdx + 1, colonIdx + 1 + 12);
+    return hex.length > 0 ? `${prefix}${hex}` : "digest";
+}
+
 export function resolveComposeMode(repoPath: string, config: Pick<WebConfig, "image" | "imageTag">): {
     buildBlock: string;
     imageLine: string;
@@ -776,7 +791,7 @@ export function resolveComposeMode(repoPath: string, config: Pick<WebConfig, "im
     pull_policy: ${pullPolicy}
 `,
         hubImage: imageRef,
-        hubVersion: hasDigest ? imageRepo.split("@")[1]?.slice(0, 12) ?? "digest" : resolvedTag,
+        hubVersion: hasDigest ? truncateDigest(imageRepo.split("@")[1]) : resolvedTag,
     };
 }
 
@@ -1165,6 +1180,11 @@ export async function runWeb(args: string[]): Promise<void> {
     if (parsed.image !== undefined && parsed.image !== config.image) {
         config.image = parsed.image;
         configChanged = true;
+        // When switching images without an explicit --tag, reset the stored tag
+        // so a previously pinned tag (e.g. "0.1.32") doesn't silently persist.
+        if (parsed.tag === undefined && config.imageTag !== "latest") {
+            config.imageTag = "latest";
+        }
     }
     if (parsed.tag !== undefined && parsed.tag !== config.imageTag) {
         config.imageTag = parsed.tag;

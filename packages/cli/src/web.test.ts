@@ -260,7 +260,13 @@ describe("resolveComposeMode", () => {
         expect(result.imageLine).not.toContain(":latest");
         expect(result.imageLine).toContain("pull_policy: if_not_present");
         expect(result.hubImage).toBe(digest);
-        expect(result.hubVersion).toBe("sha256:abc12");
+        expect(result.hubVersion).toBe("sha256:abc123def456");
+    });
+
+    test("preserves at least 12 hex chars in digest hubVersion for long digests", () => {
+        const longDigest = "ghcr.io/acme/pizzapi@sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+        const result = resolveComposeMode("/repo", { image: longDigest, imageTag: "latest" });
+        expect(result.hubVersion).toBe("sha256:abcdef012345");
     });
 
     test("defaults to latest tag when imageTag is empty", () => {
