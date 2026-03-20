@@ -3209,15 +3209,17 @@ export function App() {
         resolve(success);
       };
 
-      // Listen for server error events — the server emits these immediately
+      // Listen for trigger_error events — the server emits these immediately
       // when the target child is missing, unauthorized, or relay delivery fails.
-      // This lets us resolve the promise right away instead of waiting for the
-      // 5-second ack timeout.
-      const onError = () => {
-        settle(false, "Trigger delivery failed — try again");
+      // Each error carries its triggerId so concurrent trigger submissions
+      // don't interfere with each other (unlike the shared "error" event).
+      const onTriggerError = (data: any) => {
+        if (data?.triggerId === triggerId) {
+          settle(false, "Trigger delivery failed — try again");
+        }
       };
-      socket.on("error", onError);
-      const errorCleanup = () => { socket.off("error", onError); };
+      socket.on("trigger_error" as any, onTriggerError);
+      const errorCleanup = () => { socket.off("trigger_error" as any, onTriggerError); };
 
       // Send with Socket.IO ack — server only acks on successful delivery.
       socket.emit("trigger_response", {

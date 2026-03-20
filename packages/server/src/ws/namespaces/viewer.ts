@@ -358,7 +358,8 @@ export function registerViewerNamespace(io: SocketIOServer): void {
                 const targetSession = await getSharedSession(targetSessionId);
                 if (!targetSession || targetSession.userId !== viewerUserId) {
                     // Target session doesn't exist or belongs to a different user — nack.
-                    socket.emit("error", { message: `Target session ${targetSessionId} not found or unauthorized` });
+                    // Use trigger_error (not error) so the client can correlate by triggerId.
+                    (socket as any).emit("trigger_error", { message: `Target session ${targetSessionId} not found or unauthorized`, triggerId });
                     return;
                 }
                 const triggerPayload = {
@@ -376,7 +377,7 @@ export function registerViewerNamespace(io: SocketIOServer): void {
                 } else if (await emitToRelaySessionVerified(targetSessionId, "trigger_response", triggerPayload)) {
                     if (typeof ack === "function") ack();
                 } else {
-                    socket.emit("error", { message: `Failed to deliver trigger response to child session ${targetSessionId}` });
+                    (socket as any).emit("trigger_error", { message: `Failed to deliver trigger response to child session ${targetSessionId}`, triggerId });
                 }
                 return;
             }
@@ -395,7 +396,7 @@ export function registerViewerNamespace(io: SocketIOServer): void {
             } else if (await emitToRelaySessionVerified(sessionId, "trigger_response", triggerPayloadForParent)) {
                 if (typeof ack === "function") ack();
             } else {
-                socket.emit("error", { message: `Failed to deliver trigger response to session ${sessionId}` });
+                (socket as any).emit("trigger_error", { message: `Failed to deliver trigger response to session ${sessionId}`, triggerId });
             }
         });
 

@@ -61,8 +61,8 @@ describe("renderTrigger", () => {
                 },
             });
             const result = renderTrigger(trigger);
-            // Must contain a valid base64 block
-            const match = result.match(/<!-- questions64:([\w+/=]+) -->/);
+            // Must contain a valid base64 block in the trigger metadata comment
+            const match = result.match(/questions64:([\w+/=]+)/);
             expect(match).toBeTruthy();
             // Round-trip: decode and verify
             const decoded = Buffer.from(match![1], "base64").toString("utf-8");
