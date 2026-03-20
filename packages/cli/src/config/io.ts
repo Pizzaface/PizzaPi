@@ -7,7 +7,7 @@ import {
     type HooksConfig,
     type HookEntry,
     isPlainObject,
-} from "./config-types.js";
+} from "./types.js";
 import { mergeSandboxConfig } from "./sandbox.js";
 
 // ── Internal helpers ──────────────────────────────────────────────────────────

@@ -8,7 +8,7 @@ import {
     type SrtConfig,
     type ResolvedSandboxConfig,
     SANDBOX_MODE_ALIASES,
-} from "./config-types.js";
+} from "./types.js";
 
 export {
     validateSandboxOverride,
