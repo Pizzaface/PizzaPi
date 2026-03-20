@@ -43,6 +43,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -168,6 +169,7 @@ export function App() {
 
   const [newSessionOpen, setNewSessionOpen] = React.useState(false);
   const [spawnRunnerId, setSpawnRunnerId] = React.useState<string | undefined>(undefined);
+  const [spawnWorkerType, setSpawnWorkerType] = React.useState<"pi" | "claude-code">("pi");
   const [spawnCwd, setSpawnCwd] = React.useState<string>("");
   const [spawnPreselectedRunnerId, setSpawnPreselectedRunnerId] = React.useState<string | null>(null);
   const [spawningSession, setSpawningSession] = React.useState(false);
@@ -2650,6 +2652,7 @@ export function App() {
   const handleNewSession = React.useCallback(() => {
     setSpawnRunnerId(undefined);
     setSpawnPreselectedRunnerId(null);
+    setSpawnWorkerType("pi");
     setSpawnCwd("");
     setRecentFolders([]);
     setNewSessionOpen(true);
@@ -2658,6 +2661,7 @@ export function App() {
   const handleDuplicateSession = React.useCallback((runnerId: string, cwd: string) => {
     setSpawnRunnerId(runnerId);
     setSpawnPreselectedRunnerId(runnerId);
+    setSpawnWorkerType("pi");
     setSpawnCwd(cwd);
     setRecentFolders([]);
     setNewSessionOpen(true);
@@ -2712,6 +2716,7 @@ export function App() {
     const payload: any = {
       runnerId: spawnRunnerId,
       ...(spawnCwd.trim() ? { cwd: spawnCwd.trim() } : {}),
+      ...(spawnWorkerType !== "pi" ? { workerType: spawnWorkerType } : {}),
     };
 
     let sessionId: string | null = null;
@@ -2754,7 +2759,7 @@ export function App() {
     } finally {
       setSpawningSession(false);
     }
-  }, [spawningSession, spawnRunnerId, spawnCwd, handleOpenSession, waitForSessionToGoLive]);
+  }, [spawningSession, spawnRunnerId, spawnWorkerType, spawnCwd, handleOpenSession, waitForSessionToGoLive]);
 
   /** Spawn handler for the new wizard dialog. */
   const handleWizardSpawn = React.useCallback(async (runnerId: string, cwd: string | undefined) => {
