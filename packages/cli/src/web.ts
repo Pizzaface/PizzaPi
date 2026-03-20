@@ -459,7 +459,7 @@ function generateComposeFile(repoPath: string, config: WebConfig): string {
             ? `      - PIZZAPI_TRUST_PROXY=false\n`
             : `      # - PIZZAPI_TRUST_PROXY=\n`;
 
-    const proxyDepthLine = config.proxyDepth && config.proxyDepth > 1
+    const proxyDepthLine = config.proxyDepth !== undefined && config.proxyDepth >= 1
         ? `      - PIZZAPI_PROXY_DEPTH=${config.proxyDepth}\n`
         : `      # - PIZZAPI_PROXY_DEPTH=\n`;
 
