@@ -25,6 +25,11 @@ import { parseJsonArray } from "./utils.js";
 import { isHiddenModel } from "./model-guard.js";
 import type { RouteHandler } from "./types.js";
 
+/** Normalise a raw workerType value from the request body. Unknown values default to "pi". */
+export function normaliseWorkerType(raw: unknown): "pi" | "claude-code" {
+    return raw === "claude-code" ? "claude-code" : "pi";
+}
+
 export const handleRunnersRoute: RouteHandler = async (req, url) => {
     // ── List runners ───────────────────────────────────────────────────
     if (url.pathname === "/api/runners" && req.method === "GET") {
@@ -84,6 +89,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
                 : undefined;
 
         const requestedParentSessionId = typeof body.parentSessionId === "string" ? body.parentSessionId : undefined;
+        const workerType = normaliseWorkerType(body.workerType);
 
         if (!requestedRunnerId) {
             return Response.json({ error: "Missing runnerId" }, { status: 400 });
@@ -151,6 +157,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
                 ...(hiddenModels.length > 0 ? { hiddenModels } : {}),
                 ...(requestedAgent ? { agent: requestedAgent } : {}),
                 ...(validatedParentSessionId ? { parentSessionId: validatedParentSessionId } : {}),
+                ...(workerType !== "pi" ? { workerType } : {}),
             });
         } catch {
             return Response.json({ error: "Failed to send spawn request to runner" }, { status: 502 });
