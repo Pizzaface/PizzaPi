@@ -212,6 +212,17 @@ describe("extractSettingsFromCompose", () => {
         expect(result.proxyDepth).toBe(1);
     });
 
+    test("strips inline YAML comments from proxy settings", () => {
+        const content = `services:
+  server:
+    environment:
+      PIZZAPI_TRUST_PROXY: "true" # Caddy
+      PIZZAPI_PROXY_DEPTH: "1" # trusted hop count`;
+        const result = extractSettingsFromCompose(content);
+        expect(result.trustProxy).toBe(true);
+        expect(result.proxyDepth).toBe(1);
+    });
+
     test("parses YAML mapping syntax for all env vars", () => {
         const content = `services:
   server:

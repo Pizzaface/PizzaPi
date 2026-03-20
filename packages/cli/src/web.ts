@@ -96,11 +96,20 @@ export interface ExtractedComposeSettings {
  * Returns null if the key is not found or is commented out.
  */
 function matchEnvVar(content: string, key: string): string | null {
+    const normalizeValue = (raw: string): string => {
+        let val = raw.replace(/\s+#.*$/, "").trim();
+        // Strip surrounding quotes (both single and double)
+        if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+            val = val.slice(1, -1);
+        }
+        return val;
+    };
+
     // List form: `- KEY=value` (non-commented)
     const listRegex = new RegExp(`^\\s*-\\s+${key}=(.+)`, "m");
     const listMatch = content.match(listRegex);
     if (listMatch?.[1]) {
-        return listMatch[1].trim();
+        return normalizeValue(listMatch[1]);
     }
 
     // YAML mapping form: `KEY: "value"` or `KEY: value` (non-commented)
@@ -108,12 +117,7 @@ function matchEnvVar(content: string, key: string): string | null {
     const mapRegex = new RegExp(`^\\s+${key}:\\s+(.+)`, "m");
     const mapMatch = content.match(mapRegex);
     if (mapMatch?.[1]) {
-        let val = mapMatch[1].trim();
-        // Strip surrounding quotes (both single and double)
-        if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
-            val = val.slice(1, -1);
-        }
-        return val;
+        return normalizeValue(mapMatch[1]);
     }
 
     // Bare form fallback: `KEY=value` on a non-commented line (no list/mapping prefix).
@@ -121,7 +125,7 @@ function matchEnvVar(content: string, key: string): string | null {
     const bareRegex = new RegExp(`^(?!\\s*#).*${key}=(.+)`, "m");
     const bareMatch = content.match(bareRegex);
     if (bareMatch?.[1]) {
-        return bareMatch[1].trim();
+        return normalizeValue(bareMatch[1]);
     }
 
     return null;
