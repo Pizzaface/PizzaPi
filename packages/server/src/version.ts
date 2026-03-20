@@ -1,6 +1,23 @@
+import { readFileSync } from "fs";
+import { join } from "path";
+
 const NPM_PACKAGE = "@pizzapi/pizza";
 const CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes
 const FAILURE_TTL_MS = 60 * 1000; // 1 minute backoff on failure
+
+/**
+ * Version from the server's own package.json, read once at module load.
+ * Used as a fallback when PIZZAPI_HUB_VERSION is not injected by compose.
+ */
+const LOCAL_PACKAGE_VERSION: string | null = (() => {
+    try {
+        const pkgPath = join(import.meta.dirname ?? __dirname, "../package.json");
+        const pkg = JSON.parse(readFileSync(pkgPath, "utf-8")) as { version?: string };
+        return pkg.version?.trim() || null;
+    } catch {
+        return null;
+    }
+})();
 
 let cachedVersion: string | null = null;
 let cachedAt = 0;
@@ -47,6 +64,9 @@ export function getHubVersionInfo(): { image: string | null; version: string | n
     const version = process.env.PIZZAPI_HUB_VERSION?.trim();
     return {
         image: image ? image : null,
-        version: version ? version : null,
+        // Fall back to the package's own version so deployments that don't go
+        // through `pizza web` (docker/compose.yml, bun run dev) still surface
+        // a meaningful hub version in the UI rather than returning null.
+        version: version ? version : LOCAL_PACKAGE_VERSION,
     };
 }
