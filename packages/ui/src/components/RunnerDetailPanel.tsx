@@ -355,6 +355,11 @@ export function RunnerDetailPanel({
                             </code>{" "}
                             on your machine.
                         </p>
+                        {hubVersion && (
+                            <p className="text-[10px] text-muted-foreground mt-3">
+                                Hub: {hubImage ?? "custom image"} ({hubVersion})
+                            </p>
+                        )}
                     </div>
                 </div>
             </div>
@@ -364,7 +369,14 @@ export function RunnerDetailPanel({
     if (!runner) {
         return (
             <div className="flex flex-col flex-1 p-4 sm:p-6 overflow-y-auto items-center justify-center">
-                <p className="text-sm text-muted-foreground">Select a runner from the sidebar.</p>
+                <div className="text-center space-y-2">
+                    <p className="text-sm text-muted-foreground">Select a runner from the sidebar.</p>
+                    {hubVersion && (
+                        <p className="text-[10px] text-muted-foreground">
+                            Hub: {hubImage ?? "custom image"} ({hubVersion})
+                        </p>
+                    )}
+                </div>
             </div>
         );
     }

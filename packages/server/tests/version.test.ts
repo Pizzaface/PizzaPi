@@ -20,10 +20,10 @@ afterEach(() => {
     }
 });
 
-/** Read the local package.json version — same logic as the version module's fallback. */
+/** Read the CLI package.json version — same logic as the version module's fallback. */
 function localPackageVersion(): string | null {
     try {
-        const pkgPath = join(import.meta.dirname ?? __dirname, "../package.json");
+        const pkgPath = join(import.meta.dirname ?? __dirname, "../../cli/package.json");
         const pkg = JSON.parse(readFileSync(pkgPath, "utf-8")) as { version?: string };
         return pkg.version?.trim() || null;
     } catch {
