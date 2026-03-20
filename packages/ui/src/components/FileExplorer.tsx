@@ -695,9 +695,18 @@ function GitChangesView({
   return (
     <div className="flex flex-col h-full">
       {/* Branch header */}
-      <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-muted/50">
-        <GitBranch className="size-4 text-green-600 dark:text-green-400" />
-        <span className="text-sm font-medium text-foreground">{gitStatus.branch || "detached"}</span>
+      <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-muted/50 min-w-0">
+        <GitBranch className="size-4 text-green-600 dark:text-green-400 flex-shrink-0" />
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className="text-sm font-medium text-foreground truncate max-w-[12rem] min-w-0">
+              {gitStatus.branch || "detached"}
+            </span>
+          </TooltipTrigger>
+          <TooltipContent side="bottom" className="font-mono max-w-xs break-all">
+            {gitStatus.branch || "detached"}
+          </TooltipContent>
+        </Tooltip>
         <div className="flex-1" />
         {gitStatus.ahead > 0 && (
           <span className="inline-flex items-center gap-0.5 text-[0.65rem] text-green-600 dark:text-green-400" title={`${gitStatus.ahead} commit(s) ahead`}>

@@ -16,6 +16,7 @@ import { formatPathTail } from "@/lib/path";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { PanelLeftClose, PanelLeftOpen, Plus, X, HardDrive, FolderOpen, CheckSquare, Square, CheckCheck, Trash2, Pin, PinOff, ChevronDown, ChevronRight, MessageSquare, Copy } from "lucide-react";
 import { buildSessionTree, flattenSessionTree, getSessionIndent, getDescendantSessionIds, getGroupCwd } from "@/lib/session-tree";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 interface HubSession {
     sessionId: string;
@@ -1358,13 +1359,19 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                                 const cwd = s.cwd || "";
                                                                 const match = cwd.match(/\/\.worktrees\/([^/]+)/);
                                                                 return match ? (
-                                                                    <div className="flex items-center gap-1 mt-0.5">
-                                                                        <span
-                                                                            className="text-[0.55rem] bg-amber-500/15 text-amber-400/80 px-1 py-0.5 rounded font-mono leading-none truncate max-w-full"
-                                                                            title={`Worktree: ${match[1]}`}
-                                                                        >
-                                                                            {match[1]}
-                                                                        </span>
+                                                                    <div className="flex items-center gap-1 mt-0.5 min-w-0">
+                                                                        <Tooltip>
+                                                                            <TooltipTrigger asChild>
+                                                                                <span
+                                                                                    className="text-[0.55rem] bg-amber-500/15 text-amber-400/80 px-1 py-0.5 rounded font-mono leading-none truncate max-w-[10rem]"
+                                                                                >
+                                                                                    {match[1]}
+                                                                                </span>
+                                                                            </TooltipTrigger>
+                                                                            <TooltipContent side="bottom" className="font-mono max-w-xs break-all">
+                                                                                {match[1]}
+                                                                            </TooltipContent>
+                                                                        </Tooltip>
                                                                     </div>
                                                                 ) : null;
                                                             })()}
