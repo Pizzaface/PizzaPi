@@ -1466,7 +1466,8 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
       {/* Session info bar */}
       {sessionId && (
         <div className="border-b border-border px-3 py-2 flex items-center gap-2 min-w-0">
-          {/* Status dot */}
+          {/* Status dot — always visible; on mobile this gives compaction/active state
+              that the mobile header's simpler dot doesn't differentiate */}
           <span
             className={cn(
               "inline-block h-2 w-2 rounded-full flex-shrink-0 transition-colors",
@@ -1492,14 +1493,14 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
             </span>
           )}
 
-          {/* Session name + model */}
-          <div className="flex-1 min-w-0 flex items-center gap-2">
+          {/* Session name + model — hidden on mobile (shown in the fixed mobile header) */}
+          <div className="hidden md:flex flex-1 min-w-0 items-center gap-2">
             <span className="text-sm font-medium truncate leading-none">
               {sessionName || `Session ${sessionId.slice(0, 8)}…`}
             </span>
             {activeModel?.provider && (
               <span
-                className="hidden sm:inline-flex items-center gap-1 rounded-full border border-border bg-muted px-2 py-0.5 text-[0.65rem] text-muted-foreground flex-shrink-0"
+                className="inline-flex items-center gap-1 rounded-full border border-border bg-muted px-2 py-0.5 text-[0.65rem] text-muted-foreground flex-shrink-0"
                 title={`${activeModel.provider} · ${activeModel.name ?? activeModel.id}`}
               >
                 <ProviderIcon provider={activeModel.provider} className="size-3" />
@@ -1507,6 +1508,8 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
               </span>
             )}
           </div>
+          {/* Mobile spacer — keeps action buttons right-aligned when name is hidden */}
+          <div className="flex-1 md:hidden" />
 
           {/* Right: badges + end session */}
           <div className="flex items-center gap-1.5 flex-shrink-0">

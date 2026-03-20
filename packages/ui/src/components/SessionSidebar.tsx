@@ -1342,49 +1342,45 @@ export const SessionSidebar = React.memo(function SessionSidebar({
 
                                                         {/* Text info */}
                                                         <div className="flex-1 min-w-0">
-                                                            <div className="flex items-baseline justify-between gap-1 min-w-0">
-                                                                <span className="truncate text-[0.8rem] font-medium leading-tight">
-                                                                    {s.parentSessionId && (
-                                                                        <span className="text-[0.6rem] text-blue-400/70 mr-1" title="Child session">↳</span>
-                                                                    )}
-                                                                    {s.sessionName?.trim() || `Session ${s.sessionId.slice(0, 8)}…`}
-                                                                </span>
+                                                            {/* Session name — gets full width on its own line */}
+                                                            <span className="block truncate text-[0.8rem] font-medium leading-tight">
+                                                                {s.parentSessionId && (
+                                                                    <span className="text-[0.6rem] text-blue-400/70 mr-1" title="Child session">↳</span>
+                                                                )}
+                                                                {s.sessionName?.trim() || `Session ${s.sessionId.slice(0, 8)}…`}
+                                                            </span>
+                                                            {/* Second line: timestamp + worktree badge + user/path */}
+                                                            <div className="flex items-center gap-1 mt-0.5 min-w-0 flex-wrap">
                                                                 <span className="text-[0.65rem] text-sidebar-foreground/45 flex-shrink-0">
                                                                     {timeLabel}
                                                                 </span>
-                                                            </div>
-                                                            {/* Worktree badge — shown when cwd is inside a .worktrees/ directory */}
-                                                            {(() => {
-                                                                const cwd = s.cwd || "";
-                                                                const match = cwd.match(/\/\.worktrees\/([^/]+)/);
-                                                                return match ? (
-                                                                    <div className="flex items-center gap-1 mt-0.5">
+                                                                {/* Worktree badge — shown when cwd is inside a .worktrees/ directory */}
+                                                                {(() => {
+                                                                    const cwd = s.cwd || "";
+                                                                    const match = cwd.match(/\/\.worktrees\/([^/]+)/);
+                                                                    return match ? (
                                                                         <span
-                                                                            className="text-[0.55rem] bg-amber-500/15 text-amber-400/80 px-1 py-0.5 rounded font-mono leading-none truncate max-w-full"
+                                                                            className="text-[0.55rem] bg-amber-500/15 text-amber-400/80 px-1 py-0.5 rounded font-mono leading-none truncate max-w-[8rem]"
                                                                             title={`Worktree: ${match[1]}`}
                                                                         >
                                                                             {match[1]}
                                                                         </span>
-                                                                    </div>
-                                                                ) : null;
-                                                            })()}
-                                                            {(s.userName || (showCwd && s.cwd)) && (
-                                                                <div className="flex items-center gap-1 mt-0.5 min-w-0">
-                                                                    {s.userName && (
-                                                                        <span className="text-[0.65rem] text-sidebar-foreground/45 truncate">
-                                                                            {s.userName}
-                                                                        </span>
-                                                                    )}
-                                                                    {showCwd && s.cwd && (
-                                                                        <span
-                                                                            className="text-[0.65rem] text-sidebar-foreground/35 truncate"
-                                                                            title={s.cwd}
-                                                                        >
-                                                                            {s.userName ? "·" : ""} {formatPathTail(s.cwd, 2)}
-                                                                        </span>
-                                                                    )}
-                                                                </div>
-                                                            )}
+                                                                    ) : null;
+                                                                })()}
+                                                                {s.userName && (
+                                                                    <span className="text-[0.65rem] text-sidebar-foreground/40 truncate">
+                                                                        · {s.userName}
+                                                                    </span>
+                                                                )}
+                                                                {showCwd && s.cwd && (
+                                                                    <span
+                                                                        className="text-[0.65rem] text-sidebar-foreground/30 truncate"
+                                                                        title={s.cwd}
+                                                                    >
+                                                                        · {formatPathTail(s.cwd, 1)}
+                                                                    </span>
+                                                                )}
+                                                            </div>
                                                         </div>
                                                     </button>
                                                 </div>
