@@ -734,15 +734,25 @@ export function resolveComposeMode(repoPath: string, config: Pick<WebConfig, "im
         };
     }
 
+    // If the image reference already contains a digest (@sha256:...), use it as-is
+    // — appending a tag to a digest reference produces an invalid image ref.
+    const hasDigest = imageRepo.includes("@");
     const imageTag = config.imageTag.trim() || "latest";
-    const imageRef = `${imageRepo}:${imageTag}`;
+    const imageRef = hasDigest ? imageRepo : `${imageRepo}:${imageTag}`;
+
+    // Use `pull_policy: always` only for mutable tags (latest, main, stable)
+    // to ensure operators get updates. For pinned tags and digests, default to
+    // `if_not_present` so restarts succeed even when the registry is unreachable.
+    const mutableTags = new Set(["latest", "main", "stable", "dev", "nightly"]);
+    const pullPolicy = !hasDigest && mutableTags.has(imageTag) ? "always" : "if_not_present";
+
     return {
         buildBlock: "",
         imageLine: `    image: ${imageRef}
-    pull_policy: always
+    pull_policy: ${pullPolicy}
 `,
         hubImage: imageRef,
-        hubVersion: imageTag,
+        hubVersion: hasDigest ? imageRepo.split("@")[1]?.slice(0, 12) ?? "digest" : imageTag,
     };
 }
 

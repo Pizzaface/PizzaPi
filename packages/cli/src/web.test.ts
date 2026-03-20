@@ -233,13 +233,40 @@ describe("resolveComposeMode", () => {
         });
     });
 
-    test("returns image mode fields when image is set", () => {
+    test("returns image mode fields with if_not_present for pinned tags", () => {
         expect(resolveComposeMode("/repo", { image: "ghcr.io/acme/pizzapi", imageTag: "0.1.32" })).toEqual({
             buildBlock: "",
-            imageLine: "    image: ghcr.io/acme/pizzapi:0.1.32\n    pull_policy: always\n",
+            imageLine: "    image: ghcr.io/acme/pizzapi:0.1.32\n    pull_policy: if_not_present\n",
             hubImage: "ghcr.io/acme/pizzapi:0.1.32",
             hubVersion: "0.1.32",
         });
+    });
+
+    test("uses pull_policy: always for mutable tags like latest", () => {
+        const result = resolveComposeMode("/repo", { image: "ghcr.io/acme/pizzapi", imageTag: "latest" });
+        expect(result.imageLine).toContain("pull_policy: always");
+        expect(result.imageLine).toContain("image: ghcr.io/acme/pizzapi:latest");
+    });
+
+    test("uses pull_policy: always for mutable tag 'main'", () => {
+        const result = resolveComposeMode("/repo", { image: "ghcr.io/acme/pizzapi", imageTag: "main" });
+        expect(result.imageLine).toContain("pull_policy: always");
+    });
+
+    test("handles digest-pinned image references without appending tag", () => {
+        const digest = "ghcr.io/acme/pizzapi@sha256:abc123def456";
+        const result = resolveComposeMode("/repo", { image: digest, imageTag: "latest" });
+        expect(result.imageLine).toContain(`image: ${digest}`);
+        expect(result.imageLine).not.toContain(":latest");
+        expect(result.imageLine).toContain("pull_policy: if_not_present");
+        expect(result.hubImage).toBe(digest);
+        expect(result.hubVersion).toBe("sha256:abc12");
+    });
+
+    test("defaults to latest tag when imageTag is empty", () => {
+        const result = resolveComposeMode("/repo", { image: "ghcr.io/acme/pizzapi", imageTag: "" });
+        expect(result.imageLine).toContain("image: ghcr.io/acme/pizzapi:latest");
+        expect(result.imageLine).toContain("pull_policy: always");
     });
 });
 
