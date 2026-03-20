@@ -1,9 +1,14 @@
 import * as React from "react";
 
 import {
+  Conversation,
+  ConversationContent,
+  ConversationScrollButton,
+  WideNearBottomStick,
   ConversationEmptyState,
   ConversationExport,
   MessageCopyButton,
+  useConversationScrollRef,
 } from "@/components/ai-elements/conversation";
 import type { RelayMessage } from "@/components/session-viewer/types";
 import { SessionActionsProvider, type SessionActions } from "@/components/session-viewer/session-actions-context";
@@ -67,7 +72,7 @@ import { MultipleChoiceQuestions } from "@/components/ai-elements/multiple-choic
 import { PlanModePanel, type PlanModeAnswer } from "@/components/ai-elements/plan-mode";
 import { formatAnswersForAgent, type QuestionDisplayMode } from "@/lib/ask-user-questions";
 import { dismissNotificationsForSession } from "@/lib/push";
-import { AlertTriangleIcon, ArrowDownIcon, BookOpen, Bot, CheckCircle2, ChevronsUpDown, Circle, CircleDashed, Copy, Loader2, MessageSquare, OctagonX, PaperclipIcon, Pencil, Plus, Puzzle, ShieldAlert, Zap, Clock, X, Trash2, TerminalIcon, XCircle, FolderTree } from "lucide-react";
+import { AlertTriangleIcon, BookOpen, Bot, CheckCircle2, ChevronsUpDown, Circle, CircleDashed, Copy, Loader2, MessageSquare, OctagonX, PaperclipIcon, Pencil, Plus, Puzzle, ShieldAlert, Zap, Clock, X, Trash2, TerminalIcon, XCircle, FolderTree } from "lucide-react";
 import { AtMentionPopover } from "@/components/AtMentionPopover";
 import type { Entry as AtMentionEntry } from "@/hooks/useAtMentionFiles";
 import { McpToggleContext, type McpToggleHandler } from "@/components/session-viewer/McpToggleContext";
@@ -497,6 +502,49 @@ const SessionMessageItem = React.memo(({ message, activeToolCalls, agentActive, 
 
   return true;
 });
+
+/**
+ * Renders a 1px sentinel at the top of the message list and sets up an
+ * IntersectionObserver to load older messages when the user scrolls up.
+ *
+ * Must be rendered inside a <Conversation> (StickToBottom) so it can access
+ * the real scroll container via useConversationScrollRef(). Because it lives
+ * inside <Conversation key={sessionId}>, it remounts on session switch —
+ * automatically recreating the observer against the new DOM.
+ */
+function PaginationSentinel({ hasMore, onLoadMore }: { hasMore: boolean; onLoadMore: () => void }) {
+  const sentinelRef = React.useRef<HTMLDivElement | null>(null);
+  const scrollRef = useConversationScrollRef();
+
+  React.useEffect(() => {
+    const sentinel = sentinelRef.current;
+    const scroller = scrollRef.current;
+    if (!sentinel || !scroller || !hasMore) return;
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (!entry?.isIntersecting) return;
+        // use-stick-to-bottom handles scroll anchoring automatically —
+        // no manual scrollTop adjustment needed when content is prepended.
+        onLoadMore();
+      },
+      { root: scroller, threshold: 0 },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [hasMore, onLoadMore, scrollRef]);
+
+  return (
+    <>
+      <div ref={sentinelRef} className="h-px" />
+      {hasMore && (
+        <div className="py-2 text-center text-xs text-muted-foreground">
+          Scroll up for older messages
+        </div>
+      )}
+    </>
+  );
+}
 
 function SessionSkeleton() {
   return (
@@ -1359,22 +1407,19 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     [messages],
   );
 
-  // Stable sort: messages with a timestamp come first (ordered by timestamp);
-  // messages with no timestamp are placed at the absolute end in their original
-  // relative order. This prevents timestampless messages (e.g. synthesised tool
-  // cards, streaming partials) from appearing in the middle of a conversation.
+  // Stable insertion-order-preserving sort: messages with timestamps sort
+  // chronologically, messages without timestamps (Infinity) go to the end,
+  // and messages with the same timestamp keep their original relative order.
+  // This prevents DOM reordering when messages transition from no-timestamp
+  // to having a timestamp (e.g., when a tool result arrives).
   const sortedMessages = React.useMemo(() => {
-    const withTs: RelayMessage[] = [];
-    const withoutTs: RelayMessage[] = [];
-    for (const msg of groupedMessages) {
-      if (msg.timestamp != null) {
-        withTs.push(msg);
-      } else {
-        withoutTs.push(msg);
-      }
-    }
-    withTs.sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
-    return [...withTs, ...withoutTs];
+    return groupedMessages.slice().sort((a, b) => {
+      const aTs = a.timestamp ?? Infinity;
+      const bTs = b.timestamp ?? Infinity;
+      if (aTs !== bTs) return aTs - bTs;
+      // Preserve original order for same/missing timestamps
+      return 0;
+    });
   }, [groupedMessages]);
 
   const visibleMessages = React.useMemo(
@@ -1391,11 +1436,6 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
 
   const PAGE_SIZE = 50;
 
-  const scrollRef = React.useRef<HTMLDivElement | null>(null);
-  const contentRef = React.useRef<HTMLDivElement | null>(null);
-  const sentinelRef = React.useRef<HTMLDivElement | null>(null);
-  const [isNearBottom, setIsNearBottom] = React.useState(true);
-  const isNearBottomRef = React.useRef(true);
   const [renderedCount, setRenderedCount] = React.useState(PAGE_SIZE);
 
   // Reset window when session or message list changes significantly.
@@ -1409,81 +1449,9 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
   );
   const hasMore = visibleMessages.length > renderedCount;
 
-  const updateNearBottomState = React.useCallback(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    const nearBottom = distanceFromBottom < 200;
-    isNearBottomRef.current = nearBottom;
-    setIsNearBottom(nearBottom);
+  const loadMoreMessages = React.useCallback(() => {
+    setRenderedCount((c) => c + PAGE_SIZE);
   }, []);
-
-  const scrollToBottom = React.useCallback((behavior: "auto" | "smooth" = "auto") => {
-    const el = scrollRef.current;
-    if (!el) return;
-    el.scrollTo({ top: el.scrollHeight, behavior });
-  }, []);
-
-  // ResizeObserver: when the scroll content grows in height (e.g. during thinking/
-  // streaming where message count stays the same), keep pinned to the bottom.
-  // We calculate distance directly instead of relying on isNearBottomRef, which
-  // can be flipped to false by a scroll event that fires between the content
-  // resize and this callback (race condition).
-  React.useEffect(() => {
-    const content = contentRef.current;
-    const scroller = scrollRef.current;
-    if (!content || !scroller) return;
-    const observer = new ResizeObserver(() => {
-      const distance = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
-      if (distance < 200 || isNearBottomRef.current) {
-        scrollToBottom("auto");
-      }
-    });
-    observer.observe(content);
-    return () => observer.disconnect();
-  }, [scrollToBottom]);
-
-  // When the sentinel at the top enters the viewport, load the previous page
-  // while preserving the scroll position so the view doesn't jump.
-  React.useEffect(() => {
-    const sentinel = sentinelRef.current;
-    const scroller = scrollRef.current;
-    if (!sentinel || !scroller || !hasMore) return;
-
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        if (!entry?.isIntersecting) return;
-        const prevScrollHeight = scroller.scrollHeight;
-        setRenderedCount((c) => c + PAGE_SIZE);
-        // After React re-renders with more items, restore scroll position so
-        // the user stays at the same message they were looking at.
-        requestAnimationFrame(() => {
-          scroller.scrollTop += scroller.scrollHeight - prevScrollHeight;
-        });
-      },
-      { root: scroller, threshold: 0 },
-    );
-    observer.observe(sentinel);
-    return () => observer.disconnect();
-  }, [hasMore]);
-
-  // On session change, jump to bottom immediately.
-  React.useEffect(() => {
-    if (!sessionId) return;
-    requestAnimationFrame(() => {
-      scrollToBottom("auto");
-      updateNearBottomState();
-    });
-  }, [sessionId, scrollToBottom, updateNearBottomState]);
-
-  // When new messages arrive and we're near the bottom, keep pinned.
-  React.useEffect(() => {
-    if (!isNearBottom) return;
-    requestAnimationFrame(() => {
-      scrollToBottom("auto");
-      updateNearBottomState();
-    });
-  }, [visibleMessages, isNearBottom, scrollToBottom, updateNearBottomState]);
 
   return (
     <SessionActionsProvider value={sessionActions}>
@@ -1693,46 +1661,23 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
             />
           )
         ) : (
-          <>
-            <div
-              ref={scrollRef}
-              className="h-full overflow-y-auto overflow-x-hidden"
-              onScroll={updateNearBottomState}
-            >
-              <div ref={contentRef} className="w-full py-2 flex flex-col min-h-full justify-end">
-                {/* Sentinel: scrolling up to this triggers loading older messages */}
-                <div ref={sentinelRef} className="h-px" />
-                {hasMore && (
-                  <div className="py-2 text-center text-xs text-muted-foreground">
-                    Scroll up for older messages
-                  </div>
-                )}
-                {renderedMessages.map((message, index) => (
-                  <SessionMessageItem
-                    key={message.key}
-                    message={message}
-                    activeToolCalls={activeToolCalls}
-                    agentActive={agentActive}
-                    isLast={index === renderedMessages.length - 1}
-                    onTriggerResponse={onTriggerResponse}
-                  />
-                ))}
-              </div>
-            </div>
-
-            {!isNearBottom && (
-              <Button
-                className="absolute bottom-4 left-[50%] -translate-x-1/2 rounded-full"
-                onClick={() => scrollToBottom("smooth")}
-                size="icon"
-                type="button"
-                variant="outline"
-                aria-label="Scroll to bottom"
-              >
-                <ArrowDownIcon className="size-4" />
-              </Button>
-            )}
-          </>
+          <Conversation key={sessionId} className="overflow-x-hidden">
+            <ConversationContent className="w-full gap-0 p-0 py-2">
+              <PaginationSentinel hasMore={hasMore} onLoadMore={loadMoreMessages} />
+              {renderedMessages.map((message, index) => (
+                <SessionMessageItem
+                  key={message.key}
+                  message={message}
+                  activeToolCalls={activeToolCalls}
+                  agentActive={agentActive}
+                  isLast={index === renderedMessages.length - 1}
+                  onTriggerResponse={onTriggerResponse}
+                />
+              ))}
+            </ConversationContent>
+            <WideNearBottomStick />
+            <ConversationScrollButton />
+          </Conversation>
         )}
       </div>
 

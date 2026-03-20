@@ -16,13 +16,22 @@ import { ArrowDownIcon, CheckIcon, ClipboardIcon, DownloadIcon, ShareIcon } from
 import { useCallback, useEffect, useState, useRef } from "react";
 import { StickToBottom, useStickToBottomContext } from "use-stick-to-bottom";
 
+/**
+ * Default distance-from-bottom (in px) within which auto-follow remains
+ * active during streaming / content resizes.  `use-stick-to-bottom` uses a
+ * hardcoded 70 px threshold internally; this wider value preserves the UX of
+ * the original custom scroller, where users within 200 px of the bottom were
+ * still considered "pinned".
+ */
+const NEAR_BOTTOM_THRESHOLD_PX = 200;
+
 export type ConversationProps = ComponentProps<typeof StickToBottom>;
 
 export const Conversation = ({ className, ...props }: ConversationProps) => (
   <StickToBottom
     className={cn("relative flex-1 overflow-y-hidden", className)}
-    initial="smooth"
-    resize="smooth"
+    initial="instant"
+    resize="instant"
     role="log"
     {...props}
   />
@@ -37,7 +46,7 @@ export const ConversationContent = ({
   ...props
 }: ConversationContentProps) => (
   <StickToBottom.Content
-    className={cn("flex flex-col gap-8 p-4", className)}
+    className={cn("flex flex-col gap-8 p-4 min-h-full justify-end", className)}
     {...props}
   />
 );
@@ -76,6 +85,78 @@ export const ConversationEmptyState = ({
     )}
   </div>
 );
+
+/**
+ * Hook to access the StickToBottom scroll container ref from within a
+ * <Conversation> tree. Used by the pagination sentinel to set up an
+ * IntersectionObserver rooted at the actual scrollable element.
+ */
+export function useConversationScrollRef() {
+  const { scrollRef } = useStickToBottomContext();
+  return scrollRef;
+}
+
+/**
+ * Renders nothing visible — sits inside a `<Conversation>` tree and extends
+ * the auto-follow zone from `use-stick-to-bottom`'s built-in 70 px to
+ * {@link NEAR_BOTTOM_THRESHOLD_PX} (200 px).  When the scrollable content
+ * grows (streaming tokens, expanding tool outputs, etc.) and the user was
+ * within the wider threshold *before* the resize, this component calls
+ * `scrollToBottom()` so the view stays pinned.
+ *
+ * Importantly, the near-bottom state is tracked *continuously* via a scroll
+ * listener rather than measured after a resize.  This prevents large content
+ * jumps (e.g. a tool result taller than 200 px) from breaking auto-follow:
+ * the pre-resize state is already captured, so the ResizeObserver can act on
+ * it regardless of how much content was added.
+ */
+export function WideNearBottomStick() {
+  const { scrollRef, scrollToBottom } = useStickToBottomContext();
+  const wasNearBottomRef = useRef(false);
+
+  useEffect(() => {
+    const scroller = scrollRef.current;
+    if (!scroller) return;
+
+    // Continuously track whether the user is within the near-bottom zone.
+    // This captures the *pre-resize* state so the ResizeObserver below can
+    // decide correctly even when a single content addition exceeds the
+    // threshold distance.
+    const updateNearBottom = () => {
+      const distance =
+        scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+      wasNearBottomRef.current = distance <= NEAR_BOTTOM_THRESHOLD_PX;
+    };
+
+    // Initialise from current scroll position.
+    updateNearBottom();
+
+    scroller.addEventListener("scroll", updateNearBottom, { passive: true });
+
+    // Observe the scroll container itself — its scrollHeight changes when
+    // children grow (streaming) even if no DOM nodes are added/removed.
+    const observer = new ResizeObserver(() => {
+      if (wasNearBottomRef.current) {
+        scrollToBottom("instant");
+      }
+    });
+
+    // Observe the first (and usually only) child — this is the content
+    // wrapper whose height actually changes during streaming.
+    for (const child of Array.from(scroller.children)) {
+      observer.observe(child);
+    }
+    // Also observe the scroller itself in case it resizes (viewport change).
+    observer.observe(scroller);
+
+    return () => {
+      scroller.removeEventListener("scroll", updateNearBottom);
+      observer.disconnect();
+    };
+  }, [scrollRef, scrollToBottom]);
+
+  return null;
+}
 
 export type ConversationScrollButtonProps = ComponentProps<typeof Button>;
 
