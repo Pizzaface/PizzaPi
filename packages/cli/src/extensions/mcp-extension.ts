@@ -527,6 +527,18 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
   const bridge: McpBridge = {
     status: () => lastSnapshot,
     async reload() {
+      // Cancel any in-flight eager/background load so it can't finish after
+      // this reload, tear down our freshly loaded clients, and restore stale
+      // MCP tool state.  Rotate the lifecycle controller so the cancelled
+      // load's completion is discarded by the staleness check in load().
+      if (eagerLoadPromise) {
+        loadLifecycleController.abort();
+        loadLifecycleController = new AbortController();
+        // Wait for the eager load to settle (it will see the abort and bail)
+        await eagerLoadPromise.catch(() => {});
+        eagerLoadPromise = null;
+      }
+
       const snapshot = await load();
       // Reapply relay context to newly created providers after reload
       if (currentRelayContext) {

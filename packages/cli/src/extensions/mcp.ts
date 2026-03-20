@@ -1173,7 +1173,22 @@ export async function registerMcpTools(
           }
         } else {
           if (signal?.aborted) throw new Error("MCP registration aborted");
-          await client.initialize();
+          // Even without a timeout, forward the lifecycle abort signal so
+          // session shutdown can interrupt a hung initialize/OAuth flow.
+          // Without this, disabling the init timeout (mcpInitTimeout: 0)
+          // would leave stale eager loads uninterruptible on shutdown.
+          const ac = new AbortController();
+          const onOuterAbort = () => ac.abort();
+          signal?.addEventListener("abort", onOuterAbort, { once: true });
+          try {
+            await client.initialize(ac.signal);
+          } catch (err) {
+            ac.abort();
+            try { client.close(); } catch {}
+            throw err;
+          } finally {
+            signal?.removeEventListener("abort", onOuterAbort);
+          }
         }
 
         // Now list tools with the configurable timeout.  Since initialize()
