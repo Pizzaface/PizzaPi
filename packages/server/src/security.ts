@@ -224,35 +224,32 @@ export function getClientIp(req: Request): string {
             //   depth=1: two proxies (CDN + local) — use second-from-right
             //   depth=N: N+1 total proxies — use entry N positions from the right
             //
-            // Fail-closed: require strictly MORE XFF entries than depth.
-            // When depth >= parts.length the computed index would land on or before the
-            // left-most entry, which a client can freely inject (padding attack): an
-            // attacker who knows the configured depth can pad XFF to exactly `depth`
-            // entries, making parts.length - depth - 1 equal to a spoofed left-side
-            // value. Requiring parts.length > depth ensures at least one
-            // proxy-appended entry sits to the right of the selected position.
-            // A misconfigured depth (set too high) therefore fails closed to the
-            // direct peer IP rather than returning an attacker-controlled value.
+            // Fail-closed behavior:
+            // - If the chain is shorter than configured depth, we cannot safely resolve
+            //   the client hop and fall back to the direct peer IP.
+            // - For depth>0, we also reject chains longer than expected to avoid trusting
+            //   left-side padding (client-prepended entries) or unexpected proxy topology.
+            // - depth=0 keeps the permissive single-proxy behavior where selecting the
+            //   right-most entry remains safe even when extra left-side entries exist.
             const parts = forwardedFor.split(",").map(s => s.trim()).filter(Boolean);
             const depth = Math.max(0, parseInt(process.env.PIZZAPI_PROXY_DEPTH || "0", 10) || 0);
-            // Fail-closed guard — two distinct cases:
-            //
-            // depth=0 (single proxy): the rightmost XFF entry is always appended by the
-            //   immediately-connected trusted proxy and cannot be client-injected, so we
-            //   only require at least 1 entry (parts.length > 0).
-            //
-            // depth>0 (multi-proxy chain): we select the entry at index
-            //   (parts.length - 1 - depth). A client can inject entries into all
-            //   positions except the rightmost `depth+1` slots (the proxies in the
-            //   chain each append one entry). To guarantee the selected slot was
-            //   appended by a proxy and not by the client, we need
-            //   parts.length > depth + 1 (i.e. parts.length >= depth + 2). If only
-            //   depth+1 entries exist, the selected index is 0, which the client can
-            //   control by sending a single spoofed XFF entry before any proxy appends.
-            const minEntries = depth === 0 ? 1 : depth + 2;
-            if (parts.length < minEntries) {
+            const expectedEntries = depth + 1;
+
+            // Fail closed when the chain is shorter than expected.
+            if (parts.length < expectedEntries) {
                 return clientIp;
             }
+
+            // For depth>0 we require an exact chain length match. Extra left-side entries
+            // indicate either unexpected topology or client-prepended XFF padding; in both
+            // cases we cannot safely prove which slot is the real client, so fail closed.
+            //
+            // depth=0 remains tolerant of additional left-side entries because the
+            // right-most entry is still the one appended by the directly-connected proxy.
+            if (depth > 0 && parts.length !== expectedEntries) {
+                return clientIp;
+            }
+
             const index = parts.length - 1 - depth;
             return parts[index] || clientIp;
         }

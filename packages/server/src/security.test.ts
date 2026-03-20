@@ -254,15 +254,14 @@ describe("getClientIp", () => {
         expect(getClientIp(req)).toBe("10.0.0.1");
     });
 
-    test("PIZZAPI_PROXY_DEPTH=1 uses second-from-right for multi-proxy chains", () => {
+    test("PIZZAPI_PROXY_DEPTH=1 accepts the normal two-hop chain with 2 entries", () => {
         process.env.PIZZAPI_TRUST_PROXY = "true";
         process.env.PIZZAPI_PROXY_DEPTH = "1";
-        // CDN → nginx → PizzaPi:
-        //   XFF: <spoofed>, <real-client>, <CDN-IP>
-        // depth=1 (1 intermediate hop) → parts[length - 1 - 1] = parts[length - 2] = real-client
+        // Typical CDN → local proxy → PizzaPi request with no client-supplied XFF:
+        //   XFF: <real-client>, <cdn-proxy>
         const req = makeReq({
             "x-pizzapi-client-ip": "172.17.0.1",
-            "x-forwarded-for": "1.2.3.4, 203.0.113.50, 198.51.100.5",
+            "x-forwarded-for": "203.0.113.50, 198.51.100.5",
         });
         expect(getClientIp(req)).toBe("203.0.113.50");
         delete process.env.PIZZAPI_PROXY_DEPTH;
@@ -285,30 +284,24 @@ describe("getClientIp", () => {
     test("fails closed when PIZZAPI_PROXY_DEPTH equals XFF chain length (padding attack)", () => {
         process.env.PIZZAPI_TRUST_PROXY = "true";
         process.env.PIZZAPI_PROXY_DEPTH = "2";
-        // Attack: single-proxy setup mis-configured with depth=2.
-        // Attacker pads XFF to exactly 2 entries so parts.length - 2 - 1 would land
-        // on a spoofed left-side value. The strict >= fail-closed catches this.
+        // Chain too short for depth=2.
         const req = makeReq({
             "x-pizzapi-client-ip": "172.17.0.1",
             "x-forwarded-for": "1.2.3.4, 5.6.7.8",
         });
-        // depth=2 >= parts.length=2 → fail closed to the peer IP
         expect(getClientIp(req)).toBe("172.17.0.1");
         delete process.env.PIZZAPI_PROXY_DEPTH;
     });
 
-    test("fails closed when PIZZAPI_PROXY_DEPTH=1 with only 2 XFF entries (selects client-controlled index 0)", () => {
+    test("fails closed when depth>0 and XFF chain has extra left-side padding", () => {
         process.env.PIZZAPI_TRUST_PROXY = "true";
-        process.env.PIZZAPI_PROXY_DEPTH = "1";
-        // Single-proxy setup misconfigured with depth=1.  The client sends one
-        // spoofed XFF entry; the proxy appends the real client IP, giving 2 entries.
-        // depth=1 with parts.length=2 would select index 0 (client-controlled).
-        // The updated guard requires parts.length >= depth+2 = 3, so it fails closed.
+        process.env.PIZZAPI_PROXY_DEPTH = "2";
+        // depth=2 expects exactly 3 entries. With a padded chain of 4 entries,
+        // reject the chain instead of selecting a potentially attacker-controlled slot.
         const req = makeReq({
             "x-pizzapi-client-ip": "172.17.0.1",
-            "x-forwarded-for": "1.2.3.4, 203.0.113.50",
+            "x-forwarded-for": "1.1.1.1, 2.2.2.2, 3.3.3.3, 203.0.113.50",
         });
-        // depth=1 but only 2 entries — would land on spoofed slot → fail closed
         expect(getClientIp(req)).toBe("172.17.0.1");
         delete process.env.PIZZAPI_PROXY_DEPTH;
     });

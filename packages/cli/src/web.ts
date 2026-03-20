@@ -177,6 +177,43 @@ export function resolveBetterAuthSecret(opts: {
     return { secret: gen(), source: "generated" };
 }
 
+export function resolveMissingProxySettings(opts: {
+    currentTrustProxy: boolean | undefined;
+    currentProxyDepth: number | undefined;
+    composeContents: Array<string | null | undefined>;
+}): { trustProxy: boolean | undefined; proxyDepth: number | undefined; source: "existing" | "compose" } {
+    let trustProxy = opts.currentTrustProxy;
+    let proxyDepth = opts.currentProxyDepth;
+
+    if (trustProxy !== undefined && proxyDepth !== undefined) {
+        return { trustProxy, proxyDepth, source: "existing" };
+    }
+
+    for (const content of opts.composeContents) {
+        if (!content) continue;
+        const extracted = extractSettingsFromCompose(content);
+
+        if (trustProxy === undefined && extracted.trustProxy !== undefined) {
+            trustProxy = extracted.trustProxy;
+        }
+
+        if (proxyDepth === undefined && extracted.proxyDepth !== undefined) {
+            proxyDepth = extracted.proxyDepth;
+        }
+
+        if (trustProxy !== undefined && proxyDepth !== undefined) {
+            break;
+        }
+    }
+
+    const source: "existing" | "compose" =
+        trustProxy !== opts.currentTrustProxy || proxyDepth !== opts.currentProxyDepth
+            ? "compose"
+            : "existing";
+
+    return { trustProxy, proxyDepth, source };
+}
+
 /** @deprecated Use extractSettingsFromCompose instead */
 export function extractVapidFromCompose(content: string): { publicKey: string; privateKey: string } | null {
     return extractSettingsFromCompose(content).vapid ?? null;
@@ -256,15 +293,15 @@ export function loadWebConfig(): WebConfig {
             // Merge with defaults so new fields get default values
             const config: WebConfig = { ...DEFAULT_CONFIG, ...stored };
 
+            const composePath = join(WEB_DIR, "compose.yml");
+            const overridePath = join(WEB_DIR, "compose.override.yml");
+
+            const overrideContent = existsSync(overridePath) ? readFileSync(overridePath, "utf-8") : null;
+            const composeContent = existsSync(composePath) ? readFileSync(composePath, "utf-8") : null;
+
             // Ensure required secrets exist (migrate older configs)
             let changed = false;
             if (!config.betterAuthSecret) {
-                const composePath = join(WEB_DIR, "compose.yml");
-                const overridePath = join(WEB_DIR, "compose.override.yml");
-
-                const overrideContent = existsSync(overridePath) ? readFileSync(overridePath, "utf-8") : null;
-                const composeContent = existsSync(composePath) ? readFileSync(composePath, "utf-8") : null;
-
                 const resolved = resolveBetterAuthSecret({
                     currentSecret: config.betterAuthSecret,
                     composeContents: [overrideContent, composeContent],
@@ -273,6 +310,25 @@ export function loadWebConfig(): WebConfig {
                 config.betterAuthSecret = resolved.secret;
                 changed = true;
             }
+
+            // Backfill newly introduced proxy settings from existing compose files
+            // when upgrading from older config.json versions.
+            const resolvedProxySettings = resolveMissingProxySettings({
+                currentTrustProxy: config.trustProxy,
+                currentProxyDepth: config.proxyDepth,
+                composeContents: [overrideContent, composeContent],
+            });
+
+            if (resolvedProxySettings.trustProxy !== config.trustProxy) {
+                config.trustProxy = resolvedProxySettings.trustProxy;
+                changed = true;
+            }
+
+            if (resolvedProxySettings.proxyDepth !== config.proxyDepth) {
+                config.proxyDepth = resolvedProxySettings.proxyDepth;
+                changed = true;
+            }
+
             if (changed) {
                 saveWebConfig(config);
             }

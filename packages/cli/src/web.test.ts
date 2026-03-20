@@ -1,7 +1,12 @@
 import { describe, test, expect } from "bun:test";
 import { readFileSync } from "fs";
 import { join } from "path";
-import { extractVapidFromCompose, extractSettingsFromCompose, resolveBetterAuthSecret } from "./web";
+import {
+    extractVapidFromCompose,
+    extractSettingsFromCompose,
+    resolveBetterAuthSecret,
+    resolveMissingProxySettings,
+} from "./web";
 
 /**
  * Validates that the inlined COMPOSE_TEMPLATE in web.ts matches
@@ -222,5 +227,46 @@ describe("resolveBetterAuthSecret", () => {
             generate: () => "Generated",
         });
         expect(resolved).toEqual({ secret: "Generated", source: "generated" });
+    });
+});
+
+describe("resolveMissingProxySettings", () => {
+    test("keeps existing proxy settings", () => {
+        const resolved = resolveMissingProxySettings({
+            currentTrustProxy: false,
+            currentProxyDepth: 0,
+            composeContents: ["- PIZZAPI_TRUST_PROXY=true\n- PIZZAPI_PROXY_DEPTH=3"],
+        });
+        expect(resolved).toEqual({
+            trustProxy: false,
+            proxyDepth: 0,
+            source: "existing",
+        });
+    });
+
+    test("backfills missing trustProxy and proxyDepth from compose", () => {
+        const resolved = resolveMissingProxySettings({
+            currentTrustProxy: undefined,
+            currentProxyDepth: undefined,
+            composeContents: ["- PIZZAPI_TRUST_PROXY=true\n- PIZZAPI_PROXY_DEPTH=1"],
+        });
+        expect(resolved).toEqual({
+            trustProxy: true,
+            proxyDepth: 1,
+            source: "compose",
+        });
+    });
+
+    test("uses override compose first and fills only missing fields", () => {
+        const resolved = resolveMissingProxySettings({
+            currentTrustProxy: undefined,
+            currentProxyDepth: 2,
+            composeContents: ["- PIZZAPI_TRUST_PROXY=false", "- PIZZAPI_TRUST_PROXY=true\n- PIZZAPI_PROXY_DEPTH=1"],
+        });
+        expect(resolved).toEqual({
+            trustProxy: false,
+            proxyDepth: 2,
+            source: "compose",
+        });
     });
 });
