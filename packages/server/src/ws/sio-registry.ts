@@ -519,8 +519,9 @@ export async function emitToRelaySessionVerified(sessionId: string, eventName: s
     if (!io) return false;
     const room = relaySessionRoom(sessionId);
     try {
-        const sockets = await io.of("/relay").in(room).fetchSockets();
-        if (sockets.length === 0) return false;
+        // ⚡ Bolt: Fast check on adapter avoids fetching full RemoteSocket objects across cluster
+        const sockets = await io.of("/relay").adapter.sockets(new Set([room]));
+        if (sockets.size === 0) return false;
         io.of("/relay").to(room).emit(eventName, data);
         return true;
     } catch (err) {
@@ -1029,7 +1030,8 @@ export function broadcastToViewers(sessionId: string, eventName: string, data: u
  * Works across all servers via the Redis adapter.
  */
 export async function getViewerCount(sessionId: string): Promise<number> {
-    const sockets = await io.of("/viewer").in(viewerSessionRoom(sessionId)).allSockets();
+    // ⚡ Bolt: Fast size query on adapter prevents fetching full RemoteSocket objects across cluster
+    const sockets = await io.of("/viewer").adapter.sockets(new Set([viewerSessionRoom(sessionId)]));
     return sockets.size;
 }
 
