@@ -344,6 +344,15 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     });
                 }
             };
+            // Validate cwd against allowed workspace roots (same guard as the pi path in spawnSession)
+            if (requestedCwd && !isCwdAllowed(requestedCwd)) {
+                socket.emit("session_error", {
+                    sessionId,
+                    message: `cwd not allowed: ${requestedCwd}`,
+                });
+                return;
+            }
+
             if (workerType === "claude-code") {
                 // Claude Code bridge path — session_ready fires synchronously after spawn
                 // (same pattern as the pi path inside doSpawn). The bridge takes over relay
@@ -358,6 +367,8 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                         parentSessionId: requestedParentSessionId,
                         model: requestedModel,
                     });
+                    // TODO(Plan 2): register sessionId in runningSessions once bridge returns a child handle.
+                    // Without this, kill_session and session sweeping won't cover claude-code sessions.
                     socket.emit("session_ready", { sessionId });
                 } catch (err) {
                     socket.emit("session_error", {

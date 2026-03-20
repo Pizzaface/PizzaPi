@@ -6,7 +6,8 @@ export interface ClaudeCodeSpawnOptions {
   sessionId: string;
   apiKey: string;
   relayUrl: string;
-  cwd: string;
+  /** Working directory. If undefined, the bridge should fall back to process.cwd(). */
+  cwd: string | undefined;
   prompt?: string;
   parentSessionId?: string;
   model?: { provider: string; id: string };
