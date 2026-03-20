@@ -214,18 +214,15 @@ When PizzaPi runs behind a reverse proxy (like Caddy, nginx, or Traefik in Docke
 
 ### Loopback Proxies (Auto-Detected)
 
-If your reverse proxy is on the **same host** (loopback / 127.0.0.1) — which is typical for Docker Compose on a single machine — no configuration is needed. The server auto-detects this and safely trusts `X-Forwarded-For` headers.
+If your reverse proxy is on the **same host** and connects to PizzaPi via loopback (`127.0.0.1`) — for example, a system-installed nginx or Caddy forwarding to `localhost:7492` — no configuration is needed. The server auto-detects this and safely trusts `X-Forwarded-For` headers.
 
-Example: Docker Compose with Caddy locally → PizzaPi on localhost:7492
-
-```bash
-# No env var needed — auto-detected as loopback
-docker compose -f docker/compose.yml up -d
-```
+:::caution[Docker Compose is not loopback]
+In Docker Compose, **all inter-container traffic goes over a bridge network** (e.g. `172.x.x.x`), even when all containers run on the same machine. PizzaPi sees the proxy's bridge IP — not `127.0.0.1` — so the auto-detection does **not** apply. Docker Compose deployments with a reverse proxy always need `PIZZAPI_TRUST_PROXY=true` (see below).
+:::
 
 ### Non-Loopback Proxies
 
-If your reverse proxy is on a **different host or Docker bridge network** (e.g. Traefik on a Docker overlay network, or a cloud load balancer), set `PIZZAPI_TRUST_PROXY=true`.
+If your reverse proxy reaches PizzaPi via a **non-loopback address** — including any Docker Compose setup, a Docker overlay network, or a cloud load balancer — set `PIZZAPI_TRUST_PROXY=true`.
 
 The simplest approach is to pass the variable inline — it will be forwarded to the Docker container:
 
