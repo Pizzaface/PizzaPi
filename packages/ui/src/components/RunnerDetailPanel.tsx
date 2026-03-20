@@ -357,7 +357,7 @@ export function RunnerDetailPanel({
                         </p>
                         {hubVersion && (
                             <p className="text-[10px] text-muted-foreground mt-3">
-                                Hub: {hubImage ?? "custom image"} ({hubVersion})
+                                Hub: {hubImage ? `${hubImage} (${hubVersion})` : hubVersion}
                             </p>
                         )}
                     </div>
@@ -373,7 +373,7 @@ export function RunnerDetailPanel({
                     <p className="text-sm text-muted-foreground">Select a runner from the sidebar.</p>
                     {hubVersion && (
                         <p className="text-[10px] text-muted-foreground">
-                            Hub: {hubImage ?? "custom image"} ({hubVersion})
+                            Hub: {hubImage ? `${hubImage} (${hubVersion})` : hubVersion}
                         </p>
                     )}
                 </div>
