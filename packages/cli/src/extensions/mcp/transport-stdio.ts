@@ -6,7 +6,7 @@
  */
 
 import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
-import { expandHome } from "../config.js";
+import { expandHome } from "../../config.js";
 import { getSandboxEnv, isSandboxActive } from "@pizzapi/tools";
 import {
   MCP_PROTOCOL_VERSION,
@@ -16,7 +16,7 @@ import {
   type McpClient,
   type McpListToolsResult,
   type McpCallToolResult,
-} from "./mcp-types.js";
+} from "./types.js";
 
 export async function createStdioMcpClient(opts: {
   name: string;

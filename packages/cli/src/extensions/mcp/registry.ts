@@ -9,13 +9,13 @@
  *  - Registering MCP tools with the pi tool provider
  */
 
-import { type PizzaPiConfig } from "../config.js";
-import { PizzaPiOAuthProvider, type RelayContext } from "./mcp-oauth.js";
+import { type PizzaPiConfig } from "../../config.js";
+import { PizzaPiOAuthProvider, type RelayContext } from "../mcp-oauth.js";
 import { isSandboxActive, getResolvedConfig } from "@pizzapi/tools";
-import { createStdioMcpClient } from "./mcp-transport-stdio.js";
-import { createHttpMcpClient, createStreamableMcpClient } from "./mcp-transport-http.js";
-import { allocateProviderSafeToolName } from "./mcp-tool-naming.js";
-import { type McpClient, type McpTool } from "./mcp-types.js";
+import { createStdioMcpClient } from "./transport-stdio.js";
+import { createHttpMcpClient, createStreamableMcpClient } from "./transport-http.js";
+import { allocateProviderSafeToolName } from "./tool-naming.js";
+import { type McpClient, type McpTool } from "./types.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Config types

@@ -7,7 +7,7 @@
  * starting a full OAuth flow) and the isGitHubHost helper.
  */
 
-import { type PizzaPiOAuthProvider } from "./mcp-oauth.js";
+import { type PizzaPiOAuthProvider } from "../mcp-oauth.js";
 import {
   MCP_PROTOCOL_VERSION,
   MCP_SUPPORTED_VERSIONS,
@@ -16,7 +16,7 @@ import {
   type McpClient,
   type McpListToolsResult,
   type McpCallToolResult,
-} from "./mcp-types.js";
+} from "./types.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // HTTP client (plain JSON POST — legacy / simple servers)
