@@ -81,13 +81,19 @@ export interface FileExplorerProps {
  * sub-view (file preview, diff preview). We skip interception when:
  *  - The panel is hidden (e.g. inactive CombinedPanel tab — ancestor has `invisible` class)
  *  - A Radix dialog or popover is open (those handle Escape themselves)
+ *  - Focus is outside the explorer/preview container (e.g. in the composer)
  */
 function shouldInterceptEscape(el: HTMLElement | null): boolean {
-  if (!el) return true; // no ref yet — default to intercepting
+  if (!el) return false; // no ref yet — can't confirm focus, let Escape propagate
   // Hidden in an inactive combined-panel tab?
   if (el.closest(".invisible")) return false;
   // Radix dialog or popper overlay open?
   if (document.querySelector("[role=\"dialog\"][data-state=\"open\"], [data-radix-popper-content-wrapper]")) return false;
+  // Only intercept when focus is inside the explorer/preview container (or on
+  // document.body / null, which means nothing specific is focused — safe default
+  // since the preview is the visible interactive surface).
+  const active = document.activeElement;
+  if (active && active !== document.body && !el.contains(active)) return false;
   return true;
 }
 
