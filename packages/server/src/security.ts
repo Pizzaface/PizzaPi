@@ -227,10 +227,9 @@ export function getClientIp(req: Request): string {
             // Fail-closed behavior:
             // - If the chain is shorter than configured depth, we cannot safely resolve
             //   the client hop and fall back to the direct peer IP.
-            // - For depth>0, we also reject chains longer than expected to avoid trusting
-            //   left-side padding (client-prepended entries) or unexpected proxy topology.
-            // - depth=0 keeps the permissive single-proxy behavior where selecting the
-            //   right-most entry remains safe even when extra left-side entries exist.
+            // - Extra left-side entries (client-prepended padding) are tolerated for all
+            //   depth values — the formula reads from the right, so padding on the left
+            //   cannot shift the trusted proxy entries or spoof the client slot.
             const parts = forwardedFor.split(",").map(s => s.trim()).filter(Boolean);
             const depth = Math.max(0, parseInt(process.env.PIZZAPI_PROXY_DEPTH || "0", 10) || 0);
             const expectedEntries = depth + 1;
@@ -250,16 +249,24 @@ export function getClientIp(req: Request): string {
                 return clientIp;
             }
 
-            // For depth>0 we require an exact chain length match. Extra left-side entries
-            // indicate either unexpected topology or client-prepended XFF padding; in both
-            // cases we cannot safely prove which slot is the real client, so fail closed
-            // to the direct peer IP.
+            // We do NOT require an exact chain length match — extra left-side entries
+            // are harmless for any depth value, including depth>0.
             //
-            // depth=0 remains tolerant of additional left-side entries because the
-            // right-most entry is still the one appended by the directly-connected proxy.
-            if (depth > 0 && parts.length !== expectedEntries) {
-                return clientIp;
-            }
+            // Each trusted proxy APPENDS its peer's IP to the right of the XFF chain.
+            // So the rightmost `depth` entries are always the known trusted proxy IPs,
+            // and the entry at `parts[parts.length - 1 - depth]` is always the one
+            // recorded by the outermost trusted proxy (the CDN) — which is the real
+            // client IP regardless of how many bogus entries the client prepended on
+            // the left side.
+            //
+            // Example with depth=1 (CDN → local proxy → server):
+            //   Legitimate:   <client-ip>, <cdn-ip>        → index = 0 ✓
+            //   Padded:       <bogus>, <client-ip>, <cdn-ip> → index = 1 ✓
+            // The padded chain still yields the correct client IP.
+            //
+            // depth=0 remains tolerant of additional left-side entries for the same
+            // reason: the right-most entry is always the directly-connected proxy's
+            // append and is safe to use.
 
             const index = parts.length - 1 - depth;
             return parts[index] || clientIp;

@@ -294,30 +294,35 @@ describe("getClientIp", () => {
         delete process.env.PIZZAPI_PROXY_DEPTH;
     });
 
-    test("fails closed to socket IP when depth>0 and XFF chain has extra left-side padding", () => {
+    test("accepts padded XFF chain when depth>0 and reads the correct right-anchored slot", () => {
         process.env.PIZZAPI_TRUST_PROXY = "true";
         process.env.PIZZAPI_PROXY_DEPTH = "2";
-        // depth=2 expects exactly 3 entries. With a padded chain of 4 entries,
-        // reject the chain instead of selecting a potentially attacker-controlled slot.
+        // depth=2 expects 3 entries minimum. With 4 entries the client has prepended
+        // a bogus left-side hop. The formula parts[parts.length - 1 - depth] still
+        // reads from the right, so the correct client slot is unaffected.
+        //   parts = ["1.1.1.1", "2.2.2.2", "3.3.3.3", "203.0.113.50"]
+        //   index = 4 - 1 - 2 = 1 → "2.2.2.2" (the outermost trusted proxy's view of client)
         const req = makeReq({
             "x-pizzapi-client-ip": "172.17.0.1",
             "x-forwarded-for": "1.1.1.1, 2.2.2.2, 3.3.3.3, 203.0.113.50",
         });
-        expect(getClientIp(req)).toBe("172.17.0.1");
+        expect(getClientIp(req)).toBe("2.2.2.2");
         delete process.env.PIZZAPI_PROXY_DEPTH;
     });
 
-    test("fails closed to socket IP when depth=1 and client prepends extra XFF hop", () => {
-        // The core attack from the review: CDN -> nginx -> PizzaPi with depth=1.
-        // A malicious client prepends its own XFF hop, creating 3 entries instead of
-        // the expected 2. Falls back to the socket IP so rate limiting still applies.
+    test("accepts padded XFF chain when depth=1 and returns the CDN-appended real client IP", () => {
+        // With depth=1 (CDN → local proxy → server), each trusted proxy appends its peer:
+        //   Client sends request → CDN appends real client IP → local proxy appends CDN IP
+        // XFF = "evil-spoofed, 203.0.113.50, 198.51.100.5"
+        //   parts[3 - 1 - 1] = parts[1] = "203.0.113.50" (what the CDN saw as client)
+        // Left-side padding cannot shift the right-anchored trusted slots.
         process.env.PIZZAPI_TRUST_PROXY = "true";
         process.env.PIZZAPI_PROXY_DEPTH = "1";
         const req = makeReq({
             "x-pizzapi-client-ip": "172.17.0.1",
             "x-forwarded-for": "evil-spoofed, 203.0.113.50, 198.51.100.5",
         });
-        expect(getClientIp(req)).toBe("172.17.0.1");
+        expect(getClientIp(req)).toBe("203.0.113.50");
         delete process.env.PIZZAPI_PROXY_DEPTH;
     });
 
