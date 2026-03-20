@@ -18,7 +18,9 @@ import { io, type Socket } from "socket.io-client";
 import type { RunnerClientToServerEvents, RunnerServerToClientEvents } from "@pizzapi/protocol";
 import { loadGlobalConfig } from "../config.js";
 import { cleanupSessionAttachments, sweepOrphanedAttachments } from "../extensions/session-attachments.js";
-import { setLogComponent, logInfo, logWarn, logError } from "./logger.js";
+import { spawnClaudeCodeSession } from "./claude-code-bridge-spawn.js";
+import { getRefreshedOAuthToken, parseGeminiQuotaCredential } from "./usage-auth.js";
+import { setLogComponent, logInfo, logWarn, logError, logAuth } from "./logger.js";
 import { extractHookSummary } from "./hook-summary.js";
 import { defaultStatePath, acquireStateAndIdentity, releaseStateLock } from "./runner-state.js";
 import { startUsageRefreshLoop, stopUsageRefreshLoop } from "./runner-usage-cache.js";
@@ -277,6 +279,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         socket.on("new_session", (data: any) => {
             if (isShuttingDown) return;
             const { sessionId, cwd: requestedCwd, prompt: requestedPrompt, model: requestedModel, hiddenModels: requestedHiddenModels, agent: requestedAgent, parentSessionId: requestedParentSessionId } = data;
+            const workerType: "pi" | "claude-code" = data.workerType === "claude-code" ? "claude-code" : "pi";
 
             if (!sessionId) {
                 socket.emit("session_error", { sessionId: sessionId ?? "", message: "Missing sessionId" });
@@ -341,7 +344,30 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     });
                 }
             };
-            doSpawn();
+            if (workerType === "claude-code") {
+                // Claude Code bridge path — session_ready fires synchronously after spawn
+                // (same pattern as the pi path inside doSpawn). The bridge takes over relay
+                // registration; the daemon only tracks the subprocess handle.
+                try {
+                    spawnClaudeCodeSession({
+                        sessionId,
+                        apiKey: apiKey!,
+                        relayUrl: relayRaw,
+                        cwd: requestedCwd,
+                        prompt: requestedPrompt,
+                        parentSessionId: requestedParentSessionId,
+                        model: requestedModel,
+                    });
+                    socket.emit("session_ready", { sessionId });
+                } catch (err) {
+                    socket.emit("session_error", {
+                        sessionId,
+                        message: err instanceof Error ? err.message : String(err),
+                    });
+                }
+            } else {
+                doSpawn(); // existing pi worker path — unchanged
+            }
         });
 
         socket.on("kill_session", (data: any) => {
