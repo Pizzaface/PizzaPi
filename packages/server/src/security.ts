@@ -194,10 +194,11 @@ export function getClientIp(req: Request): string {
         // Explicitly disabled — never trust XFF.
         trustProxy = false;
     } else if (envTrustProxy === "true") {
-        // Explicitly enabled — trust XFF only from private/loopback peers.
-        // This supports cloud load balancers while preventing IP spoofing
-        // if the backend port is accidentally exposed alongside the proxy.
-        trustProxy = clientIp !== "unknown" && isPrivateOrLoopbackIp(clientIp);
+        // Explicitly enabled — trust XFF unconditionally. The operator's explicit
+        // opt-in is the authorization; no peer-IP check is applied. This supports
+        // cloud load balancers and any other proxy topology where the immediate peer
+        // has a public or non-loopback address.
+        trustProxy = clientIp !== "unknown";
     } else {
         // Auto-detect (default) — only trust XFF from loopback peers.
         // Private ranges are NOT auto-trusted since the server may be LAN-accessible.
@@ -234,7 +235,22 @@ export function getClientIp(req: Request): string {
             // direct peer IP rather than returning an attacker-controlled value.
             const parts = forwardedFor.split(",").map(s => s.trim()).filter(Boolean);
             const depth = Math.max(0, parseInt(process.env.PIZZAPI_PROXY_DEPTH || "0", 10) || 0);
-            if (depth >= parts.length) {
+            // Fail-closed guard — two distinct cases:
+            //
+            // depth=0 (single proxy): the rightmost XFF entry is always appended by the
+            //   immediately-connected trusted proxy and cannot be client-injected, so we
+            //   only require at least 1 entry (parts.length > 0).
+            //
+            // depth>0 (multi-proxy chain): we select the entry at index
+            //   (parts.length - 1 - depth). A client can inject entries into all
+            //   positions except the rightmost `depth+1` slots (the proxies in the
+            //   chain each append one entry). To guarantee the selected slot was
+            //   appended by a proxy and not by the client, we need
+            //   parts.length > depth + 1 (i.e. parts.length >= depth + 2). If only
+            //   depth+1 entries exist, the selected index is 0, which the client can
+            //   control by sending a single spoofed XFF entry before any proxy appends.
+            const minEntries = depth === 0 ? 1 : depth + 2;
+            if (parts.length < minEntries) {
                 return clientIp;
             }
             const index = parts.length - 1 - depth;
