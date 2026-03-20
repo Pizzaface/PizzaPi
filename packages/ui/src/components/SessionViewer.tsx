@@ -524,13 +524,9 @@ function PaginationSentinel({ hasMore, onLoadMore }: { hasMore: boolean; onLoadM
     const observer = new IntersectionObserver(
       ([entry]) => {
         if (!entry?.isIntersecting) return;
-        const prevScrollHeight = scroller.scrollHeight;
+        // use-stick-to-bottom handles scroll anchoring automatically —
+        // no manual scrollTop adjustment needed when content is prepended.
         onLoadMore();
-        // After React re-renders with more items, restore scroll position so
-        // the user stays at the same message they were looking at.
-        requestAnimationFrame(() => {
-          scroller.scrollTop += scroller.scrollHeight - prevScrollHeight;
-        });
       },
       { root: scroller, threshold: 0 },
     );
