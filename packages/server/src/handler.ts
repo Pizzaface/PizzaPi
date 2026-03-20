@@ -2,6 +2,7 @@ import { getAuth, isSignupAllowed } from "./auth.js";
 import { isValidPassword, PASSWORD_REQUIREMENTS_SUMMARY } from "@pizzapi/protocol";
 import { handleApi } from "./routes/index.js";
 import { serveStaticFile } from "./static.js";
+import { getClientIp } from "./security.js";
 
 /**
  * Fetch-style request handler (REST + auth + static).
@@ -40,7 +41,17 @@ export async function handleFetch(req: Request): Promise<Response> {
         }
 
         try {
-            return await getAuth().handler(req);
+            // Rewrite x-pizzapi-client-ip with the fully-resolved client IP (accounting
+            // for trusted reverse-proxy hops via getClientIp) before handing off to
+            // Better Auth. Better Auth is configured to key its built-in rate limiter on
+            // x-pizzapi-client-ip (see auth.ts advanced.ipAddress.ipAddressHeaders), so
+            // this ensures per-client rate limiting works correctly in proxy deployments
+            // while remaining immune to X-Forwarded-For spoofing.
+            const resolvedIp = getClientIp(req);
+            const authHeaders = new Headers(req.headers);
+            authHeaders.set("x-pizzapi-client-ip", resolvedIp);
+            const authReq = new Request(req, { headers: authHeaders });
+            return await getAuth().handler(authReq);
         } catch (e) {
             console.error("[auth] handler threw:", e);
             return Response.json({ error: "Auth error" }, { status: 500 });
