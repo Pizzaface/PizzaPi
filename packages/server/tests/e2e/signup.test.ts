@@ -23,11 +23,22 @@ const tmpDir = mkdtempSync(join(tmpdir(), "pizzapi-e2e-"));
 const dbPath = join(tmpDir, "test.db");
 const BASE = "http://localhost:7777";
 
+// Counter for generating unique per-request socket IPs in tests.
+// In production, nodeReqToFetchRequest always sets x-pizzapi-client-ip from
+// the TCP socket. Tests call handleFetch directly, so we simulate that here
+// to ensure each request gets a distinct rate-limit key.
+let reqCounter = 0;
+
 /** Helper to make requests through the handler */
 async function req(method: string, path: string, body?: any, headers?: Record<string, string>): Promise<Response> {
+    // Simulate the Node adapter injecting x-pizzapi-client-ip from the TCP socket.
+    // Each call gets a unique IP so rate-limiter buckets are independent, matching
+    // production behavior where distinct TCP connections get distinct IPs.
+    const socketIp = headers?.["x-pizzapi-client-ip"] ?? `10.255.${Math.floor(reqCounter / 256) % 256}.${reqCounter % 256}`;
+    reqCounter++;
     const init: RequestInit = {
         method,
-        headers: { "content-type": "application/json", ...headers },
+        headers: { "content-type": "application/json", "x-pizzapi-client-ip": socketIp, ...headers },
     };
     if (body) init.body = JSON.stringify(body);
     return handleFetch(new Request(`${BASE}${path}`, init));

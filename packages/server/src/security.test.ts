@@ -267,7 +267,7 @@ describe("getClientIp", () => {
         delete process.env.PIZZAPI_PROXY_DEPTH;
     });
 
-    test("fails closed when PIZZAPI_PROXY_DEPTH exceeds XFF chain length", () => {
+    test("fails closed to socket IP when PIZZAPI_PROXY_DEPTH exceeds XFF chain length", () => {
         process.env.PIZZAPI_TRUST_PROXY = "true";
         process.env.PIZZAPI_PROXY_DEPTH = "3";
         // Only 2 hops in the chain but depth expects 3 — depth >= parts.length,
@@ -276,13 +276,13 @@ describe("getClientIp", () => {
             "x-pizzapi-client-ip": "172.17.0.1",
             "x-forwarded-for": "203.0.113.50, 198.51.100.5",
         });
-        // Returns "unknown" — NOT clientIp (the proxy's shared address).
-        // Rate-limiting on the proxy IP would let one attacker 429 everyone behind it.
-        expect(getClientIp(req)).toBe("unknown");
+        // Falls back to the raw socket/proxy IP so callers can still apply
+        // per-IP rate limiting instead of skipping it entirely.
+        expect(getClientIp(req)).toBe("172.17.0.1");
         delete process.env.PIZZAPI_PROXY_DEPTH;
     });
 
-    test("fails closed when PIZZAPI_PROXY_DEPTH equals XFF chain length (padding attack)", () => {
+    test("fails closed to socket IP when PIZZAPI_PROXY_DEPTH equals XFF chain length (padding attack)", () => {
         process.env.PIZZAPI_TRUST_PROXY = "true";
         process.env.PIZZAPI_PROXY_DEPTH = "2";
         // Chain too short for depth=2.
@@ -290,11 +290,11 @@ describe("getClientIp", () => {
             "x-pizzapi-client-ip": "172.17.0.1",
             "x-forwarded-for": "1.2.3.4, 5.6.7.8",
         });
-        expect(getClientIp(req)).toBe("unknown");
+        expect(getClientIp(req)).toBe("172.17.0.1");
         delete process.env.PIZZAPI_PROXY_DEPTH;
     });
 
-    test("fails closed when depth>0 and XFF chain has extra left-side padding", () => {
+    test("fails closed to socket IP when depth>0 and XFF chain has extra left-side padding", () => {
         process.env.PIZZAPI_TRUST_PROXY = "true";
         process.env.PIZZAPI_PROXY_DEPTH = "2";
         // depth=2 expects exactly 3 entries. With a padded chain of 4 entries,
@@ -303,21 +303,21 @@ describe("getClientIp", () => {
             "x-pizzapi-client-ip": "172.17.0.1",
             "x-forwarded-for": "1.1.1.1, 2.2.2.2, 3.3.3.3, 203.0.113.50",
         });
-        expect(getClientIp(req)).toBe("unknown");
+        expect(getClientIp(req)).toBe("172.17.0.1");
         delete process.env.PIZZAPI_PROXY_DEPTH;
     });
 
-    test("fails closed with 'unknown' when depth=1 and client prepends extra XFF hop", () => {
+    test("fails closed to socket IP when depth=1 and client prepends extra XFF hop", () => {
         // The core attack from the review: CDN -> nginx -> PizzaPi with depth=1.
         // A malicious client prepends its own XFF hop, creating 3 entries instead of
-        // the expected 2. Returning "unknown" prevents rate-limiting on the proxy IP.
+        // the expected 2. Falls back to the socket IP so rate limiting still applies.
         process.env.PIZZAPI_TRUST_PROXY = "true";
         process.env.PIZZAPI_PROXY_DEPTH = "1";
         const req = makeReq({
             "x-pizzapi-client-ip": "172.17.0.1",
             "x-forwarded-for": "evil-spoofed, 203.0.113.50, 198.51.100.5",
         });
-        expect(getClientIp(req)).toBe("unknown");
+        expect(getClientIp(req)).toBe("172.17.0.1");
         delete process.env.PIZZAPI_PROXY_DEPTH;
     });
 

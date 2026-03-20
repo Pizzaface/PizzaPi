@@ -24,12 +24,14 @@ export const handleAuthRoute: RouteHandler = async (req, url) => {
     // ── Public endpoint: register (create user + generate CLI API key) ──
     if (url.pathname === "/api/register" && req.method === "POST") {
         const clientIp = getClientIp(req);
-        // Only rate-limit when we have a real client IP. When the IP is
-        // "unknown" (e.g. handleFetch called directly without the Node
-        // adapter injecting x-pizzapi-client-ip), skipping the check avoids
-        // collapsing every request into a single shared bucket and
-        // incorrectly returning 429 to unrelated clients.
-        if (clientIp !== "unknown" && !registerRateLimiter.check(clientIp)) {
+        // Always apply rate limiting — never skip based on IP value.
+        // When getClientIp() cannot resolve a real client IP (e.g. XFF chain
+        // mismatch in multi-proxy setups), it falls back to the raw socket IP.
+        // Even in the edge case where the IP is "unknown" (handleFetch called
+        // directly without the Node adapter), we still rate-limit: better to
+        // share a single bucket for headerless callers than to leave the
+        // endpoint completely unthrottled for brute-force.
+        if (!registerRateLimiter.check(clientIp)) {
             return Response.json(
                 { error: "Too many registration attempts. Please try again later." },
                 { status: 429 },

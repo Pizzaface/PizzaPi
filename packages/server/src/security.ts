@@ -237,23 +237,28 @@ export function getClientIp(req: Request): string {
 
             // Fail closed when the chain doesn't match expected topology.
             //
-            // IMPORTANT: We return "unknown" (not clientIp) on chain-length mismatches.
-            // clientIp is the proxy's shared address — rate-limiting on it would let one
-            // attacker exhaust the bucket and 429 all users behind the same proxy/CDN.
-            // "unknown" is a single shared bucket, but that's preferable to denying
-            // service to all legitimate users sharing a proxy IP.
+            // We fall back to the raw socket/proxy IP (clientIp) rather than "unknown".
+            // Returning "unknown" would either (a) cause callers to skip rate limiting
+            // entirely — re-enabling brute-force bypass, or (b) collapse all affected
+            // requests into a single shared rate-limit bucket, letting one attacker 429
+            // every user whose XFF resolution also failed.
+            //
+            // Using clientIp (the proxy's address) means users behind the same proxy
+            // share a rate-limit bucket, but that's bounded to one proxy's user base
+            // and still enforces throttling — a strictly better outcome than no limiting.
             if (parts.length < expectedEntries) {
-                return "unknown";
+                return clientIp;
             }
 
             // For depth>0 we require an exact chain length match. Extra left-side entries
             // indicate either unexpected topology or client-prepended XFF padding; in both
-            // cases we cannot safely prove which slot is the real client, so fail closed.
+            // cases we cannot safely prove which slot is the real client, so fail closed
+            // to the direct peer IP.
             //
             // depth=0 remains tolerant of additional left-side entries because the
             // right-most entry is still the one appended by the directly-connected proxy.
             if (depth > 0 && parts.length !== expectedEntries) {
-                return "unknown";
+                return clientIp;
             }
 
             const index = parts.length - 1 - depth;
