@@ -3496,7 +3496,7 @@ export function App() {
         <Button
           variant="ghost"
           size="icon"
-          className="h-9 w-9 flex-shrink-0"
+          className="h-11 w-11 flex-shrink-0 touch-manipulation"
           onClick={() => setSidebarOpen(prev => !prev)}
           aria-label={sidebarOpen ? "Close sidebar" : "Open sidebar"}
         >
@@ -3509,7 +3509,7 @@ export function App() {
             <DropdownMenuTrigger asChild>
               {activeSessionId ? (
                 <button
-                  className="inline-flex items-center gap-2 min-w-0 max-w-full rounded-xl bg-muted/50 border border-border/60 px-3 py-1.5 hover:bg-muted transition-colors"
+                  className="inline-flex items-center gap-2 min-w-0 max-w-full rounded-xl bg-muted/50 border border-border/60 px-3 py-1.5 min-h-[44px] hover:bg-muted transition-colors touch-manipulation"
                 >
                   <span
                     className={`inline-block h-1.5 w-1.5 rounded-full flex-shrink-0 transition-colors ${agentActive ? "bg-green-400 shadow-[0_0_5px_#4ade8080] animate-pulse" : "bg-slate-400"}`}

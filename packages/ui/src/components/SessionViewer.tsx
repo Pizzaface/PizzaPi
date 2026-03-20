@@ -64,7 +64,14 @@ import {
   CommandItem,
   CommandList,
 } from "@/components/ui/command";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
+import { exportToMarkdown } from "@/lib/export-markdown";
 import { cn } from "@/lib/utils";
 import { formatPathTail } from "@/lib/path";
 import { ProviderIcon } from "@/components/ProviderIcon";
@@ -72,7 +79,7 @@ import { MultipleChoiceQuestions } from "@/components/ai-elements/multiple-choic
 import { PlanModePanel, type PlanModeAnswer } from "@/components/ai-elements/plan-mode";
 import { formatAnswersForAgent, type QuestionDisplayMode } from "@/lib/ask-user-questions";
 import { dismissNotificationsForSession } from "@/lib/push";
-import { AlertTriangleIcon, BookOpen, Bot, CheckCircle2, ChevronsUpDown, Circle, CircleDashed, Copy, Loader2, MessageSquare, OctagonX, PaperclipIcon, Pencil, Plus, Puzzle, ShieldAlert, Zap, Clock, X, Trash2, TerminalIcon, XCircle, FolderTree } from "lucide-react";
+import { AlertTriangleIcon, BookOpen, Bot, CheckCircle2, ChevronsUpDown, Circle, CircleDashed, Copy, Loader2, MessageSquare, OctagonX, PaperclipIcon, Pencil, Plus, Puzzle, ShieldAlert, Zap, Clock, X, Trash2, TerminalIcon, XCircle, FolderTree, MoreHorizontal, Share2 } from "lucide-react";
 import { AtMentionPopover } from "@/components/AtMentionPopover";
 import type { Entry as AtMentionEntry } from "@/hooks/useAtMentionFiles";
 import { McpToggleContext, type McpToggleHandler } from "@/components/session-viewer/McpToggleContext";
@@ -1552,65 +1559,61 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                 </span>
               </span>
             )}
-            {showTerminalButton && onToggleTerminal && (
-              <Button
-                className="h-7 w-7 sm:h-7 sm:w-auto sm:px-2.5 sm:text-[0.7rem]"
-                onClick={onToggleTerminal}
-                size="icon"
-                type="button"
-                variant="outline"
-                title="Toggle terminal"
-                aria-label="Toggle terminal"
-              >
-                <TerminalIcon className="size-3.5" />
-                <span className="hidden sm:inline ml-1">Terminal</span>
-              </Button>
-            )}
-            {showFileExplorerButton && onToggleFileExplorer && (
-              <Button
-                className="h-7 w-7 sm:h-7 sm:w-auto sm:px-2.5 sm:text-[0.7rem]"
-                onClick={onToggleFileExplorer}
-                size="icon"
-                type="button"
-                variant="outline"
-                title="Toggle file explorer"
-                aria-label="Toggle file explorer"
-              >
-                <FolderTree className="size-3.5" />
-                <span className="hidden sm:inline ml-1">Files</span>
-              </Button>
-            )}
-            <ConversationExport
-              messages={sortedMessages}
-              filename={`session-${sessionId || "export"}.md`}
-              className="static top-auto right-auto h-7 w-7 sm:h-7 sm:w-auto sm:px-2.5 sm:text-[0.7rem] border-border bg-background hover:bg-accent hover:text-accent-foreground rounded-md"
-              variant="outline"
-              size="icon"
-            />
-            {onDuplicateSession && (
-              <Button
-                className="h-7 w-7 sm:h-7 sm:w-auto sm:px-2.5 sm:text-[0.7rem]"
-                onClick={onDuplicateSession}
-                size="icon"
-                type="button"
-                variant="outline"
-                title="Duplicate session (same runner & directory)"
-                aria-label="Duplicate session"
-              >
-                <Copy className="size-3.5" />
-                <span className="hidden sm:inline ml-1">Duplicate</span>
-              </Button>
-            )}
+            {/* ── Mobile: overflow menu for secondary actions + 44pt primary CTAs ── */}
+            {/* On small screens (< 640px), secondary toolbar actions are
+                collapsed into a ⋯ menu to save space and ensure End/Clear
+                are always easy to reach with 44×44pt touch targets. */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  className="h-11 w-11 sm:hidden touch-manipulation"
+                  size="icon"
+                  type="button"
+                  variant="outline"
+                  title="More actions"
+                  aria-label="More actions"
+                >
+                  <MoreHorizontal className="size-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                {showTerminalButton && onToggleTerminal && (
+                  <DropdownMenuItem onSelect={onToggleTerminal}>
+                    <TerminalIcon className="size-4 mr-2" />
+                    Toggle terminal
+                  </DropdownMenuItem>
+                )}
+                {showFileExplorerButton && onToggleFileExplorer && (
+                  <DropdownMenuItem onSelect={onToggleFileExplorer}>
+                    <FolderTree className="size-4 mr-2" />
+                    Toggle files
+                  </DropdownMenuItem>
+                )}
+                {onDuplicateSession && (
+                  <DropdownMenuItem onSelect={onDuplicateSession}>
+                    <Copy className="size-4 mr-2" />
+                    Duplicate session
+                  </DropdownMenuItem>
+                )}
+                <DropdownMenuItem
+                  onSelect={() => {
+                    const md = exportToMarkdown(sortedMessages);
+                    navigator.clipboard.writeText(md).catch(() => {});
+                  }}
+                >
+                  <Share2 className="size-4 mr-2" />
+                  Export (copy)
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+
+            {/* Mobile: End + Clear — 44pt touch targets */}
             <Button
-              className="h-7 w-7 sm:h-7 sm:w-auto sm:px-2.5 sm:text-[0.7rem]"
+              className="h-11 w-11 sm:hidden touch-manipulation"
               disabled={!onExec}
               onClick={() => {
                 if (!onExec || !sessionId) return;
-                if (window.innerWidth < 640) {
-                  setShowEndSessionDialog(true);
-                } else {
-                  onExec({ type: "exec", id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, command: "end_session" });
-                }
+                setShowEndSessionDialog(true);
               }}
               size="icon"
               type="button"
@@ -1618,19 +1621,14 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
               title="End Session"
               aria-label="End session"
             >
-              <OctagonX className="size-3.5" />
-              <span className="hidden sm:inline ml-1">End</span>
+              <OctagonX className="size-4" />
             </Button>
             <Button
-              className="h-7 w-7 sm:h-7 sm:w-auto sm:px-2.5 sm:text-[0.7rem]"
+              className="h-11 w-11 sm:hidden touch-manipulation"
               disabled={!onExec}
               onClick={() => {
                 if (!onExec) return;
-                if (window.innerWidth < 640) {
-                  setShowClearDialog(true);
-                } else {
-                  onExec({ type: "exec", id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, command: "new_session" });
-                }
+                setShowClearDialog(true);
               }}
               size="icon"
               type="button"
@@ -1638,8 +1636,90 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
               title="New conversation (/new)"
               aria-label="Clear conversation"
             >
+              <Plus className="size-4" />
+            </Button>
+
+            {/* ── Desktop (sm+): all individual action buttons ── */}
+            {showTerminalButton && onToggleTerminal && (
+              <Button
+                className="hidden sm:inline-flex h-7 w-auto px-2.5 text-[0.7rem]"
+                onClick={onToggleTerminal}
+                size="sm"
+                type="button"
+                variant="outline"
+                title="Toggle terminal"
+                aria-label="Toggle terminal"
+              >
+                <TerminalIcon className="size-3.5" />
+                <span className="ml-1">Terminal</span>
+              </Button>
+            )}
+            {showFileExplorerButton && onToggleFileExplorer && (
+              <Button
+                className="hidden sm:inline-flex h-7 w-auto px-2.5 text-[0.7rem]"
+                onClick={onToggleFileExplorer}
+                size="sm"
+                type="button"
+                variant="outline"
+                title="Toggle file explorer"
+                aria-label="Toggle file explorer"
+              >
+                <FolderTree className="size-3.5" />
+                <span className="ml-1">Files</span>
+              </Button>
+            )}
+            <ConversationExport
+              messages={sortedMessages}
+              filename={`session-${sessionId || "export"}.md`}
+              className="hidden sm:inline-flex static top-auto right-auto h-7 w-auto px-2.5 text-[0.7rem] border-border bg-background hover:bg-accent hover:text-accent-foreground rounded-md"
+              variant="outline"
+              size="sm"
+            />
+            {onDuplicateSession && (
+              <Button
+                className="hidden sm:inline-flex h-7 w-auto px-2.5 text-[0.7rem]"
+                onClick={onDuplicateSession}
+                size="sm"
+                type="button"
+                variant="outline"
+                title="Duplicate session (same runner & directory)"
+                aria-label="Duplicate session"
+              >
+                <Copy className="size-3.5" />
+                <span className="ml-1">Duplicate</span>
+              </Button>
+            )}
+            <Button
+              className="hidden sm:inline-flex h-7 w-auto px-2.5 text-[0.7rem]"
+              disabled={!onExec}
+              onClick={() => {
+                if (!onExec || !sessionId) return;
+                onExec({ type: "exec", id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, command: "end_session" });
+              }}
+              size="sm"
+              type="button"
+              variant="destructive"
+              title="End Session"
+              aria-label="End session"
+            >
+              <OctagonX className="size-3.5" />
+              <span className="ml-1">End</span>
+            </Button>
+            <Button
+              className="hidden sm:inline-flex h-7 w-auto px-2.5 text-[0.7rem]"
+              disabled={!onExec}
+              onClick={() => {
+                if (!onExec) return;
+                onExec({ type: "exec", id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, command: "new_session" });
+              }}
+              size="sm"
+              type="button"
+              variant="outline"
+              title="New conversation (/new)"
+              aria-label="Clear conversation"
+            >
               <Plus className="size-3.5" />
-              <span className="hidden sm:inline ml-1">Clear</span>
+              <span className="ml-1">Clear</span>
             </Button>
           </div>
         </div>

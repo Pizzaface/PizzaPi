@@ -14,7 +14,7 @@ import { io } from "socket.io-client";
 import type { HubServerToClientEvents, HubClientToServerEvents } from "@pizzapi/protocol";
 import { formatPathTail } from "@/lib/path";
 import { ProviderIcon } from "@/components/ProviderIcon";
-import { PanelLeftClose, PanelLeftOpen, Plus, X, HardDrive, FolderOpen, CheckSquare, Square, CheckCheck, Trash2, Pin, PinOff, ChevronDown, ChevronRight, MessageSquare, Copy } from "lucide-react";
+import { PanelLeftClose, PanelLeftOpen, Plus, X, HardDrive, FolderOpen, CheckSquare, Square, CheckCheck, Trash2, Pin, PinOff, ChevronDown, ChevronRight, MessageSquare, Copy, RefreshCw, Loader2 } from "lucide-react";
 import { buildSessionTree, flattenSessionTree, getSessionIndent, getDescendantSessionIds, getGroupCwd } from "@/lib/session-tree";
 
 interface HubSession {
@@ -372,6 +372,93 @@ export const SessionSidebar = React.memo(function SessionSidebar({
         }
     }, [revealedSessionId]);
 
+    // ── Pull-to-refresh ────────────────────────────────────────────────────
+    // Uses non-passive touchmove so we can preventDefault() to stop native
+    // scroll / pull-to-refresh while the user is pulling down.
+    const PULL_THRESHOLD = 60;   // px of pull needed to trigger refresh
+    const PULL_MAX_VISUAL = 80;  // max visual indicator height
+    const [pullDistance, setPullDistance] = React.useState(0);
+    const [isRefreshing, setIsRefreshing] = React.useState(false);
+    const pullDistanceRef = React.useRef(0);
+    const isPtrRefreshingRef = React.useRef(false);
+    const sessionListRef = React.useRef<HTMLDivElement>(null);
+    // Keep fetchPinnedSessions accessible inside the effect without re-running it
+    const fetchPinnedRef = React.useRef<() => Promise<void>>(() => Promise.resolve());
+
+    React.useEffect(() => {
+        const el = sessionListRef.current;
+        if (!el) return;
+
+        let startY = 0;
+        let activeTouch: number | null = null;
+        let isPulling = false;
+
+        const onTouchStart = (e: TouchEvent) => {
+            if (e.touches.length !== 1) return;
+            // Only activate when already scrolled to the very top
+            if (el.scrollTop > 5) return;
+            activeTouch = e.touches[0].identifier;
+            startY = e.touches[0].clientY;
+            isPulling = false;
+        };
+
+        const onTouchMove = (e: TouchEvent) => {
+            if (activeTouch === null) return;
+            const touch = Array.from(e.touches).find((t) => t.identifier === activeTouch);
+            if (!touch) return;
+
+            const dy = touch.clientY - startY;
+
+            // If the user scrolled down before pulling, abort the PTR gesture
+            if (el.scrollTop > 5 && !isPulling) {
+                activeTouch = null;
+                return;
+            }
+
+            if (dy > 8) isPulling = true;
+
+            if (isPulling && dy > 0) {
+                e.preventDefault(); // prevent native scroll / browser PTR
+                const visual = Math.min(dy * 0.5, PULL_MAX_VISUAL);
+                pullDistanceRef.current = visual;
+                setPullDistance(visual);
+            }
+        };
+
+        const onTouchEnd = () => {
+            if (!isPulling) { activeTouch = null; return; }
+            const dist = pullDistanceRef.current;
+            isPulling = false;
+            activeTouch = null;
+            pullDistanceRef.current = 0;
+            setPullDistance(0);
+
+            if (dist >= PULL_THRESHOLD * 0.5 && !isPtrRefreshingRef.current) {
+                isPtrRefreshingRef.current = true;
+                setIsRefreshing(true);
+                fetchPinnedRef.current().finally(() => {
+                    // Keep spinner briefly visible so the refresh feels intentional
+                    setTimeout(() => {
+                        isPtrRefreshingRef.current = false;
+                        setIsRefreshing(false);
+                    }, 500);
+                });
+            }
+        };
+
+        el.addEventListener("touchstart", onTouchStart, { passive: true });
+        el.addEventListener("touchmove", onTouchMove, { passive: false });
+        el.addEventListener("touchend", onTouchEnd, { passive: true });
+        el.addEventListener("touchcancel", onTouchEnd, { passive: true });
+
+        return () => {
+            el.removeEventListener("touchstart", onTouchStart);
+            el.removeEventListener("touchmove", onTouchMove);
+            el.removeEventListener("touchend", onTouchEnd);
+            el.removeEventListener("touchcancel", onTouchEnd);
+        };
+    }, []); // stable refs — no deps needed
+
     const [isDesktop, setIsDesktop] = React.useState(() => {
         if (typeof window === "undefined") return true;
         return window.matchMedia("(min-width: 768px)").matches;
@@ -434,6 +521,9 @@ export const SessionSidebar = React.memo(function SessionSidebar({
             // best-effort
         }
     }, []);
+
+    // Keep the PTR ref up-to-date so the non-reactive touch listener can call it
+    fetchPinnedRef.current = fetchPinnedSessions;
 
     React.useEffect(() => {
         fetchPinnedSessions();
@@ -834,7 +924,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                         <Button
                             variant="ghost"
                             size="icon"
-                            className="h-8 w-8 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
+                            className="h-11 w-11 md:h-8 md:w-8 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent touch-manipulation"
                             onClick={onClose}
                             aria-label="Close sidebar"
                             title="Close sidebar"
@@ -858,11 +948,12 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                             {selectedSessionIds.size} selected
                         </span>
                     </div>
+                    {/* Minimum 44×44pt touch targets on mobile */}
                     <div className="flex items-center gap-1">
                         <Button
                             variant="ghost"
                             size="icon"
-                            className="h-7 w-7 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
+                            className="h-11 w-11 md:h-7 md:w-7 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent touch-manipulation"
                             onClick={() => {
                                 if (selectedSessionIds.size === liveSessions.length) {
                                     setSelectedSessionIds(new Set());
@@ -879,7 +970,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                             variant="ghost"
                             size="icon"
                             className={cn(
-                                "h-7 w-7",
+                                "h-11 w-11 md:h-7 md:w-7 touch-manipulation",
                                 selectedSessionIds.size > 0
                                     ? "text-red-500 hover:text-red-600 hover:bg-red-500/10"
                                     : "text-sidebar-foreground/30 cursor-not-allowed",
@@ -912,12 +1003,13 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                             Sessions
                         </span>
                     </div>
+                    {/* Minimum 44×44pt touch targets on mobile, compact on desktop */}
                     <div className="flex items-center gap-1">
                         {liveSessions.length > 0 && (
                             <Button
                                 variant="ghost"
                                 size="icon"
-                                className="h-8 w-8 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
+                                className="h-11 w-11 md:h-8 md:w-8 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent touch-manipulation"
                                 onClick={() => setSelectMode(true)}
                                 aria-label="Select sessions"
                                 title="Select sessions"
@@ -928,7 +1020,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                         <Button
                             variant="ghost"
                             size="icon"
-                            className="h-8 w-8 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
+                            className="h-11 w-11 md:h-8 md:w-8 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent touch-manipulation"
                             onClick={onNewSession}
                             aria-label="New session"
                             title="New session"
@@ -938,7 +1030,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                         <Button
                             variant="ghost"
                             size="icon"
-                            className="h-8 w-8 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent"
+                            className="h-11 w-11 md:h-8 md:w-8 text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent touch-manipulation"
                             onClick={onClose}
                             aria-label="Clear selected session"
                             title="Clear selected session"
@@ -956,7 +1048,9 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                         onClick={onShowSessions}
                         className={cn(
                             "flex items-center justify-center gap-1.5 px-3 pb-2 text-xs font-medium transition-colors relative",
-                            "focus-visible:outline-none",
+                            "focus-visible:outline-none touch-manipulation",
+                            // Minimum 44pt tap target — extra top padding on mobile
+                            "pt-3 md:pt-1",
                             !showRunners
                                 ? "text-sidebar-foreground"
                                 : "text-sidebar-foreground/40 hover:text-sidebar-foreground/70"
@@ -970,7 +1064,9 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                         onClick={onShowRunners}
                         className={cn(
                             "flex items-center justify-center gap-1.5 px-3 pb-2 text-xs font-medium transition-colors relative",
-                            "focus-visible:outline-none",
+                            "focus-visible:outline-none touch-manipulation",
+                            // Minimum 44pt tap target — extra top padding on mobile
+                            "pt-3 md:pt-1",
                             showRunners
                                 ? "text-sidebar-foreground"
                                 : "text-sidebar-foreground/40 hover:text-sidebar-foreground/70"
@@ -1001,7 +1097,8 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                     key={r.runnerId}
                                     onClick={() => { onSelectRunner?.(r.runnerId); if (window.innerWidth < 768) onClose?.(); }}
                                     className={cn(
-                                        "flex items-center gap-2.5 w-full px-2.5 py-2 rounded-lg text-left transition-colors",
+                                        // min-h-[44px] ensures 44pt touch target on mobile
+                                        "flex items-center gap-2.5 w-full px-2.5 py-2 min-h-[44px] rounded-lg text-left transition-colors touch-manipulation",
                                         selectedRunnerId === r.runnerId
                                             ? "bg-sidebar-accent border border-sidebar-border"
                                             : r.isOnline
@@ -1027,7 +1124,32 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                     </div>
                 )}
 
-                {!showRunners && <div className="flex-1 px-2 overflow-y-auto overflow-x-hidden" style={{ paddingBottom: "max(0.5rem, env(safe-area-inset-bottom))" }}>
+                {!showRunners && <div
+                    ref={sessionListRef}
+                    className="flex-1 px-2 overflow-y-auto overflow-x-hidden overscroll-y-contain"
+                    style={{ paddingBottom: "max(0.5rem, env(safe-area-inset-bottom))" }}
+                >
+                    {/* Pull-to-refresh indicator — only rendered while pulling or refreshing */}
+                    {(pullDistance > 0 || isRefreshing) && (
+                        <div
+                            className="flex items-center justify-center gap-1.5 text-xs text-sidebar-foreground/50 overflow-hidden"
+                            style={{ height: isRefreshing ? 44 : pullDistance }}
+                        >
+                            {isRefreshing ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                                <>
+                                    <RefreshCw
+                                        className={cn(
+                                            "h-3.5 w-3.5 transition-transform duration-200",
+                                            pullDistance >= PULL_THRESHOLD * 0.5 ? "rotate-180" : "",
+                                        )}
+                                    />
+                                    <span>{pullDistance >= PULL_THRESHOLD * 0.5 ? "Release to refresh" : "Pull to refresh"}</span>
+                                </>
+                            )}
+                        </div>
+                    )}
                     {pinError && (
                         <p role="alert" aria-live="polite" className="px-2 py-2 text-[0.7rem] text-red-400">
                             {pinError}
@@ -1210,8 +1332,9 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                         onPointerUp={selectMode ? undefined : handleSessionPointerUp}
                                                         onContextMenu={(e) => e.preventDefault()}
                                                         className={cn(
-                                                            "relative flex items-center gap-2.5 w-full min-w-0 px-2.5 py-3 md:py-2.5 text-left rounded-md",
+                                                            "relative flex items-center gap-2.5 w-full min-w-0 px-2.5 py-3 md:py-2.5 min-h-[44px] text-left rounded-md",
                                                             "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
+                                                            "touch-manipulation",
                                                             !hasOffset && "transition-transform duration-200 ease-out",
                                                             selectMode && isChecked
                                                                 ? "bg-sidebar-accent text-sidebar-accent-foreground"
@@ -1266,7 +1389,8 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                                       });
                                                                     }
                                                                   }}
-                                                                  className="flex-shrink-0 text-sidebar-foreground/50 hover:text-sidebar-foreground/70 transition-colors cursor-pointer"
+                                                                  // 44×44pt touch target on mobile, compact on desktop
+                                                                  className="flex-shrink-0 flex items-center justify-center h-9 w-9 md:h-5 md:w-5 text-sidebar-foreground/50 hover:text-sidebar-foreground/70 transition-colors cursor-pointer touch-manipulation"
                                                                   aria-label={isExpanded ? "Collapse" : "Expand"}
                                                                 >
                                                                   {isExpanded ? (
@@ -1315,13 +1439,15 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                             />
                                                         </div>
 
-                                                        {/* Pin toggle */}
+                                                        {/* Pin toggle — 36×36pt on mobile for easy tapping */}
                                                         {!selectMode && (
                                                             <span
                                                                 role="button"
                                                                 tabIndex={-1}
                                                                 className={cn(
-                                                                    "flex-shrink-0 flex items-center justify-center w-5 h-5 rounded transition-colors",
+                                                                    "flex-shrink-0 flex items-center justify-center",
+                                                                    // Larger touch target on mobile, compact on desktop
+                                                                    "h-9 w-9 md:h-5 md:w-5 rounded transition-colors touch-manipulation",
                                                                     isPinned
                                                                         ? "text-blue-400 hover:text-blue-300"
                                                                         : "text-sidebar-foreground/20 hover:text-sidebar-foreground/40",
@@ -1476,7 +1602,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                 onContextMenu={(e) => e.preventDefault()}
                                                 title={`View pinned session ${p.sessionId}`}
                                                 className={cn(
-                                                    "flex items-center gap-2.5 w-full min-w-0 px-2.5 py-3 md:py-2.5 text-left",
+                                                    "flex items-center gap-2.5 w-full min-w-0 px-2.5 py-3 md:py-2.5 min-h-[44px] text-left touch-manipulation",
                                                     !hasOffset && "transition-transform duration-200 ease-out",
                                                     isActiveSession
                                                         ? "bg-sidebar-accent text-sidebar-accent-foreground"
