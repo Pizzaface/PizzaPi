@@ -26,6 +26,7 @@ import { platform, arch, homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveDefaultShell } from "./terminal-utils.js";
+import { logInfo, logWarn, logError } from "./logger.js";
 
 export interface TerminalEntry {
     terminalId: string;
@@ -168,7 +169,7 @@ export function spawnTerminal(
 
     // Surface any stderr from the worker to the daemon log.
     worker.stderr?.on("data", (chunk: Buffer) => {
-        console.error(`[terminal ${terminalId}] worker stderr:`, chunk.toString("utf-8").trim());
+        logError(`[terminal ${terminalId}] worker stderr: ${chunk.toString("utf-8").trim()}`);
     });
 
     let isReady = false;
@@ -181,7 +182,7 @@ export function spawnTerminal(
             case "ready": {
                 isReady = true;
                 send({ type: "terminal_ready", terminalId });
-                console.log(
+                logInfo(
                     `pizzapi runner: terminal ${terminalId} spawned (shell=${shell}, cwd=${cwd}, ${cols}x${rows}, pid=${worker.pid})`,
                 );
                 break;
@@ -191,7 +192,7 @@ export function spawnTerminal(
                 break;
             }
             case "exit": {
-                console.log(
+                logInfo(
                     `[terminal ${terminalId}] PTY exited (exitCode=${m.exitCode})`,
                 );
                 runningTerminals.delete(terminalId);
@@ -213,7 +214,7 @@ export function spawnTerminal(
         const entry = runningTerminals.get(terminalId);
         if (!entry) return; // already removed by "exit" IPC message
         runningTerminals.delete(terminalId);
-        console.log(
+        logInfo(
             `[terminal ${terminalId}] worker exited (code=${code}, signal=${signal})`,
         );
         // If the worker was killed without sending a clean "exit" IPC message
@@ -224,7 +225,8 @@ export function spawnTerminal(
 
     worker.on("error", (err) => {
         runningTerminals.delete(terminalId);
-        console.error(`[terminal ${terminalId}] worker process error:`, err);
+        logError(`[terminal ${terminalId}] worker process error: ${err.message}`);
+        if (err.stack) logError(err.stack);
         send({ type: "terminal_error", terminalId, message: err.message });
     });
 
@@ -240,13 +242,13 @@ export function spawnTerminal(
 export function writeTerminalInput(terminalId: string, dataBase64: string): void {
     const entry = runningTerminals.get(terminalId);
     if (!entry) {
-        console.warn(`[terminal] writeTerminalInput: no running terminal for terminalId=${terminalId} — input dropped`);
+        logWarn(`[terminal] writeTerminalInput: no running terminal for terminalId=${terminalId} — input dropped`);
         return;
     }
     try {
         entry.worker.send({ type: "input", data: dataBase64 });
     } catch (err) {
-        console.warn(`[terminal] writeTerminalInput: failed for terminalId=${terminalId}:`, err);
+        logWarn(`[terminal] writeTerminalInput: failed for terminalId=${terminalId}: ${err}`);
     }
 }
 
@@ -258,17 +260,17 @@ export function resizeTerminal(
 ): void {
     const entry = runningTerminals.get(terminalId);
     if (!entry) {
-        console.warn(`[terminal] resizeTerminal: no running terminal for terminalId=${terminalId} — resize dropped`);
+        logWarn(`[terminal] resizeTerminal: no running terminal for terminalId=${terminalId} — resize dropped`);
         return;
     }
     if (cols > 0 && rows > 0) {
         try {
             entry.worker.send({ type: "resize", cols, rows });
         } catch (err) {
-            console.warn(`[terminal] resizeTerminal: failed for terminalId=${terminalId}:`, err);
+            logWarn(`[terminal] resizeTerminal: failed for terminalId=${terminalId}: ${err}`);
         }
     } else {
-        console.warn(`[terminal] resizeTerminal: invalid dimensions ${cols}x${rows} for terminalId=${terminalId} — resize skipped`);
+        logWarn(`[terminal] resizeTerminal: invalid dimensions ${cols}x${rows} for terminalId=${terminalId} — resize skipped`);
     }
 }
 
@@ -276,7 +278,7 @@ export function resizeTerminal(
 export function killTerminal(terminalId: string): boolean {
     const entry = runningTerminals.get(terminalId);
     if (!entry) {
-        console.warn(`[terminal] killTerminal: no running terminal for terminalId=${terminalId}`);
+        logWarn(`[terminal] killTerminal: no running terminal for terminalId=${terminalId}`);
         return false;
     }
     runningTerminals.delete(terminalId);
@@ -286,7 +288,7 @@ export function killTerminal(terminalId: string): boolean {
     try {
         entry.worker.kill("SIGTERM");
     } catch (err) {
-        console.warn(`[terminal] killTerminal: worker.kill() failed for terminalId=${terminalId}:`, err);
+        logWarn(`[terminal] killTerminal: worker.kill() failed for terminalId=${terminalId}: ${err}`);
     }
     return true;
 }

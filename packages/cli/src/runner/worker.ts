@@ -7,6 +7,7 @@ import { buildWorkerSkillPaths } from "../skills.js";
 import { getPluginSkillPaths } from "../extensions/claude-plugins.js";
 import { initSandbox, cleanupSandbox, isSandboxActive } from "@pizzapi/tools";
 import { createBootTimer } from "./boot-timing.js";
+import { setLogComponent, setLogSessionId, logInfo, logWarn, logError, logAuth } from "./logger.js";
 
 /**
  * Build additional prompt template paths for the headless worker.
@@ -43,6 +44,10 @@ async function main(): Promise<void> {
     const bootTimer = createBootTimer();
     bootTimer.start("[boot] total");
 
+    setLogComponent("worker");
+    const sessionId = process.env.PIZZAPI_SESSION_ID ?? null;
+    setLogSessionId(sessionId);
+
     const args = process.argv.slice(2);
     const cwdFlagIdx = args.indexOf("--cwd");
     const cwdFromArgs = cwdFlagIdx !== -1 && args[cwdFlagIdx + 1] ? args[cwdFlagIdx + 1] : undefined;
@@ -51,7 +56,7 @@ async function main(): Promise<void> {
     try {
         process.chdir(cwd);
     } catch (err) {
-        console.error(`pizzapi worker: failed to chdir to ${cwd}: ${err instanceof Error ? err.message : String(err)}`);
+        logError(`failed to chdir to ${cwd}: ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
     }
 
@@ -89,15 +94,13 @@ async function main(): Promise<void> {
     try {
         await initSandbox(sandboxConfig);
     } catch (err) {
-        console.warn(
-            `pizzapi worker: sandbox init failed, continuing unsandboxed: ${err instanceof Error ? err.message : String(err)}`,
-        );
+        logWarn(`sandbox init failed, continuing unsandboxed: ${err instanceof Error ? err.message : String(err)}`);
     }
     if (isSandboxActive()) {
         process.env.PIZZAPI_SANDBOX_ACTIVE = "1";
         process.env.PIZZAPI_SANDBOX_MODE = sandboxConfig.mode;
     } else if (sandboxConfig.mode !== "none") {
-        console.warn("pizzapi worker: sandbox was requested but is not active (platform unsupported or init failed)");
+        logWarn("sandbox was requested but is not active (platform unsupported or init failed)");
     }
     bootTimer.end("[boot] sandbox");
 
@@ -117,7 +120,7 @@ async function main(): Promise<void> {
                 try {
                     agentFiles.push({ path: filePath, content: readFileSync(filePath, "utf-8") });
                 } catch (err) {
-                    console.warn(`pizzapi worker: skipping unreadable agent file ${filePath}: ${err instanceof Error ? err.message : String(err)}`);
+                    logWarn(`skipping unreadable agent file ${filePath}: ${err instanceof Error ? err.message : String(err)}`);
                 }
             }
         }
@@ -152,6 +155,36 @@ async function main(): Promise<void> {
     });
     await loader.reload();
     bootTimer.end("[boot] resource-loader");
+
+    // ── Auth diagnostics — log credential state before first API call ────
+    // This helps diagnose intermittent "No API key found" failures in
+    // concurrent worker sessions (see Godmother idea fIUvBDLZ).
+    try {
+        const { AuthStorage } = await import("@mariozechner/pi-coding-agent");
+        const diagAuthStorage = AuthStorage.create(join(agentDir, "auth.json"));
+        for (const provider of ["anthropic", "google-gemini-cli", "openai-codex"]) {
+            const raw = diagAuthStorage.get(provider);
+            if (raw && typeof raw === "object" && "type" in raw) {
+                const cred = raw as { type: string; expires?: number };
+                if (cred.type === "oauth" && cred.expires) {
+                    const remainingMs = cred.expires - Date.now();
+                    logAuth("credential-state", {
+                        provider,
+                        type: cred.type,
+                        expiresIn: `${Math.round(remainingMs / 1000)}s`,
+                        expired: remainingMs <= 0 ? "YES" : "no",
+                    });
+                } else {
+                    logAuth("credential-state", { provider, type: cred.type });
+                }
+            } else if (raw) {
+                logAuth("credential-state", { provider, type: "unknown-format" });
+            }
+            // Silently skip missing providers — not all may be configured
+        }
+    } catch {
+        // Non-fatal — diagnostic only
+    }
 
     bootTimer.start("[boot] create-session");
     const { session } = await createAgentSession({
@@ -199,16 +232,15 @@ async function main(): Promise<void> {
             }
         },
         onError: (err) => {
-            console.error(`[extension] ${err.extensionPath}: ${err.error}`);
-            if (err.stack) console.error(err.stack);
+            logError(`[extension] ${err.extensionPath}: ${err.error}`);
+            if (err.stack) logError(err.stack);
             forwardCliError(err.error, err.extensionPath);
         },
     });
     bootTimer.end("[boot] bind-extensions");
 
-    const sessionId = process.env.PIZZAPI_SESSION_ID;
     bootTimer.end("[boot] total");
-    console.log(`pizzapi worker: boot complete (cwd=${cwd}${sessionId ? `, sessionId=${sessionId}` : ""})`);
+    logInfo(`started (cwd=${cwd}${agentName ? `, agent=${agentName}` : ""})`);
 
     const shutdown = async () => {
         try {
@@ -228,6 +260,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-    console.error(err instanceof Error ? err.stack ?? err.message : String(err));
+    logError(err instanceof Error ? err.stack ?? err.message : String(err));
     process.exit(1);
 });

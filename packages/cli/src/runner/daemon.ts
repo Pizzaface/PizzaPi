@@ -23,6 +23,7 @@ import { loadGlobalConfig, loadConfig, defaultAgentDir, expandHome, type HooksCo
 import { AuthStorage } from "@mariozechner/pi-coding-agent";
 import { cleanupSessionAttachments, sweepOrphanedAttachments } from "../extensions/session-attachments.js";
 import { getRefreshedOAuthToken, parseGeminiQuotaCredential } from "./usage-auth.js";
+import { setLogComponent, logInfo, logWarn, logError, logAuth } from "./logger.js";
 
 /**
  * Summarise the active hooks from a HooksConfig for display in the web UI.
@@ -142,12 +143,12 @@ function acquireStateAndIdentity(statePath: string): { runnerId: string; runnerS
             const pid = typeof existing.pid === "number" ? existing.pid : NaN;
             if (Number.isFinite(pid) && pid > 0) {
                 if (isPidRunning(pid)) {
-                    console.error(`❌ pizzapi runner already running (pid ${pid}, state: ${statePath}).`);
-                    console.error("   Stop the existing runner process first, e.g.: kill ${pid}");
+                    logError(`pizzapi runner already running (pid ${pid}, state: ${statePath}).`);
+                    logError("   Stop the existing runner process first, e.g.: kill ${pid}");
                     process.exit(1);
                 }
                 // PID is gone or belongs to an unrelated process — stale lock.
-                console.log(`pizzapi runner: clearing stale lock (pid ${pid} is no longer a runner process)`);
+                logInfo(`clearing stale lock (pid ${pid} is no longer a runner process)`);
             }
         }
 
@@ -173,7 +174,7 @@ function acquireStateAndIdentity(statePath: string): { runnerId: string; runnerS
             writeFileSync(statePath, JSON.stringify(state, null, 2), { encoding: "utf-8", mode: 0o600 });
             return { runnerId, runnerSecret };
         } catch (err: any) {
-            console.error(`❌ Failed to write runner state to ${statePath}: ${err?.message ?? String(err)}`);
+            logError(`Failed to write runner state to ${statePath}: ${err?.message ?? String(err)}`);
             process.exit(1);
         }
     }
@@ -321,7 +322,7 @@ async function fetchAnthropicUsageData(): Promise<ProviderUsageData | null> {
             if (token) break;
         }
     } catch (err: any) {
-        console.warn(`pizzapi runner: failed to get Anthropic credentials: ${err?.message ?? String(err)}`);
+        logWarn(`failed to get Anthropic credentials: ${err?.message ?? String(err)}`);
         return null;
     }
     if (!token) return null;
@@ -396,7 +397,7 @@ async function fetchGeminiUsageData(): Promise<ProviderUsageData | null> {
             }
         }
     } catch (err: any) {
-        console.warn(`pizzapi runner: failed to get Google credentials: ${err?.message ?? String(err)}`);
+        logWarn(`failed to get Google credentials: ${err?.message ?? String(err)}`);
         return null;
     }
     if (!token || !projectId) return null;
@@ -436,7 +437,7 @@ async function fetchCodexUsageData(): Promise<ProviderUsageData | null> {
             if (token) break;
         }
     } catch (err: any) {
-        console.warn(`pizzapi runner: failed to get OpenAI Codex credentials: ${err?.message ?? String(err)}`);
+        logWarn(`failed to get OpenAI Codex credentials: ${err?.message ?? String(err)}`);
         return null;
     }
     if (!token) return null;
@@ -516,9 +517,9 @@ async function refreshAndWriteRunnerUsageCache(opts: { forceAnthropic?: boolean 
     const cache: RunnerUsageCacheFile = { fetchedAt: Date.now(), providers };
     try {
         writeFileSync(runnerUsageCacheFilePath(), JSON.stringify(cache, null, 2), { encoding: "utf-8", mode: 0o600 });
-        console.log(`pizzapi runner: usage cache refreshed (${Object.keys(providers).join(", ")})`);
+        logInfo(`usage cache refreshed (${Object.keys(providers).join(", ")})`);
     } catch (err: any) {
-        console.warn(`pizzapi runner: failed to write usage cache: ${err?.message ?? String(err)}`);
+        logWarn(`failed to write usage cache: ${err?.message ?? String(err)}`);
     }
 }
 
@@ -554,6 +555,7 @@ function stopUsageRefreshLoop(): void {
  * State file:     PIZZAPI_RUNNER_STATE_PATH env var (default: ~/.pizzapi/runner.json).
  */
 export async function runDaemon(_args: string[] = []): Promise<number> {
+    setLogComponent("daemon");
     const statePath = defaultStatePath();
     const identity = acquireStateAndIdentity(statePath);
 
@@ -588,7 +590,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
     const token = process.env.PIZZAPI_RUNNER_TOKEN;
 
     if (!apiKey && !token) {
-        console.error("❌ Set PIZZAPI_API_KEY (or PIZZAPI_API_TOKEN), or set apiKey in ~/.pizzapi/config.json.");
+        logError("Set PIZZAPI_API_KEY (or PIZZAPI_API_TOKEN), or set apiKey in ~/.pizzapi/config.json.");
         releaseStateLock(statePath);
         process.exit(1);
     }
@@ -647,7 +649,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             },
         );
 
-        console.log(`pizzapi runner: connecting to relay at ${sioUrl}/runner…`);
+        logInfo(`connecting to relay at ${sioUrl}/runner…`);
 
         const shutdown = (code: number) => {
             if (isShuttingDown) return;
@@ -697,13 +699,13 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             }
             const verb = isFirstConnect ? "connected" : "reconnected";
             isFirstConnect = false;
-            console.log(`pizzapi runner: ${verb}. Registering as ${identity.runnerId}…`);
+            logInfo(`${verb}. Registering as ${identity.runnerId}…`);
             emitRegister();
         });
 
         socket.on("disconnect", (reason) => {
             if (isShuttingDown) return;
-            console.log(`pizzapi runner: disconnected (${reason}). Socket.IO will reconnect automatically.`);
+            logInfo(`disconnected (${reason}). Socket.IO will reconnect automatically.`);
         });
 
         // ── Registration confirmation ─────────────────────────────────────
@@ -711,11 +713,9 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         socket.on("runner_registered", (data: any) => {
             runnerId = data.runnerId;
             if (runnerId !== identity.runnerId) {
-                console.warn(
-                    `pizzapi runner: server assigned unexpected ID ${runnerId} (expected ${identity.runnerId})`,
-                );
+                logWarn(`server assigned unexpected ID ${runnerId} (expected ${identity.runnerId})`);
             }
-            console.log(`pizzapi runner: registered as ${runnerId}`);
+            logInfo(`registered as ${runnerId}`);
 
             // Re-adopt orphaned sessions that survived a daemon restart.
             // Their worker processes are still running and connected to the relay.
@@ -733,7 +733,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     adopted++;
                 }
                 if (adopted > 0) {
-                    console.log(`pizzapi runner: re-adopted ${adopted} orphaned session(s): ${existingSessions.map((s: any) => s.sessionId.slice(0, 8)).join(", ")}`);
+                    logInfo(`re-adopted ${adopted} orphaned session(s): ${existingSessions.map((s: any) => s.sessionId.slice(0, 8)).join(", ")}`);
                 }
             }
 
@@ -786,7 +786,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     }
                     resolvedAgent = { ...resolvedAgent, systemPrompt: body, tools, disallowedTools };
                 } else {
-                    console.warn(`pizzapi runner: agent "${resolvedAgent.name}" not found on disk`);
+                    logWarn(`agent "${resolvedAgent.name}" not found on disk`);
                     socket.emit("session_error", { sessionId, message: `Agent "${resolvedAgent.name}" not found on this runner` });
                     return;
                 }
@@ -829,7 +829,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     socket.emit("disconnect_session", { sessionId });
                 }
                 runningSessions.delete(sessionId);
-                console.log(`pizzapi runner: killed session ${sessionId}${entry.adopted ? " (adopted)" : ""}`);
+                logInfo(`killed session ${sessionId}${entry.adopted ? " (adopted)" : ""}`);
                 socket.emit("session_killed", { sessionId });
                 // Clean up persisted attachments for this session
                 void cleanupSessionAttachments(sessionId).catch(() => {});
@@ -847,7 +847,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             // delete its entry and don't touch its attachments.
             if (restartingSessions.has(sessionId)) {
                 restartingSessions.delete(sessionId);
-                console.log(`pizzapi runner: session_ended for ${sessionId} — restarting in place, skipping teardown`);
+                logInfo(`session_ended for ${sessionId} — restarting in place, skipping teardown`);
                 return;
             }
 
@@ -855,7 +855,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             // before re-registering the same worker.  The worker is still alive —
             // don't delete its runningSessions entry or its attachments.
             if (reason === "Session reconnected") {
-                console.log(`pizzapi runner: session_ended for ${sessionId} — relay reconnect, skipping teardown`);
+                logInfo(`session_ended for ${sessionId} — relay reconnect, skipping teardown`);
                 return;
             }
 
@@ -869,18 +869,18 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 const childAlive = entry.child && !entry.child.killed && entry.child.exitCode === null;
                 const isTransientDisconnect = !reason || reason === "Session ended";
                 if (childAlive && isTransientDisconnect) {
-                    console.log(`pizzapi runner: session_ended for ${sessionId} but worker still alive — keeping entry for reconnect`);
+                    logInfo(`session_ended for ${sessionId} but worker still alive — keeping entry for reconnect`);
                     return;
                 }
                 runningSessions.delete(sessionId);
                 endedSessionIds.add(sessionId);
                 setTimeout(() => endedSessionIds.delete(sessionId), ENDED_SESSION_TTL_MS);
-                console.log(`pizzapi runner: session ${sessionId} ended on relay${entry.adopted ? " (adopted)" : ""}${reason ? ` (${reason})` : ""}`);
+                logInfo(`session ${sessionId} ended on relay${entry.adopted ? " (adopted)" : ""}${reason ? ` (${reason})` : ""}`);
             } else if (!endedSessionIds.has(sessionId)) {
                 // First duplicate — log once then suppress subsequent copies
                 endedSessionIds.add(sessionId);
                 setTimeout(() => endedSessionIds.delete(sessionId), ENDED_SESSION_TTL_MS);
-                console.log(`pizzapi runner: session_ended for unknown/already-removed session ${sessionId}`);
+                logInfo(`session_ended for unknown/already-removed session ${sessionId}`);
             }
             // else: duplicate session_ended for a session we already handled — silently ignore
 
@@ -901,14 +901,14 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         // ── Daemon control ────────────────────────────────────────────────
 
         socket.on("restart", () => {
-            console.log("pizzapi runner: restart request received. Exiting with code 42...");
+            logInfo("restart request received. Exiting with code 42...");
             setTimeout(() => {
                 shutdown(42);
             }, 500);
         });
 
         socket.on("shutdown", () => {
-            console.log("pizzapi runner: shutdown request received. Exiting cleanly...");
+            logInfo("shutdown request received. Exiting cleanly...");
             setTimeout(() => {
                 shutdown(0);
             }, 500);
@@ -925,16 +925,16 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         socket.on("new_terminal", (data: any) => {
             if (isShuttingDown) return;
             const { terminalId, cwd: requestedCwd, cols, rows, shell } = data;
-            console.log(
+            logInfo(
                 `[terminal] new_terminal received: terminalId=${terminalId} cwd=${requestedCwd ?? "(default)"} cols=${cols ?? 80} rows=${rows ?? 24} shell=${shell ?? "(default)"}`,
             );
             if (!terminalId) {
-                console.warn("[terminal] new_terminal: missing terminalId — rejecting");
+                logWarn("[terminal] new_terminal: missing terminalId — rejecting");
                 socket.emit("terminal_error", { terminalId: "", message: "Missing terminalId" });
                 return;
             }
             if (requestedCwd && !isCwdAllowed(requestedCwd)) {
-                console.warn(
+                logWarn(
                     `[terminal] new_terminal: cwd="${requestedCwd}" outside allowed roots — rejecting terminalId=${terminalId}`,
                 );
                 socket.emit("terminal_error", {
@@ -952,9 +952,8 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                         (socket as any).emit(type, rest);
                     }
                 } catch (err) {
-                    console.error(
-                        `[terminal] termSend: failed to send ${payload.type} for terminalId=${terminalId}:`,
-                        err,
+                    logError(
+                        `[terminal] termSend: failed to send ${payload.type} for terminalId=${terminalId}: ${err}`,
                     );
                 }
             };
@@ -970,7 +969,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             if (isShuttingDown) return;
             const { terminalId, data: inputData } = data;
             if (!terminalId || !inputData) {
-                console.warn(
+                logWarn(
                     `[terminal] terminal_input: missing terminalId or data (terminalId=${terminalId} dataLen=${inputData?.length ?? 0})`,
                 );
                 return;
@@ -982,10 +981,10 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             if (isShuttingDown) return;
             const { terminalId, cols, rows } = data;
             if (!terminalId) {
-                console.warn("[terminal] terminal_resize: missing terminalId");
+                logWarn("[terminal] terminal_resize: missing terminalId");
                 return;
             }
-            console.log(`[terminal] terminal_resize: terminalId=${terminalId} ${cols}x${rows}`);
+            logInfo(`[terminal] terminal_resize: terminalId=${terminalId} ${cols}x${rows}`);
             resizeTerminal(terminalId, cols, rows);
         });
 
@@ -993,12 +992,12 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             if (isShuttingDown) return;
             const { terminalId } = data;
             if (!terminalId) {
-                console.warn("[terminal] kill_terminal: missing terminalId");
+                logWarn("[terminal] kill_terminal: missing terminalId");
                 return;
             }
-            console.log(`[terminal] kill_terminal: terminalId=${terminalId}`);
+            logInfo(`[terminal] kill_terminal: terminalId=${terminalId}`);
             const killed = killTerminal(terminalId);
-            console.log(`[terminal] kill_terminal: result=${killed} terminalId=${terminalId}`);
+            logInfo(`[terminal] kill_terminal: result=${killed} terminalId=${terminalId}`);
             if (killed) {
                 socket.emit("terminal_exit", { terminalId, exitCode: -1 });
             } else {
@@ -1009,7 +1008,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         socket.on("list_terminals", () => {
             if (isShuttingDown) return;
             const list = listTerminals();
-            console.log(`[terminal] list_terminals: ${list.length} active (${list.join(", ") || "none"})`);
+            logInfo(`[terminal] list_terminals: ${list.length} active (${list.join(", ") || "none"})`);
             // terminals_list is not in the typed protocol yet — emit untyped
             (socket as any).emit("terminals_list", { terminals: list });
         });
@@ -1628,7 +1627,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         // ── Error handling ────────────────────────────────────────────────
 
         socket.on("error", (data: any) => {
-            console.error(`pizzapi runner: server error: ${data.message}`);
+            logError(`server error: ${data.message}`);
         });
     });
 }
@@ -1745,7 +1744,7 @@ function spawnSession(
         parentSessionId?: string;
     },
 ): void {
-    console.log(`pizzapi runner: spawning headless worker for session ${sessionId}…`);
+    logInfo(`spawning headless worker for session ${sessionId}…`);
 
     if (runningSessions.has(sessionId)) {
         throw new Error(`Session already running: ${sessionId}`);
@@ -1819,7 +1818,7 @@ function spawnSession(
     child.on("message", (msg: unknown) => {
         if (typeof msg === "object" && msg !== null && (msg as Record<string, unknown>).type === "pre_restart") {
             restartingSessions.add(sessionId);
-            console.log(`pizzapi runner: session ${sessionId} signaled pre-restart via IPC`);
+            logInfo(`session ${sessionId} signaled pre-restart via IPC`);
         }
     });
 
@@ -1830,7 +1829,7 @@ function spawnSession(
     child.on("exit", (code, signal) => {
         runningSessions.delete(sessionId);
         untrackSessionCwd(sessionId, effectiveCwd);
-        console.log(`pizzapi runner: session ${sessionId} exited (code=${code}, signal=${signal})`);
+        logInfo(`session ${sessionId} exited (code=${code}, signal=${signal})`);
         if (code === 43 && onRestartRequested) {
             // Restart-in-place: re-spawn immediately without touching attachments.
             // The session continues under the same ID — files saved to
@@ -1839,7 +1838,7 @@ function spawnSession(
             // message above; this add is a belt-and-suspenders fallback for the
             // (unlikely) case where the IPC message was not sent or was lost.
             restartingSessions.add(sessionId);
-            console.log(`pizzapi runner: re-spawning session ${sessionId} (worker restart requested)`);
+            logInfo(`re-spawning session ${sessionId} (worker restart requested)`);
             onRestartRequested();
         } else {
             // True termination — clean up persisted attachments now.
@@ -1850,7 +1849,7 @@ function spawnSession(
     });
 
     runningSessions.set(sessionId, { sessionId, child, startedAt: Date.now(), parentSessionId: options?.parentSessionId });
-    console.log(`pizzapi runner: session ${sessionId} worker spawned (pid=${child.pid})`);
+    logInfo(`session ${sessionId} worker spawned (pid=${child.pid})`);
 }
 
 /** Is this process running inside a compiled Bun single-file binary? */
