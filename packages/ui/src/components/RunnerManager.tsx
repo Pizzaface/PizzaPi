@@ -63,16 +63,17 @@ export function RunnerManager({
             .catch(() => {});
     }, []);
 
-    // Fetch hub image/version (authenticated)
+    // Fetch hub image/version (authenticated) — refreshed on WS reconnect via runnersStatus
     React.useEffect(() => {
+        if (runnersStatus !== "connected") return;
         fetch("/api/hub-info", { credentials: "include" })
             .then((res) => res.ok ? res.json() : null)
             .then((data) => {
-                if (data?.hubVersion) setHubVersion(data.hubVersion);
-                if (data?.hubImage) setHubImage(data.hubImage);
+                setHubVersion(data?.hubVersion ?? null);
+                setHubImage(data?.hubImage ?? null);
             })
             .catch(() => {});
-    }, []);
+    }, [runnersStatus]);
 
     // Auto-dismiss error after 5 seconds
     React.useEffect(() => {
