@@ -1639,7 +1639,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
         </div>
       )}
 
-      <div className="relative flex-1 min-h-0">
+      <div className="relative flex flex-col flex-1 min-h-0">
         {!sessionId ? (
           <ConversationEmptyState
             icon={<MessageSquare className="size-8 opacity-40" />}
@@ -1681,7 +1681,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
         )}
       </div>
 
-      <div className="border-t border-border px-3 py-2 pp-safe-bottom">
+      <div className="border-t border-border bg-background px-3 py-2 pp-safe-bottom">
         {/* Message queue display */}
         {sessionId && messageQueue && messageQueue.length > 0 && (
           <div className="mb-2 rounded-md border border-border bg-muted/30 px-2.5 py-2">
