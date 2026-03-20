@@ -59,7 +59,14 @@ function createAuthStorageWithRetry(authPath: string, maxAttempts = 5): AuthStor
                         break;
                     }
                 } catch {
-                    // Can't read file — fall through to return empty storage
+                    // Partial/empty JSON during a concurrent token refresh —
+                    // retry instead of returning the empty storage (P1 fix).
+                    lastError = new Error("Lockless auth.json probe got unreadable/partial JSON");
+                    if (attempt < maxAttempts) {
+                        Bun.sleepSync(100 * Math.pow(2, attempt - 1));
+                        continue;
+                    }
+                    break;
                 }
             }
             // File genuinely empty or doesn't exist — return as-is
@@ -74,40 +81,63 @@ function createAuthStorageWithRetry(authPath: string, maxAttempts = 5): AuthStor
 
     // All retries failed — try a lockless fallback read so the worker has
     // at least stale-but-valid credentials rather than none.
+    // Retry the lockless read a few times with short delays because a
+    // concurrent writeFileSync can produce empty/partial JSON momentarily.
     console.warn(
         `pizzapi worker: AuthStorage lock retries exhausted (${maxAttempts} attempts), falling back to lockless read`,
     );
-    try {
-        const raw = readFileSync(authPath, "utf-8");
-        const data = JSON.parse(raw);
-        if (Object.keys(data).length > 0) {
-            // The lock holder may have finished by now — try one final
-            // AuthStorage.create() so we get a file-backed instance that
-            // can persist token refreshes and see future credential updates.
-            try {
-                const fileStorage = AuthStorage.create(authPath);
-                if (fileStorage.list().length > 0) {
-                    console.log(
-                        `pizzapi worker: lock released — file-backed AuthStorage loaded ${fileStorage.list().length} provider(s) on final retry`,
-                    );
-                    return fileStorage;
+    const locklessRetries = 3;
+    for (let lr = 1; lr <= locklessRetries; lr++) {
+        try {
+            const raw = readFileSync(authPath, "utf-8");
+            if (!raw || !raw.trim()) {
+                // Empty file — likely mid-write; wait and retry
+                if (lr < locklessRetries) {
+                    Bun.sleepSync(50 * lr);
+                    continue;
                 }
-            } catch {
-                // Still can't acquire lock — fall through to in-memory
+                break;
             }
-            // Use in-memory as last resort (read-only snapshot — token
-            // refreshes won't be persisted and credential updates won't
-            // be visible, but at least the worker can start).
-            const storage = AuthStorage.inMemory(data);
+            const data = JSON.parse(raw);
+            if (Object.keys(data).length > 0) {
+                // The lock holder may have finished by now — try one final
+                // AuthStorage.create() so we get a file-backed instance that
+                // can persist token refreshes and see future credential updates.
+                try {
+                    const fileStorage = AuthStorage.create(authPath);
+                    if (fileStorage.list().length > 0) {
+                        console.log(
+                            `pizzapi worker: lock released — file-backed AuthStorage loaded ${fileStorage.list().length} provider(s) on final retry`,
+                        );
+                        return fileStorage;
+                    }
+                } catch {
+                    // Still can't acquire lock — fall through to in-memory
+                }
+                // Use in-memory as last resort (read-only snapshot — token
+                // refreshes won't be persisted and credential updates won't
+                // be visible, but at least the worker can start).
+                const storage = AuthStorage.inMemory(data);
+                console.warn(
+                    `pizzapi worker: lockless fallback loaded ${Object.keys(data).length} provider(s) from ${authPath} (in-memory snapshot — token refreshes will not persist)`,
+                );
+                return storage;
+            }
+            // Parsed OK but empty object — file genuinely has no providers
+            break;
+        } catch (err) {
+            // Partial JSON (concurrent write) — retry
+            if (lr < locklessRetries) {
+                console.warn(
+                    `pizzapi worker: lockless read attempt ${lr}/${locklessRetries} got bad JSON, retrying...`,
+                );
+                Bun.sleepSync(50 * lr);
+                continue;
+            }
             console.warn(
-                `pizzapi worker: lockless fallback loaded ${Object.keys(data).length} provider(s) from ${authPath} (in-memory snapshot — token refreshes will not persist)`,
+                `pizzapi worker: lockless fallback read failed after ${locklessRetries} attempts: ${err instanceof Error ? err.message : String(err)}`,
             );
-            return storage;
         }
-    } catch (err) {
-        console.warn(
-            `pizzapi worker: lockless fallback read failed: ${err instanceof Error ? err.message : String(err)}`,
-        );
     }
 
     // Truly nothing worked — return default (will fail at model selection time)
