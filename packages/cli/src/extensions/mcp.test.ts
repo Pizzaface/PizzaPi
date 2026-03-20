@@ -740,7 +740,73 @@ describe("MCP init timeout cancellation", () => {
             // and since the abort signal cancels the fetch, the response
             // shouldn't arrive at all. But if it does (race condition),
             // the closed flag ensures DELETE is sent.
-            // Either way: no orphaned session.
+            if (deleteReceived) {
+                expect(deleteSessionId).toBe(SESSION_ID);
+            }
+        } finally {
+            server.stop(true);
+        }
+    });
+
+    test("registerMcpTools abort signal prevents late tool registration", async () => {
+        const server = Bun.serve({
+            port: 0,
+            async fetch(req) {
+                const body = await req.json() as any;
+                if (!("id" in body)) return new Response(null, { status: 202 });
+
+                if (body.method === "initialize") {
+                    await new Promise((r) => setTimeout(r, 200));
+                    return Response.json({
+                        jsonrpc: "2.0",
+                        id: body.id,
+                        result: {
+                            protocolVersion: MCP_PROTOCOL_VERSION,
+                            capabilities: {},
+                            serverInfo: { name: "abortable", version: "1.0" },
+                        },
+                    });
+                }
+
+                if (body.method === "tools/list") {
+                    await new Promise((r) => setTimeout(r, 200));
+                    return Response.json({
+                        jsonrpc: "2.0",
+                        id: body.id,
+                        result: { tools: [{ name: "should_not_register" }] },
+                    });
+                }
+
+                return Response.json({ jsonrpc: "2.0", id: body.id, result: {} });
+            },
+        });
+
+        try {
+            const mockPi = {
+                registeredTools: [] as any[],
+                registerTool(t: any) { this.registeredTools.push(t); },
+                on() {},
+            };
+
+            const ac = new AbortController();
+            setTimeout(() => ac.abort(), 50);
+
+            const result = await registerMcpTools(
+                mockPi,
+                {
+                    mcpServers: {
+                        abortable: { url: `http://localhost:${server.port}` },
+                    },
+                    mcpInitTimeout: 5_000,
+                    mcpTimeout: 5_000,
+                } as any,
+                null,
+                ac.signal,
+            );
+
+            expect(result.toolCount).toBe(0);
+            expect(result.clients).toHaveLength(0);
+            expect(mockPi.registeredTools).toHaveLength(0);
         } finally {
             server.stop(true);
         }

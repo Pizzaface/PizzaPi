@@ -2,9 +2,18 @@ import type { ExtensionFactory } from "@mariozechner/pi-coding-agent";
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import { loadConfig, toggleMcpServer, globalConfigDir, type PizzaPiConfig } from "../config.js";
-import { registerMcpTools, type McpConfig, type McpServerInitResult, type McpRegistrationResult, getOAuthProviders } from "./mcp.js";
+import {
+  registerMcpTools,
+  type McpConfig,
+  type McpServerInitResult,
+  type McpRegistrationResult,
+  getOAuthProviders,
+  setDeferOAuthRelayWaitTimeoutUntilAnchor,
+  markOAuthRelayWaitAnchorReady,
+} from "./mcp.js";
 import { setMcpBridge } from "./mcp-bridge.js";
 import type { RelayContext } from "./mcp-oauth.js";
+import { waitForRelayRegistration } from "./remote.js";
 
 type McpServerConfigEntry = {
   name: string;
@@ -390,6 +399,10 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
   // Stash the last registration result so session_start can build reports.
   let lastRegistrationResult: McpRegistrationResult | null = null;
 
+  // Abort/cancel token for in-flight MCP loads. Replaced on session_shutdown
+  // so stale eager init work cannot repopulate clients for a new session.
+  let loadLifecycleController = new AbortController();
+
   async function load(): Promise<McpSnapshot> {
     const mergedConfig = loadConfig(process.cwd()) as PizzaPiConfig & McpConfig;
     const inspection = inspectMcpConfig(process.cwd());
@@ -402,7 +415,22 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
     // already connected — without this, providers fall back to local OAuth.
     // During initial session_start, currentRelayContext is null (relay hasn't
     // connected yet) and providers use waitForRelayContext() as before.
-    const res = await registerMcpTools(pi, mergedConfig, currentRelayContext);
+    const lifecycleAtLoadStart = loadLifecycleController;
+    const res = await registerMcpTools(pi, mergedConfig, currentRelayContext, lifecycleAtLoadStart.signal);
+
+    // If this load belongs to an old session lifecycle (or the lifecycle was
+    // aborted), discard it so a late eager init cannot repopulate clients
+    // after session_shutdown.
+    if (lifecycleAtLoadStart !== loadLifecycleController || lifecycleAtLoadStart.signal.aborted) {
+      for (const client of res.clients) {
+        try {
+          client.close();
+        } catch {
+          // ignore best-effort shutdown errors
+        }
+      }
+      throw new Error("MCP load aborted due session lifecycle change");
+    }
 
     for (const client of activeClients) {
       try {
@@ -499,6 +527,18 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
   const bridge: McpBridge = {
     status: () => lastSnapshot,
     async reload() {
+      // Cancel any in-flight eager/background load so it can't finish after
+      // this reload, tear down our freshly loaded clients, and restore stale
+      // MCP tool state.  Rotate the lifecycle controller so the cancelled
+      // load's completion is discarded by the staleness check in load().
+      if (eagerLoadPromise) {
+        loadLifecycleController.abort();
+        loadLifecycleController = new AbortController();
+        // Wait for the eager load to settle (it will see the abort and bail)
+        await eagerLoadPromise.catch(() => {});
+        eagerLoadPromise = null;
+      }
+
       const snapshot = await load();
       // Reapply relay context to newly created providers after reload
       if (currentRelayContext) {
@@ -531,20 +571,68 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
   // (relay context's waitForCallback delegates here).
   (bridge as any)._pendingOAuthCallbacks = pendingOAuthCallbacks;
 
-  // NOTE: MCP initialization is deferred to session_start (below) rather than
-  // running here in the factory.  Extension factories are awaited sequentially
-  // by pi, and session_start only fires AFTER all factories complete.  If an
-  // MCP server needs OAuth during init, the OAuth provider must wait for the
-  // relay connection (which happens asynchronously during session_start).
-  // Running load() here would deadlock: the relay can't connect because
-  // session_start hasn't fired, and session_start can't fire because load()
-  // is blocking the factory.  By deferring to session_start, the relay
-  // connection can establish in parallel while MCP servers initialize.
+  // Start MCP initialization eagerly — kick off server spawning and
+  // handshakes immediately so they overlap with other extension factory
+  // loading and relay connection setup.
+  //
+  // We do NOT await load() here, so the factory completes immediately and
+  // other extension factories continue loading. Non-OAuth servers (stdio like
+  // godmother) complete their handshake while other factories load.
+  //
+  // For OAuth streamable servers, defer the relay wait timeout window until
+  // session_start so a long startup/registration path doesn't consume the
+  // 15s fallback budget before the relay can publish context.
+  setDeferOAuthRelayWaitTimeoutUntilAnchor(true);
 
-  // ── session_start: load MCP tools + report timing to TUI/web UI ──────────
+  let eagerLoadPromise: Promise<McpSnapshot | null> | null = null;
+  try {
+    eagerLoadPromise = load().catch((err) => {
+      // Don't crash the factory — session_start will handle diagnostics.
+      // Ignore expected aborts when session lifecycle changes.
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!/aborted/i.test(msg)) {
+        console.warn(`pizzapi: MCP eager init failed, will retry in session_start: ${msg}`);
+      }
+      return null;
+    });
+  } catch {
+    // Swallow synchronous errors from load() setup
+  }
+
+  // ── session_start: await eager load + report timing to TUI/web UI ────────
   pi.on?.("session_start", async (_event: any, ctx: any) => {
+    // Re-arm deferred relay waits for this session's OAuth providers.
+    // Every session_start needs deferral enabled — not just the first.
+    // Subsequent sessions create fresh providers via load() that also
+    // need to defer their 15s localhost fallback until the relay is
+    // registered.  Without this, sessions after the first start the
+    // fallback timer immediately, reintroducing the remote/headless
+    // auth regression.
+    setDeferOAuthRelayWaitTimeoutUntilAnchor(true);
+
+    // Tie the relay-anchor wait to the current session lifecycle so that
+    // session_shutdown cancels stale callbacks from a previous session.
+    // Without this guard, a slow relay registration from session N can
+    // fire markOAuthRelayWaitAnchorReady() into session N+1's providers,
+    // opening the fallback window prematurely.
+    const lifecycleAtStart = loadLifecycleController;
+    void waitForRelayRegistration().then(() => {
+      if (lifecycleAtStart.signal.aborted) return; // stale — session was shut down
+      setDeferOAuthRelayWaitTimeoutUntilAnchor(false);
+      markOAuthRelayWaitAnchorReady();
+    });
+
     try {
-      await load();
+      if (eagerLoadPromise) {
+        const result = await eagerLoadPromise;
+        eagerLoadPromise = null;
+        if (!result) {
+          // Eager load failed — retry now that relay is connected
+          await load();
+        }
+      } else {
+        await load();
+      }
     } catch {
       // Swallow — user can diagnose via /mcp.
     }
@@ -715,6 +803,11 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
   });
 
   pi.on?.("session_shutdown", () => {
+    // Cancel any in-flight eager/background MCP load so stale completion can't
+    // repopulate active clients after shutdown.
+    loadLifecycleController.abort();
+    loadLifecycleController = new AbortController();
+
     for (const client of activeClients) {
       try {
         client.close();
@@ -723,6 +816,7 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
       }
     }
     activeClients = [];
+    lastRegistrationResult = null;
     setMcpBridge(null);
   });
 };

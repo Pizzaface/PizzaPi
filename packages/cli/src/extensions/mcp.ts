@@ -600,7 +600,15 @@ function createStreamableMcpClient(opts: {
         // which is unreachable when running remotely. Waiting here gives the
         // relay connection time to establish so OAuth uses the server callback
         // URL instead. Falls back to local mode after the timeout.
-        await oauthProvider.waitForRelayContext();
+        await oauthProvider.waitForRelayContext(15_000, signal);
+
+        // If the signal was aborted while waiting (e.g., session shutdown),
+        // bail out instead of falling through to the OAuth flow. Without this
+        // check, a stale eager init would open a local OAuth flow and keep
+        // eagerLoadPromise alive until the callback timeout.
+        if (signal?.aborted) {
+          throw new Error("MCP OAuth aborted: session shut down during relay wait");
+        }
 
         const { auth, extractWWWAuthenticateParams } = await import(
           "@modelcontextprotocol/sdk/client/auth.js"
@@ -765,6 +773,28 @@ export type McpConfig = {
 /** Track active OAuth providers so the relay context can be injected later. */
 const activeOAuthProviders: PizzaPiOAuthProvider[] = [];
 
+/**
+ * Controls whether newly created OAuth providers defer relay wait timeout
+ * counting until markOAuthRelayWaitAnchorReady() is called.
+ */
+let deferOAuthRelayWaitTimeoutUntilAnchor = false;
+
+/** Configure timeout anchoring behavior for subsequently created providers. */
+export function setDeferOAuthRelayWaitTimeoutUntilAnchor(enabled: boolean): void {
+  deferOAuthRelayWaitTimeoutUntilAnchor = enabled;
+}
+
+/**
+ * Mark the relay wait timeout anchor as ready on all active OAuth providers.
+ * Used by the MCP extension at session_start so timeout counting begins when
+ * the relay has had a chance to register.
+ */
+export function markOAuthRelayWaitAnchorReady(): void {
+  for (const provider of activeOAuthProviders) {
+    provider.markRelayWaitAnchorReady();
+  }
+}
+
 /** Get all active OAuth providers (used by the MCP extension to inject relay context). */
 export function getOAuthProviders(): PizzaPiOAuthProvider[] {
   return activeOAuthProviders;
@@ -863,7 +893,11 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
       );
     } else if (s.transport === "streamable") {
       if (!isMcpDomainAllowed(s.url, s.name)) continue;
-      const provider = new PizzaPiOAuthProvider({ serverUrl: s.url, serverName: s.name });
+      const provider = new PizzaPiOAuthProvider({
+        serverUrl: s.url,
+        serverName: s.name,
+        deferRelayWaitTimeoutUntilAnchor: deferOAuthRelayWaitTimeoutUntilAnchor,
+      });
       activeOAuthProviders.push(provider);
       clients.push(
         createStreamableMcpClient({
@@ -914,7 +948,11 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
         (d.type === "http" && d.transport === undefined);
 
       if (useStreamable) {
-        const provider = new PizzaPiOAuthProvider({ serverUrl: d.url, serverName: name });
+        const provider = new PizzaPiOAuthProvider({
+          serverUrl: d.url,
+          serverName: name,
+          deferRelayWaitTimeoutUntilAnchor: deferOAuthRelayWaitTimeoutUntilAnchor,
+        });
         activeOAuthProviders.push(provider);
         clients.push(createStreamableMcpClient({
           name,
@@ -976,30 +1014,62 @@ export type McpRegistrationResult = {
  * to prevent unhandled rejection crashes (the child process will be killed by
  * the caller, which causes the pending request to reject).
  */
-async function listToolsWithTimeout(client: McpClient, timeoutMs: number): Promise<{ tools: McpTool[]; error?: string; timedOut: boolean }> {
+async function listToolsWithTimeout(
+  client: McpClient,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<{ tools: McpTool[]; error?: string; timedOut: boolean }> {
+  if (signal?.aborted) {
+    try { client.close(); } catch {}
+    return { tools: [], error: "MCP registration aborted", timedOut: false };
+  }
+
   if (timeoutMs <= 0) {
     // Timeout disabled — call directly
-    const tools = await client.listTools();
-    return { tools, timedOut: false };
+    try {
+      const tools = await client.listTools();
+      return { tools, timedOut: false };
+    } catch (err) {
+      return {
+        tools: [],
+        error: err instanceof Error ? err.message : String(err),
+        timedOut: false,
+      };
+    }
   }
 
   // Keep a reference to the listTools promise so we can suppress its rejection
-  // if the timeout fires first (the child process will be killed, causing the
-  // pending JSON-RPC request to reject with "server exited").
+  // if the timeout/abort fires first (the child process will be killed,
+  // causing the pending JSON-RPC request to reject with "server exited").
   const listToolsPromise = client.listTools().then(
-    (tools) => ({ tools, timedOut: false as const }),
+    (tools) => ({ tools, error: undefined as string | undefined, timedOut: false as const }),
   );
 
-  const timeoutPromise = new Promise<{ tools: McpTool[]; error: string; timedOut: true }>((resolve) =>
-    setTimeout(
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<{ tools: McpTool[]; error: string; timedOut: true }>((resolve) => {
+    timeoutHandle = setTimeout(
       () => resolve({ tools: [], error: `Timed out after ${Math.round(timeoutMs / 1000)}s waiting for tools/list`, timedOut: true }),
       timeoutMs,
-    ),
-  );
+    );
+  });
 
-  const result = await Promise.race([listToolsPromise, timeoutPromise]);
+  let onAbort: (() => void) | null = null;
+  const abortPromise = signal
+    ? new Promise<{ tools: McpTool[]; error: string; timedOut: false }>((resolve) => {
+      onAbort = () => resolve({ tools: [], error: "MCP registration aborted", timedOut: false as const });
+      if (signal.aborted) onAbort();
+      else signal.addEventListener("abort", onAbort, { once: true });
+    })
+    : null;
 
-  if (result.timedOut) {
+  const result = await (abortPromise
+    ? Promise.race([listToolsPromise, timeoutPromise, abortPromise])
+    : Promise.race([listToolsPromise, timeoutPromise]));
+
+  if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+  if (signal && onAbort) signal.removeEventListener("abort", onAbort);
+
+  if (result.timedOut || result.error === "MCP registration aborted") {
     // Close the client immediately to abort the in-flight request and prevent
     // it from establishing a remote MCP session that would never be cleaned up.
     try { client.close(); } catch {}
@@ -1010,11 +1080,30 @@ async function listToolsWithTimeout(client: McpClient, timeoutMs: number): Promi
   return result;
 }
 
-export async function registerMcpTools(pi: any, config: PizzaPiConfig & McpConfig, relayContext?: RelayContext | null): Promise<McpRegistrationResult> {
+export async function registerMcpTools(
+  pi: any,
+  config: PizzaPiConfig & McpConfig,
+  relayContext?: RelayContext | null,
+  signal?: AbortSignal,
+): Promise<McpRegistrationResult> {
   const totalStart = Date.now();
   const clients = await createMcpClientsFromConfig(config);
   const empty: McpRegistrationResult = { clients: [], toolCount: 0, toolNames: [], errors: [], serverTools: {}, serverTimings: [], totalDurationMs: 0 };
   if (clients.length === 0) return { ...empty, totalDurationMs: Date.now() - totalStart };
+
+  if (signal?.aborted) {
+    for (const c of clients) {
+      try { c.close(); } catch {}
+    }
+    return { ...empty, totalDurationMs: Date.now() - totalStart };
+  }
+
+  const closeAllClients = () => {
+    for (const c of clients) {
+      try { c.close(); } catch {}
+    }
+  };
+  signal?.addEventListener("abort", closeAllClients);
 
   // Apply relay context to newly created OAuth providers before initialization.
   // During /mcp reload the relay is already connected, so providers need the
@@ -1040,6 +1129,10 @@ export async function registerMcpTools(pi: any, config: PizzaPiConfig & McpConfi
     clients.map(async (client): Promise<McpServerInitResult> => {
       const start = Date.now();
       try {
+        if (signal?.aborted) {
+          try { client.close(); } catch {}
+          return { name: client.name, tools: [], error: "MCP registration aborted", durationMs: Date.now() - start, timedOut: false };
+        }
         // Initialize the MCP handshake (+ any OAuth) with a generous timeout.
         // OAuth flows have their own 2-min callback timeout; the init timeout
         // (default 3 min) is a safety net against hung processes / stalled
@@ -1055,6 +1148,8 @@ export async function registerMcpTools(pi: any, config: PizzaPiConfig & McpConfi
         //     unhandled-rejection crashes.
         if (initTimeoutMs > 0) {
           const ac = new AbortController();
+          const onOuterAbort = () => ac.abort();
+          signal?.addEventListener("abort", onOuterAbort, { once: true });
           let timer: ReturnType<typeof setTimeout> | undefined;
           const initPromise = client.initialize(ac.signal);
           try {
@@ -1073,16 +1168,33 @@ export async function registerMcpTools(pi: any, config: PizzaPiConfig & McpConfi
             initPromise.catch(() => {});
             throw err;
           } finally {
+            signal?.removeEventListener("abort", onOuterAbort);
             if (timer !== undefined) clearTimeout(timer);
           }
         } else {
-          await client.initialize();
+          if (signal?.aborted) throw new Error("MCP registration aborted");
+          // Even without a timeout, forward the lifecycle abort signal so
+          // session shutdown can interrupt a hung initialize/OAuth flow.
+          // Without this, disabling the init timeout (mcpInitTimeout: 0)
+          // would leave stale eager loads uninterruptible on shutdown.
+          const ac = new AbortController();
+          const onOuterAbort = () => ac.abort();
+          signal?.addEventListener("abort", onOuterAbort, { once: true });
+          try {
+            await client.initialize(ac.signal);
+          } catch (err) {
+            ac.abort();
+            try { client.close(); } catch {}
+            throw err;
+          } finally {
+            signal?.removeEventListener("abort", onOuterAbort);
+          }
         }
 
         // Now list tools with the configurable timeout.  Since initialize()
         // already resolved, ensureInitialized() inside listTools() returns
         // immediately — the timeout only covers the tools/list request.
-        const { tools, error, timedOut } = await listToolsWithTimeout(client, timeoutMs);
+        const { tools, error, timedOut } = await listToolsWithTimeout(client, timeoutMs, signal);
         const durationMs = Date.now() - start;
         if (error) {
           return { name: client.name, tools: [], error, durationMs, timedOut };
@@ -1100,6 +1212,12 @@ export async function registerMcpTools(pi: any, config: PizzaPiConfig & McpConfi
       }
     }),
   );
+
+  if (signal?.aborted) {
+    closeAllClients();
+    signal.removeEventListener("abort", closeAllClients);
+    return { ...empty, totalDurationMs: Date.now() - totalStart, serverTimings: initResults };
+  }
 
   // ── Phase 2: Register tools sequentially (name allocation needs Set) ─────
   let toolCount = 0;
@@ -1163,5 +1281,6 @@ export async function registerMcpTools(pi: any, config: PizzaPiConfig & McpConfi
   });
 
   const totalDurationMs = Date.now() - totalStart;
+  signal?.removeEventListener("abort", closeAllClients);
   return { clients: liveClients, toolCount, toolNames, errors, serverTools, serverTimings: initResults, totalDurationMs };
 }

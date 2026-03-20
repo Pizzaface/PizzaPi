@@ -103,6 +103,65 @@ describe("PizzaPiOAuthProvider", () => {
             expect(provider.relayContext).toBeNull(); // still null
         });
 
+        test("deferred timeout starts only after relay wait anchor is ready", async () => {
+            const provider = new PizzaPiOAuthProvider({
+                serverUrl: `https://defer-timeout-${Date.now()}.example.com/mcp`,
+                serverName: "defer-timeout",
+                deferRelayWaitTimeoutUntilAnchor: true,
+            });
+
+            const start = Date.now();
+            const waitPromise = provider.waitForRelayContext(100);
+
+            // Before anchor is ready, timeout should not fire.
+            await new Promise((r) => setTimeout(r, 150));
+            let settled = false;
+            waitPromise.then(() => {
+                settled = true;
+            });
+            await new Promise((r) => setTimeout(r, 20));
+            expect(settled).toBe(false);
+
+            provider.markRelayWaitAnchorReady();
+            await waitPromise;
+            const elapsed = Date.now() - start;
+
+            // ~150ms pre-anchor + ~100ms timeout after anchor.
+            expect(elapsed).toBeGreaterThanOrEqual(220);
+            expect(elapsed).toBeLessThan(700);
+        });
+
+        test("deferred wait resolves immediately if relay arrives before anchor", async () => {
+            const provider = new PizzaPiOAuthProvider({
+                serverUrl: `https://defer-relay-${Date.now()}.example.com/mcp`,
+                serverName: "defer-relay",
+                deferRelayWaitTimeoutUntilAnchor: true,
+            });
+
+            const waitPromise = provider.waitForRelayContext(200);
+            setTimeout(() => {
+                provider.relayContext = createMockRelayContext();
+            }, 40);
+
+            await waitPromise;
+            expect(provider.relayContext).not.toBeNull();
+        });
+
+        test("deferred wait with timeout 0 falls back immediately", async () => {
+            const provider = new PizzaPiOAuthProvider({
+                serverUrl: `https://defer-zero-${Date.now()}.example.com/mcp`,
+                serverName: "defer-zero",
+                deferRelayWaitTimeoutUntilAnchor: true,
+            });
+
+            const start = Date.now();
+            await provider.waitForRelayContext(0);
+            const elapsed = Date.now() - start;
+
+            expect(elapsed).toBeLessThan(50);
+            expect(provider.relayContext).toBeNull();
+        });
+
         test("multiple waiters are all resolved when context is set", async () => {
             const provider = createProvider();
 
@@ -123,6 +182,47 @@ describe("PizzaPiOAuthProvider", () => {
             expect(results).toContain(1);
             expect(results).toContain(2);
             expect(results).toContain(3);
+        });
+
+        test("resolves immediately when signal is already aborted", async () => {
+            const provider = createProvider();
+            const ac = new AbortController();
+            ac.abort();
+
+            const start = Date.now();
+            await provider.waitForRelayContext(5000, ac.signal);
+            expect(Date.now() - start).toBeLessThan(100);
+        });
+
+        test("resolves when signal is aborted while waiting", async () => {
+            const provider = createProvider();
+            const ac = new AbortController();
+            let resolved = false;
+
+            const waitPromise = provider.waitForRelayContext(5000, ac.signal).then(() => {
+                resolved = true;
+            });
+
+            // Not resolved yet — no context, no abort, no timeout
+            await new Promise((r) => setTimeout(r, 50));
+            expect(resolved).toBe(false);
+
+            // Abort should resolve immediately
+            ac.abort();
+            await waitPromise;
+            expect(resolved).toBe(true);
+        });
+
+        test("abort cleans up relay ready resolvers", async () => {
+            const provider = createProvider();
+            const ac = new AbortController();
+
+            const waitPromise = provider.waitForRelayContext(5000, ac.signal);
+            ac.abort();
+            await waitPromise;
+
+            // Setting context after abort should not cause issues
+            provider.relayContext = createMockRelayContext();
         });
 
         test("setting context to null does not resolve waiters", async () => {
