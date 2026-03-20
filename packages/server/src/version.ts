@@ -1,27 +1,6 @@
-import { readFileSync } from "fs";
-import { join } from "path";
-
 const NPM_PACKAGE = "@pizzapi/pizza";
 const CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes
 const FAILURE_TTL_MS = 60 * 1000; // 1 minute backoff on failure
-
-/**
- * Version from the server's own package.json, read once at module load.
- * Used as a fallback when PIZZAPI_HUB_VERSION is not injected by compose.
- *
- * We deliberately read the server package.json (one level up from dist/) rather
- * than the CLI package because the Docker production image only copies server
- * artefacts — packages/cli is never present inside the container.
- */
-const LOCAL_PACKAGE_VERSION: string | null = (() => {
-    try {
-        const pkgPath = join(import.meta.dirname ?? __dirname, "../package.json");
-        const pkg = JSON.parse(readFileSync(pkgPath, "utf-8")) as { version?: string };
-        return pkg.version?.trim() || null;
-    } catch {
-        return null;
-    }
-})();
 
 let cachedVersion: string | null = null;
 let cachedAt = 0;
@@ -66,8 +45,9 @@ export async function getLatestNpmVersion(): Promise<string | null> {
 /**
  * Tag values injected by `resolveComposeMode()` that carry no specific build
  * information — source builds get "local", mutable-tag image deployments get
- * the tag name itself (e.g. "latest", "main"). For these cases the server's
- * own package.json version is more useful to operators than the vague label.
+ * the tag name itself (e.g. "latest", "main"). These are considered vague:
+ * `getHubVersionInfo()` returns null for them so callers can substitute the
+ * latest published npm version instead of a stale local package.json value.
  */
 const VAGUE_VERSIONS = new Set([
     "local",
@@ -83,12 +63,14 @@ const VAGUE_VERSIONS = new Set([
 export function getHubVersionInfo(): { image: string | null; version: string | null } {
     const image = process.env.PIZZAPI_HUB_IMAGE?.trim();
     const version = process.env.PIZZAPI_HUB_VERSION?.trim();
-    // Prefer the injected version for specific/pinned references (semver tags,
-    // etc.).  For vague labels injected by mutable-tag or source-build paths,
-    // fall back to the local package version so operators see the actual build
-    // number (e.g. "0.1.32") rather than "latest" or "local".
-    const effectiveVersion =
-        version && !VAGUE_VERSIONS.has(version) ? version : LOCAL_PACKAGE_VERSION;
+    // Only return the injected version when it is a specific/pinned reference
+    // (semver tag, digest abbreviation, etc.).  For vague labels like "latest",
+    // "local", or "main" we return null so callers can fall back to the npm
+    // registry version via getLatestNpmVersion() — the server's own
+    // package.json is NOT stamped during the release workflow (only
+    // packages/cli and packages/npm are), so it would permanently report a
+    // stale version for source builds and mutable-tag deployments.
+    const effectiveVersion = version && !VAGUE_VERSIONS.has(version) ? version : null;
     return {
         image: image ? image : null,
         version: effectiveVersion,

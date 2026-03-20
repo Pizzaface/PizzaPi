@@ -1,6 +1,4 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { readFileSync } from "fs";
-import { join } from "path";
 import { getHubVersionInfo } from "../src/version";
 
 const ORIGINAL_IMAGE = process.env.PIZZAPI_HUB_IMAGE;
@@ -20,34 +18,46 @@ afterEach(() => {
     }
 });
 
-/**
- * Read the server package.json version — mirrors the fallback logic in the
- * version module.  We use the server package because the CLI package is not
- * present inside the Docker production image; see packages/server/src/version.ts.
- */
-function localPackageVersion(): string | null {
-    try {
-        const pkgPath = join(import.meta.dirname ?? __dirname, "../package.json");
-        const pkg = JSON.parse(readFileSync(pkgPath, "utf-8")) as { version?: string };
-        return pkg.version?.trim() || null;
-    } catch {
-        return null;
-    }
-}
-
 describe("getHubVersionInfo", () => {
-    test("returns null image but falls back to package version when env vars are unset", () => {
+    test("returns null for both image and version when env vars are unset", () => {
         delete process.env.PIZZAPI_HUB_IMAGE;
         delete process.env.PIZZAPI_HUB_VERSION;
 
         const result = getHubVersionInfo();
         expect(result.image).toBeNull();
-        // version should fall back to the package.json version, not null
-        expect(result.version).toBe(localPackageVersion());
-        expect(result.version).not.toBeNull();
+        // Version is null — no vague label or missing env var should surface as
+        // a real version.  Callers (e.g. /api/hub-info) fall back to
+        // getLatestNpmVersion() to avoid reporting a stale package.json value.
+        expect(result.version).toBeNull();
     });
 
-    test("returns trimmed env var values when both are set", () => {
+    test("returns null version for vague labels like 'latest'", () => {
+        process.env.PIZZAPI_HUB_IMAGE = "ghcr.io/acme/pizzapi:latest";
+        process.env.PIZZAPI_HUB_VERSION = "latest";
+
+        const result = getHubVersionInfo();
+        expect(result.image).toBe("ghcr.io/acme/pizzapi:latest");
+        expect(result.version).toBeNull();
+    });
+
+    test("returns null version for source-build vague labels", () => {
+        process.env.PIZZAPI_HUB_IMAGE = "local-build";
+        process.env.PIZZAPI_HUB_VERSION = "local";
+
+        expect(getHubVersionInfo().version).toBeNull();
+    });
+
+    test("returns null version when PIZZAPI_HUB_VERSION is unset (image present)", () => {
+        delete process.env.PIZZAPI_HUB_VERSION;
+        process.env.PIZZAPI_HUB_IMAGE = "ghcr.io/acme/pizzapi:0.1.32";
+
+        const result = getHubVersionInfo();
+        expect(result.image).toBe("ghcr.io/acme/pizzapi:0.1.32");
+        // Missing version env var → null; route will substitute npm version.
+        expect(result.version).toBeNull();
+    });
+
+    test("returns pinned semver version when PIZZAPI_HUB_VERSION is a specific tag", () => {
         process.env.PIZZAPI_HUB_IMAGE = " ghcr.io/acme/pizzapi:0.1.32 ";
         process.env.PIZZAPI_HUB_VERSION = " 0.1.32 ";
 
@@ -55,15 +65,6 @@ describe("getHubVersionInfo", () => {
             image: "ghcr.io/acme/pizzapi:0.1.32",
             version: "0.1.32",
         });
-    });
-
-    test("falls back to package version when only PIZZAPI_HUB_VERSION is unset", () => {
-        delete process.env.PIZZAPI_HUB_VERSION;
-        process.env.PIZZAPI_HUB_IMAGE = "ghcr.io/acme/pizzapi:0.1.32";
-
-        const result = getHubVersionInfo();
-        expect(result.image).toBe("ghcr.io/acme/pizzapi:0.1.32");
-        expect(result.version).toBe(localPackageVersion());
     });
 
     test("returns null image when only PIZZAPI_HUB_IMAGE is unset", () => {
@@ -74,5 +75,15 @@ describe("getHubVersionInfo", () => {
             image: null,
             version: "0.1.32",
         });
+    });
+
+    test("returns digest-abbreviated version as a pinned (non-vague) value", () => {
+        process.env.PIZZAPI_HUB_IMAGE = "ghcr.io/acme/pizzapi@sha256:abc123";
+        process.env.PIZZAPI_HUB_VERSION = "sha256-abc";
+
+        const result = getHubVersionInfo();
+        expect(result.image).toBe("ghcr.io/acme/pizzapi@sha256:abc123");
+        // Short digest abbreviations are pinned — they are not in VAGUE_VERSIONS.
+        expect(result.version).toBe("sha256-abc");
     });
 });

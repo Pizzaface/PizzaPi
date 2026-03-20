@@ -64,8 +64,14 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
         const auth = await requireSession(req);
         if (auth instanceof Response) return auth;
         const hub = getHubVersionInfo();
+        // For source builds and mutable-tag deployments, PIZZAPI_HUB_VERSION
+        // carries a vague label ("local", "latest", etc.) so getHubVersionInfo()
+        // returns null.  Fall back to the latest published npm version so
+        // operators always see the actual release number rather than a stale
+        // server package.json version (which the release workflow never stamps).
+        const hubVersion = hub.version ?? (await getLatestNpmVersion());
         return Response.json({
-            hubVersion: hub.version,
+            hubVersion,
             hubImage: hub.image,
         });
     }

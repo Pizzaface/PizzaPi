@@ -1078,7 +1078,16 @@ Settable keys:
             }
             config.vapidSubject = value;
         } else if (key === "image") {
-            config.image = value.trim();
+            const newImage = value.trim();
+            if (newImage !== config.image) {
+                // When switching to a different image repo without an explicit
+                // imageTag change, reset a previously pinned tag to "latest" so
+                // operators don't silently carry over a tag that may not exist
+                // on the new registry (mirrors the --image flag behavior in
+                // runWeb()).
+                config.image = newImage;
+                config.imageTag = "latest";
+            }
         } else if (key === "imageTag") {
             if (!value.trim()) {
                 console.error("imageTag cannot be empty");
