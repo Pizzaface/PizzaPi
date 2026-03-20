@@ -77,6 +77,7 @@ import { AtMentionPopover } from "@/components/AtMentionPopover";
 import type { Entry as AtMentionEntry } from "@/hooks/useAtMentionFiles";
 import { McpToggleContext, type McpToggleHandler } from "@/components/session-viewer/McpToggleContext";
 import { isTriggerMessage, renderTriggerCard } from "@/components/session-viewer/cards/InterAgentCards";
+import { PermissionRequestCard } from "@/components/session-viewer/cards/PermissionRequestCard";
 
 
 export type { RelayMessage } from "@/components/session-viewer/types";
@@ -157,6 +158,15 @@ export interface SessionViewerProps {
   onDuplicateSession?: () => void;
   /** Full runner data for the active session's runner — from the /runners WS feed */
   runnerInfo?: import("@pizzapi/protocol").RunnerInfo | null;
+  /** Pending permission request from a Claude Code worker */
+  pendingPermission?: {
+    requestId: string;
+    toolName: string;
+    toolInput: unknown;
+    ts: number;
+  } | null;
+  /** Respond to a permission request (allow or deny) */
+  onPermissionDecision?: (requestId: string, decision: "allow" | "deny") => void;
 }
 
 function formatTokenCount(n: number): string {
@@ -542,7 +552,7 @@ function SessionSkeleton() {
   );
 }
 
-export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, pendingPlan, pluginTrustPrompt, onPluginTrustResponse, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, isCompacting, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onEditQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], planModeEnabled, runnerId, sessionCwd, onAppendSystemMessage, onSpawnAgentSession, onTriggerResponse, onQuestionDismiss, onPlanDismiss, onDuplicateSession, runnerInfo }: SessionViewerProps) {
+export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, pendingPlan, pluginTrustPrompt, onPluginTrustResponse, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, isCompacting, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onEditQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], planModeEnabled, runnerId, sessionCwd, onAppendSystemMessage, onSpawnAgentSession, onTriggerResponse, onQuestionDismiss, onPlanDismiss, onDuplicateSession, runnerInfo, pendingPermission, onPermissionDecision }: SessionViewerProps) {
   const [input, setInput] = React.useState("");
   // Per-session draft storage so switching sessions preserves unsent text
   const draftsRef = React.useRef<Map<string, string>>(new Map());
@@ -1875,6 +1885,14 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
               </div>
             </div>
           </div>
+        )}
+
+        {/* Permission request card (Claude Code worker) */}
+        {pendingPermission && onPermissionDecision && (
+          <PermissionRequestCard
+            request={pendingPermission}
+            onDecision={onPermissionDecision}
+          />
         )}
 
         {/* Multiple-choice questions (shown above the input area) */}

@@ -192,6 +192,15 @@ export function App() {
     pluginNames: string[];
     pluginSummaries: string[];
   } | null>(null);
+
+  /** Pending permission request from the worker (Claude Code worker) — shown as a permission card in the viewer. */
+  const [pendingPermission, setPendingPermission] = React.useState<{
+    requestId: string;
+    toolName: string;
+    toolInput: unknown;
+    ts: number;
+  } | null>(null);
+
   // Cached fallback promptKey for when toolCallId is absent (legacy/compat).
   // Only changes when the question content changes, preventing heartbeat
   // re-applications from resetting the MC component's selection state.
@@ -1298,6 +1307,7 @@ export function App() {
       patchSessionCache({ messages: normalized });
       setPendingQuestion(null);
       setPendingPlan(null);
+      setPendingPermission(null);
       setRetryState(null);
       setActiveToolCalls(new Map());
       // Clear message queue — the agent processed any queued steer/followUp messages
@@ -1651,6 +1661,20 @@ export function App() {
       return;
     }
 
+    // ── Permission request from Claude Code worker ─────────────────────────
+    if (type === "permission_request") {
+      const e = evt as Record<string, unknown>;
+      if (typeof e.requestId === "string") {
+        setPendingPermission({
+          requestId: e.requestId,
+          toolName: typeof e.toolName === "string" ? e.toolName : "Unknown",
+          toolInput: e.toolInput ?? null,
+          ts: typeof e.ts === "number" ? e.ts : Date.now(),
+        });
+      }
+      return;
+    }
+
     if (type === "tool_execution_start") {
       const toolCallId = typeof evt.toolCallId === "string" ? evt.toolCallId : "";
       const toolName = typeof evt.toolName === "string" ? evt.toolName : "unknown";
@@ -1842,6 +1866,7 @@ export function App() {
     if (type === "agent_end") {
       cancelHaptic();
       setActiveToolCalls(new Map());
+      setPendingPermission(null);
     }
 
     if (type === "message_update") {
@@ -2044,6 +2069,7 @@ export function App() {
     // authoritative values from the runner.
     setPendingQuestion(null);
     setPendingPlan(null);
+    setPendingPermission(null);
 
     const socket: Socket<ViewerServerToClientEvents, ViewerClientToServerEvents> = io("/viewer", {
       auth: { sessionId: relaySessionId },
@@ -2422,6 +2448,18 @@ export function App() {
       setPluginTrustPrompt(null);
     }
   }, [sendRemoteExec, pluginTrustPrompt]);
+
+  /** Respond to a permission request from the Claude Code worker. */
+  const handlePermissionDecision = React.useCallback((requestId: string, decision: "allow" | "deny") => {
+    setPendingPermission(null);
+    sendRemoteExec({
+      type: "exec",
+      id: `permission-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      command: "permission_response",
+      requestId,
+      decision,
+    });
+  }, [sendRemoteExec]);
 
   /**
    * End a session by session ID. If it's the currently active session the
@@ -3608,6 +3646,8 @@ export function App() {
                   onPlanDismiss={() => setPendingPlan(null)}
                   onDuplicateSession={activeSessionInfo?.runnerId ? () => handleDuplicateSession(activeSessionInfo.runnerId!, activeSessionInfo.cwd || "") : undefined}
                   runnerInfo={activeRunnerInfo}
+                  pendingPermission={pendingPermission}
+                  onPermissionDecision={handlePermissionDecision}
                 />
               )}
             </div>
