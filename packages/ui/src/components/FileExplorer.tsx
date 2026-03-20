@@ -80,20 +80,27 @@ export interface FileExplorerProps {
  * Returns true if an Escape keydown should be intercepted by a file-explorer
  * sub-view (file preview, diff preview). We skip interception when:
  *  - The panel is hidden (e.g. inactive CombinedPanel tab — ancestor has `invisible` class)
- *  - A Radix dialog or popover is open (those handle Escape themselves)
- *  - Focus is outside the explorer/preview container (e.g. in the composer)
+ *  - A Radix dialog is open anywhere in the app (dialogs own Escape globally)
+ *  - A Radix popper/dropdown triggered from within this explorer subtree is open
+ *  - Focus is outside the explorer/preview container (e.g. in the composer or
+ *    transcript area — including when it has fallen back to document.body)
  */
 function shouldInterceptEscape(el: HTMLElement | null): boolean {
   if (!el) return false; // no ref yet — can't confirm focus, let Escape propagate
   // Hidden in an inactive combined-panel tab?
   if (el.closest(".invisible")) return false;
-  // Radix dialog or popper overlay open?
-  if (document.querySelector("[role=\"dialog\"][data-state=\"open\"], [data-radix-popper-content-wrapper]")) return false;
-  // Only intercept when focus is inside the explorer/preview container (or on
-  // document.body / null, which means nothing specific is focused — safe default
-  // since the preview is the visible interactive surface).
+  // Global Radix dialog open? (dialogs truly own Escape at the document level)
+  if (document.querySelector("[role=\"dialog\"][data-state=\"open\"]")) return false;
+  // A Radix popper/dropdown triggered from within this explorer subtree is open?
+  // Radix portals popper content to <body>, but sets data-state="open" on the
+  // trigger element which remains inside our container.
+  if (el.querySelector("[data-state=\"open\"]")) return false;
+  // Only intercept when focus is strictly inside the explorer/preview container.
+  // Do NOT treat document.body as safe — in the docked desktop layout the user
+  // may have clicked the transcript/terminal column, which also leaves focus on
+  // body, and we must not steal Escape from SessionViewer's abort handler there.
   const active = document.activeElement;
-  if (active && active !== document.body && !el.contains(active)) return false;
+  if (!active || active === document.body || !el.contains(active)) return false;
   return true;
 }
 
