@@ -76,6 +76,21 @@ export interface FileExplorerProps {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+/**
+ * Returns true if an Escape keydown should be intercepted by a file-explorer
+ * sub-view (file preview, diff preview). We skip interception when:
+ *  - The panel is hidden (e.g. inactive CombinedPanel tab — ancestor has `invisible` class)
+ *  - A Radix dialog or popover is open (those handle Escape themselves)
+ */
+function shouldInterceptEscape(el: HTMLElement | null): boolean {
+  if (!el) return true; // no ref yet — default to intercepting
+  // Hidden in an inactive combined-panel tab?
+  if (el.closest(".invisible")) return false;
+  // Radix dialog or popper overlay open?
+  if (document.querySelector("[role=\"dialog\"][data-state=\"open\"], [data-radix-popper-content-wrapper]")) return false;
+  return true;
+}
+
 function formatSize(bytes: number | undefined): string {
   if (bytes === undefined || bytes < 0) return "";
   if (bytes < 1024) return `${bytes} B`;
@@ -612,14 +627,15 @@ function GitChangesView({
 
   // Intercept Escape when viewing a diff so it closes the diff preview
   // instead of propagating to SessionViewer's abort handler.
+  const diffContainerRef = React.useRef<HTMLDivElement>(null);
   React.useEffect(() => {
     if (!selectedDiff) return;
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        e.stopImmediatePropagation();
-        setSelectedDiff(null);
-      }
+      if (e.key !== "Escape") return;
+      if (!shouldInterceptEscape(diffContainerRef.current)) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      setSelectedDiff(null);
     };
     // Capture phase ensures this fires before SessionViewer's bubble-phase listener
     document.addEventListener("keydown", handler, true);
@@ -671,7 +687,7 @@ function GitChangesView({
 
   if (selectedDiff) {
     return (
-      <div className="flex flex-col h-full">
+      <div ref={diffContainerRef} className="flex flex-col h-full">
         <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-muted/50">
           <button
             type="button"
@@ -1008,14 +1024,15 @@ export function FileExplorer({ runnerId, cwd, className, onClose, position = "le
 
   // Intercept Escape when viewing a file so it closes the preview
   // instead of propagating to SessionViewer's abort handler.
+  const previewContainerRef = React.useRef<HTMLDivElement>(null);
   React.useEffect(() => {
     if (!viewingFile) return;
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        e.stopImmediatePropagation();
-        setViewingFile(null);
-      }
+      if (e.key !== "Escape") return;
+      if (!shouldInterceptEscape(previewContainerRef.current)) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      setViewingFile(null);
     };
     // Capture phase ensures this fires before SessionViewer's bubble-phase listener
     document.addEventListener("keydown", handler, true);
@@ -1028,7 +1045,7 @@ export function FileExplorer({ runnerId, cwd, className, onClose, position = "le
     const isImage = isImageFile(viewingFileName);
 
     return (
-      <div className={cn("flex flex-col bg-background text-foreground", className)}>
+      <div ref={previewContainerRef} className={cn("flex flex-col bg-background text-foreground", className)}>
         {isImage ? (
           <ImageViewer
             runnerId={runnerId}
