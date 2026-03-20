@@ -68,4 +68,5 @@ export interface SessionUiCacheEntry {
     description: string | null;
     steps: Array<{ title: string; description?: string }>;
   } | null;
+  workerType: string;
 }

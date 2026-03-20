@@ -48,6 +48,7 @@ import {
   AttachmentRemove,
   Attachments,
 } from "@/components/ai-elements/attachments";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -167,6 +168,8 @@ export interface SessionViewerProps {
   } | null;
   /** Respond to a permission request (allow or deny) */
   onPermissionDecision?: (requestId: string, decision: "allow" | "deny") => void;
+  /** Worker type for the current session (e.g. "pi" or "claude-code") */
+  workerType?: string;
 }
 
 function formatTokenCount(n: number): string {
@@ -552,7 +555,7 @@ function SessionSkeleton() {
   );
 }
 
-export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, pendingPlan, pluginTrustPrompt, onPluginTrustResponse, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, isCompacting, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onEditQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], planModeEnabled, runnerId, sessionCwd, onAppendSystemMessage, onSpawnAgentSession, onTriggerResponse, onQuestionDismiss, onPlanDismiss, onDuplicateSession, runnerInfo, pendingPermission, onPermissionDecision }: SessionViewerProps) {
+export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, pendingPlan, pluginTrustPrompt, onPluginTrustResponse, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, isCompacting, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onEditQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], planModeEnabled, runnerId, sessionCwd, onAppendSystemMessage, onSpawnAgentSession, onTriggerResponse, onQuestionDismiss, onPlanDismiss, onDuplicateSession, runnerInfo, pendingPermission, onPermissionDecision, workerType }: SessionViewerProps) {
   const [input, setInput] = React.useState("");
   // Per-session draft storage so switching sessions preserves unsent text
   const draftsRef = React.useRef<Map<string, string>>(new Map());
@@ -1529,6 +1532,9 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
           {/* Right: badges + end session */}
           <div className="flex items-center gap-1.5 flex-shrink-0">
             <HeartbeatStaleBadge lastHeartbeatAt={lastHeartbeatAt} />
+            {workerType === "claude-code" && (
+              <Badge variant="outline" className="text-[0.65rem] shrink-0 font-mono py-0.5">Claude Code</Badge>
+            )}
             {(activeModel?.reasoning || effortLevel != null) && (
               <button
                 className="rounded-full border border-border bg-muted px-2 py-0.5 text-[0.65rem] font-medium text-muted-foreground uppercase tracking-wide hover:bg-muted/80 transition-colors cursor-pointer"

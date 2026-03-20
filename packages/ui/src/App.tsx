@@ -242,6 +242,7 @@ export function App() {
   const [usageRefreshing, setUsageRefreshing] = React.useState(false);
   const [todoList, setTodoList] = React.useState<TodoItem[]>([]);
   const [authSource, setAuthSource] = React.useState<string | null>(null);
+  const [workerType, setWorkerType] = React.useState<string>("pi");
 
   // Keyboard shortcuts
   const isMac = React.useMemo(() => {
@@ -403,6 +404,7 @@ export function App() {
       todoList: prev?.todoList ?? [],
       pendingQuestion: prev?.pendingQuestion ?? null,
       pendingPlan: prev?.pendingPlan ?? null,
+      workerType: prev?.workerType ?? "pi",
       ...patch,
     };
 
@@ -1076,6 +1078,26 @@ export function App() {
         cachePatch.lastHeartbeatAt = hb.ts;
       }
 
+
+      if ((hb as any).providerUsage !== undefined) {
+        const nextProviderUsage = (hb as any).providerUsage ?? null;
+        setProviderUsage(nextProviderUsage);
+        cachePatch.providerUsage = nextProviderUsage;
+      }
+
+      if ((hb as any).authSource !== undefined) {
+        const nextAuthSource = typeof (hb as any).authSource === "string" ? (hb as any).authSource : null;
+        setAuthSource(nextAuthSource);
+        cachePatch.authSource = nextAuthSource;
+      }
+
+      if ((hb as any).workerType !== undefined) {
+        const nextWorkerType = typeof (hb as any).workerType === "string" ? (hb as any).workerType : "pi";
+        setWorkerType(nextWorkerType);
+        cachePatch.workerType = nextWorkerType;
+      }
+
+
       if (Object.prototype.hasOwnProperty.call(hb, "sessionName")) {
         const nextName = normalizeSessionName(hb.sessionName);
         setSessionName(nextName);
@@ -1212,6 +1234,10 @@ export function App() {
       const stateTodos = Array.isArray(state?.todoList) ? (state.todoList as TodoItem[]) : [];
       setTodoList(stateTodos);
 
+      // Extract workerType from session snapshot (defaults to "pi")
+      const stateWorkerType = typeof state?.workerType === "string" ? state.workerType : "pi";
+      setWorkerType(stateWorkerType);
+
       patchSessionCache({
         messages: normalizedMessages,
         activeModel: stateModel,
@@ -1219,6 +1245,7 @@ export function App() {
         availableModels: stateModels,
         effortLevel: thinkingLevel,
         todoList: stateTodos,
+        workerType: stateWorkerType,
       });
       return;
     }
@@ -2059,6 +2086,7 @@ export function App() {
     setEffortLevel(cached?.effortLevel ?? null);
     setPlanModeEnabled(cached?.planModeEnabled ?? false);
     setAuthSource(cached?.authSource ?? null);
+    setWorkerType(cached?.workerType ?? "pi");
     setTokenUsage(cached?.tokenUsage ?? null);
     setProviderUsage(cached?.providerUsage ?? null);
     setLastHeartbeatAt(cached?.lastHeartbeatAt ?? null);
@@ -3648,6 +3676,7 @@ export function App() {
                   runnerInfo={activeRunnerInfo}
                   pendingPermission={pendingPermission}
                   onPermissionDecision={handlePermissionDecision}
+                  workerType={workerType}
                 />
               )}
             </div>
