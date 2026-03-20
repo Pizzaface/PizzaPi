@@ -654,6 +654,9 @@ function createStreamableMcpClient(opts: {
         }
         return retry.result;
       } catch (err) {
+        // Re-throw abort errors directly so callers can detect cancellation
+        // without parsing the wrapped message.
+        if (err instanceof DOMException && err.name === "AbortError") throw err;
         throw new Error(
           `OAuth authentication failed for "${opts.name}": ${err instanceof Error ? err.message : String(err)}`,
         );
@@ -1025,7 +1028,26 @@ async function listToolsWithTimeout(
   }
 
   if (timeoutMs <= 0) {
-    // Timeout disabled — call directly
+    // Timeout disabled — but still honor the abort signal so session
+    // shutdown can cancel an in-flight tools/list request.
+    if (signal) {
+      const listToolsPromise = client.listTools().then(
+        (tools) => ({ tools, error: undefined as string | undefined, timedOut: false as const }),
+        (err) => ({ tools: [] as McpTool[], error: err instanceof Error ? err.message : String(err), timedOut: false as const }),
+      );
+      const abortPromise = new Promise<{ tools: McpTool[]; error: string; timedOut: false }>((resolve) => {
+        const onAbort = () => resolve({ tools: [], error: "MCP registration aborted", timedOut: false as const });
+        if (signal.aborted) onAbort();
+        else signal.addEventListener("abort", onAbort, { once: true });
+      });
+      const result = await Promise.race([listToolsPromise, abortPromise]);
+      if (result.error === "MCP registration aborted") {
+        try { client.close(); } catch {}
+        listToolsPromise.catch(() => {});
+      }
+      return result;
+    }
+    // No signal and no timeout — call directly
     try {
       const tools = await client.listTools();
       return { tools, timedOut: false };
@@ -1228,6 +1250,15 @@ export async function registerMcpTools(
   const liveClients: McpClient[] = [];
 
   for (let i = 0; i < clients.length; i++) {
+    // Re-check abort before registering each server's tools — if abort fired
+    // between the phase-1 check and here, stop early so we don't register
+    // tools that point at clients closeAllClients() already shut down.
+    if (signal?.aborted) {
+      closeAllClients();
+      signal.removeEventListener("abort", closeAllClients);
+      return { ...empty, totalDurationMs: Date.now() - totalStart, serverTimings: initResults };
+    }
+
     const client = clients[i];
     const result = initResults[i];
 
