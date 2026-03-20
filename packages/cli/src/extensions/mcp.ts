@@ -1028,7 +1028,26 @@ async function listToolsWithTimeout(
   }
 
   if (timeoutMs <= 0) {
-    // Timeout disabled — call directly
+    // Timeout disabled — but still honor the abort signal so session
+    // shutdown can cancel an in-flight tools/list request.
+    if (signal) {
+      const listToolsPromise = client.listTools().then(
+        (tools) => ({ tools, error: undefined as string | undefined, timedOut: false as const }),
+        (err) => ({ tools: [] as McpTool[], error: err instanceof Error ? err.message : String(err), timedOut: false as const }),
+      );
+      const abortPromise = new Promise<{ tools: McpTool[]; error: string; timedOut: false }>((resolve) => {
+        const onAbort = () => resolve({ tools: [], error: "MCP registration aborted", timedOut: false as const });
+        if (signal.aborted) onAbort();
+        else signal.addEventListener("abort", onAbort, { once: true });
+      });
+      const result = await Promise.race([listToolsPromise, abortPromise]);
+      if (result.error === "MCP registration aborted") {
+        try { client.close(); } catch {}
+        listToolsPromise.catch(() => {});
+      }
+      return result;
+    }
+    // No signal and no timeout — call directly
     try {
       const tools = await client.listTools();
       return { tools, timedOut: false };

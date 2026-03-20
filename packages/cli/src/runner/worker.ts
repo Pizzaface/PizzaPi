@@ -53,6 +53,10 @@ function createAuthStorageWithRetry(authPath: string, maxAttempts = 5): AuthStor
                             Bun.sleepSync(100 * Math.pow(2, attempt - 1));
                             continue;
                         }
+                        // Final attempt still hit lock contention — break out of the
+                        // loop so we fall through to the lockless fallback below
+                        // instead of returning the empty storage.
+                        break;
                     }
                 } catch {
                     // Can't read file — fall through to return empty storage
@@ -77,9 +81,26 @@ function createAuthStorageWithRetry(authPath: string, maxAttempts = 5): AuthStor
         const raw = readFileSync(authPath, "utf-8");
         const data = JSON.parse(raw);
         if (Object.keys(data).length > 0) {
+            // The lock holder may have finished by now — try one final
+            // AuthStorage.create() so we get a file-backed instance that
+            // can persist token refreshes and see future credential updates.
+            try {
+                const fileStorage = AuthStorage.create(authPath);
+                if (fileStorage.list().length > 0) {
+                    console.log(
+                        `pizzapi worker: lock released — file-backed AuthStorage loaded ${fileStorage.list().length} provider(s) on final retry`,
+                    );
+                    return fileStorage;
+                }
+            } catch {
+                // Still can't acquire lock — fall through to in-memory
+            }
+            // Use in-memory as last resort (read-only snapshot — token
+            // refreshes won't be persisted and credential updates won't
+            // be visible, but at least the worker can start).
             const storage = AuthStorage.inMemory(data);
-            console.log(
-                `pizzapi worker: lockless fallback loaded ${Object.keys(data).length} provider(s) from ${authPath}`,
+            console.warn(
+                `pizzapi worker: lockless fallback loaded ${Object.keys(data).length} provider(s) from ${authPath} (in-memory snapshot — token refreshes will not persist)`,
             );
             return storage;
         }
