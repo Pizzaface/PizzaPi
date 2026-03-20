@@ -643,6 +643,9 @@ function GitChangesView({
   const diffContainerRef = React.useRef<HTMLDivElement>(null);
   React.useEffect(() => {
     if (!selectedDiff) return;
+    // Move focus into the preview container so Escape is intercepted even when
+    // the preview was opened via mouse click (no keyboard focus in container yet).
+    diffContainerRef.current?.focus();
     const handler = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       if (!shouldInterceptEscape(diffContainerRef.current)) return;
@@ -700,7 +703,7 @@ function GitChangesView({
 
   if (selectedDiff) {
     return (
-      <div ref={diffContainerRef} className="flex flex-col h-full">
+      <div ref={diffContainerRef} tabIndex={-1} className="flex flex-col h-full outline-none">
         <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-muted/50">
           <button
             type="button"
@@ -1040,6 +1043,9 @@ export function FileExplorer({ runnerId, cwd, className, onClose, position = "le
   const previewContainerRef = React.useRef<HTMLDivElement>(null);
   React.useEffect(() => {
     if (!viewingFile) return;
+    // Move focus into the preview container so Escape is intercepted even when
+    // the preview was opened via mouse click (no keyboard focus in container yet).
+    previewContainerRef.current?.focus();
     const handler = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       if (!shouldInterceptEscape(previewContainerRef.current)) return;
@@ -1058,7 +1064,7 @@ export function FileExplorer({ runnerId, cwd, className, onClose, position = "le
     const isImage = isImageFile(viewingFileName);
 
     return (
-      <div ref={previewContainerRef} className={cn("flex flex-col bg-background text-foreground", className)}>
+      <div ref={previewContainerRef} tabIndex={-1} className={cn("flex flex-col bg-background text-foreground outline-none", className)}>
         {isImage ? (
           <ImageViewer
             runnerId={runnerId}
