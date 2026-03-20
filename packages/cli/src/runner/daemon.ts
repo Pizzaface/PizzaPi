@@ -256,11 +256,13 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 let adopted = 0;
                 for (const { sessionId, cwd } of existingSessions) {
                     if (runningSessions.has(sessionId)) continue; // already tracked
+                    if (typeof cwd === "string" && cwd.length > 0) trackSessionCwd(sessionId, cwd);
                     runningSessions.set(sessionId, {
                         sessionId,
                         child: null,
                         startedAt: Date.now(),
                         adopted: true,
+                        cwd: typeof cwd === "string" && cwd.length > 0 ? cwd : undefined,
                     });
                     adopted++;
                 }
@@ -355,10 +357,11 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
 
             if (workerType === "claude-code") {
                 // Claude Code bridge path — session_ready fires synchronously after spawn
-                // (same pattern as the pi path inside doSpawn). The bridge takes over relay
-                // registration; the daemon only tracks the subprocess handle.
+                // (same pattern as the pi path inside doSpawn). The bridge owns the
+                // relay connection, so the daemon tracks it as an adopted session.
                 try {
-                    spawnClaudeCodeSession({
+                    const effectiveCwd = requestedCwd ?? process.cwd();
+                    const bridge = spawnClaudeCodeSession({
                         sessionId,
                         apiKey: apiKey!,
                         relayUrl: relayRaw,
@@ -367,8 +370,27 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                         parentSessionId: requestedParentSessionId,
                         model: requestedModel,
                     });
-                    // TODO(Plan 2): register sessionId in runningSessions once bridge returns a child handle.
-                    // Without this, kill_session and session sweeping won't cover claude-code sessions.
+                    trackSessionCwd(sessionId, effectiveCwd);
+                    runningSessions.set(sessionId, {
+                        sessionId,
+                        child: null,
+                        startedAt: Date.now(),
+                        adopted: true,
+                        bridgeManaged: true,
+                        bridgeAlive: true,
+                        parentSessionId: requestedParentSessionId,
+                        cwd: effectiveCwd,
+                    });
+                    void bridge.exited.then((code) => {
+                        const entry = runningSessions.get(sessionId);
+                        if (entry) entry.bridgeAlive = false;
+                        if (entry?.adopted) {
+                            runningSessions.delete(sessionId);
+                            if (entry.cwd) untrackSessionCwd(sessionId, entry.cwd);
+                            void cleanupSessionAttachments(sessionId).catch(() => {});
+                            logInfo(`Claude Code bridge for session ${sessionId} exited (code=${code})`);
+                        }
+                    }).catch(() => {});
                     socket.emit("session_ready", { sessionId });
                 } catch (err) {
                     socket.emit("session_error", {
@@ -395,6 +417,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     // socket, which sends end_session then force-disconnects.
                     socket.emit("disconnect_session", { sessionId });
                 }
+                if (entry.cwd) untrackSessionCwd(sessionId, entry.cwd);
                 runningSessions.delete(sessionId);
                 logInfo(`killed session ${sessionId}${entry.adopted ? " (adopted)" : ""}`);
                 socket.emit("session_killed", { sessionId });
@@ -434,11 +457,13 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 // (expired/orphaned), always honor the removal — the session
                 // is legitimately dead and the worker should exit on its own.
                 const childAlive = entry.child && !entry.child.killed && entry.child.exitCode === null;
+                const bridgeAlive = entry.bridgeManaged && entry.bridgeAlive;
                 const isTransientDisconnect = !reason || reason === "Session ended";
-                if (childAlive && isTransientDisconnect) {
+                if ((childAlive || bridgeAlive) && isTransientDisconnect) {
                     logInfo(`session_ended for ${sessionId} but worker still alive — keeping entry for reconnect`);
                     return;
                 }
+                if (entry.cwd) untrackSessionCwd(sessionId, entry.cwd);
                 runningSessions.delete(sessionId);
                 endedSessionIds.set(sessionId, Date.now());
                 logInfo(`session ${sessionId} ended on relay${entry.adopted ? " (adopted)" : ""}${reason ? ` (${reason})` : ""}`);
@@ -1197,3 +1222,262 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         });
     });
 }
+<<<<<<< HEAD
+=======
+
+export function isPidRunning(pid: number): boolean {
+    if (!Number.isFinite(pid) || pid <= 0) return false;
+    try {
+        process.kill(pid, 0);
+    } catch (err: any) {
+        // ESRCH = process does not exist. EPERM = exists but no permission.
+        if (err?.code === "ESRCH") return false;
+        // On Windows, process.kill(pid, 0) throws EPERM when the process exists
+        // but we lack permission, and throws with code ESRCH (or sometimes just
+        // a generic error) when it doesn't.  If we get here without ESRCH, assume alive.
+    }
+
+    // The PID is alive, but it may have been reused by an unrelated process.
+    // Verify the command line contains a pizzapi / runner signature.
+    try {
+        let cmd: string;
+        if (process.platform === "win32") {
+            // On Windows, use WMIC to inspect the process command line.
+            // wmic is available on Windows 7+ and returns the full command line.
+            cmd = execFileSync(
+                "wmic",
+                ["process", "where", `ProcessId=${pid}`, "get", "CommandLine", "/format:list"],
+                { encoding: "utf-8", timeout: 5000 },
+            ).trim();
+        } else {
+            cmd = execFileSync("ps", ["-p", String(pid), "-o", "command="], { encoding: "utf-8", timeout: 3000 }).trim();
+        }
+        // Match against known runner process patterns:
+        //   - "bun ... runner"          (dev: bun packages/cli/src/index.ts runner)
+        //   - "bun ... daemon.ts"       (dev: direct daemon run)
+        //   - "bun ... _daemon"         (supervisor-spawned child)
+        //   - "pizzapi ... runner"      (production CLI)
+        //   - "node ... runner"         (unlikely but possible)
+        const isRunner =
+            /\brunner\b/i.test(cmd) ||
+            /\bdaemon\b/i.test(cmd) ||
+            /\bpizzapi\b/i.test(cmd) ||
+            /\b_daemon\b/i.test(cmd);
+        if (!isRunner) {
+            // PID exists but belongs to an unrelated process — stale lock.
+            return false;
+        }
+    } catch {
+        // If we can't check the command (e.g. ps/wmic not available), fall back to
+        // assuming the process is the runner (safe default — avoids double-start).
+    }
+
+    return true;
+}
+
+function parseRoots(raw: string): string[] {
+    return raw
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .map((s) => s.replace(/\\/g, "/"))
+        .map((s) => (s.length > 1 ? s.replace(/\/+$/, "") : s));
+}
+
+function getWorkspaceRoots(): string[] {
+    // Preferred env vars
+    const rootsRaw = process.env.PIZZAPI_WORKSPACE_ROOTS;
+    const rootSingle = process.env.PIZZAPI_WORKSPACE_ROOT;
+
+    // Back-compat
+    const legacy = process.env.PIZZAPI_RUNNER_ROOTS;
+
+    if (rootsRaw && rootsRaw.trim()) return parseRoots(rootsRaw);
+    if (rootSingle && rootSingle.trim()) return parseRoots(rootSingle);
+    if (legacy && legacy.trim()) return parseRoots(legacy);
+    return [];
+}
+
+function isCwdAllowed(cwd: string | undefined): boolean {
+    if (!cwd) return true;
+    const roots = getWorkspaceRoots();
+    if (roots.length === 0) return true; // unscoped runner
+    // Resolve symlinks + normalize ".." segments to prevent path traversal.
+    // Use realpathSync when the path exists (resolves symlinks), fall back
+    // to resolve() for non-existent paths (still collapses "..").
+    const canonicalize = (p: string) => {
+        try { return realpathSync(p); } catch { return resolve(p); }
+    };
+    const nCwd = canonicalize(cwd).replace(/\\/g, "/").replace(/\/+$/, "") || "/";
+    // Windows paths are case-insensitive
+    const isWin = /^[A-Za-z]:/.test(cwd);
+    return roots.some((root) => {
+        const nRoot = canonicalize(root).replace(/\\/g, "/").replace(/\/+$/, "") || "/";
+        // Special-case filesystem root: everything is under "/"
+        if (nRoot === "/") return true;
+        const rc = isWin ? nCwd.toLowerCase() : nCwd;
+        const rr = isWin ? nRoot.toLowerCase() : nRoot;
+        return rc === rr || rc.startsWith(rr + "/");
+    });
+}
+
+function spawnSession(
+    sessionId: string,
+    apiKey: string,
+    relayUrl: string,
+    requestedCwd: string | undefined,
+    runningSessions: Map<string, RunnerSession>,
+    restartingSessions: Set<string>,
+    onRestartRequested?: () => void,
+    options?: {
+        prompt?: string;
+        model?: { provider: string; id: string };
+        hiddenModels?: string[];
+        agent?: { name: string; systemPrompt?: string; tools?: string; disallowedTools?: string };
+        parentSessionId?: string;
+    },
+): void {
+    logInfo(`spawning headless worker for session ${sessionId}…`);
+
+    if (runningSessions.has(sessionId)) {
+        throw new Error(`Session already running: ${sessionId}`);
+    }
+
+    // Resolve the effective cwd for this session now so we can register it for
+    // usage auth lookups and clean it up on exit without re-deriving it.
+    const effectiveCwd = requestedCwd ?? process.cwd();
+
+    if (!isCwdAllowed(requestedCwd)) {
+        throw new Error(`Requested cwd is outside allowed workspace root(s): ${requestedCwd}`);
+    }
+
+    if (requestedCwd) {
+        if (!existsSync(requestedCwd)) {
+            throw new Error(`cwd does not exist: ${requestedCwd}`);
+        }
+        const st = statSync(requestedCwd);
+        if (!st.isDirectory()) {
+            throw new Error(`cwd is not a directory: ${requestedCwd}`);
+        }
+    }
+
+    const workerArgs = resolveWorkerSpawnArgs();
+
+    const env: Record<string, string> = {
+        ...Object.fromEntries(Object.entries(process.env).filter(([, v]) => typeof v === "string")) as any,
+        // Use the daemon's resolved relay URL so workers always connect to the
+        // same relay the daemon is using (not a potentially-changed config file).
+        PIZZAPI_RELAY_URL: relayUrl,
+        PIZZAPI_API_KEY: apiKey,
+        PIZZAPI_SESSION_ID: sessionId,
+        // Tell the worker where the runner-managed usage cache lives so it can
+        // read quota data without making its own provider API calls.
+        PIZZAPI_RUNNER_USAGE_CACHE_PATH: runnerUsageCacheFilePath(),
+        ...(requestedCwd ? { PIZZAPI_WORKER_CWD: requestedCwd } : {}),
+        // Initial prompt and model for the new session (set by spawn_session tool).
+        ...(options?.prompt ? { PIZZAPI_WORKER_INITIAL_PROMPT: options.prompt } : {}),
+        ...(options?.model ? {
+            PIZZAPI_WORKER_INITIAL_MODEL_PROVIDER: options.model.provider,
+            PIZZAPI_WORKER_INITIAL_MODEL_ID: options.model.id,
+        } : {}),
+        // Hidden model keys (JSON array of "provider/modelId" strings).
+        // The list_models tool filters these from its output.
+        ...(options?.hiddenModels && options.hiddenModels.length > 0
+            ? { PIZZAPI_HIDDEN_MODELS: JSON.stringify(options.hiddenModels) }
+            : {}),
+        // Agent session config — spawn the worker "as" this agent.
+        // Parent session ID for trigger system (child→parent communication).
+        ...(options?.parentSessionId ? { PIZZAPI_WORKER_PARENT_SESSION_ID: options.parentSessionId } : {}),
+        ...(options?.agent?.name ? { PIZZAPI_WORKER_AGENT_NAME: options.agent.name } : {}),
+        ...(options?.agent?.systemPrompt ? { PIZZAPI_WORKER_AGENT_SYSTEM_PROMPT: options.agent.systemPrompt } : {}),
+        ...(options?.agent?.tools ? { PIZZAPI_WORKER_AGENT_TOOLS: options.agent.tools } : {}),
+        ...(options?.agent?.disallowedTools ? { PIZZAPI_WORKER_AGENT_DISALLOWED_TOOLS: options.agent.disallowedTools } : {}),
+    };
+
+    const child = spawn(process.execPath, workerArgs, {
+        env,
+        // Include an IPC channel (fd[3]) so the worker can send a "pre_restart"
+        // message to the daemon before calling process.exit(43).  This lets us
+        // add the sessionId to restartingSessions *before* the process exits and
+        // before the relay's session_ended event (which travels over Socket.IO) can
+        // arrive — closing the race where session_ended beats child.on("exit") and
+        // incorrectly deletes attachments for a still-live restarting session.
+        stdio: ["ignore", "inherit", "inherit", "ipc"],
+    });
+
+    // Pre-restart IPC signal: the worker sends this before calling process.exit(43).
+    // Marking restartingSessions here (synchronously, while the worker is still
+    // alive) guarantees the guard is set before any relay session_ended event arrives.
+    child.on("message", (msg: unknown) => {
+        if (typeof msg === "object" && msg !== null && (msg as Record<string, unknown>).type === "pre_restart") {
+            restartingSessions.add(sessionId);
+            logInfo(`session ${sessionId} signaled pre-restart via IPC`);
+        }
+    });
+
+    // Register this session's cwd so usage fetches can probe its project-local
+    // agentDir override (if any).  Cleaned up on exit below.
+    trackSessionCwd(sessionId, effectiveCwd);
+
+    child.on("exit", (code, signal) => {
+        runningSessions.delete(sessionId);
+        untrackSessionCwd(sessionId, effectiveCwd);
+        logInfo(`session ${sessionId} exited (code=${code}, signal=${signal})`);
+        if (code === 43 && onRestartRequested) {
+            // Restart-in-place: re-spawn immediately without touching attachments.
+            // The session continues under the same ID — files saved to
+            // ~/.pizzapi/session-attachments/{sessionId} must survive the restart.
+            // restartingSessions was already populated via the IPC "pre_restart"
+            // message above; this add is a belt-and-suspenders fallback for the
+            // (unlikely) case where the IPC message was not sent or was lost.
+            restartingSessions.add(sessionId);
+            logInfo(`re-spawning session ${sessionId} (worker restart requested)`);
+            onRestartRequested();
+        } else {
+            // True termination — clean up persisted attachments now.
+            // session_ended will also arrive later but runningSessions will be empty
+            // by then, so this is the reliable cleanup point for spawned sessions.
+            void cleanupSessionAttachments(sessionId).catch(() => {});
+        }
+    });
+
+    runningSessions.set(sessionId, {
+        sessionId,
+        child,
+        startedAt: Date.now(),
+        parentSessionId: options?.parentSessionId,
+        cwd: effectiveCwd,
+    });
+    logInfo(`session ${sessionId} worker spawned (pid=${child.pid})`);
+}
+
+/** Is this process running inside a compiled Bun single-file binary? */
+// Detect compiled Bun single-file binary.
+// - Unix: import.meta.url contains "$bunfs"
+// - Windows: import.meta.url contains "~BUN" (drive letter/format varies)
+const isCompiledBinary = import.meta.url.includes("$bunfs") || import.meta.url.includes("~BUN") || import.meta.url.includes("%7EBUN");
+
+/**
+ * Returns the spawn arguments for starting a worker subprocess.
+ * - Compiled binary: `[process.execPath, ["_worker"]]`
+ * - Source / built JS: `[process.execPath, [workerFilePath]]`
+ */
+function resolveWorkerSpawnArgs(): string[] {
+    if (isCompiledBinary) {
+        // In a compiled binary, the worker code is embedded. We re-invoke
+        // the same binary with the `_worker` subcommand.
+        return ["_worker"];
+    }
+
+    const ext = import.meta.url.endsWith(".ts") ? "ts" : "js";
+    const url = new URL(`./worker.${ext}`, import.meta.url);
+    const path = fileURLToPath(url);
+    if (!existsSync(path)) {
+        const altExt = ext === "ts" ? "js" : "ts";
+        const alt = fileURLToPath(new URL(`./worker.${altExt}`, import.meta.url));
+        if (existsSync(alt)) return [alt];
+        throw new Error(`Runner worker entrypoint not found: ${path}`);
+    }
+    return [path];
+}
+>>>>>>> 0139fde (fix(cli): harden Claude Code worker lifecycle)

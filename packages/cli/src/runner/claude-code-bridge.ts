@@ -24,8 +24,9 @@ import type { RelayClientToServerEvents, RelayServerToClientEvents } from "@pizz
 import { randomUUID } from "node:crypto";
 import { translateNdjsonLine } from "./claude-code-ndjson.js";
 import { serializeFrame, framesFromBuffer, type PluginMessage, type BridgeMessage } from "./claude-code-ipc.js";
+import { buildSpawnSessionBody } from "./claude-code-spawn-request.js";
 import {
-  estimateMessagesSize, needsChunkedDelivery, capOversizedMessages, computeChunkBoundaries,
+  needsChunkedDelivery, capOversizedMessages, computeChunkBoundaries,
 } from "../extensions/remote.js";
 
 const RELAY_DEFAULT = "ws://localhost:7492";
@@ -36,6 +37,9 @@ const cwd = process.env.PIZZAPI_WORKER_CWD ?? process.cwd();
 const apiKey = process.env.PIZZAPI_API_KEY;
 const relayUrl = (process.env.PIZZAPI_RELAY_URL ?? RELAY_DEFAULT).replace(/\/$/, "");
 const parentSessionId = process.env.PIZZAPI_WORKER_PARENT_SESSION_ID ?? null;
+const initialPrompt = process.env.PIZZAPI_WORKER_INITIAL_PROMPT ?? "";
+const initialModelProvider = process.env.PIZZAPI_WORKER_INITIAL_MODEL_PROVIDER?.trim() ?? "";
+const initialModelId = process.env.PIZZAPI_WORKER_INITIAL_MODEL_ID?.trim() ?? "";
 
 // Plugin dir: absolute path to the static plugin directory shipped with the CLI
 const PLUGIN_DIR = resolvePath(new URL("../../claude-code-plugin", import.meta.url).pathname);
@@ -209,12 +213,15 @@ async function dispatchMcpTool(tool: string, args: Record<string, unknown>): Pro
       const resp = await fetch(`${base}/api/runners/spawn`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-api-key": apiKey ?? "" },
-        body: JSON.stringify({
-          ...args,
-          parentSessionId: args.linked !== false ? sessionId : undefined,
-        }),
+        body: JSON.stringify(buildSpawnSessionBody(args, sessionId)),
       });
-      return await resp.json();
+      const body = await resp.json().catch(() => ({}));
+      if (!resp.ok) {
+        throw new Error(typeof (body as { error?: unknown }).error === "string"
+          ? (body as { error: string }).error
+          : `Spawn failed: HTTP ${resp.status}`);
+      }
+      return body;
     }
 
     case "pizzapi_send_message": {
@@ -283,7 +290,7 @@ function spawnClaude(tmpDirPath: string, resume = false): void {
 
   // `--settings` is a verified Claude Code flag (accepts path to settings JSON).
   // The settings file contains the `hooks` key for per-session hook delivery.
-  const args = [
+  const cliArgs = [
     "--input-format", "stream-json",
     "--output-format", "stream-json",
     "--include-partial-messages",
@@ -295,10 +302,23 @@ function spawnClaude(tmpDirPath: string, resume = false): void {
     "--mcp-config", mcpPath,
     "--settings", hooksPath,
     "--add-dir", cwd,
+    ...(initialModelId
+      ? initialModelProvider && initialModelProvider !== "anthropic"
+        ? []
+        : ["--model", initialModelId]
+      : []),
     ...(resume ? ["--resume", claudeSessionId] : []),
   ];
 
-  claudeProcess = Bun.spawn(["claude", "-p", "", ...args], {
+  if (initialModelId && initialModelProvider && initialModelProvider !== "anthropic") {
+    console.warn(`[bridge] ignoring unsupported initial model provider for Claude Code worker: ${initialModelProvider}`);
+  }
+
+  const command = resume
+    ? ["claude", ...cliArgs]
+    : ["claude", "-p", initialPrompt, ...cliArgs];
+
+  claudeProcess = Bun.spawn(command, {
     cwd,
     stdin: "pipe",
     stdout: "pipe",
@@ -321,6 +341,8 @@ function writeToClaudeStdin(msg: unknown): void {
   (claudeProcess.stdin as any).write(data);
 }
 
+const _stdoutDecoder = new TextDecoder();
+const _stderrDecoder = new TextDecoder();
 let _stdoutBuf = "";
 
 async function readClaudeStdout(): Promise<void> {
@@ -332,7 +354,7 @@ async function readClaudeStdout(): Promise<void> {
 }
 
 function processStdoutChunk(chunk: Uint8Array): void {
-  const text = new TextDecoder().decode(chunk);
+  const text = _stdoutDecoder.decode(chunk, { stream: true });
   _stdoutBuf += text;
   const lines = _stdoutBuf.split("\n");
   _stdoutBuf = lines.pop() ?? "";
@@ -344,7 +366,7 @@ function processStdoutChunk(chunk: Uint8Array): void {
 async function readClaudeStderr(): Promise<void> {
   if (!claudeProcess?.stderr) return;
   for await (const chunk of claudeProcess.stderr as AsyncIterable<Uint8Array>) {
-    const text = new TextDecoder().decode(chunk);
+    const text = _stderrDecoder.decode(chunk, { stream: true });
     if (text.trim()) console.error("[claude stderr]", text.trimEnd());
   }
 }
@@ -570,12 +592,14 @@ function connectRelay(): void {
         messages = [];
         currentModel = null;
         clearPendingState();
+        processGeneration++;
         if (claudeProcess) { try { claudeProcess.kill("SIGTERM"); } catch {} claudeProcess = null; }
         setTimeout(() => { if (tmpDir) spawnClaude(tmpDir); }, 100);
         sock.emit("exec_result", { id: execData.id, ok: true, command: execData.command });
         break;
       case "reload":
         clearPendingState();
+        processGeneration++;
         if (claudeProcess) { try { claudeProcess.kill("SIGTERM"); } catch {} claudeProcess = null; }
         setTimeout(() => { if (tmpDir) spawnClaude(tmpDir, true); }, 100);
         sock.emit("exec_result", { id: execData.id, ok: true, command: execData.command });
@@ -662,4 +686,3 @@ main().catch((err) => {
 
 // Suppress unused variable warnings — broadcastToIpc will be used in future features
 void broadcastToIpc;
-void estimateMessagesSize;

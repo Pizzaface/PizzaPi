@@ -17,7 +17,7 @@ const BRIDGE_SCRIPT = join(
   "claude-code-bridge.ts",
 );
 
-export function spawnClaudeCodeSession(opts: ClaudeCodeSpawnOptions): void {
+export function spawnClaudeCodeSession(opts: ClaudeCodeSpawnOptions): ReturnType<typeof Bun.spawn> {
   const proc = Bun.spawn(["bun", BRIDGE_SCRIPT], {
     cwd: opts.cwd ?? process.cwd(),
     stdin: "ignore",
@@ -29,9 +29,15 @@ export function spawnClaudeCodeSession(opts: ClaudeCodeSpawnOptions): void {
       PIZZAPI_WORKER_CWD: opts.cwd ?? process.cwd(),
       PIZZAPI_API_KEY: opts.apiKey,
       PIZZAPI_RELAY_URL: opts.relayUrl,
+      ...(opts.prompt ? { PIZZAPI_WORKER_INITIAL_PROMPT: opts.prompt } : {}),
+      ...(opts.model ? {
+        PIZZAPI_WORKER_INITIAL_MODEL_PROVIDER: opts.model.provider,
+        PIZZAPI_WORKER_INITIAL_MODEL_ID: opts.model.id,
+      } : {}),
       ...(opts.parentSessionId ? { PIZZAPI_WORKER_PARENT_SESSION_ID: opts.parentSessionId } : {}),
     },
   });
 
   console.log(`[daemon] spawned Claude Code bridge pid=${proc.pid} session=${opts.sessionId}`);
+  return proc;
 }
