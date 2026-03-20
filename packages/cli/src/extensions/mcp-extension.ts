@@ -601,15 +601,24 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
 
   // ── session_start: await eager load + report timing to TUI/web UI ────────
   pi.on?.("session_start", async (_event: any, ctx: any) => {
-    // Anchor relay wait timeout to relay registration, not session_start.
-    // The relay context is only published after the Socket.IO `registered`
-    // round-trip (remote.ts), which can happen well after session_start.
-    // Starting the 15s fallback timer here would still consume the budget
-    // before the relay is actually usable in slow-tunnel / cold-relay scenarios.
-    setDeferOAuthRelayWaitTimeoutUntilAnchor(false);
-    // Wait for the relay to finish registration (or timeout after 10s if
-    // relay is unreachable), then open the fallback window for OAuth waiters.
+    // Re-arm deferred relay waits for this session's OAuth providers.
+    // Every session_start needs deferral enabled — not just the first.
+    // Subsequent sessions create fresh providers via load() that also
+    // need to defer their 15s localhost fallback until the relay is
+    // registered.  Without this, sessions after the first start the
+    // fallback timer immediately, reintroducing the remote/headless
+    // auth regression.
+    setDeferOAuthRelayWaitTimeoutUntilAnchor(true);
+
+    // Tie the relay-anchor wait to the current session lifecycle so that
+    // session_shutdown cancels stale callbacks from a previous session.
+    // Without this guard, a slow relay registration from session N can
+    // fire markOAuthRelayWaitAnchorReady() into session N+1's providers,
+    // opening the fallback window prematurely.
+    const lifecycleAtStart = loadLifecycleController;
     void waitForRelayRegistration().then(() => {
+      if (lifecycleAtStart.signal.aborted) return; // stale — session was shut down
+      setDeferOAuthRelayWaitTimeoutUntilAnchor(false);
       markOAuthRelayWaitAnchorReady();
     });
 
