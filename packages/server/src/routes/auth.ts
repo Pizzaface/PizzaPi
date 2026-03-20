@@ -7,7 +7,7 @@
  */
 
 import { getApiKeyRateLimitConfig, getAuth, getKysely, isSignupAllowed } from "../auth.js";
-import { RateLimiter, isValidEmail, isValidPassword } from "../security.js";
+import { RateLimiter, isValidEmail, isValidPassword, getClientIp } from "../security.js";
 import { PASSWORD_REQUIREMENTS_SUMMARY } from "@pizzapi/protocol";
 import type { RouteHandler } from "./types.js";
 
@@ -23,7 +23,14 @@ export const handleAuthRoute: RouteHandler = async (req, url) => {
 
     // ── Public endpoint: register (create user + generate CLI API key) ──
     if (url.pathname === "/api/register" && req.method === "POST") {
-        const clientIp = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
+        const clientIp = getClientIp(req);
+        // Always apply rate limiting — never skip based on IP value.
+        // When getClientIp() cannot resolve a real client IP (e.g. XFF chain
+        // mismatch in multi-proxy setups), it falls back to the raw socket IP.
+        // Even in the edge case where the IP is "unknown" (handleFetch called
+        // directly without the Node adapter), we still rate-limit: better to
+        // share a single bucket for headerless callers than to leave the
+        // endpoint completely unthrottled for brute-force.
         if (!registerRateLimiter.check(clientIp)) {
             return Response.json(
                 { error: "Too many registration attempts. Please try again later." },

@@ -208,6 +208,84 @@ cp packages/server/auth.db packages/server/auth.db.backup
 
 ---
 
+## Reverse Proxy Configuration
+
+When PizzaPi runs behind a reverse proxy (like Caddy, nginx, or Traefik in Docker), the server needs to trust proxy headers to correctly identify the real client IP for rate limiting and other security features.
+
+### Loopback Proxies (Auto-Detected)
+
+If your reverse proxy is on the **same host** and connects to PizzaPi via loopback (`127.0.0.1`) — for example, a system-installed nginx or Caddy forwarding to `localhost:7492` — no configuration is needed. The server auto-detects this and safely trusts `X-Forwarded-For` headers.
+
+:::caution[Docker Compose is not loopback]
+In Docker Compose, **all inter-container traffic goes over a bridge network** (e.g. `172.x.x.x`), even when all containers run on the same machine. PizzaPi sees the proxy's bridge IP — not `127.0.0.1` — so the auto-detection does **not** apply. Docker Compose deployments with a reverse proxy always need `PIZZAPI_TRUST_PROXY=true` (see below).
+:::
+
+### Non-Loopback Proxies
+
+If your reverse proxy reaches PizzaPi via a **non-loopback address** — including any Docker Compose setup, a Docker overlay network, or a cloud load balancer — set `PIZZAPI_TRUST_PROXY=true`.
+
+The simplest approach is to pass the variable inline — it will be forwarded to the Docker container:
+
+```bash
+PIZZAPI_TRUST_PROXY=true pizzapi web
+```
+
+Alternatively, add it to `docker/compose.override.yml` and pass **both** compose files explicitly (Docker only auto-merges `compose.override.yml` when you omit `-f`):
+
+```yaml
+# docker/compose.override.yml
+services:
+  server:
+    environment:
+      PIZZAPI_TRUST_PROXY: "true"
+```
+
+```bash
+docker compose -f docker/compose.yml -f docker/compose.override.yml up -d
+```
+
+<Aside type="caution">
+  Only set `PIZZAPI_TRUST_PROXY=true` if you have a reverse proxy in front of PizzaPi. Enabling this without a proxy allows clients to spoof their IP address and bypass rate limiting.
+</Aside>
+
+### Multi-Proxy Chains
+
+By default, PizzaPi uses the **rightmost** `X-Forwarded-For` entry — the IP appended by the directly-connected proxy. This is safe against client spoofing for single-proxy setups.
+
+If you have **multiple trusted proxy hops** (e.g. CDN → nginx → PizzaPi), set `PIZZAPI_PROXY_DEPTH` to the number of **intermediate** hops between the outermost trusted proxy and the real client:
+
+```bash
+# CDN + local reverse proxy = 1 intermediate hop
+PIZZAPI_TRUST_PROXY=true PIZZAPI_PROXY_DEPTH=1 pizzapi web
+```
+
+Or with both compose files explicitly (required when using `-f`):
+
+```yaml
+# docker/compose.override.yml — CDN + local proxy = 1 intermediate hop
+services:
+  server:
+    environment:
+      PIZZAPI_TRUST_PROXY: "true"
+      PIZZAPI_PROXY_DEPTH: "1"
+```
+
+```bash
+docker compose -f docker/compose.yml -f docker/compose.override.yml up -d
+```
+
+| Depth | Topology | XFF entry used |
+|-------|----------|----------------|
+| `0` (default) | Single proxy (Caddy, nginx, Traefik) | Rightmost |
+| `1` | CDN + local proxy (2 total hops) | Second from right |
+| `N` | N+1 total trusted hops | N positions from the right |
+
+:::note
+`PIZZAPI_PROXY_DEPTH` counts **intermediate** hops, not total proxies. A single reverse proxy uses `depth=0` (the default). If in doubt, leave it unset.
+:::
+
+---
+
 ## HTTPS with Caddy
 
 Caddy automatically provisions TLS certificates via Let's Encrypt:

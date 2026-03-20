@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeAll, afterAll } from "bun:test";
-import { RateLimiter, isValidEmail, isValidPassword, cwdMatchesRoots } from "./security";
+import { RateLimiter, isValidEmail, isValidPassword, cwdMatchesRoots, getClientIp } from "./security";
 
 describe("RateLimiter", () => {
     test("allows requests within limit", () => {
@@ -180,5 +180,261 @@ describe("isValidPassword", () => {
         expect(cwdMatchesRoots([root], "/home/user/project/")).toBe(true);
         expect(cwdMatchesRoots(["/home/user/project/"], "/home/user/project")).toBe(true);
         expect(cwdMatchesRoots(["/home/user/project/"], "/home/user/project/src")).toBe(true);
+    });
+});
+
+describe("getClientIp", () => {
+    const makeReq = (headers: Record<string, string>) =>
+        new Request("http://localhost/test", { headers });
+
+    const originalTrustProxy = process.env.PIZZAPI_TRUST_PROXY;
+    const originalProxyDepth = process.env.PIZZAPI_PROXY_DEPTH;
+    afterAll(() => {
+        if (originalTrustProxy === undefined) delete process.env.PIZZAPI_TRUST_PROXY;
+        else process.env.PIZZAPI_TRUST_PROXY = originalTrustProxy;
+        if (originalProxyDepth === undefined) delete process.env.PIZZAPI_PROXY_DEPTH;
+        else process.env.PIZZAPI_PROXY_DEPTH = originalProxyDepth;
+    });
+
+    test("returns x-pizzapi-client-ip for direct connections", () => {
+        delete process.env.PIZZAPI_TRUST_PROXY;
+        const req = makeReq({ "x-pizzapi-client-ip": "203.0.113.50" });
+        expect(getClientIp(req)).toBe("203.0.113.50");
+    });
+
+    test("does not trust x-forwarded-for for public IPs", () => {
+        delete process.env.PIZZAPI_TRUST_PROXY;
+        const req = makeReq({
+            "x-pizzapi-client-ip": "203.0.113.50",
+            "x-forwarded-for": "198.51.100.1",
+        });
+        expect(getClientIp(req)).toBe("203.0.113.50");
+    });
+
+    test("auto-detects reverse proxy when remoteAddress is 127.0.0.1", () => {
+        delete process.env.PIZZAPI_TRUST_PROXY;
+        const req = makeReq({
+            "x-pizzapi-client-ip": "127.0.0.1",
+            "x-forwarded-for": "198.51.100.1",
+        });
+        expect(getClientIp(req)).toBe("198.51.100.1");
+    });
+
+    test("auto-detects reverse proxy when remoteAddress is IPv4-mapped ::ffff:127.0.0.1", () => {
+        delete process.env.PIZZAPI_TRUST_PROXY;
+        const req = makeReq({
+            "x-pizzapi-client-ip": "::ffff:127.0.0.1",
+            "x-forwarded-for": "198.51.100.1",
+        });
+        expect(getClientIp(req)).toBe("198.51.100.1");
+    });
+
+    test("uses right-most XFF entry to prevent client spoofing (single proxy)", () => {
+        delete process.env.PIZZAPI_TRUST_PROXY;
+        delete process.env.PIZZAPI_PROXY_DEPTH;
+        // nginx $proxy_add_x_forwarded_for appends $remote_addr to any existing header:
+        //   Client sends: X-Forwarded-For: 1.2.3.4 (spoofed)
+        //   Proxy appends: X-Forwarded-For: 1.2.3.4, 203.0.113.50 (real client IP)
+        // Right-most is the proxy-appended real client IP.
+        const req = makeReq({
+            "x-pizzapi-client-ip": "127.0.0.1",
+            "x-forwarded-for": "1.2.3.4, 203.0.113.50",
+        });
+        expect(getClientIp(req)).toBe("203.0.113.50");
+    });
+
+    test("uses right-most XFF entry with TRUST_PROXY=true", () => {
+        process.env.PIZZAPI_TRUST_PROXY = "true";
+        delete process.env.PIZZAPI_PROXY_DEPTH;
+        const req = makeReq({
+            "x-pizzapi-client-ip": "172.17.0.1",
+            "x-forwarded-for": "203.0.113.99, 10.0.0.1",
+        });
+        // Right-most entry (10.0.0.1) is the proxy-appended real client (depth=0 default)
+        expect(getClientIp(req)).toBe("10.0.0.1");
+    });
+
+    test("PIZZAPI_PROXY_DEPTH=1 accepts the normal two-hop chain with 2 entries", () => {
+        process.env.PIZZAPI_TRUST_PROXY = "true";
+        process.env.PIZZAPI_PROXY_DEPTH = "1";
+        // Typical CDN → local proxy → PizzaPi request with no client-supplied XFF:
+        //   XFF: <real-client>, <cdn-proxy>
+        const req = makeReq({
+            "x-pizzapi-client-ip": "172.17.0.1",
+            "x-forwarded-for": "203.0.113.50, 198.51.100.5",
+        });
+        expect(getClientIp(req)).toBe("203.0.113.50");
+        delete process.env.PIZZAPI_PROXY_DEPTH;
+    });
+
+    test("fails closed to socket IP when PIZZAPI_PROXY_DEPTH exceeds XFF chain length", () => {
+        process.env.PIZZAPI_TRUST_PROXY = "true";
+        process.env.PIZZAPI_PROXY_DEPTH = "3";
+        // Only 2 hops in the chain but depth expects 3 — depth >= parts.length,
+        // so we can't safely identify the real client.
+        const req = makeReq({
+            "x-pizzapi-client-ip": "172.17.0.1",
+            "x-forwarded-for": "203.0.113.50, 198.51.100.5",
+        });
+        // Falls back to the raw socket/proxy IP so callers can still apply
+        // per-IP rate limiting instead of skipping it entirely.
+        expect(getClientIp(req)).toBe("172.17.0.1");
+        delete process.env.PIZZAPI_PROXY_DEPTH;
+    });
+
+    test("fails closed to socket IP when PIZZAPI_PROXY_DEPTH equals XFF chain length (padding attack)", () => {
+        process.env.PIZZAPI_TRUST_PROXY = "true";
+        process.env.PIZZAPI_PROXY_DEPTH = "2";
+        // Chain too short for depth=2.
+        const req = makeReq({
+            "x-pizzapi-client-ip": "172.17.0.1",
+            "x-forwarded-for": "1.2.3.4, 5.6.7.8",
+        });
+        expect(getClientIp(req)).toBe("172.17.0.1");
+        delete process.env.PIZZAPI_PROXY_DEPTH;
+    });
+
+    test("accepts padded XFF chain when depth>0 and reads the correct right-anchored slot", () => {
+        process.env.PIZZAPI_TRUST_PROXY = "true";
+        process.env.PIZZAPI_PROXY_DEPTH = "2";
+        // depth=2 expects 3 entries minimum. With 4 entries the client has prepended
+        // a bogus left-side hop. The formula parts[parts.length - 1 - depth] still
+        // reads from the right, so the correct client slot is unaffected.
+        //   parts = ["1.1.1.1", "2.2.2.2", "3.3.3.3", "203.0.113.50"]
+        //   index = 4 - 1 - 2 = 1 → "2.2.2.2" (the outermost trusted proxy's view of client)
+        const req = makeReq({
+            "x-pizzapi-client-ip": "172.17.0.1",
+            "x-forwarded-for": "1.1.1.1, 2.2.2.2, 3.3.3.3, 203.0.113.50",
+        });
+        expect(getClientIp(req)).toBe("2.2.2.2");
+        delete process.env.PIZZAPI_PROXY_DEPTH;
+    });
+
+    test("accepts padded XFF chain when depth=1 and returns the CDN-appended real client IP", () => {
+        // With depth=1 (CDN → local proxy → server), each trusted proxy appends its peer:
+        //   Client sends request → CDN appends real client IP → local proxy appends CDN IP
+        // XFF = "evil-spoofed, 203.0.113.50, 198.51.100.5"
+        //   parts[3 - 1 - 1] = parts[1] = "203.0.113.50" (what the CDN saw as client)
+        // Left-side padding cannot shift the right-anchored trusted slots.
+        process.env.PIZZAPI_TRUST_PROXY = "true";
+        process.env.PIZZAPI_PROXY_DEPTH = "1";
+        const req = makeReq({
+            "x-pizzapi-client-ip": "172.17.0.1",
+            "x-forwarded-for": "evil-spoofed, 203.0.113.50, 198.51.100.5",
+        });
+        expect(getClientIp(req)).toBe("203.0.113.50");
+        delete process.env.PIZZAPI_PROXY_DEPTH;
+    });
+
+    test("single-entry XFF returns that entry (depth=0 default)", () => {
+        delete process.env.PIZZAPI_TRUST_PROXY;
+        delete process.env.PIZZAPI_PROXY_DEPTH;
+        const req = makeReq({
+            "x-pizzapi-client-ip": "127.0.0.1",
+            "x-forwarded-for": "203.0.113.50",
+        });
+        // depth=0 (default): parts.length=1 > depth=0 → proceed, index=0 → client_ip
+        expect(getClientIp(req)).toBe("203.0.113.50");
+    });
+
+    test("does NOT auto-trust XFF for private (non-loopback) IPs like 192.168.x.x", () => {
+        delete process.env.PIZZAPI_TRUST_PROXY;
+        const req = makeReq({
+            "x-pizzapi-client-ip": "192.168.1.1",
+            "x-forwarded-for": "198.51.100.1",
+        });
+        // Private IPs are NOT auto-trusted — they could be direct LAN clients
+        expect(getClientIp(req)).toBe("192.168.1.1");
+    });
+
+    test("does NOT auto-trust XFF for IPv4-mapped private IPs (::ffff:192.168.x.x)", () => {
+        delete process.env.PIZZAPI_TRUST_PROXY;
+        const req = makeReq({
+            "x-pizzapi-client-ip": "::ffff:192.168.1.1",
+            "x-forwarded-for": "198.51.100.1",
+        });
+        expect(getClientIp(req)).toBe("::ffff:192.168.1.1");
+    });
+
+    test("does NOT auto-trust XFF for 10.x.x.x private IPs", () => {
+        delete process.env.PIZZAPI_TRUST_PROXY;
+        const req = makeReq({
+            "x-pizzapi-client-ip": "10.0.0.1",
+            "x-forwarded-for": "198.51.100.1",
+        });
+        expect(getClientIp(req)).toBe("10.0.0.1");
+    });
+
+    test("does NOT auto-trust XFF for Docker bridge IPs (172.17.x.x)", () => {
+        delete process.env.PIZZAPI_TRUST_PROXY;
+        const req = makeReq({
+            "x-pizzapi-client-ip": "172.17.0.1",
+            "x-forwarded-for": "198.51.100.1",
+        });
+        expect(getClientIp(req)).toBe("172.17.0.1");
+    });
+
+    test("PIZZAPI_TRUST_PROXY=true allows XFF trust for Docker bridge IPs", () => {
+        process.env.PIZZAPI_TRUST_PROXY = "true";
+        const req = makeReq({
+            "x-pizzapi-client-ip": "172.17.0.1",
+            "x-forwarded-for": "198.51.100.1",
+        });
+        expect(getClientIp(req)).toBe("198.51.100.1");
+    });
+
+    test("PIZZAPI_TRUST_PROXY=true trusts XFF from public-IP peers (explicit cloud LB opt-in)", () => {
+        // When the operator explicitly sets PIZZAPI_TRUST_PROXY=true they are asserting
+        // that all traffic arrives via a trusted proxy — including public cloud load
+        // balancers whose peer address is a public IP.  The explicit opt-in is the
+        // authorization; no additional peer-IP check is applied.
+        process.env.PIZZAPI_TRUST_PROXY = "true";
+        const req = makeReq({
+            "x-pizzapi-client-ip": "203.0.113.50",
+            "x-forwarded-for": "198.51.100.1",
+        });
+        expect(getClientIp(req)).toBe("198.51.100.1");
+    });
+
+    test("PIZZAPI_TRUST_PROXY=true trusts XFF from 10.x.x.x peers (private Docker/LAN proxy)", () => {
+        process.env.PIZZAPI_TRUST_PROXY = "true";
+        const req = makeReq({
+            "x-pizzapi-client-ip": "10.0.0.1",
+            "x-forwarded-for": "198.51.100.1",
+        });
+        expect(getClientIp(req)).toBe("198.51.100.1");
+    });
+
+    test("PIZZAPI_TRUST_PROXY=true trusts XFF from 192.168.x.x peers (private proxy)", () => {
+        process.env.PIZZAPI_TRUST_PROXY = "true";
+        const req = makeReq({
+            "x-pizzapi-client-ip": "192.168.1.1",
+            "x-forwarded-for": "198.51.100.1",
+        });
+        expect(getClientIp(req)).toBe("198.51.100.1");
+    });
+
+    test("PIZZAPI_TRUST_PROXY=false disables auto-detection for loopback IPs", () => {
+        process.env.PIZZAPI_TRUST_PROXY = "false";
+        const req = makeReq({
+            "x-pizzapi-client-ip": "127.0.0.1",
+            "x-forwarded-for": "198.51.100.1",
+        });
+        expect(getClientIp(req)).toBe("127.0.0.1");
+    });
+
+    test("PIZZAPI_TRUST_PROXY=false disables auto-detection for loopback", () => {
+        process.env.PIZZAPI_TRUST_PROXY = "false";
+        const req = makeReq({
+            "x-pizzapi-client-ip": "::ffff:127.0.0.1",
+            "x-forwarded-for": "198.51.100.1",
+        });
+        expect(getClientIp(req)).toBe("::ffff:127.0.0.1");
+    });
+
+    test("returns 'unknown' when no headers present", () => {
+        delete process.env.PIZZAPI_TRUST_PROXY;
+        const req = makeReq({});
+        expect(getClientIp(req)).toBe("unknown");
     });
 });

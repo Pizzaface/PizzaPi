@@ -200,6 +200,19 @@ function _createAuth(opts: {
         database: { dialect: opts.dialect, type: "sqlite" as const, transaction: true },
         trustedOrigins: opts.trustedOrigins,
         emailAndPassword: { enabled: true },
+        advanced: {
+            ipAddress: {
+                // Use our securely-injected header instead of the default x-forwarded-for.
+                // x-pizzapi-client-ip is set in nodeReqToFetchRequest() from the TCP socket's
+                // remoteAddress and stripped from any client-supplied value, making it
+                // spoofing-proof. This prevents attackers from rotating X-Forwarded-For to
+                // bypass Better Auth's built-in rate limits on /sign-in, /sign-up, etc.
+                // handler.ts further rewrites x-pizzapi-client-ip to the fully-resolved
+                // client IP (accounting for trusted reverse proxy hops) before auth routes
+                // are dispatched.
+                ipAddressHeaders: ["x-pizzapi-client-ip"],
+            },
+        },
         plugins: [
             apiKey({
                 enableSessionForAPIKeys: true,

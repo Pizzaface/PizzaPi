@@ -20,6 +20,11 @@ services:
       # Disable new signups after the first user has registered (default: true)
       # Set to false to allow unlimited registrations.
       # - PIZZAPI_DISABLE_SIGNUP_AFTER_FIRST_USER=true
+      # Enable reverse proxy header handling. Required when the server is behind
+      # a non-loopback proxy (e.g. Docker overlay network, cloud load balancer).
+      # Loopback proxies (127.0.0.1, ::1) are auto-detected.
+      # See https://pizzaface.github.io/PizzaPi/guides/self-hosting/#reverse-proxy-configuration
+      # - PIZZAPI_TRUST_PROXY=true
     volumes:
       - pizzapi-data:/app/data
     depends_on:

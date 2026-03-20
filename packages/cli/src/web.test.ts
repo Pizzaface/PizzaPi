@@ -1,7 +1,12 @@
 import { describe, test, expect } from "bun:test";
 import { readFileSync } from "fs";
 import { join } from "path";
-import { extractVapidFromCompose, extractSettingsFromCompose, resolveBetterAuthSecret } from "./web";
+import {
+    extractVapidFromCompose,
+    extractSettingsFromCompose,
+    resolveBetterAuthSecret,
+    resolveMissingProxySettings,
+} from "./web";
 
 /**
  * Validates that the inlined COMPOSE_TEMPLATE in web.ts matches
@@ -31,7 +36,7 @@ services:
       - VAPID_PUBLIC_KEY={{VAPID_PUBLIC_KEY}}
       - VAPID_PRIVATE_KEY={{VAPID_PRIVATE_KEY}}
       - VAPID_SUBJECT={{VAPID_SUBJECT}}
-{{EXTRA_ORIGINS_LINE}}    volumes:
+{{EXTRA_ORIGINS_LINE}}{{TRUST_PROXY_LINE}}{{PROXY_DEPTH_LINE}}    volumes:
       - {{DATA_DIR}}:/app/data:Z
     depends_on:
       - redis
@@ -65,7 +70,9 @@ describe("web.ts compose template", () => {
             .replace(/\{\{VAPID_PUBLIC_KEY}}/g, "BTestPublicKey123")
             .replace(/\{\{VAPID_PRIVATE_KEY}}/g, "TestPrivateKey456")
             .replace(/\{\{VAPID_SUBJECT}}/g, "mailto:admin@pizzapi.local")
-            .replace(/\{\{EXTRA_ORIGINS_LINE}}/g, "      - PIZZAPI_EXTRA_ORIGINS=https://example.com\n");
+            .replace(/\{\{EXTRA_ORIGINS_LINE}}/g, "      - PIZZAPI_EXTRA_ORIGINS=https://example.com\n")
+            .replace(/\{\{TRUST_PROXY_LINE}}/g, "      # - PIZZAPI_TRUST_PROXY=\n")
+            .replace(/\{\{PROXY_DEPTH_LINE}}/g, "      # - PIZZAPI_PROXY_DEPTH=\n");
 
         // No unsubstituted placeholders remain
         expect(composed).not.toContain("{{");
@@ -94,7 +101,9 @@ describe("web.ts compose template", () => {
             .replace(/\{\{VAPID_PUBLIC_KEY}}/g, "key")
             .replace(/\{\{VAPID_PRIVATE_KEY}}/g, "key")
             .replace(/\{\{VAPID_SUBJECT}}/g, "mailto:test@test.com")
-            .replace(/\{\{EXTRA_ORIGINS_LINE}}/g, "      # - PIZZAPI_EXTRA_ORIGINS=\n");
+            .replace(/\{\{EXTRA_ORIGINS_LINE}}/g, "      # - PIZZAPI_EXTRA_ORIGINS=\n")
+            .replace(/\{\{TRUST_PROXY_LINE}}/g, "      # - PIZZAPI_TRUST_PROXY=\n")
+            .replace(/\{\{PROXY_DEPTH_LINE}}/g, "      # - PIZZAPI_PROXY_DEPTH=\n");
 
         expect(composed).toContain("# - PIZZAPI_EXTRA_ORIGINS=");
         expect(composed).not.toContain("{{");
@@ -167,6 +176,84 @@ describe("extractSettingsFromCompose", () => {
         const result = extractSettingsFromCompose(content);
         expect(result.port).toBe(9000);
     });
+
+    test("parses YAML mapping syntax for proxy settings (double-quoted)", () => {
+        // This is the format shown in self-hosting docs and produced by standard
+        // YAML tools — the compose.override.yml uses mapping form, not list form.
+        const content = `services:
+  server:
+    environment:
+      PIZZAPI_TRUST_PROXY: "true"
+      PIZZAPI_PROXY_DEPTH: "1"`;
+        const result = extractSettingsFromCompose(content);
+        expect(result.trustProxy).toBe(true);
+        expect(result.proxyDepth).toBe(1);
+    });
+
+    test("parses YAML mapping syntax for proxy settings (single-quoted)", () => {
+        const content = `services:
+  server:
+    environment:
+      PIZZAPI_TRUST_PROXY: 'false'
+      PIZZAPI_PROXY_DEPTH: '2'`;
+        const result = extractSettingsFromCompose(content);
+        expect(result.trustProxy).toBe(false);
+        expect(result.proxyDepth).toBe(2);
+    });
+
+    test("parses YAML mapping syntax for proxy settings (unquoted)", () => {
+        const content = `services:
+  server:
+    environment:
+      PIZZAPI_TRUST_PROXY: true
+      PIZZAPI_PROXY_DEPTH: 1`;
+        const result = extractSettingsFromCompose(content);
+        expect(result.trustProxy).toBe(true);
+        expect(result.proxyDepth).toBe(1);
+    });
+
+    test("strips inline YAML comments from proxy settings", () => {
+        const content = `services:
+  server:
+    environment:
+      PIZZAPI_TRUST_PROXY: "true" # Caddy
+      PIZZAPI_PROXY_DEPTH: "1" # trusted hop count`;
+        const result = extractSettingsFromCompose(content);
+        expect(result.trustProxy).toBe(true);
+        expect(result.proxyDepth).toBe(1);
+    });
+
+    test("parses YAML mapping syntax for all env vars", () => {
+        const content = `services:
+  server:
+    ports:
+      - "8080:7492"
+    environment:
+      VAPID_PUBLIC_KEY: "MapPubKey123"
+      VAPID_PRIVATE_KEY: "MapPrivKey456"
+      VAPID_SUBJECT: "mailto:map@example.com"
+      BETTER_AUTH_SECRET: "MapSecret789"
+      PIZZAPI_EXTRA_ORIGINS: "https://map.example.com"
+      PIZZAPI_TRUST_PROXY: "true"
+      PIZZAPI_PROXY_DEPTH: "2"`;
+        const result = extractSettingsFromCompose(content);
+        expect(result.vapid).toEqual({ publicKey: "MapPubKey123", privateKey: "MapPrivKey456" });
+        expect(result.vapidSubject).toBe("mailto:map@example.com");
+        expect(result.betterAuthSecret).toBe("MapSecret789");
+        expect(result.extraOrigins).toBe("https://map.example.com");
+        expect(result.port).toBe(8080);
+        expect(result.trustProxy).toBe(true);
+        expect(result.proxyDepth).toBe(2);
+    });
+
+    test("list form still takes priority over mapping form", () => {
+        // When both forms exist, list form regex matches first (realistic edge case)
+        const content = `    environment:
+      - PIZZAPI_TRUST_PROXY=true
+      PIZZAPI_TRUST_PROXY: "false"`;
+        const result = extractSettingsFromCompose(content);
+        expect(result.trustProxy).toBe(true);
+    });
 });
 
 describe("extractVapidFromCompose (backward compat)", () => {
@@ -218,5 +305,46 @@ describe("resolveBetterAuthSecret", () => {
             generate: () => "Generated",
         });
         expect(resolved).toEqual({ secret: "Generated", source: "generated" });
+    });
+});
+
+describe("resolveMissingProxySettings", () => {
+    test("keeps existing proxy settings", () => {
+        const resolved = resolveMissingProxySettings({
+            currentTrustProxy: false,
+            currentProxyDepth: 0,
+            composeContents: ["- PIZZAPI_TRUST_PROXY=true\n- PIZZAPI_PROXY_DEPTH=3"],
+        });
+        expect(resolved).toEqual({
+            trustProxy: false,
+            proxyDepth: 0,
+            source: "existing",
+        });
+    });
+
+    test("backfills missing trustProxy and proxyDepth from compose", () => {
+        const resolved = resolveMissingProxySettings({
+            currentTrustProxy: undefined,
+            currentProxyDepth: undefined,
+            composeContents: ["- PIZZAPI_TRUST_PROXY=true\n- PIZZAPI_PROXY_DEPTH=1"],
+        });
+        expect(resolved).toEqual({
+            trustProxy: true,
+            proxyDepth: 1,
+            source: "compose",
+        });
+    });
+
+    test("uses override compose first and fills only missing fields", () => {
+        const resolved = resolveMissingProxySettings({
+            currentTrustProxy: undefined,
+            currentProxyDepth: 2,
+            composeContents: ["- PIZZAPI_TRUST_PROXY=false", "- PIZZAPI_TRUST_PROXY=true\n- PIZZAPI_PROXY_DEPTH=1"],
+        });
+        expect(resolved).toEqual({
+            trustProxy: false,
+            proxyDepth: 2,
+            source: "compose",
+        });
     });
 });
