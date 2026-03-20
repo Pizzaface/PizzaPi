@@ -46,10 +46,13 @@ function extractWebSearch(block: Record<string, unknown>): string | null {
 /** Strip `<!-- trigger:ID [source:ID] -->` prefixes injected by linked-session triggers. */
 const TRIGGER_PREFIX_RE = /^<!--\s*trigger:[\w-]+(?:\s+source:[\w-]+)?\s*-->\n?/;
 
+/** Strip `<!-- questions64:... -->` metadata injected for rich AskUserQuestion triggers. */
+const QUESTIONS64_RE = /<!--\s*questions64:[A-Za-z0-9+/=]+\s*-->\n?/g;
+
 /** Stringify unknown content into a readable string. */
 function contentToString(content: unknown): string {
   if (content == null) return "";
-  if (typeof content === "string") return content.replace(TRIGGER_PREFIX_RE, "");
+  if (typeof content === "string") return content.replace(TRIGGER_PREFIX_RE, "").replace(QUESTIONS64_RE, "");
   // Anthropic-style content blocks: [{type:"text", text:"..."}, {type:"thinking", thinking:"..."}, ...]
   if (Array.isArray(content)) {
     const parts: string[] = [];

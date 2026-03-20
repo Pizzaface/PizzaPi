@@ -507,6 +507,29 @@ export function emitToRelaySession(sessionId: string, eventName: string, data: u
 }
 
 /**
+ * Emit an event to the relay session room, but only if at least one socket
+ * is actually in the room. Unlike `emitToRelaySession()`, this is async
+ * because it uses `fetchSockets()` to verify room membership before emitting.
+ * Returns true only if the emit reached at least one socket.
+ *
+ * Use this for delivery-critical paths (e.g. trigger responses) where
+ * falsely reporting success would leave the client stuck.
+ */
+export async function emitToRelaySessionVerified(sessionId: string, eventName: string, data: unknown): Promise<boolean> {
+    if (!io) return false;
+    const room = relaySessionRoom(sessionId);
+    try {
+        const sockets = await io.of("/relay").in(room).fetchSockets();
+        if (sockets.length === 0) return false;
+        io.of("/relay").to(room).emit(eventName, data);
+        return true;
+    } catch (err) {
+        console.warn("[sio-registry] emitToRelaySessionVerified failed:", (err as Error)?.message);
+        return false;
+    }
+}
+
+/**
  * Remove the local TUI socket reference for a session.
  */
 export function removeLocalTuiSocket(sessionId: string): void {

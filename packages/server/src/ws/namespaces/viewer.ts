@@ -22,6 +22,7 @@ import {
     sendSnapshotToViewer,
     getLocalTuiSocket,
     emitToRelaySession,
+    emitToRelaySessionVerified,
 } from "../sio-registry.js";
 import { getPendingChunkedSnapshot } from "./relay.js";
 import { getPersistedRelaySessionSnapshot } from "../../sessions/store.js";
@@ -372,7 +373,7 @@ export function registerViewerNamespace(io: SocketIOServer): void {
                 if (childSocket) {
                     childSocket.emit("trigger_response" as string, triggerPayload);
                     if (typeof ack === "function") ack();
-                } else if (emitToRelaySession(targetSessionId, "trigger_response", triggerPayload)) {
+                } else if (await emitToRelaySessionVerified(targetSessionId, "trigger_response", triggerPayload)) {
                     if (typeof ack === "function") ack();
                 } else {
                     socket.emit("error", { message: `Failed to deliver trigger response to child session ${targetSessionId}` });
@@ -391,7 +392,7 @@ export function registerViewerNamespace(io: SocketIOServer): void {
             if (tuiSocket) {
                 tuiSocket.emit("trigger_response" as string, triggerPayloadForParent);
                 if (typeof ack === "function") ack();
-            } else if (emitToRelaySession(sessionId, "trigger_response", triggerPayloadForParent)) {
+            } else if (await emitToRelaySessionVerified(sessionId, "trigger_response", triggerPayloadForParent)) {
                 if (typeof ack === "function") ack();
             } else {
                 socket.emit("error", { message: `Failed to deliver trigger response to session ${sessionId}` });

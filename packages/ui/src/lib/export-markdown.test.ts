@@ -558,6 +558,20 @@ describe("exportToMarkdown", () => {
     expect(md).not.toContain("abc-123");
   });
 
+  test("questions64 metadata comments are stripped from exported messages", () => {
+    const base64Payload = Buffer.from(JSON.stringify([{ question: "Pick one", options: ["A", "B"] }])).toString("base64");
+    const md = exportToMarkdown([
+      msg({
+        role: "user",
+        content: `<!-- trigger:t-1 source:s-1 -->\n> Pick one\n<!-- questions64:${base64Payload} -->\nOptions: A | B`,
+      }),
+    ]);
+    expect(md).toContain("Pick one");
+    expect(md).toContain("Options: A | B");
+    expect(md).not.toContain("questions64");
+    expect(md).not.toContain(base64Payload);
+  });
+
   test("contentToString fallback uses safeFence when content contains backticks", () => {
     // If an unrecognized object contains triple backticks, the fence must be longer
     const md = exportToMarkdown([
