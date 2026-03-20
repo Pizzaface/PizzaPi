@@ -1,4 +1,4 @@
-import { createAgentSession, DefaultResourceLoader } from "@mariozechner/pi-coding-agent";
+import { createAgentSession, DefaultResourceLoader, AuthStorage } from "@mariozechner/pi-coding-agent";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -8,6 +8,93 @@ import { getPluginSkillPaths } from "../extensions/claude-plugins.js";
 import { initSandbox, cleanupSandbox, isSandboxActive } from "@pizzapi/tools";
 import { createBootTimer } from "./boot-timing.js";
 import { setLogComponent, setLogSessionId, logInfo, logWarn, logError, logAuth } from "./logger.js";
+
+/**
+ * Create an AuthStorage instance with retried file locking.
+ *
+ * When many worker processes spawn simultaneously (e.g. 6 sub-sessions in
+ * parallel), the upstream AuthStorage constructor acquires a synchronous
+ * file lock on auth.json during its `reload()` call. The sync lock uses
+ * only 10 retries × 20ms = ~200ms window, which is too short when another
+ * process is doing an async OAuth token refresh (seconds). Workers that
+ * lose the lock race silently start with empty credentials → "No API key
+ * found" errors.
+ *
+ * This helper retries AuthStorage creation with increasing delays,
+ * and if all retries fail, falls back to a lockless read so the worker
+ * at least has stale-but-valid credentials rather than none.
+ */
+function createAuthStorageWithRetry(authPath: string, maxAttempts = 5): AuthStorage {
+    let lastError: unknown;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+            const storage = AuthStorage.create(authPath);
+            // Verify it actually loaded credentials (not silently empty due to lock failure)
+            const providers = storage.list();
+            if (providers.length > 0) {
+                return storage;
+            }
+            // If the file exists but we got zero providers, it could be a lock failure
+            // that was silently swallowed. Check if the file actually has data.
+            if (existsSync(authPath)) {
+                try {
+                    const raw = readFileSync(authPath, "utf-8");
+                    const data = JSON.parse(raw);
+                    if (Object.keys(data).length > 0) {
+                        // File has data but AuthStorage didn't load it — lock contention.
+                        // Wait and retry.
+                        console.warn(
+                            `pizzapi worker: auth.json has ${Object.keys(data).length} provider(s) but AuthStorage loaded 0 (attempt ${attempt}/${maxAttempts}, likely lock contention)`,
+                        );
+                        lastError = new Error("Lock contention: auth.json has data but AuthStorage loaded empty");
+                        if (attempt < maxAttempts) {
+                            // Exponential backoff: 100ms, 200ms, 400ms, 800ms
+                            Bun.sleepSync(100 * Math.pow(2, attempt - 1));
+                            continue;
+                        }
+                    }
+                } catch {
+                    // Can't read file — fall through to return empty storage
+                }
+            }
+            // File genuinely empty or doesn't exist — return as-is
+            return storage;
+        } catch (err) {
+            lastError = err;
+            if (attempt < maxAttempts) {
+                Bun.sleepSync(100 * Math.pow(2, attempt - 1));
+            }
+        }
+    }
+
+    // All retries failed — try a lockless fallback read so the worker has
+    // at least stale-but-valid credentials rather than none.
+    console.warn(
+        `pizzapi worker: AuthStorage lock retries exhausted (${maxAttempts} attempts), falling back to lockless read`,
+    );
+    try {
+        const raw = readFileSync(authPath, "utf-8");
+        const data = JSON.parse(raw);
+        if (Object.keys(data).length > 0) {
+            const storage = AuthStorage.inMemory(data);
+            console.log(
+                `pizzapi worker: lockless fallback loaded ${Object.keys(data).length} provider(s) from ${authPath}`,
+            );
+            return storage;
+        }
+    } catch (err) {
+        console.warn(
+            `pizzapi worker: lockless fallback read failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+    }
+
+    // Truly nothing worked — return default (will fail at model selection time)
+    console.error(
+        `pizzapi worker: failed to load auth credentials after ${maxAttempts} attempts: ${lastError instanceof Error ? lastError.message : String(lastError)}`,
+    );
+    return AuthStorage.create(authPath);
+}
 
 /**
  * Build additional prompt template paths for the headless worker.
@@ -156,14 +243,17 @@ async function main(): Promise<void> {
     await loader.reload();
     bootTimer.end("[boot] resource-loader");
 
+    // Create AuthStorage with retry logic to handle lock contention when
+    // multiple workers spawn simultaneously (common with parallel sub-sessions).
+    const authPath = join(agentDir, "auth.json");
+    const authStorage = createAuthStorageWithRetry(authPath);
+
     // ── Auth diagnostics — log credential state before first API call ────
     // This helps diagnose intermittent "No API key found" failures in
     // concurrent worker sessions (see Godmother idea fIUvBDLZ).
     try {
-        const { AuthStorage } = await import("@mariozechner/pi-coding-agent");
-        const diagAuthStorage = AuthStorage.create(join(agentDir, "auth.json"));
         for (const provider of ["anthropic", "google-gemini-cli", "openai-codex"]) {
-            const raw = diagAuthStorage.get(provider);
+            const raw = authStorage.get(provider);
             if (raw && typeof raw === "object" && "type" in raw) {
                 const cred = raw as { type: string; expires?: number };
                 if (cred.type === "oauth" && cred.expires) {
@@ -190,6 +280,7 @@ async function main(): Promise<void> {
     const { session } = await createAgentSession({
         cwd,
         agentDir,
+        authStorage,
         resourceLoader: loader,
     });
     bootTimer.end("[boot] create-session");
