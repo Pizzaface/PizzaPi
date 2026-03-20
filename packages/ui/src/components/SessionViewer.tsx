@@ -571,6 +571,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
   const [input, setInput] = React.useState("");
   // Per-session draft storage so switching sessions preserves unsent text
   const draftsRef = React.useRef<Map<string, string>>(new Map());
+  const deliveryModeRef = React.useRef<Map<string, "steer" | "followUp">>(new Map());
   // Inline editing state for queued messages
   const [editingQueuedId, setEditingQueuedId] = React.useState<string | null>(null);
   const [editingQueuedText, setEditingQueuedText] = React.useState("");
@@ -619,12 +620,15 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     const prevId = prevSessionIdRef.current;
     if (prevId) {
       draftsRef.current.set(prevId, input);
+      deliveryModeRef.current.set(prevId, deliveryMode);
     }
-    // Restore the draft for the new session (or clear if null)
+    // Restore the draft and delivery mode for the new session (or clear if null)
     if (sessionId) {
       setInput(draftsRef.current.get(sessionId) ?? "");
+      setDeliveryMode(deliveryModeRef.current.get(sessionId) ?? "followUp");
     } else {
       setInput("");
+      setDeliveryMode("followUp");
     }
     prevSessionIdRef.current = sessionId ?? null;
     setComposerError(null);
@@ -634,9 +638,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     setCommandQuery("");
     setCommandHighlightedIndex(0);
     setAtMentionOpen(false);
-    // Reset delivery mode to followUp so it doesn't persist across sessions
-    setDeliveryMode("followUp");
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally reading `input` at transition time only
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally reading `input` and `deliveryMode` at transition time only
   }, [sessionId]);
 
   // Reset the compacting guard when the heartbeat confirms compact is done
@@ -1032,6 +1034,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
               setCommandOpen(false);
               setCommandQuery("");
               draftsRef.current.delete(originSessionId);
+              deliveryModeRef.current.delete(originSessionId);
             } else if (originSessionId) {
               // User switched away. Only clear the saved draft if it still
               // matches what was sent — if the user typed new text after
@@ -1040,6 +1043,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
               const saved = draftsRef.current.get(originSessionId)?.trim();
               if (saved === sentText || saved === undefined || saved === "") {
                 draftsRef.current.delete(originSessionId);
+                deliveryModeRef.current.delete(originSessionId);
               }
             }
           } else {
