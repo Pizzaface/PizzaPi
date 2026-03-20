@@ -20,10 +20,14 @@ afterEach(() => {
     }
 });
 
-/** Read the CLI package.json version — same logic as the version module's fallback. */
+/**
+ * Read the server package.json version — mirrors the fallback logic in the
+ * version module.  We use the server package because the CLI package is not
+ * present inside the Docker production image; see packages/server/src/version.ts.
+ */
 function localPackageVersion(): string | null {
     try {
-        const pkgPath = join(import.meta.dirname ?? __dirname, "../../cli/package.json");
+        const pkgPath = join(import.meta.dirname ?? __dirname, "../package.json");
         const pkg = JSON.parse(readFileSync(pkgPath, "utf-8")) as { version?: string };
         return pkg.version?.trim() || null;
     } catch {

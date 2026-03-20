@@ -6,13 +6,16 @@ const CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes
 const FAILURE_TTL_MS = 60 * 1000; // 1 minute backoff on failure
 
 /**
- * Version from the CLI package.json, read once at module load.
+ * Version from the server's own package.json, read once at module load.
  * Used as a fallback when PIZZAPI_HUB_VERSION is not injected by compose.
- * Points to CLI package since that's the product release version (not @pizzapi/server).
+ *
+ * We deliberately read the server package.json (one level up from dist/) rather
+ * than the CLI package because the Docker production image only copies server
+ * artefacts — packages/cli is never present inside the container.
  */
 const LOCAL_PACKAGE_VERSION: string | null = (() => {
     try {
-        const pkgPath = join(import.meta.dirname ?? __dirname, "../../cli/package.json");
+        const pkgPath = join(import.meta.dirname ?? __dirname, "../package.json");
         const pkg = JSON.parse(readFileSync(pkgPath, "utf-8")) as { version?: string };
         return pkg.version?.trim() || null;
     } catch {
