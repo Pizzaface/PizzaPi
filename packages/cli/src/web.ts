@@ -445,7 +445,7 @@ function generateComposeFile(repoPath: string, config: WebConfig): string {
     const envProxyDepth = process.env.PIZZAPI_PROXY_DEPTH;
     if (envProxyDepth) {
         const parsed = parseInt(envProxyDepth, 10);
-        if (!isNaN(parsed) && parsed >= 1) {
+        if (!isNaN(parsed) && parsed >= 0) {
             config.proxyDepth = parsed;
         }
     }
@@ -459,7 +459,7 @@ function generateComposeFile(repoPath: string, config: WebConfig): string {
             ? `      - PIZZAPI_TRUST_PROXY=false\n`
             : `      # - PIZZAPI_TRUST_PROXY=\n`;
 
-    const proxyDepthLine = config.proxyDepth !== undefined && config.proxyDepth >= 1
+    const proxyDepthLine = config.proxyDepth !== undefined && config.proxyDepth >= 0
         ? `      - PIZZAPI_PROXY_DEPTH=${config.proxyDepth}\n`
         : `      # - PIZZAPI_PROXY_DEPTH=\n`;
 

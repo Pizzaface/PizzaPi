@@ -194,9 +194,10 @@ export function getClientIp(req: Request): string {
         // Explicitly disabled — never trust XFF.
         trustProxy = false;
     } else if (envTrustProxy === "true") {
-        // Explicitly enabled — trust XFF from any peer. The operator's explicit opt-in
-        // covers all proxy topologies, including cloud load balancers with public IPs.
-        trustProxy = true;
+        // Explicitly enabled — trust XFF only from private/loopback peers.
+        // This supports cloud load balancers while preventing IP spoofing
+        // if the backend port is accidentally exposed alongside the proxy.
+        trustProxy = clientIp !== "unknown" && isPrivateOrLoopbackIp(clientIp);
     } else {
         // Auto-detect (default) — only trust XFF from loopback peers.
         // Private ranges are NOT auto-trusted since the server may be LAN-accessible.
