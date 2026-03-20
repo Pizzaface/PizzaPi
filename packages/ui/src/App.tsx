@@ -3201,6 +3201,24 @@ export function App() {
     // Falls back to the parent session ID for legacy triggers without source.
     return new Promise<boolean>((resolve) => {
       let resolved = false;
+      const settle = (success: boolean, message?: string) => {
+        if (resolved) return;
+        resolved = true;
+        if (message) setViewerStatus(message);
+        errorCleanup();
+        resolve(success);
+      };
+
+      // Listen for server error events — the server emits these immediately
+      // when the target child is missing, unauthorized, or relay delivery fails.
+      // This lets us resolve the promise right away instead of waiting for the
+      // 5-second ack timeout.
+      const onError = () => {
+        settle(false, "Trigger delivery failed — try again");
+      };
+      socket.on("error", onError);
+      const errorCleanup = () => { socket.off("error", onError); };
+
       // Send with Socket.IO ack — server only acks on successful delivery.
       socket.emit("trigger_response", {
         triggerId,
@@ -3209,15 +3227,11 @@ export function App() {
         targetSessionId: sourceSessionId ?? sessionId,
       }, () => {
         // Server acknowledged successful delivery
-        if (!resolved) { resolved = true; resolve(true); }
+        settle(true);
       });
       // If no ack arrives within 5s, treat as a failed delivery
       setTimeout(() => {
-        if (!resolved) {
-          resolved = true;
-          setViewerStatus("Trigger response may not have been delivered — try again");
-          resolve(false);
-        }
+        settle(false, "Trigger response may not have been delivered — try again");
       }, 5000);
     });
   }, []);
