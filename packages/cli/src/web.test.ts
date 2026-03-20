@@ -236,7 +236,7 @@ describe("resolveComposeMode", () => {
     test("returns image mode fields when image is set", () => {
         expect(resolveComposeMode("/repo", { image: "ghcr.io/acme/pizzapi", imageTag: "0.1.32" })).toEqual({
             buildBlock: "",
-            imageLine: "    image: ghcr.io/acme/pizzapi:0.1.32\n",
+            imageLine: "    image: ghcr.io/acme/pizzapi:0.1.32\n    pull_policy: always\n",
             hubImage: "ghcr.io/acme/pizzapi:0.1.32",
             hubVersion: "0.1.32",
         });

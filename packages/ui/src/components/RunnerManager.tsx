@@ -53,13 +53,21 @@ export function RunnerManager({
     // Stop confirmation dialog state
     const [stopConfirmRunnerId, setStopConfirmRunnerId] = React.useState<string | null>(null);
 
-    // Fetch the latest available version from the server (used by RunnerDetailPanel for update-available badge)
-    // Also fetches hubVersion/hubImage for compose image info display
+    // Fetch server version once (unauthenticated) — used for update-available badge
     React.useEffect(() => {
         fetch("/api/version")
             .then((res) => res.ok ? res.json() : null)
             .then((data) => {
                 if (data?.version) setLatestVersion(data.version);
+            })
+            .catch(() => {});
+    }, []);
+
+    // Fetch hub image/version (authenticated)
+    React.useEffect(() => {
+        fetch("/api/hub-info", { credentials: "include" })
+            .then((res) => res.ok ? res.json() : null)
+            .then((data) => {
                 if (data?.hubVersion) setHubVersion(data.hubVersion);
                 if (data?.hubImage) setHubImage(data.hubImage);
             })

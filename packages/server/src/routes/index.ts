@@ -9,6 +9,7 @@
 
 import { getHubVersionInfo, getLatestNpmVersion } from "../version.js";
 import { serverHealth } from "../health.js";
+import { requireSession } from "../middleware.js";
 import { handleAuthRoute } from "./auth.js";
 import { handleRunnersRoute } from "./runners.js";
 import { handleSessionsRoute } from "./sessions.js";
@@ -52,9 +53,18 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
 
     if (url.pathname === "/api/version" && req.method === "GET") {
         const latestVersion = await getLatestNpmVersion();
-        const hub = getHubVersionInfo();
         return Response.json({
             version: latestVersion,
+        });
+    }
+
+    // Hub image/version metadata — requires authentication to avoid
+    // leaking registry details on the unauthenticated /api/version endpoint.
+    if (url.pathname === "/api/hub-info" && req.method === "GET") {
+        const auth = await requireSession(req);
+        if (auth instanceof Response) return auth;
+        const hub = getHubVersionInfo();
+        return Response.json({
             hubVersion: hub.version,
             hubImage: hub.image,
         });

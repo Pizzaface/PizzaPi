@@ -739,6 +739,7 @@ export function resolveComposeMode(repoPath: string, config: Pick<WebConfig, "im
     return {
         buildBlock: "",
         imageLine: `    image: ${imageRef}
+    pull_policy: always
 `,
         hubImage: imageRef,
         hubVersion: imageTag,
