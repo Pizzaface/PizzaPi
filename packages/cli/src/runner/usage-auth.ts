@@ -44,7 +44,9 @@ export async function getRefreshedOAuthToken(authStorage: AuthStorage, providerI
 
     // Snapshot pre-refresh state for diagnostic logging
     const preExpires = typeof raw.expires === "number" ? raw.expires : 0;
-    const preAccessPrefix = typeof raw.access === "string" ? raw.access.slice(0, 8) : "?";
+    const preAccessHash = typeof raw.access === "string"
+        ? new Bun.CryptoHasher("sha256").update(raw.access).digest("hex").slice(0, 8)
+        : "?";
     const wasExpired = Date.now() >= preExpires;
 
     // Use getApiKey() which handles OAuth token refresh + locking.
@@ -53,16 +55,18 @@ export async function getRefreshedOAuthToken(authStorage: AuthStorage, providerI
     // Log if a refresh actually occurred (access token changed)
     const postRaw = authStorage.get(providerId);
     if (isRecord(postRaw) && postRaw.type === "oauth") {
-        const postAccessPrefix = typeof postRaw.access === "string" ? postRaw.access.slice(0, 8) : "?";
+        const postAccessHash = typeof postRaw.access === "string"
+            ? new Bun.CryptoHasher("sha256").update(postRaw.access).digest("hex").slice(0, 8)
+            : "?";
         const postExpires = typeof postRaw.expires === "number" ? postRaw.expires : 0;
-        if (preAccessPrefix !== postAccessPrefix) {
+        if (preAccessHash !== postAccessHash) {
             logAuth("token-refreshed", {
                 provider: providerId,
                 wasExpired: wasExpired ? "yes" : "no",
                 oldExpiresIn: `${Math.round((preExpires - Date.now()) / 1000)}s`,
                 newExpiresIn: `${Math.round((postExpires - Date.now()) / 1000)}s`,
-                oldTokenPrefix: preAccessPrefix,
-                newTokenPrefix: postAccessPrefix,
+                oldTokenHash: preAccessHash,
+                newTokenHash: postAccessHash,
             });
         }
     }

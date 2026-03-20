@@ -46,7 +46,13 @@ function formatTag(sessionOverride?: string | null): string {
 function formatLine(level: LogLevel, msg: string, sessionOverride?: string | null): string {
     const ts = new Date().toISOString();
     const tag = formatTag(sessionOverride);
-    return `${ts} ${tag} ${msg}`;
+    const prefix = `${ts} ${tag} `;
+    // Prefix every line so multiline messages (e.g. stack traces) stay
+    // correlatable when interleaved with output from other workers.
+    return msg
+        .split("\n")
+        .map((line) => `${prefix}${line}`)
+        .join("\n");
 }
 
 /** Log at info level (→ stdout → runner.log). */

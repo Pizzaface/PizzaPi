@@ -108,7 +108,12 @@ export async function runSupervisor(_args: string[] = []): Promise<number> {
             });
 
             child.on("error", (err) => {
-                logError(`failed to spawn daemon child: ${err}`);
+                logError(`failed to spawn daemon child: ${err.message}`);
+                if (err.stack) logError(err.stack);
+                // Log extra SpawnError fields (path, spawnargs, etc.)
+                for (const key of ["code", "path", "spawnargs", "syscall"] as const) {
+                    if (key in err) logError(`  ${key}: ${JSON.stringify((err as unknown as Record<string, unknown>)[key])}`);
+                }
                 resolve(1);
             });
         });

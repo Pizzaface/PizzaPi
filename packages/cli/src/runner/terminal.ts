@@ -225,7 +225,8 @@ export function spawnTerminal(
 
     worker.on("error", (err) => {
         runningTerminals.delete(terminalId);
-        logError(`[terminal ${terminalId}] worker process error: ${err}`);
+        logError(`[terminal ${terminalId}] worker process error: ${err.message}`);
+        if (err.stack) logError(err.stack);
         send({ type: "terminal_error", terminalId, message: err.message });
     });
 
