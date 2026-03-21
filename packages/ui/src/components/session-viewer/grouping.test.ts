@@ -191,11 +191,11 @@ describe("groupToolExecutionMessages", () => {
     });
 
     test("deduplication prefers non-errored message over errored one with same toolCallId", () => {
-        // Scenario: streaming partial arrives first (no error), then a final
-        // message with stopReason: "error" and the same toolCallId arrives.
-        // Dedup keeps the LAST one. After tool result merges, the tool card
-        // shows completed but the error assistant message remains.
-        // This test documents the current behavior.
+        // Scenario: streaming partial arrives first (no error, complete args),
+        // then a final message with stopReason: "error" and the same toolCallId
+        // arrives (truncated JSON args).  Dedup should PREFER the non-errored
+        // partial so the tool card shows completed and NO error banner appears
+        // on the assistant text bubble.
         const messages: RelayMessage[] = [
             msg({
                 key: "a1-partial",
@@ -231,6 +231,41 @@ describe("groupToolExecutionMessages", () => {
         const tools = result.filter((m) => m.role === "tool");
         expect(tools).toHaveLength(1);
         expect(tools[0].content).toBeTruthy();
+        // No error banner: the errored message was dropped in favour of the
+        // non-errored partial, so no assistant part inherits stopReason "error".
+        const errorParts = result.filter(
+            (m) => m.role === "assistant" && m.stopReason === "error",
+        );
+        expect(errorParts).toHaveLength(0);
+        // The assistant text bubble should come from the non-errored partial
+        const textParts = result.filter((m) => m.role === "assistant");
+        expect(textParts).toHaveLength(1);
+        expect(textParts[0].stopReason).toBeUndefined();
+    });
+
+    test("incomplete tool args fall back to empty object (not raw string)", () => {
+        // When the only version of an assistant message is the errored one
+        // (no streaming partial), parseToolArguments must return {} rather than
+        // the raw incomplete JSON string so downstream card components always
+        // receive an object-shaped toolInput.
+        const messages: RelayMessage[] = [
+            msg({
+                key: "a1",
+                role: "assistant",
+                stopReason: "error",
+                errorMessage: "JSON Parse error: Expected '}'",
+                content: [
+                    { type: "toolCall", name: "AskUserQuestion", id: "tc1",
+                      arguments: '{"questions": [{"question": "Color?", "options": ["Red"' },
+                ],
+                timestamp: 99999,
+            }),
+        ];
+        const result = groupToolExecutionMessages(messages);
+        const tools = result.filter((m) => m.role === "tool");
+        expect(tools).toHaveLength(1);
+        // toolInput must be an object (not the raw string)
+        expect(tools[0].toolInput).toEqual({});
     });
 
     test("passes through compactionSummary messages unchanged", () => {

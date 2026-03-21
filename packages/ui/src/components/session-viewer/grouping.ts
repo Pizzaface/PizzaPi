@@ -23,7 +23,10 @@ function parseToolArguments(argumentsValue: unknown): unknown {
     try {
       return JSON.parse(argumentsValue) as unknown;
     } catch {
-      return argumentsValue;
+      // Incomplete / malformed JSON (e.g. stream truncation) — return an empty
+      // object rather than the raw string so downstream code always gets an
+      // object-shaped toolInput, consistent with rendering.tsx's own fallback.
+      return {};
     }
   }
 
@@ -75,10 +78,19 @@ function extractGroupedToolCallIds(message: RelayMessage): Set<string> {
  *
  * Two assistant messages are considered duplicates of the same turn when they
  * share at least one grouped-tool toolCallId.
+ *
+ * If a non-errored version and an errored version both reference the same
+ * toolCallId, we prefer the non-errored one.  This avoids propagating
+ * stopReason="error" / errorMessage onto the content parts that are split off
+ * during grouping — which would otherwise show a spurious ERROR badge on the
+ * assistant text bubble even though the tool completed successfully.
  */
 function deduplicateAssistantMessages(messages: RelayMessage[]): RelayMessage[] {
-  // Build a map: toolCallId → last index of an assistant message that references it.
+  // Build two maps:
+  //   toolCallId → last index of ANY assistant message that references it
+  //   toolCallId → last index of a NON-ERRORED assistant message that references it
   const lastIndexForToolCallId = new Map<string, number>();
+  const lastNonErroredIndexForToolCallId = new Map<string, number>();
   // Cache the extracted IDs for each message index to avoid re-parsing the content during the filter pass.
   const messageIdsMap = new Map<number, Set<string>>();
 
@@ -90,22 +102,30 @@ function deduplicateAssistantMessages(messages: RelayMessage[]): RelayMessage[] 
       messageIdsMap.set(i, ids);
       for (const id of ids) {
         lastIndexForToolCallId.set(id, i);
+        if (msg.stopReason !== "error") {
+          lastNonErroredIndexForToolCallId.set(id, i);
+        }
       }
     }
   }
 
   if (lastIndexForToolCallId.size === 0) return messages;
 
-  // Drop any assistant message that contains grouped tool calls but is NOT the
-  // last message to reference all of those tool call IDs.
+  // For each assistant message, determine the "preferred" index for each of
+  // its tool call IDs:
+  //   - If a non-errored version exists for this ID, prefer the last such version.
+  //   - Otherwise fall back to the last version (errored or not).
   return messages.filter((msg, i) => {
     if (msg.role !== "assistant") return true;
     // Use cached IDs if available; otherwise (e.g. if empty) treat as having no IDs.
     const ids = messageIdsMap.get(i);
     if (!ids || ids.size === 0) return true;
-    // Keep only if this index is the last for every id it contains.
+    // Keep only if this index is the preferred version for every id it contains.
     for (const id of ids) {
-      if (lastIndexForToolCallId.get(id) !== i) return false;
+      const preferredIdx = lastNonErroredIndexForToolCallId.has(id)
+        ? lastNonErroredIndexForToolCallId.get(id)!
+        : lastIndexForToolCallId.get(id)!;
+      if (preferredIdx !== i) return false;
     }
     return true;
   });
