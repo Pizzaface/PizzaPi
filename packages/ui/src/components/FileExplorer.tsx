@@ -654,8 +654,23 @@ function GitChangesView({
       setSelectedDiff(null);
     };
     // Capture phase ensures this fires before SessionViewer's bubble-phase listener
+    // Clicking on non-focusable content inside the preview (e.g. <pre>, <img>)
+    // moves document.activeElement to body in Chrome, breaking shouldInterceptEscape.
+    // Re-focus the container whenever a click inside it drops focus to body.
+    const restoreFocusDiff = (e: PointerEvent) => {
+      if (!diffContainerRef.current?.contains(e.target as Node)) return;
+      requestAnimationFrame(() => {
+        if (document.activeElement === document.body) {
+          diffContainerRef.current?.focus();
+        }
+      });
+    };
     document.addEventListener("keydown", handler, true);
-    return () => document.removeEventListener("keydown", handler, true);
+    document.addEventListener("pointerdown", restoreFocusDiff);
+    return () => {
+      document.removeEventListener("keydown", handler, true);
+      document.removeEventListener("pointerdown", restoreFocusDiff);
+    };
   }, [selectedDiff]);
 
   const viewDiff = React.useCallback(async (filePath: string) => {
@@ -1054,8 +1069,23 @@ export function FileExplorer({ runnerId, cwd, className, onClose, position = "le
       setViewingFile(null);
     };
     // Capture phase ensures this fires before SessionViewer's bubble-phase listener
+    // Clicking on non-focusable content inside the preview (e.g. <pre>, <img>)
+    // moves document.activeElement to body in Chrome, breaking shouldInterceptEscape.
+    // Re-focus the container whenever a click inside it drops focus to body.
+    const restoreFocusPreview = (e: PointerEvent) => {
+      if (!previewContainerRef.current?.contains(e.target as Node)) return;
+      requestAnimationFrame(() => {
+        if (document.activeElement === document.body) {
+          previewContainerRef.current?.focus();
+        }
+      });
+    };
     document.addEventListener("keydown", handler, true);
-    return () => document.removeEventListener("keydown", handler, true);
+    document.addEventListener("pointerdown", restoreFocusPreview);
+    return () => {
+      document.removeEventListener("keydown", handler, true);
+      document.removeEventListener("pointerdown", restoreFocusPreview);
+    };
   }, [viewingFile]);
 
   // If viewing a file, show the appropriate viewer
