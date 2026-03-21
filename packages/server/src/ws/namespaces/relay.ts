@@ -761,7 +761,7 @@ export function registerRelayNamespace(io: SocketIOServer): void {
                 let hasRelayRecipient = relaySockets.size > 0;
                 if (!hasRelayRecipient && typeof relayAdapter.fetchSockets === "function") {
                     try {
-                        const remoteSockets = await relayAdapter.fetchSockets({ rooms: [relayRoom] });
+                        const remoteSockets = await relayAdapter.fetchSockets({ rooms: new Set([relayRoom]) });
                         hasRelayRecipient = remoteSockets.length > 0;
                     } catch (err) {
                         console.warn("[sio/relay] cleanup_child_session fetchSockets check failed:", err);
