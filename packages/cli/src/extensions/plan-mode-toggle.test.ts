@@ -525,7 +525,10 @@ describe("isDestructiveCommand", () => {
         // Read-only verification modes
         expect(isDestructiveCommand("patch --dry-run -p1 < changes.diff")).toBe(false);
         expect(isDestructiveCommand("patch --check -p1 < changes.diff")).toBe(false);
-        expect(isDestructiveCommand("patch -C -p1 < changes.diff")).toBe(false);
+
+        // Regression tests — avoid false safe matches / short-flag payload confusion
+        expect(isDestructiveCommand("patch --version-control=simple -p0 < changes.diff")).toBe(true);
+        expect(isDestructiveCommand("patch -zC -p0 < changes.diff")).toBe(true);
 
         // Informational flags
         expect(isDestructiveCommand("patch --help")).toBe(false);
@@ -588,6 +591,8 @@ describe("isDestructiveCommand", () => {
 
     test("allows tar with list flag only (-t / --list)", () => {
         expect(isDestructiveCommand("tar -tf archive.tar")).toBe(false);
+        expect(isDestructiveCommand("tar -tfarchive.tar")).toBe(false);
+        expect(isDestructiveCommand("tar tfarchive.tar")).toBe(false);
         expect(isDestructiveCommand("tar -tvf archive.tar")).toBe(false);
         expect(isDestructiveCommand("tar --list -f archive.tar")).toBe(false);
         expect(isDestructiveCommand("tar tf archive.tar AGENTS.md")).toBe(false);

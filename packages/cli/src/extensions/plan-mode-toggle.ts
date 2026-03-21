@@ -235,11 +235,28 @@ function isDestructiveGitCommand(segment: string): boolean {
 
 const TAR_LONG_MODE_PATTERN = /(^|\s)--(?:create|append|update|extract|get|delete|catenate|concatenate)\b/;
 const TAR_BUNDLED_MODE_PATTERN = /^\s*tar\s+(-?[A-Za-z]+)\b/i;
+const TAR_DESTRUCTIVE_SHORT_MODE_PATTERN = /[cruxA]/;
+/**
+ * Short tar options that accept an attached argument (e.g. `-fARCHIVE`).
+ * When scanning option bundles for mode letters, anything after such a flag
+ * is treated as payload (not more flags) to avoid false positives.
+ */
+const TAR_SHORT_OPTS_WITH_ATTACHED_ARG = new Set(["f", "C", "X", "T"]);
+
+function tarShortOptsForModeScan(shortOpts: string): string {
+    let out = "";
+    for (let i = 0; i < shortOpts.length; i++) {
+        const ch = shortOpts[i];
+        out += ch;
+        if (TAR_SHORT_OPTS_WITH_ATTACHED_ARG.has(ch) && i < shortOpts.length - 1) break;
+    }
+    return out;
+}
 const GAWK_INCLUDE_ARG_PATTERN = /(?:^|\s)(?:-i(\S+)|-i\s+(\S+)|--include=(\S+)|--include\s+(\S+))/gi;
 const GAWK_FILE_ARG_PATTERN = /(?:^|\s)(?:-f\s*(\S+)|--file=(\S+)|--file\s+(\S+))/g;
 const GAWK_INPLACE_MODULE_PATTERN = /(?:^|[\\/])inplace(?:\.awk)?$/i;
 
-const PATCH_SAFE_LONG_FLAG_PATTERN = /(?:^|\s)--(?:dry-run|check|help|version)\b/i;
+const PATCH_SAFE_LONG_FLAG_PATTERN = /(?:^|\s)--(?:dry-run|check|help|version)(?:\s|$)/i;
 
 function isDestructiveTarCommand(segment: string): boolean {
     if (!/^\s*tar\b/i.test(segment)) return false;
@@ -247,12 +264,16 @@ function isDestructiveTarCommand(segment: string): boolean {
 
     // Check the first token for the traditional no-dash form: `tar czf archive.tar`
     const bundledMatch = segment.match(TAR_BUNDLED_MODE_PATTERN);
-    if (bundledMatch && /[cruxA]/.test(bundledMatch[1].replace(/^-/, ""))) return true;
+    if (bundledMatch) {
+        const bundled = tarShortOptsForModeScan(bundledMatch[1].replace(/^-/, ""));
+        if (TAR_DESTRUCTIVE_SHORT_MODE_PATTERN.test(bundled)) return true;
+    }
 
     // Also scan all dash-prefixed option tokens to catch patterns where the mode
     // letter appears after other options, e.g. `tar -f archive.tar -x`.
     for (const match of segment.matchAll(/(?:^|\s)-([A-Za-z]+)/g)) {
-        if (/[cruxA]/.test(match[1])) return true;
+        const tokenOpts = tarShortOptsForModeScan(match[1]);
+        if (TAR_DESTRUCTIVE_SHORT_MODE_PATTERN.test(tokenOpts)) return true;
     }
 
     return false;
@@ -283,11 +304,6 @@ function isDestructivePatchCommand(segment: string): boolean {
     // - `--dry-run` / `--check` verify applicability without modifying files
     // - `--help` / `--version` are informational
     if (PATCH_SAFE_LONG_FLAG_PATTERN.test(segment)) return false;
-
-    // `patch -C` is equivalent to `--check`. Support clustered short flags like `-Cp1`.
-    for (const match of segment.matchAll(/(?:^|\s)-([A-Za-z0-9]+)/g)) {
-        if (match[1].includes("C")) return false;
-    }
 
     return true;
 }
