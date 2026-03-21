@@ -15,6 +15,10 @@ export interface ClaudeCodeSpawnOptions {
   hiddenModels?: string[];
 }
 
+/** Is this process running inside a compiled Bun single-file binary? */
+export const isCompiledBinary =
+  import.meta.url.includes("$bunfs") || import.meta.url.includes("~BUN") || import.meta.url.includes("%7EBUN");
+
 /**
  * Resolve the bridge script path.
  *
@@ -54,20 +58,27 @@ function resolveBridgeScript(): string {
  * Falls back to "bun" if process.execPath doesn't point to a bun executable.
  */
 function getBunExecutable(): string {
-  // process.execPath points to the current executable (bun binary or node)
   const execPath = process.execPath ?? "";
   if (execPath && (execPath.includes("bun") || existsSync(execPath))) {
     return execPath;
   }
-  // Fallback to "bun" in PATH
   return "bun";
 }
 
-export function spawnClaudeCodeSession(opts: ClaudeCodeSpawnOptions): ReturnType<typeof Bun.spawn> {
+export function resolveClaudeCodeBridgeCommand(): string[] {
+  if (isCompiledBinary) {
+    return [process.execPath, "_claude_code_bridge"];
+  }
+
   const bridgeScript = resolveBridgeScript();
   const bunExe = getBunExecutable();
+  return [bunExe, bridgeScript];
+}
 
-  const proc = Bun.spawn([bunExe, bridgeScript], {
+export function spawnClaudeCodeSession(opts: ClaudeCodeSpawnOptions): ReturnType<typeof Bun.spawn> {
+  const cmd = resolveClaudeCodeBridgeCommand();
+
+  const proc = Bun.spawn(cmd, {
     cwd: opts.cwd ?? process.cwd(),
     stdin: "ignore",
     stdout: "inherit",

@@ -45,6 +45,27 @@ describe("translateNdjsonLine", () => {
     expect(result.kind).toBe("relay_event");
     expect(result.todoList).toBeDefined();
     expect(result.todoList).toHaveLength(1);
+    expect(result.todoList?.[0]).toMatchObject({
+      text: "Do thing",
+      content: "Do thing",
+      status: "pending",
+      priority: "high",
+    });
+  });
+
+  test("normalizes TodoWrite statuses to the UI enum", () => {
+    const line = JSON.stringify({
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "tu1", name: "TodoWrite", input: { todos: [{ id: "1", text: "Ship it", status: "completed" }] } }],
+      },
+    });
+    const result = translateNdjsonLine(line);
+    expect(result.todoList?.[0]).toMatchObject({
+      text: "Ship it",
+      status: "pending",
+    });
   });
 
   test("detects AskUserQuestion tool_use — emits tool_execution_start", () => {

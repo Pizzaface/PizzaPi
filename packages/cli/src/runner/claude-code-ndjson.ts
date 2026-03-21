@@ -23,7 +23,7 @@ export interface TranslationResult {
   toolCallId?: string;
   questions?: Array<{ question: string; options: string[]; type?: string }>;
   // todoWrite side-effect
-  todoList?: Array<{ id: string; content: string; status: string; priority: string }>;
+  todoList?: Array<{ id: string; text: string; content: string; status: string; priority: string }>;
   // set_session_name side-effect
   sessionName?: string;
   // token usage from result events
@@ -107,12 +107,20 @@ export function translateNdjsonLine(line: string): TranslationResult {
         const rawTodos = Array.isArray(input?.todos) ? input!.todos as unknown[] : [];
         todoList = rawTodos
           .filter((t): t is Record<string, unknown> => !!t && typeof t === "object")
-          .map((t) => ({
-            id: String(t.id ?? ""),
-            content: String(t.content ?? t.text ?? ""),
-            status: String(t.status ?? "pending"),
-            priority: String(t.priority ?? "medium"),
-          }));
+          .map((t) => {
+            const text = String(t.text ?? t.content ?? "");
+            const rawStatus = String(t.status ?? "pending").trim();
+            const status = rawStatus === "in_progress" || rawStatus === "done" || rawStatus === "cancelled"
+              ? rawStatus
+              : "pending";
+            return {
+              id: String(t.id ?? ""),
+              text,
+              content: text,
+              status,
+              priority: String(t.priority ?? "medium"),
+            };
+          });
       }
 
       // set_session_name — extract session name as a side-effect

@@ -64,20 +64,37 @@ const PLUGIN_DIR: string = (() => {
   return found;
 })();
 
+const IS_COMPILED_BINARY = import.meta.url.includes("$bunfs") || import.meta.url.includes("~BUN") || import.meta.url.includes("%7EBUN");
+const BUN_RUNTIME = process.execPath && existsSync(process.execPath) ? process.execPath : "bun";
+
 // Detect whether compiled (.js) plugin scripts exist alongside source (.ts).
-// When compiled scripts exist, invoke them with `node` so packaged installs
-// (where only the pizza binary is on PATH, not bun) work correctly.
 const HOOK_HANDLER_JS = join(PLUGIN_DIR, "scripts", "hook-handler.js");
 const MCP_SERVER_JS = join(PLUGIN_DIR, "scripts", "mcp-server.js");
 const PLUGIN_SCRIPTS_COMPILED = existsSync(HOOK_HANDLER_JS) && existsSync(MCP_SERVER_JS);
-const HOOK_HANDLER_RUNTIME = PLUGIN_SCRIPTS_COMPILED ? "node" : "bun";
 const HOOK_HANDLER_SCRIPT = PLUGIN_SCRIPTS_COMPILED
   ? HOOK_HANDLER_JS
   : join(PLUGIN_DIR, "scripts", "hook-handler.ts");
-const MCP_SERVER_RUNTIME = PLUGIN_SCRIPTS_COMPILED ? "node" : "bun";
 const MCP_SERVER_SCRIPT = PLUGIN_SCRIPTS_COMPILED
   ? MCP_SERVER_JS
   : join(PLUGIN_DIR, "scripts", "mcp-server.ts");
+
+function shellQuote(arg: string): string {
+  return `"${arg.replace(/"/g, '\\"')}"`;
+}
+
+function getHookHandlerCommand(ipcSocketPath: string): string {
+  const args = IS_COMPILED_BINARY
+    ? [process.execPath, "_claude_code_hook_handler", "--ipc", ipcSocketPath]
+    : [BUN_RUNTIME, HOOK_HANDLER_SCRIPT, "--ipc", ipcSocketPath];
+  return args.map(shellQuote).join(" ");
+}
+
+function getMcpServerCommand(): { command: string; args: string[] } {
+  if (IS_COMPILED_BINARY) {
+    return { command: process.execPath, args: ["_claude_code_mcp_server"] };
+  }
+  return { command: BUN_RUNTIME, args: [MCP_SERVER_SCRIPT] };
+}
 
 // ── State ─────────────────────────────────────────────────────────────────
 let tmpDir: string | null = null;
@@ -390,25 +407,26 @@ async function setupTempDir(): Promise<{ ipcSocketPath: string; hooksPath: strin
   await chmod(tmpDir, 0o700);
 
   const ipcSocketPath = IS_WINDOWS
-    ? `\\.\\pipe\\pizzapi-cc-${randomUUID()}`
+    ? `\\\\.\\pipe\\pizzapi-cc-${randomUUID()}`
     : join(tmpDir, "bridge.sock");
 
   const hooksJson = {
     hooks: Object.fromEntries(
       ["SessionStart","SessionEnd","PostToolUse","PostToolUseFailure",
        "Stop","SubagentStart","SubagentStop","Notification","UserPromptSubmit","PreCompact"].map(
-        (evt) => [evt, [{ hooks: [{ type: "command", command: `${HOOK_HANDLER_RUNTIME} "${HOOK_HANDLER_SCRIPT}" --ipc "${ipcSocketPath}"` }] }]]
+        (evt) => [evt, [{ hooks: [{ type: "command", command: getHookHandlerCommand(ipcSocketPath) }] }]]
       )
     ),
   };
   const hooksPath = join(tmpDir, "hooks.json");
   await writeFile(hooksPath, JSON.stringify(hooksJson, null, 2), { mode: 0o600 });
 
+  const mcpServerCommand = getMcpServerCommand();
   const mcpJson = {
     mcpServers: {
       pizzapi: {
-        command: MCP_SERVER_RUNTIME,
-        args: [MCP_SERVER_SCRIPT],
+        command: mcpServerCommand.command,
+        args: mcpServerCommand.args,
         env: {
           PIZZAPI_CC_BRIDGE_IPC: ipcSocketPath,
           PIZZAPI_SESSION_ID: sessionId,
@@ -530,18 +548,30 @@ async function dispatchMcpTool(tool: string, args: Record<string, unknown>): Pro
           return;
         }
 
-        // No buffered message — add to waiting list
-        const timer = setTimeout(() => {
-          const idx = messageWaiters.indexOf(waiter);
-          if (idx >= 0) messageWaiters.splice(idx, 1);
+        if (timeoutMs === 0) {
           resolve(null);
-        }, timeoutMs);
+          return;
+        }
 
+        const deadlineAt = Date.now() + timeoutMs;
         const waiter: MessageWaiter = {
           fromSessionIdFilter,
           resolve: (msg) => resolve({ fromSessionId: msg.fromSessionId, message: msg.message }),
-          timer,
+          timer: null as unknown as ReturnType<typeof setTimeout>,
         };
+
+        const pollForTimeout = () => {
+          if (!messageWaiters.includes(waiter)) return;
+          if (Date.now() >= deadlineAt) {
+            const idx = messageWaiters.indexOf(waiter);
+            if (idx >= 0) messageWaiters.splice(idx, 1);
+            resolve(null);
+            return;
+          }
+          waiter.timer = setTimeout(pollForTimeout, 100);
+        };
+
+        waiter.timer = setTimeout(pollForTimeout, 100);
         messageWaiters.push(waiter);
       });
     }
@@ -893,6 +923,8 @@ function handleControlRequest(requestId: string, toolName: string, toolInput: un
     ts: requestTs,
   };
   pendingPermissions.set(requestId, pendingPermissionEntry);
+  emitHeartbeat("Waiting for permission…");
+  emitSessionActive();
 }
 
 function sendPermissionResponse(requestId: string, behavior: "allow" | "deny"): void {

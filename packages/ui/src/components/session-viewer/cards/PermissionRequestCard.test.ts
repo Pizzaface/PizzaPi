@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test";
-import { parsePermissionRequest } from "./PermissionRequestCard.js";
+import { parsePermissionRequest } from "./permission-request.js";
 
 describe("parsePermissionRequest", () => {
   test("parses a valid permission_request event", () => {

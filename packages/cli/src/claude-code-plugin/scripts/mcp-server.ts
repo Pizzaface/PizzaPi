@@ -33,6 +33,8 @@ if (!ipcPath) {
 
 // ── IPC helpers ─────────────────────────────────────────────────────────
 
+const IPC_TIMEOUT_GRACE_MS = 250;
+
 async function callBridge(
   tool: string,
   args: unknown,
@@ -42,10 +44,12 @@ async function callBridge(
   return new Promise((resolve, reject) => {
     const socket = createConnection(ipcPath!);
     let buf: Buffer = Buffer.alloc(0);
+    let settled = false;
     const timer = setTimeout(() => {
+      settled = true;
       socket.destroy();
       reject(new Error(`Bridge IPC timeout for tool ${tool}`));
-    }, timeoutMs);
+    }, timeoutMs + IPC_TIMEOUT_GRACE_MS);
 
     socket.on("connect", () => {
       const msg: PluginMessage = {
@@ -64,6 +68,7 @@ async function callBridge(
       for (const frame of parsed.frames) {
         const f = frame as BridgeMessage;
         if (f.type === "mcp_response" && f.requestId === requestId) {
+          settled = true;
           clearTimeout(timer);
           socket.destroy();
           if (f.error) reject(new Error(f.error));
@@ -73,8 +78,17 @@ async function callBridge(
     });
 
     socket.on("error", (err) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
       reject(err);
+    });
+
+    socket.on("close", () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(new Error(`Bridge IPC closed before responding to tool ${tool}`));
     });
   });
 }
