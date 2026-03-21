@@ -488,6 +488,7 @@ export function registerRelayNamespace(io: SocketIOServer): void {
             }
 
             clearThinkingMaps(sessionId);
+            pendingChunkedStates.delete(sessionId);
             void clearPushPendingQuestion(sessionId);
             // Graceful end — delete the durable runner association so it
             // isn't restored if a new session reuses this ID later.

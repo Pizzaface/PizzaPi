@@ -130,6 +130,111 @@ function simulateCleanupDispatch(opts: {
     return record;
 }
 
+// ── pendingChunkedStates cleanup logic ───────────────────────────────────────
+//
+// Mirrors the in-relay cleanup contract: both session_end and disconnect must
+// call pendingChunkedStates.delete(sessionId) so buffered chunk arrays are
+// released on graceful shutdown, not just on socket drop.
+
+interface ChunkedState {
+    snapshotId: string;
+    metadata: Record<string, unknown>;
+    chunks: unknown[][];
+    totalChunks: number;
+    receivedChunks: number;
+}
+
+/** Simulate what session_end handler does (the fix). */
+function simulateSessionEnd(
+    sessionId: string,
+    pendingChunkedStates: Map<string, ChunkedState>,
+    thinkingMaps: Map<string, unknown>,
+): void {
+    thinkingMaps.delete(sessionId);
+    pendingChunkedStates.delete(sessionId); // ← the fix
+}
+
+/** Simulate what the old (buggy) session_end handler did. */
+function simulateSessionEndBuggy(
+    sessionId: string,
+    _pendingChunkedStates: Map<string, ChunkedState>,
+    thinkingMaps: Map<string, unknown>,
+): void {
+    thinkingMaps.delete(sessionId);
+    // NOTE: pendingChunkedStates.delete() is intentionally missing here
+}
+
+describe("session_end — pendingChunkedStates cleanup", () => {
+    it("clears pending chunked state on graceful session_end", () => {
+        const pending = new Map<string, ChunkedState>();
+        const thinking = new Map<string, unknown>();
+
+        const sessionId = "sess-chunked-end";
+        pending.set(sessionId, {
+            snapshotId: "snap-1",
+            metadata: { sessionName: "test" },
+            chunks: [["msg-0", "msg-1"], ["msg-2"]],
+            totalChunks: 2,
+            receivedChunks: 1,
+        });
+
+        simulateSessionEnd(sessionId, pending, thinking);
+
+        expect(pending.has(sessionId)).toBe(false);
+    });
+
+    it("is a no-op when no pending chunked state exists (idempotent)", () => {
+        const pending = new Map<string, ChunkedState>();
+        const thinking = new Map<string, unknown>();
+
+        simulateSessionEnd("sess-no-pending", pending, thinking);
+
+        expect(pending.size).toBe(0);
+    });
+
+    it("only removes the ended session, not other pending sessions", () => {
+        const pending = new Map<string, ChunkedState>();
+        const thinking = new Map<string, unknown>();
+
+        const endedId = "sess-ended";
+        const otherId = "sess-other";
+        const state: ChunkedState = {
+            snapshotId: "snap-x",
+            metadata: {},
+            chunks: [],
+            totalChunks: 1,
+            receivedChunks: 0,
+        };
+        pending.set(endedId, { ...state });
+        pending.set(otherId, { ...state, snapshotId: "snap-y" });
+
+        simulateSessionEnd(endedId, pending, thinking);
+
+        expect(pending.has(endedId)).toBe(false);
+        expect(pending.has(otherId)).toBe(true);
+    });
+
+    it("REGRESSION: buggy session_end leaves chunked state behind (documents the bug)", () => {
+        const pending = new Map<string, ChunkedState>();
+        const thinking = new Map<string, unknown>();
+
+        const sessionId = "sess-leak";
+        pending.set(sessionId, {
+            snapshotId: "snap-leak",
+            metadata: {},
+            chunks: [new Array(1000).fill("msg")],
+            totalChunks: 2,
+            receivedChunks: 1,
+        });
+
+        simulateSessionEndBuggy(sessionId, pending, thinking);
+
+        // The buggy version leaks the entry — this test documents what would happen
+        // WITHOUT the fix (pending entry stays in memory indefinitely).
+        expect(pending.has(sessionId)).toBe(true);
+    });
+});
+
 // ── Sessions fixture ──────────────────────────────────────────────────────────
 
 const USER_A = "user-a";
