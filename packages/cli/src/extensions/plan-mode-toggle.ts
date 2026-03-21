@@ -298,13 +298,26 @@ function containsShellExpansion(token: string): boolean {
     //  - variable / command substitution: $VAR, $(cmd)
     //  - backticks: `cmd`
     //  - pathname expansion (globbing): *, ?, [...]
-    //  - brace expansion: {a,b}, {1..3}
     if (stripped.includes("$") || stripped.includes("`")) return true;
     if (stripped.includes("*") || stripped.includes("?") || stripped.includes("[") || stripped.includes("]")) return true;
 
-    // Brace expansion only triggers for comma-separated lists or sequences.
-    // (Bare braces like `@{-1}` are not expanded by bash.)
-    return /\{[^}]*,.*\}|\{[^}]*\.\.[^}]*\}/.test(stripped);
+    // Brace expansion: {a,b}, {1..3}
+    // In bash, double-quoting prevents brace expansion, so we only check
+    // truly unquoted text. Strip double-quoted segments entirely for this check.
+    const unquotedOnly = withoutSingleQuoted.replace(/"(?:[^"\\]|\\.)*"/g, "").replace(/\\./g, "");
+    return /\{[^}]*,.*\}|\{[^}]*\.\.[^}]*\}/.test(unquotedOnly);
+}
+
+/**
+ * `git format-patch --stdout` prints patches to stdout without writing files.
+ * Without `--stdout`, format-patch writes `.patch` files to the working directory.
+ */
+function isSafeGitFormatPatchInvocation(segment: string): boolean {
+    const words = splitShellWords(segment);
+    if (words.length < 2) return false;
+    if (words[0].toLowerCase() !== "git" || words[1].toLowerCase() !== "format-patch") return false;
+    // Safe only when --stdout is present (no file output)
+    return words.some((w) => w === "--stdout");
 }
 
 function isSafeGitNotesInvocation(segment: string): boolean {
@@ -356,9 +369,8 @@ function isDestructiveGitCommand(segment: string): boolean {
 
     // Subcommand not on the safe list → allow known read-only invocations, then destructive
     if (!GIT_SAFE_SUBCOMMANDS.has(subcommand)) {
-        if (isSafeGitNotesInvocation(segment)) {
-            return false;
-        }
+        if (isSafeGitNotesInvocation(segment)) return false;
+        if (isSafeGitFormatPatchInvocation(segment)) return false;
         return true;
     }
 

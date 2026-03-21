@@ -317,6 +317,12 @@ describe("isDestructiveCommand", () => {
         expect(isDestructiveCommand("git format-patch -1 HEAD")).toBe(true);
     });
 
+    test("allows git format-patch --stdout (read-only, prints to stdout)", () => {
+        expect(isDestructiveCommand("git format-patch --stdout HEAD~3")).toBe(false);
+        expect(isDestructiveCommand("git format-patch --stdout -1 HEAD")).toBe(false);
+        expect(isDestructiveCommand("git format-patch -1 --stdout HEAD")).toBe(false);
+    });
+
     test("flags git filter-branch (rewrites history)", () => {
         expect(isDestructiveCommand("git filter-branch --tree-filter 'rm -f secret' HEAD")).toBe(true);
     });
@@ -410,6 +416,16 @@ describe("isDestructiveCommand", () => {
         // Unescaped $VAR inside double quotes IS expanded by bash — must block.
         expect(isDestructiveCommand('git notes --ref "$NOTES_REF" show')).toBe(true);
         expect(isDestructiveCommand('git notes --ref="`cmd`" list')).toBe(true);
+    });
+
+    test("allows git notes with double-quoted brace expressions (no brace expansion in double quotes)", () => {
+        // In bash, double-quoting prevents brace expansion — "{review,add}" is a literal ref name.
+        expect(isDestructiveCommand('git notes --ref "{review,add}" show HEAD')).toBe(false);
+        expect(isDestructiveCommand('git notes --ref="{review,add}" list')).toBe(false);
+        expect(isDestructiveCommand('git notes --ref "{1..3}" show HEAD')).toBe(false);
+        // Unquoted braces are still brace-expanded — must remain blocked.
+        expect(isDestructiveCommand("git notes --ref {review,add} show HEAD")).toBe(true);
+        expect(isDestructiveCommand("git notes --ref={review,add}")).toBe(true);
     });
 
     test("flags git submodule update (modifies working tree)", () => {
