@@ -102,8 +102,13 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         // Hidden models are filtered from list_models output but must also be
         // enforced as a hard block here so they can't be reached by name.
         // This check runs before the socket lookup so we reject cheaply.
-        let hiddenModels: string[] = [];
-        try { hiddenModels = await getHiddenModels(identity.userId); } catch {}
+        let hiddenModels: string[];
+        try {
+            hiddenModels = await getHiddenModels(identity.userId);
+        } catch (err) {
+            console.error("Failed to fetch hidden models for user", identity.userId, err);
+            return Response.json({ error: "Unable to validate model availability" }, { status: 500 });
+        }
 
         if (requestedModel && isHiddenModel(hiddenModels, requestedModel)) {
             return Response.json({ error: "Requested model is not available" }, { status: 400 });
