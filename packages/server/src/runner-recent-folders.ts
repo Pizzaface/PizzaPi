@@ -1,6 +1,6 @@
 import { getKysely } from "./auth.js";
 
-const MAX_RECENT_FOLDERS = 10;
+const MAX_RECENT_FOLDERS = 50;
 
 export async function ensureRunnerRecentFoldersTable(): Promise<void> {
     await getKysely().schema

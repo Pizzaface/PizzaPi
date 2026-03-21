@@ -8,6 +8,7 @@ import { AuthPage } from "@/components/AuthPage";
 import { ApiKeyManager } from "@/components/ApiKeyManager";
 import { RunnerTokenManager } from "@/components/RunnerTokenManager";
 import { RunnerManager } from "@/components/RunnerManager";
+import { NewSessionWizardDialog } from "@/components/NewSessionWizardDialog";
 import { PizzaLogo } from "@/components/PizzaLogo";
 import { authClient, useSession, signOut } from "@/lib/auth-client";
 import { io, type Socket } from "socket.io-client";
@@ -180,6 +181,7 @@ export function App() {
   const [runnersLoading, setRunnersLoading] = React.useState(false);
   const [spawnRunnerId, setSpawnRunnerId] = React.useState<string | undefined>(undefined);
   const [spawnCwd, setSpawnCwd] = React.useState<string>("");
+  const [spawnPreselectedRunnerId, setSpawnPreselectedRunnerId] = React.useState<string | null>(null);
   const [spawningSession, setSpawningSession] = React.useState(false);
   const [recentFolders, setRecentFolders] = React.useState<string[]>([]);
   const [recentFoldersLoading, setRecentFoldersLoading] = React.useState(false);
@@ -2493,6 +2495,7 @@ export function App() {
 
   const handleNewSession = React.useCallback(() => {
     setSpawnRunnerId(undefined);
+    setSpawnPreselectedRunnerId(null);
     setSpawnCwd("");
     setRecentFolders([]);
     setNewSessionOpen(true);
@@ -2500,6 +2503,7 @@ export function App() {
 
   const handleDuplicateSession = React.useCallback((runnerId: string, cwd: string) => {
     setSpawnRunnerId(runnerId);
+    setSpawnPreselectedRunnerId(runnerId);
     setSpawnCwd(cwd);
     setRecentFolders([]);
     setNewSessionOpen(true);
@@ -2582,6 +2586,39 @@ export function App() {
       setSpawningSession(false);
     }
   }, [spawningSession, spawnRunnerId, spawnCwd, handleOpenSession, waitForSessionToGoLive]);
+
+  /** Spawn handler for the new wizard dialog. */
+  const handleWizardSpawn = React.useCallback(async (runnerId: string, cwd: string | undefined) => {
+    setViewerStatus("Spawning session…");
+
+    const payload: any = { runnerId, ...(cwd ? { cwd } : {}) };
+    const res = await fetch("/api/runners/spawn", {
+      method: "POST",
+      credentials: "include",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    const body = await res.json().catch(() => null) as any;
+    if (!res.ok) {
+      const msg = body && typeof body.error === "string" ? body.error : `Spawn failed (HTTP ${res.status})`;
+      throw new Error(msg);
+    }
+
+    const sessionId = typeof body?.sessionId === "string" ? body.sessionId : null;
+    if (!sessionId) throw new Error("Spawn failed: missing sessionId");
+
+    setNewSessionOpen(false);
+
+    const live = await waitForSessionToGoLive(sessionId, 30_000);
+    if (!live) {
+      setViewerStatus("Session is starting… (it will appear in the sidebar soon)");
+      return;
+    }
+
+    handleOpenSession(sessionId);
+    setViewerStatus("Connecting…");
+  }, [handleOpenSession, waitForSessionToGoLive]);
 
   // ── Respond to a trigger from a child session ─────────────────────────────
   const handleTriggerResponse = React.useCallback((triggerId: string, response: string, action?: string, sourceSessionId?: string): Promise<boolean> => {
@@ -3570,133 +3607,15 @@ export function App() {
           </div>
         </div>
 
-        <Dialog open={newSessionOpen} onOpenChange={(open) => { if (!spawningSession) setNewSessionOpen(open); }}>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>New session</DialogTitle>
-              <DialogDescription>
-                Spawn a new headless PizzaPi session on a connected runner.
-              </DialogDescription>
-            </DialogHeader>
-
-            <div className="grid gap-3">
-              <div className="grid gap-1.5">
-                <Label htmlFor="pp-runner">Runner</Label>
-                <Select value={spawnRunnerId} onValueChange={setSpawnRunnerId}>
-                  <SelectTrigger id="pp-runner" className="w-full">
-                    <SelectValue placeholder={runnersLoading ? "Loading…" : "Select a runner"} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {runners.map((r) => {
-                      const label = (r.name && r.name.trim()) ? r.name.trim() : `${r.runnerId.slice(0, 8)}…`;
-                      const roots = Array.isArray(r.roots) ? r.roots : [];
-                      const rootsLabel = roots.length > 0 ? ` · ${roots.length} root${roots.length === 1 ? "" : "s"}` : "";
-                      return (
-                        <SelectItem key={r.runnerId} value={r.runnerId}>
-                          {label} ({r.sessionCount} sessions{rootsLabel})
-                        </SelectItem>
-                      );
-                    })}
-                  </SelectContent>
-                </Select>
-                {runnersLoading && (
-                  <div className="text-xs text-muted-foreground inline-flex items-center gap-2">
-                    <Spinner className="size-3" /> Loading runners…
-                  </div>
-                )}
-                {!runnersLoading && runners.length === 0 && (
-                  <div className="text-xs text-destructive">
-                    No runners connected. Start one with <code className="px-1">pizzapi runner</code>.
-                  </div>
-                )}
-              </div>
-
-              <div className="grid gap-1.5">
-                <Label htmlFor="pp-cwd">Working directory</Label>
-                <Input
-                  id="pp-cwd"
-                  value={spawnCwd}
-                  onChange={(e) => setSpawnCwd(e.target.value)}
-                  placeholder="/path/to/project"
-                  disabled={spawningSession}
-                />
-                <div className="text-xs text-muted-foreground">
-                  This is the path on the runner machine.
-                </div>
-                {recentFoldersLoading && (
-                  <div className="text-xs text-muted-foreground inline-flex items-center gap-1.5">
-                    <Spinner className="size-3" /> Loading recent folders…
-                  </div>
-                )}
-                {!recentFoldersLoading && recentFolders.length > 0 && (
-                  <div className="flex flex-col gap-1.5">
-                    <span className="text-xs font-medium text-muted-foreground">Recent</span>
-                    <div className="flex flex-wrap gap-1.5">
-                      {recentFolders.map((folder) => (
-                        <div
-                          key={folder}
-                          className={`inline-flex items-center rounded border font-mono text-[11px] transition-colors
-                            ${spawnCwd === folder
-                              ? "border-primary bg-primary/10 text-primary"
-                              : "border-border bg-muted/50 text-muted-foreground hover:border-foreground/30 hover:text-foreground"
-                            }`}
-                        >
-                          <button
-                            type="button"
-                            disabled={spawningSession}
-                            onClick={() => setSpawnCwd(folder)}
-                            className="px-2 py-0.5"
-                            title={folder}
-                          >
-                            <span className="max-w-[220px] truncate">{folder.split("/").filter(Boolean).pop() || folder}</span>
-                          </button>
-                          <button
-                            type="button"
-                            disabled={spawningSession}
-                            onClick={async (e) => {
-                              e.stopPropagation();
-                              if (spawnRunnerId) {
-                                await fetch(`/api/runners/${encodeURIComponent(spawnRunnerId)}/recent-folders`, {
-                                  method: "DELETE",
-                                  credentials: "include",
-                                  headers: { "Content-Type": "application/json" },
-                                  body: JSON.stringify({ path: folder }),
-                                });
-                              }
-                              setRecentFolders((prev) => prev.filter((f) => f !== folder));
-                            }}
-                            className="px-1 py-0.5 border-l border-inherit text-muted-foreground hover:text-destructive"
-                            title="Remove from recent"
-                          >
-                            ×
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            <DialogFooter>
-              <div className="flex-1 text-xs text-muted-foreground">
-                {!spawnRunnerId ? "Pick a runner." : ""}
-              </div>
-              <Button variant="outline" onClick={() => setNewSessionOpen(false)} disabled={spawningSession}>
-                Cancel
-              </Button>
-              <Button onClick={spawnNewRunnerSession} disabled={spawningSession || runners.length === 0 || !spawnRunnerId}>
-                {spawningSession ? (
-                  <span className="inline-flex items-center gap-2">
-                    <Spinner /> Spawning…
-                  </span>
-                ) : (
-                  "Spawn"
-                )}
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+        <NewSessionWizardDialog
+          open={newSessionOpen}
+          onOpenChange={(open) => { if (!spawningSession) setNewSessionOpen(open); }}
+          runners={runners.map((r) => ({ ...r, name: r.name ?? null, isOnline: true }))}
+          runnersLoading={runnersLoading}
+          preselectedRunnerId={spawnPreselectedRunnerId}
+          initialCwd={spawnCwd}
+          onSpawn={handleWizardSpawn}
+        />
 
         {showApiKeys && (
           <div className="absolute inset-y-0 right-0 z-40 flex w-full max-w-md flex-col shadow-xl border-l bg-background">

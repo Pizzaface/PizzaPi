@@ -1,20 +1,10 @@
 import * as React from "react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { Plus, FolderOpen, Loader2, RefreshCw, X } from "lucide-react";
-import {
-    Dialog,
-    DialogContent,
-    DialogDescription,
-    DialogFooter,
-    DialogHeader,
-    DialogTitle,
-} from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { Plus, Loader2, RefreshCw } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ErrorAlert } from "@/components/ui/error-alert";
 import { RunnerDetailPanel } from "@/components/RunnerDetailPanel";
+import { NewSessionWizardDialog } from "@/components/NewSessionWizardDialog";
 import type { SkillInfo } from "@/components/SkillsManager";
 import type { AgentInfo } from "@/components/AgentsManager";
 import type { PluginInfo } from "@/components/PluginsManager";
@@ -71,11 +61,6 @@ export function RunnerManager({ onOpenSession, onRunnersChange, selectedRunnerId
 
     // New session dialog
     const [spawnRunnerId, setSpawnRunnerId] = React.useState<string | null>(null);
-    const [spawnCwd, setSpawnCwd] = React.useState("");
-    const [spawning, setSpawning] = React.useState(false);
-    const [spawnError, setSpawnError] = React.useState<string | null>(null);
-    const [recentFolders, setRecentFolders] = React.useState<string[]>([]);
-    const [recentFoldersLoading, setRecentFoldersLoading] = React.useState(false);
 
     const fetchData = React.useCallback(async () => {
         try {
@@ -122,28 +107,6 @@ export function RunnerManager({ onOpenSession, onRunnersChange, selectedRunnerId
             .then((data) => { if (data?.version) setServerVersion(data.version); })
             .catch(() => {});
     }, []);
-
-    // Fetch recent folders when a runner is selected in the spawn dialog
-    React.useEffect(() => {
-        if (!spawnRunnerId) {
-            setRecentFolders([]);
-            return;
-        }
-        // Clear stale folders immediately so chips from the previous runner
-        // can't be deleted against the newly selected runner.
-        setRecentFolders([]);
-        let cancelled = false;
-        setRecentFoldersLoading(true);
-        fetch(`/api/runners/${encodeURIComponent(spawnRunnerId)}/recent-folders`, { credentials: "include" })
-            .then((res) => (res.ok ? res.json() : Promise.reject()))
-            .then((data) => {
-                if (cancelled) return;
-                setRecentFolders(Array.isArray(data?.folders) ? data.folders : []);
-            })
-            .catch(() => { if (!cancelled) setRecentFolders([]); })
-            .finally(() => { if (!cancelled) setRecentFoldersLoading(false); });
-        return () => { cancelled = true; };
-    }, [spawnRunnerId]);
 
     // Auto-select when there's exactly one runner
     React.useEffect(() => {
@@ -220,65 +183,42 @@ export function RunnerManager({ onOpenSession, onRunnersChange, selectedRunnerId
 
     const handleOpenNewSession = (runnerId: string) => {
         setSpawnRunnerId(runnerId);
-        setSpawnCwd("");
-        setSpawnError(null);
     };
 
-    const handleSpawn = async () => {
-        if (!spawnRunnerId || spawning) return;
-        setSpawning(true);
-        setSpawnError(null);
-
-        try {
-            const res = await fetch("/api/runners/spawn", {
-                method: "POST",
-                credentials: "include",
-                headers: { "content-type": "application/json" },
-                body: JSON.stringify({
-                    runnerId: spawnRunnerId,
-                    ...(spawnCwd.trim() ? { cwd: spawnCwd.trim() } : {}),
-                }),
-            });
-            const body = await res.json().catch(() => null) as any;
-            if (!res.ok) {
-                setSpawnError(body?.error || `Spawn failed (HTTP ${res.status})`);
-                return;
-            }
-
-            const sessionId = body?.sessionId;
-            if (!sessionId) {
-                setSpawnError("Spawn failed: missing sessionId in response");
-                return;
-            }
-
-            setSpawnRunnerId(null);
-
-            // Poll until session appears then open it
-            if (onOpenSession) {
-                const deadline = Date.now() + 30_000;
-                const poll = async (): Promise<void> => {
-                    if (Date.now() > deadline) return;
-                    try {
-                        const r = await fetch("/api/sessions", { credentials: "include" });
-                        if (r.ok) {
-                            const d = await r.json().catch(() => null) as any;
-                            const live = Array.isArray(d?.sessions) && d.sessions.some((s: any) => s?.sessionId === sessionId);
-                            if (live) {
-                                onOpenSession(sessionId);
-                                return;
-                            }
-                        }
-                    } catch {}
-                    await new Promise((r) => setTimeout(r, 1000));
-                    return poll();
-                };
-                void poll();
-            }
-
-            fetchData();
-        } finally {
-            setSpawning(false);
+    const handleWizardSpawn = async (runnerId: string, cwd: string | undefined) => {
+        const res = await fetch("/api/runners/spawn", {
+            method: "POST",
+            credentials: "include",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ runnerId, ...(cwd ? { cwd } : {}) }),
+        });
+        const body = await res.json().catch(() => null) as any;
+        if (!res.ok) {
+            throw new Error(body?.error || `Spawn failed (HTTP ${res.status})`);
         }
+        const sessionId = body?.sessionId;
+        if (!sessionId) throw new Error("Spawn failed: missing sessionId in response");
+
+        setSpawnRunnerId(null);
+
+        if (onOpenSession) {
+            const deadline = Date.now() + 30_000;
+            const poll = async (): Promise<void> => {
+                if (Date.now() > deadline) return;
+                try {
+                    const r = await fetch("/api/sessions", { credentials: "include" });
+                    if (r.ok) {
+                        const d = await r.json().catch(() => null) as any;
+                        const live = Array.isArray(d?.sessions) && d.sessions.some((s: any) => s?.sessionId === sessionId);
+                        if (live) { onOpenSession(sessionId); return; }
+                    }
+                } catch {}
+                await new Promise((r) => setTimeout(r, 1000));
+                return poll();
+            };
+            void poll();
+        }
+        fetchData();
     };
 
     // Loading skeleton
@@ -333,116 +273,13 @@ export function RunnerManager({ onOpenSession, onRunnersChange, selectedRunnerId
             />
 
             {/* New session dialog */}
-            <Dialog open={spawnRunnerId !== null} onOpenChange={(open) => { if (!open) setSpawnRunnerId(null); }}>
-                <DialogContent className="sm:max-w-md">
-                    <DialogHeader>
-                        <DialogTitle>New Session</DialogTitle>
-                        <DialogDescription>
-                            Start a new agent session on{" "}
-                            <span className="font-medium text-foreground">
-                                {runners.find((r) => r.runnerId === spawnRunnerId)?.name || spawnRunnerId?.slice(0, 12) + "…"}
-                            </span>
-                        </DialogDescription>
-                    </DialogHeader>
-
-                    <div className="flex flex-col gap-4 py-2 min-w-0 overflow-hidden">
-                        <div className="flex flex-col gap-1.5">
-                            <Label htmlFor="spawn-cwd" className="text-sm">Working directory <span className="text-muted-foreground font-normal">(optional)</span></Label>
-                            <Input
-                                id="spawn-cwd"
-                                placeholder="/home/user/project"
-                                value={spawnCwd}
-                                onChange={(e) => setSpawnCwd(e.target.value)}
-                                onKeyDown={(e) => { if (e.key === "Enter") handleSpawn(); }}
-                                className="font-mono text-sm"
-                            />
-                        </div>
-
-                        {/* Recent folders */}
-                        {(recentFoldersLoading || recentFolders.length > 0) && (
-                            <div className="flex flex-col gap-1.5 min-w-0">
-                                <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Recent folders</p>
-                                {recentFoldersLoading ? (
-                                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                                        <Loader2 className="h-3 w-3 animate-spin" />
-                                        Loading…
-                                    </div>
-                                ) : (
-                                    <div className="flex flex-col gap-1 min-w-0">
-                                        {recentFolders.map((folder) => (
-                                            <div
-                                                key={folder}
-                                                className={cn(
-                                                    "flex items-center gap-2 text-left px-2.5 py-1.5 rounded-md text-xs font-mono transition-colors min-w-0 group",
-                                                    spawnCwd === folder
-                                                        ? "bg-accent text-accent-foreground"
-                                                        : "text-muted-foreground hover:bg-muted hover:text-foreground"
-                                                )}
-                                            >
-                                                <button
-                                                    type="button"
-                                                    onClick={() => setSpawnCwd(folder)}
-                                                    className="flex items-center gap-2 min-w-0 flex-1"
-                                                    title={folder}
-                                                >
-                                                    <FolderOpen className="h-3.5 w-3.5 flex-shrink-0 opacity-60" />
-                                                    <span className="truncate">{folder.split("/").filter(Boolean).pop() || folder}</span>
-                                                </button>
-                                                <button
-                                                    type="button"
-                                                    onClick={async (e) => {
-                                                        e.stopPropagation();
-                                                        const targetRunner = spawnRunnerId;
-                                                        if (targetRunner) {
-                                                            await fetch(`/api/runners/${encodeURIComponent(targetRunner)}/recent-folders`, {
-                                                                method: "DELETE",
-                                                                credentials: "include",
-                                                                headers: { "Content-Type": "application/json" },
-                                                                body: JSON.stringify({ path: folder }),
-                                                            });
-                                                        }
-                                                        // Only update local state if the runner hasn't changed during the request
-                                                        if (spawnRunnerId === targetRunner) {
-                                                            setRecentFolders((prev) => prev.filter((f) => f !== folder));
-                                                        }
-                                                    }}
-                                                    className="flex-shrink-0 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-opacity"
-                                                    title="Remove from recent"
-                                                >
-                                                    <X className="h-3 w-3" />
-                                                </button>
-                                            </div>
-                                        ))}
-                                    </div>
-                                )}
-                            </div>
-                        )}
-
-                        {spawnError && (
-                            <ErrorAlert>{spawnError}</ErrorAlert>
-                        )}
-                    </div>
-
-                    <DialogFooter>
-                        <Button variant="ghost" onClick={() => setSpawnRunnerId(null)} disabled={spawning}>
-                            Cancel
-                        </Button>
-                        <Button onClick={handleSpawn} disabled={spawning}>
-                            {spawning ? (
-                                <>
-                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                    Starting…
-                                </>
-                            ) : (
-                                <>
-                                    <Plus className="mr-2 h-4 w-4" />
-                                    Start Session
-                                </>
-                            )}
-                        </Button>
-                    </DialogFooter>
-                </DialogContent>
-            </Dialog>
+            <NewSessionWizardDialog
+                open={spawnRunnerId !== null}
+                onOpenChange={(open) => { if (!open) setSpawnRunnerId(null); }}
+                runners={runners.map((r) => ({ ...r, isOnline: true }))}
+                preselectedRunnerId={spawnRunnerId}
+                onSpawn={handleWizardSpawn}
+            />
         </>
     );
 }
