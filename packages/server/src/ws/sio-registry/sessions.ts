@@ -27,6 +27,10 @@ import {
     refreshRunnerAssociationTTL,
     scanExpiredSessions,
     addChildSession,
+    removeChildSession,
+    isChildDelinked,
+    clearParentSessionId,
+    refreshChildSessionsTTL,
     getRunner as getRunnerState,
 } from "../sio-state.js";
 import {
@@ -37,6 +41,7 @@ import {
 } from "../../sessions/store.js";
 import { appendRelayEventToCache } from "../../sessions/redis.js";
 import { storeAndReplaceImages, storeAndReplaceImagesInEvent } from "../strip-images.js";
+import { severStaleParentLink } from "../stale-parent-link.js";
 import type { SessionInfo } from "@pizzapi/protocol";
 import {
     getIo,
@@ -87,12 +92,15 @@ export async function registerTuiSession(
     socket: Socket,
     cwd: string = "",
     opts: RegisterTuiSessionOpts = {},
-): Promise<{ sessionId: string; token: string; shareUrl: string; parentSessionId: string | null }> {
+): Promise<{ sessionId: string; token: string; shareUrl: string; parentSessionId: string | null; wasDelinked: boolean }> {
     const requestedSessionId = typeof opts.sessionId === "string" ? opts.sessionId.trim() : "";
     const sessionId = requestedSessionId.length > 0 ? requestedSessionId : randomUUID();
     const token = randomBytes(32).toString("hex");
     const shareUrl = `${process.env.PIZZAPI_BASE_URL ?? "http://localhost:5173"}/session/${sessionId}`;
-    const startedAt = new Date().toISOString();
+    // startedAt is resolved after the existing-session check below so that
+    // reconnects preserve the original value.  This is critical for the
+    // epoch-based delink filter in delink_children.
+    let startedAt: string;
     const userId = opts.userId ?? null;
     const userName = opts.userName ?? null;
     const isEphemeral = opts.isEphemeral !== false;
@@ -114,6 +122,10 @@ export async function registerTuiSession(
         }
         await endSharedSession(sessionId, "Session reconnected");
     }
+
+    // Preserve the original startedAt on reconnect so that epoch-based
+    // delink filtering works correctly.
+    startedAt = existing?.startedAt ?? new Date().toISOString();
 
     // Check for pending runner link
     const pendingRunnerId = await getPendingRunnerLink(sessionId);
@@ -149,6 +161,9 @@ export async function registerTuiSession(
         opts.parentSessionId ??
         existing?.parentSessionId ??
         null;
+    // Set to true when resolvedParentSessionId is forced to null because the
+    // parent explicitly delinked this child (via delink_children on /new).
+    let wasExplicitlyDelinked = false;
 
     // Validate parent session exists and belongs to the same user.
     // If the parent disconnected or the ID is stale, clear it to avoid
@@ -156,6 +171,7 @@ export async function registerTuiSession(
     // Fall back to SQLite when Redis has no record (e.g. relay restarted and
     // the parent's Redis key has expired) so that parent links survive restarts.
     if (resolvedParentSessionId) {
+        const candidateParentId = resolvedParentSessionId;
         const parentSession = await getSession(resolvedParentSessionId);
         if (!parentSession) {
             // Redis miss means the parent is not connected — clear the link
@@ -163,8 +179,41 @@ export async function registerTuiSession(
             // instead of sending triggers to a dead parent ID.  The child
             // CLI will re-send parentSessionId on its next reconnect; if
             // the parent is back by then the link is restored naturally.
+            //
+            // Also evict the child from the parent's membership set so that
+            // isChildOfParent() returns false even before TTL expiry.
+            await severStaleParentLink({
+                parentSessionId: candidateParentId,
+                childSessionId: sessionId,
+                clearParentSessionId,
+                removeChildSession,
+            });
             resolvedParentSessionId = null;
         } else if (parentSession.userId !== userId) {
+            // Cross-user link attempt — evict from membership set as well.
+            await severStaleParentLink({
+                parentSessionId: candidateParentId,
+                childSessionId: sessionId,
+                clearParentSessionId,
+                removeChildSession,
+            });
+            resolvedParentSessionId = null;
+        }
+    }
+
+    // Check if parent explicitly delinked this child (via delink_children).
+    if (resolvedParentSessionId) {
+        const delinked = await isChildDelinked(sessionId);
+        if (delinked) {
+            // Parent ran /new while this child was offline — clear the link
+            // permanently and signal the client via wasDelinked.
+            await severStaleParentLink({
+                parentSessionId: resolvedParentSessionId,
+                childSessionId: sessionId,
+                clearParentSessionId,
+                removeChildSession,
+            });
+            wasExplicitlyDelinked = true;
             resolvedParentSessionId = null;
         }
     }
@@ -242,7 +291,7 @@ export async function registerTuiSession(
         userId ?? undefined,
     );
 
-    return { sessionId, token, shareUrl, parentSessionId: resolvedParentSessionId };
+    return { sessionId, token, shareUrl, parentSessionId: resolvedParentSessionId, wasDelinked: wasExplicitlyDelinked };
 }
 
 /**

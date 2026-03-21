@@ -193,6 +193,46 @@ export function safeJsonParse(value: string): any {
     }
 }
 
+/**
+ * Emit an event to a relay session room and wait for the first ack callback.
+ * Returns { hadListeners: true, acked: true } if at least one socket acknowledged.
+ * Used for delivery-critical paths like parent_delinked where the caller needs
+ * to know whether the target actually processed the event.
+ */
+export async function emitToRelaySessionAwaitingAck(
+    sessionId: string,
+    eventName: string,
+    data: unknown,
+    timeoutMs: number = 1_000,
+): Promise<{ hadListeners: boolean; acked: boolean }> {
+    if (!io) return { hadListeners: false, acked: false };
+    const room = relaySessionRoom(sessionId);
+    try {
+        const sockets = await io.of("/relay").in(room).fetchSockets();
+        if (sockets.length === 0) return { hadListeners: false, acked: false };
+
+        const relayNs = io.of("/relay") as any;
+        const responses = await new Promise<unknown[]>((resolve, reject) => {
+            relayNs.to(room).timeout(timeoutMs).emit(eventName, data, (err: unknown, ackResponses: unknown[] = []) => {
+                if (Array.isArray(ackResponses) && ackResponses.length > 0) {
+                    resolve(ackResponses);
+                    return;
+                }
+                if (err) {
+                    reject(err);
+                    return;
+                }
+                resolve([]);
+            });
+        });
+
+        return { hadListeners: true, acked: responses.length > 0 };
+    } catch (err) {
+        console.warn("[sio-registry] emitToRelaySessionAwaitingAck failed:", (err as Error)?.message);
+        return { hadListeners: true, acked: false };
+    }
+}
+
 /** Extract a ModelInfo from a raw heartbeat payload (or return null). */
 export function modelFromHeartbeat(rawHeartbeat: unknown): ModelInfo | null {
     const rawModel = (rawHeartbeat as any)?.model;

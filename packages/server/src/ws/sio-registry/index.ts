@@ -5,7 +5,7 @@
 // existing callers continue importing from `../sio-registry.js` unchanged.
 // ============================================================================
 
-export { initSioRegistry, emitToRunner, emitToRelaySession, emitToRelaySessionVerified } from "./context.js";
+export { initSioRegistry, emitToRunner, emitToRelaySession, emitToRelaySessionVerified, emitToRelaySessionAwaitingAck } from "./context.js";
 export { broadcastToHub, addHubClient, removeHubClient } from "./hub.js";
 export type { RegisterTuiSessionOpts } from "./sessions.js";
 export {

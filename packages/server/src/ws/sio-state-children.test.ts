@@ -49,6 +49,10 @@ const mockMulti = () => {
             ops.push(() => ttlStore.set(key, ttl));
             return mockMulti();
         }),
+        del: mock((key: string) => {
+            ops.push(() => store.delete(key));
+            return mockMulti();
+        }),
         exec: mock(async () => {
             for (const op of ops) op();
             return ops.map(() => "OK");
@@ -70,19 +74,34 @@ const mockRedis = {
         const s = setStore.get(key);
         if (s) for (const m of members.flat()) s.delete(m);
     }),
+    sIsMember: mock(async (key: string, member: string) => {
+        return setStore.get(key)?.has(member) ?? false;
+    }),
     expire: mock(async (key: string, ttl: number) => {
         ttlStore.set(key, ttl);
     }),
     multi: mock(() => mockMulti()),
     on: mock(() => mockRedis),
     connect: mock(async () => {}),
-    // For other sio-state functions that might be called during import
-    set: mock(async () => {}),
-    get: mock(async () => null),
-    del: mock(async () => {}),
-    exists: mock(async () => 0),
+    // Simple string key store (used by markChildAsDelinked / isChildDelinked)
+    set: mock(async (key: string, _value: string, _opts?: unknown) => {
+        store.set(key, "1");
+    }),
+    get: mock(async (key: string) => store.get(key) ?? null),
+    del: mock(async (key: string) => {
+        store.delete(key);
+        setStore.delete(key);
+        ttlStore.delete(key);
+    }),
+    exists: mock(async (key: string) => (store.has(key) ? 1 : 0)),
     hGetAll: mock(async () => ({})),
     hGet: mock(async () => null),
+    hSet: mock(async (key: string, field: string, value: string) => {
+        const existing = JSON.parse(store.get(`__hash__:${key}`) ?? "{}");
+        existing[field] = value;
+        store.set(`__hash__:${key}`, JSON.stringify(existing));
+        store.set(`${key}:${field}`, value);
+    }),
     incr: mock(async () => 1),
     eval: mock(async () => 0),
 };
@@ -96,6 +115,17 @@ const {
     addChildSession,
     getChildSessions,
     removeChildSession,
+    removeChildren,
+    clearAllChildren,
+    clearParentSessionId,
+    isChildOfParent,
+    refreshChildSessionsTTL,
+    addPendingParentDelinkChildren,
+    getPendingParentDelinkChildren,
+    removePendingParentDelinkChild,
+    markChildAsDelinked,
+    isChildDelinked,
+    clearDelinkedMark,
 } = await import("./sio-state.js");
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -147,5 +177,189 @@ describe("child session helpers (sio-state)", () => {
         await addChildSession("parent-1", "child-1");
         const children = await getChildSessions("parent-1");
         expect(children).toEqual(["child-1"]);
+    });
+
+    it("clearAllChildren removes all children and returns their IDs", async () => {
+        await addChildSession("parent-1", "child-1");
+        await addChildSession("parent-1", "child-2");
+        await addChildSession("parent-1", "child-3");
+
+        const removed = await clearAllChildren("parent-1");
+        expect(removed.sort()).toEqual(["child-1", "child-2", "child-3"]);
+
+        // Children set should be empty now
+        const remaining = await getChildSessions("parent-1");
+        expect(remaining).toEqual([]);
+    });
+
+    it("clearAllChildren returns empty array for nonexistent parent", async () => {
+        const removed = await clearAllChildren("nonexistent");
+        expect(removed).toEqual([]);
+    });
+
+    it("clearAllChildren does not affect other parents", async () => {
+        await addChildSession("parent-1", "child-1");
+        await addChildSession("parent-2", "child-2");
+
+        await clearAllChildren("parent-1");
+
+        const p1Children = await getChildSessions("parent-1");
+        const p2Children = await getChildSessions("parent-2");
+        expect(p1Children).toEqual([]);
+        expect(p2Children).toContain("child-2");
+    });
+
+    it("clearParentSessionId clears the field in Redis", async () => {
+        // clearParentSessionId calls hSet with empty string on the session key.
+        // We verify the mock was called correctly.
+        await clearParentSessionId("child-1");
+        // The hSet mock stores the value; verify it was called
+        expect(mockRedis.hSet).toHaveBeenCalled();
+    });
+
+    // ── isChildOfParent ────────────────────────────────────────────────────
+
+    it("isChildOfParent returns true when child is in parent's set", async () => {
+        await addChildSession("parent-1", "child-1");
+        expect(await isChildOfParent("parent-1", "child-1")).toBe(true);
+    });
+
+    it("isChildOfParent returns false for non-member", async () => {
+        await addChildSession("parent-1", "child-1");
+        expect(await isChildOfParent("parent-1", "child-99")).toBe(false);
+    });
+
+    it("isChildOfParent returns false after clearAllChildren (delink_children)", async () => {
+        await addChildSession("parent-1", "child-1");
+        await addChildSession("parent-1", "child-2");
+
+        // Simulate delink_children: clear the set
+        await clearAllChildren("parent-1");
+
+        expect(await isChildOfParent("parent-1", "child-1")).toBe(false);
+        expect(await isChildOfParent("parent-1", "child-2")).toBe(false);
+    });
+
+    it("isChildOfParent returns false for nonexistent parent set", async () => {
+        expect(await isChildOfParent("ghost-parent", "child-1")).toBe(false);
+    });
+
+    it("isChildOfParent returns true after removeChildSession leaves sibling", async () => {
+        await addChildSession("parent-1", "child-1");
+        await addChildSession("parent-1", "child-2");
+        await removeChildSession("parent-1", "child-2");
+
+        expect(await isChildOfParent("parent-1", "child-1")).toBe(true);
+        expect(await isChildOfParent("parent-1", "child-2")).toBe(false);
+    });
+
+    it("refreshChildSessionsTTL refreshes the membership set TTL", async () => {
+        await addChildSession("parent-1", "child-1");
+        ttlStore.set("pizzapi:sio:children:parent-1", 1);
+
+        await refreshChildSessionsTTL("parent-1");
+
+        expect(ttlStore.get("pizzapi:sio:children:parent-1")).toBe(24 * 60 * 60);
+    });
+
+    it("tracks pending parent_delinked retries per parent", async () => {
+        await addPendingParentDelinkChildren("parent-1", ["child-1", "child-2"]);
+        expect((await getPendingParentDelinkChildren("parent-1")).sort()).toEqual(["child-1", "child-2"]);
+        expect(ttlStore.get("pizzapi:sio:pending-delink-children:parent-1")).toBe(24 * 60 * 60);
+    });
+
+    it("removePendingParentDelinkChild removes only the acked child", async () => {
+        await addPendingParentDelinkChildren("parent-1", ["child-1", "child-2"]);
+        await removePendingParentDelinkChild("parent-1", "child-1");
+        expect(await getPendingParentDelinkChildren("parent-1")).toEqual(["child-2"]);
+    });
+
+    // ── Delink markers ─────────────────────────────────────────────────────
+    // These markers are written by delink_children to prevent offline children
+    // from re-linking to the old parent on their next reconnect.
+
+    it("isChildDelinked returns false when no marker exists", async () => {
+        expect(await isChildDelinked("child-orphan")).toBe(false);
+    });
+
+    it("markChildAsDelinked sets the marker; isChildDelinked returns true", async () => {
+        await markChildAsDelinked("child-1");
+        expect(await isChildDelinked("child-1")).toBe(true);
+    });
+
+    it("clearDelinkedMark removes the marker", async () => {
+        await markChildAsDelinked("child-1");
+        await clearDelinkedMark("child-1");
+        expect(await isChildDelinked("child-1")).toBe(false);
+    });
+
+    it("markers are per-child and do not affect siblings", async () => {
+        await markChildAsDelinked("child-1");
+        expect(await isChildDelinked("child-1")).toBe(true);
+        expect(await isChildDelinked("child-2")).toBe(false);
+    });
+
+    it("markChildAsDelinked is idempotent", async () => {
+        await markChildAsDelinked("child-1");
+        await markChildAsDelinked("child-1");
+        expect(await isChildDelinked("child-1")).toBe(true);
+        await clearDelinkedMark("child-1");
+        expect(await isChildDelinked("child-1")).toBe(false);
+    });
+
+    it("addChildSession clears a stale delink marker for the child", async () => {
+        // Simulate: parent delinked child-1, then later spawns it again.
+        // The new addChildSession should clear the delink marker so future
+        // reconnects don't reject the new legitimate parent link.
+        await markChildAsDelinked("child-1");
+        expect(await isChildDelinked("child-1")).toBe(true);
+        await addChildSession("parent-2", "child-1");
+        expect(await isChildDelinked("child-1")).toBe(false);
+    });
+
+    // ── removeChildren (targeted removal) ──────────────────────────────────
+
+    it("removeChildren removes only the specified children", async () => {
+        await addChildSession("parent-1", "child-1");
+        await addChildSession("parent-1", "child-2");
+        await addChildSession("parent-1", "child-3");
+
+        await removeChildren("parent-1", ["child-1", "child-3"]);
+
+        const remaining = await getChildSessions("parent-1");
+        expect(remaining).toEqual(["child-2"]);
+    });
+
+    it("removeChildren preserves children added after the snapshot", async () => {
+        // Simulate the race: snapshot sees child-1 and child-2, but child-3
+        // is added between the snapshot and the removal.
+        await addChildSession("parent-1", "child-1");
+        await addChildSession("parent-1", "child-2");
+
+        // Snapshot: ["child-1", "child-2"]
+        const snapshot = await getChildSessions("parent-1");
+
+        // New child added after snapshot (simulates race)
+        await addChildSession("parent-1", "child-3");
+
+        // Remove only the snapshotted children
+        await removeChildren("parent-1", snapshot);
+
+        const remaining = await getChildSessions("parent-1");
+        expect(remaining).toEqual(["child-3"]);
+    });
+
+    it("removeChildren is a no-op for empty array", async () => {
+        await addChildSession("parent-1", "child-1");
+        await removeChildren("parent-1", []);
+        const remaining = await getChildSessions("parent-1");
+        expect(remaining).toEqual(["child-1"]);
+    });
+
+    it("removeChildren is safe with nonexistent children", async () => {
+        await addChildSession("parent-1", "child-1");
+        await removeChildren("parent-1", ["nonexistent"]);
+        const remaining = await getChildSessions("parent-1");
+        expect(remaining).toEqual(["child-1"]);
     });
 });

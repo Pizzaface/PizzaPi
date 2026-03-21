@@ -21,6 +21,59 @@ const TRIGGER_TTL_MS = 10 * 60 * 1000; // 10 minutes
 /** Register a received trigger for response routing. Called by remote.ts on trigger receipt.
  *  If the triggerId is already tracked (e.g. after escalation re-delivers the same trigger),
  *  the original sourceSessionId is preserved so responses route back to the real child. */
+/**
+ * Clear all pending received triggers and optionally cancel them back to
+ * children via the relay. Called on /new to prevent stale triggers from
+ * the old session leaking into the new conversation.
+ *
+ * For each pending trigger that expects a response, sends a cancel
+ * trigger_response back to the child so it doesn't block waiting forever.
+ *
+ * Returns the triggers that were successfully cancelled (sent) and those that
+ * failed (relay socket was down at the time of /new).
+ */
+export function clearAndCancelPendingTriggers(
+    onConfirmed?: (triggerId: string, childSessionId: string) => void,
+): { cancelled: number; sent: Array<{ triggerId: string; childSessionId: string }>; failed: Array<{ triggerId: string; childSessionId: string }> } {
+    const conn = getRelaySocket();
+    const sent: Array<{ triggerId: string; childSessionId: string }> = [];
+    const failed: Array<{ triggerId: string; childSessionId: string }> = [];
+
+    for (const [triggerId, entry] of receivedTriggers) {
+        // Send a cancel response to children so they don't block.
+        if (conn) {
+            // Use an ack callback so we know the server received the cancel.
+            // If the socket drops before the ack arrives, the caller keeps the
+            // item in pendingCancellations and retries on the next reconnect.
+            // Only call onConfirmed once the server acknowledges the delivery —
+            // that's the signal to remove this item from the retry queue.
+            const capturedTriggerId = triggerId;
+            const capturedChildSessionId = entry.sourceSessionId;
+            conn.socket.emit("trigger_response" as any, {
+                token: conn.token,
+                triggerId: capturedTriggerId,
+                response: "Parent started a new session — trigger cancelled.",
+                action: "cancel",
+                targetSessionId: capturedChildSessionId,
+            }, (result: { ok: boolean; error?: string }) => {
+                if (result?.ok) {
+                    onConfirmed?.(capturedTriggerId, capturedChildSessionId);
+                }
+                // If !ok, the item stays in pendingCancellations for retry on reconnect.
+            });
+            // Mark as sent-pending-ack: caller should add to pendingCancellations
+            // so the retry path handles the case where the socket drops before the ack.
+            sent.push({ triggerId, childSessionId: entry.sourceSessionId });
+        } else {
+            failed.push({ triggerId, childSessionId: entry.sourceSessionId });
+        }
+    }
+
+    const count = receivedTriggers.size;
+    receivedTriggers.clear();
+    return { cancelled: count, sent, failed };
+}
+
 export function trackReceivedTrigger(triggerId: string, sourceSessionId: string, type: string): void {
     if (receivedTriggers.has(triggerId)) return; // preserve original source on re-delivery
     receivedTriggers.set(triggerId, { sourceSessionId, type, trackedAt: Date.now() });

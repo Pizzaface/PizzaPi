@@ -37,6 +37,7 @@ import { setTodoUpdateCallback, type TodoItem } from "../update-todo.js";
 import { getCurrentTodoList } from "../update-todo.js";
 import { setPlanModeChangeCallback } from "../plan-mode-toggle.js";
 import type { RemoteExecResponse } from "../remote-commands.js";
+import { clearAndCancelPendingTriggers } from "../triggers/extension.js";
 import type { ConversationTrigger } from "../triggers/types.js";
 import type { Socket } from "socket.io-client";
 import type { RelayClientToServerEvents, RelayServerToClientEvents } from "@pizzapi/protocol";
@@ -49,6 +50,10 @@ import { installFooter } from "../remote-footer.js";
 import { buildHeartbeat, stopHeartbeat } from "../remote-heartbeat.js";
 import { registerAskUserTool } from "../remote-ask-user.js";
 import { registerPlanModeTool } from "../remote-plan-mode.js";
+import { createTriggerWaitManager } from "../trigger-wait-manager.js";
+import { isCancelTriggerAction } from "../remote-trigger-response.js";
+import { evaluateDelinkChildrenAck, evaluateDelinkOwnParentAck } from "../remote-delink-retry.js";
+import { receivedTriggers } from "../triggers/extension.js";
 
 // ── Sub-modules ───────────────────────────────────────────────────────────────
 import { emitSessionActive, estimateMessagesSize, needsChunkedDelivery, capOversizedMessages, computeChunkBoundaries } from "./chunked-delivery.js";
@@ -61,6 +66,7 @@ export { estimateMessagesSize, needsChunkedDelivery, capOversizedMessages, compu
 
 const RELAY_DEFAULT = "ws://localhost:7492";
 const RELAY_STATUS_KEY = "relay";
+const TRIGGER_CANCELLATION_RETRY_INTERVAL_MS = 3_000;
 
 // ── Module-level state for external consumers ─────────────────────────────────
 let _ctx: RelayContext | null = null;
@@ -103,9 +109,205 @@ export function waitForRelayRegistration(timeoutMs: number = 10_000): Promise<vo
 export const remoteExtension: ExtensionFactory = (pi) => {
     // ── Orchestrator-local state (NOT in RelayContext) ─────────────────────
     let sessionCompleteFired = false;
+    // Set when /new fires so we can retry delink_children on reconnect if
+    // the initial emit is lost.  Cleared by the server ack callback.
+    let pendingDelink = false;
+    let pendingDelinkRetryTimer: ReturnType<typeof setTimeout> | null = null;
+    let pendingDelinkRetryEpoch: number | null = null;
+    let pendingDelinkEpoch: number | null = null;
+    const staleChildIds = new Set<string>();
+    let pendingDelinkOwnParent = false;
+    let pendingDelinkOwnParentRetryTimer: ReturnType<typeof setTimeout> | null = null;
+    let stalePrimaryParentId: string | null = null;
+    let pendingCancellations: Array<{ triggerId: string; childSessionId: string }> = [];
+    let pendingCancellationRetryTimer: ReturnType<typeof setInterval> | null = null;
+    let pendingCancellationRetryInFlight = false;
+    const triggerWaits = createTriggerWaitManager();
     let followUpGraceTimer: ReturnType<typeof setTimeout> | null = null;
+    let followUpGraceShutdown: (() => void) | null = null;
     let sessionNameSyncTimer: ReturnType<typeof setInterval> | null = null;
     let lastBroadcastSessionName: string | null = null;
+    let serverClockOffset = 0;
+
+    // ── delink_children emit helper ────────────────────────────────────────
+    const DELINK_RETRY_DELAY_MS = 3_000;
+
+    function clearPendingDelinkRetryTimer(epoch?: number | null): void {
+        if (pendingDelinkRetryTimer === null) return;
+        if (epoch !== undefined && epoch !== null && pendingDelinkRetryEpoch !== epoch) return;
+        clearTimeout(pendingDelinkRetryTimer);
+        pendingDelinkRetryTimer = null;
+        pendingDelinkRetryEpoch = null;
+    }
+
+    function emitDelinkChildren(rawEpoch: number): void {
+        if (!rctx.relay || !rctx.sioSocket?.connected) return;
+        rctx.sioSocket.emit("delink_children", {
+            token: rctx.relay.token,
+            epoch: rawEpoch + serverClockOffset,
+        }, (result: { ok: boolean; error?: string }) => {
+            const plan = evaluateDelinkChildrenAck({
+                ackEpoch: rawEpoch,
+                pendingEpoch: pendingDelinkEpoch,
+                retryEpoch: pendingDelinkRetryEpoch,
+                ok: result?.ok,
+                connected: Boolean(rctx.sioSocket?.connected),
+            });
+
+            if (plan.ignoreAck) {
+                console.log("pizzapi: ignoring stale delink_children ack (superseded by a later /new)");
+                if (plan.clearRetryTimer) clearPendingDelinkRetryTimer(rawEpoch);
+                return;
+            }
+
+            if (plan.scheduleRetry) {
+                console.log(`pizzapi: delink_children server error: ${result?.error ?? "unknown"} — scheduling retry in ${DELINK_RETRY_DELAY_MS}ms`);
+                if (plan.clearRetryTimer) clearPendingDelinkRetryTimer(rawEpoch);
+                pendingDelinkRetryEpoch = rawEpoch;
+                pendingDelinkRetryTimer = setTimeout(() => {
+                    pendingDelinkRetryTimer = null;
+                    pendingDelinkRetryEpoch = null;
+                    if (pendingDelinkEpoch === rawEpoch && rctx.sioSocket?.connected) {
+                        console.log("pizzapi: retrying delink_children after server error");
+                        emitDelinkChildren(rawEpoch);
+                    }
+                }, DELINK_RETRY_DELAY_MS);
+                return;
+            }
+
+            if (plan.clearRetryTimer) clearPendingDelinkRetryTimer(rawEpoch);
+            if (!plan.clearPendingDelink) return;
+            pendingDelink = false;
+            pendingDelinkEpoch = null;
+            staleChildIds.clear();
+            console.log("pizzapi: delink_children confirmed by server — retry guard cleared");
+        });
+    }
+
+    function clearPendingDelinkOwnParentRetryTimer(): void {
+        if (pendingDelinkOwnParentRetryTimer === null) return;
+        clearTimeout(pendingDelinkOwnParentRetryTimer);
+        pendingDelinkOwnParentRetryTimer = null;
+    }
+
+    function emitDelinkOwnParent(): void {
+        if (!pendingDelinkOwnParent || !rctx.relay || !rctx.sioSocket?.connected) return;
+        rctx.sioSocket.emit(
+            "delink_own_parent",
+            { token: rctx.relay.token, oldParentId: stalePrimaryParentId },
+            (result: { ok: boolean; error?: string }) => {
+                const plan = evaluateDelinkOwnParentAck({
+                    ok: result?.ok,
+                    pending: pendingDelinkOwnParent,
+                    connected: Boolean(rctx.sioSocket?.connected),
+                });
+
+                if (plan.confirmed) {
+                    clearPendingDelinkOwnParentRetryTimer();
+                    pendingDelinkOwnParent = false;
+                    stalePrimaryParentId = null;
+                    console.log("pizzapi: delink_own_parent confirmed by server");
+                    return;
+                }
+
+                if (!plan.scheduleRetry) return;
+                console.log(`pizzapi: delink_own_parent server error: ${result?.error ?? "unknown"} — scheduling retry in ${DELINK_RETRY_DELAY_MS}ms`);
+                clearPendingDelinkOwnParentRetryTimer();
+                pendingDelinkOwnParentRetryTimer = setTimeout(() => {
+                    pendingDelinkOwnParentRetryTimer = null;
+                    if (pendingDelinkOwnParent && rctx.sioSocket?.connected) {
+                        console.log("pizzapi: retrying delink_own_parent after server error");
+                        emitDelinkOwnParent();
+                    }
+                }, DELINK_RETRY_DELAY_MS);
+            },
+        );
+    }
+
+    // ── Cancellation retry loop ───────────────────────────────────────────
+
+    function stopPendingCancellationRetryLoop() {
+        if (pendingCancellationRetryTimer !== null) {
+            clearInterval(pendingCancellationRetryTimer);
+            pendingCancellationRetryTimer = null;
+        }
+        pendingCancellationRetryInFlight = false;
+    }
+
+    function startPendingCancellationRetryLoop() {
+        if (pendingCancellationRetryTimer !== null) return;
+        pendingCancellationRetryTimer = setInterval(() => {
+            void retryPendingTriggerCancellations("periodic");
+        }, TRIGGER_CANCELLATION_RETRY_INTERVAL_MS);
+    }
+
+    function retryPendingTriggerCancellations(reason: string) {
+        if (pendingCancellations.length === 0) {
+            stopPendingCancellationRetryLoop();
+            return;
+        }
+        if (!rctx.relay || !rctx.sioSocket?.connected) return;
+        if (pendingCancellationRetryInFlight) return;
+
+        pendingCancellationRetryInFlight = true;
+        const token = rctx.relay.token;
+        const cancellationsToRetry = [...pendingCancellations];
+        let successfulCancellations = 0;
+        let failedCancellations = 0;
+        let completedResponses = 0;
+        let finished = false;
+
+        const finishBatch = () => {
+            if (finished) return;
+            finished = true;
+            pendingCancellationRetryInFlight = false;
+            if (pendingCancellations.length === 0) {
+                stopPendingCancellationRetryLoop();
+            }
+        };
+
+        const timeout = setTimeout(() => {
+            if (finished) return;
+            const missing = cancellationsToRetry.length - completedResponses;
+            failedCancellations += missing;
+            console.log(`pizzapi: trigger cancellation retry timed out (${missing} ack callback(s) missing) — will retry`);
+            finishBatch();
+        }, 10_000);
+
+        console.log(`pizzapi: retrying ${cancellationsToRetry.length} deferred trigger cancellation(s) (${reason})`);
+
+        for (const { triggerId, childSessionId } of cancellationsToRetry) {
+            rctx.sioSocket.emit("trigger_response" as any, {
+                token,
+                triggerId,
+                response: "Parent started a new session — trigger cancelled.",
+                action: "cancel",
+                targetSessionId: childSessionId,
+            }, (result: { ok: boolean; error?: string }) => {
+                if (finished) return;
+                completedResponses++;
+
+                if (result?.ok) {
+                    successfulCancellations++;
+                    const index = pendingCancellations.findIndex(
+                        (c) => c.triggerId === triggerId && c.childSessionId === childSessionId,
+                    );
+                    if (index >= 0) {
+                        pendingCancellations.splice(index, 1);
+                    }
+                } else {
+                    failedCancellations++;
+                    console.log(`pizzapi: trigger cancellation failed for ${triggerId}: ${result?.error ?? "unknown"} — will retry`);
+                }
+
+                if (completedResponses === cancellationsToRetry.length) {
+                    clearTimeout(timeout);
+                    console.log(`pizzapi: trigger cancellation retry complete: ${successfulCancellations} succeeded, ${failedCancellations} failed`);
+                    finishBatch();
+                }
+            });
+        }
+    }
 
     // ── RelayContext creation ─────────────────────────────────────────────
     const rctx: RelayContext = {
@@ -276,34 +478,53 @@ export const remoteExtension: ExtensionFactory = (pi) => {
 
         waitForTriggerResponse(triggerId: string, timeoutMs: number, signal?: AbortSignal): Promise<TriggerResponse> {
             return new Promise<TriggerResponse>((resolve) => {
-                const timeout = setTimeout(() => {
+                const expectedParentSessionId = rctx.parentSessionId;
+                let settled = false;
+                let unregisterWait = () => {};
+
+                const finish = (result: TriggerResponse) => {
+                    if (settled) return;
+                    settled = true;
                     cleanup();
-                    resolve({ response: "Trigger timed out — no response from parent within 5 minutes.", cancelled: true });
+                    resolve(result);
+                };
+
+                const timeout = setTimeout(() => {
+                    finish({ response: "Trigger timed out — no response from parent within 5 minutes.", cancelled: true });
                 }, timeoutMs);
 
                 const handler = (data: { triggerId: string; response: string; action?: string }) => {
                     if (data.triggerId === triggerId) {
-                        cleanup();
-                        resolve({ response: data.response, action: data.action, cancelled: false });
+                        finish({
+                            response: data.response,
+                            action: data.action,
+                            cancelled: isCancelTriggerAction(data.action),
+                        });
                     }
                 };
 
                 const errorHandler = (data: { targetSessionId: string; error: string }) => {
-                    if (data.targetSessionId === rctx.parentSessionId) {
-                        cleanup();
-                        resolve({ response: `Trigger delivery failed: ${data.error}`, cancelled: true });
+                    if (expectedParentSessionId && data.targetSessionId === expectedParentSessionId) {
+                        finish({ response: `Trigger delivery failed: ${data.error}`, cancelled: true });
                     }
+                };
+
+                const abortHandler = () => {
+                    finish({ response: "Aborted", cancelled: true });
                 };
 
                 const cleanup = () => {
                     clearTimeout(timeout);
+                    unregisterWait();
                     rctx.sioSocket?.off("trigger_response" as any, handler);
                     rctx.sioSocket?.off("session_message_error" as any, errorHandler);
+                    signal?.removeEventListener("abort", abortHandler);
                 };
 
+                unregisterWait = triggerWaits.register(triggerId, finish);
                 rctx.sioSocket!.on("trigger_response" as any, handler);
                 rctx.sioSocket!.on("session_message_error" as any, errorHandler);
-                signal?.addEventListener("abort", () => { cleanup(); resolve({ response: "Aborted", cancelled: true }); });
+                signal?.addEventListener("abort", abortHandler);
             });
         },
     };
@@ -397,13 +618,26 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             clearTimeout(followUpGraceTimer);
             followUpGraceTimer = null;
         }
+        followUpGraceShutdown = null;
+    }
+
+    /** Trigger an immediate shutdown if the follow-up grace timer is running. */
+    function shutdownFollowUpGraceImmediately() {
+        if (followUpGraceShutdown) {
+            const shutdown = followUpGraceShutdown;
+            clearFollowUpGrace();
+            console.log("pizzapi: parent delinked while follow-up grace active — shutting down immediately");
+            shutdown();
+        }
     }
 
     function startFollowUpGrace(ctx: { shutdown: () => void }) {
         clearFollowUpGrace();
+        followUpGraceShutdown = ctx.shutdown;
         console.log(`pizzapi: waiting ${FOLLOWUP_GRACE_MS / 1000}s for parent follow-up before shutting down`);
         followUpGraceTimer = setTimeout(() => {
             followUpGraceTimer = null;
+            followUpGraceShutdown = null;
             console.log("pizzapi: follow-up grace period expired — shutting down");
             ctx.shutdown();
         }, FOLLOWUP_GRACE_MS);
@@ -438,13 +672,74 @@ export const remoteExtension: ExtensionFactory = (pi) => {
     }
 
     // ── Connection wrappers ───────────────────────────────────────────────
-    // Wrap connect/disconnect with the factory-scoped handlers they need.
 
     const connectionHandlers: ConnectionHandlers = {
         clearFollowUpGrace,
         setModelFromWeb,
         sendUserMessage: (msg: unknown, opts?: { deliverAs?: "followUp" | "steer" }) =>
             pi.sendUserMessage(msg as any, opts),
+
+        // ── Delink handlers ───────────────────────────────────────────────
+        isPendingDelinkOwnParent: () => pendingDelinkOwnParent,
+        setServerClockOffset: (offset: number) => { serverClockOffset = offset; },
+        isStaleChild: (sessionId: string) => staleChildIds.has(sessionId),
+        getStalePrimaryParentId: () => stalePrimaryParentId,
+
+        onParentExplicitlyDelinked: () => {
+            const cancelledWaits = triggerWaits.cancelAll("Parent started a new session — trigger cancelled.");
+            if (cancelledWaits > 0) {
+                console.log(`pizzapi: parent explicitly delinked (wasDelinked) — cancelled ${cancelledWaits} pending trigger wait(s)`);
+            }
+            shutdownFollowUpGraceImmediately();
+            console.log(`pizzapi: parent explicitly delinked — clearing parent link permanently`);
+            rctx.parentSessionId = null;
+            rctx.isChildSession = false;
+        },
+
+        onParentTransientlyOffline: () => {
+            console.log(`pizzapi: parent temporarily offline (${rctx.parentSessionId}) — preserving parent link for reconnect`);
+            rctx.isChildSession = false;
+        },
+
+        onParentDelinked: (ack?: (result: { ok: boolean }) => void) => {
+            if (rctx.isChildSession) {
+                const cancelled = triggerWaits.cancelAll("Parent started a new session — trigger cancelled.");
+                console.log(`pizzapi: parent delinked — this session is no longer a child${cancelled > 0 ? ` — cancelled ${cancelled} pending trigger wait(s)` : ""}`);
+                rctx.parentSessionId = null;
+                rctx.isChildSession = false;
+                shutdownFollowUpGraceImmediately();
+            }
+            ack?.({ ok: true });
+        },
+
+        flushDeferredDelinks: () => {
+            if (pendingDelink && pendingDelinkEpoch !== null && rctx.sioSocket?.connected) {
+                emitDelinkChildren(pendingDelinkEpoch);
+                console.log("pizzapi: flushed deferred delink_children after reconnect");
+            }
+            if (pendingDelinkOwnParent && rctx.sioSocket?.connected) {
+                emitDelinkOwnParent();
+                console.log("pizzapi: flushed deferred delink_own_parent after reconnect");
+            }
+            if (pendingCancellations.length > 0 && rctx.sioSocket?.connected) {
+                startPendingCancellationRetryLoop();
+                retryPendingTriggerCancellations("registered");
+            }
+        },
+
+        onDelinkDisconnect: () => {
+            stopPendingCancellationRetryLoop();
+            clearPendingDelinkRetryTimer();
+            clearPendingDelinkOwnParentRetryTimer();
+        },
+
+        onSocketTeardown: () => {
+            stopPendingCancellationRetryLoop();
+        },
+
+        getParentSessionIdForRegister: () => {
+            return rctx.parentSessionId ?? (pendingDelinkOwnParent ? null : undefined);
+        },
     };
 
     function doConnect() {
@@ -452,7 +747,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
     }
 
     function doDisconnect() {
-        disconnect(rctx);
+        disconnect(rctx, connectionHandlers);
     }
 
     // ── Session lifecycle events ──────────────────────────────────────────
@@ -476,10 +771,75 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         }
     });
 
-    pi.on("session_switch", (_event, ctx) => {
+    pi.on("session_switch", (event, ctx) => {
         rctx.latestCtx = ctx;
         rctx.sessionStartedAt = Date.now();
         rctx.isAgentActive = false;
+
+        // ── /new cleanup: cancel pending triggers and delink children ─────
+        if (event.reason === "new") {
+            staleChildIds.clear();
+            for (const entry of receivedTriggers.values()) {
+                staleChildIds.add(entry.sourceSessionId);
+            }
+            for (const { childSessionId } of pendingCancellations) {
+                staleChildIds.add(childSessionId);
+            }
+
+            const { cancelled, sent, failed } = clearAndCancelPendingTriggers(
+                (confirmedTriggerId, confirmedChildSessionId) => {
+                    const idx = pendingCancellations.findIndex(
+                        (c) => c.triggerId === confirmedTriggerId && c.childSessionId === confirmedChildSessionId,
+                    );
+                    if (idx >= 0) {
+                        pendingCancellations.splice(idx, 1);
+                        console.log(`pizzapi: trigger cancellation confirmed for ${confirmedTriggerId} — removed from retry queue`);
+                        if (pendingCancellations.length === 0) {
+                            stopPendingCancellationRetryLoop();
+                        }
+                    }
+                },
+            );
+            if (cancelled > 0) {
+                console.log(`pizzapi: cancelled ${cancelled} pending trigger(s) on session switch (${sent.length} sent-pending-ack, ${failed.length} deferred)`);
+            }
+
+            const allNeedingConfirmation = [...sent, ...failed];
+            if (allNeedingConfirmation.length > 0) {
+                pendingCancellations = [...pendingCancellations, ...allNeedingConfirmation];
+                for (const { childSessionId } of allNeedingConfirmation) {
+                    staleChildIds.add(childSessionId);
+                }
+                if (rctx.relay && rctx.sioSocket?.connected) {
+                    startPendingCancellationRetryLoop();
+                }
+            }
+
+            const rawDelinkEpoch = Date.now();
+            pendingDelink = true;
+            pendingDelinkEpoch = rawDelinkEpoch;
+            clearPendingDelinkRetryTimer();
+            if (rctx.relay && rctx.sioSocket?.connected) {
+                emitDelinkChildren(rawDelinkEpoch);
+            }
+
+            if (rctx.isChildSession) {
+                const cancelledChild = triggerWaits.cancelAll("Session switched — parent link cleared.");
+                console.log(`pizzapi: clearing own parent link on /new${cancelledChild > 0 ? ` — cancelled ${cancelledChild} pending trigger wait(s)` : ""}`);
+                pendingDelinkOwnParent = true;
+                clearPendingDelinkOwnParentRetryTimer();
+                stalePrimaryParentId = rctx.parentSessionId;
+                if (rctx.relay && rctx.sioSocket?.connected) {
+                    emitDelinkOwnParent();
+                }
+                rctx.parentSessionId = null;
+                rctx.isChildSession = false;
+                clearFollowUpGrace();
+            }
+        }
+
+        sessionCompleteFired = false;
+
         installFooter(rctx, ctx);
         startSessionNameSync();
         rctx.setRelayStatus(
