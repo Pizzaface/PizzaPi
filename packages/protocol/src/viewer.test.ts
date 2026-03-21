@@ -88,6 +88,16 @@ describe("viewer — ViewerServerToClientEvents payloads", () => {
     const p: Payload = { message: "Unauthorized" };
     expect(typeof p.message).toBe("string");
   });
+
+  test("trigger_error carries message and triggerId", () => {
+    type Payload = Parameters<ViewerServerToClientEvents["trigger_error"]>[0];
+    const p: Payload = {
+      message: "Child session is no longer available",
+      triggerId: "trig-abc123",
+    };
+    expect(typeof p.message).toBe("string");
+    expect(typeof p.triggerId).toBe("string");
+  });
 });
 
 describe("viewer — ViewerClientToServerEvents payloads", () => {
