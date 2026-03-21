@@ -168,6 +168,25 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
             }
 
             if (params.model) {
+                // Client-side defense: reject hidden models before making the
+                // network call. The server also enforces this, but failing fast
+                // here gives a clearer error message without a round-trip.
+                let hiddenModelKeys: Set<string>;
+                try {
+                    const raw = process.env.PIZZAPI_HIDDEN_MODELS;
+                    hiddenModelKeys = raw
+                        ? new Set(JSON.parse(raw).filter((x: unknown): x is string => typeof x === "string"))
+                        : new Set();
+                } catch {
+                    hiddenModelKeys = new Set();
+                }
+                const requestedKey = `${params.model.provider}/${params.model.id}`;
+                if (hiddenModelKeys.has(requestedKey)) {
+                    return ok(`Error: Model ${requestedKey} is not available.`, {
+                        error: "Requested model is not available",
+                    });
+                }
+
                 body.model = {
                     provider: params.model.provider,
                     id: params.model.id,

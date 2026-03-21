@@ -22,6 +22,7 @@ import { getHiddenModels } from "../user-hidden-models.js";
 import { cwdMatchesRoots } from "../security.js";
 import { isValidSkillName } from "../validation.js";
 import { parseJsonArray } from "./utils.js";
+import { isHiddenModel } from "./model-guard.js";
 import type { RouteHandler } from "./types.js";
 
 export const handleRunnersRoute: RouteHandler = async (req, url) => {
@@ -97,15 +98,23 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
             }
         }
 
+        // Block spawns that explicitly request a hidden model.
+        // Hidden models are filtered from list_models output but must also be
+        // enforced as a hard block here so they can't be reached by name.
+        // This check runs before the socket lookup so we reject cheaply.
+        let hiddenModels: string[] = [];
+        try { hiddenModels = await getHiddenModels(identity.userId); } catch {}
+
+        if (requestedModel && isHiddenModel(hiddenModels, requestedModel)) {
+            return Response.json({ error: "Requested model is not available" }, { status: 400 });
+        }
+
         const runnerSocket = getLocalRunnerSocket(runnerId);
         if (!runnerSocket) {
             return Response.json({ error: "Runner is not connected to this server" }, { status: 502 });
         }
 
         const sessionId = crypto.randomUUID();
-
-        let hiddenModels: string[] = [];
-        try { hiddenModels = await getHiddenModels(identity.userId); } catch {}
 
         // Validate parentSessionId ownership BEFORE forwarding to the runner.
         // The worker activates child trigger mode from the parent ID it receives,
