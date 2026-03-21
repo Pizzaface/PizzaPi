@@ -312,10 +312,9 @@ describe("isDestructiveCommand", () => {
         expect(isDestructiveCommand("git bisect reset")).toBe(true);
     });
 
-    test("allows git format-patch to stdout (read-only)", () => {
-        expect(isDestructiveCommand("git format-patch HEAD~3")).toBe(false);
-        expect(isDestructiveCommand("git format-patch --stdout HEAD~3")).toBe(false);
-        expect(isDestructiveCommand("git format-patch -1 HEAD")).toBe(false);
+    test("flags git format-patch (writes .patch files by default)", () => {
+        expect(isDestructiveCommand("git format-patch HEAD~3")).toBe(true);
+        expect(isDestructiveCommand("git format-patch -1 HEAD")).toBe(true);
     });
 
     test("flags git filter-branch (rewrites history)", () => {
@@ -339,10 +338,7 @@ describe("isDestructiveCommand", () => {
         expect(isDestructiveCommand("git notes list HEAD")).toBe(false);
     });
 
-    test("flags git format-patch -o <dir> (writes to directory)", () => {
-        expect(isDestructiveCommand("git format-patch -o /tmp/patches HEAD~3")).toBe(true);
-        expect(isDestructiveCommand("git format-patch --output-directory patches/ HEAD~5")).toBe(true);
-    });
+
 
     test("flags git submodule update (modifies working tree)", () => {
         expect(isDestructiveCommand("git submodule update --init")).toBe(true);

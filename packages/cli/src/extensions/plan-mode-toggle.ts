@@ -50,7 +50,7 @@ const GIT_SAFE_SUBCOMMANDS = new Set([
     // Diff plumbing (read-only)
     "diff-tree", "diff-files", "diff-index",
     // History / patch inspection (read-only, stdout-only)
-    "archive", "cherry", "range-diff", "format-patch",
+    "archive", "cherry", "range-diff",
     // Notes (read-only subcommands; destructive overrides handle write ops)
     "notes",
     // Misc read-only
@@ -87,8 +87,7 @@ const GIT_SAFE_SUBCOMMAND_DESTRUCTIVE_OVERRIDES: RegExp[] = [
     // notes: add/edit/remove/copy/merge/prune are write operations; only show/list are safe
     /^\s*git\s+notes\s+(add|edit|remove|copy|merge|prune)\b/i,
     // notes bare (no subcommand) defaults to notes list — but bare `git notes` is safe; handled above
-    // format-patch: -o <dir> writes patches to a directory instead of stdout
-    /^\s*git\s+format-patch\b.*\s(-o\s|-o\S|--output-directory\b|--output-directory=)/i,
+
 ];
 
 /**
