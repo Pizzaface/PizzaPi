@@ -79,7 +79,9 @@ const MCP_SERVER_SCRIPT = PLUGIN_SCRIPTS_COMPILED
   : join(PLUGIN_DIR, "scripts", "mcp-server.ts");
 
 function shellQuote(arg: string): string {
-  return `"${arg.replace(/"/g, '\\"')}"`;
+  // Escape backslashes first, then double-quotes, so a trailing backslash
+  // or a `\"` sequence in the input cannot break out of the quoted string.
+  return `"${arg.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 }
 
 function getHookHandlerCommand(ipcSocketPath: string): string {
@@ -993,7 +995,7 @@ function emitSessionActive(): void {
     messages: capOversizedMessages(messages),
     cwd,
     sessionName: currentSessionName,
-    availableModels: currentModelObject ? [currentModelObject] : [],
+    availableModels: listAvailableModels().models,
     todoList: currentTodoList,
     thinkingLevel: currentThinkingLevel,
     workerType: "claude-code",
