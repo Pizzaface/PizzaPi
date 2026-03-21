@@ -346,10 +346,11 @@ function deduplicateAssistantMessages(messages: RelayMessage[]): RelayMessage[] 
       const winnerBlocks = Array.isArray(winnerMsg.content) ? (winnerMsg.content as unknown[]) : null;
       const latestBlocks = Array.isArray(latestMsg.content) ? (latestMsg.content as unknown[]) : null;
 
-      const mergedBlocks =
-        winnerBlocks && latestBlocks
-          ? (latestBlocks.length >= winnerBlocks.length ? latestBlocks : winnerBlocks)
-          : latestBlocks ?? winnerBlocks;
+      // Always use the latest snapshot's block array as the authoritative tool-call
+      // set. The older (winner) snapshot may contain tool calls that the server
+      // intentionally dropped; using the longer array would resurrect them as
+      // dangling pending cards.
+      const mergedBlocks = latestBlocks ?? winnerBlocks;
 
       if (mergedBlocks) {
         const argsById = collectValidToolArgsByCallId(winnerMsg);

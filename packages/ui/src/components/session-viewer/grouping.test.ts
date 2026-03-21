@@ -451,6 +451,49 @@ describe("groupToolExecutionMessages", () => {
         expect(result.filter((m) => m.role === "tool" && m.toolCallId === "tc2")).toHaveLength(0);
     });
 
+    test("P2 regression: older partial winner does not resurrect tool calls dropped by latest snapshot", () => {
+        // Scenario: older partial has [text, tc1, tc2], latest errored has [text, tc1].
+        // tc1 gets a real result, so the vote picks the non-errored partial as winner.
+        // The merge must NOT copy tc2 from the winner since the server dropped it.
+        const messages: RelayMessage[] = [
+            msg({
+                key: "a1-partial",
+                role: "assistant",
+                content: [
+                    { type: "text", text: "Running tools" },
+                    { type: "toolCall", name: "bash", id: "tc1", arguments: { command: "ls" } },
+                    { type: "toolCall", name: "read_file", id: "tc2", arguments: { path: "/tmp/x" } },
+                ],
+            }),
+            msg({
+                key: "a1-final",
+                role: "assistant",
+                stopReason: "error",
+                errorMessage: "Stream error",
+                timestamp: 100,
+                content: [
+                    { type: "text", text: "Running tools" },
+                    { type: "toolCall", name: "bash", id: "tc1", arguments: { command: "ls" } },
+                ],
+            }),
+            msg({
+                key: "r1",
+                role: "tool",
+                toolCallId: "tc1",
+                content: "file1.txt\nfile2.txt",
+                timestamp: 101,
+            }),
+        ];
+
+        const result = groupToolExecutionMessages(messages);
+        // tc2 should NOT appear — the latest snapshot intentionally removed it
+        const tc2Tools = result.filter((m) => m.role === "tool" && m.toolCallId === "tc2");
+        expect(tc2Tools).toHaveLength(0);
+        // tc1 should still have its result
+        const tc1Tools = result.filter((m) => m.role === "tool" && m.toolCallId === "tc1");
+        expect(tc1Tools).toHaveLength(1);
+    });
+
     test("incomplete tool args fall back to empty object (not raw string)", () => {
         // When the only version of an assistant message is the errored one
         // (no streaming partial), parseToolArguments must return {} rather than
