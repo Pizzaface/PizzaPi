@@ -24,6 +24,10 @@ export interface TranslationResult {
   questions?: Array<{ question: string; options: string[]; type?: string }>;
   // todoWrite side-effect
   todoList?: Array<{ id: string; content: string; status: string; priority: string }>;
+  // set_session_name side-effect
+  sessionName?: string;
+  // token usage from result events
+  tokenUsage?: { inputTokens: number; outputTokens: number; cacheCreationInputTokens?: number; cacheReadInputTokens?: number };
 }
 
 export function translateNdjsonLine(line: string): TranslationResult {
@@ -66,12 +70,16 @@ export function translateNdjsonLine(line: string): TranslationResult {
     const message = msg.message as Record<string, unknown> | undefined;
     const content = Array.isArray(message?.content) ? message.content as unknown[] : [];
 
+    // Side-effect extraction
+    let todoList: TranslationResult["todoList"] | undefined;
+    let sessionName: string | undefined;
+
     for (const block of content) {
       if (!block || typeof block !== "object") continue;
       const b = block as Record<string, unknown>;
       if (b.type !== "tool_use") continue;
 
-      // AskUserQuestion — needs special handling
+      // AskUserQuestion — needs special handling (returns immediately)
       if (b.name === "AskUserQuestion") {
         const input = b.input as Record<string, unknown> | undefined;
         const rawQs = Array.isArray(input?.questions) ? input!.questions as unknown[] : [];
@@ -90,28 +98,34 @@ export function translateNdjsonLine(line: string): TranslationResult {
       }
 
       // TodoWrite — extract todo list as a side-effect
-      if (b.name === "TodoWrite") {
+      if (b.name === "TodoWrite" || b.name === "update_todo") {
         const input = b.input as Record<string, unknown> | undefined;
-        const todos = Array.isArray(input?.todos)
-          ? (input!.todos as unknown[]).filter((t): t is Record<string, unknown> => !!t && typeof t === "object").map((t) => ({
-              id: String(t.id ?? ""),
-              content: String(t.content ?? ""),
-              status: String(t.status ?? "pending"),
-              priority: String(t.priority ?? "medium"),
-            }))
-          : [];
-        return {
-          kind: "relay_event",
-          relayEvent: { type: "message_update", role: "assistant", message },
-          todoList: todos,
-        };
+        const rawTodos = Array.isArray(input?.todos) ? input!.todos as unknown[] : [];
+        todoList = rawTodos
+          .filter((t): t is Record<string, unknown> => !!t && typeof t === "object")
+          .map((t) => ({
+            id: String(t.id ?? ""),
+            content: String(t.content ?? t.text ?? ""),
+            status: String(t.status ?? "pending"),
+            priority: String(t.priority ?? "medium"),
+          }));
+      }
+
+      // set_session_name — extract session name as a side-effect
+      if (b.name === "set_session_name") {
+        const input = b.input as Record<string, unknown> | undefined;
+        const name = typeof input?.name === "string" ? input.name.trim() : "";
+        if (name) sessionName = name;
       }
     }
 
-    return {
+    const result: TranslationResult = {
       kind: "relay_event",
       relayEvent: { type: "message_update", role: "assistant", message },
     };
+    if (todoList) result.todoList = todoList;
+    if (sessionName) result.sessionName = sessionName;
+    return result;
   }
 
   // ── User messages (replayed with --replay-user-messages) ──────────────
@@ -124,10 +138,21 @@ export function translateNdjsonLine(line: string): TranslationResult {
 
   // ── Result (turn complete) ────────────────────────────────────────────
   if (type === "result") {
+    // Extract token usage
+    let tokenUsage: TranslationResult["tokenUsage"] | undefined;
+    const usage = msg.usage as Record<string, unknown> | undefined;
+    if (usage && typeof usage === "object") {
+      const inputTokens = typeof usage.input_tokens === "number" ? usage.input_tokens : 0;
+      const outputTokens = typeof usage.output_tokens === "number" ? usage.output_tokens : 0;
+      tokenUsage = { inputTokens, outputTokens };
+      if (typeof usage.cache_creation_input_tokens === "number") tokenUsage.cacheCreationInputTokens = usage.cache_creation_input_tokens;
+      if (typeof usage.cache_read_input_tokens === "number") tokenUsage.cacheReadInputTokens = usage.cache_read_input_tokens;
+    }
+
     return {
       kind: "relay_event",
       relayEvent: {
-        type: "agent_end",
+        type: "turn_end",
         subtype: msg.subtype,
         numTurns: msg.num_turns,
         costUsd: msg.total_cost_usd,
@@ -135,14 +160,22 @@ export function translateNdjsonLine(line: string): TranslationResult {
         isError: msg.is_error,
         usage: msg.usage,
       },
+      ...(tokenUsage ? { tokenUsage } : {}),
     };
   }
 
   // ── Partial streaming events ──────────────────────────────────────────
+  // Translate stream_event into message_update with assistantMessageEvent
+  // so the UI can handle partial streaming content
   if (type === "stream_event") {
     return {
       kind: "relay_event",
-      relayEvent: { type: "message_update_partial", event: msg },
+      relayEvent: {
+        type: "message_update",
+        assistantMessageEvent: {
+          partial: msg,
+        },
+      },
     };
   }
 

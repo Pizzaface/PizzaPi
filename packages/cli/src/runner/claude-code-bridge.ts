@@ -14,10 +14,11 @@
  *   PIZZAPI_RELAY_URL, PIZZAPI_WORKER_PARENT_SESSION_ID
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdtemp, writeFile, rm, chmod } from "node:fs/promises";
 import { join, resolve as resolvePath } from "node:path";
-import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
+import { homedir, tmpdir } from "node:os";
 import { createServer as createNetServer } from "node:net";
 import type { Server as NetServer, Socket as NetSocket } from "node:net";
 import { io, type Socket } from "socket.io-client";
@@ -47,7 +48,9 @@ const initialModelId = process.env.PIZZAPI_WORKER_INITIAL_MODEL_ID?.trim() ?? ""
 // Plugin dir: absolute path to the static plugin directory shipped with the CLI.
 // The runner may execute from either src/runner/*.ts or dist/runner/*.js, but the
 // plugin assets live under packages/cli/src/claude-code-plugin in this repo.
-const PACKAGE_ROOT = resolvePath(new URL("../..", import.meta.url).pathname);
+// Use fileURLToPath (not .pathname) to correctly handle Windows drive letters and
+// URL-encoded characters (e.g. spaces) in the install path.
+const PACKAGE_ROOT = resolvePath(fileURLToPath(new URL("../..", import.meta.url)));
 const PLUGIN_DIR_CANDIDATES = [
   join(PACKAGE_ROOT, "src", "claude-code-plugin"),
   join(PACKAGE_ROOT, "claude-code-plugin"),
@@ -59,6 +62,21 @@ const PLUGIN_DIR: string = (() => {
   }
   return found;
 })();
+
+// Detect whether compiled (.js) plugin scripts exist alongside source (.ts).
+// When compiled scripts exist, invoke them with `node` so packaged installs
+// (where only the pizza binary is on PATH, not bun) work correctly.
+const HOOK_HANDLER_JS = join(PLUGIN_DIR, "scripts", "hook-handler.js");
+const MCP_SERVER_JS = join(PLUGIN_DIR, "scripts", "mcp-server.js");
+const PLUGIN_SCRIPTS_COMPILED = existsSync(HOOK_HANDLER_JS) && existsSync(MCP_SERVER_JS);
+const HOOK_HANDLER_RUNTIME = PLUGIN_SCRIPTS_COMPILED ? "node" : "bun";
+const HOOK_HANDLER_SCRIPT = PLUGIN_SCRIPTS_COMPILED
+  ? HOOK_HANDLER_JS
+  : join(PLUGIN_DIR, "scripts", "hook-handler.ts");
+const MCP_SERVER_RUNTIME = PLUGIN_SCRIPTS_COMPILED ? "node" : "bun";
+const MCP_SERVER_SCRIPT = PLUGIN_SCRIPTS_COMPILED
+  ? MCP_SERVER_JS
+  : join(PLUGIN_DIR, "scripts", "mcp-server.ts");
 
 // ── State ─────────────────────────────────────────────────────────────────
 let tmpDir: string | null = null;
@@ -73,6 +91,15 @@ let messages: unknown[] = [];
 
 // Track whether Claude is currently processing a turn (vs idle/waiting for input)
 let claudeIsWorking = false;
+
+// ── Parity state (matches pi worker heartbeat/session_active contract) ────
+const startTime = Date.now();
+let currentSessionName: string | null = null;
+let currentModelObject: { provider: string; id: string; name: string; reasoning?: boolean } | null = null;
+let currentThinkingLevel: string | null = null;
+let currentTokenUsage: { inputTokens: number; outputTokens: number; cacheCreationInputTokens?: number; cacheReadInputTokens?: number; contextWindow?: number } | null = null;
+let currentTodoList: unknown[] = [];
+let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
 // Pending AskUserQuestion: tool_use_id → { resolve, timer }
 const pendingQuestions = new Map<string, { resolve: (answer: string) => void; timer: ReturnType<typeof setTimeout> }>();
@@ -222,6 +249,72 @@ function emitHeartbeat(status?: string): void {
   forwardEvent(hb);
 }
 
+// ── Capabilities ──────────────────────────────────────────────────────────
+function emitCapabilities(): void {
+  const { models } = listAvailableModels();
+  forwardEvent({
+    type: "capabilities",
+    models,
+    commands: [],
+  });
+}
+
+// ── Heartbeat timer ───────────────────────────────────────────────────────
+function startHeartbeatTimer(): void {
+  if (heartbeatTimer) clearInterval(heartbeatTimer);
+  heartbeatTimer = setInterval(() => {
+    emitHeartbeat();
+  }, 10_000);
+}
+
+function stopHeartbeatTimer(): void {
+  if (heartbeatTimer) {
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+  }
+}
+
+// ── Model string parser ──────────────────────────────────────────────────
+/** Parse a Claude model ID string into a structured model object. */
+function parseModelString(modelStr: string): { provider: string; id: string; name: string; reasoning?: boolean } {
+  const reasoning = /opus|sonnet|claude-4|claude-3/.test(modelStr);
+  return {
+    provider: "anthropic",
+    id: modelStr,
+    name: modelStr,
+    ...(reasoning ? { reasoning: true } : {}),
+  };
+}
+
+// ── Model list ────────────────────────────────────────────────────────────
+/** Well-known models per provider — used to populate pizzapi_list_models. */
+const WELL_KNOWN_MODELS: Array<{ provider: string; id: string; name: string; reasoning?: boolean }> = [
+  { provider: "anthropic", id: "claude-opus-4-5",    name: "Claude Opus 4.5",   reasoning: true },
+  { provider: "anthropic", id: "claude-sonnet-4-5",  name: "Claude Sonnet 4.5", reasoning: true },
+  { provider: "anthropic", id: "claude-haiku-4-5",   name: "Claude Haiku 4.5" },
+  { provider: "anthropic", id: "claude-opus-4",      name: "Claude Opus 4",     reasoning: true },
+  { provider: "anthropic", id: "claude-sonnet-4",    name: "Claude Sonnet 4",   reasoning: true },
+  { provider: "anthropic", id: "claude-haiku-4",     name: "Claude Haiku 4" },
+];
+
+/**
+ * Return models available on this runner.
+ * Always includes the current model so the list is never empty.
+ */
+function listAvailableModels(): { models: Array<{ provider: string; id: string; name: string; reasoning?: boolean }> } {
+  const models = [...WELL_KNOWN_MODELS];
+
+  // Always include the current model so the list is never empty
+  if (
+    currentModelObject &&
+    !models.some((m) => m.provider === currentModelObject!.provider && m.id === currentModelObject!.id)
+  ) {
+    models.unshift(currentModelObject);
+  }
+
+  return { models };
+}
+
 // ── Temp dir and config file generation ──────────────────────────────────
 async function setupTempDir(): Promise<{ ipcSocketPath: string; hooksPath: string; mcpPath: string }> {
   tmpDir = await mkdtemp(join(tmpdir(), "pizzapi-cc-"));
@@ -233,7 +326,7 @@ async function setupTempDir(): Promise<{ ipcSocketPath: string; hooksPath: strin
     hooks: Object.fromEntries(
       ["SessionStart","SessionEnd","PostToolUse","PostToolUseFailure",
        "Stop","SubagentStart","SubagentStop","Notification","UserPromptSubmit","PreCompact"].map(
-        (evt) => [evt, [{ hooks: [{ type: "command", command: `bun "${PLUGIN_DIR}/scripts/hook-handler.ts" --ipc "${ipcSocketPath}"` }] }]]
+        (evt) => [evt, [{ hooks: [{ type: "command", command: `${HOOK_HANDLER_RUNTIME} "${HOOK_HANDLER_SCRIPT}" --ipc "${ipcSocketPath}"` }] }]]
       )
     ),
   };
@@ -243,8 +336,8 @@ async function setupTempDir(): Promise<{ ipcSocketPath: string; hooksPath: strin
   const mcpJson = {
     mcpServers: {
       pizzapi: {
-        command: "bun",
-        args: [`${PLUGIN_DIR}/scripts/mcp-server.ts`],
+        command: MCP_SERVER_RUNTIME,
+        args: [MCP_SERVER_SCRIPT],
         env: {
           PIZZAPI_CC_BRIDGE_IPC: ipcSocketPath,
           PIZZAPI_SESSION_ID: sessionId,

@@ -74,7 +74,48 @@ describe("translateNdjsonLine", () => {
     });
     const result = translateNdjsonLine(line);
     expect(result.kind).toBe("relay_event");
-    expect(result.relayEvent?.type).toBe("agent_end");
+    expect(result.relayEvent?.type).toBe("turn_end");
+  });
+
+  test("extracts tokenUsage from result event", () => {
+    const line = JSON.stringify({
+      type: "result",
+      subtype: "success",
+      num_turns: 1,
+      usage: { input_tokens: 500, output_tokens: 200, cache_creation_input_tokens: 100, cache_read_input_tokens: 50 },
+    });
+    const result = translateNdjsonLine(line);
+    expect(result.tokenUsage).toEqual({
+      inputTokens: 500,
+      outputTokens: 200,
+      cacheCreationInputTokens: 100,
+      cacheReadInputTokens: 50,
+    });
+  });
+
+  test("detects set_session_name in assistant message", () => {
+    const line = JSON.stringify({
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "tool_use", name: "set_session_name", id: "call_1", input: { name: "My Session" } },
+        ],
+      },
+    });
+    const result = translateNdjsonLine(line);
+    expect(result.sessionName).toBe("My Session");
+  });
+
+  test("translates stream_event to message_update with assistantMessageEvent", () => {
+    const line = JSON.stringify({
+      type: "stream_event",
+      delta: { text: "Hello" },
+    });
+    const result = translateNdjsonLine(line);
+    expect(result.kind).toBe("relay_event");
+    expect(result.relayEvent?.type).toBe("message_update");
+    expect((result.relayEvent as any)?.assistantMessageEvent?.partial).toBeDefined();
   });
 
   test("returns unknown for unrecognised line", () => {
