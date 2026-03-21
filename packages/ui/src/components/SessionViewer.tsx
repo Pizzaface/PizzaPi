@@ -80,35 +80,8 @@ import { isTriggerMessage, renderTriggerCard } from "@/components/session-viewer
 
 
 export type { RelayMessage } from "@/components/session-viewer/types";
-
-export interface TodoItem {
-  id: number;
-  text: string;
-  status: "pending" | "in_progress" | "done" | "cancelled";
-}
-
-export interface TokenUsage {
-  input: number;
-  output: number;
-  cacheRead: number;
-  cacheWrite: number;
-  cost: number;
-}
-
-interface ResumeSessionOption {
-  id: string;
-  path: string;
-  name: string | null;
-  modified: string;
-  firstMessage?: string;
-}
-
-export interface QueuedMessage {
-  id: string;
-  text: string;
-  deliverAs: "steer" | "followUp";
-  timestamp: number;
-}
+export type { TodoItem, TokenUsage, QueuedMessage, ResumeSessionOption } from "@/lib/types";
+import type { TodoItem, TokenUsage, QueuedMessage, ResumeSessionOption } from "@/lib/types";
 
 export interface SessionViewerProps {
   sessionId: string | null;

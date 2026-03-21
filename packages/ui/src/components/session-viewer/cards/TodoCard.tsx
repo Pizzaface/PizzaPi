@@ -6,12 +6,7 @@ import {
   ToolCardTitle,
 } from "@/components/ui/tool-card";
 import { PizzaProgress } from "@/components/session-viewer/cards/PizzaProgress";
-
-export interface TodoItem {
-  id: number;
-  text: string;
-  status: "pending" | "in_progress" | "done" | "cancelled";
-}
+import type { TodoItem } from "@/lib/types";
 
 export function TodoCard({ todos }: { todos: TodoItem[] }) {
   const done = todos.filter((t) => t.status === "done").length;
