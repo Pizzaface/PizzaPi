@@ -12,6 +12,19 @@ import {
 import type { RouteHandler } from "./types.js";
 
 /**
+ * Strip ASCII control characters (0x00–0x1F and 0x7F) from a string.
+ *
+ * HTTP header values must not contain raw control characters — Bun throws
+ * when constructing a Response with such a header.  This is the first-line
+ * defence; per-header encoding (RFC 5987, percent-encoding) provides a
+ * second layer.
+ */
+export function sanitizeControlChars(value: string): string {
+    // eslint-disable-next-line no-control-regex
+    return value.replace(/[\x00-\x1F\x7F]/g, "_");
+}
+
+/**
  * Percent-encode a filename per RFC 5987.
  *
  * `encodeURIComponent` leaves `'`, `(`, `)`, `*`, and `!` unencoded, but
@@ -35,8 +48,9 @@ export function rfc5987Encode(value: string): string {
  * the full UTF-8 name percent-encoded.
  */
 export function buildContentDisposition(rawFilename: string, mode: "inline" | "attachment" = "inline"): string {
-    const asciiFallback = rawFilename.replace(/[^\x20-\x7E]/g, "_").replace(/["\\]/g, "_");
-    const encodedName = rfc5987Encode(rawFilename);
+    const sanitized = sanitizeControlChars(rawFilename);
+    const asciiFallback = sanitized.replace(/[^\x20-\x7E]/g, "_").replace(/["\\]/g, "_");
+    const encodedName = rfc5987Encode(sanitized);
     return `${mode}; filename="${asciiFallback}"; filename*=UTF-8''${encodedName}`;
 }
 
@@ -48,7 +62,7 @@ export function buildContentDisposition(rawFilename: string, mode: "inline" | "a
  * filenames like `résumé.txt` or `截图.png` across the wire.
  */
 export function encodeHeaderFilename(value: string): string {
-    return rfc5987Encode(value);
+    return rfc5987Encode(sanitizeControlChars(value));
 }
 
 export const handleAttachmentsRoute: RouteHandler = async (req, url) => {
@@ -72,6 +86,10 @@ export const handleAttachmentsRoute: RouteHandler = async (req, url) => {
         const session = await getSharedSession(sessionId);
         if (!session) {
             return Response.json({ error: "Session is not live" }, { status: 404 });
+        }
+
+        if (session.userId && session.userId !== identity.userId) {
+            return Response.json({ error: "Forbidden" }, { status: 403 });
         }
 
         const formData = await req.formData();

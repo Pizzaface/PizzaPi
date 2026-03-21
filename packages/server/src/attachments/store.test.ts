@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { sanitizeFilename, attachmentMaxFileSizeBytes } from "./store";
+import { sanitizeFilename, sanitizeStoredFilename, attachmentMaxFileSizeBytes } from "./store";
 
 describe("sanitizeFilename", () => {
     test("preserves safe characters", () => {
@@ -31,6 +31,46 @@ describe("sanitizeFilename", () => {
     test("handles all-special characters", () => {
         const result = sanitizeFilename("@#$%^&");
         expect(result).toBe("______");
+    });
+});
+
+describe("sanitizeStoredFilename", () => {
+    test("preserves safe ASCII filenames unchanged", () => {
+        expect(sanitizeStoredFilename("photo.png")).toBe("photo.png");
+        expect(sanitizeStoredFilename("my-file_v2.tar.gz")).toBe("my-file_v2.tar.gz");
+    });
+
+    test("preserves Unicode filenames (non-control non-ASCII characters kept)", () => {
+        expect(sanitizeStoredFilename("résumé.pdf")).toBe("résumé.pdf");
+        expect(sanitizeStoredFilename("截图_2026.png")).toBe("截图_2026.png");
+        expect(sanitizeStoredFilename("Screenshot\u202FPM.png")).toBe("Screenshot\u202FPM.png");
+    });
+
+    test("strips newline (\\n)", () => {
+        expect(sanitizeStoredFilename("evil\nfile.txt")).toBe("evil_file.txt");
+    });
+
+    test("strips carriage return (\\r)", () => {
+        expect(sanitizeStoredFilename("evil\rfile.txt")).toBe("evil_file.txt");
+    });
+
+    test("strips null byte (\\x00)", () => {
+        expect(sanitizeStoredFilename("file\x00name.txt")).toBe("file_name.txt");
+    });
+
+    test("strips all C0 control chars", () => {
+        // Generate a string with chars 0x00 through 0x1F
+        const controlChars = Array.from({ length: 32 }, (_, i) => String.fromCharCode(i)).join("");
+        const result = sanitizeStoredFilename("a" + controlChars + "b");
+        expect(result).not.toMatch(/[\x00-\x1F]/);
+    });
+
+    test("strips DEL (0x7F)", () => {
+        expect(sanitizeStoredFilename("file\x7Fname.txt")).toBe("file_name.txt");
+    });
+
+    test("handles empty string", () => {
+        expect(sanitizeStoredFilename("")).toBe("");
     });
 });
 
