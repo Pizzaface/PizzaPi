@@ -50,6 +50,26 @@ export function extractWorktreeName(
   return firstSlash === -1 ? afterMarker : afterMarker.substring(0, firstSlash);
 }
 
+/**
+ * Given an iterable of cwds, return only the ones that are worktree roots —
+ * i.e. the shortest path under each `/.worktrees/` prefix. This filters out
+ * nested subdirectories inside a worktree (e.g. `.worktrees/feat/login/src`)
+ * so that only the actual root (`.worktrees/feat/login`) is kept.
+ */
+export function worktreeRoots(cwds: Iterable<string>): string[] {
+  const marker = "/.worktrees/";
+  // Collect only cwds that contain the marker
+  const worktreeCwds: string[] = [];
+  for (const cwd of cwds) {
+    if (cwd.includes(marker)) worktreeCwds.push(cwd.replace(/\/$/, ""));
+  }
+
+  // Keep a cwd only if no other (shorter) cwd is a proper prefix of it
+  return worktreeCwds.filter((cwd) =>
+    !worktreeCwds.some((other) => other !== cwd && cwd.startsWith(other + "/")),
+  );
+}
+
 export function formatPathTail(path: string, maxSegments = 2): string {
   if (!path) return "";
   const normalized = path.replace(/\\/g, "/");

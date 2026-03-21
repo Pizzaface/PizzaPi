@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { extractWorktreeName, formatPathTail } from "./path";
+import { extractWorktreeName, formatPathTail, worktreeRoots } from "./path";
 
 describe("formatPathTail", () => {
     test("returns empty string for empty input", () => {
@@ -97,5 +97,52 @@ describe("extractWorktreeName", () => {
 
     test("returns null when nothing after marker", () => {
         expect(extractWorktreeName("/repo/.worktrees/")).toBeNull();
+    });
+
+    test("ignores nested cwds when worktreeRoots filters them", () => {
+        // If raw session cwds include nested subdirs, worktreeRoots strips them
+        const rawCwds = [
+            "/repo/.worktrees/feat/login",
+            "/repo/.worktrees/feat/login/src",
+        ];
+        const roots = worktreeRoots(rawCwds);
+        expect(extractWorktreeName("/repo/.worktrees/feat/login/src", roots)).toBe("feat/login");
+    });
+});
+
+describe("worktreeRoots", () => {
+    test("filters out nested subdirectories", () => {
+        const cwds = [
+            "/repo/.worktrees/feat/login",
+            "/repo/.worktrees/feat/login/src",
+            "/repo/.worktrees/feat/login/src/lib",
+        ];
+        expect(worktreeRoots(cwds)).toEqual(["/repo/.worktrees/feat/login"]);
+    });
+
+    test("keeps multiple distinct worktree roots", () => {
+        const cwds = [
+            "/repo/.worktrees/feat/login",
+            "/repo/.worktrees/fix/bug",
+            "/repo/.worktrees/feat/login/src",
+        ];
+        const roots = worktreeRoots(cwds);
+        expect(roots).toContain("/repo/.worktrees/feat/login");
+        expect(roots).toContain("/repo/.worktrees/fix/bug");
+        expect(roots).toHaveLength(2);
+    });
+
+    test("ignores non-worktree paths", () => {
+        const cwds = ["/projects/app", "/repo/.worktrees/main"];
+        expect(worktreeRoots(cwds)).toEqual(["/repo/.worktrees/main"]);
+    });
+
+    test("returns empty array when no worktree paths", () => {
+        expect(worktreeRoots(["/home/user/code"])).toEqual([]);
+    });
+
+    test("handles trailing slashes", () => {
+        const cwds = ["/repo/.worktrees/feat/login/", "/repo/.worktrees/feat/login/src"];
+        expect(worktreeRoots(cwds)).toEqual(["/repo/.worktrees/feat/login"]);
     });
 });
