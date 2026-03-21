@@ -241,7 +241,7 @@ const TAR_DESTRUCTIVE_SHORT_MODE_PATTERN = /[cruxA]/;
  * When scanning option bundles for mode letters, anything after such a flag
  * is treated as payload (not more flags) to avoid false positives.
  */
-const TAR_SHORT_OPTS_WITH_ATTACHED_ARG = new Set(["f", "C", "X", "T", "I"]);
+const TAR_SHORT_OPTS_WITH_ATTACHED_ARG = new Set(["f", "C", "X", "T", "I", "H"]);
 
 function tarShortOptsForModeScan(shortOpts: string): string {
     let out = "";
@@ -303,7 +303,17 @@ function isDestructivePatchCommand(segment: string): boolean {
 
     // Check for output-writing flags first, which always make patch destructive
     // even if --dry-run is present, because `-o` / `--output` causes file writes.
-    if (/\s-o\s|\s-o\S|--output\b|--output=/i.test(segment)) return true;
+    // Exception: `-o -` and `--output=-` write to stdout (read-only preview), so allow those.
+    const hasOutputFlag = /\s-o\s|\s-o\S|--output\b|--output=/i.test(segment);
+    if (hasOutputFlag) {
+        const isStdout = /\s-o\s-(?:\s|$)|--output=-(?:\s|$)/i.test(segment);
+        if (isStdout) {
+            // Output to stdout is read-only, so treat as safe
+            return false;
+        }
+        // Output to a file is destructive
+        return true;
+    }
 
     // `patch` is generally destructive, but a few explicit flags make it read-only.
     // - `--dry-run` / `--check` verify applicability without modifying files

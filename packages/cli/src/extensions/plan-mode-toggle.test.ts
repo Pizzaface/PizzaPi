@@ -538,6 +538,10 @@ describe("isDestructiveCommand", () => {
         expect(isDestructiveCommand("patch -C -p0 < fix.diff")).toBe(false);
         expect(isDestructiveCommand("patch -zC -p0 < fix.diff")).toBe(true); // -zC is: suffix=C, not check
 
+        // -o - and --output=- write to stdout (read-only preview)
+        expect(isDestructiveCommand("patch -o - file.txt < fix.diff")).toBe(false);
+        expect(isDestructiveCommand("patch --output=- file.txt < fix.diff")).toBe(false);
+
         // Informational flags
         expect(isDestructiveCommand("patch --help")).toBe(false);
         expect(isDestructiveCommand("patch --version")).toBe(false);
@@ -627,6 +631,16 @@ describe("isDestructiveCommand", () => {
         // With actual destructive mode, should still be destructive
         expect(isDestructiveCommand("tar -Ixz -cf archive.tar.xz dir/")).toBe(true);
         expect(isDestructiveCommand("tar -Ixz -xf archive.tar.xz")).toBe(true);
+    });
+
+    test("allows tar list mode with -H flag (format, attached argument)", () => {
+        // -H accepts an attached argument (format name), so `-Hposix` should not
+        // misinterpret the `x` in `posix` as extract mode
+        expect(isDestructiveCommand("tar -Hposix -tf archive.tar")).toBe(false);
+        expect(isDestructiveCommand("tar -Hposix -tvf archive.tar")).toBe(false);
+        // With actual destructive mode, should still be destructive
+        expect(isDestructiveCommand("tar -Hposix -cf archive.tar dir/")).toBe(true);
+        expect(isDestructiveCommand("tar -Hposix -xf archive.tar")).toBe(true);
     });
 
     test("flags gawk with in-place editing via the inplace module", () => {
