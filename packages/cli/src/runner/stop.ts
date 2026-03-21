@@ -10,7 +10,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { defaultStatePath, isPidRunning } from "./daemon.js";
+import { defaultStatePath, isPidRunning } from "./runner-state.js";
 
 export async function runStop(): Promise<number> {
     const statePath = defaultStatePath();

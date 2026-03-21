@@ -26,7 +26,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { defaultStatePath } from "./daemon.js";
+import { defaultStatePath } from "./runner-state.js";
 import { setLogComponent, logInfo, logError } from "./logger.js";
 
 const RESTART_DELAY_BASE = 2_000;  // 2 s

@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { extractHookSummary } from "./daemon.js";
+import { extractHookSummary } from "./hook-summary.js";
 import type { HooksConfig } from "../config.js";
 
 describe("extractHookSummary", () => {
