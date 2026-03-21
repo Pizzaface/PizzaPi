@@ -31,6 +31,7 @@ import {
     isChildDelinked,
     clearParentSessionId,
     refreshChildSessionsTTL,
+    removePendingParentDelinkChild,
     getRunner as getRunnerState,
 } from "../sio-state.js";
 import {
@@ -115,6 +116,7 @@ export async function registerTuiSession(
     // deferred disconnect fires → endSharedSession kills the new session →
     // Socket.IO reconnects → repeat.
     const existing = await getSession(sessionId);
+    const previousParentSessionId = existing?.parentSessionId ?? null;
     if (existing) {
         const oldSocket = localTuiSockets.get(sessionId);
         if (oldSocket && oldSocket !== socket) {
@@ -174,20 +176,10 @@ export async function registerTuiSession(
         const candidateParentId = resolvedParentSessionId;
         const parentSession = await getSession(resolvedParentSessionId);
         if (!parentSession) {
-            // Redis miss means the parent is not connected — clear the link
-            // so the child falls back to normal viewer/TUI interaction
-            // instead of sending triggers to a dead parent ID.  The child
-            // CLI will re-send parentSessionId on its next reconnect; if
-            // the parent is back by then the link is restored naturally.
-            //
-            // Also evict the child from the parent's membership set so that
-            // isChildOfParent() returns false even before TTL expiry.
-            await severStaleParentLink({
-                parentSessionId: candidateParentId,
-                childSessionId: sessionId,
-                clearParentSessionId,
-                removeChildSession,
-            });
+            // Redis miss means the parent is temporarily offline — keep the
+            // child in the membership set so future delink_children snapshots
+            // can still find it.  The child CLI still preserves parentSessionId
+            // and will re-send it when the parent reconnects.
             resolvedParentSessionId = null;
         } else if (parentSession.userId !== userId) {
             // Cross-user link attempt — evict from membership set as well.
@@ -246,6 +238,12 @@ export async function registerTuiSession(
     // This is the authoritative place for linking — no more racy pre-seeding.
     if (resolvedParentSessionId) {
         await addChildSession(resolvedParentSessionId, sessionId);
+        if (previousParentSessionId) {
+            // The child is now linked to a parent again, so any old retry
+            // entries for its previous parent can be discarded to avoid
+            // later delink_children hits re-delinking this child incorrectly.
+            await removePendingParentDelinkChild(previousParentSessionId, sessionId);
+        }
     }
 
     // Store local socket reference
