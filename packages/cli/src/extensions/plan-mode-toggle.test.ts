@@ -517,10 +517,19 @@ describe("isDestructiveCommand", () => {
         expect(isDestructiveCommand("mknod -m 660 /tmp/fifo p")).toBe(true);
     });
 
-    test("flags patch (applies diffs, modifies files)", () => {
+    test("flags patch (applies diffs) but allows explicit read-only flags", () => {
         expect(isDestructiveCommand("patch -p1 < changes.diff")).toBe(true);
         expect(isDestructiveCommand("patch file.txt patch.diff")).toBe(true);
         expect(isDestructiveCommand("patch --strip=1 < fix.patch")).toBe(true);
+
+        // Read-only verification modes
+        expect(isDestructiveCommand("patch --dry-run -p1 < changes.diff")).toBe(false);
+        expect(isDestructiveCommand("patch --check -p1 < changes.diff")).toBe(false);
+        expect(isDestructiveCommand("patch -C -p1 < changes.diff")).toBe(false);
+
+        // Informational flags
+        expect(isDestructiveCommand("patch --help")).toBe(false);
+        expect(isDestructiveCommand("patch --version")).toBe(false);
     });
 
     test("flags tar with create flag (-c / --create)", () => {
@@ -586,6 +595,15 @@ describe("isDestructiveCommand", () => {
         // Legacy positional flag style (list only)
         expect(isDestructiveCommand("tar tf archive.tar")).toBe(false);
         expect(isDestructiveCommand("tar tvf archive.tar")).toBe(false);
+    });
+
+    test("allows tar list mode with -C / -X modifiers (case-sensitive short options)", () => {
+        expect(isDestructiveCommand("tar -C /tmp -tf archive.tar")).toBe(false);
+        expect(isDestructiveCommand("tar -X excludes.txt -tf archive.tar")).toBe(false);
+        expect(isDestructiveCommand("tar -C /tmp -X excludes.txt -tf archive.tar")).toBe(false);
+
+        // Still destructive if an actual mode flag is present
+        expect(isDestructiveCommand("tar -C /tmp -xf archive.tar")).toBe(true);
     });
 
     test("flags gawk with in-place editing via the inplace module", () => {

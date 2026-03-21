@@ -31,7 +31,7 @@ const DESTRUCTIVE_CMD_PATTERNS = [
     /^\s*install\b/i,   // GNU install — always writes to destination
     /^\s*mkfifo\b/i,    // creates named pipes (filesystem objects)
     /^\s*mknod\b/i,     // creates device/special files
-    /^\s*patch\b/i,     // applies unified diffs (modifies files in-place)
+    // Note: `patch` is handled separately so `patch --dry-run` / `--check` stay allowed.
 ];
 
 /**
@@ -233,11 +233,13 @@ function isDestructiveGitCommand(segment: string): boolean {
     return GIT_SAFE_SUBCOMMAND_DESTRUCTIVE_OVERRIDES.some((p) => p.test(segment));
 }
 
-const TAR_LONG_MODE_PATTERN = /(^|\s)--(?:create|append|update|extract|get|delete|catenate|concatenate)\b/i;
+const TAR_LONG_MODE_PATTERN = /(^|\s)--(?:create|append|update|extract|get|delete|catenate|concatenate)\b/;
 const TAR_BUNDLED_MODE_PATTERN = /^\s*tar\s+(-?[A-Za-z]+)\b/i;
 const GAWK_INCLUDE_ARG_PATTERN = /(?:^|\s)(?:-i(\S+)|-i\s+(\S+)|--include=(\S+)|--include\s+(\S+))/gi;
 const GAWK_FILE_ARG_PATTERN = /(?:^|\s)(?:-f\s*(\S+)|--file=(\S+)|--file\s+(\S+))/g;
 const GAWK_INPLACE_MODULE_PATTERN = /(?:^|[\\/])inplace(?:\.awk)?$/i;
+
+const PATCH_SAFE_LONG_FLAG_PATTERN = /(?:^|\s)--(?:dry-run|check|help|version)\b/i;
 
 function isDestructiveTarCommand(segment: string): boolean {
     if (!/^\s*tar\b/i.test(segment)) return false;
@@ -245,12 +247,12 @@ function isDestructiveTarCommand(segment: string): boolean {
 
     // Check the first token for the traditional no-dash form: `tar czf archive.tar`
     const bundledMatch = segment.match(TAR_BUNDLED_MODE_PATTERN);
-    if (bundledMatch && /[cruxA]/i.test(bundledMatch[1].replace(/^-/, ""))) return true;
+    if (bundledMatch && /[cruxA]/.test(bundledMatch[1].replace(/^-/, ""))) return true;
 
     // Also scan all dash-prefixed option tokens to catch patterns where the mode
     // letter appears after other options, e.g. `tar -f archive.tar -x`.
     for (const match of segment.matchAll(/(?:^|\s)-([A-Za-z]+)/g)) {
-        if (/[cruxA]/i.test(match[1])) return true;
+        if (/[cruxA]/.test(match[1])) return true;
     }
 
     return false;
@@ -272,6 +274,22 @@ function isDestructiveGawkCommand(segment: string): boolean {
     }
 
     return false;
+}
+
+function isDestructivePatchCommand(segment: string): boolean {
+    if (!/^\s*patch\b/i.test(segment)) return false;
+
+    // `patch` is generally destructive, but a few explicit flags make it read-only.
+    // - `--dry-run` / `--check` verify applicability without modifying files
+    // - `--help` / `--version` are informational
+    if (PATCH_SAFE_LONG_FLAG_PATTERN.test(segment)) return false;
+
+    // `patch -C` is equivalent to `--check`. Support clustered short flags like `-Cp1`.
+    for (const match of segment.matchAll(/(?:^|\s)-([A-Za-z0-9]+)/g)) {
+        if (match[1].includes("C")) return false;
+    }
+
+    return true;
 }
 
 /**
@@ -346,9 +364,9 @@ export function isDestructiveCommand(command: string, sandboxActive = false): bo
             continue;
         }
 
-        // tar and gawk need command-aware parsing to avoid false positives and
-        // catch legacy syntax that a single regex misses.
-        if (isDestructiveTarCommand(trimmed) || isDestructiveGawkCommand(trimmed)) return true;
+        // tar, gawk, and patch need command-aware parsing to avoid false positives and
+        // to account for read-only flags / legacy syntax.
+        if (isDestructiveTarCommand(trimmed) || isDestructiveGawkCommand(trimmed) || isDestructivePatchCommand(trimmed)) return true;
 
         const isCmdDestructive = DESTRUCTIVE_CMD_PATTERNS.some((p) => p.test(trimmed));
         const hasUnsafeRedirection = hasUnsafeOutputRedirection(trimmed);
