@@ -541,6 +541,9 @@ describe("isDestructiveCommand", () => {
         // -o - and --output=- write to stdout (read-only preview)
         expect(isDestructiveCommand("patch -o - file.txt < fix.diff")).toBe(false);
         expect(isDestructiveCommand("patch --output=- file.txt < fix.diff")).toBe(false);
+        // Also support -o- (no space) and --output - (with space, no equals) forms
+        expect(isDestructiveCommand("patch -o- file.txt < fix.diff")).toBe(false);
+        expect(isDestructiveCommand("patch --output - file.txt < fix.diff")).toBe(false);
 
         // Informational flags
         expect(isDestructiveCommand("patch --help")).toBe(false);
@@ -641,6 +644,17 @@ describe("isDestructiveCommand", () => {
         // With actual destructive mode, should still be destructive
         expect(isDestructiveCommand("tar -Hposix -cf archive.tar dir/")).toBe(true);
         expect(isDestructiveCommand("tar -Hposix -xf archive.tar")).toBe(true);
+    });
+
+    test("allows tar extract with -O / --to-stdout (stdout extraction, read-only)", () => {
+        // -O suppresses filesystem writes, extracting to stdout instead (read-only)
+        expect(isDestructiveCommand("tar -xO -f archive.tar file.txt")).toBe(false);
+        expect(isDestructiveCommand("tar -xOvf archive.tar file.txt")).toBe(false);
+        // Long form: --to-stdout is equivalent to -O
+        expect(isDestructiveCommand("tar -xf archive.tar --to-stdout file.txt")).toBe(false);
+        expect(isDestructiveCommand("tar --to-stdout -xf archive.tar file.txt")).toBe(false);
+        // Even when combined with compression flags, -O makes it read-only
+        expect(isDestructiveCommand("tar -Ixz -xO -f archive.tar.xz file.txt")).toBe(false);
     });
 
     test("flags gawk with in-place editing via the inplace module", () => {

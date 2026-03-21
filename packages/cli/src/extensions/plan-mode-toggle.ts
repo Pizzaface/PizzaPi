@@ -262,10 +262,15 @@ function isDestructiveTarCommand(segment: string): boolean {
     if (!/^\s*tar\b/i.test(segment)) return false;
     if (TAR_LONG_MODE_PATTERN.test(segment)) return true;
 
+    // Allow `tar --to-stdout` (long form of -O) — extracts to stdout, not filesystem
+    if (/(?:^|\s)--to-stdout(?:\s|$)/i.test(segment)) return false;
+
     // Check the first token for the traditional no-dash form: `tar czf archive.tar`
     const bundledMatch = segment.match(TAR_BUNDLED_MODE_PATTERN);
     if (bundledMatch) {
         const bundled = tarShortOptsForModeScan(bundledMatch[1].replace(/^-/, ""));
+        // If -O is present, tar outputs to stdout (read-only), so it's safe
+        if (/O/.test(bundled)) return false;
         if (TAR_DESTRUCTIVE_SHORT_MODE_PATTERN.test(bundled)) return true;
     }
 
@@ -273,6 +278,8 @@ function isDestructiveTarCommand(segment: string): boolean {
     // letter appears after other options, e.g. `tar -f archive.tar -x`.
     for (const match of segment.matchAll(/(?:^|\s)-([A-Za-z]+)/g)) {
         const tokenOpts = tarShortOptsForModeScan(match[1]);
+        // If -O is present, tar outputs to stdout (read-only), so it's safe
+        if (/O/.test(tokenOpts)) return false;
         if (TAR_DESTRUCTIVE_SHORT_MODE_PATTERN.test(tokenOpts)) return true;
     }
 
@@ -303,10 +310,15 @@ function isDestructivePatchCommand(segment: string): boolean {
 
     // Check for output-writing flags first, which always make patch destructive
     // even if --dry-run is present, because `-o` / `--output` causes file writes.
-    // Exception: `-o -` and `--output=-` write to stdout (read-only preview), so allow those.
+    // Exception: `-o -`, `--output=-`, `--output -`, and `-o-` write to stdout (read-only preview), so allow those.
     const hasOutputFlag = /\s-o\s|\s-o\S|--output\b|--output=/i.test(segment);
     if (hasOutputFlag) {
-        const isStdout = /\s-o\s-(?:\s|$)|--output=-(?:\s|$)/i.test(segment);
+        // Check for various forms of stdout output:
+        // - `-o -` (space after -o)
+        // - `--output=-` (equals with dash)
+        // - `--output -` (space after --output)
+        // - `-o-` (no space, no equals, dash immediately after -o)
+        const isStdout = /\s-o\s-(?:\s|$)|-o-(?:\s|$)|--output=-(?:\s|$)|--output\s+-(?:\s|$)/i.test(segment);
         if (isStdout) {
             // Output to stdout is read-only, so treat as safe
             return false;
