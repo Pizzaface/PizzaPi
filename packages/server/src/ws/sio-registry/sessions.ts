@@ -177,15 +177,32 @@ export async function registerTuiSession(
         const candidateParentId = resolvedParentSessionId;
         const parentSession = await getSession(resolvedParentSessionId);
         if (!parentSession) {
-            // Redis miss means the parent is temporarily offline — keep the
-            // child in the membership set so future delink_children snapshots
-            // can still find it.  The child CLI still preserves parentSessionId
-            // and will re-send it when the parent reconnects.
-            // NOTE: We use addChildSessionMembership (not addChildSession) so
-            // we do NOT clear any existing delink marker — the marker may have
-            // been set by a previous /new and should still take effect when
-            // the parent comes back online.
-            await addChildSessionMembership(candidateParentId, sessionId);
+            // Redis miss means the parent is temporarily offline.
+            //
+            // IMPORTANT: If the parent explicitly delinked this child via /new,
+            // a delink marker will already be present. In that case we must
+            // NOT re-add the child to the old parent's membership set, or the
+            // old parent could regain child-only privileges when it reconnects.
+            const delinked = await isChildDelinked(sessionId);
+            if (delinked) {
+                await severStaleParentLink({
+                    parentSessionId: candidateParentId,
+                    childSessionId: sessionId,
+                    clearParentSessionId,
+                    removeChildSession,
+                });
+                wasExplicitlyDelinked = true;
+            } else {
+                // Keep the child in the membership set so future delink_children
+                // snapshots can still find it. The child CLI still preserves
+                // parentSessionId and will re-send it when the parent reconnects.
+                //
+                // NOTE: We use addChildSessionMembership (not addChildSession) so
+                // we do NOT clear any existing delink marker — the marker may have
+                // been set by a previous /new and should still take effect when
+                // the parent comes back online.
+                await addChildSessionMembership(candidateParentId, sessionId);
+            }
             resolvedParentSessionId = null;
         } else if (parentSession.userId !== userId) {
             // Cross-user link attempt — evict from membership set as well.

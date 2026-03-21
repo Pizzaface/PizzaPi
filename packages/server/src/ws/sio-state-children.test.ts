@@ -319,6 +319,24 @@ describe("child session helpers (sio-state)", () => {
         expect(result).toBe(false);
     });
 
+    it("isChildOfParent does not fall back to the session hash when a delink marker exists", async () => {
+        // Simulate the post-/new window for a connected child:
+        // - The parent cleared the membership set
+        // - The child's session hash still carries parentSessionId
+        // - A delink marker exists until the child reconnects / processes parent_delinked
+        //
+        // In this state, isChildOfParent must return false and must NOT re-hydrate the set.
+        store.set(
+            "__hash__:pizzapi:sio:session:child-pending-delink",
+            JSON.stringify({ sessionId: "child-pending-delink", parentSessionId: "parent-pending" }),
+        );
+        await markChildAsDelinked("child-pending-delink", "parent-pending");
+
+        const result = await isChildOfParent("parent-pending", "child-pending-delink");
+        expect(result).toBe(false);
+        expect(setStore.has("pizzapi:sio:children:parent-pending")).toBe(false);
+    });
+
     it("isChildOfParent returns true after removeChildSession leaves sibling", async () => {
         await addChildSession("parent-1", "child-1");
         await addChildSession("parent-1", "child-2");

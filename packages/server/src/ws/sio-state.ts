@@ -705,6 +705,13 @@ export async function isChildOfParent(parentSessionId: string, childSessionId: s
     const inSet = await r.sIsMember(childrenKey(parentSessionId), childSessionId);
     if (inSet) return true;
 
+    // If the parent explicitly delinked this child (via /new), we may have
+    // already cleared the children set while the child's session hash still
+    // temporarily carries parentSessionId. In that window we must NOT fall
+    // back to the hash, otherwise we'd re-hydrate the set and re-authorize
+    // stale parent/child traffic.
+    if (await isChildDelinked(childSessionId)) return false;
+
     // Fallback: the Redis children set may have expired without an explicit
     // delink.  Verify via the child's durable session hash.
     const childSession = await getSession(childSessionId);
