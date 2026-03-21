@@ -92,6 +92,24 @@ describe("readFileTool", () => {
         });
     });
 
+    describe("fs error handling", () => {
+        test("returns graceful error for nonexistent file", async () => {
+            const result = await execRead(join(tmpDir, "does-not-exist.txt"));
+            expect(result.content[0].text).toContain("❌");
+            expect(result.content[0].text).toContain("File not found");
+            expect(result.details.size).toBe(0);
+            expect(result.details.error).toBe("ENOENT");
+        });
+
+        test("returns graceful error when reading a directory as a file", async () => {
+            const result = await execRead(tmpDir);
+            expect(result.content[0].text).toContain("❌");
+            // EISDIR on most platforms, or a generic fs error — either is acceptable
+            expect(result.details.size).toBe(0);
+            expect(result.details.error).toBeTruthy();
+        });
+    });
+
     test("has correct tool metadata", () => {
         expect(readFileTool.name).toBe("read_file");
         expect(readFileTool.label).toBe("Read File");
