@@ -326,6 +326,72 @@ describe("groupToolExecutionMessages", () => {
         expect(tc2Tool!.content).toBeTruthy();
     });
 
+    test("matches id-less tool results when preferring non-errored snapshots", () => {
+        const messages: RelayMessage[] = [
+            msg({
+                key: "a1-partial",
+                role: "assistant",
+                content: [
+                    { type: "text", text: "Let me ask you something" },
+                    { type: "toolCall", name: "AskUserQuestion", id: "tc1",
+                      arguments: { questions: [{ question: "Color?", options: ["Red", "Blue"] }] } },
+                ],
+            }),
+            msg({
+                key: "a1-final",
+                role: "assistant",
+                stopReason: "error",
+                errorMessage: "JSON Parse error: Expected '}'",
+                content: [
+                    { type: "text", text: "Let me ask you something" },
+                    { type: "toolCall", name: "AskUserQuestion", id: "tc1",
+                      arguments: '{"questions": [{"question": "Color?", "options": ["Red"' },
+                ],
+            }),
+            msg({
+                key: "r1",
+                role: "toolResult",
+                toolName: "AskUserQuestion",
+                content: [{ type: "text", text: "User answered: Red" }],
+            }),
+        ];
+
+        const result = groupToolExecutionMessages(messages);
+        const tools = result.filter((m) => m.role === "tool");
+        expect(tools).toHaveLength(1);
+        expect(tools[0].toolCallId).toBe("tc1");
+        expect(tools[0].content).toBeTruthy();
+        expect(result.filter((m) => m.role === "assistant" && m.stopReason === "error")).toHaveLength(0);
+    });
+
+    test("drops stale partial-only tool IDs removed from the final snapshot", () => {
+        const messages: RelayMessage[] = [
+            msg({
+                key: "a1-partial",
+                role: "assistant",
+                content: [
+                    { type: "text", text: "Running tools" },
+                    { type: "toolCall", name: "bash", id: "tc1", arguments: { command: "ls" } },
+                    { type: "toolCall", name: "read_file", id: "tc2", arguments: { path: "/tmp/a.txt" } },
+                ],
+            }),
+            msg({
+                key: "a1-final",
+                role: "assistant",
+                stopReason: "error",
+                errorMessage: "Stream error",
+                content: [
+                    { type: "text", text: "Running tools" },
+                    { type: "toolCall", name: "bash", id: "tc1", arguments: { command: "ls" } },
+                ],
+            }),
+        ];
+
+        const result = groupToolExecutionMessages(messages);
+        expect(result.filter((m) => m.role === "assistant")).toHaveLength(1);
+        expect(result.filter((m) => m.role === "tool" && m.toolCallId === "tc2")).toHaveLength(0);
+    });
+
     test("incomplete tool args fall back to empty object (not raw string)", () => {
         // When the only version of an assistant message is the errored one
         // (no streaming partial), parseToolArguments must return {} rather than

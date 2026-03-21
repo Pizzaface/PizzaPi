@@ -54,21 +54,84 @@ function shouldGroupToolCall(_toolName: string): boolean {
 function extractGroupedToolCallIds(message: RelayMessage): Set<string> {
   const ids = new Set<string>();
   if (message.role !== "assistant" || !Array.isArray(message.content)) return ids;
+  for (const pending of extractGroupedPendingToolCalls(message)) {
+    if (pending.toolCallId) ids.add(pending.toolCallId);
+  }
+  return ids;
+}
+
+function extractGroupedPendingToolCalls(message: RelayMessage): PendingToolCall[] {
+  const pending: PendingToolCall[] = [];
+  if (message.role !== "assistant" || !Array.isArray(message.content)) return pending;
+
   for (const block of message.content) {
     if (!block || typeof block !== "object") continue;
     const b = block as Record<string, unknown>;
     if (b.type !== "toolCall") continue;
+
     const toolName = typeof b.name === "string" ? b.name : "unknown";
     if (!shouldGroupToolCall(toolName)) continue;
-    const id =
+
+    const toolCallId =
       typeof b.toolCallId === "string"
         ? b.toolCallId
         : typeof b.id === "string"
           ? b.id
           : "";
-    if (id) ids.add(id);
+
+    pending.push({
+      toolCallId,
+      toolName,
+      args: parseToolArguments(b.arguments),
+    });
   }
-  return ids;
+
+  return pending;
+}
+
+function collectToolCallIdsWithResult(messages: RelayMessage[]): Set<string> {
+  const toolCallIdsWithResult = new Set<string>();
+  const pendingToolCalls: PendingToolCall[] = [];
+
+  for (const message of messages) {
+    if (message.role === "assistant") {
+      pendingToolCalls.push(...extractGroupedPendingToolCalls(message));
+      continue;
+    }
+
+    if (message.role !== "toolResult" && message.role !== "tool") continue;
+
+    let matchedPendingIndex = -1;
+
+    if (message.toolCallId) {
+      matchedPendingIndex = pendingToolCalls.findIndex(
+        (pending) => pending.toolCallId && pending.toolCallId === message.toolCallId
+      );
+    }
+
+    if (matchedPendingIndex < 0) {
+      const normalizedName = normalizeToolName(message.toolName);
+      matchedPendingIndex = pendingToolCalls.findIndex(
+        (pending) => normalizeToolName(pending.toolName) === normalizedName
+      );
+    }
+
+    if (matchedPendingIndex < 0 && pendingToolCalls.length > 0) {
+      matchedPendingIndex = 0;
+    }
+
+    const matched =
+      matchedPendingIndex >= 0
+        ? pendingToolCalls.splice(matchedPendingIndex, 1)[0]
+        : undefined;
+    const matchedToolCallId = message.toolCallId ?? matched?.toolCallId;
+
+    if (matchedToolCallId) {
+      toolCallIdsWithResult.add(matchedToolCallId);
+    }
+  }
+
+  return toolCallIdsWithResult;
 }
 
 /**
@@ -93,60 +156,93 @@ function deduplicateAssistantMessages(messages: RelayMessage[]): RelayMessage[] 
   const lastNonErroredIndexForToolCallId = new Map<string, number>();
   // Cache the extracted IDs for each message index to avoid re-parsing the content during the filter pass.
   const messageIdsMap = new Map<number, Set<string>>();
+  const assistantIndexes: number[] = [];
 
   // Pre-collect tool call IDs that have a corresponding tool result in the
-  // transcript.  We only prefer a non-errored partial over an errored final
-  // when the tool actually ran (i.e. a result exists); otherwise the errored
-  // snapshot is the most informative version and should be kept.
-  const toolCallIdsWithResult = new Set<string>();
-  for (const msg of messages) {
-    if ((msg.role === "toolResult" || msg.role === "tool") && msg.toolCallId) {
-      toolCallIdsWithResult.add(msg.toolCallId);
-    }
-  }
+  // transcript, including legacy toolResult messages that only match back to a
+  // pending tool call by tool name / order.
+  const toolCallIdsWithResult = collectToolCallIdsWithResult(messages);
 
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
     if (msg.role !== "assistant") continue;
     const ids = extractGroupedToolCallIds(msg);
-    if (ids.size > 0) {
-      messageIdsMap.set(i, ids);
-      for (const id of ids) {
-        lastIndexForToolCallId.set(id, i);
-        // Only record the non-errored index when a tool result exists for this
-        // ID.  If no result ever arrives the errored snapshot is the right one
-        // to surface (it carries the failure state); recording a non-errored
-        // partial here would cause the filter below to prefer the partial and
-        // silently drop the error banner.
-        if (msg.stopReason !== "error" && toolCallIdsWithResult.has(id)) {
-          lastNonErroredIndexForToolCallId.set(id, i);
-        }
+    if (ids.size === 0) continue;
+
+    assistantIndexes.push(i);
+    messageIdsMap.set(i, ids);
+
+    for (const id of ids) {
+      lastIndexForToolCallId.set(id, i);
+      // Only record the non-errored index when a tool result exists for this
+      // ID.  If no result ever arrives the errored snapshot is the right one
+      // to surface (it carries the failure state); recording a non-errored
+      // partial here would cause the filter below to prefer the partial and
+      // silently drop the error banner.
+      if (msg.stopReason !== "error" && toolCallIdsWithResult.has(id)) {
+        lastNonErroredIndexForToolCallId.set(id, i);
       }
     }
   }
 
   if (lastIndexForToolCallId.size === 0) return messages;
 
+  // Assistant snapshots that share toolCallIds represent alternate versions of
+  // the same turn.  When a later snapshot drops one of the earlier IDs, that
+  // dropped ID is stale and should not keep the earlier partial alive.
+  const componentValidIdsByMessageIndex = new Map<number, Set<string>>();
+  const visitedAssistantIndexes = new Set<number>();
+
+  for (const startIndex of assistantIndexes) {
+    if (visitedAssistantIndexes.has(startIndex)) continue;
+
+    const queue = [startIndex];
+    const component: number[] = [];
+    visitedAssistantIndexes.add(startIndex);
+
+    while (queue.length > 0) {
+      const currentIndex = queue.shift()!;
+      component.push(currentIndex);
+      const currentIds = messageIdsMap.get(currentIndex)!;
+
+      for (const candidateIndex of assistantIndexes) {
+        if (visitedAssistantIndexes.has(candidateIndex)) continue;
+        const candidateIds = messageIdsMap.get(candidateIndex)!;
+        const overlaps = [...candidateIds].some((id) => currentIds.has(id));
+        if (!overlaps) continue;
+        visitedAssistantIndexes.add(candidateIndex);
+        queue.push(candidateIndex);
+      }
+    }
+
+    const latestIndex = Math.max(...component);
+    const validIds = new Set(messageIdsMap.get(latestIndex)!);
+    for (const index of component) {
+      componentValidIdsByMessageIndex.set(index, validIds);
+    }
+  }
+
   // For each assistant message, determine the "preferred" index for each of
-  // its tool call IDs:
+  // its still-relevant tool call IDs:
   //   - If a non-errored version exists for this ID AND a tool result arrived,
   //     prefer the last non-errored version (avoids a spurious error badge on
   //     a successfully-completed tool).
   //   - Otherwise fall back to the last version overall (errored or not) so
   //     that the failure state is visible when no result ever arrived.
   //
-  // A message is kept when it is the preferred version for AT LEAST ONE of its
-  // IDs.  Using "any" rather than "all" ensures a later errored snapshot that
-  // introduced new tool call IDs (absent from any earlier message) is never
-  // silently dropped — without it, the only assistant message carrying those
-  // new IDs would be discarded, orphaning any later toolResult messages.
+  // A message is kept when it is the preferred version for at least one ID that
+  // still appears in the latest snapshot of its turn. This preserves newer IDs
+  // introduced by later snapshots while dropping stale partial-only IDs that a
+  // later snapshot removed.
   return messages.filter((msg, i) => {
     if (msg.role !== "assistant") return true;
-    // Use cached IDs if available; otherwise (e.g. if empty) treat as having no IDs.
+
     const ids = messageIdsMap.get(i);
     if (!ids || ids.size === 0) return true;
-    // Keep if this is the preferred version for at least one tool call ID.
+
+    const validIds = componentValidIdsByMessageIndex.get(i) ?? ids;
     for (const id of ids) {
+      if (!validIds.has(id)) continue;
       const preferredIdx = lastNonErroredIndexForToolCallId.has(id)
         ? lastNonErroredIndexForToolCallId.get(id)!
         : lastIndexForToolCallId.get(id)!;
