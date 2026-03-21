@@ -242,7 +242,7 @@ describe("E2E: API key authenticates HTTP requests", () => {
 
 // ── Signup gating ─────────────────────────────────────────────────────────────
 
-describe("E2E: signup gating (disable after first user)", () => {
+describe.serial("E2E: signup gating (disable after first user)", () => {
     test("when gating is enabled, second user registration is blocked", async () => {
         // Set up a fresh DB with gating enabled
         const gatedDir = mkdtempSync(join(tmpdir(), "pizzapi-e2e-gated-"));
@@ -275,7 +275,7 @@ describe("E2E: signup gating (disable after first user)", () => {
             }, { "x-forwarded-for": "10.0.3.2" });
             expect(res2.status).toBe(403);
             const data2 = await res2.json();
-            expect(data2.error).toContain("disabled");
+            expect(data2.error).toBe("Registration is not available.");
 
             // Signup status should reflect disabled state
             const statusRes = await req("GET", "/api/signup-status");
@@ -290,6 +290,109 @@ describe("E2E: signup gating (disable after first user)", () => {
                 disableSignupAfterFirstUser: false,
             });
             try { rmSync(gatedDir, { recursive: true, force: true }); } catch {}
+        }
+    });
+});
+
+// ── User enumeration prevention ──────────────────────────────────────────────
+
+describe.serial("E2E: /api/register does not leak account existence when signups disabled", () => {
+    test("existing email + wrong password and unknown email both return identical 403", async () => {
+        // Set up a fresh DB with one user and gating enabled
+        const enumDir = mkdtempSync(join(tmpdir(), "pizzapi-e2e-enum-"));
+        const enumDbPath = join(enumDir, "enum.db");
+
+        try {
+            initAuth({
+                dbPath: enumDbPath,
+                baseURL: BASE,
+                secret: "test-secret-for-e2e-at-least-32-chars-long!!",
+                disableSignupAfterFirstUser: true,
+            });
+            await runAllMigrations();
+
+            // Register first (and only) user — signups now effectively disabled
+            const reg = await req("POST", "/api/register", {
+                name: "Enum Test User",
+                email: "enumtest@example.com",
+                password: "EnumPass123",
+            }, { "x-forwarded-for": "10.0.5.1" });
+            expect(reg.status).toBe(200);
+
+            // Path A: existing email with wrong password
+            const resExisting = await req("POST", "/api/register", {
+                name: "Enum Test User",
+                email: "enumtest@example.com",   // ← known email
+                password: "WrongPassword999",
+            }, { "x-forwarded-for": "10.0.5.2" });
+
+            // Path B: unknown email (new registration attempt, blocked)
+            const resUnknown = await req("POST", "/api/register", {
+                name: "Unknown User",
+                email: "nobody@example.com",     // ← unknown email
+                password: "SomePass123",
+            }, { "x-forwarded-for": "10.0.5.3" });
+
+            // Both paths MUST return the same status code
+            expect(resExisting.status).toBe(403);
+            expect(resUnknown.status).toBe(403);
+
+            // Both paths MUST return the same error body
+            const bodyExisting = await resExisting.json();
+            const bodyUnknown = await resUnknown.json();
+            expect(bodyExisting.error).toBe("Registration is not available.");
+            expect(bodyUnknown.error).toBe("Registration is not available.");
+            expect(bodyExisting.error).toBe(bodyUnknown.error);
+        } finally {
+            initAuth({
+                dbPath,
+                baseURL: BASE,
+                secret: "test-secret-for-e2e-at-least-32-chars-long!!",
+                disableSignupAfterFirstUser: false,
+            });
+            try { rmSync(enumDir, { recursive: true, force: true }); } catch {}
+        }
+    });
+
+    test("existing email + correct password still succeeds when signups disabled", async () => {
+        // Set up a fresh DB with gating enabled
+        const enumDir2 = mkdtempSync(join(tmpdir(), "pizzapi-e2e-enum2-"));
+        const enumDbPath2 = join(enumDir2, "enum2.db");
+
+        try {
+            initAuth({
+                dbPath: enumDbPath2,
+                baseURL: BASE,
+                secret: "test-secret-for-e2e-at-least-32-chars-long!!",
+                disableSignupAfterFirstUser: true,
+            });
+            await runAllMigrations();
+
+            // Register the first user
+            const reg = await req("POST", "/api/register", {
+                name: "Returning User",
+                email: "returning@example.com",
+                password: "ReturnPass123",
+            }, { "x-forwarded-for": "10.0.6.1" });
+            expect(reg.status).toBe(200);
+
+            // Re-register with correct credentials — should succeed (key rotation)
+            const reReg = await req("POST", "/api/register", {
+                email: "returning@example.com",
+                password: "ReturnPass123",
+            }, { "x-forwarded-for": "10.0.6.2" });
+            expect(reReg.status).toBe(200);
+            const data = await reReg.json();
+            expect(data.ok).toBe(true);
+            expect(typeof data.key).toBe("string");
+        } finally {
+            initAuth({
+                dbPath,
+                baseURL: BASE,
+                secret: "test-secret-for-e2e-at-least-32-chars-long!!",
+                disableSignupAfterFirstUser: false,
+            });
+            try { rmSync(enumDir2, { recursive: true, force: true }); } catch {}
         }
     });
 });

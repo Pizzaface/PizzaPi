@@ -2,6 +2,16 @@
 // Password validation — shared across server, UI, and CLI
 // ============================================================================
 
+/**
+ * Maximum password length (in characters) accepted by the server.
+ *
+ * Better Auth uses scrypt for hashing, which — unlike bcrypt — does NOT truncate
+ * input. Arbitrarily long passwords translate to proportionally expensive hashing,
+ * creating a DoS vector. 128 characters is generous for any real password/passphrase
+ * while bounding scrypt cost.
+ */
+export const MAX_PASSWORD_LENGTH = 128;
+
 /** Human-readable description of each password requirement. */
 export const PASSWORD_REQUIREMENTS = [
   "At least 8 characters",

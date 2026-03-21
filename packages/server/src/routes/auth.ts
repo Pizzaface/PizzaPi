@@ -8,7 +8,8 @@
 
 import { getApiKeyRateLimitConfig, getAuth, getKysely, isSignupAllowed } from "../auth.js";
 import { RateLimiter, isValidEmail, isValidPassword, getClientIp } from "../security.js";
-import { PASSWORD_REQUIREMENTS_SUMMARY } from "@pizzapi/protocol";
+import { PASSWORD_REQUIREMENTS_SUMMARY, MAX_PASSWORD_LENGTH } from "@pizzapi/protocol";
+import { hashPassword as betterAuthHashPassword } from "better-auth/crypto";
 import type { RouteHandler } from "./types.js";
 
 // 5 requests per 15 minutes
@@ -48,6 +49,10 @@ export const handleAuthRoute: RouteHandler = async (req, url) => {
             return Response.json({ error: "Invalid email format" }, { status: 400 });
         }
 
+        if (password.length > MAX_PASSWORD_LENGTH) {
+            return Response.json({ error: PASSWORD_REQUIREMENTS_SUMMARY }, { status: 400 });
+        }
+
         if (!isValidPassword(password)) {
             return Response.json({ error: PASSWORD_REQUIREMENTS_SUMMARY }, { status: 400 });
         }
@@ -58,6 +63,13 @@ export const handleAuthRoute: RouteHandler = async (req, url) => {
             .where("email", "=", email)
             .executeTakeFirst();
 
+        // Constant response used when signups are disabled, regardless of
+        // whether the email already exists. Returning the same status + body
+        // for both "email not found" and "email found but wrong password"
+        // prevents user-enumeration via differing error responses.
+        const SIGNUPS_DISABLED_RESPONSE = () =>
+            Response.json({ error: "Registration is not available." }, { status: 403 });
+
         let userId: string;
         if (existing) {
             // Verify password by attempting sign-in
@@ -65,17 +77,26 @@ export const handleAuthRoute: RouteHandler = async (req, url) => {
                 .api.signInEmail({ body: { email, password } })
                 .catch(() => null);
             if (!signIn?.user?.id) {
+                // When signups are disabled return the same 403 as "no account"
+                // so callers cannot distinguish existing vs non-existing emails.
+                const signupAllowed = await isSignupAllowed();
+                if (!signupAllowed) {
+                    return SIGNUPS_DISABLED_RESPONSE();
+                }
                 return Response.json({ error: "Invalid credentials" }, { status: 401 });
             }
             userId = signIn.user.id;
         } else {
             // Block new account creation when signups are disabled.
-            const allowed = await isSignupAllowed();
-            if (!allowed) {
-                return Response.json(
-                    { error: "Signups are disabled. Contact the administrator." },
-                    { status: 403 },
-                );
+            const signupAllowed = await isSignupAllowed();
+            if (!signupAllowed) {
+                // Run a dummy hash using Better Auth's own scrypt-based hasher to
+                // equalize response latency with the "account exists" branch above
+                // (which runs the same scrypt verifier via signInEmail). Without this,
+                // an attacker can distinguish registered from unregistered emails by
+                // measuring timing differences even though both paths return 403.
+                await betterAuthHashPassword(password);
+                return SIGNUPS_DISABLED_RESPONSE();
             }
             if (!name) {
                 return Response.json(
