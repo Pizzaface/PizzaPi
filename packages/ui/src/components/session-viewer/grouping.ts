@@ -132,15 +132,16 @@ function collectToolCallIdsWithResult(messages: RelayMessage[]): Set<string> {
 
     if (matchedPendingIndex < 0) {
       const normalizedName = normalizeToolName(message.toolName);
-      // Prefer the *latest* pending call with this name so stale earlier calls
-      // don't consume results meant for newer invocations (PR #220 thread cZf_-).
-      matchedPendingIndex = pendingToolCalls.findLastIndex(
+      // Use FIFO (findIndex) so results map to pending calls in invocation
+      // order. Stale streaming-partial duplicates are already excluded at
+      // enqueue time via message.key dedup, so LIFO is not needed here.
+      matchedPendingIndex = pendingToolCalls.findIndex(
         (pending) => normalizeToolName(pending.toolName) === normalizedName
       );
     }
 
     if (matchedPendingIndex < 0 && pendingToolCalls.length > 0) {
-      matchedPendingIndex = pendingToolCalls.length - 1;
+      matchedPendingIndex = 0;
     }
 
     const matched =
@@ -770,15 +771,16 @@ export function groupToolExecutionMessages(messages: RelayMessage[]): RelayMessa
 
       if (matchedPendingIndex < 0) {
         const normalizedName = normalizeToolName(message.toolName);
-        // Prefer the *latest* pending call with this name so stale earlier
-        // calls don't consume results meant for newer invocations.
-        matchedPendingIndex = pendingToolCalls.findLastIndex(
+        // Use FIFO (findIndex) so results map to pending calls in invocation
+        // order. Stale streaming-partial duplicates are excluded at enqueue
+        // time via message.key dedup, so LIFO is not needed here.
+        matchedPendingIndex = pendingToolCalls.findIndex(
           (p) => normalizeToolName(p.toolName) === normalizedName
         );
       }
 
       if (matchedPendingIndex < 0 && pendingToolCalls.length > 0) {
-        matchedPendingIndex = pendingToolCalls.length - 1;
+        matchedPendingIndex = 0;
       }
 
       const matched =
