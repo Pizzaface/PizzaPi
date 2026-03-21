@@ -42,7 +42,7 @@ const cwd = process.env.PIZZAPI_WORKER_CWD ?? process.cwd();
 const apiKey = process.env.PIZZAPI_API_KEY;
 const relayUrl = (process.env.PIZZAPI_RELAY_URL ?? RELAY_DEFAULT).replace(/\/$/, "");
 const parentSessionId = process.env.PIZZAPI_WORKER_PARENT_SESSION_ID ?? null;
-const initialPrompt = process.env.PIZZAPI_WORKER_INITIAL_PROMPT ?? "";
+let initialPrompt = process.env.PIZZAPI_WORKER_INITIAL_PROMPT ?? "";
 const initialModelProvider = process.env.PIZZAPI_WORKER_INITIAL_MODEL_PROVIDER?.trim() ?? "";
 const initialModelId = process.env.PIZZAPI_WORKER_INITIAL_MODEL_ID?.trim() ?? "";
 
@@ -761,7 +761,7 @@ function spawnClaude(tmpDirPath: string, resume = false): void {
   }
 
   const command = resume
-    ? ["claude", ...cliArgs]
+    ? ["claude", "-p", ...cliArgs]
     : ["claude", "-p", initialPrompt, ...cliArgs];
 
   claudeProcess = Bun.spawn(command, {
@@ -913,6 +913,7 @@ function handleControlRequest(requestId: string, toolName: string, toolInput: un
   const timer = setTimeout(() => {
     pendingPermissions.delete(requestId);
     sendPermissionResponse(requestId, "deny");
+    emitHeartbeat();
   }, 5 * 60 * 1000);
 
   const pendingPermissionEntry: PendingPermissionEntry = {
@@ -920,6 +921,7 @@ function handleControlRequest(requestId: string, toolName: string, toolInput: un
       clearTimeout(timer);
       pendingPermissions.delete(requestId);
       sendPermissionResponse(requestId, decision);
+      emitHeartbeat();
     },
     timer,
     toolName,
@@ -1150,6 +1152,7 @@ function connectRelay(): void {
         break;
       case "new_session":
         claudeSessionId = randomUUID();
+        initialPrompt = "";
         messages = [];
         currentModel = null;
         currentModelObject = null;
