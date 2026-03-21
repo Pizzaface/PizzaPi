@@ -64,13 +64,15 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
         const auth = await requireSession(req);
         if (auth instanceof Response) return auth;
         const hub = getHubVersionInfo();
-        // For source builds, PIZZAPI_HUB_VERSION is "local" and
-        // getHubVersionInfo() returns null.  Instead of calling the npm
-        // registry, fall back to the version bundled with the server image so
-        // the dashboard reports the build that is actually running.  Image
-        // deployments still return their configured tag/digest verbatim.
-        const bundledVersion = getBundledVersion();
-        const hubVersion = hub.version ?? bundledVersion ?? (await getLatestNpmVersion());
+        let hubVersion = hub.version;
+        if (!hubVersion) {
+            // For source builds, `PIZZAPI_HUB_VERSION` is "local" so the hub
+            // info is intentionally null.  Prefer the bundled package version
+            // before hitting the npm registry so the dashboard reports the
+            // actual build even when the hub is built from local source.
+            const bundledVersion = getBundledVersion();
+            hubVersion = bundledVersion ?? (await getLatestNpmVersion());
+        }
         return Response.json({
             hubVersion,
             hubImage: hub.image,

@@ -1185,19 +1185,19 @@ export async function runWeb(args: string[]): Promise<void> {
         config.extraOrigins = parsed.origins;
         configChanged = true;
     }
+    const shouldResetImageTag = parsed.image !== undefined && parsed.tag === undefined;
     if (parsed.image !== undefined) {
-        const newImage = parsed.image;
+        const newImage = parsed.image.trim();
         if (newImage !== config.image) {
             config.image = newImage;
             configChanged = true;
         }
-        // Reset any previously pinned tag even when the repo stays the same
-        // so running `pizza web --image ...` without --tag doesn't reapply the
-        // stale tag.
-        if (parsed.tag === undefined && config.imageTag !== "latest") {
-            config.imageTag = "latest";
-            configChanged = true;
-        }
+    }
+    if (shouldResetImageTag && config.imageTag !== "latest") {
+        // Reapply the default tag even when the repo was already set so
+        // `pizza web --image ...` without --tag unpins a previous version.
+        config.imageTag = "latest";
+        configChanged = true;
     }
     if (parsed.tag !== undefined && parsed.tag !== config.imageTag) {
         config.imageTag = parsed.tag;
