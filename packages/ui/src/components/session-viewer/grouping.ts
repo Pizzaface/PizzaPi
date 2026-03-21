@@ -192,6 +192,77 @@ function deduplicateAssistantMessages(messages: RelayMessage[]): RelayMessage[] 
 
   if (lastIndexForToolCallId.size === 0) return messages;
 
+  const parseToolArgumentsIfValid = (argumentsValue: unknown): unknown | null => {
+    if (argumentsValue && typeof argumentsValue === "object") return argumentsValue;
+    if (typeof argumentsValue === "string") {
+      try {
+        return JSON.parse(argumentsValue) as unknown;
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  };
+
+  const collectValidToolArgsByCallId = (msg: RelayMessage): Map<string, unknown> => {
+    const argsById = new Map<string, unknown>();
+    if (msg.role !== "assistant" || !Array.isArray(msg.content)) return argsById;
+
+    for (const block of msg.content) {
+      if (!block || typeof block !== "object") continue;
+      const b = block as Record<string, unknown>;
+      if (b.type !== "toolCall") continue;
+
+      const toolName = typeof b.name === "string" ? b.name : "unknown";
+      if (!shouldGroupToolCall(toolName)) continue;
+
+      const toolCallId =
+        typeof b.toolCallId === "string"
+          ? b.toolCallId
+          : typeof b.id === "string"
+            ? b.id
+            : "";
+      if (!toolCallId) continue;
+
+      const parsed = parseToolArgumentsIfValid(b.arguments);
+      if (parsed !== null) argsById.set(toolCallId, parsed);
+    }
+
+    return argsById;
+  };
+
+  const patchToolCallArguments = (blocks: unknown[], argsById: Map<string, unknown>): unknown[] => {
+    let changed = false;
+
+    const next = blocks.map((block) => {
+      if (!block || typeof block !== "object") return block;
+      const b = block as Record<string, unknown>;
+      if (b.type !== "toolCall") return block;
+
+      const toolName = typeof b.name === "string" ? b.name : "unknown";
+      if (!shouldGroupToolCall(toolName)) return block;
+
+      const toolCallId =
+        typeof b.toolCallId === "string"
+          ? b.toolCallId
+          : typeof b.id === "string"
+            ? b.id
+            : "";
+      if (!toolCallId) return block;
+
+      if (!argsById.has(toolCallId)) return block;
+      const nextArgs = argsById.get(toolCallId);
+
+      // Avoid cloning when already equal (common when winner is also the content source).
+      if (b.arguments === nextArgs) return block;
+
+      changed = true;
+      return { ...b, arguments: nextArgs };
+    });
+
+    return changed ? next : blocks;
+  };
+
   // Group assistant snapshots that share toolCallIds into "components" — all
   // members of a component represent alternate versions of the same turn.
   // We pick exactly ONE winner per component to avoid rendering the same
@@ -207,6 +278,7 @@ function deduplicateAssistantMessages(messages: RelayMessage[]): RelayMessage[] 
   //   - Tally wins per snapshot.  The snapshot with the most wins is the
   //     component winner; ties go to the latest snapshot (most complete).
   const componentWinnerByIndex = new Map<number, number>();
+  const patchedAssistantByIndex = new Map<number, RelayMessage>();
   const visitedAssistantIndexes = new Set<number>();
 
   for (const startIndex of assistantIndexes) {
@@ -235,24 +307,64 @@ function deduplicateAssistantMessages(messages: RelayMessage[]): RelayMessage[] 
     const validIds = messageIdsMap.get(latestIndex)!;
     const componentSet = new Set(component);
 
+    const latestMsg = messages[latestIndex]!;
+    const allValidIdsHaveResult = [...validIds].every((id) => toolCallIdsWithResult.has(id));
+
     // Tally wins: each valid ID votes for its preferred snapshot.
-    const winCount = new Map<number, number>();
-    for (const id of validIds) {
-      const preferredIdx = lastNonErroredIndexForToolCallId.has(id)
-        ? lastNonErroredIndexForToolCallId.get(id)!
-        : lastIndexForToolCallId.get(id)!;
-      // Only count if the preferred snapshot is actually in this component.
-      const resolvedIdx = componentSet.has(preferredIdx) ? preferredIdx : latestIndex;
-      winCount.set(resolvedIdx, (winCount.get(resolvedIdx) ?? 0) + 1);
+    // If the latest snapshot is errored AND any tool never produced a terminal
+    // result, force the latest snapshot to win so we don't silently drop the
+    // failure state.
+    let winner = latestIndex;
+
+    if (!(latestMsg.stopReason === "error" && !allValidIdsHaveResult)) {
+      const winCount = new Map<number, number>();
+      for (const id of validIds) {
+        const preferredIdx = lastNonErroredIndexForToolCallId.has(id)
+          ? lastNonErroredIndexForToolCallId.get(id)!
+          : lastIndexForToolCallId.get(id)!;
+        // Only count if the preferred snapshot is actually in this component.
+        const resolvedIdx = componentSet.has(preferredIdx) ? preferredIdx : latestIndex;
+        winCount.set(resolvedIdx, (winCount.get(resolvedIdx) ?? 0) + 1);
+      }
+
+      // Pick the snapshot with the most votes; tie-break: prefer the latest index.
+      let maxWins = winCount.get(latestIndex) ?? 0;
+      for (const [idx, count] of winCount) {
+        if (count > maxWins || (count === maxWins && idx > winner)) {
+          maxWins = count;
+          winner = idx;
+        }
+      }
     }
 
-    // Pick the snapshot with the most votes; tie-break: prefer the latest index.
-    let winner = latestIndex;
-    let maxWins = winCount.get(latestIndex) ?? 0;
-    for (const [idx, count] of winCount) {
-      if (count > maxWins || (count === maxWins && idx > winner)) {
-        maxWins = count;
-        winner = idx;
+    // If we pick an older non-errored snapshot, preserve the newer snapshot's
+    // timestamp and any additional assistant blocks, while keeping the older
+    // snapshot's non-error stopReason/isError and toolCall arguments.
+    if (winner !== latestIndex) {
+      const winnerMsg = messages[winner]!;
+
+      const winnerBlocks = Array.isArray(winnerMsg.content) ? (winnerMsg.content as unknown[]) : null;
+      const latestBlocks = Array.isArray(latestMsg.content) ? (latestMsg.content as unknown[]) : null;
+
+      const mergedBlocks =
+        winnerBlocks && latestBlocks
+          ? (latestBlocks.length >= winnerBlocks.length ? latestBlocks : winnerBlocks)
+          : latestBlocks ?? winnerBlocks;
+
+      if (mergedBlocks) {
+        const argsById = collectValidToolArgsByCallId(winnerMsg);
+        const patchedBlocks = argsById.size > 0 ? patchToolCallArguments(mergedBlocks, argsById) : mergedBlocks;
+
+        patchedAssistantByIndex.set(winner, {
+          ...winnerMsg,
+          timestamp: latestMsg.timestamp ?? winnerMsg.timestamp,
+          content: patchedBlocks,
+        });
+      } else if (latestMsg.timestamp !== undefined && winnerMsg.timestamp === undefined) {
+        patchedAssistantByIndex.set(winner, {
+          ...winnerMsg,
+          timestamp: latestMsg.timestamp,
+        });
       }
     }
 
@@ -261,15 +373,22 @@ function deduplicateAssistantMessages(messages: RelayMessage[]): RelayMessage[] 
     }
   }
 
-  // Keep only the single winner for each component of same-turn snapshots.
-  return messages.filter((msg, i) => {
-    if (msg.role !== "assistant") return true;
+  const result: RelayMessage[] = [];
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i]!;
+    if (msg.role === "assistant") {
+      const ids = messageIdsMap.get(i);
+      if (ids && ids.size > 0) {
+        if (componentWinnerByIndex.get(i) !== i) continue;
+        result.push(patchedAssistantByIndex.get(i) ?? msg);
+        continue;
+      }
+    }
 
-    const ids = messageIdsMap.get(i);
-    if (!ids || ids.size === 0) return true;
+    result.push(msg);
+  }
 
-    return componentWinnerByIndex.get(i) === i;
-  });
+  return result;
 }
 
 function getThinkingContent(buf: unknown[]): { thinking: string; duration: number } | null {

@@ -241,6 +241,65 @@ describe("groupToolExecutionMessages", () => {
         const textParts = result.filter((m) => m.role === "assistant");
         expect(textParts).toHaveLength(1);
         expect(textParts[0].stopReason).toBeUndefined();
+        // Preserve the newer (timestamped) snapshot's timestamp so the assistant
+        // text doesn't sort to the end of the transcript.
+        expect(textParts[0].timestamp).toBe(12345);
+    });
+
+    test("P2: preserves assistant blocks that only exist in the newer errored snapshot", () => {
+        // Scenario: a non-errored partial contains [text, tc1], but the newer
+        // errored snapshot contains additional assistant content after the tool
+        // call. When tc1 completes successfully, we still want to keep that
+        // trailing assistant content (it is real transcript text).
+        const messages: RelayMessage[] = [
+            msg({
+                key: "a1-partial",
+                role: "assistant",
+                content: [
+                    { type: "text", text: "Let me ask you something" },
+                    { type: "toolCall", name: "AskUserQuestion", id: "tc1",
+                      arguments: { questions: [{ question: "Color?", options: ["Red", "Blue"] }] } },
+                ],
+            }),
+            msg({
+                key: "a1-final",
+                role: "assistant",
+                stopReason: "error",
+                errorMessage: "JSON Parse error: Expected '}'",
+                content: [
+                    { type: "text", text: "Let me ask you something" },
+                    { type: "toolCall", name: "AskUserQuestion", id: "tc1",
+                      arguments: '{"questions": [{"question": "Color?", "options": ["Red"' },
+                    { type: "text", text: "Trailing text that should not be lost" },
+                ],
+                timestamp: 12345,
+            }),
+            msg({
+                key: "r1",
+                role: "toolResult",
+                toolCallId: "tc1",
+                toolName: "AskUserQuestion",
+                content: [{ type: "text", text: "User answered: Red" }],
+            }),
+        ];
+
+        const result = groupToolExecutionMessages(messages);
+
+        const tools = result.filter((m) => m.role === "tool");
+        expect(tools).toHaveLength(1);
+        expect(tools[0].content).toBeTruthy();
+
+        // One assistant part before the tool call, one after it (trailing text)
+        const assistantParts = result.filter((m) => m.role === "assistant");
+        expect(assistantParts).toHaveLength(2);
+        expect(assistantParts[0].stopReason).toBeUndefined();
+        expect(assistantParts[1].stopReason).toBeUndefined();
+
+        expect(assistantParts[1].content).toEqual([
+            { type: "text", text: "Trailing text that should not be lost" },
+        ]);
+        // Timestamp should come from the newer snapshot so sorting stays correct.
+        expect(assistantParts[1].timestamp).toBe(12345);
     });
 
     test("P1: keeps errored snapshot when no tool result follows (no non-errored partial)", () => {
