@@ -1622,6 +1622,9 @@ export function App() {
             toolName,
             content: syntheticContent,
             isError: false,
+            // Mark as a streaming partial so deduplication logic does not
+            // treat it as a terminal tool result (the tool is still in-flight).
+            isStreamingPartial: true,
           });
           scheduleToolStreamFlush();
         }

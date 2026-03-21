@@ -21,6 +21,12 @@ export interface RelayMessage {
   tokensBefore?: number;
   /** Structured details from tool results (e.g., subagent SubagentDetails) */
   details?: unknown;
+  /**
+   * True when this toolResult message is a synthetic streaming partial produced
+   * by a `tool_execution_update` event (i.e. the tool is still in-flight).
+   * These must NOT be treated as terminal results by deduplication logic.
+   */
+  isStreamingPartial?: boolean;
 }
 
 // ── Sub-agent conversation types ─────────────────────────────────────────────

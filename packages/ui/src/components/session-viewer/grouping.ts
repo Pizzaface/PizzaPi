@@ -23,7 +23,10 @@ function parseToolArguments(argumentsValue: unknown): unknown {
     try {
       return JSON.parse(argumentsValue) as unknown;
     } catch {
-      return argumentsValue;
+      // Incomplete / malformed JSON (e.g. stream truncation) — return an empty
+      // object rather than the raw string so downstream code always gets an
+      // object-shaped toolInput, consistent with rendering.tsx's own fallback.
+      return {};
     }
   }
 
@@ -51,21 +54,108 @@ function shouldGroupToolCall(_toolName: string): boolean {
 function extractGroupedToolCallIds(message: RelayMessage): Set<string> {
   const ids = new Set<string>();
   if (message.role !== "assistant" || !Array.isArray(message.content)) return ids;
+  for (const pending of extractGroupedPendingToolCalls(message)) {
+    if (pending.toolCallId) ids.add(pending.toolCallId);
+  }
+  return ids;
+}
+
+function extractGroupedPendingToolCalls(message: RelayMessage): PendingToolCall[] {
+  const pending: PendingToolCall[] = [];
+  if (message.role !== "assistant" || !Array.isArray(message.content)) return pending;
+
   for (const block of message.content) {
     if (!block || typeof block !== "object") continue;
     const b = block as Record<string, unknown>;
     if (b.type !== "toolCall") continue;
+
     const toolName = typeof b.name === "string" ? b.name : "unknown";
     if (!shouldGroupToolCall(toolName)) continue;
-    const id =
+
+    const toolCallId =
       typeof b.toolCallId === "string"
         ? b.toolCallId
         : typeof b.id === "string"
           ? b.id
           : "";
-    if (id) ids.add(id);
+
+    pending.push({
+      toolCallId,
+      toolName,
+      args: parseToolArguments(b.arguments),
+    });
   }
-  return ids;
+
+  return pending;
+}
+
+function collectToolCallIdsWithResult(messages: RelayMessage[]): Set<string> {
+  const toolCallIdsWithResult = new Set<string>();
+  const pendingToolCalls: PendingToolCall[] = [];
+
+  // Track which assistant indices have been seen so we can skip duplicates.
+  // When the same turn appears multiple times (partial + final), we only want
+  // to queue pending calls from the unique turns, not duplicate tool calls.
+  const seenTurns = new Map<string, number>(); // turnKey -> last assistant index
+
+  for (const message of messages) {
+    if (message.role === "assistant") {
+      // Build a signature of this turn (ordered tool call IDs) to detect duplicates.
+      const calls = extractGroupedPendingToolCalls(message);
+      const turnKey = calls.map((c) => c.toolCallId || `unnamed_${c.toolName}`).sort().join("|");
+
+      // If we've seen this exact turn before (same tool calls), skip it to avoid
+      // queueing duplicate pending entries that will confuse id-less result matching.
+      if (seenTurns.has(turnKey)) {
+        continue;
+      }
+      seenTurns.set(turnKey, messages.indexOf(message));
+
+      pendingToolCalls.push(...calls);
+      continue;
+    }
+
+    if (message.role !== "toolResult" && message.role !== "tool") continue;
+
+    // Synthetic streaming partials (from tool_execution_update) are in-flight
+    // tool output — they are NOT terminal results and must not be counted as
+    // proof that a tool call completed.
+    if (message.isStreamingPartial) continue;
+
+    let matchedPendingIndex = -1;
+
+    if (message.toolCallId) {
+      matchedPendingIndex = pendingToolCalls.findIndex(
+        (pending) => pending.toolCallId && pending.toolCallId === message.toolCallId
+      );
+    }
+
+    if (matchedPendingIndex < 0) {
+      const normalizedName = normalizeToolName(message.toolName);
+      // Use FIFO (findIndex) so results map to pending calls in invocation
+      // order. Stale streaming-partial duplicates are already excluded at
+      // enqueue time via message.key dedup, so LIFO is not needed here.
+      matchedPendingIndex = pendingToolCalls.findIndex(
+        (pending) => normalizeToolName(pending.toolName) === normalizedName
+      );
+    }
+
+    if (matchedPendingIndex < 0 && pendingToolCalls.length > 0) {
+      matchedPendingIndex = 0;
+    }
+
+    const matched =
+      matchedPendingIndex >= 0
+        ? pendingToolCalls.splice(matchedPendingIndex, 1)[0]
+        : undefined;
+    const matchedToolCallId = message.toolCallId ?? matched?.toolCallId;
+
+    if (matchedToolCallId) {
+      toolCallIdsWithResult.add(matchedToolCallId);
+    }
+  }
+
+  return toolCallIdsWithResult;
 }
 
 /**
@@ -75,40 +165,425 @@ function extractGroupedToolCallIds(message: RelayMessage): Set<string> {
  *
  * Two assistant messages are considered duplicates of the same turn when they
  * share at least one grouped-tool toolCallId.
+ *
+ * If a non-errored version and an errored version both reference the same
+ * toolCallId, we prefer the non-errored one.  This avoids propagating
+ * stopReason="error" / errorMessage onto the content parts that are split off
+ * during grouping — which would otherwise show a spurious ERROR badge on the
+ * assistant text bubble even though the tool completed successfully.
  */
 function deduplicateAssistantMessages(messages: RelayMessage[]): RelayMessage[] {
-  // Build a map: toolCallId → last index of an assistant message that references it.
+  // Build two maps:
+  //   toolCallId → last index of ANY assistant message that references it
+  //   toolCallId → last index of a NON-ERRORED assistant message that references it
   const lastIndexForToolCallId = new Map<string, number>();
+  const lastNonErroredIndexForToolCallId = new Map<string, number>();
   // Cache the extracted IDs for each message index to avoid re-parsing the content during the filter pass.
   const messageIdsMap = new Map<number, Set<string>>();
+  const assistantIndexes: number[] = [];
+
+  // Pre-collect tool call IDs that have a corresponding tool result in the
+  // transcript, including legacy toolResult messages that only match back to a
+  // pending tool call by tool name / order.
+  const toolCallIdsWithResult = collectToolCallIdsWithResult(messages);
 
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
     if (msg.role !== "assistant") continue;
     const ids = extractGroupedToolCallIds(msg);
-    if (ids.size > 0) {
-      messageIdsMap.set(i, ids);
-      for (const id of ids) {
-        lastIndexForToolCallId.set(id, i);
+    if (ids.size === 0) continue;
+
+    assistantIndexes.push(i);
+    messageIdsMap.set(i, ids);
+
+    for (const id of ids) {
+      lastIndexForToolCallId.set(id, i);
+      // Only record the non-errored index when a tool result exists for this
+      // ID.  If no result ever arrives the errored snapshot is the right one
+      // to surface (it carries the failure state); recording a non-errored
+      // partial here would cause the filter below to prefer the partial and
+      // silently drop the error banner.
+      if (msg.stopReason !== "error" && toolCallIdsWithResult.has(id)) {
+        lastNonErroredIndexForToolCallId.set(id, i);
       }
     }
   }
 
   if (lastIndexForToolCallId.size === 0) return messages;
 
-  // Drop any assistant message that contains grouped tool calls but is NOT the
-  // last message to reference all of those tool call IDs.
-  return messages.filter((msg, i) => {
-    if (msg.role !== "assistant") return true;
-    // Use cached IDs if available; otherwise (e.g. if empty) treat as having no IDs.
-    const ids = messageIdsMap.get(i);
-    if (!ids || ids.size === 0) return true;
-    // Keep only if this index is the last for every id it contains.
-    for (const id of ids) {
-      if (lastIndexForToolCallId.get(id) !== i) return false;
+  const parseToolArgumentsIfValid = (argumentsValue: unknown): unknown | null => {
+    if (argumentsValue && typeof argumentsValue === "object") return argumentsValue;
+    if (typeof argumentsValue === "string") {
+      try {
+        return JSON.parse(argumentsValue) as unknown;
+      } catch {
+        return null;
+      }
     }
-    return true;
-  });
+    return null;
+  };
+
+  const collectValidToolArgsByCallId = (msg: RelayMessage): Map<string, unknown> => {
+    const argsById = new Map<string, unknown>();
+    if (msg.role !== "assistant" || !Array.isArray(msg.content)) return argsById;
+
+    for (const block of msg.content) {
+      if (!block || typeof block !== "object") continue;
+      const b = block as Record<string, unknown>;
+      if (b.type !== "toolCall") continue;
+
+      const toolName = typeof b.name === "string" ? b.name : "unknown";
+      if (!shouldGroupToolCall(toolName)) continue;
+
+      const toolCallId =
+        typeof b.toolCallId === "string"
+          ? b.toolCallId
+          : typeof b.id === "string"
+            ? b.id
+            : "";
+      if (!toolCallId) continue;
+
+      const parsed = parseToolArgumentsIfValid(b.arguments);
+      if (parsed !== null) argsById.set(toolCallId, parsed);
+    }
+
+    return argsById;
+  };
+
+  const patchToolCallArguments = (blocks: unknown[], argsById: Map<string, unknown>): unknown[] => {
+    let changed = false;
+
+    const next = blocks.map((block) => {
+      if (!block || typeof block !== "object") return block;
+      const b = block as Record<string, unknown>;
+      if (b.type !== "toolCall") return block;
+
+      const toolName = typeof b.name === "string" ? b.name : "unknown";
+      if (!shouldGroupToolCall(toolName)) return block;
+
+      const toolCallId =
+        typeof b.toolCallId === "string"
+          ? b.toolCallId
+          : typeof b.id === "string"
+            ? b.id
+            : "";
+      if (!toolCallId) return block;
+
+      if (!argsById.has(toolCallId)) return block;
+      const nextArgs = argsById.get(toolCallId);
+
+      // Avoid cloning when already equal (common when winner is also the content source).
+      if (b.arguments === nextArgs) return block;
+
+      changed = true;
+      return { ...b, arguments: nextArgs };
+    });
+
+    return changed ? next : blocks;
+  };
+
+  // Group assistant snapshots that share toolCallIds into "components" — all
+  // members of a component represent alternate versions of the same turn.
+  // We pick exactly ONE winner per component to avoid rendering the same
+  // assistant text and tool cards multiple times.
+  //
+  // Winner selection per component:
+  //   - validIds = IDs present in the *latest* snapshot of the component
+  //     (earlier-only IDs were dropped by a later snapshot and are stale).
+  //   - For each valid ID, find the "preferred" snapshot:
+  //       • A non-errored snapshot wins when a tool result arrived for that ID
+  //         (prevents a spurious ERROR badge on a tool that completed fine).
+  //       • Otherwise the last snapshot wins (carries the failure state).
+  //   - Tally wins per snapshot.  The snapshot with the most wins is the
+  //     component winner; ties go to the latest snapshot (most complete).
+  const componentWinnerByIndex = new Map<number, number>();
+  const patchedAssistantByIndex = new Map<number, RelayMessage>();
+  const visitedAssistantIndexes = new Set<number>();
+
+  for (const startIndex of assistantIndexes) {
+    if (visitedAssistantIndexes.has(startIndex)) continue;
+
+    const queue = [startIndex];
+    const component: number[] = [];
+    visitedAssistantIndexes.add(startIndex);
+
+    while (queue.length > 0) {
+      const currentIndex = queue.shift()!;
+      component.push(currentIndex);
+      const currentIds = messageIdsMap.get(currentIndex)!;
+
+      for (const candidateIndex of assistantIndexes) {
+        if (visitedAssistantIndexes.has(candidateIndex)) continue;
+        const candidateIds = messageIdsMap.get(candidateIndex)!;
+        const overlaps = [...candidateIds].some((id) => currentIds.has(id));
+        if (!overlaps) continue;
+        visitedAssistantIndexes.add(candidateIndex);
+        queue.push(candidateIndex);
+      }
+    }
+
+    const latestIndex = Math.max(...component);
+    const validIds = messageIdsMap.get(latestIndex)!;
+    const componentSet = new Set(component);
+
+    const latestMsg = messages[latestIndex]!;
+    const allValidIdsHaveResult = [...validIds].every((id) => toolCallIdsWithResult.has(id));
+
+    // Tally wins: each valid ID votes for its preferred snapshot.
+    // If the latest snapshot is errored AND any tool never produced a terminal
+    // result, force the latest snapshot to win so we don't silently drop the
+    // failure state.
+    let winner = latestIndex;
+
+    if (!(latestMsg.stopReason === "error" && !allValidIdsHaveResult)) {
+      const winCount = new Map<number, number>();
+      for (const id of validIds) {
+        const preferredIdx = lastNonErroredIndexForToolCallId.has(id)
+          ? lastNonErroredIndexForToolCallId.get(id)!
+          : lastIndexForToolCallId.get(id)!;
+        // Only count if the preferred snapshot is actually in this component.
+        const resolvedIdx = componentSet.has(preferredIdx) ? preferredIdx : latestIndex;
+        winCount.set(resolvedIdx, (winCount.get(resolvedIdx) ?? 0) + 1);
+      }
+
+      // Pick the snapshot with the most votes; tie-break: prefer the latest index.
+      // UNLESS all tools have completed results, in which case prefer non-errored
+      // over errored when vote counts tie.
+      let maxWins = winCount.get(latestIndex) ?? 0;
+      for (const [idx, count] of winCount) {
+        const shouldUpdate =
+          count > maxWins ||
+          (count === maxWins &&
+            ((allValidIdsHaveResult &&
+              messages[idx]?.stopReason !== "error" &&
+              messages[winner]?.stopReason === "error") ||
+              (!allValidIdsHaveResult && idx > winner)));
+        if (shouldUpdate) {
+          maxWins = count;
+          winner = idx;
+        }
+      }
+    }
+
+    // If we pick an older non-errored snapshot, preserve the newer snapshot's
+    // timestamp and any additional assistant blocks, while keeping the older
+    // snapshot's non-error stopReason/isError and toolCall arguments.
+    if (winner !== latestIndex) {
+      const winnerMsg = messages[winner]!;
+
+      const winnerBlocks = Array.isArray(winnerMsg.content) ? (winnerMsg.content as unknown[]) : null;
+      const latestBlocks = Array.isArray(latestMsg.content) ? (latestMsg.content as unknown[]) : null;
+
+      // The authoritative tool-call set comes from the latest snapshot to avoid
+      // resurrecting tool calls that the server intentionally dropped. However,
+      // we must preserve non-toolCall blocks from the winner (text, thinking, etc.)
+      // that may not exist in the truncated latest snapshot.
+      const mergedBlocks: unknown[] = [];
+      if (latestBlocks) {
+        // Extract tool call IDs from the latest snapshot so we can preserve only
+        // those tool calls while merging in winner's non-toolCall content.
+        const latestToolIds = new Set<string>();
+        for (const block of latestBlocks) {
+          if (!block || typeof block !== "object") continue;
+          const b = block as Record<string, unknown>;
+          if (b.type === "toolCall") {
+            const id =
+              typeof b.toolCallId === "string"
+                ? b.toolCallId
+                : typeof b.id === "string"
+                  ? b.id
+                  : "";
+            if (id) latestToolIds.add(id);
+          }
+        }
+
+        // Merge strategy: segment both winner and latest by tool-call
+        // boundaries, then merge each segment preferring the latest's
+        // non-tool blocks (thread cZU) while preserving winner-only blocks
+        // (existing behaviour) and latest-only blocks between tool calls
+        // (thread cZR).
+        if (winnerBlocks) {
+          // Helper: extract tool call ID from a block
+          const tcId = (block: unknown): string => {
+            if (!block || typeof block !== "object") return "";
+            const b = block as Record<string, unknown>;
+            if (b.type !== "toolCall") return "";
+            return typeof b.toolCallId === "string"
+              ? b.toolCallId
+              : typeof b.id === "string"
+                ? b.id
+                : "";
+          };
+
+          // Segment blocks into alternating non-tool segments and tool calls.
+          // Result: segments[0], toolCalls[0], segments[1], toolCalls[1], ...
+          const segment = (blocks: unknown[]): { segs: unknown[][]; tcs: unknown[] } => {
+            const segs: unknown[][] = [[]];
+            const tcs: unknown[] = [];
+            for (const block of blocks) {
+              if (block && typeof block === "object" && (block as Record<string, unknown>).type === "toolCall") {
+                tcs.push(block);
+                segs.push([]);
+              } else {
+                segs[segs.length - 1].push(block);
+              }
+            }
+            return { segs, tcs };
+          };
+
+          const wSeg = segment(winnerBlocks);
+          const lSeg = segment(latestBlocks);
+
+          // Determine which tool calls make it into the merge (in latest OR has result)
+          const mergeToolCalls: unknown[] = [];
+          // Map from tool-call ID to its index in mergeToolCalls
+          const mergeToolIdx = new Map<string, number>();
+
+          // Start with latest's tool calls (preserves latest ordering)
+          for (const tc of lSeg.tcs) {
+            const id = tcId(tc);
+            mergeToolIdx.set(id, mergeToolCalls.length);
+            mergeToolCalls.push(tc);
+          }
+
+          // Add winner-only tool calls that have completed results,
+          // inserting at their original position from the winner snapshot
+          // rather than appending at the end (PR #220 thread cZf__).
+          for (let wi = 0; wi < wSeg.tcs.length; wi++) {
+            const tc = wSeg.tcs[wi];
+            const id = tcId(tc);
+            if (!id || mergeToolIdx.has(id) || !toolCallIdsWithResult.has(id)) continue;
+
+            // Find the insertion point: after the last preceding winner TC
+            // that is already in mergeToolCalls.
+            let insertAfter = -1; // -1 means "insert at the beginning"
+            for (let j = wi - 1; j >= 0; j--) {
+              const prevId = tcId(wSeg.tcs[j]);
+              if (prevId && mergeToolIdx.has(prevId)) {
+                insertAfter = mergeToolIdx.get(prevId)!;
+                break;
+              }
+            }
+
+            const insertAt = insertAfter + 1;
+            mergeToolCalls.splice(insertAt, 0, tc);
+            // Update all indices >= insertAt
+            for (const [k, v] of mergeToolIdx) {
+              if (v >= insertAt) mergeToolIdx.set(k, v + 1);
+            }
+            mergeToolIdx.set(id, insertAt);
+          }
+
+          // For each gap between tool calls, merge non-tool segments.
+          // Map winner tool calls to their position so we can align segments.
+          const wTcPositions = new Map<string, number>();
+          for (let i = 0; i < wSeg.tcs.length; i++) {
+            wTcPositions.set(tcId(wSeg.tcs[i]), i);
+          }
+          const lTcPositions = new Map<string, number>();
+          for (let i = 0; i < lSeg.tcs.length; i++) {
+            lTcPositions.set(tcId(lSeg.tcs[i]), i);
+          }
+
+          // For each gap position in the merge (0 = before first TC, 1 = after first TC, etc.),
+          // find the corresponding segment from winner and latest by matching
+          // surrounding tool call IDs.
+          const numGaps = mergeToolCalls.length + 1;
+          for (let g = 0; g < numGaps; g++) {
+            // Determine which segment index in winner/latest corresponds to gap g
+            // Gap g is after mergeToolCalls[g-1] and before mergeToolCalls[g]
+            const prevTcId = g > 0 ? tcId(mergeToolCalls[g - 1]) : null;
+            const nextTcId = g < mergeToolCalls.length ? tcId(mergeToolCalls[g]) : null;
+
+            // Winner segment: the segment after prevTcId (or segment 0 if no prevTcId)
+            let wSegIdx = -1;
+            if (prevTcId === null) {
+              wSegIdx = 0;
+            } else if (wTcPositions.has(prevTcId)) {
+              wSegIdx = wTcPositions.get(prevTcId)! + 1;
+            }
+
+            // Latest segment: the segment after prevTcId (or segment 0 if no prevTcId)
+            let lSegIdx = -1;
+            if (prevTcId === null) {
+              lSegIdx = 0;
+            } else if (lTcPositions.has(prevTcId)) {
+              lSegIdx = lTcPositions.get(prevTcId)! + 1;
+            }
+
+            const wBlocks = wSegIdx >= 0 && wSegIdx < wSeg.segs.length ? wSeg.segs[wSegIdx] : [];
+            const lBlocks = lSegIdx >= 0 && lSegIdx < lSeg.segs.length ? lSeg.segs[lSegIdx] : [];
+
+            // Merge: prefer latest blocks (thread cZU), then append any
+            // winner-only extras (preserves winner-only text like "Between").
+            if (lBlocks.length > 0) {
+              mergedBlocks.push(...lBlocks);
+              // Append winner blocks beyond the latest's count at this position
+              for (let i = lBlocks.length; i < wBlocks.length; i++) {
+                mergedBlocks.push(wBlocks[i]);
+              }
+            } else {
+              mergedBlocks.push(...wBlocks);
+            }
+
+            // Emit the tool call for this gap (if not the last gap)
+            if (g < mergeToolCalls.length) {
+              mergedBlocks.push(mergeToolCalls[g]);
+            }
+          }
+        } else {
+          mergedBlocks.push(...latestBlocks);
+        }
+      } else if (winnerBlocks) {
+        mergedBlocks.push(...winnerBlocks);
+      }
+
+      if (mergedBlocks.length > 0) {
+        // For each shared tool call, prefer the latest parseable args over the
+        // winner's — the latest snapshot may have a more complete version of
+        // the arguments even if the message itself errored.
+        const argsById = collectValidToolArgsByCallId(winnerMsg);
+        const latestArgsById = collectValidToolArgsByCallId(latestMsg);
+        // Overlay: latest valid args win over winner's args
+        for (const [id, args] of latestArgsById) {
+          argsById.set(id, args);
+        }
+        const patchedBlocks = argsById.size > 0 ? patchToolCallArguments(mergedBlocks, argsById) : mergedBlocks;
+
+        patchedAssistantByIndex.set(winner, {
+          ...winnerMsg,
+          timestamp: latestMsg.timestamp ?? winnerMsg.timestamp,
+          content: patchedBlocks,
+        });
+      } else if (latestMsg.timestamp !== undefined && winnerMsg.timestamp === undefined) {
+        patchedAssistantByIndex.set(winner, {
+          ...winnerMsg,
+          timestamp: latestMsg.timestamp,
+        });
+      }
+    }
+
+    for (const idx of component) {
+      componentWinnerByIndex.set(idx, winner);
+    }
+  }
+
+  const result: RelayMessage[] = [];
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i]!;
+    if (msg.role === "assistant") {
+      const ids = messageIdsMap.get(i);
+      if (ids && ids.size > 0) {
+        if (componentWinnerByIndex.get(i) !== i) continue;
+        result.push(patchedAssistantByIndex.get(i) ?? msg);
+        continue;
+      }
+    }
+
+    result.push(msg);
+  }
+
+  return result;
 }
 
 function getThinkingContent(buf: unknown[]): { thinking: string; duration: number } | null {
@@ -296,6 +771,9 @@ export function groupToolExecutionMessages(messages: RelayMessage[]): RelayMessa
 
       if (matchedPendingIndex < 0) {
         const normalizedName = normalizeToolName(message.toolName);
+        // Use FIFO (findIndex) so results map to pending calls in invocation
+        // order. Stale streaming-partial duplicates are excluded at enqueue
+        // time via message.key dedup, so LIFO is not needed here.
         matchedPendingIndex = pendingToolCalls.findIndex(
           (p) => normalizeToolName(p.toolName) === normalizedName
         );
