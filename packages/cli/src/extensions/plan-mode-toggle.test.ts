@@ -329,6 +329,9 @@ describe("isDestructiveCommand", () => {
         expect(isDestructiveCommand("git notes copy HEAD~1 HEAD")).toBe(true);
         expect(isDestructiveCommand("git notes merge origin/refs/notes/commits")).toBe(true);
         expect(isDestructiveCommand("git notes prune")).toBe(true);
+        // Also block append/import/export/set-ref etc.
+        expect(isDestructiveCommand("git notes append -m 'extra'")).toBe(true);
+        expect(isDestructiveCommand("git notes import refs/notes/import")).toBe(true);
     });
 
     test("allows git notes read operations (read-only)", () => {
@@ -336,6 +339,8 @@ describe("isDestructiveCommand", () => {
         expect(isDestructiveCommand("git notes show HEAD")).toBe(false);
         expect(isDestructiveCommand("git notes list")).toBe(false);
         expect(isDestructiveCommand("git notes list HEAD")).toBe(false);
+        // bare `git notes` defaults to `git notes list`
+        expect(isDestructiveCommand("git notes")).toBe(false);
     });
 
 

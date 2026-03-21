@@ -52,7 +52,7 @@ const GIT_SAFE_SUBCOMMANDS = new Set([
     // History / patch inspection (read-only, stdout-only)
     "archive", "cherry", "range-diff",
     // Notes (read-only subcommands; destructive overrides handle write ops)
-    "notes",
+
     // Misc read-only
     "help", "version", "config", "reflog", "worktree",
 ]);
@@ -84,9 +84,7 @@ const GIT_SAFE_SUBCOMMAND_DESTRUCTIVE_OVERRIDES: RegExp[] = [
     /^\s*git\s+worktree\s+(add|remove|move|repair|lock|unlock)\b/i,
     // archive: -o / --output writes to a file instead of stdout
     /^\s*git\s+archive\b.*\s(-o\s|-o\S|--output\b|--output=)/i,
-    // notes: add/edit/remove/copy/merge/prune are write operations; only show/list are safe
-    /^\s*git\s+notes\s+(add|edit|remove|copy|merge|prune)\b/i,
-    // notes bare (no subcommand) defaults to notes list — but bare `git notes` is safe; handled above
+
 
 ];
 
@@ -221,14 +219,32 @@ export function splitShellSegments(command: string): string[] {
  * list, a secondary override check catches argument combinations that are
  * still mutating (e.g. `git branch -D`, `git remote add`).
  */
+/**
+ * Patterns that make an otherwise-destructive git subcommand safe (read-only).
+ * If a subcommand is NOT in GIT_SAFE_SUBCOMMANDS, these patterns are checked
+ * before declaring it destructive — allowing specific read-only invocations.
+ */
+const GIT_DESTRUCTIVE_SUBCOMMAND_SAFE_OVERRIDES: RegExp[] = [
+    // notes show/list are read-only; all other notes subcommands write to git
+    /^\s*git\s+notes\s+(show|list)\b/i,
+    // bare `git notes` (no subcommand) defaults to `git notes list` — read-only
+    /^\s*git\s+notes\s*$/i,
+];
+
 function isDestructiveGitCommand(segment: string): boolean {
     const gitMatch = segment.match(/^\s*git\s+(\S+)/i);
     if (!gitMatch) return false; // not a git command
 
     const subcommand = gitMatch[1].toLowerCase();
 
-    // Subcommand not on the safe list → destructive
-    if (!GIT_SAFE_SUBCOMMANDS.has(subcommand)) return true;
+    // Subcommand not on the safe list → check for safe overrides, then destructive
+    if (!GIT_SAFE_SUBCOMMANDS.has(subcommand)) {
+        // Some destructive subcommands have specific read-only invocations
+        if (GIT_DESTRUCTIVE_SUBCOMMAND_SAFE_OVERRIDES.some((p) => p.test(segment))) {
+            return false;
+        }
+        return true;
+    }
 
     // Subcommand is safe in general, but check for destructive argument patterns
     return GIT_SAFE_SUBCOMMAND_DESTRUCTIVE_OVERRIDES.some((p) => p.test(segment));
