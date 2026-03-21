@@ -182,6 +182,22 @@ describe("relay — RelayClientToServerEvents payloads", () => {
     expect(typeof p.token).toBe("string");
     expect(typeof p.childSessionId).toBe("string");
   });
+
+  test("cleanup_child_session ack callback is (result: { ok: boolean; error?: string }) => void", () => {
+    // Validates the second parameter (ack) of cleanup_child_session.
+    // If ack is removed or its payload shape changes, this fails at compile time.
+    type Ack = NonNullable<Parameters<RelayClientToServerEvents["cleanup_child_session"]>[1]>;
+    type Result = Parameters<Ack>[0];
+
+    const ack: Ack = (_result) => {};
+    expect(typeof ack).toBe("function");
+
+    const ok: Result = { ok: true };
+    const fail: Result = { ok: false, error: "Not authorized" };
+
+    expect(ack(ok)).toBeUndefined();
+    expect(ack(fail)).toBeUndefined();
+  });
 });
 
 describe("relay — RelayServerToClientEvents payloads", () => {
@@ -318,11 +334,20 @@ describe("relay — RelayServerToClientEvents payloads", () => {
     expect(p.trigger.sourceSessionName).toBeUndefined();
   });
 
-  test("trigger_response carries triggerId and response", () => {
+  test("trigger_response carries triggerId and response with optional metadata", () => {
     type Payload = Parameters<RelayServerToClientEvents["trigger_response"]>[0];
-    const p: Payload = { triggerId: "trig-1", response: "proceed" };
-    expect(typeof p.triggerId).toBe("string");
-    expect(typeof p.response).toBe("string");
+
+    const minimal: Payload = { triggerId: "trig-1", response: "proceed" };
+    expect(typeof minimal.triggerId).toBe("string");
+    expect(typeof minimal.response).toBe("string");
+    expect(minimal.action).toBeUndefined();
+    expect(minimal.targetSessionId).toBeUndefined();
+
+    const withAction: Payload = { ...minimal, action: "followUp" };
+    expect(withAction.action).toBe("followUp");
+
+    const withTargetSessionId: Payload = { ...minimal, targetSessionId: "sess-child" };
+    expect(withTargetSessionId.targetSessionId).toBe("sess-child");
   });
 
   test("session_expired carries sessionId", () => {
