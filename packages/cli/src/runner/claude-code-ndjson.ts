@@ -131,9 +131,25 @@ export function translateNdjsonLine(line: string): TranslationResult {
       }
     }
 
+    // Normalize Claude tool_use blocks into PizzaPi toolCall blocks so the
+    // viewer's grouping/rendering path (which expects type:"toolCall" with
+    // toolCallId/arguments) works correctly.
+    const normalizedContent = content.map((block) => {
+      if (!block || typeof block !== "object") return block;
+      const b = block as Record<string, unknown>;
+      if (b.type !== "tool_use") return block;
+      return {
+        type: "toolCall",
+        toolCallId: typeof b.id === "string" ? b.id : undefined,
+        name: typeof b.name === "string" ? b.name : undefined,
+        arguments: b.input != null ? JSON.stringify(b.input) : undefined,
+      };
+    });
+    const normalizedMessage = { ...message, content: normalizedContent };
+
     const result: TranslationResult = {
       kind: "relay_event",
-      relayEvent: { type: "message_update", role: "assistant", message },
+      relayEvent: { type: "message_update", role: "assistant", message: normalizedMessage },
     };
     if (todoList) result.todoList = todoList;
     if (sessionName) result.sessionName = sessionName;
@@ -180,11 +196,26 @@ export function translateNdjsonLine(line: string): TranslationResult {
   // Translate stream_event into message_update with assistantMessageEvent
   // so the UI can handle partial streaming content
   if (type === "stream_event") {
+    // Extract the event subtype — Claude Code uses "event" for the delta type name
+    // (e.g. "text_delta", "thinking_delta", "thinking_start", "thinking_end", "toolcall_delta").
+    const eventType = typeof msg.event === "string" ? msg.event : undefined;
+    // Delta may be a string directly, or an object with a .text field.
+    const rawDelta = msg.delta;
+    const delta = typeof rawDelta === "string"
+      ? rawDelta
+      : (rawDelta && typeof rawDelta === "object" && typeof (rawDelta as Record<string, unknown>).text === "string")
+        ? (rawDelta as Record<string, unknown>).text as string
+        : undefined;
+    const contentIndex = typeof msg.index === "number" ? msg.index : undefined;
+
     return {
       kind: "relay_event",
       relayEvent: {
         type: "message_update",
         assistantMessageEvent: {
+          type: eventType,
+          delta,
+          contentIndex,
           partial: msg,
         },
       },

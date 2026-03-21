@@ -33,6 +33,29 @@ describe("translateNdjsonLine", () => {
     expect(result.relayEvent?.type).toBe("message_update");
   });
 
+  test("normalizes tool_use blocks to toolCall format", () => {
+    const line = JSON.stringify({
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "text", text: "Let me run that." },
+          { type: "tool_use", id: "tu_123", name: "Bash", input: { command: "ls" } },
+        ],
+      },
+    });
+    const result = translateNdjsonLine(line);
+    expect(result.kind).toBe("relay_event");
+    const msg = (result.relayEvent as any)?.message;
+    expect(msg.content[0]).toMatchObject({ type: "text", text: "Let me run that." });
+    expect(msg.content[1]).toMatchObject({
+      type: "toolCall",
+      toolCallId: "tu_123",
+      name: "Bash",
+      arguments: JSON.stringify({ command: "ls" }),
+    });
+  });
+
   test("detects TodoWrite tool_use in assistant message", () => {
     const line = JSON.stringify({
       type: "assistant",
@@ -134,12 +157,32 @@ describe("translateNdjsonLine", () => {
   test("translates stream_event to message_update with assistantMessageEvent", () => {
     const line = JSON.stringify({
       type: "stream_event",
+      event: "text_delta",
       delta: { text: "Hello" },
+      index: 0,
     });
     const result = translateNdjsonLine(line);
     expect(result.kind).toBe("relay_event");
     expect(result.relayEvent?.type).toBe("message_update");
-    expect((result.relayEvent as any)?.assistantMessageEvent?.partial).toBeDefined();
+    const ae = (result.relayEvent as any)?.assistantMessageEvent;
+    expect(ae?.partial).toBeDefined();
+    expect(ae?.type).toBe("text_delta");
+    expect(ae?.delta).toBe("Hello");
+    expect(ae?.contentIndex).toBe(0);
+  });
+
+  test("stream_event with string delta", () => {
+    const line = JSON.stringify({
+      type: "stream_event",
+      event: "thinking_delta",
+      delta: "some thought",
+      index: 1,
+    });
+    const result = translateNdjsonLine(line);
+    const ae = (result.relayEvent as any)?.assistantMessageEvent;
+    expect(ae?.type).toBe("thinking_delta");
+    expect(ae?.delta).toBe("some thought");
+    expect(ae?.contentIndex).toBe(1);
   });
 
   test("returns unknown for unrecognised line", () => {

@@ -16,7 +16,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { mkdtemp, writeFile, rm, chmod } from "node:fs/promises";
-import { join, resolve as resolvePath } from "node:path";
+import { dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir, tmpdir } from "node:os";
 import { createServer as createNetServer } from "node:net";
@@ -55,6 +55,8 @@ const PACKAGE_ROOT = resolvePath(fileURLToPath(new URL("../..", import.meta.url)
 const PLUGIN_DIR_CANDIDATES = [
   join(PACKAGE_ROOT, "src", "claude-code-plugin"),
   join(PACKAGE_ROOT, "claude-code-plugin"),
+  // Packaged/npm installs: plugin dir lives next to the shipped binary or runner sidecar
+  join(dirname(process.execPath), "claude-code-plugin"),
 ];
 const PLUGIN_DIR: string = (() => {
   const found = PLUGIN_DIR_CANDIDATES.find((candidate) => existsSync(candidate));
