@@ -173,6 +173,9 @@ export function NewSessionWizardDialog({
     // Watch for runner disconnect while wizard is open
     React.useEffect(() => {
         if (!open || !selectedRunnerId || step !== "folder") return;
+        // Skip validation while runners list is still loading (empty).
+        // Without this guard, preselectedRunnerId gets cleared on first render.
+        if (runners.length === 0) return;
         const isConnected = runners.some((r) => r.runnerId === selectedRunnerId && r.isOnline);
         if (!isConnected) {
             const remaining = runners.filter((r) => r.isOnline);
