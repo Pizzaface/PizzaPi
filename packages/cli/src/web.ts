@@ -1080,12 +1080,11 @@ Settable keys:
         } else if (key === "image") {
             const newImage = value.trim();
             if (newImage !== config.image) {
-                // When switching to a different image repo without an explicit
-                // imageTag change, reset a previously pinned tag to "latest" so
-                // operators don't silently carry over a tag that may not exist
-                // on the new registry (mirrors the --image flag behavior in
-                // runWeb()).
                 config.image = newImage;
+            }
+            // Reapplying an image (even the same repo) should clear a pinned
+            // tag so the documented default delivery tag (latest) takes effect.
+            if (config.imageTag !== "latest") {
                 config.imageTag = "latest";
             }
         } else if (key === "imageTag") {
@@ -1186,13 +1185,18 @@ export async function runWeb(args: string[]): Promise<void> {
         config.extraOrigins = parsed.origins;
         configChanged = true;
     }
-    if (parsed.image !== undefined && parsed.image !== config.image) {
-        config.image = parsed.image;
-        configChanged = true;
-        // When switching images without an explicit --tag, reset the stored tag
-        // so a previously pinned tag (e.g. "0.1.32") doesn't silently persist.
+    if (parsed.image !== undefined) {
+        const newImage = parsed.image;
+        if (newImage !== config.image) {
+            config.image = newImage;
+            configChanged = true;
+        }
+        // Reset any previously pinned tag even when the repo stays the same
+        // so running `pizza web --image ...` without --tag doesn't reapply the
+        // stale tag.
         if (parsed.tag === undefined && config.imageTag !== "latest") {
             config.imageTag = "latest";
+            configChanged = true;
         }
     }
     if (parsed.tag !== undefined && parsed.tag !== config.imageTag) {

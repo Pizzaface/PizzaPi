@@ -1,6 +1,19 @@
+import { readFileSync } from "fs";
+import { join } from "path";
+
 const NPM_PACKAGE = "@pizzapi/pizza";
 const CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes
 const FAILURE_TTL_MS = 60 * 1000; // 1 minute backoff on failure
+
+const BUNDLED_PACKAGE_VERSION: string | null = (() => {
+    try {
+        const pkgPath = join(import.meta.dirname ?? __dirname, "../package.json");
+        const pkg = JSON.parse(readFileSync(pkgPath, "utf-8")) as { version?: string };
+        return pkg.version?.trim() || null;
+    } catch {
+        return null;
+    }
+})();
 
 let cachedVersion: string | null = null;
 let cachedAt = 0;
@@ -98,4 +111,8 @@ export function getHubVersionInfo(): { image: string | null; version: string | n
         image,
         version: effectiveVersion ?? deriveVersionFromImage(image),
     };
+}
+
+export function getBundledVersion(): string | null {
+    return BUNDLED_PACKAGE_VERSION;
 }

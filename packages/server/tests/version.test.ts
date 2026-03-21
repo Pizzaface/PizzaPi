@@ -1,8 +1,19 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { getHubVersionInfo } from "../src/version";
+import { readFileSync } from "fs";
+import { join } from "path";
+import { getBundledVersion, getHubVersionInfo } from "../src/version";
 
 const ORIGINAL_IMAGE = process.env.PIZZAPI_HUB_IMAGE;
 const ORIGINAL_VERSION = process.env.PIZZAPI_HUB_VERSION;
+const SERVER_PACKAGE_PATH = join(import.meta.dirname ?? __dirname, "..", "package.json");
+const SERVER_PACKAGE_VERSION: string | null = (() => {
+    try {
+        const pkg = JSON.parse(readFileSync(SERVER_PACKAGE_PATH, "utf-8")) as { version?: string };
+        return pkg.version?.trim() || null;
+    } catch {
+        return null;
+    }
+})();
 
 afterEach(() => {
     if (ORIGINAL_IMAGE === undefined) {
@@ -112,5 +123,13 @@ describe("getHubVersionInfo", () => {
         expect(result.image).toBe("ghcr.io/acme/pizzapi@sha256:abc123");
         // Short digest abbreviations are pinned — they are not in VAGUE_VERSIONS.
         expect(result.version).toBe("sha256-abc");
+    });
+
+    test("getBundledVersion returns the packaged server release", () => {
+        if (SERVER_PACKAGE_VERSION === null) {
+            expect(getBundledVersion()).toBeNull();
+        } else {
+            expect(getBundledVersion()).toBe(SERVER_PACKAGE_VERSION);
+        }
     });
 });

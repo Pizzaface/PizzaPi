@@ -7,7 +7,7 @@
  * files and eventually 404.
  */
 
-import { getHubVersionInfo, getLatestNpmVersion } from "../version.js";
+import { getBundledVersion, getHubVersionInfo, getLatestNpmVersion } from "../version.js";
 import { serverHealth } from "../health.js";
 import { requireSession } from "../middleware.js";
 import { handleAuthRoute } from "./auth.js";
@@ -65,13 +65,12 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
         if (auth instanceof Response) return auth;
         const hub = getHubVersionInfo();
         // For source builds, PIZZAPI_HUB_VERSION is "local" and
-        // getHubVersionInfo() returns null — fall back to the npm registry to
-        // surface the actual release number.  For image-mode deployments
-        // (mutable tags like "latest"/"main" or pinned semver/digest),
-        // getHubVersionInfo() now returns the tag verbatim so we do NOT
-        // substitute the npm version, which would misrepresent the deployed
-        // image.
-        const hubVersion = hub.version ?? (await getLatestNpmVersion());
+        // getHubVersionInfo() returns null.  Instead of calling the npm
+        // registry, fall back to the version bundled with the server image so
+        // the dashboard reports the build that is actually running.  Image
+        // deployments still return their configured tag/digest verbatim.
+        const bundledVersion = getBundledVersion();
+        const hubVersion = hub.version ?? bundledVersion ?? (await getLatestNpmVersion());
         return Response.json({
             hubVersion,
             hubImage: hub.image,
