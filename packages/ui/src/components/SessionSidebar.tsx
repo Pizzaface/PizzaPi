@@ -12,7 +12,7 @@ import {
 import { cn } from "@/lib/utils";
 import { io } from "socket.io-client";
 import type { HubServerToClientEvents, HubClientToServerEvents } from "@pizzapi/protocol";
-import { formatPathTail } from "@/lib/path";
+import { extractWorktreeName, formatPathTail } from "@/lib/path";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { PanelLeftClose, PanelLeftOpen, Plus, X, HardDrive, FolderOpen, CheckSquare, Square, CheckCheck, Trash2, Pin, PinOff, ChevronDown, ChevronRight, MessageSquare, Copy } from "lucide-react";
 import { buildSessionTree, flattenSessionTree, getSessionIndent, getDescendantSessionIds, getGroupCwd } from "@/lib/session-tree";
@@ -1363,11 +1363,8 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                             {/* Worktree badge — shown when cwd is inside a .worktrees/ directory */}
                                                             {(() => {
                                                                 const cwd = s.cwd || "";
-                                                                const wtMarker = "/.worktrees/";
-                                                                const wtIdx = cwd.indexOf(wtMarker);
-                                                                const branchName = wtIdx !== -1
-                                                                    ? cwd.substring(wtIdx + wtMarker.length).replace(/\/$/, "")
-                                                                    : null;
+                                                                const knownCwds = liveSessions.map((ls) => ls.cwd || "");
+                                                                const branchName = extractWorktreeName(cwd, knownCwds);
                                                                 return branchName ? (
                                                                     <div className="flex items-center gap-1 mt-0.5">
                                                                         <span

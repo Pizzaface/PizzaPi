@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { formatPathTail } from "./path";
+import { extractWorktreeName, formatPathTail } from "./path";
 
 describe("formatPathTail", () => {
     test("returns empty string for empty input", () => {
@@ -40,5 +40,62 @@ describe("formatPathTail", () => {
 
     test("handles relative paths", () => {
         expect(formatPathTail("a/b/c/d")).toBe("…/c/d");
+    });
+});
+
+describe("extractWorktreeName", () => {
+    test("returns null for paths without .worktrees marker", () => {
+        expect(extractWorktreeName("/projects/foo/src")).toBeNull();
+        expect(extractWorktreeName("")).toBeNull();
+    });
+
+    test("extracts single-segment branch name", () => {
+        expect(extractWorktreeName("/repo/.worktrees/fix-bar")).toBe("fix-bar");
+    });
+
+    test("extracts single-segment branch when cwd is a subdir", () => {
+        expect(extractWorktreeName("/repo/.worktrees/fix-bar/src")).toBe("fix-bar");
+    });
+
+    test("extracts slashed branch name using known cwds", () => {
+        const known = ["/repo/.worktrees/feat/login"];
+        expect(extractWorktreeName("/repo/.worktrees/feat/login", known)).toBe("feat/login");
+    });
+
+    test("extracts slashed branch name when cwd is a subdir using known cwds", () => {
+        const known = ["/repo/.worktrees/feat/login"];
+        expect(extractWorktreeName("/repo/.worktrees/feat/login/src", known)).toBe("feat/login");
+    });
+
+    test("extracts deeply slashed branch name using known cwds", () => {
+        const known = ["/repo/.worktrees/a/b/c"];
+        expect(extractWorktreeName("/repo/.worktrees/a/b/c/src/lib", known)).toBe("a/b/c");
+    });
+
+    test("picks longest matching known cwd", () => {
+        const known = [
+            "/repo/.worktrees/feat",
+            "/repo/.worktrees/feat/login",
+        ];
+        expect(extractWorktreeName("/repo/.worktrees/feat/login/src", known)).toBe("feat/login");
+    });
+
+    test("falls back to first segment without known cwds", () => {
+        // Without known cwds, slashed branches fall back to first segment
+        expect(extractWorktreeName("/repo/.worktrees/feat/login/src")).toBe("feat");
+    });
+
+    test("ignores known cwds from different repos", () => {
+        const known = ["/other-repo/.worktrees/feat/login"];
+        // No match from our repo, falls back to first segment
+        expect(extractWorktreeName("/repo/.worktrees/feat/login/src", known)).toBe("feat");
+    });
+
+    test("handles trailing slashes", () => {
+        expect(extractWorktreeName("/repo/.worktrees/fix-bar/")).toBe("fix-bar");
+    });
+
+    test("returns null when nothing after marker", () => {
+        expect(extractWorktreeName("/repo/.worktrees/")).toBeNull();
     });
 });
