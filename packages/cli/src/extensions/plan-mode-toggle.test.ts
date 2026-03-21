@@ -498,6 +498,101 @@ describe("isDestructiveCommand", () => {
         expect(isDestructiveCommand("make -n")).toBe(false);
         expect(isDestructiveCommand("make --just-print")).toBe(false);
     });
+
+    // ── Previously-missing write-capable commands ─────────────────────────
+
+    test("flags GNU install (always writes to destination)", () => {
+        expect(isDestructiveCommand("install -m 755 binary /usr/local/bin/")).toBe(true);
+        expect(isDestructiveCommand("install -d /usr/local/share/myapp")).toBe(true);
+        expect(isDestructiveCommand("install file.so /usr/lib/")).toBe(true);
+    });
+
+    test("flags mkfifo (creates named pipes)", () => {
+        expect(isDestructiveCommand("mkfifo /tmp/mypipe")).toBe(true);
+        expect(isDestructiveCommand("mkfifo -m 600 /tmp/pipe")).toBe(true);
+    });
+
+    test("flags mknod (creates device/special files)", () => {
+        expect(isDestructiveCommand("mknod /dev/mydev c 89 1")).toBe(true);
+        expect(isDestructiveCommand("mknod -m 660 /tmp/fifo p")).toBe(true);
+    });
+
+    test("flags patch (applies diffs, modifies files)", () => {
+        expect(isDestructiveCommand("patch -p1 < changes.diff")).toBe(true);
+        expect(isDestructiveCommand("patch file.txt patch.diff")).toBe(true);
+        expect(isDestructiveCommand("patch --strip=1 < fix.patch")).toBe(true);
+    });
+
+    test("flags tar with create flag (-c / --create)", () => {
+        expect(isDestructiveCommand("tar -cf archive.tar dir/")).toBe(true);
+        expect(isDestructiveCommand("tar -czf archive.tar.gz dir/")).toBe(true);
+        expect(isDestructiveCommand("tar --create -f out.tar .")).toBe(true);
+        expect(isDestructiveCommand("tar --create --gzip -f out.tar.gz .")).toBe(true);
+        // Legacy positional flag style
+        expect(isDestructiveCommand("tar czf archive.tar.gz dir/")).toBe(true);
+        expect(isDestructiveCommand("tar cf out.tar file1 file2")).toBe(true);
+    });
+
+    test("flags tar with append flag (-r / --append)", () => {
+        expect(isDestructiveCommand("tar -rf archive.tar newfile")).toBe(true);
+        expect(isDestructiveCommand("tar --append -f archive.tar newfile")).toBe(true);
+        // Legacy positional flag style
+        expect(isDestructiveCommand("tar rf archive.tar newfile")).toBe(true);
+    });
+
+    test("flags tar with update flag (-u / --update)", () => {
+        expect(isDestructiveCommand("tar -uf archive.tar updated")).toBe(true);
+        expect(isDestructiveCommand("tar --update -f archive.tar updated")).toBe(true);
+        // Legacy positional flag style
+        expect(isDestructiveCommand("tar uf archive.tar updated")).toBe(true);
+    });
+
+    test("flags tar with extract flag (-x / --extract)", () => {
+        expect(isDestructiveCommand("tar -xf archive.tar")).toBe(true);
+        expect(isDestructiveCommand("tar -xzf archive.tar.gz")).toBe(true);
+        expect(isDestructiveCommand("tar --extract -f archive.tar")).toBe(true);
+        expect(isDestructiveCommand("tar --get -f archive.tar")).toBe(true);
+        // Legacy positional flag style
+        expect(isDestructiveCommand("tar xvf archive.tar")).toBe(true);
+        expect(isDestructiveCommand("tar xf archive.tar")).toBe(true);
+    });
+
+    test("allows tar with list flag only (-t / --list)", () => {
+        expect(isDestructiveCommand("tar -tf archive.tar")).toBe(false);
+        expect(isDestructiveCommand("tar -tvf archive.tar")).toBe(false);
+        expect(isDestructiveCommand("tar --list -f archive.tar")).toBe(false);
+        // Legacy positional flag style (list only)
+        expect(isDestructiveCommand("tar tf archive.tar")).toBe(false);
+        expect(isDestructiveCommand("tar tvf archive.tar")).toBe(false);
+    });
+
+    test("flags gawk with in-place editing flags", () => {
+        expect(isDestructiveCommand("gawk -i inplace '{gsub(/foo/, \"bar\")} 1' file.txt")).toBe(true);
+        expect(isDestructiveCommand("gawk --inplace '{gsub(/foo/, \"bar\")} 1' file.txt")).toBe(true);
+    });
+
+    test("allows awk / gawk without in-place flags", () => {
+        expect(isDestructiveCommand("awk '{print $1}' file.txt")).toBe(false);
+        expect(isDestructiveCommand("gawk '{print NR, $0}' file.txt")).toBe(false);
+        expect(isDestructiveCommand("awk -F: '{print $1}' /etc/passwd")).toBe(false);
+    });
+
+    test("flags shell output redirection (>)", () => {
+        expect(isDestructiveCommand("echo hello > /tmp/out.txt")).toBe(true);
+        expect(isDestructiveCommand("cat file.txt > copy.txt")).toBe(true);
+        expect(isDestructiveCommand("ls > listing.txt")).toBe(true);
+    });
+
+    test("flags shell append redirection (>>)", () => {
+        expect(isDestructiveCommand("echo hello >> /tmp/out.txt")).toBe(true);
+        expect(isDestructiveCommand("date >> /tmp/timestamps.log")).toBe(true);
+    });
+
+    test("allows stderr redirection to /dev/null (2>/dev/null)", () => {
+        expect(isDestructiveCommand("ls 2>/dev/null")).toBe(false);
+        expect(isDestructiveCommand("cat file.txt 2>/dev/null")).toBe(false);
+        expect(isDestructiveCommand("grep pattern src/ 2>/dev/null")).toBe(false);
+    });
 });
 
 // ── isDestructiveCommand with sandboxActive=true ─────────────────────────────

@@ -27,6 +27,11 @@ const DESTRUCTIVE_CMD_PATTERNS = [
     /^\s*brew\s+(install|uninstall|upgrade)/i,
     /^\s*systemctl\s+(start|stop|restart|enable|disable)/i,
     /^\s*service\s+\S+\s+(start|stop|restart)/i,
+    // Filesystem-creating / file-modifying utilities missing from the original list
+    /^\s*install\b/i,   // GNU install — always writes to destination
+    /^\s*mkfifo\b/i,    // creates named pipes (filesystem objects)
+    /^\s*mknod\b/i,     // creates device/special files
+    /^\s*patch\b/i,     // applies unified diffs (modifies files in-place)
 ];
 
 /**
@@ -118,9 +123,16 @@ const DESTRUCTIVE_FLAG_PATTERNS = [
     /\bfind\b.*\s-exec(dir)?\b/i, /\bfind\b.*\s-ok(dir)?\b/i, /\bfind\b.*\s-delete\b/i, /\bfind\b.*\s-fprintf\b/i,
     /\bgit\b.*\s--output[= ]/i,
     /\bsort\b.*\s(-o\s|-o\S|--output\b|--output=)/i,
+    // tar: any invocation that creates, appends, updates, or extracts (writes to filesystem)
+    // Safe operations (list/test: -t / --list) are not matched by these patterns.
+    /\btar\b.*(?:\s-[a-zA-Z]*[crux]|--(?:create|append|update|extract|get)\b)/i,
+    /\btar\b\s+[crux][a-zA-Z]*/i, // legacy positional-flag style: tar czf / tar xvf
     // In-place editing via sed/perl -i
     /\bsed\b.*\s-i\b/i, /\bsed\b.*\s-i\S/i,
     /\bperl\b.*\s-i\b/i, /\bperl\b.*\s-i\S/i,
+    // gawk in-place editing (-i inplace or --inplace)
+    /\bgawk\b.*\s-i\b/i,
+    /\bgawk\b.*--inplace\b/i,
     // Interpreters executing scripts (not just --version/--help)
     /^\s*python[23]?\s+(?!--(version|help)\b)\S/i,
     /^\s*ruby\s+(?!--(version|help)\b)\S/i,
