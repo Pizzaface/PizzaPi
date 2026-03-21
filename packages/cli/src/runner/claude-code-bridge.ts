@@ -79,6 +79,19 @@ const pendingPermissions = new Map<string, { resolve: (decision: "allow" | "deny
 const receivedTriggers = new Map<string, { sourceSessionId: string; type: string; trackedAt: number }>();
 const TRIGGER_TTL_MS = 10 * 60 * 1000;
 
+// Buffered session messages from other sessions (for pizzapi_check_messages).
+// Each entry: { fromSessionId, message }
+const messageQueue: Array<{ fromSessionId: string; message: string }> = [];
+
+// Pending message waiters: filters → resolver
+// Allows pizzapi_wait_for_message to efficiently wait for matching messages
+type MessageWaiter = {
+  fromSessionIdFilter?: string;
+  resolve: (msg: { fromSessionId: string; message: string }) => void;
+  timer: ReturnType<typeof setTimeout>;
+};
+const messageWaiters: MessageWaiter[] = [];
+
 // Generation counter — prevents stale watchClaudeExit from triggering shutdown
 let processGeneration = 0;
 
@@ -87,6 +100,8 @@ function clearPendingState(): void {
   pendingQuestions.clear();
   for (const { timer } of pendingPermissions.values()) clearTimeout(timer);
   pendingPermissions.clear();
+  for (const waiter of messageWaiters) clearTimeout(waiter.timer);
+  messageWaiters.length = 0;
 }
 
 function trackReceivedTrigger(trigger: ConversationTrigger): void {
@@ -110,6 +125,27 @@ function getReceivedTrigger(triggerId: string) {
     return null;
   }
   return pending;
+}
+
+/**
+ * Handle an incoming session message.
+ * Delivers to waiting listeners or buffers for later retrieval.
+ */
+function handleIncomingSessionMessage(data: { fromSessionId: string; message: string }): void {
+  // Try to deliver to a waiting listener
+  let waiterIdx = -1;
+  for (let i = 0; i < messageWaiters.length; i++) {
+    const waiter = messageWaiters[i];
+    if (!waiter.fromSessionIdFilter || waiter.fromSessionIdFilter === data.fromSessionId) {
+      clearTimeout(waiter.timer);
+      messageWaiters.splice(i, 1);
+      waiter.resolve(data);
+      return;
+    }
+  }
+
+  // No matching waiter — buffer the message
+  messageQueue.push(data);
 }
 
 // ── IPC connected clients ─────────────────────────────────────────────────
@@ -281,22 +317,58 @@ async function dispatchMcpTool(tool: string, args: Record<string, unknown>): Pro
     case "pizzapi_wait_for_message": {
       const timeoutMs = Math.min(Number(args.timeout ?? 20) * 1000, 25_000);
       return new Promise<unknown>((resolve) => {
+        // First check if there's an already-buffered message that matches
+        const fromSessionIdFilter = typeof args.fromSessionId === "string" ? args.fromSessionId : undefined;
+        let foundIdx = -1;
+
+        if (!fromSessionIdFilter) {
+          foundIdx = 0;
+        } else {
+          foundIdx = messageQueue.findIndex((m) => m.fromSessionId === fromSessionIdFilter);
+        }
+
+        if (foundIdx >= 0) {
+          const msg = messageQueue.splice(foundIdx, 1)[0];
+          resolve({ fromSessionId: msg.fromSessionId, message: msg.message });
+          return;
+        }
+
+        // No buffered message — add to waiting list
         const timer = setTimeout(() => {
-          sioSocket?.off("session_message" as any, handler);
+          const idx = messageWaiters.indexOf(waiter);
+          if (idx >= 0) messageWaiters.splice(idx, 1);
           resolve(null);
         }, timeoutMs);
-        const handler = (data: { fromSessionId: string; message: string }) => {
-          if (args.fromSessionId && data.fromSessionId !== args.fromSessionId) return;
-          clearTimeout(timer);
-          sioSocket?.off("session_message" as any, handler);
-          resolve({ fromSessionId: data.fromSessionId, message: data.message });
+
+        const waiter: MessageWaiter = {
+          fromSessionIdFilter,
+          resolve: (msg) => resolve({ fromSessionId: msg.fromSessionId, message: msg.message }),
+          timer,
         };
-        sioSocket?.on("session_message" as any, handler);
+        messageWaiters.push(waiter);
       });
     }
 
-    case "pizzapi_check_messages":
-      return null;
+    case "pizzapi_check_messages": {
+      const fromSessionIdFilter = typeof args.fromSessionId === "string" ? args.fromSessionId : undefined;
+      const result = fromSessionIdFilter
+        ? messageQueue.filter((m) => m.fromSessionId === fromSessionIdFilter)
+        : messageQueue.slice();
+
+      if (fromSessionIdFilter) {
+        // Remove the returned messages from the queue
+        messageQueue.splice(
+          0,
+          messageQueue.length,
+          ...messageQueue.filter((m) => m.fromSessionId !== fromSessionIdFilter),
+        );
+      } else {
+        // Clear the entire queue
+        messageQueue.length = 0;
+      }
+
+      return result.length > 0 ? result : null;
+    }
 
     case "pizzapi_respond_to_trigger": {
       await respondToReceivedTrigger({
@@ -733,6 +805,12 @@ function connectRelay(): void {
       type: "user",
       message: { role: "user", content: typeof data.text === "string" ? data.text : "" },
     });
+  });
+
+  // Handle incoming messages from other sessions
+  // Delivers to waiting listeners or buffers for later retrieval (for pizzapi_check_messages)
+  sock.on("session_message" as any, (data: { fromSessionId: string; message: string }) => {
+    handleIncomingSessionMessage(data);
   });
 
   sock.on("exec", (data) => {

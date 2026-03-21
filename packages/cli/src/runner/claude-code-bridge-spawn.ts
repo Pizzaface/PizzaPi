@@ -1,5 +1,6 @@
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { existsSync } from "node:fs";
 
 export interface ClaudeCodeSpawnOptions {
   sessionId: string;
@@ -12,13 +13,40 @@ export interface ClaudeCodeSpawnOptions {
   model?: { provider: string; id: string };
 }
 
-const BRIDGE_SCRIPT = join(
-  fileURLToPath(new URL(".", import.meta.url)),
-  "claude-code-bridge.ts",
-);
+/**
+ * Resolve the bridge script path.
+ * Tries the compiled JS path first (for packaged builds), then falls back to TS (for development).
+ */
+function resolveBridgeScript(): string {
+  const currentDir = fileURLToPath(new URL(".", import.meta.url));
+  const jsPath = join(currentDir, "claude-code-bridge.js");
+  const tsPath = join(currentDir, "claude-code-bridge.ts");
+
+  if (existsSync(jsPath)) {
+    return jsPath;
+  }
+  return tsPath;
+}
+
+/**
+ * Get the current bun executable path.
+ * Falls back to "bun" if process.execPath doesn't point to a bun executable.
+ */
+function getBunExecutable(): string {
+  // process.execPath points to the current executable (bun binary or node)
+  const execPath = process.execPath ?? "";
+  if (execPath && (execPath.includes("bun") || existsSync(execPath))) {
+    return execPath;
+  }
+  // Fallback to "bun" in PATH
+  return "bun";
+}
 
 export function spawnClaudeCodeSession(opts: ClaudeCodeSpawnOptions): ReturnType<typeof Bun.spawn> {
-  const proc = Bun.spawn(["bun", BRIDGE_SCRIPT], {
+  const bridgeScript = resolveBridgeScript();
+  const bunExe = getBunExecutable();
+
+  const proc = Bun.spawn([bunExe, bridgeScript], {
     cwd: opts.cwd ?? process.cwd(),
     stdin: "ignore",
     stdout: "inherit",

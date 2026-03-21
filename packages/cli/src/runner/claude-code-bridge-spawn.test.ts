@@ -24,7 +24,11 @@ test("spawnClaudeCodeSession forwards prompt/model env to bridge", async () => {
     });
 
     expect(proc.pid).toBe(12345);
-    expect(capturedCmd).toEqual(["bun", expect.stringContaining("claude-code-bridge.ts")]);
+    // First element should be a bun executable path (either "bun" or a full path)
+    expect(capturedCmd?.[0]).toBeTruthy();
+    expect(capturedCmd?.[0]).toMatch(/bun|\.bin/);
+    // Second element should be the bridge script (either .ts or .js)
+    expect(capturedCmd?.[1]).toMatch(/claude-code-bridge\.(ts|js)/);
     expect(capturedOpts?.cwd).toBe("/tmp");
     expect(capturedOpts?.env).toMatchObject({
       PIZZAPI_SESSION_ID: "test-session",
