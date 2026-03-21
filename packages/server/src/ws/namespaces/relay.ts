@@ -755,8 +755,9 @@ export function registerRelayNamespace(io: SocketIOServer): void {
                     command: "end_session",
                 });
 
-                const relaySockets = await io.of("/relay").in(`session:${childSessionId}`).fetchSockets();
-                const hasRelayRecipient = relaySockets.length > 0;
+                // ⚡ Bolt: Fast socket presence check via adapter.sockets() avoids expensive cluster-wide network overhead of fetchSockets()
+                const relaySockets = await io.of("/relay").adapter.sockets(new Set([`session:${childSessionId}`]));
+                const hasRelayRecipient = relaySockets.size > 0;
 
                 // Clean up child-index entry
                 void removeChildSession(sessionId, childSessionId);
