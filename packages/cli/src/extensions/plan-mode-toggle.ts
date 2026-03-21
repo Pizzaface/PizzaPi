@@ -56,6 +56,8 @@ const GIT_SAFE_SUBCOMMANDS = new Set([
     "diff-tree", "diff-files", "diff-index",
     // History / patch inspection (read-only, stdout-only)
     "archive", "cherry", "range-diff",
+    // Notes (read-only subcommands; destructive overrides handle write ops)
+
     // Misc read-only
     "help", "version", "config", "reflog", "worktree",
 ]);
@@ -87,6 +89,8 @@ const GIT_SAFE_SUBCOMMAND_DESTRUCTIVE_OVERRIDES: RegExp[] = [
     /^\s*git\s+worktree\s+(add|remove|move|repair|lock|unlock)\b/i,
     // archive: -o / --output writes to a file instead of stdout
     /^\s*git\s+archive\b.*\s(-o\s|-o\S|--output\b|--output=)/i,
+
+
 ];
 
 /**
@@ -220,14 +224,160 @@ export function splitShellSegments(command: string): string[] {
  * list, a secondary override check catches argument combinations that are
  * still mutating (e.g. `git branch -D`, `git remote add`).
  */
+/**
+ * Patterns that make an otherwise-destructive git subcommand safe (read-only).
+ * If a subcommand is NOT in GIT_SAFE_SUBCOMMANDS, these patterns are checked
+ * before declaring it destructive — allowing specific read-only invocations.
+ */
+function splitShellWords(command: string, keepQuotes = false): string[] {
+    const words: string[] = [];
+    let current = "";
+    let inSingle = false;
+    let inDouble = false;
+    let escaped = false;
+
+    for (const ch of command) {
+        if (escaped) {
+            current += ch;
+            escaped = false;
+            continue;
+        }
+
+        if (ch === "\\") {
+            if (keepQuotes) current += ch;
+            escaped = true;
+            continue;
+        }
+
+        if (ch === "'" && !inDouble) {
+            inSingle = !inSingle;
+            if (keepQuotes) current += ch;
+            continue;
+        }
+
+        if (ch === '"' && !inSingle) {
+            inDouble = !inDouble;
+            if (keepQuotes) current += ch;
+            continue;
+        }
+
+        if (!inSingle && !inDouble && /\s/.test(ch)) {
+            if (current) {
+                words.push(current);
+                current = "";
+            }
+            continue;
+        }
+
+        current += ch;
+    }
+
+    if (escaped) current += "\\";
+    if (current) words.push(current);
+    return words;
+}
+
+/**
+ * Returns true if a raw (quote-preserving) token may be expanded by the shell.
+ * Strips single-quoted segments (which bash never expands) before checking for
+ * expansion characters in the remaining unquoted / double-quoted portions.
+ * For unquoted tokens this behaves identically to checking the unquoted form.
+ */
+function containsShellExpansion(token: string): boolean {
+    // Remove single-quoted segments — bash never expands inside single quotes.
+    const withoutSingleQuoted = token.replace(/'[^']*'/g, "");
+
+    // For double-quoted segments: strip backslash escapes (\$, \`, \\) first,
+    // then replace the quotes themselves. This preserves unescaped $VAR and
+    // `cmd` inside double quotes (which bash DOES expand) while removing
+    // safely-escaped content.
+    const withoutDoubleQuoted = withoutSingleQuoted.replace(
+        /"(?:[^"\\]|\\.)*"/g,
+        (match) => match.slice(1, -1).replace(/\\([$`\\"])/g, ""),
+    );
+
+    // Remove backslash-escaped characters in unquoted text (e.g. \$VAR is literal).
+    const stripped = withoutDoubleQuoted.replace(/\\./g, "");
+
+    // Conservatively reject expansion characters in the remaining text:
+    //  - variable / command substitution: $VAR, $(cmd)
+    //  - backticks: `cmd`
+    //  - pathname expansion (globbing): *, ?, [...]
+    if (stripped.includes("$") || stripped.includes("`")) return true;
+    if (stripped.includes("*") || stripped.includes("?") || stripped.includes("[") || stripped.includes("]")) return true;
+
+    // Brace expansion: {a,b}, {1..3}
+    // In bash, double-quoting prevents brace expansion, so we only check
+    // truly unquoted text. Strip double-quoted segments entirely for this check.
+    const unquotedOnly = withoutSingleQuoted.replace(/"(?:[^"\\]|\\.)*"/g, "").replace(/\\./g, "");
+    return /\{[^}]*,.*\}|\{[^}]*\.\.[^}]*\}/.test(unquotedOnly);
+}
+
+/**
+ * `git format-patch --stdout` prints patches to stdout without writing files.
+ * Without `--stdout`, format-patch writes `.patch` files to the working directory.
+ */
+function isSafeGitFormatPatchInvocation(segment: string): boolean {
+    const words = splitShellWords(segment);
+    if (words.length < 2) return false;
+    if (words[0].toLowerCase() !== "git" || words[1].toLowerCase() !== "format-patch") return false;
+    // Safe only when --stdout is present (no file output)
+    return words.some((w) => w === "--stdout");
+}
+
+function isSafeGitNotesInvocation(segment: string): boolean {
+    const words = splitShellWords(segment);
+    // Also parse with quotes preserved so we can check shell expansion
+    // against the raw token — single-quoted values like '$literal' must
+    // not false-positive on `containsShellExpansion`.
+    const rawWords = splitShellWords(segment, true);
+    if (words.length < 2) return false;
+    if (words[0].toLowerCase() !== "git" || words[1].toLowerCase() !== "notes") return false;
+
+    let index = 2;
+    while (index < words.length) {
+        const arg = words[index].toLowerCase();
+        if (arg === "--ref") {
+            if (index + 1 >= words.length) return false;
+            // Check the raw (still-quoted) token for shell expansion so
+            // that properly quoted refs like '$literal' pass through while
+            // unquoted $VAR or *.glob are still rejected.
+            const rawRefValue = rawWords[index + 1];
+            if (containsShellExpansion(rawRefValue)) return false;
+            index += 2;
+            continue;
+        }
+        if (arg.startsWith("--ref=")) {
+            // Check the raw token's value portion for shell expansion.
+            const rawRefValue = rawWords[index].slice("--ref=".length);
+            if (containsShellExpansion(rawRefValue)) return false;
+            index++;
+            continue;
+        }
+        break;
+    }
+
+    // bare `git notes` (with or without `--ref`) defaults to `git notes list`
+    if (index >= words.length) return true;
+
+    const subcommand = words[index].toLowerCase();
+    // show, list — read-only
+    // get-ref  — prints the effective notes ref, also read-only
+    return subcommand === "show" || subcommand === "list" || subcommand === "get-ref";
+}
+
 function isDestructiveGitCommand(segment: string): boolean {
     const gitMatch = segment.match(/^\s*git\s+(\S+)/i);
     if (!gitMatch) return false; // not a git command
 
     const subcommand = gitMatch[1].toLowerCase();
 
-    // Subcommand not on the safe list → destructive
-    if (!GIT_SAFE_SUBCOMMANDS.has(subcommand)) return true;
+    // Subcommand not on the safe list → allow known read-only invocations, then destructive
+    if (!GIT_SAFE_SUBCOMMANDS.has(subcommand)) {
+        if (isSafeGitNotesInvocation(segment)) return false;
+        if (isSafeGitFormatPatchInvocation(segment)) return false;
+        return true;
+    }
 
     // Subcommand is safe in general, but check for destructive argument patterns
     return GIT_SAFE_SUBCOMMAND_DESTRUCTIVE_OVERRIDES.some((p) => p.test(segment));

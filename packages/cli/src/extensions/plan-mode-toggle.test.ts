@@ -312,16 +312,120 @@ describe("isDestructiveCommand", () => {
         expect(isDestructiveCommand("git bisect reset")).toBe(true);
     });
 
-    test("flags git format-patch (writes files)", () => {
+    test("flags git format-patch (writes .patch files by default)", () => {
         expect(isDestructiveCommand("git format-patch HEAD~3")).toBe(true);
+        expect(isDestructiveCommand("git format-patch -1 HEAD")).toBe(true);
+    });
+
+    test("allows git format-patch --stdout (read-only, prints to stdout)", () => {
+        expect(isDestructiveCommand("git format-patch --stdout HEAD~3")).toBe(false);
+        expect(isDestructiveCommand("git format-patch --stdout -1 HEAD")).toBe(false);
+        expect(isDestructiveCommand("git format-patch -1 --stdout HEAD")).toBe(false);
     });
 
     test("flags git filter-branch (rewrites history)", () => {
         expect(isDestructiveCommand("git filter-branch --tree-filter 'rm -f secret' HEAD")).toBe(true);
     });
 
-    test("flags git notes (modifies notes)", () => {
+    test("flags git notes write operations (mutating)", () => {
         expect(isDestructiveCommand("git notes add -m 'note'")).toBe(true);
+        expect(isDestructiveCommand("git notes add")).toBe(true);
+        expect(isDestructiveCommand("git notes edit HEAD")).toBe(true);
+        expect(isDestructiveCommand("git notes remove HEAD")).toBe(true);
+        expect(isDestructiveCommand("git notes copy HEAD~1 HEAD")).toBe(true);
+        expect(isDestructiveCommand("git notes merge origin/refs/notes/commits")).toBe(true);
+        expect(isDestructiveCommand("git notes prune")).toBe(true);
+        // Also block append/import/export/set-ref etc.
+        expect(isDestructiveCommand("git notes append -m 'extra'")).toBe(true);
+        expect(isDestructiveCommand("git notes import refs/notes/import")).toBe(true);
+    });
+
+    test("allows git notes read operations (read-only)", () => {
+        expect(isDestructiveCommand("git notes show")).toBe(false);
+        expect(isDestructiveCommand("git notes show HEAD")).toBe(false);
+        expect(isDestructiveCommand("git notes list")).toBe(false);
+        expect(isDestructiveCommand("git notes list HEAD")).toBe(false);
+        // bare `git notes` defaults to `git notes list`
+        expect(isDestructiveCommand("git notes")).toBe(false);
+        // --ref flag before show/list
+        expect(isDestructiveCommand("git notes --ref=review show HEAD")).toBe(false);
+        expect(isDestructiveCommand("git notes --ref=foo list")).toBe(false);
+        expect(isDestructiveCommand("git notes --ref review show HEAD")).toBe(false);
+        expect(isDestructiveCommand("git notes --ref review")).toBe(false);
+        expect(isDestructiveCommand("git notes --ref 'team review' list HEAD")).toBe(false);
+    });
+
+    test("still blocks git notes write operations when --ref is separate", () => {
+        expect(isDestructiveCommand("git notes --ref review add -m 'note' HEAD")).toBe(true);
+    });
+
+    test("allows git notes get-ref (read-only)", () => {
+        expect(isDestructiveCommand("git notes get-ref")).toBe(false);
+        expect(isDestructiveCommand("git notes --ref review get-ref")).toBe(false);
+        expect(isDestructiveCommand("git notes --ref=review get-ref")).toBe(false);
+    });
+
+    test("blocks git notes with shell-expanded --ref values (P1 bypass prevention)", () => {
+        // A variable that expands to `add -m note HEAD` must be rejected
+        expect(isDestructiveCommand("git notes --ref $NOTES_REF")).toBe(true);
+        expect(isDestructiveCommand("git notes --ref $NOTES_REF show")).toBe(true);
+        expect(isDestructiveCommand("git notes --ref=$(echo review) show")).toBe(true);
+        expect(isDestructiveCommand("git notes --ref=`echo review` list")).toBe(true);
+        // command substitution in the separate form
+        expect(isDestructiveCommand("git notes --ref $(get_ref) list")).toBe(true);
+    });
+
+    test("allows git notes with single-quoted --ref values containing expansion chars", () => {
+        // Single-quoted refs are opaque to the shell — no expansion happens.
+        expect(isDestructiveCommand("git notes --ref '$NOTES_REF' show HEAD")).toBe(false);
+        expect(isDestructiveCommand("git notes --ref='$literal' list")).toBe(false);
+        expect(isDestructiveCommand("git notes --ref '*.glob' show HEAD")).toBe(false);
+        expect(isDestructiveCommand("git notes --ref='{a,b}' list")).toBe(false);
+    });
+
+    test("blocks git notes with glob/brace-expanded --ref values (P1 bypass prevention)", () => {
+        // Glob expansion can inject extra argv items and change the subcommand.
+        expect(isDestructiveCommand("git notes --ref *")).toBe(true);
+        expect(isDestructiveCommand("git notes --ref * show HEAD")).toBe(true);
+        expect(isDestructiveCommand("git notes --ref=*.txt show HEAD")).toBe(true);
+        expect(isDestructiveCommand("git notes --ref ? list")).toBe(true);
+        expect(isDestructiveCommand("git notes --ref [ab] show HEAD")).toBe(true);
+
+        // Brace expansion can also inject extra argv items.
+        expect(isDestructiveCommand("git notes --ref {review,add} show HEAD")).toBe(true);
+        expect(isDestructiveCommand("git notes --ref={review,add}")).toBe(true);
+        expect(isDestructiveCommand("git notes --ref {1..3} list")).toBe(true);
+    });
+
+    test("allows git notes with double-quoted --ref values containing escaped $", () => {
+        // Double-quoted refs with escaped $ are safe — bash treats \$ as literal.
+        expect(isDestructiveCommand('git notes --ref "\\$NOTES_REF" show')).toBe(false);
+        expect(isDestructiveCommand('git notes --ref="\\$literal" list')).toBe(false);
+        // Note: escaped backticks inside double quotes (e.g. "\`cmd\`") are
+        // caught by the top-level backtick guard before reaching the git-notes
+        // path, so they remain blocked — acceptable conservative behavior.
+    });
+
+    test("allows git notes with backslash-escaped --ref values in unquoted text", () => {
+        // Backslash-escaped $ in unquoted context is literal in bash.
+        expect(isDestructiveCommand("git notes --ref \\$review show")).toBe(false);
+        expect(isDestructiveCommand("git notes --ref=\\$review list")).toBe(false);
+    });
+
+    test("still blocks git notes with unescaped expansion inside double quotes", () => {
+        // Unescaped $VAR inside double quotes IS expanded by bash — must block.
+        expect(isDestructiveCommand('git notes --ref "$NOTES_REF" show')).toBe(true);
+        expect(isDestructiveCommand('git notes --ref="`cmd`" list')).toBe(true);
+    });
+
+    test("allows git notes with double-quoted brace expressions (no brace expansion in double quotes)", () => {
+        // In bash, double-quoting prevents brace expansion — "{review,add}" is a literal ref name.
+        expect(isDestructiveCommand('git notes --ref "{review,add}" show HEAD')).toBe(false);
+        expect(isDestructiveCommand('git notes --ref="{review,add}" list')).toBe(false);
+        expect(isDestructiveCommand('git notes --ref "{1..3}" show HEAD')).toBe(false);
+        // Unquoted braces are still brace-expanded — must remain blocked.
+        expect(isDestructiveCommand("git notes --ref {review,add} show HEAD")).toBe(true);
+        expect(isDestructiveCommand("git notes --ref={review,add}")).toBe(true);
     });
 
     test("flags git submodule update (modifies working tree)", () => {
