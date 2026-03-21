@@ -569,6 +569,9 @@ describe("isDestructiveCommand", () => {
     test("flags gawk with in-place editing flags", () => {
         expect(isDestructiveCommand("gawk -i inplace '{gsub(/foo/, \"bar\")} 1' file.txt")).toBe(true);
         expect(isDestructiveCommand("gawk --inplace '{gsub(/foo/, \"bar\")} 1' file.txt")).toBe(true);
+        // -iSUFFIX (no space between -i and backup suffix)
+        expect(isDestructiveCommand("gawk -ibak '{gsub(/foo/, \"bar\")} 1' file.txt")).toBe(true);
+        expect(isDestructiveCommand("gawk -iinplace '{print}' file.txt")).toBe(true);
     });
 
     test("allows awk / gawk without in-place flags", () => {

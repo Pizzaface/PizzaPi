@@ -130,8 +130,8 @@ const DESTRUCTIVE_FLAG_PATTERNS = [
     // In-place editing via sed/perl -i
     /\bsed\b.*\s-i\b/i, /\bsed\b.*\s-i\S/i,
     /\bperl\b.*\s-i\b/i, /\bperl\b.*\s-i\S/i,
-    // gawk in-place editing (-i inplace or --inplace)
-    /\bgawk\b.*\s-i\b/i,
+    // gawk in-place editing (-i, -iSUFFIX, or --inplace)
+    /\bgawk\b.*\s-i/i,
     /\bgawk\b.*--inplace\b/i,
     // Interpreters executing scripts (not just --version/--help)
     /^\s*python[23]?\s+(?!--(version|help)\b)\S/i,
