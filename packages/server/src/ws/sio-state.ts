@@ -694,10 +694,32 @@ export async function getChildSessions(parentSessionId: string): Promise<string[
 }
 
 /** Check whether a session is still listed as a child of the given parent.
- *  Returns false if delink_children was called (which clears the set). */
+ *  Returns false if delink_children was called (which clears the set).
+ *
+ *  Fallback: if the Redis children set has expired (24 h TTL) but the child's
+ *  session hash still records `parentSessionId` pointing at this parent, the
+ *  relationship is still live.  We re-hydrate the set in that case so that
+ *  subsequent calls are fast again (self-healing after TTL expiry). */
 export async function isChildOfParent(parentSessionId: string, childSessionId: string): Promise<boolean> {
     const r = requireRedis();
-    return r.sIsMember(childrenKey(parentSessionId), childSessionId);
+    const inSet = await r.sIsMember(childrenKey(parentSessionId), childSessionId);
+    if (inSet) return true;
+
+    // Fallback: the Redis children set may have expired without an explicit
+    // delink.  Verify via the child's durable session hash.
+    const childSession = await getSession(childSessionId);
+    if (childSession?.parentSessionId === parentSessionId) {
+        // Re-hydrate the children set and reset its TTL so future checks are
+        // fast and the delink guard (clearAllChildren / clearParentSessionId)
+        // still works correctly.
+        const multi = r.multi();
+        multi.sAdd(childrenKey(parentSessionId), childSessionId);
+        multi.expire(childrenKey(parentSessionId), SESSION_TTL_SECONDS);
+        await multi.exec();
+        return true;
+    }
+
+    return false;
 }
 
 /** Refresh the TTL on an existing parent→children membership set. */

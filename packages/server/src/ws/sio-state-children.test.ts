@@ -94,7 +94,10 @@ const mockRedis = {
         ttlStore.delete(key);
     }),
     exists: mock(async (key: string) => (store.has(key) ? 1 : 0)),
-    hGetAll: mock(async () => ({})),
+    hGetAll: mock(async (key: string) => {
+        const raw = store.get(`__hash__:${key}`);
+        return raw ? (JSON.parse(raw) as Record<string, string>) : {};
+    }),
     hGet: mock(async () => null),
     hSet: mock(async (key: string, field: string, value: string) => {
         const existing = JSON.parse(store.get(`__hash__:${key}`) ?? "{}");
@@ -244,6 +247,76 @@ describe("child session helpers (sio-state)", () => {
 
     it("isChildOfParent returns false for nonexistent parent set", async () => {
         expect(await isChildOfParent("ghost-parent", "child-1")).toBe(false);
+    });
+
+    // ── isChildOfParent TTL-expiry fallback ────────────────────────────────
+
+    it("isChildOfParent falls back to session hash when Redis set has expired (TTL fallback)", async () => {
+        // Simulate TTL expiry: the children set is absent, but the child's
+        // session hash still records parentSessionId pointing to this parent.
+        // isChildOfParent must return true via the session-hash fallback.
+        store.set(
+            "pizzapi:sio:session:child-fallback",
+            JSON.stringify({ sessionId: "child-fallback", parentSessionId: "parent-ttl" }),
+        );
+        store.set(
+            "__hash__:pizzapi:sio:session:child-fallback",
+            JSON.stringify({ sessionId: "child-fallback", parentSessionId: "parent-ttl" }),
+        );
+
+        // No children set entry for parent-ttl
+        expect(setStore.has("pizzapi:sio:children:parent-ttl")).toBe(false);
+
+        const result = await isChildOfParent("parent-ttl", "child-fallback");
+        expect(result).toBe(true);
+    });
+
+    it("isChildOfParent re-hydrates the children set after TTL fallback", async () => {
+        // After the fallback confirms the relationship, the child must be
+        // re-added to the Redis set so subsequent checks are fast.
+        store.set(
+            "__hash__:pizzapi:sio:session:child-rehydrate",
+            JSON.stringify({ sessionId: "child-rehydrate", parentSessionId: "parent-rehydrate" }),
+        );
+
+        await isChildOfParent("parent-rehydrate", "child-rehydrate");
+
+        // Set should now contain the child
+        expect(setStore.get("pizzapi:sio:children:parent-rehydrate")?.has("child-rehydrate")).toBe(true);
+        // TTL should have been refreshed
+        expect(ttlStore.get("pizzapi:sio:children:parent-rehydrate")).toBe(24 * 60 * 60);
+    });
+
+    it("isChildOfParent returns false via fallback when parentSessionId does not match", async () => {
+        // The child's hash has a different parentSessionId (e.g. it was re-linked
+        // to another parent). The fallback must not grant access.
+        store.set(
+            "__hash__:pizzapi:sio:session:child-other",
+            JSON.stringify({ sessionId: "child-other", parentSessionId: "different-parent" }),
+        );
+
+        const result = await isChildOfParent("parent-original", "child-other");
+        expect(result).toBe(false);
+    });
+
+    it("isChildOfParent returns false after explicit delink (clearAllChildren + clearParentSessionId)", async () => {
+        // Seed the session hash with the parent link
+        store.set(
+            "__hash__:pizzapi:sio:session:child-delinked",
+            JSON.stringify({ sessionId: "child-delinked", parentSessionId: "parent-delink" }),
+        );
+        await addChildSession("parent-delink", "child-delinked");
+
+        // Explicit delink: remove from set and clear parentSessionId in hash
+        await clearAllChildren("parent-delink");
+        store.set(
+            "__hash__:pizzapi:sio:session:child-delinked",
+            JSON.stringify({ sessionId: "child-delinked", parentSessionId: "" }),
+        );
+
+        // Both guards reject: set is cleared AND parentSessionId is ""
+        const result = await isChildOfParent("parent-delink", "child-delinked");
+        expect(result).toBe(false);
     });
 
     it("isChildOfParent returns true after removeChildSession leaves sibling", async () => {
