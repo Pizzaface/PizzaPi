@@ -910,15 +910,16 @@ describe("groupToolExecutionMessages", () => {
             }),
         ];
         const result = groupToolExecutionMessages(messages);
-        // The merged assistant block should include both "Let me run two things"
-        // and "Between the tools" text.
+        // After grouping, text blocks are split across multiple assistant parts
+        // (one before each tool call). Both texts must appear somewhere in the
+        // result — check all assistant parts combined.
         const assistantParts = result.filter((m) => m.role === "assistant");
         expect(assistantParts.length).toBeGreaterThan(0);
-        const assistant = assistantParts[0];
-        expect(assistant.content).toBeDefined();
-        const content = assistant.content as unknown[];
-        const textBlocks = content.filter((b) => !b || typeof b !== "object" ? false : (b as Record<string, unknown>).type === "text");
-        const allText = textBlocks.map((b) => (b as Record<string, unknown>).text || "").join(" ");
+        const allText = assistantParts
+            .flatMap((m) => (Array.isArray(m.content) ? (m.content as unknown[]) : []))
+            .filter((b) => b && typeof b === "object" && (b as Record<string, unknown>).type === "text")
+            .map((b) => (b as Record<string, unknown>).text || "")
+            .join(" ");
         // Should contain both the intro and the "Between" text
         expect(allText).toContain("Let me run two things");
         expect(allText).toContain("Between the tools");

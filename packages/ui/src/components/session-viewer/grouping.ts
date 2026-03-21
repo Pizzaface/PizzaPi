@@ -441,7 +441,19 @@ function deduplicateAssistantMessages(messages: RelayMessage[]): RelayMessage[] 
             }
           }
 
-          // Append any tool calls that exist only in the latest snapshot
+          // Collect text content from winner blocks so we can skip duplicates
+          // when appending new content from the latest snapshot.
+          const winnerTexts = new Set<string>();
+          for (const block of winnerBlocks) {
+            if (!block || typeof block !== "object") continue;
+            const b = block as Record<string, unknown>;
+            if (b.type === "text" && typeof b.text === "string") winnerTexts.add(b.text);
+          }
+
+          // Append any tool calls that exist only in the latest snapshot, and
+          // any non-toolCall blocks (e.g. trailing text) that don't appear in
+          // the winner — these represent content the model emitted after the
+          // errored stream ended that the winner (partial) never received.
           for (const block of latestBlocks) {
             if (!block || typeof block !== "object") continue;
             const b = block as Record<string, unknown>;
@@ -454,6 +466,11 @@ function deduplicateAssistantMessages(messages: RelayMessage[]): RelayMessage[] 
                     : "";
               // Only add if this tool ID doesn't already exist in the winner
               if (id && !winnerToolIds.has(id)) {
+                mergedBlocks.push(block);
+              }
+            } else if (b.type === "text" && typeof b.text === "string") {
+              // Append text blocks that are unique to the latest snapshot
+              if (!winnerTexts.has(b.text)) {
                 mergedBlocks.push(block);
               }
             }
