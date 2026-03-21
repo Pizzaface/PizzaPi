@@ -1,3 +1,11 @@
+# Root-level bunfig.toml — applies when `bun test` is run from the repo root.
+#
+# The canonical test command is `bun run test` (which cd's into each package so
+# that package-local bunfig.toml files are picked up automatically).  This file
+# provides equivalent module-resolution config for the less-common `bun test`
+# invocation from the repo root so that UI tests that use the `@/` path alias
+# (which maps to packages/ui/src/) can be resolved without errors.
+
 [test]
 preload = ["./packages/server/tests/harness/preload.ts"]
 
@@ -7,3 +15,10 @@ preload = ["./packages/server/tests/harness/preload.ts"]
 #   bun test packages/server/tests/harness/
 # Tracking: Godmother idea "harness Redis mock.module contamination"
 exclude = ["packages/server/tests/harness/mock-runner.test.ts", "packages/server/tests/harness/builders.test.ts", "packages/server/tests/harness/integration.test.ts", "packages/server/tests/harness/mock-viewer.test.ts"]
+
+[test.module-resolution]
+# Resolve `@/*` imports to packages/ui/src/* so that UI component tests can be
+# discovered and run from the repo root in the same way they are when bun test
+# is run from inside packages/ui/ (where the package-local bunfig.toml handles
+# this mapping).  Only packages/ui uses the `@/` alias convention.
+paths = { "@/*" = ["./packages/ui/src/*"] }
