@@ -64,11 +64,13 @@ export async function handleApi(req: Request, url: URL): Promise<Response | unde
         const auth = await requireSession(req);
         if (auth instanceof Response) return auth;
         const hub = getHubVersionInfo();
-        // For source builds and mutable-tag deployments, PIZZAPI_HUB_VERSION
-        // carries a vague label ("local", "latest", etc.) so getHubVersionInfo()
-        // returns null.  Fall back to the latest published npm version so
-        // operators always see the actual release number rather than a stale
-        // server package.json version (which the release workflow never stamps).
+        // For source builds, PIZZAPI_HUB_VERSION is "local" and
+        // getHubVersionInfo() returns null — fall back to the npm registry to
+        // surface the actual release number.  For image-mode deployments
+        // (mutable tags like "latest"/"main" or pinned semver/digest),
+        // getHubVersionInfo() now returns the tag verbatim so we do NOT
+        // substitute the npm version, which would misrepresent the deployed
+        // image.
         const hubVersion = hub.version ?? (await getLatestNpmVersion());
         return Response.json({
             hubVersion,

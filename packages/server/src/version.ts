@@ -43,36 +43,33 @@ export async function getLatestNpmVersion(): Promise<string | null> {
 }
 
 /**
- * Tag values injected by `resolveComposeMode()` that carry no specific build
- * information — source builds get "local", mutable-tag image deployments get
- * the tag name itself (e.g. "latest", "main"). These are considered vague:
- * `getHubVersionInfo()` returns null for them so callers can substitute the
- * latest published npm version instead of a stale local package.json value.
+ * Version labels injected by `resolveComposeMode()` for source builds.  These
+ * carry no useful version information, so `getHubVersionInfo()` returns null
+ * for them and callers (e.g. `/api/hub-info`) substitute the latest published
+ * npm version instead.
+ *
+ * Mutable image tags such as "latest", "main", "stable", etc. are intentionally
+ * NOT in this set.  They are returned as-is so the UI shows the actual deployed
+ * tag rather than the latest npm release — otherwise the hub badge would
+ * misrepresent which image is running (e.g. showing "0.2.0" when the operator
+ * deployed `:main` which could be any commit).
  */
-const VAGUE_VERSIONS = new Set([
-    "local",
-    "local-build",
-    "latest",
-    "main",
-    "stable",
-    "dev",
-    "nightly",
-    "digest",
+const SOURCE_BUILD_LABELS = new Set([
+    "local",       // emitted by resolveComposeMode() for source builds
+    "local-build", // safety label — should only appear as hubImage, not hubVersion
+    "digest",      // fallback when truncateDigest() receives a malformed digest
 ]);
 
 export function getHubVersionInfo(): { image: string | null; version: string | null } {
-    const image = process.env.PIZZAPI_HUB_IMAGE?.trim();
-    const version = process.env.PIZZAPI_HUB_VERSION?.trim();
-    // Only return the injected version when it is a specific/pinned reference
-    // (semver tag, digest abbreviation, etc.).  For vague labels like "latest",
-    // "local", or "main" we return null so callers can fall back to the npm
-    // registry version via getLatestNpmVersion() — the server's own
-    // package.json is NOT stamped during the release workflow (only
-    // packages/cli and packages/npm are), so it would permanently report a
-    // stale version for source builds and mutable-tag deployments.
-    const effectiveVersion = version && !VAGUE_VERSIONS.has(version) ? version : null;
+    const image = process.env.PIZZAPI_HUB_IMAGE?.trim() || null;
+    const rawVersion = process.env.PIZZAPI_HUB_VERSION?.trim() || null;
+    // Return null only for source-build labels so callers can fall back to the
+    // npm registry version.  Mutable image tags ("latest", "main", etc.) and
+    // pinned semver/digest versions are returned verbatim — rewriting a mutable
+    // tag with the npm version would misrepresent the deployed image.
+    const effectiveVersion = rawVersion && !SOURCE_BUILD_LABELS.has(rawVersion) ? rawVersion : null;
     return {
-        image: image ? image : null,
+        image,
         version: effectiveVersion,
     };
 }

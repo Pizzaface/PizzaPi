@@ -31,16 +31,32 @@ describe("getHubVersionInfo", () => {
         expect(result.version).toBeNull();
     });
 
-    test("returns null version for vague labels like 'latest'", () => {
+    test("returns the mutable tag as-is for image-mode deployments", () => {
+        // Mutable tags like "latest" and "main" are returned verbatim, NOT
+        // replaced with null.  Returning null would cause the /api/hub-info route
+        // to substitute the latest npm version, which misrepresents the deployed
+        // image (an operator who deployed :main would see "0.2.0" instead of
+        // "main").
         process.env.PIZZAPI_HUB_IMAGE = "ghcr.io/acme/pizzapi:latest";
         process.env.PIZZAPI_HUB_VERSION = "latest";
 
         const result = getHubVersionInfo();
         expect(result.image).toBe("ghcr.io/acme/pizzapi:latest");
-        expect(result.version).toBeNull();
+        expect(result.version).toBe("latest");
     });
 
-    test("returns null version for source-build vague labels", () => {
+    test("returns mutable tag for other mutable labels (main, stable, dev, nightly)", () => {
+        for (const tag of ["main", "stable", "dev", "nightly"]) {
+            process.env.PIZZAPI_HUB_IMAGE = `ghcr.io/acme/pizzapi:${tag}`;
+            process.env.PIZZAPI_HUB_VERSION = tag;
+            expect(getHubVersionInfo().version).toBe(tag);
+        }
+    });
+
+    test("returns null version for source-build labels", () => {
+        // "local" is the label resolveComposeMode() injects for source builds —
+        // the npm registry fallback in /api/hub-info is appropriate here since
+        // the running binary has a real release version we can surface.
         process.env.PIZZAPI_HUB_IMAGE = "local-build";
         process.env.PIZZAPI_HUB_VERSION = "local";
 
