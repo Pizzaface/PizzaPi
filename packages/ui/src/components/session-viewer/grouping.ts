@@ -132,13 +132,15 @@ function collectToolCallIdsWithResult(messages: RelayMessage[]): Set<string> {
 
     if (matchedPendingIndex < 0) {
       const normalizedName = normalizeToolName(message.toolName);
-      matchedPendingIndex = pendingToolCalls.findIndex(
+      // Prefer the *latest* pending call with this name so stale earlier calls
+      // don't consume results meant for newer invocations (PR #220 thread cZf_-).
+      matchedPendingIndex = pendingToolCalls.findLastIndex(
         (pending) => normalizeToolName(pending.toolName) === normalizedName
       );
     }
 
     if (matchedPendingIndex < 0 && pendingToolCalls.length > 0) {
-      matchedPendingIndex = 0;
+      matchedPendingIndex = pendingToolCalls.length - 1;
     }
 
     const matched =
@@ -443,13 +445,32 @@ function deduplicateAssistantMessages(messages: RelayMessage[]): RelayMessage[] 
             mergeToolCalls.push(tc);
           }
 
-          // Add winner-only tool calls that have completed results
-          for (const tc of wSeg.tcs) {
+          // Add winner-only tool calls that have completed results,
+          // inserting at their original position from the winner snapshot
+          // rather than appending at the end (PR #220 thread cZf__).
+          for (let wi = 0; wi < wSeg.tcs.length; wi++) {
+            const tc = wSeg.tcs[wi];
             const id = tcId(tc);
-            if (id && !mergeToolIdx.has(id) && toolCallIdsWithResult.has(id)) {
-              mergeToolIdx.set(id, mergeToolCalls.length);
-              mergeToolCalls.push(tc);
+            if (!id || mergeToolIdx.has(id) || !toolCallIdsWithResult.has(id)) continue;
+
+            // Find the insertion point: after the last preceding winner TC
+            // that is already in mergeToolCalls.
+            let insertAfter = -1; // -1 means "insert at the beginning"
+            for (let j = wi - 1; j >= 0; j--) {
+              const prevId = tcId(wSeg.tcs[j]);
+              if (prevId && mergeToolIdx.has(prevId)) {
+                insertAfter = mergeToolIdx.get(prevId)!;
+                break;
+              }
             }
+
+            const insertAt = insertAfter + 1;
+            mergeToolCalls.splice(insertAt, 0, tc);
+            // Update all indices >= insertAt
+            for (const [k, v] of mergeToolIdx) {
+              if (v >= insertAt) mergeToolIdx.set(k, v + 1);
+            }
+            mergeToolIdx.set(id, insertAt);
           }
 
           // For each gap between tool calls, merge non-tool segments.
@@ -749,13 +770,15 @@ export function groupToolExecutionMessages(messages: RelayMessage[]): RelayMessa
 
       if (matchedPendingIndex < 0) {
         const normalizedName = normalizeToolName(message.toolName);
-        matchedPendingIndex = pendingToolCalls.findIndex(
+        // Prefer the *latest* pending call with this name so stale earlier
+        // calls don't consume results meant for newer invocations.
+        matchedPendingIndex = pendingToolCalls.findLastIndex(
           (p) => normalizeToolName(p.toolName) === normalizedName
         );
       }
 
       if (matchedPendingIndex < 0 && pendingToolCalls.length > 0) {
-        matchedPendingIndex = 0;
+        matchedPendingIndex = pendingToolCalls.length - 1;
       }
 
       const matched =
