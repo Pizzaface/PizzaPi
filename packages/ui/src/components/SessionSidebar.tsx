@@ -1363,7 +1363,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                             {/* Worktree badge — shown when cwd is inside a .worktrees/ directory */}
                                                             {(() => {
                                                                 const cwd = s.cwd || "";
-                                                                const match = cwd.match(/\/\.worktrees\/([^/]+)/);
+                                                                const match = cwd.match(/\/\.worktrees\/([^/]+\/[^/]+)/);
                                                                 return match ? (
                                                                     <div className="flex items-center gap-1 mt-0.5">
                                                                         <span
