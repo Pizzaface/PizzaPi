@@ -391,6 +391,27 @@ describe("isDestructiveCommand", () => {
         expect(isDestructiveCommand("git notes --ref {1..3} list")).toBe(true);
     });
 
+    test("allows git notes with double-quoted --ref values containing escaped $", () => {
+        // Double-quoted refs with escaped $ are safe — bash treats \$ as literal.
+        expect(isDestructiveCommand('git notes --ref "\\$NOTES_REF" show')).toBe(false);
+        expect(isDestructiveCommand('git notes --ref="\\$literal" list')).toBe(false);
+        // Note: escaped backticks inside double quotes (e.g. "\`cmd\`") are
+        // caught by the top-level backtick guard before reaching the git-notes
+        // path, so they remain blocked — acceptable conservative behavior.
+    });
+
+    test("allows git notes with backslash-escaped --ref values in unquoted text", () => {
+        // Backslash-escaped $ in unquoted context is literal in bash.
+        expect(isDestructiveCommand("git notes --ref \\$review show")).toBe(false);
+        expect(isDestructiveCommand("git notes --ref=\\$review list")).toBe(false);
+    });
+
+    test("still blocks git notes with unescaped expansion inside double quotes", () => {
+        // Unescaped $VAR inside double quotes IS expanded by bash — must block.
+        expect(isDestructiveCommand('git notes --ref "$NOTES_REF" show')).toBe(true);
+        expect(isDestructiveCommand('git notes --ref="`cmd`" list')).toBe(true);
+    });
+
     test("flags git submodule update (modifies working tree)", () => {
         expect(isDestructiveCommand("git submodule update --init")).toBe(true);
     });

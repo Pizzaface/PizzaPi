@@ -282,17 +282,29 @@ function containsShellExpansion(token: string): boolean {
     // Remove single-quoted segments — bash never expands inside single quotes.
     const withoutSingleQuoted = token.replace(/'[^']*'/g, "");
 
+    // For double-quoted segments: strip backslash escapes (\$, \`, \\) first,
+    // then replace the quotes themselves. This preserves unescaped $VAR and
+    // `cmd` inside double quotes (which bash DOES expand) while removing
+    // safely-escaped content.
+    const withoutDoubleQuoted = withoutSingleQuoted.replace(
+        /"(?:[^"\\]|\\.)*"/g,
+        (match) => match.slice(1, -1).replace(/\\([$`\\"])/g, ""),
+    );
+
+    // Remove backslash-escaped characters in unquoted text (e.g. \$VAR is literal).
+    const stripped = withoutDoubleQuoted.replace(/\\./g, "");
+
     // Conservatively reject expansion characters in the remaining text:
     //  - variable / command substitution: $VAR, $(cmd)
     //  - backticks: `cmd`
     //  - pathname expansion (globbing): *, ?, [...]
     //  - brace expansion: {a,b}, {1..3}
-    if (withoutSingleQuoted.includes("$") || withoutSingleQuoted.includes("`")) return true;
-    if (withoutSingleQuoted.includes("*") || withoutSingleQuoted.includes("?") || withoutSingleQuoted.includes("[") || withoutSingleQuoted.includes("]")) return true;
+    if (stripped.includes("$") || stripped.includes("`")) return true;
+    if (stripped.includes("*") || stripped.includes("?") || stripped.includes("[") || stripped.includes("]")) return true;
 
     // Brace expansion only triggers for comma-separated lists or sequences.
     // (Bare braces like `@{-1}` are not expanded by bash.)
-    return /\{[^}]*,.*\}|\{[^}]*\.\.[^}]*\}/.test(withoutSingleQuoted);
+    return /\{[^}]*,.*\}|\{[^}]*\.\.[^}]*\}/.test(stripped);
 }
 
 function isSafeGitNotesInvocation(segment: string): boolean {
