@@ -312,16 +312,36 @@ describe("isDestructiveCommand", () => {
         expect(isDestructiveCommand("git bisect reset")).toBe(true);
     });
 
-    test("flags git format-patch (writes files)", () => {
-        expect(isDestructiveCommand("git format-patch HEAD~3")).toBe(true);
+    test("allows git format-patch to stdout (read-only)", () => {
+        expect(isDestructiveCommand("git format-patch HEAD~3")).toBe(false);
+        expect(isDestructiveCommand("git format-patch --stdout HEAD~3")).toBe(false);
+        expect(isDestructiveCommand("git format-patch -1 HEAD")).toBe(false);
     });
 
     test("flags git filter-branch (rewrites history)", () => {
         expect(isDestructiveCommand("git filter-branch --tree-filter 'rm -f secret' HEAD")).toBe(true);
     });
 
-    test("flags git notes (modifies notes)", () => {
+    test("flags git notes write operations (mutating)", () => {
         expect(isDestructiveCommand("git notes add -m 'note'")).toBe(true);
+        expect(isDestructiveCommand("git notes add")).toBe(true);
+        expect(isDestructiveCommand("git notes edit HEAD")).toBe(true);
+        expect(isDestructiveCommand("git notes remove HEAD")).toBe(true);
+        expect(isDestructiveCommand("git notes copy HEAD~1 HEAD")).toBe(true);
+        expect(isDestructiveCommand("git notes merge origin/refs/notes/commits")).toBe(true);
+        expect(isDestructiveCommand("git notes prune")).toBe(true);
+    });
+
+    test("allows git notes read operations (read-only)", () => {
+        expect(isDestructiveCommand("git notes show")).toBe(false);
+        expect(isDestructiveCommand("git notes show HEAD")).toBe(false);
+        expect(isDestructiveCommand("git notes list")).toBe(false);
+        expect(isDestructiveCommand("git notes list HEAD")).toBe(false);
+    });
+
+    test("flags git format-patch -o <dir> (writes to directory)", () => {
+        expect(isDestructiveCommand("git format-patch -o /tmp/patches HEAD~3")).toBe(true);
+        expect(isDestructiveCommand("git format-patch --output-directory patches/ HEAD~5")).toBe(true);
     });
 
     test("flags git submodule update (modifies working tree)", () => {
