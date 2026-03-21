@@ -182,6 +182,10 @@ export interface ExtractedComposeSettings {
     betterAuthSecret?: string;
     trustProxy?: boolean;
     proxyDepth?: number;
+    /** Detected image reference from the server service (if image-mode, not build-mode) */
+    image?: string;
+    /** Detected image tag parsed from the image reference */
+    imageTag?: string;
 }
 
 /**
@@ -283,6 +287,39 @@ export function extractSettingsFromCompose(content: string): ExtractedComposeSet
     if (proxyDepthVal) {
         const val = parseInt(proxyDepthVal, 10);
         if (!isNaN(val) && val >= 1) result.proxyDepth = val;
+    }
+
+    // Detect image mode: look for `image:` line in the server service.
+    // The compose template puts `image:` directly under the server service
+    // (indented 4 spaces) only in image mode; build mode uses `build:` instead.
+    // We also skip the redis `image: redis:7-alpine` line by matching only
+    // refs that don't look like the redis image.
+    const imageMatch = content.match(/^\s{4}image:\s+(.+)/m);
+    if (imageMatch?.[1]) {
+        const rawRef = imageMatch[1].trim();
+        // Skip the redis service image (e.g. "redis", "redis:7-alpine")
+        if (!rawRef.startsWith("redis:") && rawRef !== "redis") {
+            result.image = rawRef;
+            // Parse tag from the reference
+            if (rawRef.includes("@")) {
+                // Digest-pinned: store the full ref as image, tag as "digest"
+                result.image = rawRef;
+                result.imageTag = "digest";
+            } else {
+                const lastSlash = rawRef.lastIndexOf("/");
+                const afterSlash = lastSlash === -1 ? rawRef : rawRef.slice(lastSlash + 1);
+                const colonIdx = afterSlash.indexOf(":");
+                if (colonIdx !== -1) {
+                    // Has tag: split into repo + tag
+                    result.image = rawRef.slice(0, rawRef.lastIndexOf(":"));
+                    result.imageTag = afterSlash.slice(colonIdx + 1);
+                } else {
+                    // No tag — implicit latest
+                    result.image = rawRef;
+                    result.imageTag = "latest";
+                }
+            }
+        }
     }
 
     return result;
@@ -405,6 +442,11 @@ function migrateLegacySettings(): Partial<WebConfig> {
                 migrated.proxyDepth = extracted.proxyDepth;
                 sources.push("compose.yml (proxyDepth)");
             }
+            if (extracted.image) {
+                migrated.image = extracted.image;
+                if (extracted.imageTag) migrated.imageTag = extracted.imageTag;
+                sources.push("compose.yml (image)");
+            }
         } catch { /* can't read */ }
     }
 
@@ -461,6 +503,16 @@ export function loadWebConfig(): WebConfig {
                 changed = true;
             }
 
+            // Restore image mode from compose file when config.json lost it
+            if (!config.image && composeContent) {
+                const extracted = extractSettingsFromCompose(composeContent);
+                if (extracted.image) {
+                    config.image = extracted.image;
+                    if (extracted.imageTag) config.imageTag = extracted.imageTag;
+                    changed = true;
+                }
+            }
+
             if (changed) {
                 saveWebConfig(config);
             }
@@ -492,6 +544,13 @@ export function loadWebConfig(): WebConfig {
     } else {
         config.betterAuthSecret = generateBetterAuthSecret();
         log.info("Generated BETTER_AUTH_SECRET for authentication.");
+    }
+
+    // Restore image mode from existing compose file so config loss doesn't
+    // silently switch an image-mode install to a source-build install.
+    if (legacy.image) {
+        config.image = legacy.image;
+        if (legacy.imageTag) config.imageTag = legacy.imageTag;
     }
 
     saveWebConfig(config);
@@ -1262,9 +1321,10 @@ export async function runWeb(args: string[]): Promise<void> {
     }
     const composePath = generateComposeFile(repoPath, config, prebuiltUi);
 
+    const composeMode = resolveComposeMode(repoPath, config);
     console.log(`Starting PizzaPi web on port ${config.port}...`);
     if (useImageMode) {
-        console.log(`  Image:   ${config.image}:${config.imageTag}`);
+        console.log(`  Image:   ${composeMode.hubImage}`);
     } else {
         console.log(`  Repo:    ${repoPath}`);
     }
