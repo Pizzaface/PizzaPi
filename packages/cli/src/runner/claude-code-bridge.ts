@@ -271,6 +271,8 @@ function emitHeartbeat(status?: string): void {
     };
   }
 
+  // Always include pendingPermission so the UI's hasOwnProperty guard fires
+  // and clears any stale card after a timeout/resolution.
   if (pendingPermissions.size > 0) {
     const [requestId, entry] = [...pendingPermissions.entries()][0];
     hb.pendingPermission = {
@@ -279,6 +281,8 @@ function emitHeartbeat(status?: string): void {
       toolInput: entry.toolInput,
       ts: entry.ts,
     };
+  } else {
+    hb.pendingPermission = null;
   }
 
   forwardEvent(hb);
