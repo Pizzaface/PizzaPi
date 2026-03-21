@@ -91,6 +91,25 @@ describe("writeFileTool", () => {
         });
     });
 
+    describe("fs error handling", () => {
+        test("returns graceful error when writing to a path whose parent cannot be created (root-owned)", async () => {
+            // /proc is always present and non-writable on Linux; use a clearly inaccessible path on macOS too
+            const unwritablePath = "/root/pizzapi-test-canary/out.txt";
+            const result = await execWrite(unwritablePath, "content");
+            expect(result.content[0].text).toContain("❌");
+            expect(result.details.size).toBe(0);
+            expect(result.details.error).toBeTruthy();
+        });
+
+        test("returns graceful error when writing to a directory path", async () => {
+            // Attempt to write to a path that already exists as a directory
+            const result = await execWrite(tmpDir, "content");
+            expect(result.content[0].text).toContain("❌");
+            expect(result.details.size).toBe(0);
+            expect(result.details.error).toBeTruthy();
+        });
+    });
+
     test("has correct tool metadata", () => {
         expect(writeFileTool.name).toBe("write_file");
         expect(writeFileTool.label).toBe("Write File");
