@@ -47,12 +47,22 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         const requestedRunnerId = typeof body.runnerId === "string" ? body.runnerId : undefined;
         const requestedCwd = typeof body.cwd === "string" ? body.cwd : undefined;
         const requestedPrompt = typeof body.prompt === "string" ? body.prompt : undefined;
-        const requestedModel =
-            body.model && typeof body.model === "object" &&
-            typeof (body.model as any).provider === "string" &&
-            typeof (body.model as any).id === "string"
-                ? { provider: (body.model as any).provider as string, id: (body.model as any).id as string }
-                : undefined;
+
+        // Normalize requested model fields. Whitespace is trimmed to match the
+        // worker-side normalization in initial-prompt.ts (env vars are .trim()'d
+        // before modelRegistry lookup).
+        let requestedModel: { provider: string; id: string } | undefined;
+        if (body.model && typeof body.model === "object") {
+            const provider = (body.model as any).provider;
+            const id = (body.model as any).id;
+            if (typeof provider === "string" && typeof id === "string") {
+                const normalizedProvider = provider.trim();
+                const normalizedId = id.trim();
+                if (normalizedProvider && normalizedId) {
+                    requestedModel = { provider: normalizedProvider, id: normalizedId };
+                }
+            }
+        }
 
         // Optional agent config — spawn the session "as" this agent.
         // Validate the agent name to prevent path traversal — only allow names

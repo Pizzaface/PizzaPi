@@ -13,5 +13,8 @@ export function isHiddenModel(
     hiddenModels: string[],
     model: { provider: string; id: string },
 ): boolean {
-    return hiddenModels.includes(`${model.provider}/${model.id}`);
+    const provider = model.provider.trim();
+    const id = model.id.trim();
+    if (!provider || !id) return false;
+    return hiddenModels.includes(`${provider}/${id}`);
 }

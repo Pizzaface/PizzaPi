@@ -16,6 +16,11 @@ describe("isHiddenModel", () => {
         expect(isHiddenModel(hidden, { provider: "anthropic", id: "claude-3-5-haiku-20241022" })).toBe(true);
     });
 
+    it("trims surrounding whitespace from provider and model id", () => {
+        const hidden = ["anthropic/claude-3-5-haiku-20241022"];
+        expect(isHiddenModel(hidden, { provider: " anthropic ", id: " claude-3-5-haiku-20241022 " })).toBe(true);
+    });
+
     it("returns true for any matching provider/id pair", () => {
         const hidden = ["google/gemini-2.0-flash", "openai/gpt-4o"];
         expect(isHiddenModel(hidden, { provider: "google", id: "gemini-2.0-flash" })).toBe(true);
