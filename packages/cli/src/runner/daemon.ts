@@ -145,8 +145,19 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         // disconnect).  Entries auto-expire after 5 min — must be comfortably
         // longer than the relay's sweep interval (default 60 s) to avoid
         // re-logging on the next sweep cycle.
-        const endedSessionIds = new Set<string>();
+        // Map of sessionId → timestamp (ms) when the entry was recorded.
+        // A single shared sweep interval purges stale entries rather than
+        // scheduling one setTimeout per session (which scales linearly with
+        // session churn under high load).
+        const endedSessionIds = new Map<string, number>();
         const ENDED_SESSION_TTL_MS = 5 * 60_000;
+        const ENDED_SESSION_SWEEP_MS = 60_000; // sweep every 60 s
+        const endedSessionSweep = setInterval(() => {
+            const now = Date.now();
+            for (const [id, ts] of endedSessionIds) {
+                if (now - ts >= ENDED_SESSION_TTL_MS) endedSessionIds.delete(id);
+            }
+        }, ENDED_SESSION_SWEEP_MS);
         const runnerName = process.env.PIZZAPI_RUNNER_NAME?.trim() || hostname();
         let runnerId: string | null = null;
         let isFirstConnect = true;
@@ -171,6 +182,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         const shutdown = (code: number) => {
             if (isShuttingDown) return;
             isShuttingDown = true;
+            clearInterval(endedSessionSweep);
             killAllTerminals();
             stopUsageRefreshLoop();
             releaseStateLock(statePath);
@@ -390,13 +402,11 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     return;
                 }
                 runningSessions.delete(sessionId);
-                endedSessionIds.add(sessionId);
-                setTimeout(() => endedSessionIds.delete(sessionId), ENDED_SESSION_TTL_MS);
+                endedSessionIds.set(sessionId, Date.now());
                 logInfo(`session ${sessionId} ended on relay${entry.adopted ? " (adopted)" : ""}${reason ? ` (${reason})` : ""}`);
             } else if (!endedSessionIds.has(sessionId)) {
                 // First duplicate — log once then suppress subsequent copies
-                endedSessionIds.add(sessionId);
-                setTimeout(() => endedSessionIds.delete(sessionId), ENDED_SESSION_TTL_MS);
+                endedSessionIds.set(sessionId, Date.now());
                 logInfo(`session_ended for unknown/already-removed session ${sessionId}`);
             }
             // else: duplicate session_ended for a session we already handled — silently ignore
