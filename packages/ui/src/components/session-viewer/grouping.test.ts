@@ -417,6 +417,111 @@ describe("groupToolExecutionMessages", () => {
         expect(tools[0].toolInput).toEqual({});
     });
 
+    test("P1 regression: streaming partial (isStreamingPartial) is not counted as a terminal result", () => {
+        // Scenario (mirrors the runtime state during a failed tool invocation):
+        //   1. Non-errored assistant partial references tc1.
+        //   2. A synthetic toolResult for tc1 arrives from tool_execution_update
+        //      (isStreamingPartial: true) — the tool is still in-flight.
+        //   3. The turn errors out; a final errored snapshot for tc1 is written.
+        //   4. No real/terminal toolResult ever arrives for tc1.
+        //
+        // Without the fix, collectToolCallIdsWithResult counts the streaming
+        // partial as proof that tc1 completed, causing the non-errored partial
+        // to be preferred and the error banner to be silently dropped.
+        const messages: RelayMessage[] = [
+            msg({
+                key: "a1-partial",
+                role: "assistant",
+                content: [
+                    { type: "toolCall", name: "bash", id: "tc1", arguments: { command: "ls" } },
+                ],
+            }),
+            // Synthetic streaming partial — in-flight, NOT a terminal result.
+            msg({
+                key: "toolResult:tool:tc1",
+                role: "toolResult",
+                toolCallId: "tc1",
+                toolName: "bash",
+                content: [{ type: "text", text: "partial output..." }],
+                isStreamingPartial: true,
+            }),
+            msg({
+                key: "a1-final",
+                role: "assistant",
+                stopReason: "error",
+                errorMessage: "Stream disconnected mid-tool",
+                content: [
+                    { type: "toolCall", name: "bash", id: "tc1", arguments: { command: "ls" } },
+                ],
+                timestamp: 12345,
+            }),
+            // No real toolResult — the stream died before the tool finished.
+        ];
+        const result = groupToolExecutionMessages(messages);
+        // The errored final must be kept so the failure banner is visible.
+        const errorParts = result.filter(
+            (m) => m.role === "assistant" && m.stopReason === "error",
+        );
+        expect(errorParts).toHaveLength(1);
+        // The non-errored partial must be dropped (it looks "pending" which is wrong).
+        const nonErroredParts = result.filter(
+            (m) => m.role === "assistant" && !m.stopReason,
+        );
+        expect(nonErroredParts).toHaveLength(0);
+    });
+
+    test("P2 regression: non-errored partial [tc1] + errored final [tc1,tc2] with tc1 result does not duplicate text", () => {
+        // Scenario: a non-errored partial covers [text, tc1]; then the stream
+        // continues and issues tc2, dying before tc2 finishes.  The errored
+        // final covers [text, tc1, tc2].  A real toolResult exists for tc1.
+        //
+        // Without the fix, the "keep if it wins for any ID" rule keeps BOTH
+        // snapshots (partial wins for tc1 via lastNonErroredIndex; final wins
+        // for tc2 via lastIndex) — the same assistant text is rendered twice.
+        //
+        // With the fix, the component has exactly ONE winner (the errored final,
+        // because the tie goes to the latest snapshot), so text appears once.
+        const messages: RelayMessage[] = [
+            msg({
+                key: "a1-partial",
+                role: "assistant",
+                content: [
+                    { type: "text", text: "Running tools" },
+                    { type: "toolCall", name: "bash", id: "tc1", arguments: { command: "ls" } },
+                ],
+            }),
+            msg({
+                key: "a1-final",
+                role: "assistant",
+                stopReason: "error",
+                errorMessage: "Stream error",
+                content: [
+                    { type: "text", text: "Running tools" },
+                    { type: "toolCall", name: "bash", id: "tc1", arguments: { command: "ls" } },
+                    { type: "toolCall", name: "read_file", id: "tc2", arguments: { path: "/a.ts" } },
+                ],
+                timestamp: 12345,
+            }),
+            // Real terminal result for tc1 only — tc2 never ran.
+            msg({
+                key: "r1",
+                role: "toolResult",
+                toolCallId: "tc1",
+                toolName: "bash",
+                content: [{ type: "text", text: "file1.txt" }],
+            }),
+        ];
+        const result = groupToolExecutionMessages(messages);
+        // Exactly one assistant text bubble — no duplication.
+        const assistantParts = result.filter((m) => m.role === "assistant");
+        expect(assistantParts).toHaveLength(1);
+        // Both tool cards must be present (tc1 with result, tc2 pending).
+        const tools = result.filter((m) => m.role === "tool");
+        expect(tools).toHaveLength(2);
+        expect(tools.find((t) => t.toolCallId === "tc1")?.content).toBeTruthy();
+        expect(tools.find((t) => t.toolCallId === "tc2")).toBeDefined();
+    });
+
     test("passes through compactionSummary messages unchanged", () => {
         const messages: RelayMessage[] = [
             msg({

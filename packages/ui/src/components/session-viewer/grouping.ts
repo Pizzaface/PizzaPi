@@ -101,6 +101,11 @@ function collectToolCallIdsWithResult(messages: RelayMessage[]): Set<string> {
 
     if (message.role !== "toolResult" && message.role !== "tool") continue;
 
+    // Synthetic streaming partials (from tool_execution_update) are in-flight
+    // tool output — they are NOT terminal results and must not be counted as
+    // proof that a tool call completed.
+    if (message.isStreamingPartial) continue;
+
     let matchedPendingIndex = -1;
 
     if (message.toolCallId) {
@@ -187,10 +192,21 @@ function deduplicateAssistantMessages(messages: RelayMessage[]): RelayMessage[] 
 
   if (lastIndexForToolCallId.size === 0) return messages;
 
-  // Assistant snapshots that share toolCallIds represent alternate versions of
-  // the same turn.  When a later snapshot drops one of the earlier IDs, that
-  // dropped ID is stale and should not keep the earlier partial alive.
-  const componentValidIdsByMessageIndex = new Map<number, Set<string>>();
+  // Group assistant snapshots that share toolCallIds into "components" — all
+  // members of a component represent alternate versions of the same turn.
+  // We pick exactly ONE winner per component to avoid rendering the same
+  // assistant text and tool cards multiple times.
+  //
+  // Winner selection per component:
+  //   - validIds = IDs present in the *latest* snapshot of the component
+  //     (earlier-only IDs were dropped by a later snapshot and are stale).
+  //   - For each valid ID, find the "preferred" snapshot:
+  //       • A non-errored snapshot wins when a tool result arrived for that ID
+  //         (prevents a spurious ERROR badge on a tool that completed fine).
+  //       • Otherwise the last snapshot wins (carries the failure state).
+  //   - Tally wins per snapshot.  The snapshot with the most wins is the
+  //     component winner; ties go to the latest snapshot (most complete).
+  const componentWinnerByIndex = new Map<number, number>();
   const visitedAssistantIndexes = new Set<number>();
 
   for (const startIndex of assistantIndexes) {
@@ -216,39 +232,43 @@ function deduplicateAssistantMessages(messages: RelayMessage[]): RelayMessage[] 
     }
 
     const latestIndex = Math.max(...component);
-    const validIds = new Set(messageIdsMap.get(latestIndex)!);
-    for (const index of component) {
-      componentValidIdsByMessageIndex.set(index, validIds);
+    const validIds = messageIdsMap.get(latestIndex)!;
+    const componentSet = new Set(component);
+
+    // Tally wins: each valid ID votes for its preferred snapshot.
+    const winCount = new Map<number, number>();
+    for (const id of validIds) {
+      const preferredIdx = lastNonErroredIndexForToolCallId.has(id)
+        ? lastNonErroredIndexForToolCallId.get(id)!
+        : lastIndexForToolCallId.get(id)!;
+      // Only count if the preferred snapshot is actually in this component.
+      const resolvedIdx = componentSet.has(preferredIdx) ? preferredIdx : latestIndex;
+      winCount.set(resolvedIdx, (winCount.get(resolvedIdx) ?? 0) + 1);
+    }
+
+    // Pick the snapshot with the most votes; tie-break: prefer the latest index.
+    let winner = latestIndex;
+    let maxWins = winCount.get(latestIndex) ?? 0;
+    for (const [idx, count] of winCount) {
+      if (count > maxWins || (count === maxWins && idx > winner)) {
+        maxWins = count;
+        winner = idx;
+      }
+    }
+
+    for (const idx of component) {
+      componentWinnerByIndex.set(idx, winner);
     }
   }
 
-  // For each assistant message, determine the "preferred" index for each of
-  // its still-relevant tool call IDs:
-  //   - If a non-errored version exists for this ID AND a tool result arrived,
-  //     prefer the last non-errored version (avoids a spurious error badge on
-  //     a successfully-completed tool).
-  //   - Otherwise fall back to the last version overall (errored or not) so
-  //     that the failure state is visible when no result ever arrived.
-  //
-  // A message is kept when it is the preferred version for at least one ID that
-  // still appears in the latest snapshot of its turn. This preserves newer IDs
-  // introduced by later snapshots while dropping stale partial-only IDs that a
-  // later snapshot removed.
+  // Keep only the single winner for each component of same-turn snapshots.
   return messages.filter((msg, i) => {
     if (msg.role !== "assistant") return true;
 
     const ids = messageIdsMap.get(i);
     if (!ids || ids.size === 0) return true;
 
-    const validIds = componentValidIdsByMessageIndex.get(i) ?? ids;
-    for (const id of ids) {
-      if (!validIds.has(id)) continue;
-      const preferredIdx = lastNonErroredIndexForToolCallId.has(id)
-        ? lastNonErroredIndexForToolCallId.get(id)!
-        : lastIndexForToolCallId.get(id)!;
-      if (preferredIdx === i) return true;
-    }
-    return false;
+    return componentWinnerByIndex.get(i) === i;
   });
 }
 

@@ -48,6 +48,7 @@ export function toRelayMessage(raw: unknown, fallbackId: string): RelayMessage |
     summary,
     tokensBefore,
     details,
+    isStreamingPartial: msg.isStreamingPartial === true ? true : undefined,
   };
 }
 
