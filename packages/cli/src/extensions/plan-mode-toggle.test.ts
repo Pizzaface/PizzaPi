@@ -548,6 +548,16 @@ describe("isDestructiveCommand", () => {
         // Informational flags
         expect(isDestructiveCommand("patch --help")).toBe(false);
         expect(isDestructiveCommand("patch --version")).toBe(false);
+
+        // -r / --reject-file with a real path is destructive even when -o sends to stdout
+        expect(isDestructiveCommand("patch -o - -r rejects.txt file.txt < fix.diff")).toBe(true);
+        expect(isDestructiveCommand("patch --output=- --reject-file=rejects.txt file.txt < fix.diff")).toBe(true);
+        expect(isDestructiveCommand("patch -o - --reject-file=/tmp/rej file.txt < fix.diff")).toBe(true);
+        // -r - (reject to stdout) is safe when combined with -o -
+        expect(isDestructiveCommand("patch -o - -r - file.txt < fix.diff")).toBe(false);
+        expect(isDestructiveCommand("patch --output=- --reject-file=- file.txt < fix.diff")).toBe(false);
+        // -r with real path but no -o is already destructive (patch writes to file)
+        expect(isDestructiveCommand("patch -r rejects.txt file.txt < fix.diff")).toBe(true);
     });
 
     test("flags tar with create flag (-c / --create)", () => {
@@ -655,6 +665,24 @@ describe("isDestructiveCommand", () => {
         expect(isDestructiveCommand("tar --to-stdout -xf archive.tar file.txt")).toBe(false);
         // Even when combined with compression flags, -O makes it read-only
         expect(isDestructiveCommand("tar -Ixz -xO -f archive.tar.xz file.txt")).toBe(false);
+    });
+
+    test("tar -O does not mask write-mode flags (-c, -u, -r, -A)", () => {
+        // -cO: create archive to stdout — still a write operation (creates archive data)
+        expect(isDestructiveCommand("tar -cO dir/")).toBe(true);
+        expect(isDestructiveCommand("tar -cOf archive.tar dir/")).toBe(true);
+        // -uO: update archive to stdout
+        expect(isDestructiveCommand("tar -uO -f archive.tar file.txt")).toBe(true);
+        // -rO: append to archive to stdout
+        expect(isDestructiveCommand("tar -rO -f archive.tar file.txt")).toBe(true);
+        // -AO: catenate archives to stdout
+        expect(isDestructiveCommand("tar -AO -f archive.tar other.tar")).toBe(true);
+        // Long form --to-stdout with write mode
+        expect(isDestructiveCommand("tar --to-stdout -cf archive.tar dir/")).toBe(true);
+        // -xO is still safe (extract to stdout)
+        expect(isDestructiveCommand("tar -xO -f archive.tar file.txt")).toBe(false);
+        // -tO is safe (list with stdout — no write mode)
+        expect(isDestructiveCommand("tar -tO -f archive.tar")).toBe(false);
     });
 
     test("flags gawk with in-place editing via the inplace module", () => {

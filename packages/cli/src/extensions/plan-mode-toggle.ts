@@ -258,30 +258,40 @@ const GAWK_INPLACE_MODULE_PATTERN = /(?:^|[\\/])inplace(?:\.awk)?$/i;
 
 const PATCH_SAFE_LONG_FLAG_PATTERN = /(?:^|\s)--(?:dry-run|check|help|version)(?:\s|$)/i;
 
+/** Short tar mode flags that write to or update archives. */
+const TAR_WRITE_MODE_PATTERN = /[cruA]/;
+
 function isDestructiveTarCommand(segment: string): boolean {
     if (!/^\s*tar\b/i.test(segment)) return false;
     if (TAR_LONG_MODE_PATTERN.test(segment)) return true;
 
-    // Allow `tar --to-stdout` (long form of -O) — extracts to stdout, not filesystem
-    if (/(?:^|\s)--to-stdout(?:\s|$)/i.test(segment)) return false;
+    // Collect all short-option mode letters across the entire command so we can
+    // reason about -O (stdout) and write-mode flags (-c/-r/-u/-A) together.
+    let allModeLetters = "";
 
     // Check the first token for the traditional no-dash form: `tar czf archive.tar`
     const bundledMatch = segment.match(TAR_BUNDLED_MODE_PATTERN);
     if (bundledMatch) {
-        const bundled = tarShortOptsForModeScan(bundledMatch[1].replace(/^-/, ""));
-        // If -O is present, tar outputs to stdout (read-only), so it's safe
-        if (/O/.test(bundled)) return false;
-        if (TAR_DESTRUCTIVE_SHORT_MODE_PATTERN.test(bundled)) return true;
+        allModeLetters += tarShortOptsForModeScan(bundledMatch[1].replace(/^-/, ""));
     }
 
     // Also scan all dash-prefixed option tokens to catch patterns where the mode
     // letter appears after other options, e.g. `tar -f archive.tar -x`.
     for (const match of segment.matchAll(/(?:^|\s)-([A-Za-z]+)/g)) {
-        const tokenOpts = tarShortOptsForModeScan(match[1]);
-        // If -O is present, tar outputs to stdout (read-only), so it's safe
-        if (/O/.test(tokenOpts)) return false;
-        if (TAR_DESTRUCTIVE_SHORT_MODE_PATTERN.test(tokenOpts)) return true;
+        allModeLetters += tarShortOptsForModeScan(match[1]);
     }
+
+    // Also check for long-form --to-stdout
+    const hasStdout = /O/.test(allModeLetters) || /(?:^|\s)--to-stdout(?:\s|$)/i.test(segment);
+    const hasWriteMode = TAR_WRITE_MODE_PATTERN.test(allModeLetters);
+
+    // -O (stdout) only makes tar safe when no write-mode flag is present.
+    // `tar -cO` still creates an archive (to stdout pipe) — that's a write operation.
+    // `tar -xO` extracts to stdout — genuinely read-only.
+    if (hasStdout && !hasWriteMode) return false;
+
+    // Any destructive short mode letter present → destructive
+    if (TAR_DESTRUCTIVE_SHORT_MODE_PATTERN.test(allModeLetters)) return true;
 
     return false;
 }
@@ -320,11 +330,29 @@ function isDestructivePatchCommand(segment: string): boolean {
         // - `-o-` (no space, no equals, dash immediately after -o)
         const isStdout = /\s-o\s-(?:\s|$)|-o-(?:\s|$)|--output=-(?:\s|$)|--output\s+-(?:\s|$)/i.test(segment);
         if (isStdout) {
-            // Output to stdout is read-only, so treat as safe
-            return false;
+            // Output to stdout is read-only — but still check for reject-file
+            // writing below (don't return early).
+        } else {
+            // Output to a file is destructive
+            return true;
         }
-        // Output to a file is destructive
-        return true;
+    }
+
+    // Check for reject-file flags: `-r FILE` / `--reject-file=FILE`.
+    // If a real file path is given (not `-` for stdout), patch writes rejected
+    // hunks to disk — destructive even when main output goes to stdout.
+    const hasRejectFile = /\s-r\s|\s-r\S|--reject-file\b|--reject-file=/i.test(segment);
+    if (hasRejectFile) {
+        const rejectIsStdout = /\s-r\s-(?:\s|$)|-r-(?:\s|$)|--reject-file=-(?:\s|$)|--reject-file\s+-(?:\s|$)/i.test(segment);
+        if (!rejectIsStdout) {
+            return true; // reject file writes to a real path
+        }
+    }
+
+    // If we got here with -o to stdout and no reject file (or reject to stdout),
+    // the command is read-only.
+    if (hasOutputFlag) {
+        return false;
     }
 
     // `patch` is generally destructive, but a few explicit flags make it read-only.
