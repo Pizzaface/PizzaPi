@@ -269,14 +269,25 @@ function splitShellWords(command: string): string[] {
     return words;
 }
 
-/** Returns true if a token contains unquoted shell expansion (variable, command substitution, etc.) */
+/** Returns true if a token may be expanded by the shell into a different argv shape. */
 function containsShellExpansion(token: string): boolean {
-    // After splitShellWords the token is already unquoted, but variable
-    // references like $VAR or $(cmd) or `cmd` survive unquoted splitting and
-    // would be expanded by the shell at execution time.  We can't predict
-    // what an expanded value contains, so reject any ref token that still
-    // holds `$` (variable/command substitution) or a backtick.
-    return token.includes("$") || token.includes("`");
+    // After splitShellWords the token is already unquoted, so we can't know
+    // whether the user originally quoted/escaped it. In plan-mode we must
+    // assume `bash -lc` execution, so any expansion that can inject *multiple*
+    // argv items could turn a seemingly safe `git notes` invocation into a
+    // mutating one.
+    //
+    // Conservatively reject:
+    //  - variable / command substitution: $VAR, $(cmd)
+    //  - backticks: `cmd`
+    //  - pathname expansion (globbing): *, ?, [...]
+    //  - brace expansion: {a,b}, {1..3}
+    if (token.includes("$") || token.includes("`")) return true;
+    if (token.includes("*") || token.includes("?") || token.includes("[") || token.includes("]")) return true;
+
+    // Brace expansion only triggers for comma-separated lists or sequences.
+    // (Bare braces like `@{-1}` are not expanded by bash.)
+    return /\{[^}]*,.*\}|\{[^}]*\.\.[^}]*\}/.test(token);
 }
 
 function isSafeGitNotesInvocation(segment: string): boolean {

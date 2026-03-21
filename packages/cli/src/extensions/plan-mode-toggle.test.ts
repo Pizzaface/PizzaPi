@@ -369,6 +369,19 @@ describe("isDestructiveCommand", () => {
         expect(isDestructiveCommand("git notes --ref $(get_ref) list")).toBe(true);
     });
 
+    test("blocks git notes with glob/brace-expanded --ref values (P1 bypass prevention)", () => {
+        // Glob expansion can inject extra argv items and change the subcommand.
+        expect(isDestructiveCommand("git notes --ref *")).toBe(true);
+        expect(isDestructiveCommand("git notes --ref * show HEAD")).toBe(true);
+        expect(isDestructiveCommand("git notes --ref=*.txt show HEAD")).toBe(true);
+        expect(isDestructiveCommand("git notes --ref ? list")).toBe(true);
+        expect(isDestructiveCommand("git notes --ref [ab] show HEAD")).toBe(true);
+
+        // Brace expansion can also inject extra argv items.
+        expect(isDestructiveCommand("git notes --ref {review,add} show HEAD")).toBe(true);
+        expect(isDestructiveCommand("git notes --ref={review,add}")).toBe(true);
+        expect(isDestructiveCommand("git notes --ref {1..3} list")).toBe(true);
+    });
 
     test("flags git submodule update (modifies working tree)", () => {
         expect(isDestructiveCommand("git submodule update --init")).toBe(true);
