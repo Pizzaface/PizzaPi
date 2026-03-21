@@ -488,7 +488,14 @@ export function registerRelayNamespace(io: SocketIOServer): void {
             }
 
             clearThinkingMaps(sessionId);
-            pendingChunkedStates.delete(sessionId);
+            // Defer chunked-state cleanup until all previously-queued
+            // session_messages_chunk handlers have finished.  If we deleted
+            // pendingChunkedStates immediately, any chunks still queued in
+            // enqueueSessionEvent() would wake up, find no pending state, and
+            // skip final assembly — leaving the session with a stale snapshot.
+            enqueueSessionEvent(sessionId, async () => {
+                pendingChunkedStates.delete(sessionId);
+            });
             void clearPushPendingQuestion(sessionId);
             // Graceful end — delete the durable runner association so it
             // isn't restored if a new session reuses this ID later.
