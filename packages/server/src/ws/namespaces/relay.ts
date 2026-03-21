@@ -19,6 +19,8 @@ import {
     getLocalTuiSocket,
     getLocalRunnerSocket,
     emitToRelaySession,
+    emitToRelaySessionVerified,
+    emitToRelaySessionAwaitingAck,
     emitToRunner,
     updateSessionState,
     updateSessionHeartbeat,
@@ -36,6 +38,18 @@ import {
     clearPushPendingQuestion,
     deleteRunnerAssociation,
     removeChildSession,
+    removeChildren,
+    addPendingParentDelinkChildren,
+    getChildSessions,
+    getPendingParentDelinkChildren,
+    removePendingParentDelinkChild,
+    isPendingParentDelinkChild,
+    getSession,
+    markChildAsDelinked,
+    isChildDelinked,
+    isChildOfParent,
+    refreshChildSessionsTTL,
+    clearParentSessionId,
 } from "../sio-state.js";
 import {
     notifyAgentFinished,
@@ -309,7 +323,7 @@ export function registerRelayNamespace(io: SocketIOServer): void {
             const isEphemeral = data.ephemeral !== false;
             const collabMode = data.collabMode !== false;
 
-            const { sessionId, token, shareUrl, parentSessionId } = await registerTuiSession(socket, cwd, {
+            const { sessionId, token, shareUrl, parentSessionId, wasDelinked } = await registerTuiSession(socket, cwd, {
                 sessionId: data.sessionId,
                 isEphemeral,
                 collabMode,
@@ -331,6 +345,12 @@ export function registerRelayNamespace(io: SocketIOServer): void {
                 isEphemeral,
                 collabMode,
                 parentSessionId,
+                // Server wall-clock time — lets the client compute
+                // clock offset for accurate epoch-based delink filtering.
+                serverTime: Date.now(),
+                // Only include wasDelinked when it is true to keep the payload
+                // minimal for non-child or non-delinked sessions.
+                ...(wasDelinked ? { wasDelinked: true } : {}),
             });
         });
 
@@ -547,6 +567,41 @@ export function registerRelayNamespace(io: SocketIOServer): void {
                 return;
             }
 
+            // Block messages from delinked children. If the sender's session
+            // still carries a parentSessionId pointing at the target (i.e. it
+            // was a linked child), but the target has already delinked it via
+            // /new, reject the message so stale children can't inject traffic
+            // into the parent's new conversation.
+            if (senderSession.parentSessionId === targetSessionId) {
+                const stillLinked = await isChildOfParent(targetSessionId, sessionId);
+                if (!stillLinked) {
+                    socket.emit("session_message_error", {
+                        targetSessionId,
+                        error: "Sender is no longer a child of the target session",
+                    });
+                    return;
+                }
+            }
+
+            // Block stale parent→child traffic. deliverAs:"input" always
+            // requires a live parent→child link (used by tell_child and
+            // session_complete follow-up). Plain session_message (used by
+            // send_message) is also blocked when the target's parentSessionId
+            // still names the sender — the parent may have run /new and
+            // delinked this child, so the old parent's plain messages must not
+            // reach the child's brand-new conversation either.
+            const isParentToChildTraffic = data.deliverAs === "input" || targetSession.parentSessionId === sessionId;
+            if (isParentToChildTraffic) {
+                const targetIsChild = await isChildOfParent(sessionId, targetSessionId);
+                if (!targetIsChild) {
+                    socket.emit("session_message_error", {
+                        targetSessionId,
+                        error: "Target session is not a child of the sender",
+                    });
+                    return;
+                }
+            }
+
             const targetSocket = getLocalTuiSocket(targetSessionId);
             if (!targetSocket) {
                 socket.emit("session_message_error", {
@@ -615,6 +670,31 @@ export function registerRelayNamespace(io: SocketIOServer): void {
                 return;
             }
 
+            if (targetSessionId !== sessionId && await isPendingParentDelinkChild(targetSessionId, sessionId)) {
+                socket.emit("session_message_error", {
+                    targetSessionId,
+                    error: "Sender is currently being delinked from the target session",
+                });
+                return;
+            }
+
+            // Reject triggers from sessions that are no longer children of the target.
+            // This closes a race window after delink_children: a connected child that
+            // emits session_trigger before it processes parent_delinked could otherwise
+            // inject a stale trigger into the parent's new conversation.
+            // Self-triggers (escalations) are explicitly excluded.
+            if (targetSessionId !== sessionId) {
+                const senderIsChild = await isChildOfParent(targetSessionId, sessionId);
+                if (!senderIsChild) {
+                    socket.emit("session_message_error", {
+                        targetSessionId,
+                        error: "Sender is no longer a child of the target session",
+                    });
+                    return;
+                }
+                await refreshChildSessionsTTL(targetSessionId);
+            }
+
             const targetSocket = getLocalTuiSocket(targetSessionId);
             if (!targetSocket) {
                 socket.emit("session_message_error", {
@@ -650,16 +730,18 @@ export function registerRelayNamespace(io: SocketIOServer): void {
             response: string;
             action?: string;
             targetSessionId: string;
-        }) => {
+        }, ack: ((result: { ok: boolean; error?: string }) => void) | undefined) => {
             const { triggerId, response, action, targetSessionId } = data ?? {};
             if (!triggerId || !response || !targetSessionId) {
                 socket.emit("error", { message: "trigger_response requires triggerId, response, and targetSessionId" });
+                if (typeof ack === "function") ack({ ok: false, error: "Missing required fields" });
                 return;
             }
 
             // Validate sender is authenticated and token matches
             if (!socket.data.sessionId || data?.token !== socket.data.token) {
                 socket.emit("error", { message: "Invalid token" });
+                if (typeof ack === "function") ack({ ok: false, error: "Invalid token" });
                 return;
             }
 
@@ -668,6 +750,7 @@ export function registerRelayNamespace(io: SocketIOServer): void {
             const targetSession = await getSharedSession(targetSessionId);
             if (!senderSession?.userId || !targetSession?.userId || senderSession.userId !== targetSession.userId) {
                 socket.emit("error", { message: "Target session belongs to a different user" });
+                if (typeof ack === "function") ack({ ok: false, error: "Target session belongs to a different user" });
                 return;
             }
 
@@ -677,29 +760,43 @@ export function registerRelayNamespace(io: SocketIOServer): void {
             // respond with trigger_response to children. Allowing child→parent
             // would let a sibling session inject responses into another child's
             // pending trigger through the parent's forwarding handler.
-            const isParentOfTarget = targetSession.parentSessionId === socket.data.sessionId;
+            //
+            // Fall back to the children membership set when the child's session
+            // hash has parentSessionId=null because the parent was transiently
+            // offline during the child's last reconnect (Fix #3: the set membership
+            // is preserved by addChildSessionMembership in that path).
+            const isParentOfTarget = targetSession.parentSessionId === socket.data.sessionId
+                || await isChildOfParent(socket.data.sessionId, targetSessionId);
             if (!isParentOfTarget) {
                 socket.emit("error", { message: "Sender is not the parent of the target session" });
+                if (typeof ack === "function") ack({ ok: false, error: "Sender is not the parent of the target session" });
                 return;
             }
 
             const triggerPayload = { triggerId, response, ...(action ? { action } : {}) };
-            // Try local socket first, fall back to relay room for cross-node delivery
+            // Try local socket first, then verified room delivery for cross-node
+            // routing. We only ack success when at least one relay recipient is
+            // actually present.
             const targetSocket = getLocalTuiSocket(targetSessionId);
-            if (targetSocket) {
+            if (targetSocket?.connected) {
                 try {
                     targetSocket.emit("trigger_response" as any, triggerPayload);
+                    if (typeof ack === "function") ack({ ok: true });
                 } catch {
                     socket.emit("session_message_error", {
                         targetSessionId,
                         error: "Failed to deliver trigger response to target session",
                     });
+                    if (typeof ack === "function") ack({ ok: false, error: "Failed to deliver trigger response to target session" });
                 }
-            } else if (!emitToRelaySession(targetSessionId, "trigger_response", triggerPayload)) {
+            } else if (!await emitToRelaySessionVerified(targetSessionId, "trigger_response", triggerPayload)) {
                 socket.emit("session_message_error", {
                     targetSessionId,
                     error: `Target session ${targetSessionId} is not connected`,
                 });
+                if (typeof ack === "function") ack({ ok: false, error: `Target session ${targetSessionId} is not connected` });
+            } else {
+                if (typeof ack === "function") ack({ ok: true });
             }
         });
 
@@ -727,7 +824,11 @@ export function registerRelayNamespace(io: SocketIOServer): void {
                 return;
             }
 
-            if (childSession.parentSessionId !== sessionId) {
+            // Same fallback as trigger_response: when the child's parentSessionId
+            // was cleared during a transient-offline reconnect, check set membership.
+            const isParentOfChild = childSession.parentSessionId === sessionId
+                || await isChildOfParent(sessionId, childSessionId);
+            if (!isParentOfChild) {
                 socket.emit("error", { message: "Sender is not the parent of the target session" });
                 if (typeof ack === "function") ack({ ok: false, error: "Sender is not the parent of the target session" });
                 return;
@@ -797,6 +898,196 @@ export function registerRelayNamespace(io: SocketIOServer): void {
             }
         });
 
+        // ── delink_children — parent severs all child links (e.g. on /new) ─
+        socket.on("delink_children", async (data, ack?: (result: { ok: boolean; error?: string }) => void) => {
+            const sessionId = socket.data.sessionId;
+            if (!sessionId || data?.token !== socket.data.token) {
+                socket.emit("error", { message: "Invalid token" });
+                if (typeof ack === "function") ack({ ok: false, error: "Invalid token" });
+                return;
+            }
+
+            // Optional epoch (ms): when provided, only delink children whose
+            // startedAt is before this timestamp.  Used by deferred delinks
+            // (sent on reconnect after /new while disconnected) to avoid
+            // inadvertently delinking children spawned during the disconnect
+            // window.
+            const epoch: number | undefined =
+                typeof data.epoch === "number" && data.epoch > 0 ? data.epoch : undefined;
+
+            console.log(`[sio/relay] delink_children: parent=${sessionId}${epoch ? ` epoch=${new Date(epoch).toISOString()}` : ""}`);
+
+            try {
+                // Snapshot current children plus any children whose
+                // parent_delinked delivery previously timed out. The pending
+                // retry set preserves recipients across delink_children retries
+                // even after we have already removed them from the membership set.
+                const [currentChildIds, pendingRetryChildIds] = await Promise.all([
+                    getChildSessions(sessionId),
+                    getPendingParentDelinkChildren(sessionId),
+                ]);
+                let childIds = Array.from(new Set([...currentChildIds, ...pendingRetryChildIds]));
+
+                // If an epoch was provided, filter out children that registered
+                // after the epoch — they belong to the new conversation and must
+                // not be delinked. However, children with existing delink markers
+                // are stale and should be included even if their startedAt > epoch
+                // (this handles the case where a stale child reconnected and got a
+                // fresh startedAt timestamp).
+                if (epoch && childIds.length > 0) {
+                    const filtered: string[] = [];
+                    for (const childId of childIds) {
+                        const childSession = await getSession(childId);
+                        if (!childSession?.startedAt) {
+                            // No session data — conservative: include it
+                            filtered.push(childId);
+                            continue;
+                        }
+                        const startedAtMs = new Date(childSession.startedAt).getTime();
+                        if (startedAtMs <= epoch) {
+                            filtered.push(childId);
+                        } else {
+                            // Child started after epoch, but check if it already has a delink marker.
+                            // If it does, it's a stale child that reconnected and should be delinked
+                            // regardless of its fresh startedAt timestamp.
+                            const hasDelinkMarker = await isChildDelinked(childId);
+                            if (hasDelinkMarker) {
+                                filtered.push(childId);
+                                console.log(`[sio/relay] delink_children: including child ${childId} (startedAt > epoch but has delink marker)`);
+                            } else {
+                                console.log(`[sio/relay] delink_children: skipping child ${childId} (startedAt=${childSession.startedAt} > epoch)`);
+                            }
+                        }
+                    }
+                    childIds = filtered;
+                }
+
+                // Write delink markers BEFORE clearing the membership set. This
+                // closes a race window: if a child reconnects between the snapshot
+                // and the clear, registerTuiSession's isChildDelinked() check will
+                // already find the marker and refuse to re-link. If we cleared
+                // first and wrote markers second, a reconnecting child could slip
+                // through before its marker exists.
+                for (const childId of childIds) {
+                    // Store the parent session ID in the marker so that
+                    // addChildSession can scrub the child from this parent's
+                    // pending-delink retry set when the child is re-linked elsewhere.
+                    await markChildAsDelinked(childId, sessionId);
+                }
+                await addPendingParentDelinkChildren(sessionId, childIds);
+
+                // Remove only the snapshotted children from the membership set.
+                // Using removeChildren() instead of clearAllChildren() avoids a
+                // race: if the parent spawns a new child between the snapshot and
+                // this removal, the new child's membership is preserved.
+                await removeChildren(sessionId, childIds);
+
+                // Notify each connected child that their parent is gone.
+                // This lets children cancel any pending triggers awaiting a response.
+                //
+                // NOTE: We intentionally do NOT clear parentSessionId in Redis here.
+                // Doing so races with any in-flight trigger_response(cancel) messages
+                // that clearAndCancelPendingTriggers() emitted just before this event.
+                // The trigger_response handler checks targetSession.parentSessionId; if
+                // we clear it concurrently, the check fails with "Sender is not the
+                // parent" and the child is left blocked until its 5-minute timeout.
+                //
+                // Instead, parentSessionId is cleaned up lazily: registerTuiSession
+                // checks isChildDelinked() on reconnect and clears the stale field
+                // then (see sio-registry.ts).  For connected children, the parent_delinked
+                // event causes rctx.parentSessionId = null so reconnects won't re-link.
+                // For offline children (who never received parent_delinked), the marker
+                // we just wrote above prevents re-link.
+                for (const childId of childIds) {
+                    const payload = { parentSessionId: sessionId };
+                    const delivery = await emitToRelaySessionAwaitingAck(childId, "parent_delinked", payload);
+                    if (delivery.hadListeners && !delivery.acked) {
+                        throw new Error(`parent_delinked delivery was not confirmed for child ${childId}`);
+                    }
+                    // Offline children are safe to clear from the retry set too:
+                    // their delink marker will prevent re-linking on reconnect.
+                    await removePendingParentDelinkChild(sessionId, childId);
+                }
+
+                // Acknowledge that the delink completed only after every
+                // connected child has confirmed parent_delinked delivery. The
+                // client uses this to clear its pendingDelink retry guard —
+                // until the ack arrives, it keeps blocking stale child
+                // session_message / session_trigger traffic from reaching the
+                // new conversation.
+                if (typeof ack === "function") ack({ ok: true });
+            } catch (err) {
+                console.error(`[sio/relay] delink_children failed for parent=${sessionId}:`, err);
+                // Always nack so the client can clear its pendingDelink guard
+                // and retry on reconnect rather than latching permanently.
+                if (typeof ack === "function") ack({ ok: false, error: String(err) });
+            }
+        });
+
+        // ── delink_own_parent — child severs its own parent link (e.g. on /new) ─
+        // When a child session starts /new, it clears its local parent link
+        // but the server still has the association. This event lets the child
+        // tell the server to remove itself from the old parent's children set
+        // and clear the parentSessionId on its own Redis session hash.
+        socket.on("delink_own_parent", async (data, ack: ((result: { ok: boolean; error?: string }) => void) | undefined) => {
+            const sessionId = socket.data.sessionId;
+            if (!sessionId || data?.token !== socket.data.token) {
+                socket.emit("error", { message: "Invalid token" });
+                if (typeof ack === "function") ack({ ok: false, error: "Invalid token" });
+                return;
+            }
+
+            const session = await getSharedSession(sessionId);
+            const parentId = session?.parentSessionId;
+            if (!parentId) {
+                // parentSessionId is already cleared in Redis (e.g. the child
+                // ran /new while the relay socket was down, so
+                // registerTuiSession wrote null before this event arrived).
+                // If the client supplied the old parent ID it captured before
+                // clearing rctx.parentSessionId, use it to scrub the stale
+                // children-set entry that the disconnect path deliberately
+                // left behind to avoid a /new race window.
+                const oldParentId = typeof data?.oldParentId === "string" ? data.oldParentId : null;
+                if (oldParentId) {
+                    console.log(
+                        `[sio/relay] delink_own_parent: child=${sessionId} parentSessionId already cleared — removing stale child entry from parent=${oldParentId}`,
+                    );
+                    try {
+                        await removeChildSession(oldParentId, sessionId);
+                    } catch (err) {
+                        console.error("[sio/relay] delink_own_parent: failed to remove stale child entry:", err);
+                        if (typeof ack === "function") ack({ ok: false, error: err instanceof Error ? err.message : String(err) });
+                        return;
+                    }
+                }
+                // Already delinked or never linked — confirm success so the
+                // client stops retrying.
+                if (typeof ack === "function") ack({ ok: true });
+                return;
+            }
+
+            console.log(`[sio/relay] delink_own_parent: child=${sessionId} parent=${parentId}`);
+
+            // Clear our own parentSessionId FIRST — this closes the race
+            // window where a stale ack/followUp/cleanup_child_session from
+            // the old parent could still see parentSessionId === oldParent
+            // and authorize operations against this now-independent session.
+            // Then remove ourselves from the parent's children set.
+            // Both writes are atomic enough for our purposes; if either
+            // throws, ack failure so the client retries on next reconnect.
+            try {
+                await clearParentSessionId(sessionId);
+                await removeChildSession(parentId, sessionId);
+            } catch (err) {
+                console.error("[sio/relay] delink_own_parent: Redis write failed:", err);
+                if (typeof ack === "function") ack({ ok: false, error: err instanceof Error ? err.message : String(err) });
+                return;
+            }
+
+            // Acknowledge success so the client can clear its retry flag.
+            if (typeof ack === "function") ack({ ok: true });
+        });
+
         // ── disconnect ───────────────────────────────────────────────────────
         socket.on("disconnect", async (reason) => {
             console.log(`[sio/relay] disconnected: ${socket.id} (${reason})`);
@@ -816,11 +1107,15 @@ export function registerRelayNamespace(io: SocketIOServer): void {
                 clearThinkingMaps(sessionId);
                 pendingChunkedStates.delete(sessionId);
                 void clearPushPendingQuestion(sessionId);
-                // Clean up child-index entry so stale memberships don't persist
-                const session = await getSharedSession(sessionId);
-                if (session?.parentSessionId) {
-                    void removeChildSession(session.parentSessionId, sessionId);
-                }
+                // NOTE: We intentionally do NOT remove the child from the
+                // parent's children set here.  Doing so races with
+                // delink_children: if the child disconnects before the parent
+                // fires /new, delink_children's getChildSessions() snapshot
+                // won't include it and no delink marker will be written.  When
+                // the child reconnects, registerTuiSession() would re-link it
+                // to the parent's new conversation.  Leaving the membership in
+                // place is harmless — delink_children will clean it up, and
+                // stale entries are pruned when the session key expires.
                 await endSharedSession(sessionId);
             }
             socketAckedSeqs.delete(socket.id);

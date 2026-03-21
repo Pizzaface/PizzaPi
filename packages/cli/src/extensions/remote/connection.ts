@@ -23,6 +23,7 @@ import type { ConversationTrigger } from "../triggers/types.js";
 import type { RelayContext } from "../remote-types.js";
 import { emitSessionActive } from "./chunked-delivery.js";
 import { resetRelayRegistrationGate, signalRelayRegistered } from "./registration-gate.js";
+import { decideRegisteredParentState } from "../remote-registered-parent-state.js";
 
 // ── Module-level singletons (safe: one relay extension per process) ───────────
 
@@ -45,6 +46,30 @@ export interface ConnectionHandlers {
     setModelFromWeb: (provider: string, modelId: string) => Promise<void>;
     /** Deliver a user message to the agent (called from input and session_trigger handlers). */
     sendUserMessage: (message: unknown, options?: { deliverAs?: "followUp" | "steer" }) => void;
+
+    // ── Delink handlers (PR #176) ─────────────────────────────────────────
+    /** Whether a delink_own_parent is pending (child did /new). */
+    isPendingDelinkOwnParent: () => boolean;
+    /** Set server clock offset from registered event's serverTime. */
+    setServerClockOffset: (offset: number) => void;
+    /** Check if a session_message sender is a known stale pre-/new child. */
+    isStaleChild: (sessionId: string) => boolean;
+    /** Get the stale parent ID for session_message filtering. */
+    getStalePrimaryParentId: () => string | null;
+    /** Parent explicitly delinked (wasDelinked=true in registered). */
+    onParentExplicitlyDelinked: () => void;
+    /** Parent transiently offline (Redis miss, no wasDelinked). */
+    onParentTransientlyOffline: () => void;
+    /** parent_delinked event received from server. */
+    onParentDelinked: (ack?: (result: { ok: boolean }) => void) => void;
+    /** Flush deferred delink_children + delink_own_parent + cancellations after reconnect. */
+    flushDeferredDelinks: () => void;
+    /** Called on disconnect to clean up delink timers. */
+    onDelinkDisconnect: () => void;
+    /** Called before socket teardown to stop cancellation retry loops. */
+    onSocketTeardown: () => void;
+    /** Compute parentSessionId for register (accounts for pendingDelinkOwnParent). */
+    getParentSessionIdForRegister: () => string | null | undefined;
 }
 
 // ── URL helpers ───────────────────────────────────────────────────────────────
@@ -130,6 +155,7 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
     }
 
     if (rctx.sioSocket) {
+        handlers.onSocketTeardown();
         rctx.sioSocket.removeAllListeners();
         rctx.sioSocket.disconnect();
         rctx.sioSocket = null;
@@ -184,13 +210,14 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
 
     sock.on("connect", () => {
         resetRelayRegistrationGate();
+        const parentSessionIdForRegister = handlers.getParentSessionIdForRegister();
         sock.emit("register", {
             sessionId: rctx.relaySessionId,
             cwd: process.cwd(),
             ephemeral: true,
             collabMode: true,
             sessionName: rctx.getCurrentSessionName() ?? undefined,
-            ...(rctx.parentSessionId ? { parentSessionId: rctx.parentSessionId } : {}),
+            ...(parentSessionIdForRegister === undefined ? {} : { parentSessionId: parentSessionIdForRegister }),
         });
     });
 
@@ -212,6 +239,11 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
                 : `pizzapi: relay connected — session ${data.sessionId} (${data.shareUrl})`,
         );
 
+        // Update server clock offset for epoch calculations.
+        if (typeof data.serverTime === "number") {
+            handlers.setServerClockOffset(data.serverTime - Date.now());
+        }
+
         messageBus.setOwnSessionId(rctx.relaySessionId);
         messageBus.setSendFn((targetSessionId: string, message: string) => {
             if (!rctx.relay || !rctx.sioSocket?.connected) return false;
@@ -223,14 +255,34 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
             return true;
         });
 
-        if (data.parentSessionId) {
-            rctx.parentSessionId = data.parentSessionId;
-            rctx.isChildSession = true;
-            console.log(`pizzapi: linked as child of parent session ${data.parentSessionId}`);
-        } else if (rctx.parentSessionId && !data.parentSessionId) {
-            console.log(`pizzapi: server rejected parent link (${rctx.parentSessionId}), falling back to local interaction`);
-            rctx.parentSessionId = null;
-            rctx.isChildSession = false;
+        const parentStateDecision = decideRegisteredParentState({
+            serverParentSessionId: data.parentSessionId,
+            localParentSessionId: rctx.parentSessionId,
+            pendingDelinkOwnParent: handlers.isPendingDelinkOwnParent(),
+            wasDelinked: data.wasDelinked,
+        });
+
+        switch (parentStateDecision.kind) {
+            case "link":
+                rctx.parentSessionId = parentStateDecision.parentSessionId;
+                rctx.isChildSession = true;
+                console.log(`pizzapi: linked as child of parent session ${parentStateDecision.parentSessionId}`);
+                break;
+            case "ignore_stale_server_link":
+                // The child ran /new while disconnected — don't restore the
+                // stale parent link from Redis.
+                console.log("pizzapi: ignoring stale parentSessionId from server (pendingDelinkOwnParent)");
+                rctx.parentSessionId = null;
+                rctx.isChildSession = false;
+                break;
+            case "explicit_delink":
+                handlers.onParentExplicitlyDelinked();
+                break;
+            case "transient_offline":
+                handlers.onParentTransientlyOffline();
+                break;
+            case "no_change":
+                break;
         }
 
         emitSessionActive(rctx);
@@ -238,6 +290,9 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
         startHeartbeat(rctx);
         updateMcpRelayContext(rctx);
         signalRelayRegistered();
+
+        // Flush deferred delinks and cancellations after reconnect.
+        handlers.flushDeferredDelinks();
     });
 
     // ── Incoming events from server ───────────────────────────────────────
@@ -254,6 +309,14 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
     });
 
     sock.on("input", (data) => {
+        // While waiting for delink_own_parent to be confirmed by the server,
+        // the old parent can still inject tell_child / follow-up input.
+        // Drop agent-originated input until the server-side link is severed.
+        if (handlers.isPendingDelinkOwnParent() && (data as any).client === "agent") {
+            console.log("pizzapi: dropping stale parent tell_child/follow-up input — delink_own_parent pending");
+            return;
+        }
+
         // Any new input cancels the follow-up grace period immediately
         // (don't wait for turn_start which is async).
         handlers.clearFollowUpGrace();
@@ -293,6 +356,17 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
     });
 
     sock.on("session_message", (data) => {
+        // Drop session_messages only from senders we know are pre-/new children.
+        if (handlers.isStaleChild(data.fromSessionId)) {
+            console.log(`pizzapi: dropping stale session_message from ${data.fromSessionId} — sender is a pre-/new child`);
+            return;
+        }
+        // Drop stale send_message traffic from old parent during pending delink.
+        const stalePrimary = handlers.getStalePrimaryParentId();
+        if (handlers.isPendingDelinkOwnParent() && stalePrimary && data.fromSessionId === stalePrimary) {
+            console.log(`pizzapi: dropping stale session_message from old parent ${data.fromSessionId} — delink_own_parent pending`);
+            return;
+        }
         messageBus.receive({
             fromSessionId: data.fromSessionId,
             message: data.message,
@@ -303,6 +377,11 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
     sock.on("session_trigger" as any, (data: { trigger: ConversationTrigger }) => {
         const trigger = data?.trigger;
         if (!trigger) return;
+        // Drop triggers from known pre-/new children.
+        if (handlers.isStaleChild(trigger.sourceSessionId)) {
+            console.log(`pizzapi: dropping stale session_trigger (${trigger.type}) from ${trigger.sourceSessionId} — sender is a pre-/new child`);
+            return;
+        }
 
         // NOTE: We no longer auto-suppress session_complete triggers when
         // the parent has consumed messages from the child. Linked sessions
@@ -312,10 +391,6 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
         // parent doesn't want triggers, it should spawn with linked: false.
         trackReceivedTrigger(trigger.triggerId, trigger.sourceSessionId, trigger.type);
         const rendered = renderTrigger(trigger);
-        // The trigger metadata line (<!-- trigger:ID source:SID questions64:... -->)
-        // carries structured question data inline so the web UI can render
-        // rich trigger cards. This keeps the agent-facing prompt clean —
-        // no separate HTML comment block is needed.
         const deliverAs = trigger.deliverAs === "followUp" ? "followUp" as const : "steer" as const;
         handlers.sendUserMessage(rendered, { deliverAs });
     });
@@ -325,17 +400,9 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
         const pending = receivedTriggers.get(data.triggerId);
         if (!pending || !rctx.relay || !rctx.sioSocket?.connected) return;
 
-        // For session_complete triggers, handle cleanup the same way
-        // as respond_to_trigger in the triggers extension — escalated
-        // replies from the human viewer must also clean up the child.
-        // Keep the trigger pending until delivery is confirmed so the
-        // human can retry if it fails.
         if (pending.type === "session_complete") {
             const action = data.action ?? "ack";
             if (action === "followUp") {
-                // Deliver follow-up as agent input to resume the child.
-                // Keep the trigger pending if delivery fails so the human
-                // can retry instead of losing the follow-up.
                 const childId = pending.sourceSessionId;
                 let failed = false;
                 const onError = (err: { targetSessionId: string; error: string }) => {
@@ -351,9 +418,6 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
                     message: data.response,
                     deliverAs: "input",
                 });
-                // After a short window without an error, consider delivery
-                // successful and clear the trigger. On failure it stays
-                // pending for retry.
                 setTimeout(() => {
                     rctx.sioSocket?.off("session_message_error" as any, onError);
                     if (!failed) {
@@ -361,7 +425,6 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
                     }
                 }, 3000);
             } else {
-                // ack — emit cleanup request with ack callback
                 rctx.sioSocket.emit("cleanup_child_session", {
                     token: rctx.relay.token,
                     childSessionId: pending.sourceSessionId,
@@ -369,7 +432,6 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
                     if (result?.ok) {
                         receivedTriggers.delete(data.triggerId);
                     }
-                    // On failure, trigger stays — human can retry
                 });
             }
             return;
@@ -389,6 +451,11 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
         rctx.shuttingDown = true;
         rctx.relay = null;
         rctx.setRelayStatus("Session expired");
+    });
+
+    // ── parent_delinked — parent started a new session ───────────────
+    sock.on("parent_delinked", (_data: any, ack?: (result: { ok: boolean }) => void) => {
+        handlers.onParentDelinked(ack);
     });
 
     sock.on("connect_error", (err) => {
@@ -412,13 +479,14 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
     });
 
     sock.on("disconnect", (_reason) => {
+        handlers.onDelinkDisconnect();
         rctx.relay = null;
         cancelPendingAskUserQuestion(rctx);
         cancelPendingPlanMode(rctx);
         rctx.setRelayStatus(rctx.disconnectedStatusText());
     });
 
-    // ── MCP OAuth relay context ───────────────────────────────────────────
+    // ── MCP OAuth relay context ───────────────────────────────────────
     sock.on("connect", () => updateMcpRelayContext(rctx));
     sock.on("disconnect", () => {
         const bridge = getMcpBridge();
@@ -445,8 +513,10 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
  * Cancels any pending ask-user-question / plan-mode prompts, clears the
  * message bus send function, and emits `session_end` before disconnecting.
  */
-export function disconnect(rctx: RelayContext): void {
+export function disconnect(rctx: RelayContext, handlers?: ConnectionHandlers): void {
     stopHeartbeat();
+    handlers?.onSocketTeardown();
+    handlers?.onDelinkDisconnect();
     cancelPendingAskUserQuestion(rctx);
     cancelPendingPlanMode(rctx);
     messageBus.setSendFn(null);

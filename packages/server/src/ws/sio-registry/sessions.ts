@@ -27,6 +27,12 @@ import {
     refreshRunnerAssociationTTL,
     scanExpiredSessions,
     addChildSession,
+    addChildSessionMembership,
+    removeChildSession,
+    isChildDelinked,
+    clearParentSessionId,
+    refreshChildSessionsTTL,
+    removePendingParentDelinkChild,
     getRunner as getRunnerState,
 } from "../sio-state.js";
 import {
@@ -37,6 +43,7 @@ import {
 } from "../../sessions/store.js";
 import { appendRelayEventToCache } from "../../sessions/redis.js";
 import { storeAndReplaceImages, storeAndReplaceImagesInEvent } from "../strip-images.js";
+import { severStaleParentLink } from "../stale-parent-link.js";
 import type { SessionInfo } from "@pizzapi/protocol";
 import {
     getIo,
@@ -87,12 +94,15 @@ export async function registerTuiSession(
     socket: Socket,
     cwd: string = "",
     opts: RegisterTuiSessionOpts = {},
-): Promise<{ sessionId: string; token: string; shareUrl: string; parentSessionId: string | null }> {
+): Promise<{ sessionId: string; token: string; shareUrl: string; parentSessionId: string | null; wasDelinked: boolean }> {
     const requestedSessionId = typeof opts.sessionId === "string" ? opts.sessionId.trim() : "";
     const sessionId = requestedSessionId.length > 0 ? requestedSessionId : randomUUID();
     const token = randomBytes(32).toString("hex");
     const shareUrl = `${process.env.PIZZAPI_BASE_URL ?? "http://localhost:5173"}/session/${sessionId}`;
-    const startedAt = new Date().toISOString();
+    // startedAt is resolved after the existing-session check below so that
+    // reconnects preserve the original value.  This is critical for the
+    // epoch-based delink filter in delink_children.
+    let startedAt: string;
     const userId = opts.userId ?? null;
     const userName = opts.userName ?? null;
     const isEphemeral = opts.isEphemeral !== false;
@@ -107,6 +117,7 @@ export async function registerTuiSession(
     // deferred disconnect fires → endSharedSession kills the new session →
     // Socket.IO reconnects → repeat.
     const existing = await getSession(sessionId);
+    const previousParentSessionId = existing?.parentSessionId ?? null;
     if (existing) {
         const oldSocket = localTuiSockets.get(sessionId);
         if (oldSocket && oldSocket !== socket) {
@@ -114,6 +125,10 @@ export async function registerTuiSession(
         }
         await endSharedSession(sessionId, "Session reconnected");
     }
+
+    // Preserve the original startedAt on reconnect so that epoch-based
+    // delink filtering works correctly.
+    startedAt = existing?.startedAt ?? new Date().toISOString();
 
     // Check for pending runner link
     const pendingRunnerId = await getPendingRunnerLink(sessionId);
@@ -149,6 +164,9 @@ export async function registerTuiSession(
         opts.parentSessionId ??
         existing?.parentSessionId ??
         null;
+    // Set to true when resolvedParentSessionId is forced to null because the
+    // parent explicitly delinked this child (via delink_children on /new).
+    let wasExplicitlyDelinked = false;
 
     // Validate parent session exists and belongs to the same user.
     // If the parent disconnected or the ID is stale, clear it to avoid
@@ -156,15 +174,61 @@ export async function registerTuiSession(
     // Fall back to SQLite when Redis has no record (e.g. relay restarted and
     // the parent's Redis key has expired) so that parent links survive restarts.
     if (resolvedParentSessionId) {
+        const candidateParentId = resolvedParentSessionId;
         const parentSession = await getSession(resolvedParentSessionId);
         if (!parentSession) {
-            // Redis miss means the parent is not connected — clear the link
-            // so the child falls back to normal viewer/TUI interaction
-            // instead of sending triggers to a dead parent ID.  The child
-            // CLI will re-send parentSessionId on its next reconnect; if
-            // the parent is back by then the link is restored naturally.
+            // Redis miss means the parent is temporarily offline.
+            //
+            // IMPORTANT: If the parent explicitly delinked this child via /new,
+            // a delink marker will already be present. In that case we must
+            // NOT re-add the child to the old parent's membership set, or the
+            // old parent could regain child-only privileges when it reconnects.
+            const delinked = await isChildDelinked(sessionId);
+            if (delinked) {
+                await severStaleParentLink({
+                    parentSessionId: candidateParentId,
+                    childSessionId: sessionId,
+                    clearParentSessionId,
+                    removeChildSession,
+                });
+                wasExplicitlyDelinked = true;
+            } else {
+                // Keep the child in the membership set so future delink_children
+                // snapshots can still find it. The child CLI still preserves
+                // parentSessionId and will re-send it when the parent reconnects.
+                //
+                // NOTE: We use addChildSessionMembership (not addChildSession) so
+                // we do NOT clear any existing delink marker — the marker may have
+                // been set by a previous /new and should still take effect when
+                // the parent comes back online.
+                await addChildSessionMembership(candidateParentId, sessionId);
+            }
             resolvedParentSessionId = null;
         } else if (parentSession.userId !== userId) {
+            // Cross-user link attempt — evict from membership set as well.
+            await severStaleParentLink({
+                parentSessionId: candidateParentId,
+                childSessionId: sessionId,
+                clearParentSessionId,
+                removeChildSession,
+            });
+            resolvedParentSessionId = null;
+        }
+    }
+
+    // Check if parent explicitly delinked this child (via delink_children).
+    if (resolvedParentSessionId) {
+        const delinked = await isChildDelinked(sessionId);
+        if (delinked) {
+            // Parent ran /new while this child was offline — clear the link
+            // permanently and signal the client via wasDelinked.
+            await severStaleParentLink({
+                parentSessionId: resolvedParentSessionId,
+                childSessionId: sessionId,
+                clearParentSessionId,
+                removeChildSession,
+            });
+            wasExplicitlyDelinked = true;
             resolvedParentSessionId = null;
         }
     }
@@ -197,6 +261,12 @@ export async function registerTuiSession(
     // This is the authoritative place for linking — no more racy pre-seeding.
     if (resolvedParentSessionId) {
         await addChildSession(resolvedParentSessionId, sessionId);
+        if (previousParentSessionId) {
+            // The child is now linked to a parent again, so any old retry
+            // entries for its previous parent can be discarded to avoid
+            // later delink_children hits re-delinking this child incorrectly.
+            await removePendingParentDelinkChild(previousParentSessionId, sessionId);
+        }
     }
 
     // Store local socket reference
@@ -242,7 +312,7 @@ export async function registerTuiSession(
         userId ?? undefined,
     );
 
-    return { sessionId, token, shareUrl, parentSessionId: resolvedParentSessionId };
+    return { sessionId, token, shareUrl, parentSessionId: resolvedParentSessionId, wasDelinked: wasExplicitlyDelinked };
 }
 
 /**

@@ -84,6 +84,24 @@ export interface RelayClientToServerEvents {
     token: string;
     childSessionId: string;
   }, ack?: (result: { ok: boolean; error?: string }) => void) => void;
+
+  /** Parent requests delinking of all child sessions (e.g. on /new).
+   *  The server clears child→parent links and notifies children their parent is gone. */
+  delink_children: (data: {
+    token: string;
+    epoch?: number;
+  }, ack?: (result: { ok: boolean; error?: string }) => void) => void;
+
+  /** Child requests severing its own parent link (e.g. on /new).
+   *  The server removes the child from the parent's children set and clears
+   *  parentSessionId on the child's Redis session hash. */
+  delink_own_parent: (data: {
+    token: string;
+    /** Old parent session ID captured before clearing rctx.parentSessionId.
+     *  Used by the server to scrub stale children-set entries when
+     *  parentSessionId is already null in Redis (e.g. /new while disconnected). */
+    oldParentId?: string | null;
+  }, ack?: (result: { ok: boolean; error?: string }) => void) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -100,6 +118,14 @@ export interface RelayServerToClientEvents {
     collabMode: boolean;
     /** Confirmed parent session ID (null if not a child session). */
     parentSessionId?: string | null;
+    /** Server wall-clock time (ms since epoch) for clock-offset calculation. */
+    serverTime?: number;
+    /**
+     * True when parentSessionId is null because the parent explicitly delinked
+     * this child (ran /new). Absent or false for transient parent-offline cases.
+     * The client uses this to distinguish "permanent delink" from "retry later".
+     */
+    wasDelinked?: boolean;
   }) => void;
 
   /** Acknowledges receipt of an event with its sequence number */
@@ -165,12 +191,21 @@ export interface RelayServerToClientEvents {
   trigger_response: (data: {
     triggerId: string;
     response: string;
+    action?: string;
   }) => void;
 
   /** Notifies that a session has expired */
   session_expired: (data: {
     sessionId: string;
   }) => void;
+
+  /** Notifies a child that its parent has delinked (e.g. started a new session).
+   *  Children receiving this should cancel any pending triggers awaiting a parent response.
+   *  The optional ack lets the server confirm delivery before acknowledging the
+   *  parent's delink_children request. */
+  parent_delinked: (data: {
+    parentSessionId: string;
+  }, ack?: (result: { ok: boolean }) => void) => void;
 
   /** Generic error */
   error: (data: {

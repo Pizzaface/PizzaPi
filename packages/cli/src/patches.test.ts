@@ -114,15 +114,23 @@ describe("pi-coding-agent patch application", () => {
 // ---------------------------------------------------------------------------
 
 describe("pi-coding-agent patched runtime behavior", () => {
-    test("createExtensionRuntime returns object with newSession/switchSession", async () => {
-        const { createExtensionRuntime } = await import(
-            piCodingAgentPath("dist/core/extensions/loader.js")
-        );
-        const runtime = createExtensionRuntime();
+    // The first dynamic import of loader.js is slow on cold start (the package
+    // is large and Bun's module resolver takes ~10-20s the first time in CI).
+    // Give it a generous timeout; subsequent tests in this describe block reuse
+    // the cached module and are fast.
+    test(
+        "createExtensionRuntime returns object with newSession/switchSession",
+        async () => {
+            const { createExtensionRuntime } = await import(
+                piCodingAgentPath("dist/core/extensions/loader.js")
+            );
+            const runtime = createExtensionRuntime();
 
-        expect(typeof runtime.newSession).toBe("function");
-        expect(typeof runtime.switchSession).toBe("function");
-    });
+            expect(typeof runtime.newSession).toBe("function");
+            expect(typeof runtime.switchSession).toBe("function");
+        },
+        30_000,
+    );
 
     test("runtime.newSession rejects before initialization", async () => {
         const { createExtensionRuntime } = await import(
