@@ -23,6 +23,7 @@ import type { ConversationTrigger } from "../triggers/types.js";
 import type { RelayContext } from "../remote-types.js";
 import { emitSessionActive } from "./chunked-delivery.js";
 import { resetRelayRegistrationGate, signalRelayRegistered } from "./registration-gate.js";
+import { decideRegisteredParentState } from "../remote-registered-parent-state.js";
 
 // ── Module-level singletons (safe: one relay extension per process) ───────────
 
@@ -254,22 +255,34 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
             return true;
         });
 
-        if (data.parentSessionId && !handlers.isPendingDelinkOwnParent()) {
-            rctx.parentSessionId = data.parentSessionId;
-            rctx.isChildSession = true;
-            console.log(`pizzapi: linked as child of parent session ${data.parentSessionId}`);
-        } else if (data.parentSessionId && handlers.isPendingDelinkOwnParent()) {
-            // The child ran /new while disconnected — don't restore the
-            // stale parent link from Redis.
-            console.log(`pizzapi: ignoring stale parentSessionId from server (pendingDelinkOwnParent)`);
-            rctx.parentSessionId = null;
-            rctx.isChildSession = false;
-        } else if (rctx.parentSessionId && !data.parentSessionId) {
-            if (data.wasDelinked) {
+        const parentStateDecision = decideRegisteredParentState({
+            serverParentSessionId: data.parentSessionId,
+            localParentSessionId: rctx.parentSessionId,
+            pendingDelinkOwnParent: handlers.isPendingDelinkOwnParent(),
+            wasDelinked: data.wasDelinked,
+        });
+
+        switch (parentStateDecision.kind) {
+            case "link":
+                rctx.parentSessionId = parentStateDecision.parentSessionId;
+                rctx.isChildSession = true;
+                console.log(`pizzapi: linked as child of parent session ${parentStateDecision.parentSessionId}`);
+                break;
+            case "ignore_stale_server_link":
+                // The child ran /new while disconnected — don't restore the
+                // stale parent link from Redis.
+                console.log("pizzapi: ignoring stale parentSessionId from server (pendingDelinkOwnParent)");
+                rctx.parentSessionId = null;
+                rctx.isChildSession = false;
+                break;
+            case "explicit_delink":
                 handlers.onParentExplicitlyDelinked();
-            } else {
+                break;
+            case "transient_offline":
                 handlers.onParentTransientlyOffline();
-            }
+                break;
+            case "no_change":
+                break;
         }
 
         emitSessionActive(rctx);

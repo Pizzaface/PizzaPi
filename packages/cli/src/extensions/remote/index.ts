@@ -697,8 +697,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         },
 
         onParentTransientlyOffline: () => {
-            console.log(`pizzapi: parent temporarily offline (${rctx.parentSessionId}) — preserving parent link for reconnect`);
-            rctx.isChildSession = false;
+            console.log(`pizzapi: parent temporarily offline (${rctx.parentSessionId}) — preserving parent link and child mode for reconnect`);
         },
 
         onParentDelinked: (ack?: (result: { ok: boolean }) => void) => {
