@@ -372,6 +372,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                         prompt: requestedPrompt,
                         parentSessionId: requestedParentSessionId,
                         model: requestedModel,
+                        hiddenModels: requestedHiddenModels,
                     });
                     trackSessionCwd(sessionId, effectiveCwd);
                     runningSessions.set(sessionId, {

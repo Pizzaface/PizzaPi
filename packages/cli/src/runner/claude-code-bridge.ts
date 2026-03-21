@@ -29,6 +29,7 @@ import { serializeFrame, framesFromBuffer, type PluginMessage, type BridgeMessag
 import { buildSpawnSessionBody } from "./claude-code-spawn-request.js";
 import { renderTrigger } from "../extensions/triggers/registry.js";
 import type { ConversationTrigger } from "../extensions/triggers/types.js";
+import { normalizeRemoteInputAttachments, buildUserMessageFromRemoteInput } from "../extensions/remote-input.js";
 import {
   needsChunkedDelivery, capOversizedMessages, computeChunkBoundaries,
 } from "../extensions/remote.js";
@@ -109,6 +110,7 @@ interface PendingPermissionEntry {
   timer: ReturnType<typeof setTimeout>;
   toolName: string;
   toolInput: unknown;
+  ts: number;
 }
 const pendingPermissions = new Map<string, PendingPermissionEntry>();
 // Pending triggers this session has received from linked children.
@@ -254,6 +256,7 @@ function emitHeartbeat(status?: string): void {
       requestId,
       toolName: entry.toolName,
       toolInput: entry.toolInput,
+      ts: entry.ts,
     };
   }
 
@@ -327,6 +330,14 @@ const WELL_KNOWN_MODELS: Array<{ provider: string; id: string; name: string; rea
  * which providers have credentials, then filters the well-known model list to
  * those providers.  Always includes the current session model as a fallback.
  */
+// Auth.json key → canonical provider name used in WELL_KNOWN_MODELS.
+// The CLI stores credentials under provider-specific keys that don't match
+// the shorter names used in the model list (e.g. "google-gemini-cli" → "google").
+const AUTH_PROVIDER_MAP: Record<string, string> = {
+  "google-gemini-cli": "google",
+  "openai-codex": "openai",
+};
+
 function listAvailableModels(): { models: Array<{ provider: string; id: string; name: string; reasoning?: boolean }> } {
   // Detect which providers have credentials
   const agentDir = process.env.PIZZAPI_AGENT_DIR ?? join(homedir(), ".pizzapi");
@@ -334,14 +345,17 @@ function listAvailableModels(): { models: Array<{ provider: string; id: string; 
   try {
     const raw = readFileSync(join(agentDir, "auth.json"), "utf-8");
     const auth = JSON.parse(raw) as Record<string, unknown>;
-    configuredProviders = new Set(Object.keys(auth));
+    // Normalize auth.json keys to canonical provider names used in WELL_KNOWN_MODELS.
+    configuredProviders = new Set(
+      Object.keys(auth).map((k) => AUTH_PROVIDER_MAP[k] ?? k),
+    );
   } catch {
     // auth.json missing or unreadable — fall back to current model only
   }
 
   // If we can read credentials, filter to configured providers; otherwise return all models
   // (so the tool is still useful even if auth.json is temporarily unavailable).
-  const models = configuredProviders.size > 0
+  let models = configuredProviders.size > 0
     ? WELL_KNOWN_MODELS.filter((m) => configuredProviders.has(m.provider))
     : [...WELL_KNOWN_MODELS];
 
@@ -351,6 +365,20 @@ function listAvailableModels(): { models: Array<{ provider: string; id: string; 
     !models.some((m) => m.provider === currentModelObject!.provider && m.id === currentModelObject!.id)
   ) {
     models.unshift(currentModelObject);
+  }
+
+  // Apply hidden-model filter from the environment (set by daemon via PIZZAPI_HIDDEN_MODELS).
+  const hiddenRaw = process.env.PIZZAPI_HIDDEN_MODELS;
+  if (hiddenRaw) {
+    try {
+      const hidden = JSON.parse(hiddenRaw) as unknown;
+      if (Array.isArray(hidden) && hidden.length > 0) {
+        const hiddenKeys = new Set(hidden.filter((h): h is string => typeof h === "string"));
+        models = models.filter((m) => !hiddenKeys.has(`${m.provider}/${m.id}`));
+      }
+    } catch {
+      // Malformed PIZZAPI_HIDDEN_MODELS — ignore
+    }
   }
 
   return { models };
@@ -482,7 +510,9 @@ async function dispatchMcpTool(tool: string, args: Record<string, unknown>): Pro
     }
 
     case "pizzapi_wait_for_message": {
-      const timeoutMs = Math.min(Number(args.timeout ?? 20) * 1000, 25_000);
+      const requestedTimeout = Number(args.timeout ?? 20_000);
+      const normalizedTimeout = Number.isFinite(requestedTimeout) ? requestedTimeout : 20_000;
+      const timeoutMs = Math.min(Math.max(normalizedTimeout, 0), 25_000);
       return new Promise<unknown>((resolve) => {
         // First check if there's an already-buffered message that matches
         const fromSessionIdFilter = typeof args.fromSessionId === "string" ? args.fromSessionId : undefined;
@@ -824,7 +854,9 @@ function handleNdjsonLine(line: string): void {
     if (!relayEvent) return;
     const eventType = relayEvent.type;
     if (eventType === "message_update") {
-      messages.push(relayEvent.message);
+      if (relayEvent.message) {
+        messages.push(relayEvent.message);
+      }
       claudeIsWorking = true;  // Claude is actively working/outputting
     } else if (eventType === "agent_end" || eventType === "turn_end") {
       claudeIsWorking = false;  // Turn complete, Claude is now idle
@@ -835,12 +867,13 @@ function handleNdjsonLine(line: string): void {
 
 // ── Permission request via control protocol ───────────────────────────────
 function handleControlRequest(requestId: string, toolName: string, toolInput: unknown): void {
+  const requestTs = Date.now();
   forwardEvent({
     type: "permission_request",
     requestId,
     toolName,
     toolInput,
-    ts: Date.now(),
+    ts: requestTs,
   });
 
   const timer = setTimeout(() => {
@@ -857,6 +890,7 @@ function handleControlRequest(requestId: string, toolName: string, toolInput: un
     timer,
     toolName,
     toolInput,
+    ts: requestTs,
   };
   pendingPermissions.set(requestId, pendingPermissionEntry);
 }
@@ -949,6 +983,7 @@ function emitSessionActive(): void {
       requestId,
       toolName: entry.toolName,
       toolInput: entry.toolInput,
+      ts: entry.ts,
     };
   }
 
@@ -1031,7 +1066,7 @@ function connectRelay(): void {
   });
 
   sock.on("input", (data) => {
-    const text = data.text ?? "";
+    const text = typeof data.text === "string" ? data.text : "";
 
     // If a question is pending, deliver the input as the answer
     if (pendingQuestions.size > 0) {
@@ -1040,11 +1075,24 @@ function connectRelay(): void {
       return;
     }
 
-    // Normal user input → inject into claude stdin
-    writeToClaudeStdin({
-      type: "user",
-      message: { role: "user", content: typeof data.text === "string" ? data.text : "" },
-    });
+    const attachments = normalizeRemoteInputAttachments(data.attachments);
+    void (async () => {
+      try {
+        const content = await buildUserMessageFromRemoteInput(
+          text,
+          attachments,
+          relayHttpBase(),
+          apiKey ?? "",
+          claudeSessionId,
+        );
+        writeToClaudeStdin({
+          type: "user",
+          message: { role: "user", content },
+        });
+      } catch (err) {
+        console.error("[bridge] failed to deliver input:", err);
+      }
+    })();
   });
 
   // Handle incoming messages from other sessions

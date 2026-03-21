@@ -11,21 +11,42 @@ export interface ClaudeCodeSpawnOptions {
   prompt?: string;
   parentSessionId?: string;
   model?: { provider: string; id: string };
+  /** Models to hide from the model picker (same format as pi worker: "provider/id"). */
+  hiddenModels?: string[];
 }
 
 /**
  * Resolve the bridge script path.
- * Tries the compiled JS path first (for packaged builds), then falls back to TS (for development).
+ *
+ * Search order:
+ *  1. Compiled JS next to this module file (dev build: dist/runner/claude-code-bridge.js)
+ *  2. TS source next to this module file (dev source checkout)
+ *  3. runner/claude-code-bridge.js next to the pizza binary (packaged/npm install)
+ *
+ * In a Bun single-file compiled binary, import.meta.url resolves to a virtual
+ * path inside the bundle that doesn't exist on disk, so checks 1 and 2 will
+ * return false and we fall through to check 3 (the sidecar runner/ directory).
  */
 function resolveBridgeScript(): string {
   const currentDir = fileURLToPath(new URL(".", import.meta.url));
   const jsPath = join(currentDir, "claude-code-bridge.js");
   const tsPath = join(currentDir, "claude-code-bridge.ts");
 
-  if (existsSync(jsPath)) {
-    return jsPath;
-  }
-  return tsPath;
+  if (existsSync(jsPath)) return jsPath;
+  if (existsSync(tsPath)) return tsPath;
+
+  // Compiled/binary install: build-binaries.ts copies runner/ next to the executable.
+  const binDir = dirname(process.execPath);
+  const runnerJsPath = join(binDir, "runner", "claude-code-bridge.js");
+  if (existsSync(runnerJsPath)) return runnerJsPath;
+
+  throw new Error(
+    `Claude Code bridge script not found.\n` +
+    `  Checked: ${jsPath}\n` +
+    `  Checked: ${tsPath}\n` +
+    `  Checked: ${runnerJsPath}\n` +
+    `Run 'bun run build' in packages/cli to generate the compiled bridge.`,
+  );
 }
 
 /**
@@ -63,6 +84,9 @@ export function spawnClaudeCodeSession(opts: ClaudeCodeSpawnOptions): ReturnType
         PIZZAPI_WORKER_INITIAL_MODEL_ID: opts.model.id,
       } : {}),
       ...(opts.parentSessionId ? { PIZZAPI_WORKER_PARENT_SESSION_ID: opts.parentSessionId } : {}),
+      ...(opts.hiddenModels && opts.hiddenModels.length > 0
+        ? { PIZZAPI_HIDDEN_MODELS: JSON.stringify(opts.hiddenModels) }
+        : {}),
     },
   });
 

@@ -1104,6 +1104,113 @@ export function App() {
         cachePatch.sessionName = nextName;
       }
 
+
+      if (Array.isArray((hb as any).todoList)) {
+        const todos = (hb as any).todoList as TodoItem[];
+        setTodoList(todos);
+        cachePatch.todoList = todos;
+      }
+
+      // Restore pending AskUserQuestion state when reconnecting to a session.
+      if (Object.prototype.hasOwnProperty.call(hb, "pendingQuestion")) {
+        const pq = (hb as any).pendingQuestion as { toolCallId: string; questions?: Array<{ question: string; options: string[] }>; display?: string; question?: string; options?: string[] } | null;
+        if (pq) {
+          const questions = parsePendingQuestions(pq);
+          if (questions.length > 0) {
+            const resolved = {
+              toolCallId: typeof pq.toolCallId === "string" ? pq.toolCallId : getFallbackPromptKey(questions),
+              questions,
+              display: parsePendingQuestionDisplayMode(pq, questions.length),
+            };
+            setPendingQuestion(resolved);
+            cachePatch.pendingQuestion = resolved;
+            setViewerStatus("Waiting for answer…");
+          } else {
+            setPendingQuestion(null);
+            cachePatch.pendingQuestion = null;
+          }
+        } else {
+          // Heartbeat explicitly says no pending question; clear any stale state.
+          setPendingQuestion(null);
+          cachePatch.pendingQuestion = null;
+        }
+      }
+
+      // Restore pending plan mode state when reconnecting to a session.
+      if (Object.prototype.hasOwnProperty.call(hb, "pendingPlan")) {
+        const pp = (hb as any).pendingPlan as {
+          toolCallId: string;
+          title: string;
+          description?: string | null;
+          steps?: Array<{ title: string; description?: string }>;
+        } | null;
+        if (pp && typeof pp.toolCallId === "string" && typeof pp.title === "string" && pp.title.trim()) {
+          const steps = Array.isArray(pp.steps)
+            ? pp.steps.filter((s): s is { title: string; description?: string } =>
+                s !== null && typeof s === "object" && typeof s.title === "string" && s.title.trim().length > 0,
+              )
+            : [];
+          const resolved = {
+            toolCallId: pp.toolCallId,
+            title: pp.title.trim(),
+            description: typeof pp.description === "string" && pp.description.trim() ? pp.description.trim() : null,
+            steps,
+          };
+          setPendingPlan(resolved);
+          cachePatch.pendingPlan = resolved;
+          setViewerStatus("Waiting for plan review…");
+        } else {
+          setPendingPlan(null);
+          cachePatch.pendingPlan = null;
+        }
+      }
+
+      // Restore pending permission prompts when reconnecting.
+      if (Object.prototype.hasOwnProperty.call(hb, "pendingPermission")) {
+        const pp = (hb as any).pendingPermission as {
+          requestId: string;
+          toolName?: string;
+          toolInput?: unknown;
+          ts?: number;
+        } | null;
+        if (pp && typeof pp.requestId === "string") {
+          setPendingPermission({
+            requestId: pp.requestId,
+            toolName: typeof pp.toolName === "string" ? pp.toolName : "Unknown",
+            toolInput: pp.toolInput ?? null,
+            ts: typeof pp.ts === "number" ? pp.ts : Date.now(),
+          });
+        } else {
+          setPendingPermission(null);
+        }
+      }
+
+      // Track auto-retry state from CLI so we can show a retry indicator.
+      if (Object.prototype.hasOwnProperty.call(hb, "retryState")) {
+        const rs = (hb as any).retryState as { errorMessage: string; detectedAt: number } | null;
+        setRetryState(rs);
+      }
+
+      // Restore pending plugin trust prompt when reconnecting.
+      if (Object.prototype.hasOwnProperty.call(hb, "pendingPluginTrust")) {
+        const pt = (hb as any).pendingPluginTrust as {
+          promptId: string;
+          pluginNames: string[];
+          pluginSummaries: string[];
+        } | null;
+        if (pt && typeof pt.promptId === "string" && Array.isArray(pt.pluginNames) && pt.pluginNames.length > 0) {
+          setPluginTrustPrompt({
+            promptId: pt.promptId,
+            pluginNames: pt.pluginNames,
+            pluginSummaries: Array.isArray(pt.pluginSummaries) ? pt.pluginSummaries : pt.pluginNames,
+          });
+        } else {
+          setPluginTrustPrompt(null);
+        }
+      }
+
+      // Heartbeats also carry the current model; keep activeModel in sync.
+
       if (hb.model) {
         const m = normalizeModel(hb.model);
         if (m) {
@@ -1237,6 +1344,24 @@ export function App() {
       // Extract workerType from session snapshot (defaults to "pi")
       const stateWorkerType = typeof state?.workerType === "string" ? state.workerType : "pi";
       setWorkerType(stateWorkerType);
+
+      // Rehydrate pending permission request from the snapshot so that the
+      // permission card is shown immediately on reconnect, without waiting
+      // for the next heartbeat.  The heartbeat also carries pendingPermission
+      // and acts as the authoritative state, but the snapshot restores it
+      // synchronously so there is no visible gap while the HB travels.
+      const snapshotPP = state?.pendingPermission as Record<string, unknown> | null | undefined;
+      if (snapshotPP && typeof snapshotPP.requestId === "string") {
+        setPendingPermission({
+          requestId: snapshotPP.requestId,
+          toolName: typeof snapshotPP.toolName === "string" ? snapshotPP.toolName : "Unknown",
+          toolInput: snapshotPP.toolInput ?? null,
+          ts: typeof snapshotPP.ts === "number" ? snapshotPP.ts : Date.now(),
+        });
+      } else if (Object.prototype.hasOwnProperty.call(state ?? {}, "pendingPermission")) {
+        // Snapshot explicitly carries null — clear any stale card.
+        setPendingPermission(null);
+      }
 
       patchSessionCache({
         messages: normalizedMessages,
