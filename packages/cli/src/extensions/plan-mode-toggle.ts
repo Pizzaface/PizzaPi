@@ -225,8 +225,8 @@ export function splitShellSegments(command: string): string[] {
  * before declaring it destructive — allowing specific read-only invocations.
  */
 const GIT_DESTRUCTIVE_SUBCOMMAND_SAFE_OVERRIDES: RegExp[] = [
-    // notes show/list are read-only; all other notes subcommands write to git
-    /^\s*git\s+notes\s+(show|list)\b/i,
+    // notes show/list are read-only; allow optional flags (e.g. --ref=review) before the subcommand
+    /^\s*git\s+notes(?:\s+(?:--?\S+))*\s+(show|list)\b/i,
     // bare `git notes` (no subcommand) defaults to `git notes list` — read-only
     /^\s*git\s+notes\s*$/i,
 ];

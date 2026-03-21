@@ -341,6 +341,9 @@ describe("isDestructiveCommand", () => {
         expect(isDestructiveCommand("git notes list HEAD")).toBe(false);
         // bare `git notes` defaults to `git notes list`
         expect(isDestructiveCommand("git notes")).toBe(false);
+        // --ref flag before show/list
+        expect(isDestructiveCommand("git notes --ref=review show HEAD")).toBe(false);
+        expect(isDestructiveCommand("git notes --ref=foo list")).toBe(false);
     });
 
 
