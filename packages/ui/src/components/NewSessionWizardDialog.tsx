@@ -99,6 +99,8 @@ export function NewSessionWizardDialog({
     const [selectedRunnerId, setSelectedRunnerId] = React.useState<string | null>(
         preselectedRunnerId ?? null,
     );
+    const selectedRunnerIdRef = React.useRef(selectedRunnerId);
+    selectedRunnerIdRef.current = selectedRunnerId;
     const [cwd, setCwd] = React.useState(initialCwd ?? "");
     const [spawning, setSpawning] = React.useState(false);
     const [spawnError, setSpawnError] = React.useState<string | null>(null);
@@ -210,11 +212,13 @@ export function NewSessionWizardDialog({
 
     async function handleRemoveRecent(folder: string) {
         if (!selectedRunnerId) return;
+        // Capture runner id at initiation so the rollback targets the right runner.
+        const initiatingRunnerId = selectedRunnerId;
         // Optimistic remove
         setRecentFolders((prev) => prev.filter((f) => f !== folder));
         try {
             const res = await fetch(
-                `/api/runners/${encodeURIComponent(selectedRunnerId)}/recent-folders`,
+                `/api/runners/${encodeURIComponent(initiatingRunnerId)}/recent-folders`,
                 {
                     method: "DELETE",
                     credentials: "include",
@@ -224,11 +228,13 @@ export function NewSessionWizardDialog({
             );
             if (!res.ok) throw new Error();
         } catch {
-            // Restore on failure
-            setRecentFolders((prev) => {
-                if (prev.includes(folder)) return prev;
-                return [...prev, folder];
-            });
+            // Only restore if we're still viewing the same runner
+            if (selectedRunnerIdRef.current === initiatingRunnerId) {
+                setRecentFolders((prev) => {
+                    if (prev.includes(folder)) return prev;
+                    return [...prev, folder];
+                });
+            }
         }
     }
 

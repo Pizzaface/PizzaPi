@@ -1,19 +1,28 @@
-import { describe, test, expect, beforeEach } from "bun:test";
-import { recordRecentFolder, getRecentFolders, deleteRecentFolder } from "./runner-recent-folders.js";
-import { getKysely } from "./auth.js";
-
-// Use a fresh in-memory SQLite for each test.
-// The module uses getKysely() which is configured via env — we patch the table
-// creation by calling ensureRunnerRecentFoldersTable first.
-import { ensureRunnerRecentFoldersTable } from "./runner-recent-folders.js";
+import { describe, test, expect, beforeAll, beforeEach, afterAll } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { recordRecentFolder, getRecentFolders, deleteRecentFolder, ensureRunnerRecentFoldersTable } from "./runner-recent-folders.js";
+import { initAuth, getKysely } from "./auth.js";
 
 const USER = "user-1";
 const RUNNER = "runner-1";
 
-beforeEach(async () => {
-    // Drop and recreate the table for a clean slate.
-    await getKysely().schema.dropTable("runner_recent_folder").ifExists().execute();
+const tmpDir = mkdtempSync(join(tmpdir(), "pizzapi-recent-folders-test-"));
+const dbPath = join(tmpDir, "test.db");
+
+beforeAll(async () => {
+    initAuth({ dbPath, baseURL: "http://localhost:7777", secret: "test-secret-rf" });
     await ensureRunnerRecentFoldersTable();
+});
+
+beforeEach(async () => {
+    // Truncate rows for a clean slate (table already exists in temp DB).
+    await getKysely().deleteFrom("runner_recent_folder").execute();
+});
+
+afterAll(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
 });
 
 describe("recordRecentFolder", () => {
