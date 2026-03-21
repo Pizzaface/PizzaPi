@@ -241,7 +241,7 @@ const TAR_DESTRUCTIVE_SHORT_MODE_PATTERN = /[cruxA]/;
  * When scanning option bundles for mode letters, anything after such a flag
  * is treated as payload (not more flags) to avoid false positives.
  */
-const TAR_SHORT_OPTS_WITH_ATTACHED_ARG = new Set(["f", "C", "X", "T"]);
+const TAR_SHORT_OPTS_WITH_ATTACHED_ARG = new Set(["f", "C", "X", "T", "I"]);
 
 function tarShortOptsForModeScan(shortOpts: string): string {
     let out = "";
@@ -280,7 +280,8 @@ function isDestructiveTarCommand(segment: string): boolean {
 }
 
 function isDestructiveGawkCommand(segment: string): boolean {
-    if (!/^\s*gawk\b/i.test(segment)) return false;
+    // Check for both `gawk` and `awk` (which may be GNU Awk on some systems)
+    if (!/^\s*(?:gawk|awk)\b/i.test(segment)) return false;
 
     for (const match of segment.matchAll(GAWK_INCLUDE_ARG_PATTERN)) {
         const includeArg = (match[1] ?? match[2] ?? match[3] ?? match[4] ?? "").replace(/^['"]|['"]$/g, "");
@@ -300,10 +301,32 @@ function isDestructiveGawkCommand(segment: string): boolean {
 function isDestructivePatchCommand(segment: string): boolean {
     if (!/^\s*patch\b/i.test(segment)) return false;
 
+    // Check for output-writing flags first, which always make patch destructive
+    // even if --dry-run is present, because `-o` / `--output` causes file writes.
+    if (/\s-o\s|\s-o\S|--output\b|--output=/i.test(segment)) return true;
+
     // `patch` is generally destructive, but a few explicit flags make it read-only.
     // - `--dry-run` / `--check` verify applicability without modifying files
     // - `--help` / `--version` are informational
-    if (PATCH_SAFE_LONG_FLAG_PATTERN.test(segment)) return false;
+    // - Verify each is a complete flag, not a prefix of another (e.g., not --version-control)
+    if (PATCH_SAFE_LONG_FLAG_PATTERN.test(segment)) {
+        // Verify the matched flags are actually safe (not part of compound flags)
+        // --dry-run, --check, --help, --version must be standalone or followed by space/=
+        const isDryRun = /(?:^|\s)--dry-run(?:\s|=|$)/.test(segment);
+        const isCheck = /(?:^|\s)--check(?:\s|=|$)/.test(segment);
+        const isHelp = /(?:^|\s)--help(?:\s|=|$)/.test(segment);
+        const isVersion = /(?:^|\s)--version(?:\s|=|$)/.test(segment);
+        
+        if (isDryRun || isCheck || isHelp || isVersion) {
+            return false;
+        }
+    }
+
+    // Also check for short-flag `-C` standalone (the actual --check alias is `-C`)
+    // But reject patterns like `-zC` where `-C` is not standalone
+    if (/(?:^|\s)-C(?:\s|$)/.test(segment)) {
+        return false;
+    }
 
     return true;
 }

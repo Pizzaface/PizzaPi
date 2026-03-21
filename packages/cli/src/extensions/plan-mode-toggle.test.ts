@@ -530,6 +530,14 @@ describe("isDestructiveCommand", () => {
         expect(isDestructiveCommand("patch --version-control=simple -p0 < changes.diff")).toBe(true);
         expect(isDestructiveCommand("patch -zC -p0 < changes.diff")).toBe(true);
 
+        // --dry-run with --output still writes output, so it's destructive
+        expect(isDestructiveCommand("patch --dry-run -o out.txt file.txt < fix.diff")).toBe(true);
+        expect(isDestructiveCommand("patch --dry-run --output=out.txt file.txt < fix.diff")).toBe(true);
+
+        // Short-flag -C must be standalone, not bundled with other options like -z
+        expect(isDestructiveCommand("patch -C -p0 < fix.diff")).toBe(false);
+        expect(isDestructiveCommand("patch -zC -p0 < fix.diff")).toBe(true); // -zC is: suffix=C, not check
+
         // Informational flags
         expect(isDestructiveCommand("patch --help")).toBe(false);
         expect(isDestructiveCommand("patch --version")).toBe(false);
@@ -611,6 +619,16 @@ describe("isDestructiveCommand", () => {
         expect(isDestructiveCommand("tar -C /tmp -xf archive.tar")).toBe(true);
     });
 
+    test("allows tar list mode with -I flag (use-compress-program, attached argument)", () => {
+        // -I accepts an attached argument (the compression program), so `-Ixz` should not
+        // misinterpret the `x` as extract mode
+        expect(isDestructiveCommand("tar -Ixz -tf archive.tar.xz")).toBe(false);
+        expect(isDestructiveCommand("tar -Ixz -tvf archive.tar.xz")).toBe(false);
+        // With actual destructive mode, should still be destructive
+        expect(isDestructiveCommand("tar -Ixz -cf archive.tar.xz dir/")).toBe(true);
+        expect(isDestructiveCommand("tar -Ixz -xf archive.tar.xz")).toBe(true);
+    });
+
     test("flags gawk with in-place editing via the inplace module", () => {
         // -i inplace (space-separated) — the destructive form
         expect(isDestructiveCommand("gawk -i inplace '{gsub(/foo/, \"bar\")} 1' file.txt")).toBe(true);
@@ -640,6 +658,17 @@ describe("isDestructiveCommand", () => {
         // -f with a non-inplace script file must not be blocked
         expect(isDestructiveCommand("gawk -f prog.awk file.txt")).toBe(false);
         expect(isDestructiveCommand("gawk --file=transform.awk file.txt")).toBe(false);
+    });
+
+    test("flags awk (bare command, GNU Awk alias) with in-place editing", () => {
+        // On systems where `awk` is GNU Awk, it supports the same inplace module as gawk
+        expect(isDestructiveCommand("awk -i inplace '{gsub(/foo/, \"bar\")} 1' file.txt")).toBe(true);
+        expect(isDestructiveCommand("awk -iinplace '{print}' file.txt")).toBe(true);
+        expect(isDestructiveCommand("awk -i /usr/share/awk/inplace.awk '{print}' file.txt")).toBe(true);
+        expect(isDestructiveCommand("awk --include=inplace '{print}' file.txt")).toBe(true);
+        expect(isDestructiveCommand("awk --include=/usr/share/awk/inplace.awk '{print}' file.txt")).toBe(true);
+        expect(isDestructiveCommand("awk -f inplace.awk -f prog.awk file.txt")).toBe(true);
+        expect(isDestructiveCommand("awk -f /usr/share/awk/inplace.awk -f prog.awk file.txt")).toBe(true);
     });
 
     test("flags shell output redirection (>)", () => {
