@@ -73,9 +73,12 @@ export interface RunnersSocketData {
 }
 ```
 
-`sessionCount` is **not** included in WS events. The client computes it from
+`sessionCount` is **not** a meaningful field in WS events. The server will
+send the `RunnerInfo` shape as-is (which includes `sessionCount`), but the
+client **ignores the server's `sessionCount`** and computes it locally from
 `liveSessions.filter(s => s.runnerId === r.runnerId).length` — it already has
-the full sessions list from the `/hub` feed.
+the full sessions list from the `/hub` feed. Implementers should not rely on
+the server's `sessionCount` value in the WS events.
 
 **Updated:** `packages/protocol/src/index.ts` — export the four new types.
 
@@ -110,7 +113,7 @@ Uses `io.of("/runners").to("runners:user:<userId>")` for user-scoped delivery.
 
 New broadcast calls:
 - `registerRunner()` — after `setRunner()` succeeds, build `RunnerInfo` and call `broadcastToRunnersNs("runner_added", runnerInfo, userId)`
-- `removeRunner()` — look up runner from Redis *before* deleting (to get userId), then broadcast `runner_removed` and delete
+- `removeRunner()` — the current implementation deletes without reading first; change it to call `getRunnerState(runnerId)` before `deleteRunnerState` to get the `userId` for room targeting, then broadcast `runner_removed`, then delete
 - `updateRunnerSkills(runnerId, skills)` — after the field update, re-fetch runner, broadcast `runner_updated`
 - `updateRunnerAgents(runnerId, agents)` — same pattern
 - `updateRunnerPlugins(runnerId, plugins)` — same pattern
@@ -158,7 +161,7 @@ Behavior:
 
 **Add:**
 - `const { runners } = useRunnersFeed()` — replaces local runners state
-- New prop: `sessions: LiveSession[]` — passed from App.tsx `liveSessions` (already from `/hub`)
+- New prop: `sessions: Array<{ sessionId: string; runnerId: string | null }>` — passed from App.tsx `liveSessions` (already from `/hub`). Narrow type: RunnerManager only uses `runnerId` for grouping and `sessionId` for the spawn-wait check. Using a narrow type avoids coupling RunnerManager to the full `HubSession` or `SessionInfo` shape.
 - `const [pendingSessionId, setPendingSessionId] = React.useState<string | null>(null)` — tracks a spawning session
 - `useEffect` on `sessions` + `pendingSessionId` → calls `onOpenSession(id)` when session appears, then clears
 - `useEffect` timeout guard: after 30s, clears `pendingSessionId` if session never appeared
@@ -174,6 +177,8 @@ Behavior:
 #### 5a. Remove eager fetch on mount
 
 Remove the `useEffect` block (lines ~137–159) that does `fetch("/api/runners")` on mount to pre-populate `runnersForSidebar`. `useRunnersFeed` inside `RunnerManager` will provide this data on first connect (sub-100ms in practice).
+
+Note: there is a separate on-demand `fetch("/api/runners")` triggered when the new-session dialog opens (`newSessionOpen` change). That fetch is **intentionally kept** — it's a one-time request for dialog initialization, not polling.
 
 #### 5b. Replace `waitForSessionToGoLive` with hub-based waiter
 
