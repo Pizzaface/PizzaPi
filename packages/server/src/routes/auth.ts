@@ -9,6 +9,7 @@
 import { getApiKeyRateLimitConfig, getAuth, getKysely, isSignupAllowed } from "../auth.js";
 import { RateLimiter, isValidEmail, isValidPassword, getClientIp } from "../security.js";
 import { PASSWORD_REQUIREMENTS_SUMMARY } from "@pizzapi/protocol";
+import { hashPassword as betterAuthHashPassword } from "better-auth/crypto";
 import type { RouteHandler } from "./types.js";
 
 // 5 requests per 15 minutes
@@ -85,11 +86,12 @@ export const handleAuthRoute: RouteHandler = async (req, url) => {
             // Block new account creation when signups are disabled.
             const signupAllowed = await isSignupAllowed();
             if (!signupAllowed) {
-                // Run a constant-time dummy hash to equalize response latency with
-                // the "account exists" branch above (which runs bcrypt via signInEmail).
-                // Without this, an attacker can distinguish registered from unregistered
-                // emails by measuring timing differences even though both paths return 403.
-                await Bun.password.hash(password);
+                // Run a dummy hash using Better Auth's own scrypt-based hasher to
+                // equalize response latency with the "account exists" branch above
+                // (which runs the same scrypt verifier via signInEmail). Without this,
+                // an attacker can distinguish registered from unregistered emails by
+                // measuring timing differences even though both paths return 403.
+                await betterAuthHashPassword(password);
                 return SIGNUPS_DISABLED_RESPONSE();
             }
             if (!name) {
