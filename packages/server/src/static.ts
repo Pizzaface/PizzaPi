@@ -4,7 +4,7 @@
  */
 
 import { existsSync } from "fs";
-import { join, extname, resolve } from "path";
+import { join, extname, resolve, sep } from "path";
 
 // Resolve UI dist directory. Check in order:
 // 1. PIZZAPI_UI_DIR env var
@@ -29,7 +29,11 @@ function resolveUiDir(): string | null {
     return null;
 }
 
-const UI_DIR = resolveUiDir();
+export let UI_DIR = resolveUiDir();
+
+export function setUiDir(dir: string | null) {
+    UI_DIR = dir;
+}
 
 if (UI_DIR) {
     console.log(`[static] Serving UI from ${UI_DIR}`);
@@ -62,10 +66,22 @@ export async function serveStaticFile(pathname: string): Promise<Response | null
     // Don't serve API or socket.io paths
     if (pathname.startsWith("/api/") || pathname.startsWith("/socket.io/")) return null;
 
+    let decodedPathname: string;
+    try {
+        decodedPathname = decodeURIComponent(pathname);
+    } catch {
+        return null; // Malformed URI component
+    }
+
+    if (decodedPathname.includes("\0")) return null;
+
     // Prevent path traversal: resolve the real path and verify it stays within UI_DIR
-    const requested = pathname === "/" ? "index.html" : pathname.slice(1);
+    const requested = decodedPathname === "/" ? "index.html" : decodedPathname.slice(1);
     let filePath = resolve(UI_DIR, requested);
-    if (!filePath.startsWith(UI_DIR + "/")) return null;
+
+    // Ensure the resolved path strictly resides within the configured UI_DIR
+    const uiDirWithTrailingSlash = UI_DIR.endsWith(sep) ? UI_DIR : UI_DIR + sep;
+    if (!filePath.startsWith(uiDirWithTrailingSlash)) return null;
 
     // If file doesn't exist, serve index.html for SPA routing
     if (!existsSync(filePath)) {
