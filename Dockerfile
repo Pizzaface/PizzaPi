@@ -28,6 +28,7 @@ COPY packages/tunnel/package.json packages/tunnel/
 COPY packages/tools/package.json packages/tools/
 COPY packages/server/package.json packages/server/
 COPY packages/ui/package.json packages/ui/
+COPY packages/cli/package.json packages/cli/
 
 # --ignore-scripts skips native builds (better-sqlite3 from @better-auth/cli)
 # that aren't needed at runtime since the server uses bun:sqlite.
@@ -90,6 +91,7 @@ COPY --from=build-server /app/packages/server/dist ./packages/server/dist
 COPY --from=build-server /app/packages/server/package.json ./packages/server/
 COPY --from=build-server /app/packages/server/node_modules ./packages/server/node_modules
 COPY --from=build-ui /app/packages/ui/dist ./packages/ui/dist
+COPY --from=builder /app/packages/cli/package.json ./packages/cli/
 COPY --from=build-server /app/package.json ./
 
 ENV PIZZAPI_UI_DIR=/app/packages/ui/dist

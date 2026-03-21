@@ -6,13 +6,23 @@ const CACHE_TTL_MS = 15 * 60 * 1000; // 15 minutes
 const FAILURE_TTL_MS = 60 * 1000; // 1 minute backoff on failure
 
 const BUNDLED_PACKAGE_VERSION: string | null = (() => {
-    try {
-        const pkgPath = join(import.meta.dirname ?? __dirname, "../package.json");
-        const pkg = JSON.parse(readFileSync(pkgPath, "utf-8")) as { version?: string };
-        return pkg.version?.trim() || null;
-    } catch {
-        return null;
+    // Prefer the CLI package version — that is the product release version stamped
+    // by the release workflow.  Fall back to the server package.json for local dev
+    // environments where packages/cli may not be present.
+    const candidates = [
+        join(import.meta.dirname ?? __dirname, "../../cli/package.json"),
+        join(import.meta.dirname ?? __dirname, "../package.json"),
+    ];
+    for (const pkgPath of candidates) {
+        try {
+            const pkg = JSON.parse(readFileSync(pkgPath, "utf-8")) as { version?: string };
+            const v = pkg.version?.trim();
+            if (v) return v;
+        } catch {
+            // try next candidate
+        }
     }
+    return null;
 })();
 
 let cachedVersion: string | null = null;

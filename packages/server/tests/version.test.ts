@@ -5,14 +5,20 @@ import { getBundledVersion, getHubVersionInfo } from "../src/version";
 
 const ORIGINAL_IMAGE = process.env.PIZZAPI_HUB_IMAGE;
 const ORIGINAL_VERSION = process.env.PIZZAPI_HUB_VERSION;
+// getBundledVersion() prefers packages/cli/package.json (the release version).
+const CLI_PACKAGE_PATH = join(import.meta.dirname ?? __dirname, "../../cli/package.json");
 const SERVER_PACKAGE_PATH = join(import.meta.dirname ?? __dirname, "..", "package.json");
-const SERVER_PACKAGE_VERSION: string | null = (() => {
-    try {
-        const pkg = JSON.parse(readFileSync(SERVER_PACKAGE_PATH, "utf-8")) as { version?: string };
-        return pkg.version?.trim() || null;
-    } catch {
-        return null;
+const BUNDLED_VERSION: string | null = (() => {
+    for (const p of [CLI_PACKAGE_PATH, SERVER_PACKAGE_PATH]) {
+        try {
+            const pkg = JSON.parse(readFileSync(p, "utf-8")) as { version?: string };
+            const v = pkg.version?.trim();
+            if (v) return v;
+        } catch {
+            // try next
+        }
     }
+    return null;
 })();
 
 afterEach(() => {
@@ -125,11 +131,14 @@ describe("getHubVersionInfo", () => {
         expect(result.version).toBe("sha256-abc");
     });
 
-    test("getBundledVersion returns the packaged server release", () => {
-        if (SERVER_PACKAGE_VERSION === null) {
+    test("getBundledVersion returns the CLI release version (not the server package version)", () => {
+        // The release workflow stamps packages/cli/package.json, not
+        // packages/server/package.json.  getBundledVersion() must prefer the
+        // CLI package so the hub badge shows the correct product version.
+        if (BUNDLED_VERSION === null) {
             expect(getBundledVersion()).toBeNull();
         } else {
-            expect(getBundledVersion()).toBe(SERVER_PACKAGE_VERSION);
+            expect(getBundledVersion()).toBe(BUNDLED_VERSION);
         }
     });
 });

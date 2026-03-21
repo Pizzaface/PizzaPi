@@ -767,9 +767,24 @@ export function resolveComposeMode(repoPath: string, config: Pick<WebConfig, "im
         imageRef = imageRepo;
         resolvedTag = "digest";
     } else if (hasEmbeddedTag) {
-        // Tag already baked in — use as-is, ignore config.imageTag
-        imageRef = imageRepo;
-        resolvedTag = afterSlash.slice(colonInLastPart + 1);
+        const embeddedTag = afterSlash.slice(colonInLastPart + 1);
+        const explicitTag = config.imageTag.trim();
+        // Honor an explicit, non-default imageTag override: if the operator
+        // ran `pizza web --tag X` or `pizza web config set imageTag X` with a
+        // tag that differs from what is baked into the image ref, strip the
+        // embedded tag and use the explicit one.  We skip this when
+        // explicitTag is "latest" because that is the default value and cannot
+        // be distinguished from "the operator never touched imageTag" — in that
+        // case we preserve the embedded tag as the operator originally intended.
+        if (explicitTag && explicitTag !== "latest" && explicitTag !== embeddedTag) {
+            const repoBase = imageRepo.slice(0, imageRepo.lastIndexOf(":"));
+            resolvedTag = explicitTag;
+            imageRef = `${repoBase}:${resolvedTag}`;
+        } else {
+            // Tag already baked in — use as-is
+            imageRef = imageRepo;
+            resolvedTag = embeddedTag;
+        }
     } else {
         resolvedTag = config.imageTag.trim() || "latest";
         imageRef = `${imageRepo}:${resolvedTag}`;

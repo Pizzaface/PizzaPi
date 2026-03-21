@@ -294,6 +294,36 @@ describe("resolveComposeMode", () => {
         expect(result.imageLine).toContain("pull_policy: always");
     });
 
+    test("honors explicit non-default imageTag when image has embedded tag (P2 regression)", () => {
+        // If an operator pasted a full ref "ghcr.io/acme/pizzapi:0.1.32" as the
+        // image setting and later runs `pizza web --tag 0.1.33`, the explicit tag
+        // must override the embedded one so the upgrade takes effect.
+        const result = resolveComposeMode("/repo", { image: "ghcr.io/acme/pizzapi:0.1.32", imageTag: "0.1.33" });
+        expect(result.imageLine).toContain("image: ghcr.io/acme/pizzapi:0.1.33");
+        expect(result.imageLine).not.toContain("0.1.32");
+        expect(result.hubVersion).toBe("0.1.33");
+        expect(result.hubImage).toBe("ghcr.io/acme/pizzapi:0.1.33");
+    });
+
+    test("does not override embedded tag when imageTag is the default 'latest'", () => {
+        // imageTag defaults to "latest" — an operator who pasted
+        // "ghcr.io/acme/pizzapi:0.1.32" without touching imageTag should NOT
+        // silently switch to :latest.  The embedded tag wins when imageTag is
+        // still the default.
+        const result = resolveComposeMode("/repo", { image: "ghcr.io/acme/pizzapi:0.1.32", imageTag: "latest" });
+        expect(result.imageLine).toContain("image: ghcr.io/acme/pizzapi:0.1.32");
+        expect(result.hubVersion).toBe("0.1.32");
+    });
+
+    test("honors explicit mutable imageTag override when image has embedded semver tag", () => {
+        // `pizza web --tag main` on an image ref with an embedded semver tag should
+        // switch to the mutable :main pointer.
+        const result = resolveComposeMode("/repo", { image: "ghcr.io/acme/pizzapi:0.1.32", imageTag: "main" });
+        expect(result.imageLine).toContain("image: ghcr.io/acme/pizzapi:main");
+        expect(result.imageLine).toContain("pull_policy: always");
+        expect(result.hubVersion).toBe("main");
+    });
+
     test("returns build mode when image is whitespace-only (P3 regression)", () => {
         // A whitespace-only image value must NOT flip into image mode
         const result = resolveComposeMode("/repo", { image: "   ", imageTag: "latest" });
