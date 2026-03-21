@@ -498,6 +498,266 @@ describe("isDestructiveCommand", () => {
         expect(isDestructiveCommand("make -n")).toBe(false);
         expect(isDestructiveCommand("make --just-print")).toBe(false);
     });
+
+    // ── Previously-missing write-capable commands ─────────────────────────
+
+    test("flags GNU install (always writes to destination)", () => {
+        expect(isDestructiveCommand("install -m 755 binary /usr/local/bin/")).toBe(true);
+        expect(isDestructiveCommand("install -d /usr/local/share/myapp")).toBe(true);
+        expect(isDestructiveCommand("install file.so /usr/lib/")).toBe(true);
+    });
+
+    test("flags mkfifo (creates named pipes)", () => {
+        expect(isDestructiveCommand("mkfifo /tmp/mypipe")).toBe(true);
+        expect(isDestructiveCommand("mkfifo -m 600 /tmp/pipe")).toBe(true);
+    });
+
+    test("flags mknod (creates device/special files)", () => {
+        expect(isDestructiveCommand("mknod /dev/mydev c 89 1")).toBe(true);
+        expect(isDestructiveCommand("mknod -m 660 /tmp/fifo p")).toBe(true);
+    });
+
+    test("flags patch (applies diffs) but allows explicit read-only flags", () => {
+        expect(isDestructiveCommand("patch -p1 < changes.diff")).toBe(true);
+        expect(isDestructiveCommand("patch file.txt patch.diff")).toBe(true);
+        expect(isDestructiveCommand("patch --strip=1 < fix.patch")).toBe(true);
+
+        // Read-only verification modes
+        expect(isDestructiveCommand("patch --dry-run -p1 < changes.diff")).toBe(false);
+        expect(isDestructiveCommand("patch --check -p1 < changes.diff")).toBe(false);
+
+        // Regression tests — avoid false safe matches / short-flag payload confusion
+        expect(isDestructiveCommand("patch --version-control=simple -p0 < changes.diff")).toBe(true);
+        expect(isDestructiveCommand("patch -zC -p0 < changes.diff")).toBe(true);
+
+        // --dry-run with --output still writes output, so it's destructive
+        expect(isDestructiveCommand("patch --dry-run -o out.txt file.txt < fix.diff")).toBe(true);
+        expect(isDestructiveCommand("patch --dry-run --output=out.txt file.txt < fix.diff")).toBe(true);
+
+        // Short-flag -C must be standalone, not bundled with other options like -z
+        expect(isDestructiveCommand("patch -C -p0 < fix.diff")).toBe(false);
+        expect(isDestructiveCommand("patch -zC -p0 < fix.diff")).toBe(true); // -zC is: suffix=C, not check
+
+        // -o - without -r - is destructive: GNU patch creates -.rej on disk
+        expect(isDestructiveCommand("patch -o - file.txt < fix.diff")).toBe(true);
+        expect(isDestructiveCommand("patch --output=- file.txt < fix.diff")).toBe(true);
+        expect(isDestructiveCommand("patch -o- file.txt < fix.diff")).toBe(true);
+        expect(isDestructiveCommand("patch --output - file.txt < fix.diff")).toBe(true);
+
+        // Informational flags
+        expect(isDestructiveCommand("patch --help")).toBe(false);
+        expect(isDestructiveCommand("patch --version")).toBe(false);
+
+        // -r / --reject-file with a real path is destructive even when -o sends to stdout
+        expect(isDestructiveCommand("patch -o - -r rejects.txt file.txt < fix.diff")).toBe(true);
+        expect(isDestructiveCommand("patch --output=- --reject-file=rejects.txt file.txt < fix.diff")).toBe(true);
+        expect(isDestructiveCommand("patch -o - --reject-file=/tmp/rej file.txt < fix.diff")).toBe(true);
+        // -r - (reject to stdout) is safe when combined with -o -
+        expect(isDestructiveCommand("patch -o - -r - file.txt < fix.diff")).toBe(false);
+        expect(isDestructiveCommand("patch --output=- --reject-file=- file.txt < fix.diff")).toBe(false);
+        // -r with real path but no -o is already destructive (patch writes to file)
+        expect(isDestructiveCommand("patch -r rejects.txt file.txt < fix.diff")).toBe(true);
+    });
+
+    test("flags tar with create flag (-c / --create)", () => {
+        expect(isDestructiveCommand("tar -cf archive.tar dir/")).toBe(true);
+        expect(isDestructiveCommand("tar -czf archive.tar.gz dir/")).toBe(true);
+        expect(isDestructiveCommand("tar --create -f out.tar .")).toBe(true);
+        expect(isDestructiveCommand("tar --create --gzip -f out.tar.gz .")).toBe(true);
+        // Legacy positional flag style
+        expect(isDestructiveCommand("tar czf archive.tar.gz dir/")).toBe(true);
+        expect(isDestructiveCommand("tar zcf archive.tar.gz dir/")).toBe(true);
+        expect(isDestructiveCommand("tar cf out.tar file1 file2")).toBe(true);
+    });
+
+    test("flags tar with append flag (-r / --append)", () => {
+        expect(isDestructiveCommand("tar -rf archive.tar newfile")).toBe(true);
+        expect(isDestructiveCommand("tar --append -f archive.tar newfile")).toBe(true);
+        // Legacy positional flag style
+        expect(isDestructiveCommand("tar rf archive.tar newfile")).toBe(true);
+    });
+
+    test("flags tar with update flag (-u / --update)", () => {
+        expect(isDestructiveCommand("tar -uf archive.tar updated")).toBe(true);
+        expect(isDestructiveCommand("tar --update -f archive.tar updated")).toBe(true);
+        // Legacy positional flag style
+        expect(isDestructiveCommand("tar uf archive.tar updated")).toBe(true);
+    });
+
+    test("flags tar with extract flag (-x / --extract)", () => {
+        expect(isDestructiveCommand("tar -xf archive.tar")).toBe(true);
+        expect(isDestructiveCommand("tar -xzf archive.tar.gz")).toBe(true);
+        expect(isDestructiveCommand("tar --extract -f archive.tar")).toBe(true);
+        expect(isDestructiveCommand("tar --get -f archive.tar")).toBe(true);
+        // Legacy positional flag style
+        expect(isDestructiveCommand("tar xvf archive.tar")).toBe(true);
+        expect(isDestructiveCommand("tar xf archive.tar")).toBe(true);
+        expect(isDestructiveCommand("tar zxf archive.tar.gz")).toBe(true);
+        // Mode letter after other options, e.g. -f first then -x / -c
+        expect(isDestructiveCommand("tar -f archive.tar -x")).toBe(true);
+        expect(isDestructiveCommand("tar -f archive.tar -c")).toBe(true);
+        expect(isDestructiveCommand("tar -f out.tar.gz -z -c src/")).toBe(true);
+    });
+
+    test("flags tar with delete mode (--delete)", () => {
+        expect(isDestructiveCommand("tar --delete -f archive.tar foo")).toBe(true);
+        expect(isDestructiveCommand("tar --delete --file=archive.tar bar")).toBe(true);
+    });
+
+    test("flags tar with concatenate mode (-A / --catenate / --concatenate)", () => {
+        expect(isDestructiveCommand("tar -Af archive.tar other.tar")).toBe(true);
+        expect(isDestructiveCommand("tar -Avf archive.tar other.tar")).toBe(true);
+        expect(isDestructiveCommand("tar --catenate -f archive.tar other.tar")).toBe(true);
+        expect(isDestructiveCommand("tar --concatenate -f archive.tar other.tar")).toBe(true);
+        // Legacy positional-flag style
+        expect(isDestructiveCommand("tar Af archive.tar other.tar")).toBe(true);
+    });
+
+    test("allows tar with list flag only (-t / --list)", () => {
+        expect(isDestructiveCommand("tar -tf archive.tar")).toBe(false);
+        expect(isDestructiveCommand("tar -tfarchive.tar")).toBe(false);
+        expect(isDestructiveCommand("tar tfarchive.tar")).toBe(false);
+        expect(isDestructiveCommand("tar -tvf archive.tar")).toBe(false);
+        expect(isDestructiveCommand("tar --list -f archive.tar")).toBe(false);
+        expect(isDestructiveCommand("tar tf archive.tar AGENTS.md")).toBe(false);
+        expect(isDestructiveCommand("tar tf archive.tar README.md")).toBe(false);
+        // Legacy positional flag style (list only)
+        expect(isDestructiveCommand("tar tf archive.tar")).toBe(false);
+        expect(isDestructiveCommand("tar tvf archive.tar")).toBe(false);
+    });
+
+    test("allows tar list mode with -C / -X modifiers (case-sensitive short options)", () => {
+        expect(isDestructiveCommand("tar -C /tmp -tf archive.tar")).toBe(false);
+        expect(isDestructiveCommand("tar -X excludes.txt -tf archive.tar")).toBe(false);
+        expect(isDestructiveCommand("tar -C /tmp -X excludes.txt -tf archive.tar")).toBe(false);
+
+        // Still destructive if an actual mode flag is present
+        expect(isDestructiveCommand("tar -C /tmp -xf archive.tar")).toBe(true);
+    });
+
+    test("allows tar list mode with -I flag (use-compress-program, attached argument)", () => {
+        // -I accepts an attached argument (the compression program), so `-Ixz` should not
+        // misinterpret the `x` as extract mode
+        expect(isDestructiveCommand("tar -Ixz -tf archive.tar.xz")).toBe(false);
+        expect(isDestructiveCommand("tar -Ixz -tvf archive.tar.xz")).toBe(false);
+        // With actual destructive mode, should still be destructive
+        expect(isDestructiveCommand("tar -Ixz -cf archive.tar.xz dir/")).toBe(true);
+        expect(isDestructiveCommand("tar -Ixz -xf archive.tar.xz")).toBe(true);
+    });
+
+    test("allows tar list mode with -g flag (listed-incremental, attached argument)", () => {
+        // -g accepts an attached argument (snapshot file), so `-gindex` should not
+        // misinterpret the `x` in `index` as extract mode
+        expect(isDestructiveCommand("tar -gindex -tf archive.tar")).toBe(false);
+        expect(isDestructiveCommand("tar -g snapshot.snar -tf archive.tar")).toBe(false);
+        // With actual destructive mode, should still be destructive
+        expect(isDestructiveCommand("tar -gindex -xf archive.tar")).toBe(true);
+    });
+
+    test("allows tar list mode with -H flag (format, attached argument)", () => {
+        // -H accepts an attached argument (format name), so `-Hposix` should not
+        // misinterpret the `x` in `posix` as extract mode
+        expect(isDestructiveCommand("tar -Hposix -tf archive.tar")).toBe(false);
+        expect(isDestructiveCommand("tar -Hposix -tvf archive.tar")).toBe(false);
+        // With actual destructive mode, should still be destructive
+        expect(isDestructiveCommand("tar -Hposix -cf archive.tar dir/")).toBe(true);
+        expect(isDestructiveCommand("tar -Hposix -xf archive.tar")).toBe(true);
+    });
+
+    test("allows tar extract with -O / --to-stdout (stdout extraction, read-only)", () => {
+        // -O suppresses filesystem writes, extracting to stdout instead (read-only)
+        expect(isDestructiveCommand("tar -xO -f archive.tar file.txt")).toBe(false);
+        expect(isDestructiveCommand("tar -xOvf archive.tar file.txt")).toBe(false);
+        // Long form: --to-stdout is equivalent to -O
+        expect(isDestructiveCommand("tar -xf archive.tar --to-stdout file.txt")).toBe(false);
+        expect(isDestructiveCommand("tar --to-stdout -xf archive.tar file.txt")).toBe(false);
+        // Even when combined with compression flags, -O makes it read-only
+        expect(isDestructiveCommand("tar -Ixz -xO -f archive.tar.xz file.txt")).toBe(false);
+        // Long-form --extract / --get with --to-stdout is read-only
+        expect(isDestructiveCommand("tar --extract --to-stdout -f archive.tar file.txt")).toBe(false);
+        expect(isDestructiveCommand("tar --get --to-stdout -f archive.tar file.txt")).toBe(false);
+        expect(isDestructiveCommand("tar --to-stdout --extract -f archive.tar file.txt")).toBe(false);
+        // Long-form write modes with --to-stdout are still destructive
+        expect(isDestructiveCommand("tar --create --to-stdout dir/")).toBe(true);
+        expect(isDestructiveCommand("tar --append --to-stdout -f archive.tar file.txt")).toBe(true);
+    });
+
+    test("tar -O does not mask write-mode flags (-c, -u, -r, -A)", () => {
+        // -cO: create archive to stdout — still a write operation (creates archive data)
+        expect(isDestructiveCommand("tar -cO dir/")).toBe(true);
+        expect(isDestructiveCommand("tar -cOf archive.tar dir/")).toBe(true);
+        // -uO: update archive to stdout
+        expect(isDestructiveCommand("tar -uO -f archive.tar file.txt")).toBe(true);
+        // -rO: append to archive to stdout
+        expect(isDestructiveCommand("tar -rO -f archive.tar file.txt")).toBe(true);
+        // -AO: catenate archives to stdout
+        expect(isDestructiveCommand("tar -AO -f archive.tar other.tar")).toBe(true);
+        // Long form --to-stdout with write mode
+        expect(isDestructiveCommand("tar --to-stdout -cf archive.tar dir/")).toBe(true);
+        // -xO is still safe (extract to stdout)
+        expect(isDestructiveCommand("tar -xO -f archive.tar file.txt")).toBe(false);
+        // -tO is safe (list with stdout — no write mode)
+        expect(isDestructiveCommand("tar -tO -f archive.tar")).toBe(false);
+    });
+
+    test("flags gawk with in-place editing via the inplace module", () => {
+        // -i inplace (space-separated) — the destructive form
+        expect(isDestructiveCommand("gawk -i inplace '{gsub(/foo/, \"bar\")} 1' file.txt")).toBe(true);
+        // -iinplace (no space) — also the destructive form
+        expect(isDestructiveCommand("gawk -iinplace '{print}' file.txt")).toBe(true);
+        expect(isDestructiveCommand("gawk -i /usr/share/awk/inplace.awk '{print}' file.txt")).toBe(true);
+        // --include=inplace — long-form destructive
+        expect(isDestructiveCommand("gawk --include=inplace '{gsub(/foo/, \"bar\")} 1' file.txt")).toBe(true);
+        // --include inplace — long-form with space
+        expect(isDestructiveCommand("gawk --include inplace '{gsub(/foo/, \"bar\")} 1' file.txt")).toBe(true);
+        expect(isDestructiveCommand("gawk --include=/usr/share/awk/inplace.awk '{print}' file.txt")).toBe(true);
+        // -f inplace.awk / --file= — loading the inplace library via -f is equivalent
+        expect(isDestructiveCommand("gawk -f inplace.awk -f prog.awk file.txt")).toBe(true);
+        expect(isDestructiveCommand("gawk -f /usr/share/awk/inplace.awk -f prog.awk file.txt")).toBe(true);
+        expect(isDestructiveCommand("gawk --file=inplace.awk -f prog.awk file.txt")).toBe(true);
+        expect(isDestructiveCommand("gawk --file /usr/share/awk/inplace.awk -f prog.awk file.txt")).toBe(true);
+    });
+
+    test("allows awk / gawk without in-place flags", () => {
+        expect(isDestructiveCommand("awk '{print $1}' file.txt")).toBe(false);
+        expect(isDestructiveCommand("gawk '{print NR, $0}' file.txt")).toBe(false);
+        expect(isDestructiveCommand("awk -F: '{print $1}' /etc/passwd")).toBe(false);
+        // -i with a read-only library (not the inplace module) must not be blocked
+        expect(isDestructiveCommand("gawk -i ord 'BEGIN { print ord(\"A\") }'")).toBe(false);
+        // -ibak is a read-only library include, not in-place editing
+        expect(isDestructiveCommand("gawk -ibak '{print}' file.txt")).toBe(false);
+        // -f with a non-inplace script file must not be blocked
+        expect(isDestructiveCommand("gawk -f prog.awk file.txt")).toBe(false);
+        expect(isDestructiveCommand("gawk --file=transform.awk file.txt")).toBe(false);
+    });
+
+    test("flags awk (bare command, GNU Awk alias) with in-place editing", () => {
+        // On systems where `awk` is GNU Awk, it supports the same inplace module as gawk
+        expect(isDestructiveCommand("awk -i inplace '{gsub(/foo/, \"bar\")} 1' file.txt")).toBe(true);
+        expect(isDestructiveCommand("awk -iinplace '{print}' file.txt")).toBe(true);
+        expect(isDestructiveCommand("awk -i /usr/share/awk/inplace.awk '{print}' file.txt")).toBe(true);
+        expect(isDestructiveCommand("awk --include=inplace '{print}' file.txt")).toBe(true);
+        expect(isDestructiveCommand("awk --include=/usr/share/awk/inplace.awk '{print}' file.txt")).toBe(true);
+        expect(isDestructiveCommand("awk -f inplace.awk -f prog.awk file.txt")).toBe(true);
+        expect(isDestructiveCommand("awk -f /usr/share/awk/inplace.awk -f prog.awk file.txt")).toBe(true);
+    });
+
+    test("flags shell output redirection (>)", () => {
+        expect(isDestructiveCommand("echo hello > /tmp/out.txt")).toBe(true);
+        expect(isDestructiveCommand("cat file.txt > copy.txt")).toBe(true);
+        expect(isDestructiveCommand("ls > listing.txt")).toBe(true);
+    });
+
+    test("flags shell append redirection (>>)", () => {
+        expect(isDestructiveCommand("echo hello >> /tmp/out.txt")).toBe(true);
+        expect(isDestructiveCommand("date >> /tmp/timestamps.log")).toBe(true);
+    });
+
+    test("allows stderr redirection to /dev/null (2>/dev/null)", () => {
+        expect(isDestructiveCommand("ls 2>/dev/null")).toBe(false);
+        expect(isDestructiveCommand("cat file.txt 2>/dev/null")).toBe(false);
+        expect(isDestructiveCommand("grep pattern src/ 2>/dev/null")).toBe(false);
+    });
 });
 
 // ── isDestructiveCommand with sandboxActive=true ─────────────────────────────
