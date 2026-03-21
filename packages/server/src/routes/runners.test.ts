@@ -48,6 +48,11 @@ describe("isHiddenModel", () => {
         expect(isHiddenModel(hidden, { provider: "Anthropic", id: "Claude-3-5-Haiku" })).toBe(true);
     });
 
+    it("normalizes stored keys with whitespace or padding", () => {
+        const hidden = [" anthropic / claude-3-5-haiku-20241022 "];
+        expect(isHiddenModel(hidden, { provider: "anthropic", id: "claude-3-5-haiku-20241022" })).toBe(true);
+    });
+
     it("correctly formats the key as 'provider/id'", () => {
         // Verify the key format — provider and id joined with /
         const hidden = ["my-provider/my-model-v2"];

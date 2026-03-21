@@ -16,5 +16,10 @@ export function isHiddenModel(
     const provider = model.provider.trim();
     const id = model.id.trim();
     if (!provider || !id) return false;
-    return hiddenModels.includes(`${provider}/${id}`);
+    const key = `${provider}/${id}`;
+    return hiddenModels.some((stored) => {
+        const parts = stored.split("/");
+        if (parts.length !== 2) return stored.trim() === key;
+        return `${parts[0].trim()}/${parts[1].trim()}` === key;
+    });
 }
