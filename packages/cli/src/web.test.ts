@@ -6,7 +6,7 @@ import { tmpdir } from "os";
 import {
     extractVapidFromCompose,
     extractSettingsFromCompose,
-
+    normalizeImageRepoForExplicitTag,
     parseArgs,
     resolveBetterAuthSecret,
     resolveComposeMode,
@@ -330,6 +330,21 @@ describe("resolveComposeMode", () => {
         expect(result.buildBlock).toContain("context: /repo");
         expect(result.imageLine).toBe("");
         expect(result.hubImage).toBe("local-build");
+    });
+});
+
+describe("normalizeImageRepoForExplicitTag", () => {
+    test("strips an embedded tag so an explicit imageTag can take over", () => {
+        expect(normalizeImageRepoForExplicitTag("ghcr.io/acme/pizzapi:0.1.32")).toBe("ghcr.io/acme/pizzapi");
+    });
+
+    test("leaves digest-pinned refs unchanged", () => {
+        const digestRef = "ghcr.io/acme/pizzapi@sha256:abcdef0123456789";
+        expect(normalizeImageRepoForExplicitTag(digestRef)).toBe(digestRef);
+    });
+
+    test("leaves plain repos unchanged", () => {
+        expect(normalizeImageRepoForExplicitTag("ghcr.io/acme/pizzapi")).toBe("ghcr.io/acme/pizzapi");
     });
 });
 

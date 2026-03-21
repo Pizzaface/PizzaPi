@@ -730,6 +730,15 @@ function truncateDigest(digest: string | undefined): string {
     return hex.length > 0 ? `${prefix}${hex}` : "digest";
 }
 
+export function normalizeImageRepoForExplicitTag(imageRepo: string): string {
+    if (imageRepo.includes("@")) return imageRepo;
+    const lastSlash = imageRepo.lastIndexOf("/");
+    const afterSlash = lastSlash === -1 ? imageRepo : imageRepo.slice(lastSlash + 1);
+    const colonInLastPart = afterSlash.indexOf(":");
+    if (colonInLastPart === -1) return imageRepo;
+    return imageRepo.slice(0, imageRepo.lastIndexOf(":"));
+}
+
 export function resolveComposeMode(repoPath: string, config: Pick<WebConfig, "image" | "imageTag">): {
     buildBlock: string;
     imageLine: string;
@@ -1108,6 +1117,7 @@ Settable keys:
                 process.exit(1);
             }
             config.imageTag = value.trim();
+            config.image = normalizeImageRepoForExplicitTag(config.image);
         } else {
             // extraOrigins: empty string is valid (clears the setting)
             config[key] = value;
@@ -1214,9 +1224,16 @@ export async function runWeb(args: string[]): Promise<void> {
         config.imageTag = "latest";
         configChanged = true;
     }
-    if (parsed.tag !== undefined && parsed.tag !== config.imageTag) {
-        config.imageTag = parsed.tag;
-        configChanged = true;
+    if (parsed.tag !== undefined) {
+        const normalizedImage = normalizeImageRepoForExplicitTag(config.image);
+        if (normalizedImage !== config.image) {
+            config.image = normalizedImage;
+            configChanged = true;
+        }
+        if (parsed.tag !== config.imageTag) {
+            config.imageTag = parsed.tag;
+            configChanged = true;
+        }
     }
     if (configChanged) {
         saveWebConfig(config);
