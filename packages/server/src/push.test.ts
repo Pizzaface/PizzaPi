@@ -1,8 +1,18 @@
-import { describe, it, expect, beforeAll, afterEach } from "bun:test";
-import { getKysely } from "./auth.js";
+import { describe, it, expect, beforeAll, afterAll, afterEach } from "bun:test";
+import { getKysely, initAuth } from "./auth.js";
 import { unsubscribePush } from "./push.js";
+import { mkdtempSync, rmSync } from "fs";
+import { join } from "path";
+import { tmpdir } from "os";
+
+// Use a temp directory so the test is portable (CI runners have read-only working dirs)
+const tmpDir = mkdtempSync(join(tmpdir(), "push-test-"));
+const tmpDbPath = join(tmpDir, "test.db");
 
 beforeAll(async () => {
+    initAuth({ dbPath: tmpDbPath });
+
+
     await getKysely().schema
         .createTable("push_subscription")
         .ifNotExists()
@@ -18,6 +28,11 @@ beforeAll(async () => {
 afterEach(async () => {
     await getKysely().deleteFrom("push_subscription" as any).execute();
 });
+
+afterAll(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+});
+
 
 describe("unsubscribePush", () => {
     it("returns true when a matching subscription is deleted", async () => {
