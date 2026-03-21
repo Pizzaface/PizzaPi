@@ -348,6 +348,13 @@ describe("normalizeImageRepoForExplicitTag", () => {
         expect(normalizeImageRepoForExplicitTag(digestRef)).toBe("ghcr.io/acme/pizzapi");
     });
 
+    test("strips both digest and embedded tag from digest+tag refs", () => {
+        // e.g. ghcr.io/acme/pizzapi:0.1.32@sha256:abc... — both must be stripped
+        // so that --tag latest is not silently ignored by resolveComposeMode.
+        const digestTagRef = "ghcr.io/acme/pizzapi:0.1.32@sha256:abcdef0123456789";
+        expect(normalizeImageRepoForExplicitTag(digestTagRef)).toBe("ghcr.io/acme/pizzapi");
+    });
+
     test("leaves plain repos unchanged", () => {
         expect(normalizeImageRepoForExplicitTag("ghcr.io/acme/pizzapi")).toBe("ghcr.io/acme/pizzapi");
     });

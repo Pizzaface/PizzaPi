@@ -794,17 +794,24 @@ function truncateDigest(digest: string | undefined): string {
     return hex.length > 0 ? `${prefix}${hex}` : "digest";
 }
 
-export function normalizeImageRepoForExplicitTag(imageRepo: string): string {
-    // Strip digest (@sha256:...) so the explicit tag can be applied.
-    // Without this, a digest-pinned image silently ignores --tag/imageTag.
-    if (imageRepo.includes("@")) {
-        return imageRepo.slice(0, imageRepo.indexOf("@"));
-    }
-    const lastSlash = imageRepo.lastIndexOf("/");
-    const afterSlash = lastSlash === -1 ? imageRepo : imageRepo.slice(lastSlash + 1);
+/** Strip embedded tag (`:tag`) from an image repo string, if present. */
+function stripEmbeddedTag(repo: string): string {
+    const lastSlash = repo.lastIndexOf("/");
+    const afterSlash = lastSlash === -1 ? repo : repo.slice(lastSlash + 1);
     const colonInLastPart = afterSlash.indexOf(":");
-    if (colonInLastPart === -1) return imageRepo;
-    return imageRepo.slice(0, imageRepo.lastIndexOf(":"));
+    if (colonInLastPart === -1) return repo;
+    return repo.slice(0, repo.lastIndexOf(":"));
+}
+
+export function normalizeImageRepoForExplicitTag(imageRepo: string): string {
+    // Strip digest (@sha256:...) AND any embedded tag so the explicit tag
+    // can be applied cleanly — including when --tag latest is passed.
+    // Without stripping both, resolveComposeMode sees an embedded tag and
+    // treats "latest" as the default (preserving the old tag instead).
+    if (imageRepo.includes("@")) {
+        return stripEmbeddedTag(imageRepo.slice(0, imageRepo.indexOf("@")));
+    }
+    return stripEmbeddedTag(imageRepo);
 }
 
 export function resolveComposeMode(repoPath: string, config: Pick<WebConfig, "image" | "imageTag">): {
