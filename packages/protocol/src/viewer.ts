@@ -44,6 +44,14 @@ export interface ViewerServerToClientEvents {
   error: (data: {
     message: string;
   }) => void;
+
+  /** Error delivering a trigger_response to a child session or relay target.
+   *  Carries the triggerId so the viewer can match the error to the original
+   *  trigger response attempt, enabling per-trigger error UI (retry buttons, etc). */
+  trigger_error: (data: {
+    message: string;
+    triggerId: string;
+  }) => void;
 }
 
 // ---------------------------------------------------------------------------

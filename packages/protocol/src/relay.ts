@@ -187,11 +187,16 @@ export interface RelayServerToClientEvents {
     };
   }) => void;
 
-  /** Delivers a trigger response back to the source child */
+  /** Delivers a trigger response back to the source child.
+   *  May also be forwarded via the parent session when a human viewer reply
+   *  is routed through the parent CLI. */
   trigger_response: (data: {
     triggerId: string;
     response: string;
+    /** Optional action metadata (approve/cancel/ack/followUp, etc.). */
     action?: string;
+    /** Optional child target session ID when forwarded via parent. */
+    targetSessionId?: string;
   }) => void;
 
   /** Notifies that a session has expired */
