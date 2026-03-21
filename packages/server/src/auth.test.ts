@@ -1,10 +1,19 @@
-import { describe, expect, test, beforeAll } from "bun:test";
-import { getDisableSignupAfterFirstUser, isSignupAllowed, getKysely } from "./auth";
+import { describe, expect, test, beforeAll, afterAll } from "bun:test";
+import { getDisableSignupAfterFirstUser, isSignupAllowed, getKysely, initAuth } from "./auth";
 import { sql } from "kysely";
+import { mkdtempSync, rmSync } from "fs";
+import { join } from "path";
+import { tmpdir } from "os";
 
+// Use a temp directory so the test is portable (CI runners have read-only working dirs)
+const tmpDir = mkdtempSync(join(tmpdir(), "auth-test-"));
+const tmpDbPath = join(tmpDir, "test.db");
 
-// Ensure the user table exists for testing (better-auth normally creates it via migrations)
+// Initialize auth with the temp DB before any tests run
 beforeAll(async () => {
+    initAuth({ dbPath: tmpDbPath });
+
+    // Ensure the user table exists for testing (better-auth normally creates it via migrations)
     await sql`
         CREATE TABLE IF NOT EXISTS user (
             id TEXT PRIMARY KEY,
@@ -16,6 +25,10 @@ beforeAll(async () => {
             updatedAt TEXT NOT NULL
         )
     `.execute(getKysely());
+});
+
+afterAll(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
 });
 
 describe("signup gating", () => {
