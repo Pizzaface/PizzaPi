@@ -45,7 +45,10 @@ services:
 
 describe("web.ts compose template", () => {
     test("inlined template matches external template file", () => {
-        const externalPath = join(import.meta.dirname, "templates", "compose.yml.template");
+        // Always look in src/templates/ so this test passes when bun discovers
+        // the compiled dist/web.test.js from the project root as well as when
+        // running directly from packages/cli/src/web.test.ts.
+        const externalPath = join(import.meta.dirname, "..", "src", "templates", "compose.yml.template");
         const external = readFileSync(externalPath, "utf-8");
         expect(COMPOSE_TEMPLATE).toBe(external);
     });

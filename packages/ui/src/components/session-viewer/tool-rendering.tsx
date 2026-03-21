@@ -48,7 +48,8 @@ import {
 
 import { CopyableCodeBlock } from "@/components/session-viewer/cards/InterAgentCards";
 import { WriteFileCard } from "@/components/session-viewer/cards/WriteFileCard";
-import { TodoCard, type TodoItem } from "@/components/session-viewer/cards/TodoCard";
+import { TodoCard } from "@/components/session-viewer/cards/TodoCard";
+import type { TodoItem } from "@/lib/types";
 import { SessionNameCard } from "@/components/session-viewer/cards/SessionNameCard";
 import {
   truncateSessionId,

@@ -6,7 +6,7 @@ import {
   ToolCardTitle,
   ToolCardActions,
   StatusPill,
-} from "@/components/ui/tool-card";
+} from "../../ui/tool-card";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 

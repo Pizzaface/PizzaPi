@@ -16,7 +16,7 @@ import {
   WebSearchQueryCard,
   WebSearchResultsCard,
   type WebSearchResult,
-} from "@/components/session-viewer/cards/WebSearchCard";
+} from "./cards/WebSearchCard";
 
 // ── Types for server tool metadata ──────────────────────────────────────────
 

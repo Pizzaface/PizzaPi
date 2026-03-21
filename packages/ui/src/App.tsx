@@ -47,7 +47,7 @@ import { Sun, Moon, LogOut, KeyRound, X, User, ChevronsUpDown, PanelLeftOpen, Ha
 import { NotificationToggle, MobileNotificationMenuItem } from "@/components/NotificationToggle";
 import { HapticsToggle, MobileHapticsMenuItem } from "@/components/HapticsToggle";
 import { UsageIndicator, type ProviderUsageMap } from "@/components/UsageIndicator";
-import { TerminalManager, type TerminalTab } from "@/components/TerminalManager";
+import { TerminalManager } from "@/components/TerminalManager";
 import { FileExplorer } from "@/components/FileExplorer";
 import { CombinedPanel } from "@/components/CombinedPanel";
 import {
@@ -64,6 +64,7 @@ import {
 } from "@/components/ai-elements/model-selector";
 import { HiddenModelsManager, loadHiddenModels, fetchHiddenModels, modelKey } from "@/components/HiddenModelsManager";
 import { ChangePasswordDialog } from "@/components/ChangePasswordDialog";
+import { ShortcutsDialog } from "@/components/ShortcutsDialog";
 import {
   beginInputAttempt,
   completeInputAttempt,
@@ -72,252 +73,18 @@ import {
   type InputDedupeState,
 } from "@/lib/input-dedupe";
 import { parsePendingQuestionDisplayMode, parsePendingQuestions, type QuestionDisplayMode } from "@/lib/ask-user-questions";
-
-function toRelayMessage(raw: unknown, fallbackId: string): RelayMessage | null {
-  if (!raw || typeof raw !== "object") return null;
-
-  const msg = raw as Record<string, unknown>;
-  const role = typeof msg.role === "string" ? msg.role : "message";
-  const timestamp = typeof msg.timestamp === "number" ? msg.timestamp : undefined;
-  const toolCallId = typeof msg.toolCallId === "string" ? msg.toolCallId : "";
-  const id = typeof msg.id === "string" ? msg.id : undefined;
-
-  const key = id
-    ? `${role}:id:${id}`
-    : toolCallId
-      ? `${role}:tool:${toolCallId}`
-      : timestamp !== undefined
-        ? `${role}:ts:${timestamp}`
-        : `${role}:fallback:${fallbackId}`;
-
-  const stopReason = typeof msg.stopReason === "string" ? msg.stopReason : undefined;
-  const errorMessage = typeof msg.errorMessage === "string" ? msg.errorMessage : undefined;
-
-  // Extract summary/tokensBefore for compactionSummary / branchSummary messages
-  const summary = typeof msg.summary === "string" ? msg.summary : undefined;
-  const tokensBefore = typeof msg.tokensBefore === "number" ? msg.tokensBefore : undefined;
-
-  // Preserve structured details (e.g., subagent SubagentDetails) for tool results
-  const details = msg.details !== undefined && msg.details !== null ? msg.details : undefined;
-
-  return {
-    key,
-    role,
-    timestamp,
-    content: msg.content,
-    toolName: typeof msg.toolName === "string" ? msg.toolName : undefined,
-    toolCallId: toolCallId || undefined,
-    isError: msg.isError === true || stopReason === "error",
-    stopReason,
-    errorMessage,
-    summary,
-    tokensBefore,
-    details,
-  };
-}
-
-function getAssistantToolCallIds(msg: RelayMessage): string[] {
-  if (msg.role !== "assistant" || !Array.isArray(msg.content)) return [];
-  const ids: string[] = [];
-  for (const block of msg.content) {
-    if (!block || typeof block !== "object") continue;
-    const b = block as Record<string, unknown>;
-    if (b.type !== "toolCall") continue;
-    const id =
-      typeof b.toolCallId === "string"
-        ? b.toolCallId
-        : typeof b.id === "string"
-          ? b.id
-          : "";
-    if (id) ids.push(id);
-  }
-  return ids;
-}
-
-/** Extract concatenated text content from an assistant message for dedup comparison. */
-function extractAssistantText(msg: RelayMessage): string {
-  if (msg.role !== "assistant" || !Array.isArray(msg.content)) return "";
-  let text = "";
-  for (const block of msg.content) {
-    if (!block || typeof block !== "object") continue;
-    const b = block as Record<string, unknown>;
-    if (b.type === "text" && typeof b.text === "string") text += b.text;
-  }
-  return text;
-}
-
-/** Deduplicate assistant messages within a list. Removes no-timestamp partials
- * that are superseded by timestamped finals, even across chunk boundaries. */
-function deduplicateMessages(messages: RelayMessage[]): RelayMessage[] {
-  // Build a set of toolCallIds referenced by any timestamped assistant message.
-  const timestampedToolCallIds = new Set<string>();
-  for (const msg of messages) {
-    if (msg.role === "assistant" && msg.timestamp !== undefined) {
-      for (const id of getAssistantToolCallIds(msg)) {
-        timestampedToolCallIds.add(id);
-      }
-    }
-  }
-
-  const dropIndices = new Set<number>();
-  for (let i = 0; i < messages.length; i++) {
-    const cur = messages[i];
-    if (cur.role !== "assistant" || cur.timestamp !== undefined) continue;
-
-    // Original heuristic: immediately followed by a timestamped assistant message.
-    const next = messages[i + 1];
-    if (next?.role === "assistant" && next.timestamp !== undefined) {
-      dropIndices.add(i);
-      continue;
-    }
-
-    // Extended heuristic: shares a toolCallId with any later timestamped assistant message.
-    const ids = getAssistantToolCallIds(cur);
-    if (ids.length > 0 && ids.some((id) => timestampedToolCallIds.has(id))) {
-      dropIndices.add(i);
-      continue;
-    }
-
-    // Text-prefix heuristic: if this no-timestamp message has no toolCallIds,
-    // check if any later timestamped assistant message contains the same text
-    // (the partial is a prefix of the final). This catches text-only streaming
-    // partials that survive alongside the final message (e.g. after web_search).
-    if (ids.length === 0) {
-      const curText = extractAssistantText(cur);
-      if (curText) {
-        for (let j = i + 1; j < messages.length; j++) {
-          const candidate = messages[j];
-          if (candidate.role !== "assistant" || candidate.timestamp === undefined) continue;
-          const candidateText = extractAssistantText(candidate);
-          if (candidateText && candidateText.startsWith(curText)) {
-            dropIndices.add(i);
-            break;
-          }
-        }
-      }
-    }
-  }
-
-  if (dropIndices.size === 0) return messages;
-  return messages.filter((_, i) => !dropIndices.has(i));
-}
-
-function normalizeMessages(rawMessages: unknown[], keyOffset = 0): RelayMessage[] {
-  const all = rawMessages
-    .map((m, i) => toRelayMessage(m, `snapshot-${keyOffset + i}`))
-    .filter((m): m is RelayMessage => m !== null);
-
-  return deduplicateMessages(all);
-}
-
-interface ConfiguredModelInfo {
-  provider: string;
-  id: string;
-  name?: string;
-  reasoning?: boolean;
-  contextWindow?: number;
-}
-
-interface TokenUsageInfo {
-  input: number;
-  output: number;
-  cacheRead: number;
-  cacheWrite: number;
-  cost: number;
-}
-
-interface ResumeSessionOption {
-  id: string;
-  path: string;
-  name: string | null;
-  modified: string;
-  firstMessage?: string;
-}
-
-export interface TodoItem {
-  id: number;
-  text: string;
-  status: "pending" | "in_progress" | "done" | "cancelled";
-}
-
-interface SessionUiCacheEntry {
-  messages: RelayMessage[];
-  activeModel: ConfiguredModelInfo | null;
-  sessionName: string | null;
-  availableModels: ConfiguredModelInfo[];
-  availableCommands: Array<{ name: string; description?: string; source?: string }>;
-  agentActive: boolean;
-  isCompacting: boolean;
-  effortLevel: string | null;
-  planModeEnabled: boolean;
-  authSource: string | null;
-  tokenUsage: TokenUsageInfo | null;
-  providerUsage: ProviderUsageMap | null;
-  lastHeartbeatAt: number | null;
-  todoList: TodoItem[];
-  pendingQuestion: { toolCallId: string; questions: Array<{ question: string; options: string[]; type?: import("@/lib/ask-user-questions").QuestionType }>; display: QuestionDisplayMode } | null;
-  pendingPlan: {
-    toolCallId: string;
-    title: string;
-    description: string | null;
-    steps: Array<{ title: string; description?: string }>;
-  } | null;
-}
-
-function normalizeModel(raw: unknown): ConfiguredModelInfo | null {
-  if (!raw || typeof raw !== "object") return null;
-  const model = raw as Record<string, unknown>;
-  const provider = typeof model.provider === "string" ? model.provider.trim() : "";
-  // Accept both `id` (availableModels shape) and `modelId` (buildSessionContext shape)
-  const id = (typeof model.id === "string" ? model.id.trim() : "") ||
-              (typeof model.modelId === "string" ? model.modelId.trim() : "");
-  if (!provider || !id) return null;
-
-  return {
-    provider,
-    id,
-    name: typeof model.name === "string" ? model.name : undefined,
-    reasoning: typeof model.reasoning === "boolean" ? model.reasoning : undefined,
-    contextWindow: typeof model.contextWindow === "number" ? model.contextWindow : undefined,
-  };
-}
-
-function normalizeSessionName(raw: unknown): string | null {
-  if (typeof raw !== "string") return null;
-  const trimmed = raw.trim();
-  return trimmed.length > 0 ? trimmed : null;
-}
-
-/** Inject `durationSeconds` into thinking blocks that we've timed client-side. */
-function augmentThinkingDurations(message: unknown, durations: Map<number, number>): unknown {
-  if (!message || typeof message !== "object" || durations.size === 0) return message;
-  const msg = message as Record<string, unknown>;
-  if (!Array.isArray(msg.content)) return message;
-  let changed = false;
-  const content = msg.content.map((block, i) => {
-    if (!block || typeof block !== "object") return block;
-    const b = block as Record<string, unknown>;
-    if (b.type === "thinking" && durations.has(i) && b.durationSeconds === undefined) {
-      changed = true;
-      return { ...b, durationSeconds: durations.get(i) };
-    }
-    return block;
-  });
-  return changed ? { ...msg, content } : message;
-}
-
-function normalizeModelList(rawModels: unknown[]): ConfiguredModelInfo[] {
-  const deduped = new Map<string, ConfiguredModelInfo>();
-  for (const raw of rawModels) {
-    const model = normalizeModel(raw);
-    if (!model) continue;
-    deduped.set(`${model.provider}/${model.id}`, model);
-  }
-  return Array.from(deduped.values()).sort((a, b) => {
-    if (a.provider !== b.provider) return a.provider.localeCompare(b.provider);
-    return a.id.localeCompare(b.id);
-  });
-}
+import type { TodoItem, TokenUsage, ConfiguredModelInfo, ResumeSessionOption, QueuedMessage, SessionUiCacheEntry } from "@/lib/types";
+import { usePanelLayout } from "@/hooks/usePanelLayout";
+import { useMobileSidebar } from "@/hooks/useMobileSidebar";
+import {
+  toRelayMessage,
+  deduplicateMessages,
+  normalizeMessages,
+  normalizeModel,
+  normalizeSessionName,
+  augmentThinkingDurations,
+  normalizeModelList,
+} from "@/lib/message-helpers";
 
 export function App() {
   const { data: session, isPending } = useSession();
@@ -388,314 +155,24 @@ export function App() {
       .catch(() => { /* sidebar will stay with cached/empty data until RunnerManager loads */ });
     return () => { cancelled = true; };
   }, [setSidebarRunners]);
-  const [showTerminal, setShowTerminal] = React.useState(false);
-  const [terminalPosition, setTerminalPosition] = React.useState<"bottom" | "right" | "left">(() => {
-    try { return (localStorage.getItem("pp-terminal-position") as "bottom" | "right" | "left") ?? "bottom"; } catch { return "bottom"; }
-  });
-  const [terminalHeight, setTerminalHeight] = React.useState<number>(() => {
-    try {
-      const saved = localStorage.getItem("pp-terminal-height");
-      if (saved) return Math.max(120, Math.min(parseInt(saved, 10), 900));
-    } catch {}
-    return 280;
-  });
-  const [terminalWidth, setTerminalWidth] = React.useState<number>(() => {
-    try {
-      const saved = localStorage.getItem("pp-terminal-width");
-      if (saved) return Math.max(200, Math.min(parseInt(saved, 10), 1400));
-    } catch {}
-    return 480;
-  });
-  const terminalColumnRef = React.useRef<HTMLDivElement>(null);
-  // "height" = bottom panel vertical drag, "width-right" = right panel, "width-left" = left panel
-  const resizeDir = React.useRef<"height" | "width-right" | "width-left" | null>(null);
-
-  // Single handler — direction is derived from current terminalPosition at drag start
-  const handleTerminalResizeStart = React.useCallback((e: React.PointerEvent) => {
-    e.preventDefault();
-    resizeDir.current = terminalPosition === "bottom" ? "height"
-      : terminalPosition === "right" ? "width-right"
-      : "width-left";
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-  }, [terminalPosition]);
-
-  const handleTerminalResizeMove = React.useCallback((e: React.PointerEvent) => {
-    const dir = resizeDir.current;
-    if (!dir || !terminalColumnRef.current) return;
-    const rect = terminalColumnRef.current.getBoundingClientRect();
-    if (dir === "height") {
-      setTerminalHeight(Math.max(120, Math.min(rect.bottom - e.clientY, rect.height - 80)));
-    } else if (dir === "width-right") {
-      setTerminalWidth(Math.max(200, Math.min(rect.right - e.clientX, rect.width - 200)));
-    } else {
-      setTerminalWidth(Math.max(200, Math.min(e.clientX - rect.left, rect.width - 200)));
-    }
-  }, []);
-
-  const handleTerminalResizeEnd = React.useCallback(() => {
-    const dir = resizeDir.current;
-    if (!dir) return;
-    resizeDir.current = null;
-    if (dir === "height") {
-      setTerminalHeight((h) => { try { localStorage.setItem("pp-terminal-height", String(Math.round(h))); } catch {} return h; });
-    } else {
-      setTerminalWidth((w) => { try { localStorage.setItem("pp-terminal-width", String(Math.round(w))); } catch {} return w; });
-    }
-  }, []);
-
-  // Panel drag-to-reposition
-  const isPanelDragging = React.useRef(false);
-  const panelDragZoneRef = React.useRef<"bottom" | "right" | "left" | null>(null);
-  const [panelDragActive, setPanelDragActive] = React.useState(false);
-  const [panelDragZone, setPanelDragZone] = React.useState<"bottom" | "right" | "left" | null>(null);
-
-  const handleTerminalPositionChange = React.useCallback((pos: "bottom" | "right" | "left") => {
-    setTerminalPosition(pos);
-    try { localStorage.setItem("pp-terminal-position", pos); } catch {}
-  }, []);
-
-  const handlePanelDragStart = React.useCallback((e: React.PointerEvent) => {
-    e.preventDefault();
-    isPanelDragging.current = true;
-    panelDragZoneRef.current = null;
-    setPanelDragActive(true);
-    setPanelDragZone(null);
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-  }, []);
-
-  const handlePanelDragMove = React.useCallback((e: React.PointerEvent) => {
-    if (!isPanelDragging.current || !terminalColumnRef.current) return;
-    const rect = terminalColumnRef.current.getBoundingClientRect();
-    const pctX = (e.clientX - rect.left) / rect.width;
-    const pctY = (e.clientY - rect.top) / rect.height;
-    let zone: "bottom" | "right" | "left" | null = null;
-    if (pctY > 0.55) zone = "bottom";
-    else if (pctX > 0.65) zone = "right";
-    else if (pctX < 0.35) zone = "left";
-    panelDragZoneRef.current = zone;
-    setPanelDragZone(zone);
-  }, []);
-
-  // Ref to sync file explorer position when panels are combined (avoids forward-reference issues)
-  const combinedDragSyncRef = React.useRef<((zone: "bottom" | "right" | "left") => void) | null>(null);
-
-  // Drag start handler for the Terminal tab inside the combined panel.
-  // Unlike the grip handle (which moves both panels together), this only moves
-  // the terminal panel so it can be detached from the files panel.
-  const handleTerminalTabDragStart = React.useCallback((e: React.PointerEvent) => {
-    // Clear the sync ref so handlePanelDragEnd doesn't also reposition the files panel
-    combinedDragSyncRef.current = null;
-    handlePanelDragStart(e);
-  }, [handlePanelDragStart]);
-
-  const handlePanelDragEnd = React.useCallback(() => {
-    if (!isPanelDragging.current) return;
-    isPanelDragging.current = false;
-    const zone = panelDragZoneRef.current;
-    panelDragZoneRef.current = null;
-    setPanelDragActive(false);
-    setPanelDragZone(null);
-    if (zone) {
-      handleTerminalPositionChange(zone);
-      // When panels are combined (same position), also move file explorer
-      combinedDragSyncRef.current?.(zone);
-    }
-  }, [handleTerminalPositionChange]);
-
-  const handleOuterPointerMove = React.useCallback((e: React.PointerEvent) => {
-    handleTerminalResizeMove(e);
-    handlePanelDragMove(e);
-  }, [handleTerminalResizeMove, handlePanelDragMove]);
-
-  const handleOuterPointerUp = React.useCallback(() => {
-    handleTerminalResizeEnd();
-    handlePanelDragEnd();
-  }, [handleTerminalResizeEnd, handlePanelDragEnd]);
-
-  const [combinedActiveTab, setCombinedActiveTab] = React.useState<"terminal" | "files">(() => {
-    try { return (localStorage.getItem("pp-combined-tab") as "terminal" | "files") ?? "terminal"; } catch { return "terminal"; }
-  });
-  const handleCombinedTabChange = React.useCallback((tab: string) => {
-    const t = tab as "terminal" | "files";
-    setCombinedActiveTab(t);
-    try { localStorage.setItem("pp-combined-tab", t); } catch {}
-  }, []);
-
-  // ── Lifted terminal tab state ────────────────────────────────────────────
-  // Stored here (not inside TerminalManager) so tabs survive panel remounts
-  // (e.g., when the panel transitions between combined and standalone layouts).
-  const [terminalTabs, setTerminalTabs] = React.useState<TerminalTab[]>([]);
-  const [activeTerminalId, setActiveTerminalId] = React.useState<string | null>(null);
-
-  // Per-session last-active terminal: save/restore when switching sessions.
-  const sessionActiveTerminalRef = React.useRef<Map<string | null, string | null>>(new Map());
-  const prevSessionIdForTerminalRef = React.useRef<string | null>(null);
-  // Stable ref so the effect doesn't need activeTerminalId in its dep array
-  const activeTerminalIdRef = React.useRef<string | null>(null);
-  activeTerminalIdRef.current = activeTerminalId;
-
-  React.useEffect(() => {
-    const prev = prevSessionIdForTerminalRef.current;
-    if (prev === activeSessionId) return;
-    prevSessionIdForTerminalRef.current = activeSessionId;
-
-    // Save current active terminal for the outgoing session
-    sessionActiveTerminalRef.current.set(prev, activeTerminalIdRef.current);
-
-    // Restore the last-active terminal for the incoming session
-    const incoming = activeSessionId;
-    const sessionTabs = incoming != null
-      ? terminalTabs.filter((t) => t.sessionId === incoming)
-      : terminalTabs;
-    const savedActive = sessionActiveTerminalRef.current.get(incoming);
-
-    if (savedActive && sessionTabs.some((t) => t.terminalId === savedActive)) {
-      setActiveTerminalId(savedActive);
-    } else if (sessionTabs.length > 0) {
-      setActiveTerminalId(sessionTabs[sessionTabs.length - 1].terminalId);
-    } else {
-      setActiveTerminalId(null);
-    }
-  }, [activeSessionId, terminalTabs]);
-
-  const handleTerminalTabAdd = React.useCallback((tab: TerminalTab) => {
-    setTerminalTabs((prev) => [...prev, tab]);
-    setActiveTerminalId(tab.terminalId);
-  }, []);
-
-  const handleTerminalTabClose = React.useCallback((terminalId: string) => {
-    setTerminalTabs((prev) => {
-      const next = prev.filter((t) => t.terminalId !== terminalId);
-      setActiveTerminalId((current) => {
-        if (current !== terminalId) return current;
-        // Find the closest remaining tab in the same session
-        const removed = prev.find((t) => t.terminalId === terminalId);
-        const sameSess = next.filter((t) => t.sessionId === (removed?.sessionId ?? null));
-        return sameSess.length > 0 ? sameSess[sameSess.length - 1].terminalId : null;
-      });
-      return next;
-    });
-  }, []);
-
-  const [showFileExplorer, setShowFileExplorer] = React.useState(false);
-  const [filesPosition, setFilesPosition] = React.useState<"left" | "right" | "bottom">(() => {
-    try { return (localStorage.getItem("pp-files-position") as "left" | "right" | "bottom") ?? "left"; } catch { return "left"; }
-  });
-  const [filesWidth, setFilesWidth] = React.useState<number>(() => {
-    try {
-      const saved = localStorage.getItem("pp-files-width");
-      if (saved) return Math.max(160, Math.min(parseInt(saved, 10), 800));
-    } catch {}
-    return 280;
-  });
-  const [filesHeight, setFilesHeight] = React.useState<number>(() => {
-    try {
-      const saved = localStorage.getItem("pp-files-height");
-      if (saved) return Math.max(150, Math.min(parseInt(saved, 10), 800));
-    } catch {}
-    return 280;
-  });
-  const filesContainerRef = React.useRef<HTMLDivElement>(null);
-  const filesResizeDir = React.useRef<"width-right" | "width-left" | "height" | null>(null);
-
-  const handleFilesWidthLeftResizeStart = React.useCallback((e: React.PointerEvent) => {
-    e.preventDefault();
-    filesResizeDir.current = "width-left";
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-  }, []);
-  const handleFilesWidthRightResizeStart = React.useCallback((e: React.PointerEvent) => {
-    e.preventDefault();
-    filesResizeDir.current = "width-right";
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-  }, []);
-  const handleFilesHeightResizeStart = React.useCallback((e: React.PointerEvent) => {
-    e.preventDefault();
-    filesResizeDir.current = "height";
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-  }, []);
-  const handleFilesResizeMove = React.useCallback((e: React.PointerEvent) => {
-    const dir = filesResizeDir.current;
-    if (!dir || !filesContainerRef.current) return;
-    const rect = filesContainerRef.current.getBoundingClientRect();
-    if (dir === "width-right") {
-      setFilesWidth(Math.max(160, Math.min(rect.right - e.clientX, rect.width - 200)));
-    } else if (dir === "width-left") {
-      setFilesWidth(Math.max(160, Math.min(e.clientX - rect.left, rect.width - 200)));
-    } else {
-      setFilesHeight(Math.max(150, Math.min(rect.bottom - e.clientY, rect.height - 100)));
-    }
-  }, []);
-  const handleFilesResizeEnd = React.useCallback(() => {
-    const dir = filesResizeDir.current;
-    if (!dir) return;
-    filesResizeDir.current = null;
-    if (dir === "height") {
-      setFilesHeight((h) => { try { localStorage.setItem("pp-files-height", String(Math.round(h))); } catch {} return h; });
-    } else {
-      setFilesWidth((w) => { try { localStorage.setItem("pp-files-width", String(Math.round(w))); } catch {} return w; });
-    }
-  }, []);
-
-  const isFilesDragging = React.useRef(false);
-  const filesDragZoneRef = React.useRef<"left" | "right" | "bottom" | null>(null);
-  const [filesDragActive, setFilesDragActive] = React.useState(false);
-  const [filesDragZone, setFilesDragZone] = React.useState<"left" | "right" | "bottom" | null>(null);
-
-  const handleFilesPositionChange = React.useCallback((pos: "left" | "right" | "bottom") => {
-    setFilesPosition(pos);
-    try { localStorage.setItem("pp-files-position", pos); } catch {}
-  }, []);
-  const handleCombinedPositionChange = React.useCallback((pos: "left" | "right" | "bottom") => {
-    handleTerminalPositionChange(pos);
-    handleFilesPositionChange(pos);
-  }, [handleTerminalPositionChange, handleFilesPositionChange]);
-
-  // Keep the drag sync ref up-to-date so handlePanelDragEnd can sync file explorer
-  React.useEffect(() => {
-    if (showTerminal && showFileExplorer && terminalPosition === filesPosition) {
-      combinedDragSyncRef.current = handleFilesPositionChange;
-    } else {
-      combinedDragSyncRef.current = null;
-    }
-  }, [showTerminal, showFileExplorer, terminalPosition, filesPosition, handleFilesPositionChange]);
-
-  const handleFilesDragStart = React.useCallback((e: React.PointerEvent) => {
-    e.preventDefault();
-    isFilesDragging.current = true;
-    filesDragZoneRef.current = null;
-    setFilesDragActive(true);
-    setFilesDragZone(null);
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-  }, []);
-  const handleFilesDragMove = React.useCallback((e: React.PointerEvent) => {
-    if (!isFilesDragging.current || !filesContainerRef.current) return;
-    const rect = filesContainerRef.current.getBoundingClientRect();
-    const pctX = (e.clientX - rect.left) / rect.width;
-    const pctY = (e.clientY - rect.top) / rect.height;
-    let zone: "left" | "right" | "bottom" | null = null;
-    if (pctY > 0.55) zone = "bottom";
-    else if (pctX > 0.65) zone = "right";
-    else if (pctX < 0.35) zone = "left";
-    filesDragZoneRef.current = zone;
-    setFilesDragZone(zone);
-  }, []);
-  const handleFilesDragEnd = React.useCallback(() => {
-    if (!isFilesDragging.current) return;
-    isFilesDragging.current = false;
-    const zone = filesDragZoneRef.current;
-    filesDragZoneRef.current = null;
-    setFilesDragActive(false);
-    setFilesDragZone(null);
-    if (zone) handleFilesPositionChange(zone);
-  }, [handleFilesPositionChange]);
-  const handleFilesOuterPointerMove = React.useCallback((e: React.PointerEvent) => {
-    handleFilesResizeMove(e);
-    handleFilesDragMove(e);
-  }, [handleFilesResizeMove, handleFilesDragMove]);
-  const handleFilesOuterPointerUp = React.useCallback(() => {
-    handleFilesResizeEnd();
-    handleFilesDragEnd();
-  }, [handleFilesResizeEnd, handleFilesDragEnd]);
+  const panelLayout = usePanelLayout(activeSessionId);
+  const {
+    showTerminal, setShowTerminal,
+    terminalPosition, terminalHeight, terminalWidth, terminalColumnRef,
+    handleTerminalResizeStart, handleTerminalPositionChange,
+    panelDragActive, panelDragZone,
+    handlePanelDragStart, handleTerminalTabDragStart,
+    handleOuterPointerMove, handleOuterPointerUp,
+    combinedActiveTab, handleCombinedTabChange, handleCombinedPositionChange,
+    terminalTabs, activeTerminalId, setActiveTerminalId,
+    handleTerminalTabAdd, handleTerminalTabClose,
+    showFileExplorer, setShowFileExplorer,
+    filesPosition, filesWidth, filesHeight, filesContainerRef,
+    handleFilesWidthLeftResizeStart, handleFilesWidthRightResizeStart, handleFilesHeightResizeStart,
+    handleFilesPositionChange,
+    filesDragActive, filesDragZone, handleFilesDragStart,
+    handleFilesOuterPointerMove, handleFilesOuterPointerUp,
+  } = panelLayout;
 
   type RunnerInfo = { runnerId: string; name?: string | null; roots?: string[]; sessionCount: number };
   const [newSessionOpen, setNewSessionOpen] = React.useState(false);
@@ -743,7 +220,6 @@ export function App() {
   const [activeToolCalls, setActiveToolCalls] = React.useState<Map<string, string>>(new Map());
 
   // Message queue: messages sent while the agent is active
-  type QueuedMessage = { id: string; text: string; deliverAs: "steer" | "followUp"; timestamp: number };
   const [messageQueue, setMessageQueue] = React.useState<QueuedMessage[]>([]);
   const [activeModel, setActiveModel] = React.useState<ConfiguredModelInfo | null>(null);
   const [sessionName, setSessionName] = React.useState<string | null>(null);
@@ -759,7 +235,7 @@ export function App() {
   const [isCompacting, setIsCompacting] = React.useState(false);
   const [effortLevel, setEffortLevel] = React.useState<string | null>(null);
   const [planModeEnabled, setPlanModeEnabled] = React.useState(false);
-  const [tokenUsage, setTokenUsage] = React.useState<TokenUsageInfo | null>(null);
+  const [tokenUsage, setTokenUsage] = React.useState<TokenUsage | null>(null);
   const [lastHeartbeatAt, setLastHeartbeatAt] = React.useState<number | null>(null);
   const [providerUsage, setProviderUsage] = React.useState<ProviderUsageMap | null>(null);
   const [usageRefreshing, setUsageRefreshing] = React.useState(false);
@@ -821,82 +297,13 @@ export function App() {
   const [resumeSessionsLoading, setResumeSessionsLoading] = React.useState(false);
 
   // Mobile layout
-  const [sidebarOpen, setSidebarOpen] = React.useState(false);
+  const {
+    sidebarOpen, setSidebarOpen,
+    sidebarSwipeOffset, suppressOverlayClickRef,
+    handleSidebarPointerDown, handleSidebarPointerMove, handleSidebarPointerUp,
+  } = useMobileSidebar();
   const [liveSessions, setLiveSessions] = React.useState<HubSession[]>([]);
   const [sessionSwitcherOpen, setSessionSwitcherOpen] = React.useState(false);
-
-  // Swipe-left-to-close for the mobile sidebar — gesture lives on the overlay
-  // (the dim backdrop to the right of the sidebar) so it never conflicts with
-  // interactions inside the sidebar itself.
-  const sidebarSwipeRef = React.useRef<{
-    pointerId: number;
-    startX: number;
-    startY: number;
-    locked: boolean;
-    isVertical: boolean;
-    didSwipe: boolean;
-  } | null>(null);
-  const sidebarSwipeOffsetRef = React.useRef(0);
-  const [sidebarSwipeOffset, setSidebarSwipeOffset] = React.useState(0);
-  // Suppresses the click that fires immediately after a swipe pointerUp
-  const suppressOverlayClickRef = React.useRef(false);
-
-  const handleSidebarPointerDown = React.useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    if (e.button !== 0) return;
-    sidebarSwipeRef.current = {
-      pointerId: e.pointerId,
-      startX: e.clientX,
-      startY: e.clientY,
-      locked: false,
-      isVertical: false,
-      didSwipe: false,
-    };
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-  }, []);
-
-  const handleSidebarPointerMove = React.useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    const s = sidebarSwipeRef.current;
-    if (!s || e.pointerId !== s.pointerId) return;
-    const dx = e.clientX - s.startX;
-    const dy = e.clientY - s.startY;
-    if (!s.locked && !s.isVertical) {
-      if (Math.abs(dy) > 8 && Math.abs(dy) > Math.abs(dx)) {
-        s.isVertical = true;
-        sidebarSwipeRef.current = null;
-        return;
-      }
-      if (Math.abs(dx) > 8 && Math.abs(dx) > Math.abs(dy)) {
-        s.locked = true;
-      }
-    }
-    if (s.isVertical || !s.locked) return;
-    s.didSwipe = true;
-    // Only allow leftward swipes (negative dx), with a tiny rightward overscroll
-    const clamped = Math.min(8, dx);
-    sidebarSwipeOffsetRef.current = clamped;
-    setSidebarSwipeOffset(clamped);
-    e.preventDefault();
-  }, []);
-
-  const handleSidebarPointerUp = React.useCallback((e: React.PointerEvent<HTMLDivElement>) => {
-    const s = sidebarSwipeRef.current;
-    if (!s || e.pointerId !== s.pointerId) return;
-    try { (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId); } catch { /* ignore */ }
-    const didSwipe = s.didSwipe;
-    sidebarSwipeRef.current = null;
-    const offset = sidebarSwipeOffsetRef.current;
-    sidebarSwipeOffsetRef.current = 0;
-    setSidebarSwipeOffset(0);
-    if (didSwipe) {
-      // Suppress the click that the browser fires right after pointerUp
-      suppressOverlayClickRef.current = true;
-      requestAnimationFrame(() => { suppressOverlayClickRef.current = false; });
-    }
-    // Close if dragged more than 80 px to the left
-    if (offset < -80) {
-      setSidebarOpen(false);
-    }
-  }, []);
 
   // Auto-reopen the last viewed session once live sessions arrive.
   // (restoredRef is declared here; the effect is placed after openSession is defined below)
@@ -906,15 +313,6 @@ export function App() {
   // When the session comes back live (hub sends session_added), we auto-reconnect.
   const restartPendingSessionIdRef = React.useRef<string | null>(null);
   const restartPendingTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // Prevent the underlying content from scrolling when the mobile sidebar is open.
-  React.useEffect(() => {
-    const prev = document.body.style.overflow;
-    if (sidebarOpen) document.body.style.overflow = "hidden";
-    return () => {
-      document.body.style.overflow = prev;
-    };
-  }, [sidebarOpen]);
 
 
 
@@ -1355,7 +753,7 @@ export function App() {
         model?: { provider: string; id: string; name?: string } | null;
         sessionName?: string | null;
         thinkingLevel?: string | null;
-        tokenUsage?: TokenUsageInfo | null;
+        tokenUsage?: TokenUsage | null;
         ts?: number;
       };
 
@@ -4048,7 +3446,7 @@ export function App() {
                         id: "terminal",
                         label: "Terminal",
                         icon: <TerminalIcon className="size-3.5" />,
-                        onClose: () => { setShowTerminal(false); setCombinedActiveTab("files"); },
+                        onClose: () => { setShowTerminal(false); handleCombinedTabChange("files"); },
                         // Dragging the Terminal tab detaches it (moves only the terminal panel)
                         onDragStart: handleTerminalTabDragStart,
                         content: (
@@ -4070,7 +3468,7 @@ export function App() {
                         id: "files",
                         label: "Files",
                         icon: <FolderTree className="size-3.5" />,
-                        onClose: () => { setShowFileExplorer(false); setCombinedActiveTab("terminal"); },
+                        onClose: () => { setShowFileExplorer(false); handleCombinedTabChange("terminal"); },
                         // Dragging the Files tab detaches it (moves only the files panel)
                         onDragStart: handleFilesDragStart,
                         content: (
@@ -4328,38 +3726,7 @@ export function App() {
           </div>
         )}
 
-        {/* Keyboard shortcuts help dialog */}
-        <Dialog open={showShortcutsHelp} onOpenChange={setShowShortcutsHelp}>
-          <DialogContent className="max-w-sm">
-            <DialogHeader>
-              <DialogTitle className="flex items-center gap-2">
-                <Keyboard className="h-4 w-4" />
-                Keyboard Shortcuts
-              </DialogTitle>
-              <DialogDescription>
-                Available shortcuts for the PizzaPi web UI.
-              </DialogDescription>
-            </DialogHeader>
-            <div className="flex flex-col gap-2.5 text-sm py-1">
-              {(
-                [
-                  { key: isMac ? "⌘K" : "Ctrl+K", action: "Focus prompt" },
-                  { key: "Ctrl+`", action: "Toggle terminal" },
-                  { key: isMac ? "⌘⇧E" : "Ctrl+Shift+E", action: "Toggle file explorer" },
-                  { key: isMac ? "⌘." : "Ctrl+.", action: "Abort active agent" },
-                  { key: "?", action: "Show this dialog" },
-                ] as { key: string; action: string }[]
-              ).map(({ key, action }) => (
-                <div key={key} className="flex items-center justify-between gap-4">
-                  <span className="text-muted-foreground">{action}</span>
-                  <kbd className="inline-flex items-center rounded border bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground whitespace-nowrap">
-                    {key}
-                  </kbd>
-                </div>
-              ))}
-            </div>
-          </DialogContent>
-        </Dialog>
+        <ShortcutsDialog open={showShortcutsHelp} onOpenChange={setShowShortcutsHelp} />
       </div>
     </div>
     </TooltipProvider>

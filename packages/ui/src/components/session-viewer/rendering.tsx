@@ -24,7 +24,8 @@ import type { SubAgentTurn } from "@/components/session-viewer/types";
 
 // Re-export card components
 export { PizzaProgress, getPizzaStages, pizzaLayerLabel, stageVisual, ALL_STAGES, TOPPING_NAME_TO_IDX } from "@/components/session-viewer/cards/PizzaProgress";
-export { TodoCard, type TodoItem } from "@/components/session-viewer/cards/TodoCard";
+export { TodoCard } from "@/components/session-viewer/cards/TodoCard";
+export type { TodoItem } from "@/lib/types";
 export { SessionNameCard } from "@/components/session-viewer/cards/SessionNameCard";
 export {
   truncateSessionId,
