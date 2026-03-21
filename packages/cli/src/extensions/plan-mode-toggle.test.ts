@@ -353,6 +353,22 @@ describe("isDestructiveCommand", () => {
         expect(isDestructiveCommand("git notes --ref review add -m 'note' HEAD")).toBe(true);
     });
 
+    test("allows git notes get-ref (read-only)", () => {
+        expect(isDestructiveCommand("git notes get-ref")).toBe(false);
+        expect(isDestructiveCommand("git notes --ref review get-ref")).toBe(false);
+        expect(isDestructiveCommand("git notes --ref=review get-ref")).toBe(false);
+    });
+
+    test("blocks git notes with shell-expanded --ref values (P1 bypass prevention)", () => {
+        // A variable that expands to `add -m note HEAD` must be rejected
+        expect(isDestructiveCommand("git notes --ref $NOTES_REF")).toBe(true);
+        expect(isDestructiveCommand("git notes --ref $NOTES_REF show")).toBe(true);
+        expect(isDestructiveCommand("git notes --ref=$(echo review) show")).toBe(true);
+        expect(isDestructiveCommand("git notes --ref=`echo review` list")).toBe(true);
+        // command substitution in the separate form
+        expect(isDestructiveCommand("git notes --ref $(get_ref) list")).toBe(true);
+    });
+
 
     test("flags git submodule update (modifies working tree)", () => {
         expect(isDestructiveCommand("git submodule update --init")).toBe(true);

@@ -269,6 +269,16 @@ function splitShellWords(command: string): string[] {
     return words;
 }
 
+/** Returns true if a token contains unquoted shell expansion (variable, command substitution, etc.) */
+function containsShellExpansion(token: string): boolean {
+    // After splitShellWords the token is already unquoted, but variable
+    // references like $VAR or $(cmd) or `cmd` survive unquoted splitting and
+    // would be expanded by the shell at execution time.  We can't predict
+    // what an expanded value contains, so reject any ref token that still
+    // holds `$` (variable/command substitution) or a backtick.
+    return token.includes("$") || token.includes("`");
+}
+
 function isSafeGitNotesInvocation(segment: string): boolean {
     const words = splitShellWords(segment);
     if (words.length < 2) return false;
@@ -279,10 +289,18 @@ function isSafeGitNotesInvocation(segment: string): boolean {
         const arg = words[index].toLowerCase();
         if (arg === "--ref") {
             if (index + 1 >= words.length) return false;
+            // Reject shell-expanded ref values: the shell would split them
+            // into additional tokens at execution time, turning a seemingly
+            // safe invocation into a mutating one.
+            const refValue = words[index + 1];
+            if (containsShellExpansion(refValue)) return false;
             index += 2;
             continue;
         }
         if (arg.startsWith("--ref=")) {
+            // Reject shell expansion in the ref= value portion
+            const refValue = words[index].slice("--ref=".length);
+            if (containsShellExpansion(refValue)) return false;
             index++;
             continue;
         }
@@ -293,7 +311,9 @@ function isSafeGitNotesInvocation(segment: string): boolean {
     if (index >= words.length) return true;
 
     const subcommand = words[index].toLowerCase();
-    return subcommand === "show" || subcommand === "list";
+    // show, list — read-only
+    // get-ref  — prints the effective notes ref, also read-only
+    return subcommand === "show" || subcommand === "list" || subcommand === "get-ref";
 }
 
 function isDestructiveGitCommand(segment: string): boolean {
