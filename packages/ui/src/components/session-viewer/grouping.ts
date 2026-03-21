@@ -416,7 +416,7 @@ function deduplicateAssistantMessages(messages: RelayMessage[]): RelayMessage[] 
           }
 
           // Preserve all non-toolCall blocks from winner and tool calls that
-          // exist in both winner and latest.
+          // exist in both winner and latest, or that have a completed result.
           for (const block of winnerBlocks) {
             if (!block || typeof block !== "object") {
               mergedBlocks.push(block);
@@ -424,15 +424,15 @@ function deduplicateAssistantMessages(messages: RelayMessage[]): RelayMessage[] 
             }
             const b = block as Record<string, unknown>;
             if (b.type === "toolCall") {
-              // Only preserve if this tool call exists in the latest snapshot.
               const id =
                 typeof b.toolCallId === "string"
                   ? b.toolCallId
                   : typeof b.id === "string"
                     ? b.id
                     : "";
-              if (!id || latestToolIds.has(id)) {
-                // Preserve winner's version for better parsed args
+              // Keep if present in latest, OR if a terminal toolResult exists
+              // (the latest snapshot may have truncated it, but the call ran).
+              if (!id || latestToolIds.has(id) || toolCallIdsWithResult.has(id)) {
                 mergedBlocks.push(block);
               }
             } else {
@@ -441,20 +441,22 @@ function deduplicateAssistantMessages(messages: RelayMessage[]): RelayMessage[] 
             }
           }
 
-          // Collect text content from winner blocks so we can skip duplicates
-          // when appending new content from the latest snapshot.
-          const winnerTexts = new Set<string>();
-          for (const block of winnerBlocks) {
-            if (!block || typeof block !== "object") continue;
-            const b = block as Record<string, unknown>;
-            if (b.type === "text" && typeof b.text === "string") winnerTexts.add(b.text);
+          // Find the index of the last toolCall in the latest snapshot — only
+          // blocks after this position are "trailing" content unique to latest.
+          let lastToolCallIdx = -1;
+          for (let li = latestBlocks.length - 1; li >= 0; li--) {
+            const lb = latestBlocks[li];
+            if (lb && typeof lb === "object" && (lb as Record<string, unknown>).type === "toolCall") {
+              lastToolCallIdx = li;
+              break;
+            }
           }
 
-          // Append any tool calls that exist only in the latest snapshot, and
-          // any non-toolCall blocks (e.g. trailing text) that don't appear in
-          // the winner — these represent content the model emitted after the
-          // errored stream ended that the winner (partial) never received.
-          for (const block of latestBlocks) {
+          // Append tool calls that exist only in the latest snapshot, and
+          // trailing non-toolCall blocks (after the last tool call) that aren't
+          // already at the end of the merged result.
+          for (let li = 0; li < latestBlocks.length; li++) {
+            const block = latestBlocks[li];
             if (!block || typeof block !== "object") continue;
             const b = block as Record<string, unknown>;
             if (b.type === "toolCall") {
@@ -468,9 +470,18 @@ function deduplicateAssistantMessages(messages: RelayMessage[]): RelayMessage[] 
               if (id && !winnerToolIds.has(id)) {
                 mergedBlocks.push(block);
               }
-            } else if (b.type === "text" && typeof b.text === "string") {
-              // Append text blocks that are unique to the latest snapshot
-              if (!winnerTexts.has(b.text)) {
+            } else if (li > lastToolCallIdx && b.type === "text" && typeof b.text === "string") {
+              // This is trailing text (after the last tool call in the latest
+              // snapshot). Only skip if this exact text is already at the tail
+              // of the merged result — comparing by position prevents conflating
+              // identical text that appears at different positions.
+              const lastMerged = mergedBlocks.length > 0 ? mergedBlocks[mergedBlocks.length - 1] : null;
+              const lastIsMatch =
+                lastMerged &&
+                typeof lastMerged === "object" &&
+                (lastMerged as Record<string, unknown>).type === "text" &&
+                (lastMerged as Record<string, unknown>).text === b.text;
+              if (!lastIsMatch) {
                 mergedBlocks.push(block);
               }
             }
@@ -483,7 +494,15 @@ function deduplicateAssistantMessages(messages: RelayMessage[]): RelayMessage[] 
       }
 
       if (mergedBlocks.length > 0) {
+        // For each shared tool call, prefer the latest parseable args over the
+        // winner's — the latest snapshot may have a more complete version of
+        // the arguments even if the message itself errored.
         const argsById = collectValidToolArgsByCallId(winnerMsg);
+        const latestArgsById = collectValidToolArgsByCallId(latestMsg);
+        // Overlay: latest valid args win over winner's args
+        for (const [id, args] of latestArgsById) {
+          argsById.set(id, args);
+        }
         const patchedBlocks = argsById.size > 0 ? patchToolCallArguments(mergedBlocks, argsById) : mergedBlocks;
 
         patchedAssistantByIndex.set(winner, {
