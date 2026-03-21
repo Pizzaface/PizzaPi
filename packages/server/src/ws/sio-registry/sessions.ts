@@ -27,6 +27,7 @@ import {
     refreshRunnerAssociationTTL,
     scanExpiredSessions,
     addChildSession,
+    addChildSessionMembership,
     removeChildSession,
     isChildDelinked,
     clearParentSessionId,
@@ -180,6 +181,11 @@ export async function registerTuiSession(
             // child in the membership set so future delink_children snapshots
             // can still find it.  The child CLI still preserves parentSessionId
             // and will re-send it when the parent reconnects.
+            // NOTE: We use addChildSessionMembership (not addChildSession) so
+            // we do NOT clear any existing delink marker — the marker may have
+            // been set by a previous /new and should still take effect when
+            // the parent comes back online.
+            await addChildSessionMembership(candidateParentId, sessionId);
             resolvedParentSessionId = null;
         } else if (parentSession.userId !== userId) {
             // Cross-user link attempt — evict from membership set as well.

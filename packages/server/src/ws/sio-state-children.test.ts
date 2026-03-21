@@ -84,8 +84,8 @@ const mockRedis = {
     on: mock(() => mockRedis),
     connect: mock(async () => {}),
     // Simple string key store (used by markChildAsDelinked / isChildDelinked)
-    set: mock(async (key: string, _value: string, _opts?: unknown) => {
-        store.set(key, "1");
+    set: mock(async (key: string, value: string, _opts?: unknown) => {
+        store.set(key, value);
     }),
     get: mock(async (key: string) => store.get(key) ?? null),
     del: mock(async (key: string) => {
@@ -113,6 +113,7 @@ mock.module("redis", () => ({
 const {
     initStateRedis,
     addChildSession,
+    addChildSessionMembership,
     getChildSessions,
     removeChildSession,
     removeChildren,
@@ -123,6 +124,7 @@ const {
     addPendingParentDelinkChildren,
     getPendingParentDelinkChildren,
     removePendingParentDelinkChild,
+    isPendingParentDelinkChild,
     markChildAsDelinked,
     isChildDelinked,
     clearDelinkedMark,
@@ -283,25 +285,25 @@ describe("child session helpers (sio-state)", () => {
     });
 
     it("markChildAsDelinked sets the marker; isChildDelinked returns true", async () => {
-        await markChildAsDelinked("child-1");
+        await markChildAsDelinked("child-1", "parent-1");
         expect(await isChildDelinked("child-1")).toBe(true);
     });
 
     it("clearDelinkedMark removes the marker", async () => {
-        await markChildAsDelinked("child-1");
+        await markChildAsDelinked("child-1", "parent-1");
         await clearDelinkedMark("child-1");
         expect(await isChildDelinked("child-1")).toBe(false);
     });
 
     it("markers are per-child and do not affect siblings", async () => {
-        await markChildAsDelinked("child-1");
+        await markChildAsDelinked("child-1", "parent-1");
         expect(await isChildDelinked("child-1")).toBe(true);
         expect(await isChildDelinked("child-2")).toBe(false);
     });
 
     it("markChildAsDelinked is idempotent", async () => {
-        await markChildAsDelinked("child-1");
-        await markChildAsDelinked("child-1");
+        await markChildAsDelinked("child-1", "parent-1");
+        await markChildAsDelinked("child-1", "parent-1");
         expect(await isChildDelinked("child-1")).toBe(true);
         await clearDelinkedMark("child-1");
         expect(await isChildDelinked("child-1")).toBe(false);
@@ -311,10 +313,61 @@ describe("child session helpers (sio-state)", () => {
         // Simulate: parent delinked child-1, then later spawns it again.
         // The new addChildSession should clear the delink marker so future
         // reconnects don't reject the new legitimate parent link.
-        await markChildAsDelinked("child-1");
+        await markChildAsDelinked("child-1", "parent-1");
         expect(await isChildDelinked("child-1")).toBe(true);
         await addChildSession("parent-2", "child-1");
         expect(await isChildDelinked("child-1")).toBe(false);
+    });
+
+    it("addChildSession removes child from former parent's pending-delink set (Fix #2)", async () => {
+        // Scenario: P1 ran /new while C was online but delivery failed.
+        // C stays in pending-delink-children:P1.  C is later linked to P2.
+        // addChildSession(P2, C) must scrub C from pending-delink-children:P1
+        // so P1's next /new doesn't re-sever the P2→C link.
+        await markChildAsDelinked("child-1", "parent-1");
+        await addPendingParentDelinkChildren("parent-1", ["child-1"]);
+        expect(await isPendingParentDelinkChild("parent-1", "child-1")).toBe(true);
+
+        await addChildSession("parent-2", "child-1");
+
+        expect(await isChildDelinked("child-1")).toBe(false);
+        expect(await isPendingParentDelinkChild("parent-1", "child-1")).toBe(false);
+    });
+
+    it("addChildSession with old-format marker ('1') does not attempt pending-delink cleanup", async () => {
+        // Legacy markers stored "1" as the value — no parent ID available.
+        // addChildSession must still clear the marker but not try to sRem from
+        // a set keyed by "1" (that would be a garbage key operation).
+        store.set("pizzapi:sio:delinked:child-1", "1");
+        expect(await isChildDelinked("child-1")).toBe(true);
+
+        await addChildSession("parent-2", "child-1");
+
+        expect(await isChildDelinked("child-1")).toBe(false);
+        // No garbage set entry created
+        expect(setStore.has("pizzapi:sio:pending-delink-children:1")).toBe(false);
+    });
+
+    // ── addChildSessionMembership (transient-offline path) ─────────────────
+
+    it("addChildSessionMembership adds child to membership set", async () => {
+        await addChildSessionMembership("parent-1", "child-1");
+        expect(await isChildOfParent("parent-1", "child-1")).toBe(true);
+    });
+
+    it("addChildSessionMembership does NOT clear a delink marker (Fix #1)", async () => {
+        // When the parent is transiently offline during the child's reconnect,
+        // we still add the child to the membership set (so delink_children can
+        // find it), but we must NOT clear the delink marker — it may have been
+        // set by a previous /new and should still gate the child's next reconnect
+        // when the parent is actually online.
+        await markChildAsDelinked("child-1", "parent-1");
+        expect(await isChildDelinked("child-1")).toBe(true);
+
+        await addChildSessionMembership("parent-1", "child-1");
+
+        expect(await isChildOfParent("parent-1", "child-1")).toBe(true);
+        expect(await isChildDelinked("child-1")).toBe(true); // marker preserved
     });
 
     // ── removeChildren (targeted removal) ──────────────────────────────────

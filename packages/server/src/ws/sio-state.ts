@@ -649,6 +649,12 @@ function childrenKey(parentSessionId: string): string {
 /** Record a child session under its parent. */
 export async function addChildSession(parentSessionId: string, childSessionId: string): Promise<void> {
     const r = requireRedis();
+    // Read the delink marker value BEFORE the transaction — if the marker stores
+    // the former parent's session ID, we can scrub the child from that parent's
+    // pending-delink retry set in the same atomic multi.  This prevents a child
+    // that was delinked from P1 and is now being (re)linked to P2 from being
+    // severed again when P1 next runs /new and re-processes its retry set.
+    const formerParentId = await r.get(delinkMarkerKey(childSessionId));
     const multi = r.multi();
     multi.sAdd(childrenKey(parentSessionId), childSessionId);
     multi.expire(childrenKey(parentSessionId), SESSION_TTL_SECONDS);
@@ -657,6 +663,27 @@ export async function addChildSession(parentSessionId: string, childSessionId: s
     // (not consumed on first check) so that reconnect races are idempotent;
     // clearing it here when a new link is explicitly created is the safe place.
     multi.del(delinkMarkerKey(childSessionId));
+    // If the former parent's ID was stored in the marker value (non-empty, non-"1"),
+    // remove the child from that parent's pending-delink retry set atomically.
+    if (formerParentId && formerParentId !== "1") {
+        multi.sRem(pendingDelinkChildrenKey(formerParentId), childSessionId);
+    }
+    await multi.exec();
+}
+
+/**
+ * Add a child to the parent's membership set WITHOUT clearing any delink marker.
+ *
+ * Used when the parent is transiently offline during the child's reconnect —
+ * we still want future `delink_children` snapshots to include this child, but
+ * we must not clear the delink marker (which could have been set by a previous
+ * /new and should still take effect when the parent reconnects).
+ */
+export async function addChildSessionMembership(parentSessionId: string, childSessionId: string): Promise<void> {
+    const r = requireRedis();
+    const multi = r.multi();
+    multi.sAdd(childrenKey(parentSessionId), childSessionId);
+    multi.expire(childrenKey(parentSessionId), SESSION_TTL_SECONDS);
     await multi.exec();
 }
 
@@ -727,10 +754,18 @@ function delinkMarkerKey(childSessionId: string): string {
     return `${KEY_PREFIX}:delinked:${childSessionId}`;
 }
 
-/** Mark a child as explicitly delinked (consumed on first reconnect). */
-export async function markChildAsDelinked(childSessionId: string): Promise<void> {
+/**
+ * Mark a child as explicitly delinked by the given parent.
+ *
+ * The parent session ID is stored as the marker value so that
+ * `addChildSession` can atomically remove the child from the former
+ * parent's `pending-delink-children` set when the child is re-linked to
+ * a new parent.  Consumers that only need the boolean check can continue
+ * to use `isChildDelinked()`.
+ */
+export async function markChildAsDelinked(childSessionId: string, byParentSessionId: string): Promise<void> {
     const r = requireRedis();
-    await r.set(delinkMarkerKey(childSessionId), "1", { EX: DELINK_MARKER_TTL_SECONDS });
+    await r.set(delinkMarkerKey(childSessionId), byParentSessionId, { EX: DELINK_MARKER_TTL_SECONDS });
 }
 
 /** Check if a child has a pending delink marker. */

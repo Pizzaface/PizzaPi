@@ -760,7 +760,13 @@ export function registerRelayNamespace(io: SocketIOServer): void {
             // respond with trigger_response to children. Allowing child→parent
             // would let a sibling session inject responses into another child's
             // pending trigger through the parent's forwarding handler.
-            const isParentOfTarget = targetSession.parentSessionId === socket.data.sessionId;
+            //
+            // Fall back to the children membership set when the child's session
+            // hash has parentSessionId=null because the parent was transiently
+            // offline during the child's last reconnect (Fix #3: the set membership
+            // is preserved by addChildSessionMembership in that path).
+            const isParentOfTarget = targetSession.parentSessionId === socket.data.sessionId
+                || await isChildOfParent(socket.data.sessionId, targetSessionId);
             if (!isParentOfTarget) {
                 socket.emit("error", { message: "Sender is not the parent of the target session" });
                 if (typeof ack === "function") ack({ ok: false, error: "Sender is not the parent of the target session" });
@@ -818,7 +824,11 @@ export function registerRelayNamespace(io: SocketIOServer): void {
                 return;
             }
 
-            if (childSession.parentSessionId !== sessionId) {
+            // Same fallback as trigger_response: when the child's parentSessionId
+            // was cleared during a transient-offline reconnect, check set membership.
+            const isParentOfChild = childSession.parentSessionId === sessionId
+                || await isChildOfParent(sessionId, childSessionId);
+            if (!isParentOfChild) {
                 socket.emit("error", { message: "Sender is not the parent of the target session" });
                 if (typeof ack === "function") ack({ ok: false, error: "Sender is not the parent of the target session" });
                 return;
@@ -959,7 +969,10 @@ export function registerRelayNamespace(io: SocketIOServer): void {
                 // first and wrote markers second, a reconnecting child could slip
                 // through before its marker exists.
                 for (const childId of childIds) {
-                    await markChildAsDelinked(childId);
+                    // Store the parent session ID in the marker so that
+                    // addChildSession can scrub the child from this parent's
+                    // pending-delink retry set when the child is re-linked elsewhere.
+                    await markChildAsDelinked(childId, sessionId);
                 }
                 await addPendingParentDelinkChildren(sessionId, childIds);
 
