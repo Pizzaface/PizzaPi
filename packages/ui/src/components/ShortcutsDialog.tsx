@@ -13,9 +13,13 @@ interface ShortcutsDialogProps {
   onOpenChange: (open: boolean) => void;
 }
 
-const isMac = /Mac|iPhone|iPad/i.test(navigator.platform);
+function isMacPlatform(): boolean {
+  if (typeof navigator === "undefined") return false;
+  return /Mac|iPhone|iPad/i.test(navigator.platform);
+}
 
 export function ShortcutsDialog({ open, onOpenChange }: ShortcutsDialogProps) {
+  const isMac = isMacPlatform();
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-sm">
