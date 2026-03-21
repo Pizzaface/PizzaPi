@@ -123,19 +123,9 @@ const DESTRUCTIVE_FLAG_PATTERNS = [
     /\bfind\b.*\s-exec(dir)?\b/i, /\bfind\b.*\s-ok(dir)?\b/i, /\bfind\b.*\s-delete\b/i, /\bfind\b.*\s-fprintf\b/i,
     /\bgit\b.*\s--output[= ]/i,
     /\bsort\b.*\s(-o\s|-o\S|--output\b|--output=)/i,
-    // tar: any invocation that creates, appends, updates, extracts, deletes, or concatenates
-    // (all modes that write to an archive or the filesystem).
-    // Safe operations (list/test: -t / --list) are not matched by these patterns.
-    /\btar\b.*(?:\s-[a-zA-Z]*[cruxA]|--(?:create|append|update|extract|get|delete|catenate|concatenate)\b)/i,
-    /\btar\b\s+[cruxA][a-zA-Z]*/i, // legacy positional-flag style: tar czf / tar xvf / tar -Af
     // In-place editing via sed/perl -i
     /\bsed\b.*\s-i\b/i, /\bsed\b.*\s-i\S/i,
     /\bperl\b.*\s-i\b/i, /\bperl\b.*\s-i\S/i,
-    // gawk in-place editing: only match when the inplace extension is loaded.
-    // "-i" alone is gawk's --include shorthand (e.g. "gawk -i ord ..." is a read-only library
-    // load); the destructive variant requires the "inplace" module specifically.
-    // The real long-form flag is "--include=inplace", not the nonexistent "--inplace".
-    /\bgawk\b.*(?:\s-i\s*inplace\b|--include[= ]inplace\b)/i,
     // Interpreters executing scripts (not just --version/--help)
     /^\s*python[23]?\s+(?!--(version|help)\b)\S/i,
     /^\s*ruby\s+(?!--(version|help)\b)\S/i,
@@ -243,6 +233,32 @@ function isDestructiveGitCommand(segment: string): boolean {
     return GIT_SAFE_SUBCOMMAND_DESTRUCTIVE_OVERRIDES.some((p) => p.test(segment));
 }
 
+const TAR_LONG_MODE_PATTERN = /(^|\s)--(?:create|append|update|extract|get|delete|catenate|concatenate)\b/i;
+const TAR_BUNDLED_MODE_PATTERN = /^\s*tar\s+(-?[A-Za-z]+)\b/i;
+const GAWK_INCLUDE_ARG_PATTERN = /(?:^|\s)(?:-i(\S+)|-i\s+(\S+)|--include=(\S+)|--include\s+(\S+))/gi;
+const GAWK_INPLACE_MODULE_PATTERN = /(?:^|[\\/])inplace(?:\.awk)?$/i;
+
+function isDestructiveTarCommand(segment: string): boolean {
+    if (!/^\s*tar\b/i.test(segment)) return false;
+    if (TAR_LONG_MODE_PATTERN.test(segment)) return true;
+
+    const bundledMatch = segment.match(TAR_BUNDLED_MODE_PATTERN);
+    if (!bundledMatch) return false;
+
+    return /[cruxA]/i.test(bundledMatch[1].replace(/^-/, ""));
+}
+
+function isDestructiveGawkCommand(segment: string): boolean {
+    if (!/^\s*gawk\b/i.test(segment)) return false;
+
+    for (const match of segment.matchAll(GAWK_INCLUDE_ARG_PATTERN)) {
+        const includeArg = (match[1] ?? match[2] ?? match[3] ?? match[4] ?? "").replace(/^['"]|['"]$/g, "");
+        if (GAWK_INPLACE_MODULE_PATTERN.test(includeArg)) return true;
+    }
+
+    return false;
+}
+
 /**
  * Check if a command looks destructive based on known patterns.
  *
@@ -314,6 +330,10 @@ export function isDestructiveCommand(command: string, sandboxActive = false): bo
             if (DESTRUCTIVE_FLAG_PATTERNS.some((p) => p.test(trimmed))) return true;
             continue;
         }
+
+        // tar and gawk need command-aware parsing to avoid false positives and
+        // catch legacy syntax that a single regex misses.
+        if (isDestructiveTarCommand(trimmed) || isDestructiveGawkCommand(trimmed)) return true;
 
         const isCmdDestructive = DESTRUCTIVE_CMD_PATTERNS.some((p) => p.test(trimmed));
         const hasUnsafeRedirection = hasUnsafeOutputRedirection(trimmed);
