@@ -595,6 +595,11 @@ services:
     environment:
       - PORT=7492
       - PIZZAPI_REDIS_URL=redis://redis:6379
+      # NOTE: If you override server.image or server.build in a
+      # compose.override.yml, you MUST also override PIZZAPI_HUB_IMAGE and
+      # PIZZAPI_HUB_VERSION below — Docker Compose merges environment entries
+      # and will keep these stale values otherwise, causing /api/hub-info to
+      # report the wrong version/image in the UI.
       - PIZZAPI_HUB_IMAGE={{HUB_IMAGE}}
       - PIZZAPI_HUB_VERSION={{HUB_VERSION}}
       - BETTER_AUTH_SECRET={{BETTER_AUTH_SECRET}}
@@ -731,7 +736,11 @@ function truncateDigest(digest: string | undefined): string {
 }
 
 export function normalizeImageRepoForExplicitTag(imageRepo: string): string {
-    if (imageRepo.includes("@")) return imageRepo;
+    // Strip digest (@sha256:...) so the explicit tag can be applied.
+    // Without this, a digest-pinned image silently ignores --tag/imageTag.
+    if (imageRepo.includes("@")) {
+        return imageRepo.slice(0, imageRepo.indexOf("@"));
+    }
     const lastSlash = imageRepo.lastIndexOf("/");
     const afterSlash = lastSlash === -1 ? imageRepo : imageRepo.slice(lastSlash + 1);
     const colonInLastPart = afterSlash.indexOf(":");

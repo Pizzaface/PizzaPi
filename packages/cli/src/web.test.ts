@@ -39,6 +39,11 @@ services:
     environment:
       - PORT=7492
       - PIZZAPI_REDIS_URL=redis://redis:6379
+      # NOTE: If you override server.image or server.build in a
+      # compose.override.yml, you MUST also override PIZZAPI_HUB_IMAGE and
+      # PIZZAPI_HUB_VERSION below — Docker Compose merges environment entries
+      # and will keep these stale values otherwise, causing /api/hub-info to
+      # report the wrong version/image in the UI.
       - PIZZAPI_HUB_IMAGE={{HUB_IMAGE}}
       - PIZZAPI_HUB_VERSION={{HUB_VERSION}}
       - BETTER_AUTH_SECRET={{BETTER_AUTH_SECRET}}
@@ -338,9 +343,9 @@ describe("normalizeImageRepoForExplicitTag", () => {
         expect(normalizeImageRepoForExplicitTag("ghcr.io/acme/pizzapi:0.1.32")).toBe("ghcr.io/acme/pizzapi");
     });
 
-    test("leaves digest-pinned refs unchanged", () => {
+    test("strips digest from digest-pinned refs so explicit tag can be applied", () => {
         const digestRef = "ghcr.io/acme/pizzapi@sha256:abcdef0123456789";
-        expect(normalizeImageRepoForExplicitTag(digestRef)).toBe(digestRef);
+        expect(normalizeImageRepoForExplicitTag(digestRef)).toBe("ghcr.io/acme/pizzapi");
     });
 
     test("leaves plain repos unchanged", () => {
