@@ -7,7 +7,8 @@
  */
 import * as React from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { FolderOpen, Loader2, X, ChevronLeft } from "lucide-react";
+import { FolderOpen, Loader2, X, ChevronLeft, Monitor } from "lucide-react";
+import { SiApple, SiLinux } from "react-icons/si";
 import { cn } from "@/lib/utils";
 import { formatPathTail } from "@/lib/path";
 import { Button } from "@/components/ui/button";
@@ -30,6 +31,8 @@ export interface WizardRunner {
     sessionCount: number;
     roots?: string[];
     isOnline: boolean;
+    /** Node.js process.platform from the runner (e.g. "darwin", "linux", "win32") */
+    platform?: string | null;
 }
 
 export interface NewSessionWizardDialogProps {
@@ -68,6 +71,26 @@ const LIST_MAX_HEIGHT = 360;
 
 function runnerLabel(r: WizardRunner): string {
     return r.name?.trim() || `${r.runnerId.slice(0, 8)}…`;
+}
+
+function PlatformIcon({ platform }: { platform: string | null | undefined }) {
+    const cls = "h-3.5 w-3.5 flex-shrink-0";
+    switch (platform) {
+        case "darwin":  return <SiApple className={cls} />;
+        case "linux":   return <SiLinux className={cls} />;
+        case "win32":   return <Monitor className={cls} />;
+        default:        return platform ? <Monitor className={cls} /> : null;
+    }
+}
+
+function platformName(platform: string | null | undefined): string | null {
+    if (!platform) return null;
+    switch (platform) {
+        case "darwin":  return "macOS";
+        case "linux":   return "Linux";
+        case "win32":   return "Windows";
+        default:        return platform;
+    }
 }
 
 function filterFolders(folders: string[], query: string): string[] {
@@ -293,29 +316,41 @@ export function NewSessionWizardDialog({
                             </div>
                         )}
                         {!runnersLoading && connectedRunners.length > 0 && (
-                            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                            <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
                                 {connectedRunners.map((r) => {
                                     const roots = Array.isArray(r.roots) ? r.roots.length : 0;
-                                    const meta = `${r.sessionCount} session${r.sessionCount !== 1 ? "s" : ""}${roots > 0 ? ` · ${roots} root${roots !== 1 ? "s" : ""}` : ""}`;
+                                    const sessionMeta = `${r.sessionCount} session${r.sessionCount !== 1 ? "s" : ""}${roots > 0 ? ` · ${roots} root${roots !== 1 ? "s" : ""}` : ""}`;
+                                    const osName = platformName(r.platform);
                                     return (
                                         <button
                                             key={r.runnerId}
                                             type="button"
                                             onClick={() => handleSelectRunner(r.runnerId)}
                                             className={cn(
-                                                "relative flex flex-col items-start gap-1 rounded-lg border p-3 text-left transition-colors",
+                                                "flex flex-col items-start gap-2.5 rounded-xl border p-5 text-left transition-colors w-full",
                                                 "hover:bg-accent hover:border-accent-foreground/20",
                                                 selectedRunnerId === r.runnerId
                                                     ? "border-primary bg-primary/5"
                                                     : "border-border bg-card",
                                             )}
                                         >
-                                            {/* Green connection dot */}
-                                            <span className="absolute top-2 right-2 h-2 w-2 rounded-full bg-green-500" />
-                                            <span className="font-medium text-sm leading-tight pr-4 truncate w-full">
+                                            {/* Top row: OS label (left) + status dot (right) */}
+                                            <div className="flex items-center justify-between w-full">
+                                                {osName ? (
+                                                    <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                                                        <PlatformIcon platform={r.platform} />
+                                                        <span>{osName}</span>
+                                                    </span>
+                                                ) : (
+                                                    <span />
+                                                )}
+                                                <span className="h-2.5 w-2.5 rounded-full bg-green-500 flex-shrink-0" />
+                                            </div>
+
+                                            <span className="font-semibold text-sm leading-tight truncate w-full">
                                                 {runnerLabel(r)}
                                             </span>
-                                            <span className="text-xs text-muted-foreground">{meta}</span>
+                                            <span className="text-xs text-muted-foreground">{sessionMeta}</span>
                                         </button>
                                     );
                                 })}

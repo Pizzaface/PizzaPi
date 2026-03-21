@@ -20,6 +20,8 @@ export interface RunnerClientToServerEvents {
     plugins?: RunnerPlugin[];
     hooks?: RunnerHook[];
     version?: string;
+    /** Node.js process.platform value (e.g. "darwin", "linux", "win32") */
+    platform?: string;
   }) => void;
 
   /** Runner responds with its list of skills */

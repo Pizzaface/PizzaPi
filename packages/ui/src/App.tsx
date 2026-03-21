@@ -149,6 +149,7 @@ export function App() {
             name: (typeof r.name === "string" ? r.name : null) as string | null,
             sessionCount: (typeof r.sessionCount === "number" ? r.sessionCount : 0) as number,
             version: (typeof r.version === "string" ? r.version : null) as string | null,
+            platform: (typeof r.platform === "string" ? r.platform : null) as string | null,
             isOnline: true,
           }));
         setSidebarRunners(mapped);
@@ -175,7 +176,7 @@ export function App() {
     handleFilesOuterPointerMove, handleFilesOuterPointerUp,
   } = panelLayout;
 
-  type RunnerInfo = { runnerId: string; name?: string | null; roots?: string[]; sessionCount: number };
+  type RunnerInfo = { runnerId: string; name?: string | null; roots?: string[]; sessionCount: number; platform?: string | null };
   const [newSessionOpen, setNewSessionOpen] = React.useState(false);
   const [runners, setRunners] = React.useState<RunnerInfo[]>([]);
   const [runnersLoading, setRunnersLoading] = React.useState(false);
@@ -364,6 +365,7 @@ export function App() {
             name: typeof r?.name === "string" ? r.name : null,
             roots: Array.isArray(r?.roots) ? (r.roots as unknown[]).filter((x): x is string => typeof x === "string") : [],
             sessionCount: typeof r?.sessionCount === "number" ? r.sessionCount : 0,
+            platform: typeof r?.platform === "string" ? r.platform : null,
           }))
           .filter((r) => r.runnerId);
         setRunners(normalized);

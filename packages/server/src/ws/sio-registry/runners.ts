@@ -111,6 +111,7 @@ export interface RegisterRunnerOpts {
     userId?: string | null;
     userName?: string | null;
     version?: string | null;
+    platform?: string | null;
 }
 
 /**
@@ -181,6 +182,7 @@ export async function registerRunner(
         plugins: JSON.stringify(plugins),
         hooks: JSON.stringify(hooks),
         version: typeof opts.version === "string" ? opts.version : null,
+        platform: typeof opts.platform === "string" ? opts.platform : null,
     };
 
     await setRunner(runnerId, runnerData);
@@ -329,6 +331,7 @@ export async function getRunners(filterUserId?: string): Promise<RunnerInfo[]> {
             plugins: safeJsonParse(r.plugins ?? "[]") ?? [],
             hooks: safeJsonParse(r.hooks ?? "[]") ?? [],
             version: r.version ?? null,
+            platform: r.platform ?? null,
         });
     }
 
