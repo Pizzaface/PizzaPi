@@ -671,6 +671,158 @@ describe("groupToolExecutionMessages", () => {
         expect(result[2].role).toBe("user");
         expect(result[3].role).toBe("assistant");
     });
+
+    test("P2 regression: preserves trailing text from winner when blocks are merged", () => {
+        // Scenario: A non-errored partial has [text, tc1], an errored final has
+        // [text, tc1, trailing_text]. When tc1 completes, we prefer the partial
+        // but must preserve the trailing text from the final.
+        const messages: RelayMessage[] = [
+            msg({
+                key: "a1-partial",
+                role: "assistant",
+                content: [
+                    { type: "text", text: "Starting task" },
+                    { type: "toolCall", name: "bash", id: "tc1", arguments: { command: "ls" } },
+                ],
+            }),
+            msg({
+                key: "a1-final",
+                role: "assistant",
+                stopReason: "error",
+                errorMessage: "Stream error",
+                content: [
+                    { type: "text", text: "Starting task" },
+                    { type: "toolCall", name: "bash", id: "tc1", arguments: { command: "ls" } },
+                    { type: "text", text: "Task in progress (tool still running)" },
+                ],
+                timestamp: 12345,
+            }),
+            msg({
+                key: "r1",
+                role: "toolResult",
+                toolCallId: "tc1",
+                toolName: "bash",
+                content: [{ type: "text", text: "output" }],
+            }),
+        ];
+        const result = groupToolExecutionMessages(messages);
+        // Should have leading text, tool card, and trailing text
+        const assistantParts = result.filter((m) => m.role === "assistant");
+        expect(assistantParts.length).toBeGreaterThanOrEqual(2);
+        // Check that trailing text is preserved
+        const trailingPart = assistantParts[assistantParts.length - 1];
+        const content = Array.isArray(trailingPart.content) ? trailingPart.content : [];
+        const trailingText = content.find((b: unknown) => {
+            if (!b || typeof b !== "object") return false;
+            const block = b as Record<string, unknown>;
+            return block.type === "text" && typeof block.text === "string" && block.text.includes("in progress");
+        });
+        expect(trailingText).toBeDefined();
+    });
+
+    test("P2 regression: deduplicates pending calls so id-less result matches correctly", () => {
+        // Scenario: partial = [bash tc1], final(error) = [bash tc1, bash tc2],
+        // result for tc1 arrives, then id-less bash result for tc2 arrives.
+        // Without dedup, pending list has stale [bash/tc1 from partial, bash/tc1
+        // from final, bash/tc2 from final], so the id-less result matches the
+        // stale tc1 entry instead of tc2. With dedup, it matches tc2 correctly.
+        const messages: RelayMessage[] = [
+            msg({
+                key: "a1-partial",
+                role: "assistant",
+                content: [
+                    { type: "toolCall", name: "bash", id: "tc1", arguments: { command: "echo a" } },
+                ],
+            }),
+            msg({
+                key: "a1-final",
+                role: "assistant",
+                stopReason: "error",
+                errorMessage: "Stream error",
+                content: [
+                    { type: "toolCall", name: "bash", id: "tc1", arguments: { command: "echo a" } },
+                    { type: "toolCall", name: "bash", id: "tc2", arguments: { command: "echo b" } },
+                ],
+                timestamp: 12345,
+            }),
+            // Real result for tc1
+            msg({
+                key: "r1",
+                role: "toolResult",
+                toolCallId: "tc1",
+                toolName: "bash",
+                content: [{ type: "text", text: "a" }],
+            }),
+            // Id-less result for bash (should match tc2, not tc1)
+            msg({
+                key: "r2",
+                role: "toolResult",
+                toolName: "bash",
+                content: [{ type: "text", text: "b" }],
+            }),
+        ];
+        const result = groupToolExecutionMessages(messages);
+        // Both tool calls should be completed with correct results
+        const tools = result.filter((m) => m.role === "tool");
+        expect(tools).toHaveLength(2);
+        const tc1Tool = tools.find((t) => t.toolCallId === "tc1");
+        const tc2Tool = tools.find((t) => t.toolCallId === "tc2");
+        expect(tc1Tool?.content).toBeTruthy();
+        expect(tc2Tool?.content).toBeTruthy();
+    });
+
+    test("P2 regression: prefers non-errored snapshot when all tools complete (tie-break)", () => {
+        // Scenario: partial = [text, tc1], final(error) = [text, tc1, tc2],
+        // results for both tc1 and tc2 arrive. Without the fix, the vote ties
+        // (tc1 votes partial, tc2 votes final) and the tie-break picks latest
+        // (errored final), so ERROR badge persists. With the fix, when all
+        // tools complete, we prefer the non-errored partial.
+        const messages: RelayMessage[] = [
+            msg({
+                key: "a1-partial",
+                role: "assistant",
+                content: [
+                    { type: "text", text: "Running both tools" },
+                    { type: "toolCall", name: "bash", id: "tc1", arguments: { command: "cmd1" } },
+                ],
+            }),
+            msg({
+                key: "a1-final",
+                role: "assistant",
+                stopReason: "error",
+                errorMessage: "Stream error",
+                content: [
+                    { type: "text", text: "Running both tools" },
+                    { type: "toolCall", name: "bash", id: "tc1", arguments: { command: "cmd1" } },
+                    { type: "toolCall", name: "bash", id: "tc2", arguments: { command: "cmd2" } },
+                ],
+                timestamp: 12345,
+            }),
+            // Result for tc1
+            msg({
+                key: "r1",
+                role: "toolResult",
+                toolCallId: "tc1",
+                toolName: "bash",
+                content: [{ type: "text", text: "out1" }],
+            }),
+            // Result for tc2
+            msg({
+                key: "r2",
+                role: "toolResult",
+                toolCallId: "tc2",
+                toolName: "bash",
+                content: [{ type: "text", text: "out2" }],
+            }),
+        ];
+        const result = groupToolExecutionMessages(messages);
+        // The assistant text should come from the non-errored partial
+        const assistantParts = result.filter((m) => m.role === "assistant");
+        expect(assistantParts.length).toBeGreaterThan(0);
+        // Should NOT have error badge since all tools completed
+        const errorParts = assistantParts.filter((m) => m.stopReason === "error");
+        expect(errorParts).toHaveLength(0);
+    });
 });
 
 // ── groupSubAgentConversations ──────────────────────────────────────────────

@@ -93,9 +93,25 @@ function collectToolCallIdsWithResult(messages: RelayMessage[]): Set<string> {
   const toolCallIdsWithResult = new Set<string>();
   const pendingToolCalls: PendingToolCall[] = [];
 
+  // Track which assistant indices have been seen so we can skip duplicates.
+  // When the same turn appears multiple times (partial + final), we only want
+  // to queue pending calls from the unique turns, not duplicate tool calls.
+  const seenTurns = new Map<string, number>(); // turnKey -> last assistant index
+
   for (const message of messages) {
     if (message.role === "assistant") {
-      pendingToolCalls.push(...extractGroupedPendingToolCalls(message));
+      // Build a signature of this turn (ordered tool call IDs) to detect duplicates.
+      const calls = extractGroupedPendingToolCalls(message);
+      const turnKey = calls.map((c) => c.toolCallId || `unnamed_${c.toolName}`).sort().join("|");
+
+      // If we've seen this exact turn before (same tool calls), skip it to avoid
+      // queueing duplicate pending entries that will confuse id-less result matching.
+      if (seenTurns.has(turnKey)) {
+        continue;
+      }
+      seenTurns.set(turnKey, messages.indexOf(message));
+
+      pendingToolCalls.push(...calls);
       continue;
     }
 
@@ -328,9 +344,18 @@ function deduplicateAssistantMessages(messages: RelayMessage[]): RelayMessage[] 
       }
 
       // Pick the snapshot with the most votes; tie-break: prefer the latest index.
+      // UNLESS all tools have completed results, in which case prefer non-errored
+      // over errored when vote counts tie.
       let maxWins = winCount.get(latestIndex) ?? 0;
       for (const [idx, count] of winCount) {
-        if (count > maxWins || (count === maxWins && idx > winner)) {
+        const shouldUpdate =
+          count > maxWins ||
+          (count === maxWins &&
+            ((allValidIdsHaveResult &&
+              messages[idx]?.stopReason !== "error" &&
+              messages[winner]?.stopReason === "error") ||
+              (!allValidIdsHaveResult && idx > winner)));
+        if (shouldUpdate) {
           maxWins = count;
           winner = idx;
         }
@@ -346,13 +371,84 @@ function deduplicateAssistantMessages(messages: RelayMessage[]): RelayMessage[] 
       const winnerBlocks = Array.isArray(winnerMsg.content) ? (winnerMsg.content as unknown[]) : null;
       const latestBlocks = Array.isArray(latestMsg.content) ? (latestMsg.content as unknown[]) : null;
 
-      // Always use the latest snapshot's block array as the authoritative tool-call
-      // set. The older (winner) snapshot may contain tool calls that the server
-      // intentionally dropped; using the longer array would resurrect them as
-      // dangling pending cards.
-      const mergedBlocks = latestBlocks ?? winnerBlocks;
+      // The authoritative tool-call set comes from the latest snapshot to avoid
+      // resurrecting tool calls that the server intentionally dropped. However,
+      // we must preserve non-toolCall blocks from the winner (text, thinking, etc.)
+      // that may not exist in the truncated latest snapshot.
+      const mergedBlocks: unknown[] = [];
+      if (latestBlocks) {
+        // Extract tool call IDs from the latest snapshot so we can preserve only
+        // those tool calls while merging in winner's non-toolCall content.
+        const latestToolIds = new Set<string>();
+        for (const block of latestBlocks) {
+          if (!block || typeof block !== "object") continue;
+          const b = block as Record<string, unknown>;
+          if (b.type === "toolCall") {
+            const id =
+              typeof b.toolCallId === "string"
+                ? b.toolCallId
+                : typeof b.id === "string"
+                  ? b.id
+                  : "";
+            if (id) latestToolIds.add(id);
+          }
+        }
 
-      if (mergedBlocks) {
+        // Merge: preserve winner's blocks up to the first tool call, then use
+        // latest's blocks (which contain the authoritative tool calls and any
+        // trailing content).
+        if (winnerBlocks) {
+          let foundFirstToolCall = false;
+          for (const block of winnerBlocks) {
+            if (!block || typeof block !== "object") {
+              if (!foundFirstToolCall) mergedBlocks.push(block);
+              continue;
+            }
+            const b = block as Record<string, unknown>;
+            if (b.type === "toolCall") {
+              foundFirstToolCall = true;
+              // Only preserve if this tool call exists in the latest snapshot.
+              const id =
+                typeof b.toolCallId === "string"
+                  ? b.toolCallId
+                  : typeof b.id === "string"
+                    ? b.id
+                    : "";
+              if (!id || latestToolIds.has(id)) {
+                // Preserve winner's version for better parsed args
+                mergedBlocks.push(block);
+              }
+            } else if (!foundFirstToolCall) {
+              // Keep non-toolCall blocks before the first tool call
+              mergedBlocks.push(block);
+            }
+          }
+
+          // Append any trailing content from the latest snapshot
+          let latestFoundFirstToolCall = false;
+          let skippedToFirstToolCall = false;
+          for (const block of latestBlocks) {
+            if (!block || typeof block !== "object") {
+              if (skippedToFirstToolCall) mergedBlocks.push(block);
+              continue;
+            }
+            const b = block as Record<string, unknown>;
+            if (b.type === "toolCall") {
+              latestFoundFirstToolCall = true;
+              skippedToFirstToolCall = true;
+            } else if (skippedToFirstToolCall) {
+              // Only append trailing non-toolCall blocks from latest
+              mergedBlocks.push(block);
+            }
+          }
+        } else {
+          mergedBlocks.push(...latestBlocks);
+        }
+      } else if (winnerBlocks) {
+        mergedBlocks.push(...winnerBlocks);
+      }
+
+      if (mergedBlocks.length > 0) {
         const argsById = collectValidToolArgsByCallId(winnerMsg);
         const patchedBlocks = argsById.size > 0 ? patchToolCallArguments(mergedBlocks, argsById) : mergedBlocks;
 
