@@ -823,6 +823,106 @@ describe("groupToolExecutionMessages", () => {
         const errorParts = assistantParts.filter((m) => m.stopReason === "error");
         expect(errorParts).toHaveLength(0);
     });
+
+    test("P2 regression: keeps latest-only tool calls when a clean snapshot wins", () => {
+        // Scenario: partial (non-errored) = [text, tc1], final (error) = [text, tc1, tc2]
+        // Result for tc1 arrives → final wins (has both IDs). But current merge
+        // logic only iterates through winner blocks and doesn't add tool calls
+        // that exist only in latest. tc2 should still be added to the transcript.
+        const messages: RelayMessage[] = [
+            msg({
+                key: "a1",
+                role: "assistant",
+                content: [
+                    { type: "text", text: "Let me run these" },
+                    { type: "toolCall", name: "bash", id: "tc1", arguments: { command: "ls" } },
+                ],
+            }),
+            msg({
+                key: "a2",
+                role: "assistant",
+                stopReason: "error",
+                content: [
+                    { type: "text", text: "Let me run these" },
+                    { type: "toolCall", name: "bash", id: "tc1", arguments: { command: "ls" } },
+                    { type: "toolCall", name: "bash", id: "tc2", arguments: { command: "pwd" } },
+                ],
+            }),
+            msg({
+                key: "r1",
+                role: "toolResult",
+                toolCallId: "tc1",
+                toolName: "bash",
+                content: [{ type: "text", text: "file1\nfile2" }],
+            }),
+        ];
+        const result = groupToolExecutionMessages(messages);
+        // Both tc1 and tc2 must be present as grouped tools, even though only tc1
+        // has a result. tc2 should appear as a pending tool card.
+        const tools = result.filter(
+            (m) => m.role === "tool" && (m.toolCallId === "tc1" || m.toolCallId === "tc2")
+        );
+        expect(tools.length).toBeGreaterThanOrEqual(1); // At least tc1
+        const tc2Tools = result.filter((m) => m.role === "tool" && m.toolCallId === "tc2");
+        expect(tc2Tools.length).toBeGreaterThan(0);
+    });
+
+    test("P2 regression: preserves winner-only assistant text after first tool call", () => {
+        // Scenario: partial (non-errored) = [text, tc1, "Between", tc2]
+        //          final (error) = [text, tc1, tc2]
+        // Results for both tools arrive.
+        // The merge should keep the "Between" text from the winner even though
+        // it doesn't exist in the final snapshot.
+        const messages: RelayMessage[] = [
+            msg({
+                key: "a1",
+                role: "assistant",
+                content: [
+                    { type: "text", text: "Let me run two things" },
+                    { type: "toolCall", name: "bash", id: "tc1", arguments: { command: "ls" } },
+                    { type: "text", text: "Between the tools" },
+                    { type: "toolCall", name: "bash", id: "tc2", arguments: { command: "pwd" } },
+                ],
+            }),
+            msg({
+                key: "a2",
+                role: "assistant",
+                stopReason: "error",
+                content: [
+                    { type: "text", text: "Let me run two things" },
+                    { type: "toolCall", name: "bash", id: "tc1", arguments: { command: "ls" } },
+                    { type: "toolCall", name: "bash", id: "tc2", arguments: { command: "pwd" } },
+                ],
+            }),
+            msg({
+                key: "r1",
+                role: "toolResult",
+                toolCallId: "tc1",
+                toolName: "bash",
+                content: [{ type: "text", text: "file1" }],
+            }),
+            msg({
+                key: "r2",
+                role: "toolResult",
+                toolCallId: "tc2",
+                toolName: "bash",
+                content: [{ type: "text", text: "/home" }],
+            }),
+        ];
+        const result = groupToolExecutionMessages(messages);
+        // The merged assistant block should include both "Let me run two things"
+        // and "Between the tools" text.
+        const assistantParts = result.filter((m) => m.role === "assistant");
+        expect(assistantParts.length).toBeGreaterThan(0);
+        const assistant = assistantParts[0];
+        expect(assistant.content).toBeDefined();
+        const content = assistant.content as unknown[];
+        const textBlocks = content.filter((b) => !b || typeof b !== "object" ? false : (b as Record<string, unknown>).type === "text");
+        const allText = textBlocks.map((b) => (b as Record<string, unknown>).text || "").join(" ");
+        // Should contain both the intro and the "Between" text
+        expect(allText).toContain("Let me run two things");
+        expect(allText).toContain("Between the tools");
+    });
 });
 
 // ── groupSubAgentConversations ──────────────────────────────────────────────

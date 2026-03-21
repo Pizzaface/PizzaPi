@@ -394,19 +394,36 @@ function deduplicateAssistantMessages(messages: RelayMessage[]): RelayMessage[] 
           }
         }
 
-        // Merge: preserve winner's blocks up to the first tool call, then use
-        // latest's blocks (which contain the authoritative tool calls and any
-        // trailing content).
+        // Merge: preserve winner's assistant blocks (text, thinking, etc.) and use
+        // latest's tool calls as the authoritative set. We also need to add any
+        // tool calls that exist only in the latest snapshot.
         if (winnerBlocks) {
-          let foundFirstToolCall = false;
+          // Build a set of tool IDs from the winner so we can identify which
+          // tool calls we've already added.
+          const winnerToolIds = new Set<string>();
+          for (const block of winnerBlocks) {
+            if (!block || typeof block !== "object") continue;
+            const b = block as Record<string, unknown>;
+            if (b.type === "toolCall") {
+              const id =
+                typeof b.toolCallId === "string"
+                  ? b.toolCallId
+                  : typeof b.id === "string"
+                    ? b.id
+                    : "";
+              if (id) winnerToolIds.add(id);
+            }
+          }
+
+          // Preserve all non-toolCall blocks from winner and tool calls that
+          // exist in both winner and latest.
           for (const block of winnerBlocks) {
             if (!block || typeof block !== "object") {
-              if (!foundFirstToolCall) mergedBlocks.push(block);
+              mergedBlocks.push(block);
               continue;
             }
             const b = block as Record<string, unknown>;
             if (b.type === "toolCall") {
-              foundFirstToolCall = true;
               // Only preserve if this tool call exists in the latest snapshot.
               const id =
                 typeof b.toolCallId === "string"
@@ -418,27 +435,27 @@ function deduplicateAssistantMessages(messages: RelayMessage[]): RelayMessage[] 
                 // Preserve winner's version for better parsed args
                 mergedBlocks.push(block);
               }
-            } else if (!foundFirstToolCall) {
-              // Keep non-toolCall blocks before the first tool call
+            } else {
+              // Keep all non-toolCall blocks (text, thinking, etc.) from winner
               mergedBlocks.push(block);
             }
           }
 
-          // Append any trailing content from the latest snapshot
-          let latestFoundFirstToolCall = false;
-          let skippedToFirstToolCall = false;
+          // Append any tool calls that exist only in the latest snapshot
           for (const block of latestBlocks) {
-            if (!block || typeof block !== "object") {
-              if (skippedToFirstToolCall) mergedBlocks.push(block);
-              continue;
-            }
+            if (!block || typeof block !== "object") continue;
             const b = block as Record<string, unknown>;
             if (b.type === "toolCall") {
-              latestFoundFirstToolCall = true;
-              skippedToFirstToolCall = true;
-            } else if (skippedToFirstToolCall) {
-              // Only append trailing non-toolCall blocks from latest
-              mergedBlocks.push(block);
+              const id =
+                typeof b.toolCallId === "string"
+                  ? b.toolCallId
+                  : typeof b.id === "string"
+                    ? b.id
+                    : "";
+              // Only add if this tool ID doesn't already exist in the winner
+              if (id && !winnerToolIds.has(id)) {
+                mergedBlocks.push(block);
+              }
             }
           }
         } else {
