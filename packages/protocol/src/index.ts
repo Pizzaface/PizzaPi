@@ -18,6 +18,7 @@ export type {
 
 // Password validation (shared across server, UI, CLI)
 export {
+  MAX_PASSWORD_LENGTH,
   PASSWORD_REQUIREMENTS,
   PASSWORD_REQUIREMENTS_SUMMARY,
   validatePassword,
