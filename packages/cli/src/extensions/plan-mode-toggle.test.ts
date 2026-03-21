@@ -557,6 +557,20 @@ describe("isDestructiveCommand", () => {
         expect(isDestructiveCommand("tar xf archive.tar")).toBe(true);
     });
 
+    test("flags tar with delete mode (--delete)", () => {
+        expect(isDestructiveCommand("tar --delete -f archive.tar foo")).toBe(true);
+        expect(isDestructiveCommand("tar --delete --file=archive.tar bar")).toBe(true);
+    });
+
+    test("flags tar with concatenate mode (-A / --catenate / --concatenate)", () => {
+        expect(isDestructiveCommand("tar -Af archive.tar other.tar")).toBe(true);
+        expect(isDestructiveCommand("tar -Avf archive.tar other.tar")).toBe(true);
+        expect(isDestructiveCommand("tar --catenate -f archive.tar other.tar")).toBe(true);
+        expect(isDestructiveCommand("tar --concatenate -f archive.tar other.tar")).toBe(true);
+        // Legacy positional-flag style
+        expect(isDestructiveCommand("tar Af archive.tar other.tar")).toBe(true);
+    });
+
     test("allows tar with list flag only (-t / --list)", () => {
         expect(isDestructiveCommand("tar -tf archive.tar")).toBe(false);
         expect(isDestructiveCommand("tar -tvf archive.tar")).toBe(false);
@@ -566,18 +580,25 @@ describe("isDestructiveCommand", () => {
         expect(isDestructiveCommand("tar tvf archive.tar")).toBe(false);
     });
 
-    test("flags gawk with in-place editing flags", () => {
+    test("flags gawk with in-place editing via the inplace module", () => {
+        // -i inplace (space-separated) — the destructive form
         expect(isDestructiveCommand("gawk -i inplace '{gsub(/foo/, \"bar\")} 1' file.txt")).toBe(true);
-        expect(isDestructiveCommand("gawk --inplace '{gsub(/foo/, \"bar\")} 1' file.txt")).toBe(true);
-        // -iSUFFIX (no space between -i and backup suffix)
-        expect(isDestructiveCommand("gawk -ibak '{gsub(/foo/, \"bar\")} 1' file.txt")).toBe(true);
+        // -iinplace (no space) — also the destructive form
         expect(isDestructiveCommand("gawk -iinplace '{print}' file.txt")).toBe(true);
+        // --include=inplace — long-form destructive
+        expect(isDestructiveCommand("gawk --include=inplace '{gsub(/foo/, \"bar\")} 1' file.txt")).toBe(true);
+        // --include inplace — long-form with space
+        expect(isDestructiveCommand("gawk --include inplace '{gsub(/foo/, \"bar\")} 1' file.txt")).toBe(true);
     });
 
     test("allows awk / gawk without in-place flags", () => {
         expect(isDestructiveCommand("awk '{print $1}' file.txt")).toBe(false);
         expect(isDestructiveCommand("gawk '{print NR, $0}' file.txt")).toBe(false);
         expect(isDestructiveCommand("awk -F: '{print $1}' /etc/passwd")).toBe(false);
+        // -i with a read-only library (not the inplace module) must not be blocked
+        expect(isDestructiveCommand("gawk -i ord 'BEGIN { print ord(\"A\") }'")).toBe(false);
+        // -ibak is a read-only library include, not in-place editing
+        expect(isDestructiveCommand("gawk -ibak '{print}' file.txt")).toBe(false);
     });
 
     test("flags shell output redirection (>)", () => {

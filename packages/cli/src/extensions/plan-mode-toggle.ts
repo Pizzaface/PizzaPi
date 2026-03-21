@@ -123,16 +123,19 @@ const DESTRUCTIVE_FLAG_PATTERNS = [
     /\bfind\b.*\s-exec(dir)?\b/i, /\bfind\b.*\s-ok(dir)?\b/i, /\bfind\b.*\s-delete\b/i, /\bfind\b.*\s-fprintf\b/i,
     /\bgit\b.*\s--output[= ]/i,
     /\bsort\b.*\s(-o\s|-o\S|--output\b|--output=)/i,
-    // tar: any invocation that creates, appends, updates, or extracts (writes to filesystem)
+    // tar: any invocation that creates, appends, updates, extracts, deletes, or concatenates
+    // (all modes that write to an archive or the filesystem).
     // Safe operations (list/test: -t / --list) are not matched by these patterns.
-    /\btar\b.*(?:\s-[a-zA-Z]*[crux]|--(?:create|append|update|extract|get)\b)/i,
-    /\btar\b\s+[crux][a-zA-Z]*/i, // legacy positional-flag style: tar czf / tar xvf
+    /\btar\b.*(?:\s-[a-zA-Z]*[cruxA]|--(?:create|append|update|extract|get|delete|catenate|concatenate)\b)/i,
+    /\btar\b\s+[cruxA][a-zA-Z]*/i, // legacy positional-flag style: tar czf / tar xvf / tar -Af
     // In-place editing via sed/perl -i
     /\bsed\b.*\s-i\b/i, /\bsed\b.*\s-i\S/i,
     /\bperl\b.*\s-i\b/i, /\bperl\b.*\s-i\S/i,
-    // gawk in-place editing (-i, -iSUFFIX, or --inplace)
-    /\bgawk\b.*\s-i/i,
-    /\bgawk\b.*--inplace\b/i,
+    // gawk in-place editing: only match when the inplace extension is loaded.
+    // "-i" alone is gawk's --include shorthand (e.g. "gawk -i ord ..." is a read-only library
+    // load); the destructive variant requires the "inplace" module specifically.
+    // The real long-form flag is "--include=inplace", not the nonexistent "--inplace".
+    /\bgawk\b.*(?:\s-i\s*inplace\b|--include[= ]inplace\b)/i,
     // Interpreters executing scripts (not just --version/--help)
     /^\s*python[23]?\s+(?!--(version|help)\b)\S/i,
     /^\s*ruby\s+(?!--(version|help)\b)\S/i,
