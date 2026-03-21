@@ -76,6 +76,34 @@ export interface FileExplorerProps {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+/**
+ * Returns true if an Escape keydown should be intercepted by a file-explorer
+ * sub-view (file preview, diff preview). We skip interception when:
+ *  - The panel is hidden (e.g. inactive CombinedPanel tab — ancestor has `invisible` class)
+ *  - A Radix dialog is open anywhere in the app (dialogs own Escape globally)
+ *  - A Radix popper/dropdown triggered from within this explorer subtree is open
+ *  - Focus is outside the explorer/preview container (e.g. in the composer or
+ *    transcript area — including when it has fallen back to document.body)
+ */
+function shouldInterceptEscape(el: HTMLElement | null): boolean {
+  if (!el) return false; // no ref yet — can't confirm focus, let Escape propagate
+  // Hidden in an inactive combined-panel tab?
+  if (el.closest(".invisible")) return false;
+  // Global Radix dialog open? (dialogs truly own Escape at the document level)
+  if (document.querySelector("[role=\"dialog\"][data-state=\"open\"]")) return false;
+  // A Radix popper/dropdown triggered from within this explorer subtree is open?
+  // Radix portals popper content to <body>, but sets data-state="open" on the
+  // trigger element which remains inside our container.
+  if (el.querySelector("[data-state=\"open\"]")) return false;
+  // Only intercept when focus is strictly inside the explorer/preview container.
+  // Do NOT treat document.body as safe — in the docked desktop layout the user
+  // may have clicked the transcript/terminal column, which also leaves focus on
+  // body, and we must not steal Escape from SessionViewer's abort handler there.
+  const active = document.activeElement;
+  if (!active || active === document.body || !el.contains(active)) return false;
+  return true;
+}
+
 function formatSize(bytes: number | undefined): string {
   if (bytes === undefined || bytes < 0) return "";
   if (bytes < 1024) return `${bytes} B`;
@@ -567,9 +595,14 @@ function FileViewer({
 function GitChangesView({
   runnerId,
   cwd,
+  outerRef,
 }: {
   runnerId: string;
   cwd: string;
+  /** Ref to the outer FileExplorer container (tab strip, breadcrumb, controls).
+   *  When provided the Escape handler covers the full panel chrome, not just
+   *  the inner diff body. */
+  outerRef?: React.RefObject<HTMLDivElement | null>;
 }) {
   const [gitStatus, setGitStatus] = React.useState<GitStatus | null>(null);
   const [loading, setLoading] = React.useState(true);
@@ -609,6 +642,50 @@ function GitChangesView({
   React.useEffect(() => {
     void fetchStatus();
   }, [fetchStatus]);
+
+  // Intercept Escape when viewing a diff so it closes the diff preview
+  // instead of propagating to SessionViewer's abort handler.
+  const diffContainerRef = React.useRef<HTMLDivElement>(null);
+  React.useEffect(() => {
+    if (!selectedDiff) return;
+    // Move focus into the preview container so Escape is intercepted even when
+    // the preview was opened via mouse click (no keyboard focus in container yet).
+    diffContainerRef.current?.focus();
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      // Guard against focus being in the inner diff body OR anywhere in the
+      // surrounding FileExplorer chrome (tab strip, cwd breadcrumb, position
+      // picker, close button).  Without the outerRef check those chrome elements
+      // are outside diffContainerRef and would let Escape reach the abort handler.
+      const innerOk = shouldInterceptEscape(diffContainerRef.current);
+      const outerOk = outerRef ? shouldInterceptEscape(outerRef.current) : false;
+      if (!innerOk && !outerOk) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      setSelectedDiff(null);
+    };
+    // Capture phase ensures this fires before SessionViewer's bubble-phase listener
+    // Clicking on non-focusable content (e.g. <pre> in the diff, the cwd breadcrumb)
+    // moves document.activeElement to body in Chrome, breaking shouldInterceptEscape.
+    // Re-focus the diff container whenever a click inside the diff body OR the outer
+    // FileExplorer chrome drops focus to body.
+    const restoreFocusDiff = (e: PointerEvent) => {
+      const insideDiff = diffContainerRef.current?.contains(e.target as Node);
+      const insideOuter = outerRef?.current?.contains(e.target as Node);
+      if (!insideDiff && !insideOuter) return;
+      requestAnimationFrame(() => {
+        if (document.activeElement === document.body) {
+          diffContainerRef.current?.focus();
+        }
+      });
+    };
+    document.addEventListener("keydown", handler, true);
+    document.addEventListener("pointerdown", restoreFocusDiff);
+    return () => {
+      document.removeEventListener("keydown", handler, true);
+      document.removeEventListener("pointerdown", restoreFocusDiff);
+    };
+  }, [selectedDiff, outerRef]);
 
   const viewDiff = React.useCallback(async (filePath: string) => {
     setDiffLoading(true);
@@ -655,7 +732,7 @@ function GitChangesView({
 
   if (selectedDiff) {
     return (
-      <div className="flex flex-col h-full">
+      <div ref={diffContainerRef} tabIndex={-1} className="flex flex-col h-full outline-none">
         <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-muted/50">
           <button
             type="button"
@@ -990,13 +1067,48 @@ export function FileExplorer({ runnerId, cwd, className, onClose, position = "le
     void fetchFiles();
   }, [fetchFiles]);
 
+  // Intercept Escape when viewing a file so it closes the preview
+  // instead of propagating to SessionViewer's abort handler.
+  const previewContainerRef = React.useRef<HTMLDivElement>(null);
+  React.useEffect(() => {
+    if (!viewingFile) return;
+    // Move focus into the preview container so Escape is intercepted even when
+    // the preview was opened via mouse click (no keyboard focus in container yet).
+    previewContainerRef.current?.focus();
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (!shouldInterceptEscape(previewContainerRef.current)) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      setViewingFile(null);
+    };
+    // Capture phase ensures this fires before SessionViewer's bubble-phase listener
+    // Clicking on non-focusable content inside the preview (e.g. <pre>, <img>)
+    // moves document.activeElement to body in Chrome, breaking shouldInterceptEscape.
+    // Re-focus the container whenever a click inside it drops focus to body.
+    const restoreFocusPreview = (e: PointerEvent) => {
+      if (!previewContainerRef.current?.contains(e.target as Node)) return;
+      requestAnimationFrame(() => {
+        if (document.activeElement === document.body) {
+          previewContainerRef.current?.focus();
+        }
+      });
+    };
+    document.addEventListener("keydown", handler, true);
+    document.addEventListener("pointerdown", restoreFocusPreview);
+    return () => {
+      document.removeEventListener("keydown", handler, true);
+      document.removeEventListener("pointerdown", restoreFocusPreview);
+    };
+  }, [viewingFile]);
+
   // If viewing a file, show the appropriate viewer
   if (viewingFile) {
     const viewingFileName = viewingFile.split("/").pop() ?? viewingFile;
     const isImage = isImageFile(viewingFileName);
 
     return (
-      <div className={cn("flex flex-col bg-background text-foreground", className)}>
+      <div ref={previewContainerRef} tabIndex={-1} className={cn("flex flex-col bg-background text-foreground outline-none", className)}>
         {isImage ? (
           <ImageViewer
             runnerId={runnerId}
@@ -1014,8 +1126,13 @@ export function FileExplorer({ runnerId, cwd, className, onClose, position = "le
     );
   }
 
+  // outerRef covers the full FileExplorer panel including tab strip, breadcrumb,
+  // and desktop controls.  GitChangesView uses it so Escape still closes the diff
+  // preview when focus is on those chrome elements rather than inside the diff body.
+  const outerRef = React.useRef<HTMLDivElement>(null);
+
   return (
-    <div className={cn("flex flex-col bg-background text-foreground", className)}>
+    <div ref={outerRef} className={cn("flex flex-col bg-background text-foreground", className)}>
       {/* Header with tabs */}
       <div className="flex items-center border-b border-border bg-muted/50">
         {/* Mobile back button */}
@@ -1165,7 +1282,7 @@ export function FileExplorer({ runnerId, cwd, className, onClose, position = "le
             </div>
           )
         ) : (
-          <GitChangesView runnerId={runnerId} cwd={cwd} />
+          <GitChangesView runnerId={runnerId} cwd={cwd} outerRef={outerRef} />
         )}
       </div>
     </div>
