@@ -58,6 +58,13 @@ export const handleAuthRoute: RouteHandler = async (req, url) => {
             .where("email", "=", email)
             .executeTakeFirst();
 
+        // Constant response used when signups are disabled, regardless of
+        // whether the email already exists. Returning the same status + body
+        // for both "email not found" and "email found but wrong password"
+        // prevents user-enumeration via differing error responses.
+        const SIGNUPS_DISABLED_RESPONSE = () =>
+            Response.json({ error: "Registration is not available." }, { status: 403 });
+
         let userId: string;
         if (existing) {
             // Verify password by attempting sign-in
@@ -65,6 +72,12 @@ export const handleAuthRoute: RouteHandler = async (req, url) => {
                 .api.signInEmail({ body: { email, password } })
                 .catch(() => null);
             if (!signIn?.user?.id) {
+                // When signups are disabled return the same 403 as "no account"
+                // so callers cannot distinguish existing vs non-existing emails.
+                const allowed = await isSignupAllowed();
+                if (!allowed) {
+                    return SIGNUPS_DISABLED_RESPONSE();
+                }
                 return Response.json({ error: "Invalid credentials" }, { status: 401 });
             }
             userId = signIn.user.id;
@@ -72,10 +85,7 @@ export const handleAuthRoute: RouteHandler = async (req, url) => {
             // Block new account creation when signups are disabled.
             const allowed = await isSignupAllowed();
             if (!allowed) {
-                return Response.json(
-                    { error: "Signups are disabled. Contact the administrator." },
-                    { status: 403 },
-                );
+                return SIGNUPS_DISABLED_RESPONSE();
             }
             if (!name) {
                 return Response.json(
