@@ -71,6 +71,9 @@ let seq = 0;
 let currentModel: string | null = null;
 let messages: unknown[] = [];
 
+// Track whether Claude is currently processing a turn (vs idle/waiting for input)
+let claudeIsWorking = false;
+
 // Pending AskUserQuestion: tool_use_id → { resolve, timer }
 const pendingQuestions = new Map<string, { resolve: (answer: string) => void; timer: ReturnType<typeof setTimeout> }>();
 // Pending permission requests: requestId → { resolve: (decision: "allow" | "deny") => void; timer: ReturnType<typeof setTimeout> };
@@ -96,8 +99,10 @@ const messageWaiters: MessageWaiter[] = [];
 let processGeneration = 0;
 
 function clearPendingState(): void {
+  claudeIsWorking = false;
   for (const { timer } of pendingQuestions.values()) clearTimeout(timer);
   pendingQuestions.clear();
+  pendingQuestionState.clear();
   for (const { timer } of pendingPermissions.values()) clearTimeout(timer);
   pendingPermissions.clear();
   for (const waiter of messageWaiters) clearTimeout(waiter.timer);
@@ -180,15 +185,41 @@ function forwardEvent(event: unknown): void {
 }
 
 function emitHeartbeat(status?: string): void {
-  forwardEvent({
+  const hb: Record<string, unknown> = {
     type: "heartbeat",
     workerType: "claude-code",
-    active: claudeProcess !== null,
-    isAgentActive: claudeProcess !== null,
+    active: claudeIsWorking,
+    isAgentActive: claudeIsWorking,
     model: currentModel ? { provider: "anthropic", id: currentModel, name: currentModel } : null,
     ts: Date.now(),
     ...(status ? { status } : {}),
-  });
+  };
+
+  // Persist pending prompts in heartbeat so they restore on reconnect
+  if (pendingQuestionState.size > 0) {
+    const [toolCallId, pendingQ] = [...pendingQuestionState.entries()][0];
+    hb.pendingQuestion = {
+      toolCallId,
+      questions: pendingQ.questions,
+      display: "modal", // default to modal for Claude Code sessions
+    };
+  } else if (pendingQuestions.size > 0) {
+    // Fallback: if we have an entry in pendingQuestions but not in pendingQuestionState
+    // (shouldn't happen, but be defensive)
+    const [toolCallId] = [...pendingQuestions.entries()][0];
+    hb.pendingQuestion = {
+      toolCallId,
+      questions: [],
+      display: "modal",
+    };
+  }
+
+  if (pendingPermissions.size > 0) {
+    const [requestId, _entry] = [...pendingPermissions.entries()][0];
+    hb.pendingPermission = { requestId };
+  }
+
+  forwardEvent(hb);
 }
 
 // ── Temp dir and config file generation ──────────────────────────────────
@@ -617,6 +648,7 @@ function handleNdjsonLine(line: string): void {
   if (result.kind === "session_init") {
     if (result.sessionId) claudeSessionId = result.sessionId;
     if (result.model) currentModel = result.model;
+    claudeIsWorking = false;
     emitSessionActive();
     return;
   }
@@ -634,6 +666,9 @@ function handleNdjsonLine(line: string): void {
     }
     if (result.relayEvent.type === "message_update") {
       messages.push(result.relayEvent.message);
+      claudeIsWorking = true;  // Claude is actively working/outputting
+    } else if (result.relayEvent.type === "agent_end") {
+      claudeIsWorking = false;  // Turn complete, Claude is now idle
     }
     forwardEvent(result.relayEvent);
   }
@@ -673,20 +708,39 @@ function sendPermissionResponse(requestId: string, behavior: "allow" | "deny"): 
 }
 
 // ── AskUserQuestion ───────────────────────────────────────────────────────
+interface PendingQuestion {
+  questions: Array<{ question: string; options: string[]; type?: string }>;
+  resolve: (answer: string) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+// Pending AskUserQuestion: tool_use_id → { questions, resolve, timer }
+const pendingQuestionState = new Map<string, PendingQuestion>();
+
 function handleAskUserQuestion(toolCallId: string, questions: Array<{ question: string; options: string[]; type?: string }>): void {
   forwardEvent({ type: "tool_execution_start", toolName: "AskUserQuestion", toolCallId, args: { questions } });
-  emitHeartbeat("Waiting for answer…");
 
   const timer = setTimeout(() => {
+    pendingQuestionState.delete(toolCallId);
     pendingQuestions.delete(toolCallId);
     deliverAskUserAnswer(toolCallId, "");
   }, 5 * 60 * 1000);
 
-  pendingQuestions.set(toolCallId, { resolve: (answer) => {
-    clearTimeout(timer);
-    pendingQuestions.delete(toolCallId);
-    deliverAskUserAnswer(toolCallId, answer);
-  }, timer });
+  const pendingQ: PendingQuestion = {
+    questions,
+    resolve: (answer) => {
+      clearTimeout(timer);
+      pendingQuestionState.delete(toolCallId);
+      pendingQuestions.delete(toolCallId);
+      deliverAskUserAnswer(toolCallId, answer);
+    },
+    timer,
+  };
+
+  pendingQuestionState.set(toolCallId, pendingQ);
+  pendingQuestions.set(toolCallId, { resolve: pendingQ.resolve, timer });
+
+  emitHeartbeat("Waiting for answer…");
 }
 
 function deliverAskUserAnswer(toolCallId: string, answer: string): void {
@@ -703,16 +757,31 @@ function deliverAskUserAnswer(toolCallId: string, answer: string): void {
 
 // ── session_active snapshot ───────────────────────────────────────────────
 function emitSessionActive(): void {
-  const sessionState = {
+  const sessionState: Record<string, unknown> = {
     model: currentModel,
     messages: capOversizedMessages(messages),
     cwd,
-    sessionName: null as string | null,
-    availableModels: [] as unknown[],
-    todoList: [] as unknown[],
+    sessionName: null,
+    availableModels: [],
+    todoList: [],
     thinkingLevel: null,
     workerType: "claude-code",
   };
+
+  // Include pending prompts so they persist across reconnects
+  if (pendingQuestionState.size > 0) {
+    const [toolCallId, pendingQ] = [...pendingQuestionState.entries()][0];
+    sessionState.pendingQuestion = {
+      toolCallId,
+      questions: pendingQ.questions,
+      display: "modal",
+    };
+  }
+
+  if (pendingPermissions.size > 0) {
+    const [requestId, _entry] = [...pendingPermissions.entries()][0];
+    sessionState.pendingPermission = { requestId };
+  }
 
   if (needsChunkedDelivery(messages)) {
     const snapshotId = randomUUID();
