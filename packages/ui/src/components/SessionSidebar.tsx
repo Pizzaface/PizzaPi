@@ -1363,14 +1363,18 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                             {/* Worktree badge — shown when cwd is inside a .worktrees/ directory */}
                                                             {(() => {
                                                                 const cwd = s.cwd || "";
-                                                                const match = cwd.match(/\/\.worktrees\/([^/]+\/[^/]+)/);
-                                                                return match ? (
+                                                                const wtMarker = "/.worktrees/";
+                                                                const wtIdx = cwd.indexOf(wtMarker);
+                                                                const branchName = wtIdx !== -1
+                                                                    ? cwd.substring(wtIdx + wtMarker.length).replace(/\/$/, "")
+                                                                    : null;
+                                                                return branchName ? (
                                                                     <div className="flex items-center gap-1 mt-0.5">
                                                                         <span
                                                                             className="text-[0.55rem] bg-amber-500/15 text-amber-400/80 px-1 py-0.5 rounded font-mono leading-none truncate max-w-full"
-                                                                            title={`Worktree: ${match[1]}`}
+                                                                            title={`Worktree: ${branchName}`}
                                                                         >
-                                                                            {match[1]}
+                                                                            {branchName}
                                                                         </span>
                                                                     </div>
                                                                 ) : null;
