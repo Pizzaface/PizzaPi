@@ -557,6 +557,10 @@ describe("isDestructiveCommand", () => {
         expect(isDestructiveCommand("tar xvf archive.tar")).toBe(true);
         expect(isDestructiveCommand("tar xf archive.tar")).toBe(true);
         expect(isDestructiveCommand("tar zxf archive.tar.gz")).toBe(true);
+        // Mode letter after other options, e.g. -f first then -x / -c
+        expect(isDestructiveCommand("tar -f archive.tar -x")).toBe(true);
+        expect(isDestructiveCommand("tar -f archive.tar -c")).toBe(true);
+        expect(isDestructiveCommand("tar -f out.tar.gz -z -c src/")).toBe(true);
     });
 
     test("flags tar with delete mode (--delete)", () => {
@@ -595,6 +599,11 @@ describe("isDestructiveCommand", () => {
         // --include inplace — long-form with space
         expect(isDestructiveCommand("gawk --include inplace '{gsub(/foo/, \"bar\")} 1' file.txt")).toBe(true);
         expect(isDestructiveCommand("gawk --include=/usr/share/awk/inplace.awk '{print}' file.txt")).toBe(true);
+        // -f inplace.awk / --file= — loading the inplace library via -f is equivalent
+        expect(isDestructiveCommand("gawk -f inplace.awk -f prog.awk file.txt")).toBe(true);
+        expect(isDestructiveCommand("gawk -f /usr/share/awk/inplace.awk -f prog.awk file.txt")).toBe(true);
+        expect(isDestructiveCommand("gawk --file=inplace.awk -f prog.awk file.txt")).toBe(true);
+        expect(isDestructiveCommand("gawk --file /usr/share/awk/inplace.awk -f prog.awk file.txt")).toBe(true);
     });
 
     test("allows awk / gawk without in-place flags", () => {
@@ -605,6 +614,9 @@ describe("isDestructiveCommand", () => {
         expect(isDestructiveCommand("gawk -i ord 'BEGIN { print ord(\"A\") }'")).toBe(false);
         // -ibak is a read-only library include, not in-place editing
         expect(isDestructiveCommand("gawk -ibak '{print}' file.txt")).toBe(false);
+        // -f with a non-inplace script file must not be blocked
+        expect(isDestructiveCommand("gawk -f prog.awk file.txt")).toBe(false);
+        expect(isDestructiveCommand("gawk --file=transform.awk file.txt")).toBe(false);
     });
 
     test("flags shell output redirection (>)", () => {

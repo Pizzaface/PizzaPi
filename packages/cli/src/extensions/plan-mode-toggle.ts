@@ -236,16 +236,24 @@ function isDestructiveGitCommand(segment: string): boolean {
 const TAR_LONG_MODE_PATTERN = /(^|\s)--(?:create|append|update|extract|get|delete|catenate|concatenate)\b/i;
 const TAR_BUNDLED_MODE_PATTERN = /^\s*tar\s+(-?[A-Za-z]+)\b/i;
 const GAWK_INCLUDE_ARG_PATTERN = /(?:^|\s)(?:-i(\S+)|-i\s+(\S+)|--include=(\S+)|--include\s+(\S+))/gi;
+const GAWK_FILE_ARG_PATTERN = /(?:^|\s)(?:-f\s*(\S+)|--file=(\S+)|--file\s+(\S+))/g;
 const GAWK_INPLACE_MODULE_PATTERN = /(?:^|[\\/])inplace(?:\.awk)?$/i;
 
 function isDestructiveTarCommand(segment: string): boolean {
     if (!/^\s*tar\b/i.test(segment)) return false;
     if (TAR_LONG_MODE_PATTERN.test(segment)) return true;
 
+    // Check the first token for the traditional no-dash form: `tar czf archive.tar`
     const bundledMatch = segment.match(TAR_BUNDLED_MODE_PATTERN);
-    if (!bundledMatch) return false;
+    if (bundledMatch && /[cruxA]/i.test(bundledMatch[1].replace(/^-/, ""))) return true;
 
-    return /[cruxA]/i.test(bundledMatch[1].replace(/^-/, ""));
+    // Also scan all dash-prefixed option tokens to catch patterns where the mode
+    // letter appears after other options, e.g. `tar -f archive.tar -x`.
+    for (const match of segment.matchAll(/(?:^|\s)-([A-Za-z]+)/g)) {
+        if (/[cruxA]/i.test(match[1])) return true;
+    }
+
+    return false;
 }
 
 function isDestructiveGawkCommand(segment: string): boolean {
@@ -254,6 +262,13 @@ function isDestructiveGawkCommand(segment: string): boolean {
     for (const match of segment.matchAll(GAWK_INCLUDE_ARG_PATTERN)) {
         const includeArg = (match[1] ?? match[2] ?? match[3] ?? match[4] ?? "").replace(/^['"]|['"]$/g, "");
         if (GAWK_INPLACE_MODULE_PATTERN.test(includeArg)) return true;
+    }
+
+    // Also flag `-f inplace.awk` / `--file=inplace.awk` because gawk ships an
+    // inplace.awk library that rewrites files in-place, just like `-i inplace`.
+    for (const match of segment.matchAll(GAWK_FILE_ARG_PATTERN)) {
+        const fileArg = (match[1] ?? match[2] ?? match[3] ?? "").replace(/^['"]|['"]$/g, "");
+        if (GAWK_INPLACE_MODULE_PATTERN.test(fileArg)) return true;
     }
 
     return false;
