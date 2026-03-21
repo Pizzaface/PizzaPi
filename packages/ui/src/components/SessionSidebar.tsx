@@ -214,7 +214,9 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     const [confirmEndSessionId, setConfirmEndSessionId] = React.useState<string | null>(null);
     const [revealedSessionId, setRevealedSessionId] = React.useState<string | null>(null);
     const [swipeOffsets, setSwipeOffsets] = React.useState<Map<string, number>>(new Map());
-    const REVEAL_WIDTH = 198; // px width of the revealed "Duplicate" + "Pin" + "End" buttons
+    // Reveal widths: 3 buttons (Duplicate + Pin + End) vs 2 buttons (Pin + End when no runner)
+    const REVEAL_WIDTH = 198; // px — Duplicate + Pin + End (session has a runner)
+    const REVEAL_WIDTH_NO_RUNNER = 132; // px — Pin + End only (session has no runner)
 
     const swipeRef = React.useRef<{
         sessionId: string;
@@ -225,6 +227,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
         locked: boolean; // true once we've committed to horizontal movement
         isVertical: boolean; // true once we've committed to vertical scroll
         didSwipe: boolean; // true if any significant horizontal movement happened
+        revealWidth: number; // effective snap-to width for this session's reveal area
     } | null>(null);
     // Flag to suppress the click that fires after a swipe/long-press pointerUp
     const suppressClickRef = React.useRef(false);
@@ -241,7 +244,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     // Cleanup long-press timer on unmount
     React.useEffect(() => () => { clearLongPress(); }, [clearLongPress]);
 
-    const handleSessionPointerDown = React.useCallback((e: React.PointerEvent, sessionId: string) => {
+    const handleSessionPointerDown = React.useCallback((e: React.PointerEvent, sessionId: string, revealWidth: number = REVEAL_WIDTH) => {
         // Only track primary button (left-click / single touch)
         if (e.button !== 0) return;
         // Prevent the event from bubbling to the App-level sidebar swipe-to-close
@@ -257,6 +260,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
             locked: false,
             isVertical: false,
             didSwipe: false,
+            revealWidth,
         };
         // Capture the pointer so we get move/up even if the cursor leaves the element
         (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
@@ -308,17 +312,18 @@ export const SessionSidebar = React.memo(function SessionSidebar({
 
         // If this session was previously revealed, account for that
         const wasRevealed = revealedSessionId === s.sessionId;
-        const base = wasRevealed ? -REVEAL_WIDTH : 0;
+        const rw = s.revealWidth;
+        const base = wasRevealed ? -rw : 0;
         const raw = base + dx;
-        // Clamp: allow from -REVEAL_WIDTH (with slight overscroll) to 0 (with slight overscroll)
-        const clamped = Math.max(-REVEAL_WIDTH - 20, Math.min(raw, wasRevealed ? 0 : 10));
+        // Clamp: allow from -rw (with slight overscroll) to 0 (with slight overscroll)
+        const clamped = Math.max(-rw - 20, Math.min(raw, wasRevealed ? 0 : 10));
 
         setSwipeOffsets((prev) => {
             const next = new Map(prev);
             next.set(s.sessionId, clamped);
             return next;
         });
-    }, [revealedSessionId, REVEAL_WIDTH, clearLongPress]);
+    }, [revealedSessionId, clearLongPress]);
 
     const handleSessionPointerUp = React.useCallback((e: React.PointerEvent) => {
         clearLongPress();
@@ -341,12 +346,13 @@ export const SessionSidebar = React.memo(function SessionSidebar({
 
         const wasRevealed = revealedSessionId === s.sessionId;
         const offset = swipeOffsets.get(s.sessionId) ?? 0;
+        const rw = s.revealWidth;
 
         // Snap open if swiped past half the reveal width, otherwise snap closed
-        if (offset < -REVEAL_WIDTH / 2) {
+        if (offset < -rw / 2) {
             setSwipeOffsets((prev) => {
                 const next = new Map(prev);
-                next.set(s.sessionId, -REVEAL_WIDTH);
+                next.set(s.sessionId, -rw);
                 return next;
             });
             setRevealedSessionId(s.sessionId);
@@ -358,7 +364,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
             });
             if (wasRevealed) setRevealedSessionId(null);
         }
-    }, [revealedSessionId, swipeOffsets, REVEAL_WIDTH, clearLongPress]);
+    }, [revealedSessionId, swipeOffsets, clearLongPress]);
 
     // Close revealed item when clicking elsewhere
     const handleCloseRevealed = React.useCallback(() => {
@@ -1108,9 +1114,10 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                     className="relative overflow-hidden rounded-lg"
                                                 >
                                                     {/* "Duplicate" + "Pin" + "End" actions behind the card — only rendered during swipe/reveal (not in select mode) */}
+                                                    {/* Width adapts: 3 buttons when session has a runner, 2 buttons otherwise */}
                                                     {!selectMode && (hasOffset || isRevealed) && <div
                                                         className="absolute inset-y-0 right-0 flex items-stretch rounded-r-lg overflow-hidden"
-                                                        style={{ width: REVEAL_WIDTH }}
+                                                        style={{ width: s.runnerId ? REVEAL_WIDTH : REVEAL_WIDTH_NO_RUNNER }}
                                                     >
                                                         {s.runnerId && (
                                                         <button
@@ -1205,7 +1212,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                             e.stopPropagation();
                                                             togglePinSession(s.sessionId, isPinned);
                                                         }}
-                                                        onPointerDown={selectMode ? undefined : (e) => handleSessionPointerDown(e, s.sessionId)}
+                                                        onPointerDown={selectMode ? undefined : (e) => handleSessionPointerDown(e, s.sessionId, s.runnerId ? REVEAL_WIDTH : REVEAL_WIDTH_NO_RUNNER)}
                                                         onPointerMove={selectMode ? undefined : handleSessionPointerMove}
                                                         onPointerUp={selectMode ? undefined : handleSessionPointerUp}
                                                         onContextMenu={(e) => e.preventDefault()}
