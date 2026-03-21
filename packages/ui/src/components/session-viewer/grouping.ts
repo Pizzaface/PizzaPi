@@ -394,96 +394,119 @@ function deduplicateAssistantMessages(messages: RelayMessage[]): RelayMessage[] 
           }
         }
 
-        // Merge: preserve winner's assistant blocks (text, thinking, etc.) and use
-        // latest's tool calls as the authoritative set. We also need to add any
-        // tool calls that exist only in the latest snapshot.
+        // Merge strategy: segment both winner and latest by tool-call
+        // boundaries, then merge each segment preferring the latest's
+        // non-tool blocks (thread cZU) while preserving winner-only blocks
+        // (existing behaviour) and latest-only blocks between tool calls
+        // (thread cZR).
         if (winnerBlocks) {
-          // Build a set of tool IDs from the winner so we can identify which
-          // tool calls we've already added.
-          const winnerToolIds = new Set<string>();
-          for (const block of winnerBlocks) {
-            if (!block || typeof block !== "object") continue;
+          // Helper: extract tool call ID from a block
+          const tcId = (block: unknown): string => {
+            if (!block || typeof block !== "object") return "";
             const b = block as Record<string, unknown>;
-            if (b.type === "toolCall") {
-              const id =
-                typeof b.toolCallId === "string"
-                  ? b.toolCallId
-                  : typeof b.id === "string"
-                    ? b.id
-                    : "";
-              if (id) winnerToolIds.add(id);
+            if (b.type !== "toolCall") return "";
+            return typeof b.toolCallId === "string"
+              ? b.toolCallId
+              : typeof b.id === "string"
+                ? b.id
+                : "";
+          };
+
+          // Segment blocks into alternating non-tool segments and tool calls.
+          // Result: segments[0], toolCalls[0], segments[1], toolCalls[1], ...
+          const segment = (blocks: unknown[]): { segs: unknown[][]; tcs: unknown[] } => {
+            const segs: unknown[][] = [[]];
+            const tcs: unknown[] = [];
+            for (const block of blocks) {
+              if (block && typeof block === "object" && (block as Record<string, unknown>).type === "toolCall") {
+                tcs.push(block);
+                segs.push([]);
+              } else {
+                segs[segs.length - 1].push(block);
+              }
+            }
+            return { segs, tcs };
+          };
+
+          const wSeg = segment(winnerBlocks);
+          const lSeg = segment(latestBlocks);
+
+          // Determine which tool calls make it into the merge (in latest OR has result)
+          const mergeToolCalls: unknown[] = [];
+          // Map from tool-call ID to its index in mergeToolCalls
+          const mergeToolIdx = new Map<string, number>();
+
+          // Start with latest's tool calls (preserves latest ordering)
+          for (const tc of lSeg.tcs) {
+            const id = tcId(tc);
+            mergeToolIdx.set(id, mergeToolCalls.length);
+            mergeToolCalls.push(tc);
+          }
+
+          // Add winner-only tool calls that have completed results
+          for (const tc of wSeg.tcs) {
+            const id = tcId(tc);
+            if (id && !mergeToolIdx.has(id) && toolCallIdsWithResult.has(id)) {
+              mergeToolIdx.set(id, mergeToolCalls.length);
+              mergeToolCalls.push(tc);
             }
           }
 
-          // Preserve all non-toolCall blocks from winner and tool calls that
-          // exist in both winner and latest, or that have a completed result.
-          for (const block of winnerBlocks) {
-            if (!block || typeof block !== "object") {
-              mergedBlocks.push(block);
-              continue;
+          // For each gap between tool calls, merge non-tool segments.
+          // Map winner tool calls to their position so we can align segments.
+          const wTcPositions = new Map<string, number>();
+          for (let i = 0; i < wSeg.tcs.length; i++) {
+            wTcPositions.set(tcId(wSeg.tcs[i]), i);
+          }
+          const lTcPositions = new Map<string, number>();
+          for (let i = 0; i < lSeg.tcs.length; i++) {
+            lTcPositions.set(tcId(lSeg.tcs[i]), i);
+          }
+
+          // For each gap position in the merge (0 = before first TC, 1 = after first TC, etc.),
+          // find the corresponding segment from winner and latest by matching
+          // surrounding tool call IDs.
+          const numGaps = mergeToolCalls.length + 1;
+          for (let g = 0; g < numGaps; g++) {
+            // Determine which segment index in winner/latest corresponds to gap g
+            // Gap g is after mergeToolCalls[g-1] and before mergeToolCalls[g]
+            const prevTcId = g > 0 ? tcId(mergeToolCalls[g - 1]) : null;
+            const nextTcId = g < mergeToolCalls.length ? tcId(mergeToolCalls[g]) : null;
+
+            // Winner segment: the segment after prevTcId (or segment 0 if no prevTcId)
+            let wSegIdx = -1;
+            if (prevTcId === null) {
+              wSegIdx = 0;
+            } else if (wTcPositions.has(prevTcId)) {
+              wSegIdx = wTcPositions.get(prevTcId)! + 1;
             }
-            const b = block as Record<string, unknown>;
-            if (b.type === "toolCall") {
-              const id =
-                typeof b.toolCallId === "string"
-                  ? b.toolCallId
-                  : typeof b.id === "string"
-                    ? b.id
-                    : "";
-              // Keep if present in latest, OR if a terminal toolResult exists
-              // (the latest snapshot may have truncated it, but the call ran).
-              if (!id || latestToolIds.has(id) || toolCallIdsWithResult.has(id)) {
-                mergedBlocks.push(block);
+
+            // Latest segment: the segment after prevTcId (or segment 0 if no prevTcId)
+            let lSegIdx = -1;
+            if (prevTcId === null) {
+              lSegIdx = 0;
+            } else if (lTcPositions.has(prevTcId)) {
+              lSegIdx = lTcPositions.get(prevTcId)! + 1;
+            }
+
+            const wBlocks = wSegIdx >= 0 && wSegIdx < wSeg.segs.length ? wSeg.segs[wSegIdx] : [];
+            const lBlocks = lSegIdx >= 0 && lSegIdx < lSeg.segs.length ? lSeg.segs[lSegIdx] : [];
+
+            // Merge: prefer latest blocks (thread cZU), then append any
+            // winner-only extras (preserves winner-only text like "Between").
+            if (lBlocks.length > 0) {
+              mergedBlocks.push(...lBlocks);
+              // Append winner blocks beyond the latest's count at this position
+              for (let i = lBlocks.length; i < wBlocks.length; i++) {
+                mergedBlocks.push(wBlocks[i]);
               }
             } else {
-              // Keep all non-toolCall blocks (text, thinking, etc.) from winner
-              mergedBlocks.push(block);
+              mergedBlocks.push(...wBlocks);
             }
-          }
 
-          // Find the index of the last toolCall in the latest snapshot — only
-          // blocks after this position are "trailing" content unique to latest.
-          let lastToolCallIdx = -1;
-          for (let li = latestBlocks.length - 1; li >= 0; li--) {
-            const lb = latestBlocks[li];
-            if (lb && typeof lb === "object" && (lb as Record<string, unknown>).type === "toolCall") {
-              lastToolCallIdx = li;
-              break;
-            }
-          }
-
-          // Append tool calls that exist only in the latest snapshot, and
-          // trailing non-toolCall blocks (after the last tool call) that aren't
-          // already at the end of the merged result.
-          for (let li = 0; li < latestBlocks.length; li++) {
-            const block = latestBlocks[li];
-            if (!block || typeof block !== "object") continue;
-            const b = block as Record<string, unknown>;
-            if (b.type === "toolCall") {
-              const id =
-                typeof b.toolCallId === "string"
-                  ? b.toolCallId
-                  : typeof b.id === "string"
-                    ? b.id
-                    : "";
-              // Only add if this tool ID doesn't already exist in the winner
-              if (id && !winnerToolIds.has(id)) {
-                mergedBlocks.push(block);
-              }
-            } else if (li > lastToolCallIdx && b.type === "text" && typeof b.text === "string") {
-              // This is trailing text (after the last tool call in the latest
-              // snapshot). Only skip if this exact text is already at the tail
-              // of the merged result — comparing by position prevents conflating
-              // identical text that appears at different positions.
-              const lastMerged = mergedBlocks.length > 0 ? mergedBlocks[mergedBlocks.length - 1] : null;
-              const lastIsMatch =
-                lastMerged &&
-                typeof lastMerged === "object" &&
-                (lastMerged as Record<string, unknown>).type === "text" &&
-                (lastMerged as Record<string, unknown>).text === b.text;
-              if (!lastIsMatch) {
-                mergedBlocks.push(block);
-              }
+            // Emit the tool call for this gap (if not the last gap)
+            if (g < mergeToolCalls.length) {
+              mergedBlocks.push(mergeToolCalls[g]);
             }
           }
         } else {

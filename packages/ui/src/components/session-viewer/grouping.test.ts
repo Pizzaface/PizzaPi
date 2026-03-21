@@ -924,6 +924,78 @@ describe("groupToolExecutionMessages", () => {
         expect(allText).toContain("Let me run two things");
         expect(allText).toContain("Between the tools");
     });
+
+    test("P2: preserves latest-only text between tool calls (thread cZR)", () => {
+        // partial (non-errored) = [text, tc1]
+        // final (error) = [text, tc1, "Between", tc2] with results for both
+        // The "Between" text from the latest must survive the merge.
+        const messages: RelayMessage[] = [
+            msg({
+                key: "a1",
+                role: "assistant",
+                content: [
+                    { type: "text", text: "Start" },
+                    { type: "toolCall", name: "bash", id: "tc1", arguments: { command: "ls" } },
+                ],
+            }),
+            msg({
+                key: "a2",
+                role: "assistant",
+                stopReason: "error",
+                content: [
+                    { type: "text", text: "Start" },
+                    { type: "toolCall", name: "bash", id: "tc1", arguments: { command: "ls" } },
+                    { type: "text", text: "Between" },
+                    { type: "toolCall", name: "bash", id: "tc2", arguments: { command: "pwd" } },
+                ],
+            }),
+            msg({ key: "r1", role: "toolResult", toolCallId: "tc1", toolName: "bash", content: [{ type: "text", text: "out1" }] }),
+            msg({ key: "r2", role: "toolResult", toolCallId: "tc2", toolName: "bash", content: [{ type: "text", text: "out2" }] }),
+        ];
+        const result = groupToolExecutionMessages(messages);
+        const assistantParts = result.filter((m) => m.role === "assistant");
+        const allText = assistantParts
+            .flatMap((m) => (Array.isArray(m.content) ? (m.content as unknown[]) : []))
+            .filter((b) => b && typeof b === "object" && (b as Record<string, unknown>).type === "text")
+            .map((b) => (b as Record<string, unknown>).text || "")
+            .join(" ");
+        expect(allText).toContain("Between");
+    });
+
+    test("P2: prefers latest revision of shared assistant text (thread cZU)", () => {
+        // partial (non-errored) = ["Let me ask", tc1]
+        // final (error) = ["Let me ask you something", tc1] with result for tc1
+        // The merged text should be the latest version.
+        const messages: RelayMessage[] = [
+            msg({
+                key: "a1",
+                role: "assistant",
+                content: [
+                    { type: "text", text: "Let me ask" },
+                    { type: "toolCall", name: "bash", id: "tc1", arguments: { command: "ls" } },
+                ],
+            }),
+            msg({
+                key: "a2",
+                role: "assistant",
+                stopReason: "error",
+                content: [
+                    { type: "text", text: "Let me ask you something" },
+                    { type: "toolCall", name: "bash", id: "tc1", arguments: { command: "ls" } },
+                ],
+            }),
+            msg({ key: "r1", role: "toolResult", toolCallId: "tc1", toolName: "bash", content: [{ type: "text", text: "out" }] }),
+        ];
+        const result = groupToolExecutionMessages(messages);
+        const assistantParts = result.filter((m) => m.role === "assistant");
+        const allText = assistantParts
+            .flatMap((m) => (Array.isArray(m.content) ? (m.content as unknown[]) : []))
+            .filter((b) => b && typeof b === "object" && (b as Record<string, unknown>).type === "text")
+            .map((b) => (b as Record<string, unknown>).text || "")
+            .join(" ");
+        expect(allText).toContain("Let me ask you something");
+        expect(allText).not.toContain("Let me ask you something Let me ask you something");
+    });
 });
 
 // ── groupSubAgentConversations ──────────────────────────────────────────────
