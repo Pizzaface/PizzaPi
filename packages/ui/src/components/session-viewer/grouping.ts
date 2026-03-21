@@ -94,6 +94,17 @@ function deduplicateAssistantMessages(messages: RelayMessage[]): RelayMessage[] 
   // Cache the extracted IDs for each message index to avoid re-parsing the content during the filter pass.
   const messageIdsMap = new Map<number, Set<string>>();
 
+  // Pre-collect tool call IDs that have a corresponding tool result in the
+  // transcript.  We only prefer a non-errored partial over an errored final
+  // when the tool actually ran (i.e. a result exists); otherwise the errored
+  // snapshot is the most informative version and should be kept.
+  const toolCallIdsWithResult = new Set<string>();
+  for (const msg of messages) {
+    if ((msg.role === "toolResult" || msg.role === "tool") && msg.toolCallId) {
+      toolCallIdsWithResult.add(msg.toolCallId);
+    }
+  }
+
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
     if (msg.role !== "assistant") continue;
@@ -102,7 +113,12 @@ function deduplicateAssistantMessages(messages: RelayMessage[]): RelayMessage[] 
       messageIdsMap.set(i, ids);
       for (const id of ids) {
         lastIndexForToolCallId.set(id, i);
-        if (msg.stopReason !== "error") {
+        // Only record the non-errored index when a tool result exists for this
+        // ID.  If no result ever arrives the errored snapshot is the right one
+        // to surface (it carries the failure state); recording a non-errored
+        // partial here would cause the filter below to prefer the partial and
+        // silently drop the error banner.
+        if (msg.stopReason !== "error" && toolCallIdsWithResult.has(id)) {
           lastNonErroredIndexForToolCallId.set(id, i);
         }
       }
@@ -113,21 +129,30 @@ function deduplicateAssistantMessages(messages: RelayMessage[]): RelayMessage[] 
 
   // For each assistant message, determine the "preferred" index for each of
   // its tool call IDs:
-  //   - If a non-errored version exists for this ID, prefer the last such version.
-  //   - Otherwise fall back to the last version (errored or not).
+  //   - If a non-errored version exists for this ID AND a tool result arrived,
+  //     prefer the last non-errored version (avoids a spurious error badge on
+  //     a successfully-completed tool).
+  //   - Otherwise fall back to the last version overall (errored or not) so
+  //     that the failure state is visible when no result ever arrived.
+  //
+  // A message is kept when it is the preferred version for AT LEAST ONE of its
+  // IDs.  Using "any" rather than "all" ensures a later errored snapshot that
+  // introduced new tool call IDs (absent from any earlier message) is never
+  // silently dropped — without it, the only assistant message carrying those
+  // new IDs would be discarded, orphaning any later toolResult messages.
   return messages.filter((msg, i) => {
     if (msg.role !== "assistant") return true;
     // Use cached IDs if available; otherwise (e.g. if empty) treat as having no IDs.
     const ids = messageIdsMap.get(i);
     if (!ids || ids.size === 0) return true;
-    // Keep only if this index is the preferred version for every id it contains.
+    // Keep if this is the preferred version for at least one tool call ID.
     for (const id of ids) {
       const preferredIdx = lastNonErroredIndexForToolCallId.has(id)
         ? lastNonErroredIndexForToolCallId.get(id)!
         : lastIndexForToolCallId.get(id)!;
-      if (preferredIdx !== i) return false;
+      if (preferredIdx === i) return true;
     }
-    return true;
+    return false;
   });
 }
 

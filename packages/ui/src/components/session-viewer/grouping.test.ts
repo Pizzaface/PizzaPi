@@ -243,6 +243,89 @@ describe("groupToolExecutionMessages", () => {
         expect(textParts[0].stopReason).toBeUndefined();
     });
 
+    test("P1: keeps errored snapshot when no tool result follows (no non-errored partial)", () => {
+        // Scenario: partial arrives (non-errored), then stream dies producing an
+        // errored final for the same toolCallId with NO tool result ever arriving.
+        // The errored snapshot must be kept so the failure banner is visible;
+        // the non-errored partial should be dropped (it looks "pending" which is wrong).
+        const messages: RelayMessage[] = [
+            msg({
+                key: "a1-partial",
+                role: "assistant",
+                content: [
+                    { type: "toolCall", name: "AskUserQuestion", id: "tc1",
+                      arguments: { questions: [{ question: "Color?", options: ["Red"] }] } },
+                ],
+            }),
+            msg({
+                key: "a1-final",
+                role: "assistant",
+                stopReason: "error",
+                errorMessage: "Stream disconnected",
+                content: [
+                    { type: "toolCall", name: "AskUserQuestion", id: "tc1",
+                      arguments: '{"questions": [{"question": "Color?", "options": ["Red"' },
+                ],
+                timestamp: 12345,
+            }),
+            // No toolResult message — stream died before the tool ran.
+        ];
+        const result = groupToolExecutionMessages(messages);
+        // The errored final should be kept (not the non-errored partial),
+        // because no tool result ever arrived.
+        const errorParts = result.filter(
+            (m) => m.role === "assistant" && m.stopReason === "error",
+        );
+        expect(errorParts).toHaveLength(1);
+        // The non-errored partial should have been dropped.
+        const nonErroredParts = result.filter(
+            (m) => m.role === "assistant" && !m.stopReason,
+        );
+        expect(nonErroredParts).toHaveLength(0);
+    });
+
+    test("P2: keeps errored snapshot that introduces new tool call IDs", () => {
+        // Scenario: a non-errored partial carries [tc1], then an errored final
+        // carries [tc1, tc2].  The current "all IDs must agree" filter would
+        // discard the errored final (because tc1 prefers the partial), silently
+        // orphaning tc2.  With the "any ID" fix the errored final is kept so
+        // tc2's tool entry is created and any subsequent toolResult for tc2 can
+        // be matched.
+        const messages: RelayMessage[] = [
+            msg({
+                key: "a1-partial",
+                role: "assistant",
+                content: [
+                    { type: "toolCall", name: "bash", id: "tc1", arguments: { command: "ls" } },
+                ],
+            }),
+            msg({
+                key: "a1-final",
+                role: "assistant",
+                stopReason: "error",
+                errorMessage: "Stream error",
+                content: [
+                    { type: "toolCall", name: "bash", id: "tc1", arguments: { command: "ls" } },
+                    { type: "toolCall", name: "read_file", id: "tc2", arguments: { path: "/a.ts" } },
+                ],
+                timestamp: 12345,
+            }),
+            msg({
+                key: "r2",
+                role: "toolResult",
+                toolCallId: "tc2",
+                toolName: "read_file",
+                content: [{ type: "text", text: "file content" }],
+            }),
+        ];
+        const result = groupToolExecutionMessages(messages);
+        // tc2's tool item must exist and have its result filled in.
+        const tools = result.filter((m) => m.role === "tool");
+        const tc2Tool = tools.find((t) => t.toolCallId === "tc2");
+        expect(tc2Tool).toBeDefined();
+        expect(tc2Tool!.content).toBeTruthy();
+    });
+
     test("incomplete tool args fall back to empty object (not raw string)", () => {
         // When the only version of an assistant message is the errored one
         // (no streaming partial), parseToolArguments must return {} rather than
