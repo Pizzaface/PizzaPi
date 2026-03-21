@@ -316,10 +316,10 @@ export function NewSessionWizardDialog({
                             </div>
                         )}
                         {!runnersLoading && connectedRunners.length > 0 && (
-                            <div className="flex flex-col gap-2 max-h-72 overflow-y-auto">
+                            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                                 {connectedRunners.map((r) => {
                                     const roots = Array.isArray(r.roots) ? r.roots.length : 0;
-                                    const sessionMeta = `${r.sessionCount} session${r.sessionCount !== 1 ? "s" : ""}${roots > 0 ? ` · ${roots} root${roots !== 1 ? "s" : ""}` : ""}`;
+                                    const meta = `${r.sessionCount} session${r.sessionCount !== 1 ? "s" : ""}${roots > 0 ? ` · ${roots} root${roots !== 1 ? "s" : ""}` : ""}`;
                                     const osName = platformName(r.platform);
                                     return (
                                         <button
@@ -327,30 +327,28 @@ export function NewSessionWizardDialog({
                                             type="button"
                                             onClick={() => handleSelectRunner(r.runnerId)}
                                             className={cn(
-                                                "flex items-center gap-3 rounded-xl border px-4 py-3 text-left transition-colors w-full",
+                                                "relative flex flex-col items-start gap-1 rounded-lg border p-3 text-left transition-colors",
                                                 "hover:bg-accent hover:border-accent-foreground/20",
                                                 selectedRunnerId === r.runnerId
                                                     ? "border-primary bg-primary/5"
                                                     : "border-border bg-card",
                                             )}
                                         >
-                                            {/* Platform icon */}
-                                            {r.platform && (
-                                                <span className="text-muted-foreground flex-shrink-0">
-                                                    <PlatformIcon platform={r.platform} />
-                                                </span>
-                                            )}
-
-                                            {/* Name + meta */}
-                                            <span className="flex-1 min-w-0">
-                                                <span className="block font-semibold text-sm truncate">{runnerLabel(r)}</span>
-                                                <span className="block text-xs text-muted-foreground">
-                                                    {osName ? `${osName} · ` : ""}{sessionMeta}
+                                            {/* Green connection dot */}
+                                            <span className="absolute top-2 right-2 h-2 w-2 rounded-full bg-green-500" />
+                                            <span className="flex items-center gap-1.5 min-w-0 pr-4 w-full">
+                                                {r.platform && (
+                                                    <span className="text-muted-foreground flex-shrink-0">
+                                                        <PlatformIcon platform={r.platform} />
+                                                    </span>
+                                                )}
+                                                <span className="font-medium text-sm leading-tight truncate">
+                                                    {runnerLabel(r)}
                                                 </span>
                                             </span>
-
-                                            {/* Status dot */}
-                                            <span className="h-2.5 w-2.5 rounded-full bg-green-500 flex-shrink-0" />
+                                            <span className="text-xs text-muted-foreground">
+                                                {osName ? `${osName} · ` : ""}{meta}
+                                            </span>
                                         </button>
                                     );
                                 })}
