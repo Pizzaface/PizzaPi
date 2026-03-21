@@ -224,12 +224,77 @@ export function splitShellSegments(command: string): string[] {
  * If a subcommand is NOT in GIT_SAFE_SUBCOMMANDS, these patterns are checked
  * before declaring it destructive — allowing specific read-only invocations.
  */
-const GIT_DESTRUCTIVE_SUBCOMMAND_SAFE_OVERRIDES: RegExp[] = [
-    // notes show/list are read-only; allow optional flags (e.g. --ref=review) before the subcommand
-    /^\s*git\s+notes(?:\s+(?:--?\S+))*\s+(show|list)\b/i,
-    // bare `git notes` (no subcommand) defaults to `git notes list` — read-only
-    /^\s*git\s+notes\s*$/i,
-];
+function splitShellWords(command: string): string[] {
+    const words: string[] = [];
+    let current = "";
+    let inSingle = false;
+    let inDouble = false;
+    let escaped = false;
+
+    for (const ch of command) {
+        if (escaped) {
+            current += ch;
+            escaped = false;
+            continue;
+        }
+
+        if (ch === "\\") {
+            escaped = true;
+            continue;
+        }
+
+        if (ch === "'" && !inDouble) {
+            inSingle = !inSingle;
+            continue;
+        }
+
+        if (ch === '"' && !inSingle) {
+            inDouble = !inDouble;
+            continue;
+        }
+
+        if (!inSingle && !inDouble && /\s/.test(ch)) {
+            if (current) {
+                words.push(current);
+                current = "";
+            }
+            continue;
+        }
+
+        current += ch;
+    }
+
+    if (escaped) current += "\\";
+    if (current) words.push(current);
+    return words;
+}
+
+function isSafeGitNotesInvocation(segment: string): boolean {
+    const words = splitShellWords(segment);
+    if (words.length < 2) return false;
+    if (words[0].toLowerCase() !== "git" || words[1].toLowerCase() !== "notes") return false;
+
+    let index = 2;
+    while (index < words.length) {
+        const arg = words[index].toLowerCase();
+        if (arg === "--ref") {
+            if (index + 1 >= words.length) return false;
+            index += 2;
+            continue;
+        }
+        if (arg.startsWith("--ref=")) {
+            index++;
+            continue;
+        }
+        break;
+    }
+
+    // bare `git notes` (with or without `--ref`) defaults to `git notes list`
+    if (index >= words.length) return true;
+
+    const subcommand = words[index].toLowerCase();
+    return subcommand === "show" || subcommand === "list";
+}
 
 function isDestructiveGitCommand(segment: string): boolean {
     const gitMatch = segment.match(/^\s*git\s+(\S+)/i);
@@ -237,10 +302,9 @@ function isDestructiveGitCommand(segment: string): boolean {
 
     const subcommand = gitMatch[1].toLowerCase();
 
-    // Subcommand not on the safe list → check for safe overrides, then destructive
+    // Subcommand not on the safe list → allow known read-only invocations, then destructive
     if (!GIT_SAFE_SUBCOMMANDS.has(subcommand)) {
-        // Some destructive subcommands have specific read-only invocations
-        if (GIT_DESTRUCTIVE_SUBCOMMAND_SAFE_OVERRIDES.some((p) => p.test(segment))) {
+        if (isSafeGitNotesInvocation(segment)) {
             return false;
         }
         return true;

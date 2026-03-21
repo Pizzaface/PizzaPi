@@ -344,8 +344,14 @@ describe("isDestructiveCommand", () => {
         // --ref flag before show/list
         expect(isDestructiveCommand("git notes --ref=review show HEAD")).toBe(false);
         expect(isDestructiveCommand("git notes --ref=foo list")).toBe(false);
+        expect(isDestructiveCommand("git notes --ref review show HEAD")).toBe(false);
+        expect(isDestructiveCommand("git notes --ref review")).toBe(false);
+        expect(isDestructiveCommand("git notes --ref 'team review' list HEAD")).toBe(false);
     });
 
+    test("still blocks git notes write operations when --ref is separate", () => {
+        expect(isDestructiveCommand("git notes --ref review add -m 'note' HEAD")).toBe(true);
+    });
 
 
     test("flags git submodule update (modifies working tree)", () => {
