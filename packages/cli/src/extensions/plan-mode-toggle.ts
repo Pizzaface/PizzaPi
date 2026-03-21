@@ -241,7 +241,7 @@ const TAR_DESTRUCTIVE_SHORT_MODE_PATTERN = /[cruxA]/;
  * When scanning option bundles for mode letters, anything after such a flag
  * is treated as payload (not more flags) to avoid false positives.
  */
-const TAR_SHORT_OPTS_WITH_ATTACHED_ARG = new Set(["f", "C", "X", "T", "I", "H"]);
+const TAR_SHORT_OPTS_WITH_ATTACHED_ARG = new Set(["f", "g", "C", "X", "T", "I", "H"]);
 
 function tarShortOptsForModeScan(shortOpts: string): string {
     let out = "";
@@ -263,7 +263,21 @@ const TAR_WRITE_MODE_PATTERN = /[cruA]/;
 
 function isDestructiveTarCommand(segment: string): boolean {
     if (!/^\s*tar\b/i.test(segment)) return false;
-    if (TAR_LONG_MODE_PATTERN.test(segment)) return true;
+
+    // Check for --to-stdout / -O BEFORE the long-mode early return so that
+    // `tar --extract --to-stdout` is correctly treated as read-only.
+    const hasLongToStdout = /(?:^|\s)--to-stdout(?:\s|$)/i.test(segment);
+
+    if (TAR_LONG_MODE_PATTERN.test(segment)) {
+        // Long-form extract/get with --to-stdout is read-only (no files written).
+        // Long-form write modes (--create, --append, --update, etc.) are always
+        // destructive even with --to-stdout (they produce archive data).
+        if (hasLongToStdout) {
+            const hasLongWriteMode = /(?:^|\s)--(?:create|append|update|delete|catenate|concatenate)\b/.test(segment);
+            if (!hasLongWriteMode) return false;
+        }
+        return true;
+    }
 
     // Collect all short-option mode letters across the entire command so we can
     // reason about -O (stdout) and write-mode flags (-c/-r/-u/-A) together.
@@ -282,7 +296,7 @@ function isDestructiveTarCommand(segment: string): boolean {
     }
 
     // Also check for long-form --to-stdout
-    const hasStdout = /O/.test(allModeLetters) || /(?:^|\s)--to-stdout(?:\s|$)/i.test(segment);
+    const hasStdout = /O/.test(allModeLetters) || hasLongToStdout;
     const hasWriteMode = TAR_WRITE_MODE_PATTERN.test(allModeLetters);
 
     // -O (stdout) only makes tar safe when no write-mode flag is present.
@@ -342,17 +356,20 @@ function isDestructivePatchCommand(segment: string): boolean {
     // If a real file path is given (not `-` for stdout), patch writes rejected
     // hunks to disk — destructive even when main output goes to stdout.
     const hasRejectFile = /\s-r\s|\s-r\S|--reject-file\b|--reject-file=/i.test(segment);
+    let rejectIsStdout = false;
     if (hasRejectFile) {
-        const rejectIsStdout = /\s-r\s-(?:\s|$)|-r-(?:\s|$)|--reject-file=-(?:\s|$)|--reject-file\s+-(?:\s|$)/i.test(segment);
+        rejectIsStdout = /\s-r\s-(?:\s|$)|-r-(?:\s|$)|--reject-file=-(?:\s|$)|--reject-file\s+-(?:\s|$)/i.test(segment);
         if (!rejectIsStdout) {
             return true; // reject file writes to a real path
         }
     }
 
-    // If we got here with -o to stdout and no reject file (or reject to stdout),
-    // the command is read-only.
+    // If output goes to stdout (`-o -`), the command is only safe if the
+    // reject file is ALSO directed to stdout (`-r -`). When `-r` is omitted
+    // entirely, GNU patch names the reject file after the output file with
+    // `.rej` appended — so `patch -o -` without `-r -` creates `-.rej` on disk.
     if (hasOutputFlag) {
-        return false;
+        return !rejectIsStdout;
     }
 
     // `patch` is generally destructive, but a few explicit flags make it read-only.

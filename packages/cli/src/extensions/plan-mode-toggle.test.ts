@@ -538,12 +538,11 @@ describe("isDestructiveCommand", () => {
         expect(isDestructiveCommand("patch -C -p0 < fix.diff")).toBe(false);
         expect(isDestructiveCommand("patch -zC -p0 < fix.diff")).toBe(true); // -zC is: suffix=C, not check
 
-        // -o - and --output=- write to stdout (read-only preview)
-        expect(isDestructiveCommand("patch -o - file.txt < fix.diff")).toBe(false);
-        expect(isDestructiveCommand("patch --output=- file.txt < fix.diff")).toBe(false);
-        // Also support -o- (no space) and --output - (with space, no equals) forms
-        expect(isDestructiveCommand("patch -o- file.txt < fix.diff")).toBe(false);
-        expect(isDestructiveCommand("patch --output - file.txt < fix.diff")).toBe(false);
+        // -o - without -r - is destructive: GNU patch creates -.rej on disk
+        expect(isDestructiveCommand("patch -o - file.txt < fix.diff")).toBe(true);
+        expect(isDestructiveCommand("patch --output=- file.txt < fix.diff")).toBe(true);
+        expect(isDestructiveCommand("patch -o- file.txt < fix.diff")).toBe(true);
+        expect(isDestructiveCommand("patch --output - file.txt < fix.diff")).toBe(true);
 
         // Informational flags
         expect(isDestructiveCommand("patch --help")).toBe(false);
@@ -646,6 +645,15 @@ describe("isDestructiveCommand", () => {
         expect(isDestructiveCommand("tar -Ixz -xf archive.tar.xz")).toBe(true);
     });
 
+    test("allows tar list mode with -g flag (listed-incremental, attached argument)", () => {
+        // -g accepts an attached argument (snapshot file), so `-gindex` should not
+        // misinterpret the `x` in `index` as extract mode
+        expect(isDestructiveCommand("tar -gindex -tf archive.tar")).toBe(false);
+        expect(isDestructiveCommand("tar -g snapshot.snar -tf archive.tar")).toBe(false);
+        // With actual destructive mode, should still be destructive
+        expect(isDestructiveCommand("tar -gindex -xf archive.tar")).toBe(true);
+    });
+
     test("allows tar list mode with -H flag (format, attached argument)", () => {
         // -H accepts an attached argument (format name), so `-Hposix` should not
         // misinterpret the `x` in `posix` as extract mode
@@ -665,6 +673,13 @@ describe("isDestructiveCommand", () => {
         expect(isDestructiveCommand("tar --to-stdout -xf archive.tar file.txt")).toBe(false);
         // Even when combined with compression flags, -O makes it read-only
         expect(isDestructiveCommand("tar -Ixz -xO -f archive.tar.xz file.txt")).toBe(false);
+        // Long-form --extract / --get with --to-stdout is read-only
+        expect(isDestructiveCommand("tar --extract --to-stdout -f archive.tar file.txt")).toBe(false);
+        expect(isDestructiveCommand("tar --get --to-stdout -f archive.tar file.txt")).toBe(false);
+        expect(isDestructiveCommand("tar --to-stdout --extract -f archive.tar file.txt")).toBe(false);
+        // Long-form write modes with --to-stdout are still destructive
+        expect(isDestructiveCommand("tar --create --to-stdout dir/")).toBe(true);
+        expect(isDestructiveCommand("tar --append --to-stdout -f archive.tar file.txt")).toBe(true);
     });
 
     test("tar -O does not mask write-mode flags (-c, -u, -r, -A)", () => {
