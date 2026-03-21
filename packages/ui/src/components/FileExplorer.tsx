@@ -595,9 +595,14 @@ function FileViewer({
 function GitChangesView({
   runnerId,
   cwd,
+  outerRef,
 }: {
   runnerId: string;
   cwd: string;
+  /** Ref to the outer FileExplorer container (tab strip, breadcrumb, controls).
+   *  When provided the Escape handler covers the full panel chrome, not just
+   *  the inner diff body. */
+  outerRef?: React.RefObject<HTMLDivElement | null>;
 }) {
   const [gitStatus, setGitStatus] = React.useState<GitStatus | null>(null);
   const [loading, setLoading] = React.useState(true);
@@ -648,17 +653,26 @@ function GitChangesView({
     diffContainerRef.current?.focus();
     const handler = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
-      if (!shouldInterceptEscape(diffContainerRef.current)) return;
+      // Guard against focus being in the inner diff body OR anywhere in the
+      // surrounding FileExplorer chrome (tab strip, cwd breadcrumb, position
+      // picker, close button).  Without the outerRef check those chrome elements
+      // are outside diffContainerRef and would let Escape reach the abort handler.
+      const innerOk = shouldInterceptEscape(diffContainerRef.current);
+      const outerOk = outerRef ? shouldInterceptEscape(outerRef.current) : false;
+      if (!innerOk && !outerOk) return;
       e.preventDefault();
       e.stopImmediatePropagation();
       setSelectedDiff(null);
     };
     // Capture phase ensures this fires before SessionViewer's bubble-phase listener
-    // Clicking on non-focusable content inside the preview (e.g. <pre>, <img>)
+    // Clicking on non-focusable content (e.g. <pre> in the diff, the cwd breadcrumb)
     // moves document.activeElement to body in Chrome, breaking shouldInterceptEscape.
-    // Re-focus the container whenever a click inside it drops focus to body.
+    // Re-focus the diff container whenever a click inside the diff body OR the outer
+    // FileExplorer chrome drops focus to body.
     const restoreFocusDiff = (e: PointerEvent) => {
-      if (!diffContainerRef.current?.contains(e.target as Node)) return;
+      const insideDiff = diffContainerRef.current?.contains(e.target as Node);
+      const insideOuter = outerRef?.current?.contains(e.target as Node);
+      if (!insideDiff && !insideOuter) return;
       requestAnimationFrame(() => {
         if (document.activeElement === document.body) {
           diffContainerRef.current?.focus();
@@ -671,7 +685,7 @@ function GitChangesView({
       document.removeEventListener("keydown", handler, true);
       document.removeEventListener("pointerdown", restoreFocusDiff);
     };
-  }, [selectedDiff]);
+  }, [selectedDiff, outerRef]);
 
   const viewDiff = React.useCallback(async (filePath: string) => {
     setDiffLoading(true);
@@ -1112,8 +1126,13 @@ export function FileExplorer({ runnerId, cwd, className, onClose, position = "le
     );
   }
 
+  // outerRef covers the full FileExplorer panel including tab strip, breadcrumb,
+  // and desktop controls.  GitChangesView uses it so Escape still closes the diff
+  // preview when focus is on those chrome elements rather than inside the diff body.
+  const outerRef = React.useRef<HTMLDivElement>(null);
+
   return (
-    <div className={cn("flex flex-col bg-background text-foreground", className)}>
+    <div ref={outerRef} className={cn("flex flex-col bg-background text-foreground", className)}>
       {/* Header with tabs */}
       <div className="flex items-center border-b border-border bg-muted/50">
         {/* Mobile back button */}
@@ -1263,7 +1282,7 @@ export function FileExplorer({ runnerId, cwd, className, onClose, position = "le
             </div>
           )
         ) : (
-          <GitChangesView runnerId={runnerId} cwd={cwd} />
+          <GitChangesView runnerId={runnerId} cwd={cwd} outerRef={outerRef} />
         )}
       </div>
     </div>
