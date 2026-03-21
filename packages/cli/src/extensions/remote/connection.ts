@@ -8,7 +8,7 @@
 import { io, type Socket } from "socket.io-client";
 import type { RelayClientToServerEvents, RelayServerToClientEvents } from "@pizzapi/protocol";
 import { loadConfig } from "../../config.js";
-import { RELAY_BACKOFF_DEFAULTS } from "../../backoff.js";
+import { RELAY_BACKOFF_DEFAULTS, computeBackoffDelay } from "../../backoff.js";
 import { getMcpBridge } from "../mcp-bridge.js";
 import { messageBus } from "../session-message-bus.js";
 import { refreshAllUsage } from "../remote-provider-usage.js";
@@ -136,6 +136,7 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
     }
 
     const sioUrl = socketIoUrl(rctx);
+    console.log(`pizzapi: connecting to relay at ${sioUrl}/relay…`);
 
     const sock: Socket<RelayServerToClientEvents, RelayClientToServerEvents> = io(
         sioUrl + "/relay",
@@ -155,6 +156,30 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
     rctx.sioSocket = sock;
     resetRelayRegistrationGate();
 
+    // ── Backoff / reconnection logging (Manager-level events) ─────────────
+    //
+    // Socket.IO's built-in exponential backoff handles all retry scheduling;
+    // these listeners only add visibility into each attempt.
+
+    sock.io.on("reconnect_attempt", (attempt: number) => {
+        // attempt is 1-indexed; computeBackoffDelay expects a 0-indexed count,
+        // so pass (attempt - 1) to mirror Socket.IO's own delay calculation.
+        const approxDelayMs = computeBackoffDelay(attempt - 1);
+        const delaySec = (approxDelayMs / 1000).toFixed(1);
+        rctx.setRelayStatus(`Reconnecting to relay… (attempt ${attempt})`);
+        console.log(`pizzapi: relay reconnect attempt ${attempt} — retrying in ~${delaySec}s`);
+    });
+
+    sock.io.on("reconnect", (attempt: number) => {
+        console.log(
+            `pizzapi: relay reconnected after ${attempt} attempt${attempt === 1 ? "" : "s"}`,
+        );
+    });
+
+    sock.io.on("reconnect_error", (err: Error) => {
+        console.log(`pizzapi: relay reconnect error — ${err?.message ?? String(err)}`);
+    });
+
     // ── Connection lifecycle ──────────────────────────────────────────────
 
     sock.on("connect", () => {
@@ -170,6 +195,7 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
     });
 
     sock.on("registered", (data) => {
+        const wasReconnect = connectFailureNotified;
         rctx.relaySessionId = data.sessionId;
         rctx.relay = {
             sessionId: data.sessionId,
@@ -180,6 +206,11 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
         };
         connectFailureNotified = false;
         rctx.setRelayStatus("Connected to Relay");
+        console.log(
+            wasReconnect
+                ? `pizzapi: relay reconnected — session ${data.sessionId} (${data.shareUrl})`
+                : `pizzapi: relay connected — session ${data.sessionId} (${data.shareUrl})`,
+        );
 
         messageBus.setOwnSessionId(rctx.relaySessionId);
         messageBus.setSendFn((targetSessionId: string, message: string) => {
@@ -360,9 +391,11 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
         rctx.setRelayStatus("Session expired");
     });
 
-    sock.on("connect_error", (_err) => {
+    sock.on("connect_error", (err) => {
         const url = socketIoUrl(rctx);
+        const reason = err?.message ?? String(err);
         rctx.setRelayStatus(`Relay connection failed (${url})`);
+        console.log(`pizzapi: relay connection error — ${reason}`);
 
         if (!connectFailureNotified && rctx.latestCtx) {
             connectFailureNotified = true;
