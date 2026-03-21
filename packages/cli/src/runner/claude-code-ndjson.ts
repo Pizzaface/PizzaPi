@@ -90,10 +90,14 @@ export function translateNdjsonLine(line: string): TranslationResult {
             options: Array.isArray(q.options) ? (q.options as unknown[]).filter((o): o is string => typeof o === "string") : [],
             type: typeof q.type === "string" ? q.type : "radio",
           }));
+        // Include relayEvent so the bridge can save the assistant message to
+        // history before presenting the question.  Without this the AskUserQuestion
+        // turn is silently dropped, which breaks reconnect snapshots.
         return {
           kind: "ask_user_question",
           toolCallId: typeof b.id === "string" ? b.id : undefined,
           questions,
+          relayEvent: { type: "message_update", role: "assistant", message },
         };
       }
 

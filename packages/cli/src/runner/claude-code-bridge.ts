@@ -289,22 +289,52 @@ function parseModelString(modelStr: string): { provider: string; id: string; nam
 // ── Model list ────────────────────────────────────────────────────────────
 /** Well-known models per provider — used to populate pizzapi_list_models. */
 const WELL_KNOWN_MODELS: Array<{ provider: string; id: string; name: string; reasoning?: boolean }> = [
+  // Anthropic
   { provider: "anthropic", id: "claude-opus-4-5",    name: "Claude Opus 4.5",   reasoning: true },
   { provider: "anthropic", id: "claude-sonnet-4-5",  name: "Claude Sonnet 4.5", reasoning: true },
   { provider: "anthropic", id: "claude-haiku-4-5",   name: "Claude Haiku 4.5" },
   { provider: "anthropic", id: "claude-opus-4",      name: "Claude Opus 4",     reasoning: true },
   { provider: "anthropic", id: "claude-sonnet-4",    name: "Claude Sonnet 4",   reasoning: true },
   { provider: "anthropic", id: "claude-haiku-4",     name: "Claude Haiku 4" },
+  { provider: "anthropic", id: "claude-3-7-sonnet-20250219", name: "Claude 3.7 Sonnet", reasoning: true },
+  { provider: "anthropic", id: "claude-3-5-sonnet-20241022", name: "Claude 3.5 Sonnet" },
+  { provider: "anthropic", id: "claude-3-5-haiku-20241022",  name: "Claude 3.5 Haiku" },
+  // Google
+  { provider: "google",    id: "gemini-2.5-pro",     name: "Gemini 2.5 Pro",   reasoning: true },
+  { provider: "google",    id: "gemini-2.5-flash",   name: "Gemini 2.5 Flash", reasoning: true },
+  { provider: "google",    id: "gemini-2.0-flash",   name: "Gemini 2.0 Flash" },
+  // OpenAI
+  { provider: "openai",    id: "o3",                 name: "o3",               reasoning: true },
+  { provider: "openai",    id: "o4-mini",            name: "o4-mini",          reasoning: true },
+  { provider: "openai",    id: "gpt-4.1",            name: "GPT-4.1" },
+  { provider: "openai",    id: "gpt-4o",             name: "GPT-4o" },
 ];
 
 /**
  * Return models available on this runner.
- * Always includes the current model so the list is never empty.
+ * Reads ~/.pizzapi/auth.json (or $PIZZAPI_AGENT_DIR/auth.json) to discover
+ * which providers have credentials, then filters the well-known model list to
+ * those providers.  Always includes the current session model as a fallback.
  */
 function listAvailableModels(): { models: Array<{ provider: string; id: string; name: string; reasoning?: boolean }> } {
-  const models = [...WELL_KNOWN_MODELS];
+  // Detect which providers have credentials
+  const agentDir = process.env.PIZZAPI_AGENT_DIR ?? join(homedir(), ".pizzapi");
+  let configuredProviders = new Set<string>();
+  try {
+    const raw = readFileSync(join(agentDir, "auth.json"), "utf-8");
+    const auth = JSON.parse(raw) as Record<string, unknown>;
+    configuredProviders = new Set(Object.keys(auth));
+  } catch {
+    // auth.json missing or unreadable — fall back to current model only
+  }
 
-  // Always include the current model so the list is never empty
+  // If we can read credentials, filter to configured providers; otherwise return all models
+  // (so the tool is still useful even if auth.json is temporarily unavailable).
+  const models = configuredProviders.size > 0
+    ? WELL_KNOWN_MODELS.filter((m) => configuredProviders.has(m.provider))
+    : [...WELL_KNOWN_MODELS];
+
+  // Always include the current session model so the list is never empty.
   if (
     currentModelObject &&
     !models.some((m) => m.provider === currentModelObject!.provider && m.id === currentModelObject!.id)
@@ -512,7 +542,7 @@ async function dispatchMcpTool(tool: string, args: Record<string, unknown>): Pro
       return "sent";
 
     case "pizzapi_list_models":
-      return { models: [] };
+      return listAvailableModels();
 
     default:
       throw new Error(`Unknown PizzaPi tool: ${tool}`);
@@ -740,13 +770,24 @@ function handleNdjsonLine(line: string): void {
 
   if (result.kind === "session_init") {
     if (result.sessionId) claudeSessionId = result.sessionId;
-    if (result.model) currentModel = result.model;
+    if (result.model) {
+      currentModel = result.model;
+      currentModelObject = parseModelString(result.model);
+    }
     claudeIsWorking = false;
+    emitCapabilities();
     emitSessionActive();
     return;
   }
 
   if (result.kind === "ask_user_question") {
+    // Forward the assistant message to history first so reconnecting viewers
+    // see the full conversation including the AskUserQuestion turn.
+    if (result.relayEvent?.message) {
+      messages.push(result.relayEvent.message);
+      claudeIsWorking = true;
+      forwardEvent(result.relayEvent);
+    }
     if (result.toolCallId) {
       handleAskUserQuestion(result.toolCallId, result.questions ?? []);
     }
@@ -754,9 +795,18 @@ function handleNdjsonLine(line: string): void {
   }
 
   if (result.kind === "relay_event" && result.relayEvent) {
+    // Update parity state from side-effects carried on the translation result
     if (result.todoList) {
+      currentTodoList = result.todoList;
       forwardEvent({ type: "todo_update", todos: result.todoList, ts: Date.now() });
     }
+    if (result.sessionName !== undefined) {
+      currentSessionName = result.sessionName;
+    }
+    if (result.tokenUsage) {
+      currentTokenUsage = result.tokenUsage;
+    }
+
     if (result.relayEvent.type === "message_update") {
       messages.push(result.relayEvent.message);
       claudeIsWorking = true;  // Claude is actively working/outputting
@@ -851,13 +901,13 @@ function deliverAskUserAnswer(toolCallId: string, answer: string): void {
 // ── session_active snapshot ───────────────────────────────────────────────
 function emitSessionActive(): void {
   const sessionState: Record<string, unknown> = {
-    model: currentModel,
+    model: currentModelObject ?? (currentModel ? { provider: "anthropic", id: currentModel, name: currentModel } : null),
     messages: capOversizedMessages(messages),
     cwd,
-    sessionName: null,
-    availableModels: [],
-    todoList: [],
-    thinkingLevel: null,
+    sessionName: currentSessionName,
+    availableModels: currentModelObject ? [currentModelObject] : [],
+    todoList: currentTodoList,
+    thinkingLevel: currentThinkingLevel,
     workerType: "claude-code",
   };
 
@@ -932,8 +982,10 @@ function connectRelay(): void {
 
   sock.on("registered", (data) => {
     relayToken = data.token;
+    emitCapabilities();
     emitHeartbeat("Starting Claude Code…");
     emitSessionActive();
+    startHeartbeatTimer();
   });
 
   sock.on("session_trigger" as any, (data: { trigger: ConversationTrigger }) => {
@@ -990,6 +1042,10 @@ function connectRelay(): void {
         claudeSessionId = randomUUID();
         messages = [];
         currentModel = null;
+        currentModelObject = null;
+        currentSessionName = null;
+        currentTokenUsage = null;
+        currentTodoList = [];
         clearPendingState();
         processGeneration++;
         if (claudeProcess) { try { claudeProcess.kill("SIGTERM"); } catch {} claudeProcess = null; }
@@ -1030,6 +1086,7 @@ function connectRelay(): void {
 
   sock.on("disconnect", () => {
     relayToken = null;
+    stopHeartbeatTimer();
   });
 }
 

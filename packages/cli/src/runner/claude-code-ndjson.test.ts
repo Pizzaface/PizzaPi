@@ -59,6 +59,9 @@ describe("translateNdjsonLine", () => {
     expect(result.kind).toBe("ask_user_question");
     expect(result.toolCallId).toBe("tu2");
     expect(result.questions).toHaveLength(1);
+    // relayEvent must be present so the bridge can save the assistant message to history
+    expect(result.relayEvent).toBeDefined();
+    expect(result.relayEvent?.type).toBe("message_update");
   });
 
   test("translates result to agent_end", () => {
