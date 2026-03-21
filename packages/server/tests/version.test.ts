@@ -63,14 +63,15 @@ describe("getHubVersionInfo", () => {
         expect(getHubVersionInfo().version).toBeNull();
     });
 
-    test("returns null version when PIZZAPI_HUB_VERSION is unset (image present)", () => {
+    test("derives the image tag when PIZZAPI_HUB_VERSION is unset", () => {
         delete process.env.PIZZAPI_HUB_VERSION;
         process.env.PIZZAPI_HUB_IMAGE = "ghcr.io/acme/pizzapi:0.1.32";
 
         const result = getHubVersionInfo();
         expect(result.image).toBe("ghcr.io/acme/pizzapi:0.1.32");
-        // Missing version env var → null; route will substitute npm version.
-        expect(result.version).toBeNull();
+        // Missing version env var → derive the tag from the image so we don't
+        // report the npm version for mutable deploys.
+        expect(result.version).toBe("0.1.32");
     });
 
     test("returns pinned semver version when PIZZAPI_HUB_VERSION is a specific tag", () => {
@@ -90,6 +91,16 @@ describe("getHubVersionInfo", () => {
         expect(getHubVersionInfo()).toEqual({
             image: null,
             version: "0.1.32",
+        });
+    });
+
+    test("derives digest tag when version env var is unset", () => {
+        delete process.env.PIZZAPI_HUB_VERSION;
+        process.env.PIZZAPI_HUB_IMAGE = "ghcr.io/acme/pizzapi@sha256:abcdef0123456789abcdef";
+
+        expect(getHubVersionInfo()).toEqual({
+            image: "ghcr.io/acme/pizzapi@sha256:abcdef0123456789abcdef",
+            version: "sha256:abcdef012345",
         });
     });
 

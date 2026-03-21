@@ -60,6 +60,32 @@ const SOURCE_BUILD_LABELS = new Set([
     "digest",      // fallback when truncateDigest() receives a malformed digest
 ]);
 
+function truncateDigestForDisplay(digest: string | undefined): string {
+    if (!digest) return "digest";
+    const colonIdx = digest.indexOf(":");
+    if (colonIdx === -1) {
+        return digest.slice(0, 19) || "digest";
+    }
+    const prefix = digest.slice(0, colonIdx + 1);
+    const hex = digest.slice(colonIdx + 1, colonIdx + 1 + 12);
+    return hex.length > 0 ? `${prefix}${hex}` : "digest";
+}
+
+function deriveVersionFromImage(image: string | null): string | null {
+    if (!image) return null;
+    const digestIndex = image.indexOf("@");
+    if (digestIndex !== -1) {
+        return truncateDigestForDisplay(image.slice(digestIndex + 1));
+    }
+
+    const lastSlash = image.lastIndexOf("/");
+    const afterSlash = lastSlash === -1 ? image : image.slice(lastSlash + 1);
+    const colonIdx = afterSlash.indexOf(":");
+    if (colonIdx === -1) return null;
+    const tag = afterSlash.slice(colonIdx + 1).trim();
+    return tag || null;
+}
+
 export function getHubVersionInfo(): { image: string | null; version: string | null } {
     const image = process.env.PIZZAPI_HUB_IMAGE?.trim() || null;
     const rawVersion = process.env.PIZZAPI_HUB_VERSION?.trim() || null;
@@ -70,6 +96,6 @@ export function getHubVersionInfo(): { image: string | null; version: string | n
     const effectiveVersion = rawVersion && !SOURCE_BUILD_LABELS.has(rawVersion) ? rawVersion : null;
     return {
         image,
-        version: effectiveVersion,
+        version: effectiveVersion ?? deriveVersionFromImage(image),
     };
 }
