@@ -103,11 +103,18 @@ let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
 // Pending AskUserQuestion: tool_use_id → { resolve, timer }
 const pendingQuestions = new Map<string, { resolve: (answer: string) => void; timer: ReturnType<typeof setTimeout> }>();
-// Pending permission requests: requestId → { resolve: (decision: "allow" | "deny") => void; timer: ReturnType<typeof setTimeout> };
-const pendingPermissions = new Map<string, { resolve: (decision: "allow" | "deny") => void; timer: ReturnType<typeof setTimeout> }>();
+// Pending permission requests: requestId → pending handler metadata
+interface PendingPermissionEntry {
+  resolve: (decision: "allow" | "deny") => void;
+  timer: ReturnType<typeof setTimeout>;
+  toolName: string;
+  toolInput: unknown;
+}
+const pendingPermissions = new Map<string, PendingPermissionEntry>();
 // Pending triggers this session has received from linked children.
 const receivedTriggers = new Map<string, { sourceSessionId: string; type: string; trackedAt: number }>();
 const TRIGGER_TTL_MS = 10 * 60 * 1000;
+const IS_WINDOWS = process.platform === "win32";
 
 // Buffered session messages from other sessions (for pizzapi_check_messages).
 // Each entry: { fromSessionId, message }
@@ -242,8 +249,12 @@ function emitHeartbeat(status?: string): void {
   }
 
   if (pendingPermissions.size > 0) {
-    const [requestId, _entry] = [...pendingPermissions.entries()][0];
-    hb.pendingPermission = { requestId };
+    const [requestId, entry] = [...pendingPermissions.entries()][0];
+    hb.pendingPermission = {
+      requestId,
+      toolName: entry.toolName,
+      toolInput: entry.toolInput,
+    };
   }
 
   forwardEvent(hb);
@@ -350,7 +361,9 @@ async function setupTempDir(): Promise<{ ipcSocketPath: string; hooksPath: strin
   tmpDir = await mkdtemp(join(tmpdir(), "pizzapi-cc-"));
   await chmod(tmpDir, 0o700);
 
-  const ipcSocketPath = join(tmpDir, "bridge.sock");
+  const ipcSocketPath = IS_WINDOWS
+    ? `\\.\\pipe\\pizzapi-cc-${randomUUID()}`
+    : join(tmpDir, "bridge.sock");
 
   const hooksJson = {
     hooks: Object.fromEntries(
@@ -807,13 +820,16 @@ function handleNdjsonLine(line: string): void {
       currentTokenUsage = result.tokenUsage;
     }
 
-    if (result.relayEvent.type === "message_update") {
-      messages.push(result.relayEvent.message);
+    const relayEvent = result.relayEvent;
+    if (!relayEvent) return;
+    const eventType = relayEvent.type;
+    if (eventType === "message_update") {
+      messages.push(relayEvent.message);
       claudeIsWorking = true;  // Claude is actively working/outputting
-    } else if (result.relayEvent.type === "agent_end") {
+    } else if (eventType === "agent_end" || eventType === "turn_end") {
       claudeIsWorking = false;  // Turn complete, Claude is now idle
     }
-    forwardEvent(result.relayEvent);
+    forwardEvent(relayEvent);
   }
 }
 
@@ -832,11 +848,17 @@ function handleControlRequest(requestId: string, toolName: string, toolInput: un
     sendPermissionResponse(requestId, "deny");
   }, 5 * 60 * 1000);
 
-  pendingPermissions.set(requestId, { resolve: (decision) => {
-    clearTimeout(timer);
-    pendingPermissions.delete(requestId);
-    sendPermissionResponse(requestId, decision);
-  }, timer });
+  const pendingPermissionEntry: PendingPermissionEntry = {
+    resolve: (decision) => {
+      clearTimeout(timer);
+      pendingPermissions.delete(requestId);
+      sendPermissionResponse(requestId, decision);
+    },
+    timer,
+    toolName,
+    toolInput,
+  };
+  pendingPermissions.set(requestId, pendingPermissionEntry);
 }
 
 function sendPermissionResponse(requestId: string, behavior: "allow" | "deny"): void {
@@ -922,8 +944,12 @@ function emitSessionActive(): void {
   }
 
   if (pendingPermissions.size > 0) {
-    const [requestId, _entry] = [...pendingPermissions.entries()][0];
-    sessionState.pendingPermission = { requestId };
+    const [requestId, entry] = [...pendingPermissions.entries()][0];
+    sessionState.pendingPermission = {
+      requestId,
+      toolName: entry.toolName,
+      toolInput: entry.toolInput,
+    };
   }
 
   if (needsChunkedDelivery(messages)) {

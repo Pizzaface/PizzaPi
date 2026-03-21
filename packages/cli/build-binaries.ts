@@ -84,6 +84,21 @@ function copyAssets(piPkgDir: string, outDir: string): void {
     if (existsSync(templatesSrc)) {
         cpSync(templatesSrc, join(outDir, "templates"), { recursive: true });
     }
+
+    const cliDist = join(import.meta.dirname, "dist");
+    const runnerDist = join(cliDist, "runner");
+    const runnerSrc = join(import.meta.dirname, "src", "runner");
+    const runnerSource = existsSync(runnerDist) ? runnerDist : runnerSrc;
+    if (existsSync(runnerSource)) {
+        cpSync(runnerSource, join(outDir, "runner"), { recursive: true });
+    }
+
+    const pluginDist = join(cliDist, "claude-code-plugin");
+    const pluginSrc = join(import.meta.dirname, "src", "claude-code-plugin");
+    const pluginSource = existsSync(pluginDist) ? pluginDist : pluginSrc;
+    if (existsSync(pluginSource)) {
+        cpSync(pluginSource, join(outDir, "claude-code-plugin"), { recursive: true });
+    }
 }
 
 // ---------------------------------------------------------------------------
