@@ -8,7 +8,16 @@ describe("runner-usage-cache", () => {
     test("refreshes usage data with tracked cwd auth paths and drops them after untracking", () => {
         const repoRoot = join(import.meta.dir, "../../../..");
         const tmpHome = mkdtempSync(join(tmpdir(), "runner-usage-cache-test-"));
-        const childTestPath = join(import.meta.dir, `.runner-usage-cache-child-${Date.now()}-${Math.random().toString(16).slice(2)}.test.ts`);
+
+        // Always write the child test file into the **source** tree (src/runner/)
+        // so that its relative `import("./runner-usage-cache.ts")` and
+        // `mock.module("../config.js")` etc. resolve to the correct source modules.
+        // This also makes the test correct when bun discovers and runs the compiled
+        // dist/runner/runner-usage-cache.test.js from the project root.
+        const runnerSrcDir = import.meta.dir.includes("/dist/runner")
+            ? import.meta.dir.replace("/dist/runner", "/src/runner")
+            : import.meta.dir;
+        const childTestPath = join(runnerSrcDir, `.runner-usage-cache-child-${Date.now()}-${Math.random().toString(16).slice(2)}.test.ts`);
 
         try {
             writeFileSync(
