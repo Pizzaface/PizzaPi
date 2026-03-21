@@ -14,9 +14,13 @@ The `RunnerManager` component polls two REST endpoints every 10 seconds:
 
 There is also a spin-poll loop after spawning a session (`poll()` in `RunnerManager`, `waitForSessionToGoLive` in `App.tsx`) that hits `/api/sessions` every 1 second until the new session appears.
 
-Additionally, `App.tsx` does a one-time eager `fetch("/api/runners")` on mount.
+Additionally:
+- `App.tsx` does a one-time eager `fetch("/api/runners")` on mount
+- `App.tsx` re-fetches `/api/runners` every time the new-session dialog opens
+- `TerminalManager` fetches `/api/runners` every time the terminal dialog opens
+- `SessionViewer` fires `fetch("/api/runners/{id}/skills|agents|plugins")` each time a user runs a `/skills`, `/agents`, or `/plugins` slash command, and fetches agents on every `@mention` popover open and `/agents <name>` invocation — even though this data is already known from the runner's registration
 
-**Effect:** Up to 10-second lag before a newly connected/disconnected runner appears in the UI. Unnecessary HTTP load. Architectural smell — the rest of the session lifecycle already uses WebSocket (`/hub` namespace for sessions, `/viewer` for content).
+**Effect:** Up to 10-second lag before a newly connected/disconnected runner appears in the UI. Unnecessary HTTP load on every dialog open and slash command. Architectural smell — the rest of the session lifecycle already uses WebSocket (`/hub` namespace for sessions, `/viewer` for content).
 
 ---
 
@@ -24,6 +28,7 @@ Additionally, `App.tsx` does a one-time eager `fetch("/api/runners")` on mount.
 
 - Instant runner connect/disconnect/update notifications (latency → ~0)
 - Zero polling: eliminate all `setInterval` + `fetch` for runners and sessions
+- Eliminate redundant on-demand runner fetches in dialogs and slash commands — use cached WS state
 - Consistent architecture: all real-time state flows through Socket.IO namespaces
 
 ---
@@ -174,11 +179,13 @@ Behavior:
 
 ### 5. UI: `App.tsx` Changes
 
-#### 5a. Remove eager fetch on mount
+#### 5a. Remove all ad-hoc runner fetches
 
-Remove the `useEffect` block (lines ~137–159) that does `fetch("/api/runners")` on mount to pre-populate `runnersForSidebar`. `useRunnersFeed` inside `RunnerManager` will provide this data on first connect (sub-100ms in practice).
+**On-mount eager fetch** (lines ~137–159): remove the `useEffect` that does `fetch("/api/runners")` on mount to pre-populate `runnersForSidebar`. `useRunnersFeed` inside `RunnerManager` provides this data on first WS connect.
 
-Note: there is a separate on-demand `fetch("/api/runners")` triggered when the new-session dialog opens (`newSessionOpen` change). That fetch is **intentionally kept** — it's a one-time request for dialog initialization, not polling.
+**New-session dialog fetch** (`newSessionOpen` effect, lines ~352–385): the `runners` state (with `runnerId`, `name`, `roots`, `platform`) is now always fresh via `useRunnersFeed`. Remove the `fetch` and instead derive this from `useRunnersFeed` data. The `runners` state and `runnersLoading` state in App.tsx are replaced by the feed. The `NewSessionWizardDialog` receives the same `runners` array from the feed.
+
+**`runnersLoading` state**: replaced by `useRunnersFeed`'s `status`. Loading is `status === 'connecting'`.
 
 #### 5b. Replace `waitForSessionToGoLive` with hub-based waiter
 
@@ -222,16 +229,71 @@ const waitForSessionToGoLive = React.useCallback(
 
 No HTTP requests. Resolves as soon as the session appears on the `/hub` feed.
 
-#### 5c. Pass sessions to RunnerManager
+#### 5c. Pass sessions and runners to consumers
 
 ```tsx
 <RunnerManager
-  sessions={liveSessions}  // ← new prop
+  sessions={liveSessions}         // ← new prop (from /hub)
   onOpenSession={...}
   onRunnersChange={setSidebarRunners}
   selectedRunnerId={selectedRunnerId}
   onSelectRunner={setSelectedRunnerId}
 />
+```
+
+`TerminalManager` and `NewSessionWizardDialog` receive runners via props — see §6 and §7.
+
+---
+
+### 6. UI: `TerminalManager` Refactor (`packages/ui`)
+
+**Remove:**
+- `const [runners, setRunners]` local state
+- `const [runnersLoading, setRunnersLoading]` local state
+- `useEffect` that fires `fetch("/api/runners")` when `dialogOpen` changes
+
+**Add:**
+- New props: `runners: RunnerInfo[]` and `runnersLoading: boolean` — passed from App.tsx
+
+App.tsx gets runner data from `useRunnersFeed()` and passes it down:
+```tsx
+const { runners: feedRunners, status: runnersStatus } = useRunnersFeed();
+// ...
+<TerminalManager
+  runners={feedRunners}
+  runnersLoading={runnersStatus === 'connecting'}
+  // ...existing props...
+/>
+```
+
+The `TerminalDialog` sub-component (which currently receives `runners` and `runnersLoading` as props from `TerminalManager`) is unchanged — it already accepts them as props.
+
+---
+
+### 7. UI: `SessionViewer` Slash Command Optimization (`packages/ui`)
+
+The `/skills`, `/agents`, `/plugins`, and `/sandbox` slash command handlers in `SessionViewer` currently fire individual HTTP fetches. Since `runner_updated` events keep skills/agents/plugins in the WS feed, the data is already cached.
+
+**Add prop:** `runnerInfo: RunnerInfo | null` — the full runner data for the session's runner, passed from App.tsx via `useRunnersFeed`. App.tsx already knows the session's `runnerId` from `liveSessions`.
+
+**`/skills` command:** read `runnerInfo.skills` instead of `fetch("/api/runners/{id}/skills")`.
+
+**`/plugins` command:** read `runnerInfo.plugins` instead of `fetch("/api/runners/{id}/plugins")`.
+
+**`/agents` command:** read `runnerInfo.agents` instead of `fetch("/api/runners/{id}/agents")`.
+
+**`/agents <name>` execution:** same — match against `runnerInfo.agents`.
+
+**`@mention` agent popover:** same — use `runnerInfo.agents` instead of fetching.
+
+**`/sandbox` command:** keep as HTTP fetch — sandbox status (violation counts, recent violations) is not part of `RunnerInfo` and is not in the WS feed. This is an intentional exception.
+
+**`runnerInfo` derivation in App.tsx:**
+```typescript
+const activeRunnerInfo = React.useMemo(
+  () => feedRunners.find(r => r.runnerId === activeSessionInfo?.runnerId) ?? null,
+  [feedRunners, activeSessionInfo?.runnerId],
+);
 ```
 
 ---
@@ -243,13 +305,21 @@ Runner daemon connects
   → /runner namespace: register_runner
   → registerRunner() in sio-registry
   → broadcastToRunnersNs("runner_added", runnerInfo, userId)
-  → /runners namespace → browser RunnerManager (useRunnersFeed)
+  → /runners namespace → useRunnersFeed → feedRunners state
+  → RunnerManager, TerminalManager, NewSessionWizardDialog, SessionViewer all updated instantly
 
 Runner daemon disconnects
   → /runner namespace: disconnect event
-  → removeRunner()
+  → removeRunner() reads userId first, then deletes
   → broadcastToRunnersNs("runner_removed", { runnerId }, userId)
-  → /runners namespace → browser removes runner from list
+  → /runners namespace → useRunnersFeed filters out runner
+
+Runner updates skills/agents/plugins
+  → /runner namespace: skills_list / agent_list / plugins event
+  → updateRunnerSkills/Agents/Plugins()
+  → broadcastToRunnersNs("runner_updated", freshRunnerInfo, userId)
+  → /runners namespace → useRunnersFeed upserts runner
+  → SessionViewer slash commands and agent popover use fresh cached data
 
 Session spawned
   → POST /api/runners/spawn → server creates session
@@ -258,6 +328,9 @@ Session spawned
   → /hub namespace → SessionSidebar → onSessionsChange(setLiveSessions)
   → liveSessions useEffect in App.tsx → resolves sessionWaitersRef
   → waitForSessionToGoLive Promise resolves → handleOpenSession(id)
+
+User opens new-session dialog or terminal dialog
+  → no HTTP fetch — feedRunners already populated from /runners WS
 ```
 
 ---
@@ -286,6 +359,7 @@ Session spawned
 - `useRunnersFeed`: upsert/remove/update behavior
 - `waitForSessionToGoLive`: resolves via liveSessions, times out correctly
 - `RunnerManager`: `pendingSessionId` clears when session appears in sessions prop
+- `SessionViewer`: `/skills`, `/agents`, `/plugins` commands use cached `runnerInfo` data; `/sandbox` still uses HTTP fetch
 
 ---
 
@@ -297,7 +371,9 @@ Session spawned
 | `packages/protocol/src/index.ts` | Export new types |
 | `packages/server/src/ws/namespaces/runners.ts` | **New** — `/runners` namespace |
 | `packages/server/src/ws/namespaces/index.ts` | Register new namespace |
-| `packages/server/src/ws/sio-registry/runners.ts` | Add `broadcastToRunnersNs`, add broadcast calls |
-| `packages/ui/src/lib/useRunnersFeed.ts` | **New** — hook |
-| `packages/ui/src/components/RunnerManager.tsx` | Remove polling, add prop, use hook |
-| `packages/ui/src/App.tsx` | Remove eager fetch, waiter-based `waitForSessionToGoLive`, pass sessions |
+| `packages/server/src/ws/sio-registry/runners.ts` | Add `broadcastToRunnersNs`, broadcast on register/remove/update |
+| `packages/ui/src/lib/useRunnersFeed.ts` | **New** — hook connecting to `/runners` |
+| `packages/ui/src/components/RunnerManager.tsx` | Remove polling + sessions fetch; use hook + sessions/runners props |
+| `packages/ui/src/components/TerminalManager.tsx` | Remove `fetch("/api/runners")` on dialog open; accept runners prop |
+| `packages/ui/src/components/SessionViewer.tsx` | Replace `/skills`, `/agents`, `/plugins` HTTP fetches with cached `runnerInfo` prop |
+| `packages/ui/src/App.tsx` | Use `useRunnersFeed`; remove all ad-hoc runner fetches; hub-based `waitForSessionToGoLive`; pass sessions + runners + runnerInfo to children |
