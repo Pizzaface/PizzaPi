@@ -52,6 +52,9 @@ export const handleAuthRoute: RouteHandler = async (req, url) => {
             return Response.json({ error: PASSWORD_REQUIREMENTS_SUMMARY }, { status: 400 });
         }
 
+        // Check signup status once, before the per-branch logic below.
+        const signupAllowed = await isSignupAllowed();
+
         const existing = await getKysely()
             .selectFrom("user")
             .select("id")
@@ -74,8 +77,7 @@ export const handleAuthRoute: RouteHandler = async (req, url) => {
             if (!signIn?.user?.id) {
                 // When signups are disabled return the same 403 as "no account"
                 // so callers cannot distinguish existing vs non-existing emails.
-                const allowed = await isSignupAllowed();
-                if (!allowed) {
+                if (!signupAllowed) {
                     return SIGNUPS_DISABLED_RESPONSE();
                 }
                 return Response.json({ error: "Invalid credentials" }, { status: 401 });
@@ -83,8 +85,12 @@ export const handleAuthRoute: RouteHandler = async (req, url) => {
             userId = signIn.user.id;
         } else {
             // Block new account creation when signups are disabled.
-            const allowed = await isSignupAllowed();
-            if (!allowed) {
+            if (!signupAllowed) {
+                // Run a constant-time dummy hash to equalize response latency with
+                // the "account exists" branch above (which runs bcrypt via signInEmail).
+                // Without this, an attacker can distinguish registered from unregistered
+                // emails by measuring timing differences even though both paths return 403.
+                await Bun.password.hash(password);
                 return SIGNUPS_DISABLED_RESPONSE();
             }
             if (!name) {
