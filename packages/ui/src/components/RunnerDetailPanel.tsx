@@ -1,6 +1,12 @@
 import * as React from "react";
 import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
+import {
+    Tooltip,
+    TooltipContent,
+    TooltipProvider,
+    TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { formatPathTail } from "@/lib/path";
 import { SkillsManager, type SkillInfo } from "@/components/SkillsManager";
@@ -445,32 +451,48 @@ export function RunnerDetailPanel({
                             <Plus className="h-3.5 w-3.5 mr-1" />
                             New Session
                         </Button>
-                        <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-8 w-8"
-                            onClick={onRestart}
-                            disabled={actionsDisabled}
-                        >
-                            {isRestarting ? (
-                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                            ) : (
-                                <RefreshCw className="h-3.5 w-3.5" />
-                            )}
-                        </Button>
-                        <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-8 w-8"
-                            onClick={onStop}
-                            disabled={actionsDisabled}
-                        >
-                            {isStopping ? (
-                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                            ) : (
-                                <Power className="h-3.5 w-3.5" />
-                            )}
-                        </Button>
+                        <TooltipProvider>
+                            <Tooltip>
+                                <TooltipTrigger asChild>
+                                    <Button
+                                        variant="ghost"
+                                        size="icon"
+                                        className="h-8 w-8"
+                                        onClick={onRestart}
+                                        disabled={actionsDisabled}
+                                        aria-label="Restart runner"
+                                    >
+                                        {isRestarting ? (
+                                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                        ) : (
+                                            <RefreshCw className="h-3.5 w-3.5" />
+                                        )}
+                                    </Button>
+                                </TooltipTrigger>
+                                <TooltipContent>Restart runner</TooltipContent>
+                            </Tooltip>
+                        </TooltipProvider>
+                        <TooltipProvider>
+                            <Tooltip>
+                                <TooltipTrigger asChild>
+                                    <Button
+                                        variant="ghost"
+                                        size="icon"
+                                        className="h-8 w-8"
+                                        onClick={onStop}
+                                        disabled={actionsDisabled}
+                                        aria-label="Stop runner"
+                                    >
+                                        {isStopping ? (
+                                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                        ) : (
+                                            <Power className="h-3.5 w-3.5" />
+                                        )}
+                                    </Button>
+                                </TooltipTrigger>
+                                <TooltipContent>Stop runner</TooltipContent>
+                            </Tooltip>
+                        </TooltipProvider>
                     </div>
                 </div>
 
