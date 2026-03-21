@@ -48,6 +48,17 @@ export function sanitizeFilename(filename: string): string {
     return filename.replace(/[^a-zA-Z0-9._-]/g, "_");
 }
 
+/**
+ * Strip control characters (0x00–0x1F and 0x7F) from a filename before
+ * storing it.  The full Unicode name is preserved (non-ASCII printable chars
+ * are kept) — only raw control characters that would cause Bun to throw when
+ * building HTTP response headers are removed.
+ */
+export function sanitizeStoredFilename(filename: string): string {
+    // eslint-disable-next-line no-control-regex
+    return filename.replace(/[\x00-\x1F\x7F]/g, "_");
+}
+
 export async function storeSessionAttachment(input: {
     sessionId: string;
     ownerUserId: string;
@@ -72,7 +83,7 @@ export async function storeSessionAttachment(input: {
         sessionId,
         ownerUserId,
         uploaderUserId,
-        filename: file.name || safeName,
+        filename: sanitizeStoredFilename(file.name || safeName),
         mimeType: file.type || "application/octet-stream",
         size: file.size,
         createdAt: new Date(createdAtMs).toISOString(),

@@ -1,5 +1,33 @@
 import { describe, test, expect } from "bun:test";
-import { buildContentDisposition, encodeHeaderFilename, rfc5987Encode } from "./attachments";
+import { buildContentDisposition, encodeHeaderFilename, rfc5987Encode, sanitizeControlChars } from "./attachments";
+
+describe("sanitizeControlChars", () => {
+    test("strips null byte", () => {
+        expect(sanitizeControlChars("file\x00name.txt")).toBe("file_name.txt");
+    });
+
+    test("strips newline and carriage return", () => {
+        expect(sanitizeControlChars("file\r\nname.txt")).toBe("file__name.txt");
+    });
+
+    test("strips all C0 control chars (0x00–0x1F)", () => {
+        const result = sanitizeControlChars("a\x00b\x01c\x1Fd");
+        expect(result).toBe("a_b_c_d");
+    });
+
+    test("strips DEL (0x7F)", () => {
+        expect(sanitizeControlChars("file\x7Fname.txt")).toBe("file_name.txt");
+    });
+
+    test("preserves printable ASCII and Unicode", () => {
+        expect(sanitizeControlChars("résumé (1).pdf")).toBe("résumé (1).pdf");
+        expect(sanitizeControlChars("截图_2026.png")).toBe("截图_2026.png");
+    });
+
+    test("preserves empty string", () => {
+        expect(sanitizeControlChars("")).toBe("");
+    });
+});
 
 describe("rfc5987Encode", () => {
     test("encodes basic special characters", () => {
@@ -110,6 +138,26 @@ describe("buildContentDisposition", () => {
         const result = buildContentDisposition("file.pdf");
         expect(result).toStartWith("inline;");
     });
+
+    test("strips newline from filename (prevents header injection)", () => {
+        const result = buildContentDisposition("evil\r\nX-Injected: bad\r\nfile.txt");
+        // Control chars must not appear raw in the output
+        expect(result).not.toMatch(/[\x00-\x1F\x7F]/);
+        // Must not throw when used in a Response header
+        expect(() => new Response("", { headers: { "content-disposition": result } })).not.toThrow();
+    });
+
+    test("strips null byte from filename", () => {
+        const result = buildContentDisposition("file\x00name.txt");
+        expect(result).not.toMatch(/[\x00-\x1F\x7F]/);
+        expect(() => new Response("", { headers: { "content-disposition": result } })).not.toThrow();
+    });
+
+    test("strips DEL (0x7F) from filename", () => {
+        const result = buildContentDisposition("file\x7Fname.txt");
+        expect(result).not.toMatch(/[\x00-\x1F\x7F]/);
+        expect(() => new Response("", { headers: { "content-disposition": result } })).not.toThrow();
+    });
 });
 
 describe("encodeHeaderFilename", () => {
@@ -151,5 +199,18 @@ describe("encodeHeaderFilename", () => {
 
     test("preserves empty string", () => {
         expect(encodeHeaderFilename("")).toBe("");
+    });
+
+    test("strips newline before encoding (prevents header injection)", () => {
+        const result = encodeHeaderFilename("evil\r\nX-Injected: bad");
+        // After control-char stripping, \r\n become underscores → URL-safe
+        expect(result).not.toMatch(/[\x00-\x1F\x7F]/);
+        expect(() => new Response("", { headers: { "x-attachment-filename": result } })).not.toThrow();
+    });
+
+    test("strips null byte before encoding", () => {
+        const result = encodeHeaderFilename("file\x00name.txt");
+        expect(result).not.toMatch(/[\x00-\x1F\x7F]/);
+        expect(() => new Response("", { headers: { "x-attachment-filename": result } })).not.toThrow();
     });
 });
