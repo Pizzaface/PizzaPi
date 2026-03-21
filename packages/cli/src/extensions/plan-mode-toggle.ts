@@ -224,7 +224,7 @@ export function splitShellSegments(command: string): string[] {
  * If a subcommand is NOT in GIT_SAFE_SUBCOMMANDS, these patterns are checked
  * before declaring it destructive — allowing specific read-only invocations.
  */
-function splitShellWords(command: string): string[] {
+function splitShellWords(command: string, keepQuotes = false): string[] {
     const words: string[] = [];
     let current = "";
     let inSingle = false;
@@ -239,17 +239,20 @@ function splitShellWords(command: string): string[] {
         }
 
         if (ch === "\\") {
+            if (keepQuotes) current += ch;
             escaped = true;
             continue;
         }
 
         if (ch === "'" && !inDouble) {
             inSingle = !inSingle;
+            if (keepQuotes) current += ch;
             continue;
         }
 
         if (ch === '"' && !inSingle) {
             inDouble = !inDouble;
+            if (keepQuotes) current += ch;
             continue;
         }
 
@@ -269,29 +272,35 @@ function splitShellWords(command: string): string[] {
     return words;
 }
 
-/** Returns true if a token may be expanded by the shell into a different argv shape. */
+/**
+ * Returns true if a raw (quote-preserving) token may be expanded by the shell.
+ * Strips single-quoted segments (which bash never expands) before checking for
+ * expansion characters in the remaining unquoted / double-quoted portions.
+ * For unquoted tokens this behaves identically to checking the unquoted form.
+ */
 function containsShellExpansion(token: string): boolean {
-    // After splitShellWords the token is already unquoted, so we can't know
-    // whether the user originally quoted/escaped it. In plan-mode we must
-    // assume `bash -lc` execution, so any expansion that can inject *multiple*
-    // argv items could turn a seemingly safe `git notes` invocation into a
-    // mutating one.
-    //
-    // Conservatively reject:
+    // Remove single-quoted segments — bash never expands inside single quotes.
+    const withoutSingleQuoted = token.replace(/'[^']*'/g, "");
+
+    // Conservatively reject expansion characters in the remaining text:
     //  - variable / command substitution: $VAR, $(cmd)
     //  - backticks: `cmd`
     //  - pathname expansion (globbing): *, ?, [...]
     //  - brace expansion: {a,b}, {1..3}
-    if (token.includes("$") || token.includes("`")) return true;
-    if (token.includes("*") || token.includes("?") || token.includes("[") || token.includes("]")) return true;
+    if (withoutSingleQuoted.includes("$") || withoutSingleQuoted.includes("`")) return true;
+    if (withoutSingleQuoted.includes("*") || withoutSingleQuoted.includes("?") || withoutSingleQuoted.includes("[") || withoutSingleQuoted.includes("]")) return true;
 
     // Brace expansion only triggers for comma-separated lists or sequences.
     // (Bare braces like `@{-1}` are not expanded by bash.)
-    return /\{[^}]*,.*\}|\{[^}]*\.\.[^}]*\}/.test(token);
+    return /\{[^}]*,.*\}|\{[^}]*\.\.[^}]*\}/.test(withoutSingleQuoted);
 }
 
 function isSafeGitNotesInvocation(segment: string): boolean {
     const words = splitShellWords(segment);
+    // Also parse with quotes preserved so we can check shell expansion
+    // against the raw token — single-quoted values like '$literal' must
+    // not false-positive on `containsShellExpansion`.
+    const rawWords = splitShellWords(segment, true);
     if (words.length < 2) return false;
     if (words[0].toLowerCase() !== "git" || words[1].toLowerCase() !== "notes") return false;
 
@@ -300,18 +309,18 @@ function isSafeGitNotesInvocation(segment: string): boolean {
         const arg = words[index].toLowerCase();
         if (arg === "--ref") {
             if (index + 1 >= words.length) return false;
-            // Reject shell-expanded ref values: the shell would split them
-            // into additional tokens at execution time, turning a seemingly
-            // safe invocation into a mutating one.
-            const refValue = words[index + 1];
-            if (containsShellExpansion(refValue)) return false;
+            // Check the raw (still-quoted) token for shell expansion so
+            // that properly quoted refs like '$literal' pass through while
+            // unquoted $VAR or *.glob are still rejected.
+            const rawRefValue = rawWords[index + 1];
+            if (containsShellExpansion(rawRefValue)) return false;
             index += 2;
             continue;
         }
         if (arg.startsWith("--ref=")) {
-            // Reject shell expansion in the ref= value portion
-            const refValue = words[index].slice("--ref=".length);
-            if (containsShellExpansion(refValue)) return false;
+            // Check the raw token's value portion for shell expansion.
+            const rawRefValue = rawWords[index].slice("--ref=".length);
+            if (containsShellExpansion(rawRefValue)) return false;
             index++;
             continue;
         }

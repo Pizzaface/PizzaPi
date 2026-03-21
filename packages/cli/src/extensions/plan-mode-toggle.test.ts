@@ -369,6 +369,14 @@ describe("isDestructiveCommand", () => {
         expect(isDestructiveCommand("git notes --ref $(get_ref) list")).toBe(true);
     });
 
+    test("allows git notes with single-quoted --ref values containing expansion chars", () => {
+        // Single-quoted refs are opaque to the shell — no expansion happens.
+        expect(isDestructiveCommand("git notes --ref '$NOTES_REF' show HEAD")).toBe(false);
+        expect(isDestructiveCommand("git notes --ref='$literal' list")).toBe(false);
+        expect(isDestructiveCommand("git notes --ref '*.glob' show HEAD")).toBe(false);
+        expect(isDestructiveCommand("git notes --ref='{a,b}' list")).toBe(false);
+    });
+
     test("blocks git notes with glob/brace-expanded --ref values (P1 bypass prevention)", () => {
         // Glob expansion can inject extra argv items and change the subcommand.
         expect(isDestructiveCommand("git notes --ref *")).toBe(true);
