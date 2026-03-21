@@ -63,7 +63,7 @@ export function acquireStateAndIdentity(statePath: string): { runnerId: string; 
             if (Number.isFinite(pid) && pid > 0) {
                 if (isPidRunning(pid)) {
                     logError(`pizzapi runner already running (pid ${pid}, state: ${statePath}).`);
-                    logError("   Stop the existing runner process first, e.g.: kill ${pid}");
+                    logError(`   Stop the existing runner process first, e.g.: kill ${pid}`);
                     process.exit(1);
                 }
                 // PID is gone or belongs to an unrelated process — stale lock.
