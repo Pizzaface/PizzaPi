@@ -5,12 +5,44 @@ import {
   validatePassword,
   isValidPassword,
 } from "./index";
+import type {
+  Attachment,
+  HubClientToServerEvents,
+  HubInterServerEvents,
+  HubServerToClientEvents,
+  HubSocketData,
+  ModelInfo,
+  PasswordCheck,
+  PasswordCheckItem,
+  RelayClientToServerEvents,
+  RelayInterServerEvents,
+  RelayServerToClientEvents,
+  RelaySocketData,
+  RunnerAgent,
+  RunnerClientToServerEvents,
+  RunnerHook,
+  RunnerInfo,
+  RunnerInterServerEvents,
+  RunnerPlugin,
+  RunnerServerToClientEvents,
+  RunnerSkill,
+  RunnerSocketData,
+  SessionInfo,
+  TerminalClientToServerEvents,
+  TerminalInterServerEvents,
+  TerminalServerToClientEvents,
+  TerminalSocketData,
+  ViewerClientToServerEvents,
+  ViewerInterServerEvents,
+  ViewerServerToClientEvents,
+  ViewerSocketData,
+} from "./index";
 
 // ---------------------------------------------------------------------------
-// index.ts public API surface — verify all runtime exports are present
+// index.ts public API surface - verify all runtime exports are present
 // ---------------------------------------------------------------------------
 
-describe("index — runtime exports", () => {
+describe("index - runtime exports", () => {
   test("PASSWORD_REQUIREMENTS is exported and is a readonly tuple of 4 strings", () => {
     expect(Array.isArray(PASSWORD_REQUIREMENTS)).toBe(true);
     expect(PASSWORD_REQUIREMENTS).toHaveLength(4);
@@ -71,4 +103,58 @@ describe("index — runtime exports", () => {
       expect(isValidPassword(pw)).toBe(validatePassword(pw).valid);
     }
   });
+});
+
+// ---------------------------------------------------------------------------
+// index.ts public API surface — verify type-only exports are present (compile-time)
+// ---------------------------------------------------------------------------
+
+describe("index — type exports", () => {
+  test(
+    "re-exports type-only symbols expected by external consumers (compile-time)",
+    () => {
+      // Runtime value is irrelevant; the assertion is enforced by TypeScript during
+      // `bun run typecheck` (packages/protocol typecheck:tests).
+      const _types = null as unknown as {
+        sessionInfo: SessionInfo;
+        modelInfo: ModelInfo;
+        runnerInfo: RunnerInfo;
+        runnerSkill: RunnerSkill;
+        runnerAgent: RunnerAgent;
+        runnerPlugin: RunnerPlugin;
+        runnerHook: RunnerHook;
+        attachment: Attachment;
+
+        passwordCheck: PasswordCheck;
+        passwordCheckItem: PasswordCheckItem;
+
+        relayC2S: RelayClientToServerEvents;
+        relayS2C: RelayServerToClientEvents;
+        relayInter: RelayInterServerEvents;
+        relaySocket: RelaySocketData;
+
+        viewerC2S: ViewerClientToServerEvents;
+        viewerS2C: ViewerServerToClientEvents;
+        viewerInter: ViewerInterServerEvents;
+        viewerSocket: ViewerSocketData;
+
+        runnerC2S: RunnerClientToServerEvents;
+        runnerS2C: RunnerServerToClientEvents;
+        runnerInter: RunnerInterServerEvents;
+        runnerSocket: RunnerSocketData;
+
+        terminalC2S: TerminalClientToServerEvents;
+        terminalS2C: TerminalServerToClientEvents;
+        terminalInter: TerminalInterServerEvents;
+        terminalSocket: TerminalSocketData;
+
+        hubC2S: HubClientToServerEvents;
+        hubS2C: HubServerToClientEvents;
+        hubInter: HubInterServerEvents;
+        hubSocket: HubSocketData;
+      };
+
+      expect(_types).toBeNull();
+    },
+  );
 });
