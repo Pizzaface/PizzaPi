@@ -242,7 +242,7 @@ describe("E2E: API key authenticates HTTP requests", () => {
 
 // ── Signup gating ─────────────────────────────────────────────────────────────
 
-describe("E2E: signup gating (disable after first user)", () => {
+describe.serial("E2E: signup gating (disable after first user)", () => {
     test("when gating is enabled, second user registration is blocked", async () => {
         // Set up a fresh DB with gating enabled
         const gatedDir = mkdtempSync(join(tmpdir(), "pizzapi-e2e-gated-"));
@@ -296,7 +296,7 @@ describe("E2E: signup gating (disable after first user)", () => {
 
 // ── User enumeration prevention ──────────────────────────────────────────────
 
-describe("E2E: /api/register does not leak account existence when signups disabled", () => {
+describe.serial("E2E: /api/register does not leak account existence when signups disabled", () => {
     test("existing email + wrong password and unknown email both return identical 403", async () => {
         // Set up a fresh DB with one user and gating enabled
         const enumDir = mkdtempSync(join(tmpdir(), "pizzapi-e2e-enum-"));
