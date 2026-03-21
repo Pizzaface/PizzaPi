@@ -168,6 +168,11 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
             }
 
             if (params.model) {
+                // Note: hidden-model enforcement is done server-side (runners.ts).
+                // A client-side check here using PIZZAPI_HIDDEN_MODELS would be
+                // stale — the env var is set once at worker start and does not
+                // reflect later changes made via PUT /api/settings/hidden-models.
+                // Relying on the server ensures the freshest list is always used.
                 body.model = {
                     provider: params.model.provider,
                     id: params.model.id,
