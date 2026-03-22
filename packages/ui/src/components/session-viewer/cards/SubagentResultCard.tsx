@@ -130,20 +130,6 @@ function getFinalOutput(messages: Array<{ role: string; content: unknown[] }>): 
   return "";
 }
 
-function getToolCallCount(messages: Array<{ role: string; content: unknown[] }>): number {
-  let count = 0;
-  for (const msg of messages) {
-    if (msg.role === "assistant") {
-      for (const part of msg.content) {
-        if (part && typeof part === "object" && "type" in part && (part as any).type === "toolCall") {
-          count++;
-        }
-      }
-    }
-  }
-  return count;
-}
-
 // ── Tool execution extraction ──────────────────────────────────────────
 
 interface ToolExecution {
@@ -378,17 +364,6 @@ function ErrorBubble({ message, agentName }: { message: string; agentName: strin
   );
 }
 
-/** Small inline activity line between bubbles */
-function ToolCallActivity({ count }: { count: number }) {
-  if (count === 0) return null;
-  return (
-    <div className="flex items-center gap-1.5 text-[11px] text-zinc-600 px-1">
-      <WrenchIcon className="size-3 shrink-0" />
-      <span>{count} tool call{count !== 1 ? "s" : ""}</span>
-    </div>
-  );
-}
-
 /** Animated typing/thinking indicator */
 function ThinkingBubble() {
   return (
@@ -417,7 +392,7 @@ function AgentExchange({
 }) {
   const isError = result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
   const finalOutput = getFinalOutput(result.messages);
-  const toolCallCount = getToolCallCount(result.messages);
+  const toolExecutions = extractToolExecutions(result.messages);
 
   return (
     <>
@@ -435,8 +410,8 @@ function AgentExchange({
       {/* Task bubble (sent) */}
       <TaskBubble task={result.task} />
 
-      {/* Tool call activity */}
-      <ToolCallActivity count={toolCallCount} />
+      {/* Inline tool cards */}
+      <SubagentToolCallsSection executions={toolExecutions} />
 
       {/* Agent response or running state */}
       {isRunning ? (
