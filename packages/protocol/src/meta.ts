@@ -141,7 +141,11 @@ export function metaEventToPatch(event: MetaRelayEvent): Partial<SessionMetaStat
     case "retry_state_changed":    return { retryState: event.state };
     case "plugin_trust_required":  return { pendingPluginTrust: event.prompt };
     case "plugin_trust_resolved":  return { pendingPluginTrust: null };
-    case "mcp_startup_report":     return { mcpStartupReport: event.report };
+    case "mcp_startup_report":
+      // Old CLI emits a flat format with no nested `report` field.
+      // Return an empty patch rather than { mcpStartupReport: undefined },
+      // which JSON.stringify would silently drop, wiping the stored value.
+      return (event as any).report != null ? { mcpStartupReport: (event as any).report } : {};
     case "token_usage_updated":    return { tokenUsage: event.tokenUsage, providerUsage: event.providerUsage };
     case "thinking_level_changed": return { thinkingLevel: event.level };
     case "auth_source_changed":    return { authSource: event.source };
