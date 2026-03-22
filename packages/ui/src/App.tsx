@@ -1949,9 +1949,14 @@ export function App() {
     // Re-subscribe to the current session's meta room after non-recovered reconnects
     // (e.g., server restart). Without this, the client stops receiving meta_event
     // updates until the user switches sessions or reloads.
+    // Also clear the stored meta version so that the first state_snapshot/meta_event
+    // arriving after reconnect (version ≥ 1) is not dropped as "stale" — the server
+    // resets its version counter to 0 on restart, so any previously-seen version
+    // would cause all new events to be silently ignored.
     const handleReconnect = () => {
       const currentSessionId = activeSessionRef.current;
       if (currentSessionId) {
+        metaVersionsRef.current.delete(currentSessionId);
         socket.emit("subscribe_session_meta", { sessionId: currentSessionId });
       }
     };

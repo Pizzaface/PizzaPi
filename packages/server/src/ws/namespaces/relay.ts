@@ -484,22 +484,27 @@ export function registerRelayNamespace(io: SocketIOServer): void {
                 clearThinkingMaps(sessionId);
             }
 
-            // For session_messages_chunk and chunked session_active, broadcast
-            // to viewers WITHOUT caching.  Chunks are transient and only needed
-            // during active hydration; the final assembled snapshot is cached
-            // separately when assembly completes.  The metadata-only chunked
-            // session_active must also skip the cache — if the stream is
-            // interrupted before the final chunk, the replay path would find
-            // this empty-messages snapshot and show a blank transcript instead
-            // of the last durable state.
-            const isChunkedSessionActive =
-                event.type === "session_active" &&
-                !!(event.state as Record<string, unknown> | undefined)?.chunked;
-            if (event.type === "session_messages_chunk" || isChunkedSessionActive) {
-                await broadcastSessionEventToViewers(sessionId, eventToPublish);
-            } else {
-                // Publish to viewers via Redis cache + Socket.IO rooms
-                await publishSessionEvent(sessionId, eventToPublish);
+            // Meta events are routed exclusively via hub session meta rooms — they
+            // must NOT flow through to relay viewers or be cached in the event
+            // store.  Skip the entire viewer publish path for them.
+            if (!isMetaRelayEvent(event as { type?: unknown })) {
+                // For session_messages_chunk and chunked session_active, broadcast
+                // to viewers WITHOUT caching.  Chunks are transient and only needed
+                // during active hydration; the final assembled snapshot is cached
+                // separately when assembly completes.  The metadata-only chunked
+                // session_active must also skip the cache — if the stream is
+                // interrupted before the final chunk, the replay path would find
+                // this empty-messages snapshot and show a blank transcript instead
+                // of the last durable state.
+                const isChunkedSessionActive =
+                    event.type === "session_active" &&
+                    !!(event.state as Record<string, unknown> | undefined)?.chunked;
+                if (event.type === "session_messages_chunk" || isChunkedSessionActive) {
+                    await broadcastSessionEventToViewers(sessionId, eventToPublish);
+                } else {
+                    // Publish to viewers via Redis cache + Socket.IO rooms
+                    await publishSessionEvent(sessionId, eventToPublish);
+                }
             }
 
             // Track push-pending state for AskUserQuestion (awaited to ensure
