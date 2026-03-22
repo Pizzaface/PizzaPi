@@ -775,7 +775,7 @@ export function renderGroupedToolExecution(
         isStreaming={isStreaming}
       />
     );
-  } else if (norm === "subagent" || norm.endsWith(".subagent") || norm === "task" || norm.endsWith(".task")) {
+  } else if (norm === "subagent" || norm.endsWith(".subagent") || norm === "task" || norm.endsWith(".task") || norm === "agent" || norm.endsWith(".agent")) {
     card = (
       <SubagentResultCard
         toolInput={toolInput}

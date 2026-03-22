@@ -24,7 +24,7 @@ import type { Server as NetServer, Socket as NetSocket } from "node:net";
 import { io, type Socket } from "socket.io-client";
 import type { RelayClientToServerEvents, RelayServerToClientEvents } from "@pizzapi/protocol";
 import { randomUUID } from "node:crypto";
-import { translateNdjsonLine } from "./claude-code-ndjson.js";
+import { translateNdjsonLine, SUBAGENT_TOOL_NAMES } from "./claude-code-ndjson.js";
 import { serializeFrame, framesFromBuffer, type PluginMessage, type BridgeMessage } from "./claude-code-ipc.js";
 import { SET_SESSION_NAME_PROMPT } from "../config/system-prompt.js";
 import { buildSpawnSessionBody } from "./claude-code-spawn-request.js";
@@ -126,6 +126,24 @@ let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
 // Pending AskUserQuestion: tool_use_id → { resolve, timer }
 const pendingQuestions = new Map<string, { resolve: (answer: string) => void; timer: ReturnType<typeof setTimeout> }>();
+// Pending tool executions: tool_use_id → { toolName, toolInput }
+// Populated when tool_use blocks appear in assistant messages; consumed when
+// tool_result blocks arrive in user messages. Used to emit synthetic
+// tool_execution_start/end events and annotate toolResult messages.
+const pendingToolCallMap = new Map<string, { toolName: string; toolInput: unknown }>();
+// Subagent hook data: agent_id → metadata from SubagentStart/SubagentStop hooks.
+// Claude Code fires these when the Task/Agent tool spawns or completes a subagent.
+// We cache this data so we can enrich toolResult messages with subagent details.
+interface SubagentHookInfo {
+  agentId: string;
+  subagentType?: string;
+  description?: string;
+  parentAgentId?: string;
+  transcriptPath?: string;
+  startedAt: number;
+  stoppedAt?: number;
+}
+const subagentHookData = new Map<string, SubagentHookInfo>();
 // Pending permission requests: requestId → pending handler metadata
 interface PendingPermissionEntry {
   resolve: (decision: "allow" | "deny") => void;
@@ -165,6 +183,8 @@ function clearPendingState(): void {
   pendingPermissions.clear();
   for (const waiter of messageWaiters) clearTimeout(waiter.timer);
   messageWaiters.length = 0;
+  pendingToolCallMap.clear();
+  subagentHookData.clear();
 }
 
 function trackReceivedTrigger(trigger: ConversationTrigger): void {
@@ -517,6 +537,34 @@ function startIpcServer(socketPath: string): Promise<void> {
 
 function handleIpcMessage(client: NetSocket, msg: PluginMessage): void {
   if (msg.type === "hook_event") {
+    // Extract enriched data from SubagentStart/SubagentStop hook events.
+    // Claude Code fires these when the Task/Agent tool spawns or completes
+    // a subagent. The hook input (msg.data) carries agent details that we
+    // can use to provide richer UI rendering.
+    if (msg.event === "SubagentStart" || msg.event === "SubagentStop") {
+      const hookData = msg.data as Record<string, unknown> | undefined;
+      if (hookData) {
+        // Store subagent metadata keyed by agent_id so we can attach it
+        // to the tool_result when SubagentStop fires later.
+        const agentId = typeof hookData.agent_id === "string" ? hookData.agent_id : undefined;
+        if (msg.event === "SubagentStart" && agentId) {
+          subagentHookData.set(agentId, {
+            agentId,
+            subagentType: typeof hookData.subagent_type === "string" ? hookData.subagent_type : undefined,
+            description: typeof hookData.description === "string" ? hookData.description : undefined,
+            parentAgentId: typeof hookData.parent_agent_id === "string" ? hookData.parent_agent_id : undefined,
+            startedAt: Date.now(),
+          });
+        }
+        if (msg.event === "SubagentStop" && agentId) {
+          const startData = subagentHookData.get(agentId);
+          if (startData) {
+            startData.stoppedAt = Date.now();
+            startData.transcriptPath = typeof hookData.transcript_path === "string" ? hookData.transcript_path : undefined;
+          }
+        }
+      }
+    }
     forwardEvent({ type: "hook_event", event: msg.event, ts: Date.now() });
   }
 
@@ -893,6 +941,73 @@ async function watchClaudeExit(tmpDirPath: string, generation: number): Promise<
   shutdown(exitCode === 0 ? "completed" : "error");
 }
 
+// ── Subagent details synthesis ─────────────────────────────────────────────
+/**
+ * Synthesize a pi-style SubagentDetails object from Claude Code's Task/Agent
+ * tool input and result content. This allows the SubagentResultCard to render
+ * structured results (agent name, task, usage) instead of just plain text.
+ *
+ * The resulting object matches the shape expected by SubagentResultCard:
+ *   { mode, agentScope, projectAgentsDir, results: [{ agent, task, exitCode, messages, usage, ... }] }
+ */
+function synthesizeSubagentDetails(toolName: string, toolInput: unknown, resultContent: unknown): Record<string, unknown> {
+  const input = toolInput && typeof toolInput === "object" ? toolInput as Record<string, unknown> : {};
+
+  // Extract agent info from tool input (Claude Code Task/Agent schema)
+  const agentName = typeof input.subagent_type === "string" ? input.subagent_type
+    : typeof input.agent === "string" ? input.agent
+    : "agent";
+  const task = typeof input.prompt === "string" ? input.prompt
+    : typeof input.task === "string" ? input.task
+    : typeof input.description === "string" ? input.description
+    : "";
+
+  // Extract the text result from content
+  let resultText = "";
+  if (typeof resultContent === "string") {
+    resultText = resultContent;
+  } else if (Array.isArray(resultContent)) {
+    for (const block of resultContent) {
+      if (block && typeof block === "object" && (block as Record<string, unknown>).type === "text") {
+        resultText += (resultText ? "\n" : "") + String((block as Record<string, unknown>).text ?? "");
+      }
+    }
+  }
+
+  // Build a SingleResult-compatible object
+  const singleResult: Record<string, unknown> = {
+    agent: agentName,
+    agentSource: "user",
+    task,
+    exitCode: 0,
+    // Provide a minimal messages array with the final assistant response
+    messages: resultText ? [{ role: "assistant", content: [{ type: "text", text: resultText }] }] : [],
+    stderr: "",
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
+  };
+
+  // Try to find matching hook data for richer metadata
+  // (SubagentStart/SubagentStop hooks carry agent_id, duration, etc.)
+  for (const [, hookInfo] of subagentHookData) {
+    if (hookInfo.subagentType === agentName || hookInfo.description === (input.description as string)) {
+      if (hookInfo.stoppedAt && hookInfo.startedAt) {
+        // Can't directly set usage.durationMs but it's useful context
+        singleResult.model = hookInfo.subagentType;
+      }
+      // Clean up consumed hook data
+      subagentHookData.delete(hookInfo.agentId);
+      break;
+    }
+  }
+
+  return {
+    mode: "single",
+    agentScope: "user",
+    projectAgentsDir: null,
+    results: [singleResult],
+  };
+}
+
 // ── NDJSON event handling ─────────────────────────────────────────────────
 function handleNdjsonLine(line: string): void {
   const result = translateNdjsonLine(line);
@@ -946,10 +1061,77 @@ function handleNdjsonLine(line: string): void {
       currentTokenUsage = result.tokenUsage;
     }
 
+    // ── Emit synthetic tool_execution_start events ────────────────────
+    // When an assistant message contains tool_use blocks, emit start events
+    // so the UI can track active tool calls (spinning indicators).
+    if (result.toolCalls) {
+      for (const tc of result.toolCalls) {
+        pendingToolCallMap.set(tc.toolCallId, { toolName: tc.toolName, toolInput: tc.toolInput });
+        forwardEvent({
+          type: "tool_execution_start",
+          toolCallId: tc.toolCallId,
+          toolName: tc.toolName,
+          args: tc.toolInput,
+        });
+      }
+    }
+
     // Support both single (relayEvent) and multiple (relayEvents) events.
     // relayEvents is used when one NDJSON line produces multiple relay events
     // (e.g. a user message containing several tool_result blocks).
     const events = result.relayEvents ?? (result.relayEvent ? [result.relayEvent] : []);
+
+    // First pass: annotate toolResult messages with toolName from the
+    // pending tool call, and collect tool_execution_end events to emit.
+    const toolEndEvents: Array<{ toolCallId: string; toolName: string; isError: boolean }> = [];
+
+    for (const relayEvent of events) {
+      if (relayEvent.type !== "message_update") continue;
+      const msg = relayEvent.message as Record<string, unknown> | undefined;
+      if (!msg || msg.role !== "toolResult") continue;
+
+      const toolCallId = typeof msg.toolCallId === "string" ? msg.toolCallId : undefined;
+      if (!toolCallId) continue;
+
+      const pending = pendingToolCallMap.get(toolCallId);
+      if (!pending) continue;
+
+      // Annotate with toolName so the UI's rendering pipeline can select the
+      // correct card component (e.g. SubagentResultCard for "subagent").
+      if (!msg.toolName) {
+        msg.toolName = pending.toolName;
+      }
+
+      // For subagent tools (Task/Agent/subagent), synthesize a pi-style
+      // `details` object so the SubagentResultCard can render structured
+      // results instead of falling back to plain text.
+      if (SUBAGENT_TOOL_NAMES.has(pending.toolName) && !msg.details) {
+        msg.details = synthesizeSubagentDetails(pending.toolName, pending.toolInput, msg.content);
+      }
+
+      // Queue a synthetic tool_execution_end event
+      toolEndEvents.push({
+        toolCallId,
+        toolName: pending.toolName,
+        isError: msg.isError === true,
+      });
+      pendingToolCallMap.delete(toolCallId);
+    }
+
+    // Emit tool_execution_end events BEFORE forwarding the relay messages,
+    // matching the pi-native event order (end event clears activeToolCalls
+    // in the UI, then the message_update adds the final tool result).
+    for (const endEvt of toolEndEvents) {
+      forwardEvent({
+        type: "tool_execution_end",
+        toolCallId: endEvt.toolCallId,
+        toolName: endEvt.toolName,
+        result: null,
+        isError: endEvt.isError,
+      });
+    }
+
+    // Second pass: forward relay events and update bridge state.
     for (const relayEvent of events) {
       const eventType = relayEvent.type;
       if (eventType === "message_update") {

@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test";
-import { translateNdjsonLine } from "./claude-code-ndjson.js";
+import { translateNdjsonLine, SUBAGENT_TOOL_NAMES } from "./claude-code-ndjson.js";
 
 describe("translateNdjsonLine", () => {
   test("ignores control_request frames (not relay events)", () => {
@@ -351,5 +351,223 @@ describe("translateNdjsonLine", () => {
     // Absent content defaults to empty string
     expect(msg.content).toBe("");
     expect(msg.isError).toBe(false);
+  });
+
+  // ── toolCalls extraction from assistant messages ──────────────────────
+
+  test("extracts toolCalls from assistant message with tool_use blocks", () => {
+    const line = JSON.stringify({
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "text", text: "Running commands." },
+          { type: "tool_use", id: "tc_1", name: "Bash", input: { command: "ls" } },
+          { type: "tool_use", id: "tc_2", name: "Read", input: { path: "file.txt" } },
+        ],
+      },
+    });
+    const result = translateNdjsonLine(line);
+    expect(result.kind).toBe("relay_event");
+    expect(result.toolCalls).toBeDefined();
+    expect(result.toolCalls).toHaveLength(2);
+    expect(result.toolCalls![0]).toMatchObject({
+      toolCallId: "tc_1",
+      toolName: "Bash",
+      toolInput: { command: "ls" },
+    });
+    expect(result.toolCalls![1]).toMatchObject({
+      toolCallId: "tc_2",
+      toolName: "Read",
+      toolInput: { path: "file.txt" },
+    });
+  });
+
+  test("extracts toolCalls for subagent tool_use", () => {
+    const line = JSON.stringify({
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: "tc_sub", name: "subagent", input: { agent: "task", task: "Do something" } },
+        ],
+      },
+    });
+    const result = translateNdjsonLine(line);
+    expect(result.toolCalls).toHaveLength(1);
+    expect(result.toolCalls![0]).toMatchObject({
+      toolCallId: "tc_sub",
+      toolName: "subagent",
+      toolInput: { agent: "task", task: "Do something" },
+    });
+  });
+
+  test("excludes side-effect-only tools from toolCalls", () => {
+    const line = JSON.stringify({
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: "tc_todo", name: "TodoWrite", input: { todos: [] } },
+          { type: "tool_use", id: "tc_name", name: "set_session_name", input: { name: "Test" } },
+          { type: "tool_use", id: "tc_utodo", name: "update_todo", input: { todos: [] } },
+          { type: "tool_use", id: "tc_bash", name: "Bash", input: { command: "echo hi" } },
+        ],
+      },
+    });
+    const result = translateNdjsonLine(line);
+    // Only Bash should be in toolCalls — side-effect tools are excluded
+    expect(result.toolCalls).toHaveLength(1);
+    expect(result.toolCalls![0].toolName).toBe("Bash");
+  });
+
+  test("excludes AskUserQuestion from toolCalls (has its own path)", () => {
+    // AskUserQuestion returns ask_user_question kind, not relay_event, so
+    // toolCalls should not be populated. Verify by using a message with both
+    // AskUserQuestion and another tool — AskUserQuestion takes over the result.
+    const line = JSON.stringify({
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: "tc_ask", name: "AskUserQuestion", input: { questions: [] } },
+        ],
+      },
+    });
+    const result = translateNdjsonLine(line);
+    expect(result.kind).toBe("ask_user_question");
+    // AskUserQuestion returns early — no toolCalls extracted
+    expect(result.toolCalls).toBeUndefined();
+  });
+
+  test("no toolCalls for assistant messages without tool_use blocks", () => {
+    const line = JSON.stringify({
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "Just text, no tools." }],
+      },
+    });
+    const result = translateNdjsonLine(line);
+    expect(result.toolCalls).toBeUndefined();
+  });
+
+  // ── toolResultIds extraction from user messages ───────────────────────
+
+  test("extracts toolResultIds from tool_result blocks", () => {
+    const line = JSON.stringify({
+      type: "user",
+      message: {
+        role: "user",
+        content: [
+          { type: "tool_result", tool_use_id: "tc_1", content: "result 1" },
+          { type: "tool_result", tool_use_id: "tc_2", content: "result 2" },
+        ],
+      },
+    });
+    const result = translateNdjsonLine(line);
+    expect(result.toolResultIds).toEqual(["tc_1", "tc_2"]);
+  });
+
+  test("single tool_result extracts toolResultIds", () => {
+    const line = JSON.stringify({
+      type: "user",
+      message: {
+        role: "user",
+        content: [
+          { type: "tool_result", tool_use_id: "tc_single", content: "done" },
+        ],
+      },
+    });
+    const result = translateNdjsonLine(line);
+    expect(result.toolResultIds).toEqual(["tc_single"]);
+  });
+
+  test("no toolResultIds for user messages without tool_results", () => {
+    const line = JSON.stringify({
+      type: "user",
+      message: { role: "user", content: [{ type: "text", text: "Hello" }] },
+    });
+    const result = translateNdjsonLine(line);
+    expect(result.toolResultIds).toBeUndefined();
+  });
+
+  // ── Claude Code subagent tool recognition ─────────────────────────────
+
+  test("SUBAGENT_TOOL_NAMES includes Task, Agent, and subagent", () => {
+    expect(SUBAGENT_TOOL_NAMES.has("Task")).toBe(true);
+    expect(SUBAGENT_TOOL_NAMES.has("Agent")).toBe(true);
+    expect(SUBAGENT_TOOL_NAMES.has("subagent")).toBe(true);
+    // Common non-subagent tools should NOT be in the set
+    expect(SUBAGENT_TOOL_NAMES.has("Bash")).toBe(false);
+    expect(SUBAGENT_TOOL_NAMES.has("Read")).toBe(false);
+  });
+
+  test("extracts toolCalls for Claude Code Task tool", () => {
+    const line = JSON.stringify({
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: "tc_task", name: "Task", input: {
+            subagent_type: "Explore",
+            description: "Find auth code",
+            prompt: "Search for authentication patterns",
+          } },
+        ],
+      },
+    });
+    const result = translateNdjsonLine(line);
+    expect(result.toolCalls).toHaveLength(1);
+    expect(result.toolCalls![0]).toMatchObject({
+      toolCallId: "tc_task",
+      toolName: "Task",
+      toolInput: {
+        subagent_type: "Explore",
+        description: "Find auth code",
+        prompt: "Search for authentication patterns",
+      },
+    });
+  });
+
+  test("extracts toolCalls for Claude Code Agent tool (newer SDK)", () => {
+    const line = JSON.stringify({
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: "tc_agent", name: "Agent", input: {
+            subagent_type: "general-purpose",
+            prompt: "Implement the feature",
+          } },
+        ],
+      },
+    });
+    const result = translateNdjsonLine(line);
+    expect(result.toolCalls).toHaveLength(1);
+    expect(result.toolCalls![0].toolName).toBe("Agent");
+  });
+
+  test("normalizes Task tool_use to toolCall format like any other tool", () => {
+    const line = JSON.stringify({
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: "tc_task", name: "Task", input: {
+            subagent_type: "Explore",
+            prompt: "Find files",
+          } },
+        ],
+      },
+    });
+    const result = translateNdjsonLine(line);
+    const msg = (result.relayEvent as any)?.message;
+    expect(msg.content[0]).toMatchObject({
+      type: "toolCall",
+      toolCallId: "tc_task",
+      name: "Task",
+      arguments: JSON.stringify({ subagent_type: "Explore", prompt: "Find files" }),
+    });
   });
 });

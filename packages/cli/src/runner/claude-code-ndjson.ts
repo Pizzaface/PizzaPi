@@ -2,6 +2,18 @@
  * Translates Claude Code CLI NDJSON output lines into PizzaPi relay events.
  */
 
+/** Tool names that Claude Code uses for subagent invocations.
+ *  "Task" is the older name, "Agent" is the current SDK name.
+ *  Pi uses "subagent". All are recognized for lifecycle tracking. */
+export const SUBAGENT_TOOL_NAMES = new Set(["Task", "Agent", "subagent"]);
+
+/** Info about a tool_use block extracted from an assistant message. */
+export interface ToolCallInfo {
+  toolCallId: string;
+  toolName: string;
+  toolInput: unknown;
+}
+
 export interface TranslationResult {
   kind:
     | "control_request"   // needs a response on stdin
@@ -32,6 +44,14 @@ export interface TranslationResult {
   sessionName?: string;
   // token usage from result events
   tokenUsage?: { inputTokens: number; outputTokens: number; cacheCreationInputTokens?: number; cacheReadInputTokens?: number };
+  /** Tool calls extracted from assistant messages — used by the bridge to
+   *  track pending tool executions and emit synthetic tool_execution_start/end
+   *  events. Excludes side-effect-only tools (TodoWrite, set_session_name)
+   *  and AskUserQuestion (which has its own handling path). */
+  toolCalls?: ToolCallInfo[];
+  /** Tool call IDs extracted from tool_result blocks in user messages — used
+   *  by the bridge to emit synthetic tool_execution_end events. */
+  toolResultIds?: string[];
 }
 
 export function translateNdjsonLine(line: string): TranslationResult {
@@ -138,14 +158,30 @@ export function translateNdjsonLine(line: string): TranslationResult {
     // Normalize Claude tool_use blocks into PizzaPi toolCall blocks so the
     // viewer's grouping/rendering path (which expects type:"toolCall" with
     // toolCallId/arguments) works correctly.
+    //
+    // Also collect ToolCallInfo for each tool_use that represents a real tool
+    // execution (not side-effect-only tools or AskUserQuestion).
+    const toolCalls: ToolCallInfo[] = [];
+    const SIDE_EFFECT_TOOLS = new Set(["TodoWrite", "update_todo", "set_session_name"]);
+
     const normalizedContent = content.map((block) => {
       if (!block || typeof block !== "object") return block;
       const b = block as Record<string, unknown>;
       if (b.type !== "tool_use") return block;
+
+      const toolCallId = typeof b.id === "string" ? b.id : undefined;
+      const name = typeof b.name === "string" ? b.name : undefined;
+
+      // Collect tool call info for tools that will actually execute
+      // (exclude side-effect-only tools and AskUserQuestion which has its own path)
+      if (toolCallId && name && !SIDE_EFFECT_TOOLS.has(name) && name !== "AskUserQuestion") {
+        toolCalls.push({ toolCallId, toolName: name, toolInput: b.input });
+      }
+
       return {
         type: "toolCall",
-        toolCallId: typeof b.id === "string" ? b.id : undefined,
-        name: typeof b.name === "string" ? b.name : undefined,
+        toolCallId,
+        name,
         arguments: b.input != null ? JSON.stringify(b.input) : undefined,
       };
     });
@@ -157,6 +193,7 @@ export function translateNdjsonLine(line: string): TranslationResult {
     };
     if (todoList) result.todoList = todoList;
     if (sessionName) result.sessionName = sessionName;
+    if (toolCalls.length > 0) result.toolCalls = toolCalls;
     return result;
   }
 
@@ -205,12 +242,15 @@ export function translateNdjsonLine(line: string): TranslationResult {
     // Build one relay event per tool_result block, plus one user event for any
     // remaining non-tool_result blocks.
     const events: Array<Record<string, unknown>> = [];
+    const toolResultIds: string[] = [];
 
     for (const block of toolResultBlocks) {
       const toolCallId = typeof block.tool_use_id === "string" ? block.tool_use_id : undefined;
       // content can be a string, an array of content blocks, or absent
       const blockContent = block.content ?? "";
       const isError = block.is_error === true;
+
+      if (toolCallId) toolResultIds.push(toolCallId);
 
       events.push({
         type: "message_update",
@@ -234,11 +274,12 @@ export function translateNdjsonLine(line: string): TranslationResult {
       });
     }
 
-    if (events.length === 1) {
-      return { kind: "relay_event", relayEvent: events[0] };
-    }
+    const translationResult: TranslationResult = events.length === 1
+      ? { kind: "relay_event", relayEvent: events[0] }
+      : { kind: "relay_event", relayEvents: events };
 
-    return { kind: "relay_event", relayEvents: events };
+    if (toolResultIds.length > 0) translationResult.toolResultIds = toolResultIds;
+    return translationResult;
   }
 
   // ── Result (turn complete) ────────────────────────────────────────────
