@@ -94,5 +94,18 @@ export async function extractMetaFromHeartbeat(
 
   if (Object.keys(patch).length > 0) {
     await updateSessionMetaState(sessionId, patch);
+    // Broadcast a fresh state_snapshot to hub meta room subscribers so that
+    // old-CLI runners (fat heartbeats, no discrete meta events) keep hub viewers
+    // up to date. Without this, hub subscribers freeze at the initial snapshot.
+    try {
+      const updatedState = await getSessionMetaState(sessionId);
+      const io = getIo();
+      io.of("/hub").to(sessionMetaRoom(sessionId)).emit("state_snapshot", {
+        sessionId,
+        state: updatedState,
+      });
+    } catch {
+      // Non-fatal — best-effort broadcast for old-CLI compat
+    }
   }
 }

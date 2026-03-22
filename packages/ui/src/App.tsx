@@ -1963,7 +1963,14 @@ export function App() {
       metaVersionsRef.current.set(sessionId, version);
       applyMetaPatch(metaEventToStatePatch(event as any));
       if ((event as any).type === "mcp_startup_report" && (event as any).report) {
-        applyMcpReport((event as any).report);
+        // Buffer if session not yet hydrated — the new slim CLI no longer retries
+        // in heartbeats, so without this the report would be lost for live events
+        // that race session_active delivery.
+        if (sessionHydratedRef.current) {
+          applyMcpReport((event as any).report);
+        } else {
+          pendingMcpReportRef.current = (event as any).report as Record<string, unknown>;
+        }
       }
     };
 
