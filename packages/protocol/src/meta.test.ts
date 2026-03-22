@@ -41,6 +41,13 @@ describe("metaEventToPatch", () => {
   test("question_cleared → pendingQuestion null", () => {
     expect(metaEventToPatch({ type: "question_cleared", toolCallId: "tc1" })).toEqual({ pendingQuestion: null });
   });
+  test("plan_pending → pendingPlan set", () => {
+    const plan = { toolCallId: "tc1", title: "My Plan", steps: [] };
+    expect(metaEventToPatch({ type: "plan_pending", plan })).toEqual({ pendingPlan: plan });
+  });
+  test("plan_cleared → pendingPlan null", () => {
+    expect(metaEventToPatch({ type: "plan_cleared", toolCallId: "tc1" })).toEqual({ pendingPlan: null });
+  });
   test("compact_started → isCompacting true", () => {
     expect(metaEventToPatch({ type: "compact_started" })).toEqual({ isCompacting: true });
   });
@@ -53,7 +60,35 @@ describe("metaEventToPatch", () => {
   test("retry_state_changed null clears state", () => {
     expect(metaEventToPatch({ type: "retry_state_changed", state: null })).toEqual({ retryState: null });
   });
+  test("plugin_trust_required → pendingPluginTrust set", () => {
+    const prompt = { promptId: "p1", pluginNames: ["myPlugin"], pluginSummaries: ["does things"] };
+    expect(metaEventToPatch({ type: "plugin_trust_required", prompt })).toEqual({ pendingPluginTrust: prompt });
+  });
   test("plugin_trust_resolved clears trust prompt", () => {
     expect(metaEventToPatch({ type: "plugin_trust_resolved", promptId: "p1" })).toEqual({ pendingPluginTrust: null });
+  });
+  test("mcp_startup_report → mcpStartupReport set", () => {
+    const report = { slow: true, totalDurationMs: 5000, ts: 1234 };
+    expect(metaEventToPatch({ type: "mcp_startup_report", report, ts: 1234 })).toEqual({ mcpStartupReport: report });
+  });
+  test("token_usage_updated → tokenUsage + providerUsage set", () => {
+    const tokenUsage = { input: 100, output: 50, cacheRead: 0, cacheWrite: 0, cost: 0.01 };
+    const providerUsage = { anthropic: { tokens: 150 } };
+    const patch = metaEventToPatch({ type: "token_usage_updated", tokenUsage, providerUsage });
+    expect(patch.tokenUsage).toEqual(tokenUsage);
+    expect(patch.providerUsage).toEqual(providerUsage);
+  });
+  test("thinking_level_changed → thinkingLevel set", () => {
+    expect(metaEventToPatch({ type: "thinking_level_changed", level: "high" })).toEqual({ thinkingLevel: "high" });
+  });
+  test("auth_source_changed → authSource set", () => {
+    expect(metaEventToPatch({ type: "auth_source_changed", source: "oauth" })).toEqual({ authSource: "oauth" });
+  });
+  test("model_changed → model set", () => {
+    const model = { provider: "anthropic", id: "claude-3", name: "Claude 3" };
+    expect(metaEventToPatch({ type: "model_changed", model })).toEqual({ model });
+  });
+  test("model_changed null → model null", () => {
+    expect(metaEventToPatch({ type: "model_changed", model: null })).toEqual({ model: null });
   });
 });
