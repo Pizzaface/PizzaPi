@@ -986,7 +986,7 @@ function handleControlRequest(requestId: string, toolName: string, toolInput: un
     resolve: (decision) => {
       clearTimeout(timer);
       pendingPermissions.delete(requestId);
-      sendPermissionResponse(requestId, decision);
+      sendPermissionResponse(requestId, decision, toolInput);
       emitHeartbeat();
     },
     timer,
@@ -999,13 +999,15 @@ function handleControlRequest(requestId: string, toolName: string, toolInput: un
   emitSessionActive();
 }
 
-function sendPermissionResponse(requestId: string, behavior: "allow" | "deny"): void {
+function sendPermissionResponse(requestId: string, behavior: "allow" | "deny", toolInput?: unknown): void {
   writeToClaudeStdin({
     type: "control_response",
     response: {
       subtype: "success",
       request_id: requestId,
-      response: behavior === "allow" ? { behavior: "allow" } : { behavior: "deny", message: "Denied via PizzaPi web UI" },
+      response: behavior === "allow"
+        ? { behavior: "allow", updatedInput: (toolInput && typeof toolInput === "object" ? toolInput : {}) as Record<string, unknown> }
+        : { behavior: "deny", message: "Denied via PizzaPi web UI" },
     },
   });
 }
