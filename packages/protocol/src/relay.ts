@@ -20,7 +20,9 @@ export interface RelayClientToServerEvents {
     parentSessionId?: string | null;
   }) => void;
 
-  /** TUI forwards an agent event (heartbeat, message_update, etc.) */
+  /** TUI forwards an agent event (heartbeat, message_update, etc.)
+   *  Meta event discrimination is handled by isMetaRelayEvent from meta.ts.
+   */
   event: (data: {
     sessionId: string;
     token: string;

@@ -1,4 +1,5 @@
 import type { ExtensionFactory } from "@mariozechner/pi-coding-agent";
+import type { MetaTodoItem } from "@pizzapi/protocol";
 
 /** Minimal Component that renders nothing — keeps the tool call invisible in the TUI. */
 const silent = { render: (_width: number): string[] => [], invalidate: () => {} };
@@ -22,6 +23,12 @@ let _onTodoUpdate: ((list: TodoItem[]) => void) | null = null;
 
 export function setTodoUpdateCallback(cb: (list: TodoItem[]) => void): void {
     _onTodoUpdate = cb;
+}
+
+/** Meta event emitter for discrete todo_updated events. */
+let _metaEmit: ((list: MetaTodoItem[]) => void) | null = null;
+export function setTodoMetaEmitter(cb: (list: MetaTodoItem[]) => void): void {
+    _metaEmit = cb;
 }
 
 function normalizeTodos(raw: unknown): TodoItem[] {
@@ -82,6 +89,7 @@ export const updateTodoExtension: ExtensionFactory = (pi) => {
             const normalized = normalizeTodos((params as any)?.todos);
             currentTodoList = normalized;
             _onTodoUpdate?.(normalized);
+            if (_metaEmit) _metaEmit(currentTodoList);
             return {
                 content: [{ type: "text" as const, text: "" }],
                 details: undefined,
@@ -106,10 +114,12 @@ export const updateTodoExtension: ExtensionFactory = (pi) => {
     pi.on("session_start", () => {
         currentTodoList = [];
         _onTodoUpdate?.([]);
+        if (_metaEmit) _metaEmit(currentTodoList);
     });
 
     pi.on("session_switch", () => {
         currentTodoList = [];
         _onTodoUpdate?.([]);
+        if (_metaEmit) _metaEmit(currentTodoList);
     });
 };

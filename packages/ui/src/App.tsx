@@ -12,7 +12,13 @@ import { NewSessionWizardDialog } from "@/components/NewSessionWizardDialog";
 import { PizzaLogo } from "@/components/PizzaLogo";
 import { authClient, useSession, signOut } from "@/lib/auth-client";
 import { io, type Socket } from "socket.io-client";
-import type { ViewerServerToClientEvents, ViewerClientToServerEvents } from "@pizzapi/protocol";
+import type {
+  ViewerServerToClientEvents,
+  ViewerClientToServerEvents,
+  HubServerToClientEvents,
+  HubClientToServerEvents,
+  SessionMetaState,
+} from "@pizzapi/protocol";
 import { cn } from "@/lib/utils";
 import { pulseStreamingHaptic, cancelHaptic, startToolHaptic, stopToolHaptic } from "@/lib/haptics";
 import { Button } from "@/components/ui/button";
@@ -75,6 +81,7 @@ import {
 } from "@/lib/input-dedupe";
 import { parsePendingQuestionDisplayMode, parsePendingQuestions, type QuestionDisplayMode } from "@/lib/ask-user-questions";
 import type { TodoItem, TokenUsage, ConfiguredModelInfo, ResumeSessionOption, QueuedMessage, SessionUiCacheEntry } from "@/lib/types";
+import { metaEventToStatePatch, type MetaStatePatch } from "@/lib/meta-state-apply";
 import { usePanelLayout } from "@/hooks/usePanelLayout";
 import { useMobileSidebar } from "@/hooks/useMobileSidebar";
 import {
@@ -278,6 +285,18 @@ export function App() {
   // messages, otherwise the report gets appended then immediately replaced.
   const sessionHydratedRef = React.useRef(false);
 
+  // Holds an MCP startup report that arrived (via hub state_snapshot) before
+  // session_active hydration completed. Flushed when hydration finishes.
+  // Needed for the new slim-heartbeat CLI that no longer retries in every heartbeat.
+  const pendingMcpReportRef = React.useRef<Record<string, unknown> | null>(null);
+
+  // Tracks the highest meta state version seen per session, to prevent stale
+  // state_snapshot from rolling back state already updated by meta_event.
+  const metaVersionsRef = React.useRef<Map<string, number>>(new Map());
+
+  // Tracks which session's meta room we've joined so we can unsubscribe when needed.
+  const prevMetaSessionRef = React.useRef<string | null>(null);
+
   // Chunked session delivery: when session_active arrives with chunked:true,
   // messages follow as session_messages_chunk events. This ref tracks state.
   // The snapshotId ties chunks to their originating session_active so stale
@@ -388,6 +407,7 @@ export function App() {
   }, [newSessionOpen]);
 
   const viewerWsRef = React.useRef<Socket<ViewerServerToClientEvents, ViewerClientToServerEvents> | null>(null);
+  const hubSocketRef = React.useRef<Socket<HubServerToClientEvents, HubClientToServerEvents> | null>(null);
   const activeSessionRef = React.useRef<string | null>(null);
 
   // Cache last-known UI state per relay session so switching sessions feels instant.
@@ -718,6 +738,311 @@ export function App() {
     });
   }, [patchSessionCache]);
 
+
+  const applyMcpReport = React.useCallback((mcpReport: {
+    slow?: boolean;
+    showSlowWarning?: boolean;
+    errors?: Array<{ server: string; error: string }>;
+    serverTimings?: Array<{ name: string; durationMs: number; toolCount: number; timedOut: boolean; error?: string }>;
+    totalDurationMs?: number;
+    ts?: number;
+  }) => {
+    const reportTs = typeof mcpReport.ts === "number" ? mcpReport.ts : 0;
+    if (reportTs <= 0 || reportTs === renderedMcpReportTsRef.current || !sessionHydratedRef.current) return;
+    const hasErrors = Array.isArray(mcpReport.errors) && mcpReport.errors.length > 0;
+    const showSlow = mcpReport.showSlowWarning !== false;
+    const isSlow = mcpReport.slow === true && showSlow;
+    if (!hasErrors && !isSlow) return;
+    renderedMcpReportTsRef.current = reportTs;
+    const totalMs = typeof mcpReport.totalDurationMs === "number" ? mcpReport.totalDurationMs : 0;
+    const totalDur = totalMs >= 1000 ? `${(totalMs / 1000).toFixed(1)}s` : `${totalMs}ms`;
+    const parts: string[] = [];
+    if (isSlow) parts.push(`⏱ MCP startup took ${totalDur}`);
+    const timings = Array.isArray(mcpReport.serverTimings) ? mcpReport.serverTimings : [];
+    const noteworthy = timings.filter((t) => t.error || t.timedOut || t.durationMs >= 3000);
+    for (const t of noteworthy) {
+      const dur = t.durationMs >= 1000 ? `${(t.durationMs / 1000).toFixed(1)}s` : `${t.durationMs}ms`;
+      if (t.timedOut) parts.push(`  ⏱ ${t.name}: timed out (${dur})`);
+      else if (t.error) parts.push(`  ✗ ${t.name}: ${t.error} (${dur})`);
+      else parts.push(`  ● ${t.name}: ${dur}`);
+    }
+    if (hasErrors && !isSlow) {
+      const errLines = mcpReport.errors!.map((e) => `  ✗ ${e.server}: ${e.error}`);
+      parts.push(`⚠ MCP server errors:\n${errLines.join("\n")}`);
+    }
+    if (isSlow) parts.push("Tip: Use --safe-mode or --no-mcp for instant startup.");
+    if (parts.length === 0) return;
+    const message: RelayMessage = {
+      key: `mcp_startup:${reportTs}:${Math.random().toString(16).slice(2)}`,
+      role: "system",
+      timestamp: reportTs,
+      content: parts.join("\n"),
+      isError: hasErrors,
+    };
+    setMessages((prev) => {
+      if (prev.some((m) => m.key?.startsWith(`mcp_startup:${reportTs}`))) return prev;
+      const next = [...prev, message];
+      patchSessionCache({ messages: next });
+      return next;
+    });
+  }, [patchSessionCache]);
+
+  const applyMetaStateSnapshot = React.useCallback((state: SessionMetaState) => {
+    const cachePatch: Partial<SessionUiCacheEntry> = {};
+
+    if (Array.isArray(state.todoList)) {
+      setTodoList(state.todoList as TodoItem[]);
+      cachePatch.todoList = state.todoList as TodoItem[];
+    }
+
+    if (Object.prototype.hasOwnProperty.call(state, "pendingQuestion")) {
+      const pq = state.pendingQuestion;
+      if (pq) {
+        const questions = parsePendingQuestions(pq as unknown as Record<string, unknown>);
+        if (questions.length > 0) {
+          const resolved = {
+            toolCallId: typeof pq.toolCallId === "string" ? pq.toolCallId : getFallbackPromptKey(questions),
+            questions,
+            display: parsePendingQuestionDisplayMode(pq as unknown as Record<string, unknown>, questions.length),
+          };
+          setPendingQuestion(resolved);
+          cachePatch.pendingQuestion = resolved;
+          setViewerStatus("Waiting for answer…");
+        } else {
+          setPendingQuestion(null);
+          cachePatch.pendingQuestion = null;
+        }
+      } else {
+        setPendingQuestion(null);
+        cachePatch.pendingQuestion = null;
+      }
+    }
+
+    if (Object.prototype.hasOwnProperty.call(state, "pendingPlan")) {
+      const pp = state.pendingPlan;
+      if (pp && typeof pp.toolCallId === "string" && typeof pp.title === "string" && pp.title.trim()) {
+        const steps = Array.isArray(pp.steps)
+          ? pp.steps.filter((s): s is { title: string; description?: string } =>
+              s !== null && typeof s === "object" && typeof s.title === "string" && s.title.trim().length > 0,
+            )
+          : [];
+        const resolved = {
+          toolCallId: pp.toolCallId,
+          title: pp.title.trim(),
+          description: typeof pp.description === "string" && pp.description.trim() ? pp.description.trim() : null,
+          steps,
+        };
+        setPendingPlan(resolved);
+        cachePatch.pendingPlan = resolved;
+        setViewerStatus("Waiting for plan review…");
+      } else {
+        setPendingPlan(null);
+        cachePatch.pendingPlan = null;
+      }
+    }
+
+    if (typeof state.planModeEnabled === "boolean") {
+      setPlanModeEnabled(state.planModeEnabled);
+      cachePatch.planModeEnabled = state.planModeEnabled;
+    }
+
+    if (typeof state.isCompacting === "boolean") {
+      setIsCompacting(state.isCompacting);
+      cachePatch.isCompacting = state.isCompacting;
+      if (state.isCompacting) {
+        setViewerStatus("Compacting…");
+      }
+    }
+
+    if (Object.prototype.hasOwnProperty.call(state, "retryState")) {
+      setRetryState(state.retryState);
+    }
+
+    if (Object.prototype.hasOwnProperty.call(state, "pendingPluginTrust")) {
+      const pt = state.pendingPluginTrust;
+      if (pt && typeof pt.promptId === "string" && Array.isArray(pt.pluginNames) && pt.pluginNames.length > 0) {
+        setPluginTrustPrompt({
+          promptId: pt.promptId,
+          pluginNames: pt.pluginNames,
+          pluginSummaries: Array.isArray(pt.pluginSummaries) ? pt.pluginSummaries : pt.pluginNames,
+        });
+      } else {
+        setPluginTrustPrompt(null);
+      }
+    }
+
+    if (Object.prototype.hasOwnProperty.call(state, "tokenUsage")) {
+      const usage = state.tokenUsage as TokenUsage | null;
+      setTokenUsage(usage);
+      cachePatch.tokenUsage = usage;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(state, "providerUsage")) {
+      const usage = state.providerUsage as ProviderUsageMap | null;
+      setProviderUsage(usage);
+      cachePatch.providerUsage = usage;
+    }
+
+    if (state.thinkingLevel !== undefined) {
+      setEffortLevel(state.thinkingLevel);
+      cachePatch.effortLevel = state.thinkingLevel;
+    }
+
+    if (state.authSource !== undefined) {
+      setAuthSource(state.authSource);
+      cachePatch.authSource = state.authSource;
+    }
+
+    if (state.model !== undefined) {
+      if (state.model) {
+        const m = normalizeModel(state.model);
+        if (m) {
+          setActiveModel(m);
+          cachePatch.activeModel = m;
+        }
+      } else {
+        // snapshot explicitly clears model
+        setActiveModel(null);
+        cachePatch.activeModel = null;
+      }
+    }
+
+    // Apply mcpStartupReport from snapshot so late-joining viewers see MCP startup warnings.
+    // If session is not yet hydrated, save it for replay once session_active arrives —
+    // the new slim-heartbeat CLI no longer retries in every heartbeat, so without this
+    // the report would be permanently lost for any viewer connecting to an existing session.
+    if (state.mcpStartupReport) {
+      if (sessionHydratedRef.current) {
+        applyMcpReport(state.mcpStartupReport as Record<string, unknown>);
+      } else {
+        pendingMcpReportRef.current = state.mcpStartupReport as Record<string, unknown>;
+      }
+    }
+
+    if (Object.keys(cachePatch).length > 0) {
+      patchSessionCache(cachePatch);
+    }
+  }, [applyMcpReport, getFallbackPromptKey, patchSessionCache]);
+
+  const applyMetaPatch = React.useCallback((patch: MetaStatePatch) => {
+    const cachePatch: Partial<SessionUiCacheEntry> = {};
+
+    if (patch.todoList !== undefined) {
+      setTodoList(patch.todoList);
+      cachePatch.todoList = patch.todoList;
+    }
+
+    if (patch.setPendingQuestion) {
+      if (patch.pendingQuestion) {
+        setPendingQuestion(patch.pendingQuestion);
+        cachePatch.pendingQuestion = patch.pendingQuestion;
+        setViewerStatus("Waiting for answer…");
+      } else {
+        setPendingQuestion(null);
+        cachePatch.pendingQuestion = null;
+      }
+    }
+
+    if (patch.setPendingPlan) {
+      if (patch.pendingPlan) {
+        const pp = patch.pendingPlan as any;
+        if (typeof pp.toolCallId === "string" && typeof pp.title === "string") {
+          const steps = Array.isArray(pp.steps)
+            ? pp.steps.filter((s: any): s is { title: string; description?: string } =>
+                s !== null && typeof s === "object" && typeof s.title === "string" && s.title.trim().length > 0,
+              )
+            : [];
+          const resolved = {
+            toolCallId: pp.toolCallId,
+            title: pp.title.trim(),
+            description: typeof pp.description === "string" && pp.description.trim() ? pp.description.trim() : null,
+            steps,
+          };
+          setPendingPlan(resolved);
+          cachePatch.pendingPlan = resolved;
+          setViewerStatus("Waiting for plan review…");
+        }
+      } else {
+        setPendingPlan(null);
+        cachePatch.pendingPlan = null;
+      }
+    }
+
+    if (patch.planModeEnabled !== undefined) {
+      setPlanModeEnabled(patch.planModeEnabled);
+      cachePatch.planModeEnabled = patch.planModeEnabled;
+    }
+
+    if (patch.isCompacting !== undefined) {
+      setIsCompacting(patch.isCompacting);
+      cachePatch.isCompacting = patch.isCompacting;
+      if (patch.viewerStatusOverride) {
+        setViewerStatus(patch.viewerStatusOverride);
+      } else if (!patch.isCompacting) {
+        setViewerStatus((prev) => (prev === "Compacting…" ? "Connected" : prev));
+      }
+    } else if (patch.viewerStatusOverride) {
+      setViewerStatus(patch.viewerStatusOverride);
+    }
+
+    if ("retryState" in patch) {
+      setRetryState(patch.retryState ?? null);
+    }
+
+    if ("pluginTrustPrompt" in patch) {
+      if (patch.pluginTrustPrompt) {
+        const pt = patch.pluginTrustPrompt;
+        if (pt.promptId && Array.isArray(pt.pluginNames) && pt.pluginNames.length > 0) {
+          setPluginTrustPrompt({
+            promptId: pt.promptId,
+            pluginNames: pt.pluginNames,
+            pluginSummaries: Array.isArray(pt.pluginSummaries) ? pt.pluginSummaries : pt.pluginNames,
+          });
+        }
+      } else {
+        setPluginTrustPrompt(null);
+      }
+    }
+
+    if (patch.tokenUsage !== undefined) {
+      setTokenUsage(patch.tokenUsage);
+      cachePatch.tokenUsage = patch.tokenUsage;
+    }
+
+    if (patch.providerUsage !== undefined) {
+      setProviderUsage(patch.providerUsage);
+      cachePatch.providerUsage = patch.providerUsage;
+    }
+
+    if (patch.thinkingLevel !== undefined) {
+      setEffortLevel(patch.thinkingLevel);
+      cachePatch.effortLevel = patch.thinkingLevel;
+    }
+
+    if (patch.authSource !== undefined) {
+      setAuthSource(patch.authSource);
+      cachePatch.authSource = patch.authSource;
+    }
+
+    if (patch.model !== undefined) {
+      if (patch.model) {
+        const m = normalizeModel(patch.model);
+        if (m) {
+          setActiveModel(m);
+          cachePatch.activeModel = m;
+        }
+      } else {
+        // model_changed with null — clear the active model
+        setActiveModel(null);
+        cachePatch.activeModel = null;
+      }
+    }
+
+    if (Object.keys(cachePatch).length > 0) {
+      patchSessionCache(cachePatch);
+    }
+  }, [patchSessionCache]);
+
   const handleRelayEvent = React.useCallback((event: unknown, seq?: number) => {
     if (!event || typeof event !== "object") return;
 
@@ -759,8 +1084,6 @@ export function App() {
         isCompacting?: boolean;
         model?: { provider: string; id: string; name?: string } | null;
         sessionName?: string | null;
-        thinkingLevel?: string | null;
-        tokenUsage?: TokenUsage | null;
         ts?: number;
       };
 
@@ -774,49 +1097,15 @@ export function App() {
       setAgentActive(nextAgentActive);
       setIsCompacting(nextIsCompacting);
 
-      // Drive viewerStatus from the authoritative heartbeat compacting flag
       if (nextIsCompacting) {
         setViewerStatus("Compacting…");
       } else {
-        // If we were showing "Compacting…" and the heartbeat says no longer compacting,
-        // the exec_result handler will set the final "Compacted" status. But if we
-        // missed the exec_result (e.g. reconnected after compact), clear the stale status.
         setViewerStatus((prev) => (prev === "Compacting…" ? "Connected" : prev));
-      }
-
-      if (hb.thinkingLevel !== undefined) {
-        const next = hb.thinkingLevel ?? null;
-        setEffortLevel(next);
-        cachePatch.effortLevel = next;
-      }
-
-      if ((hb as any).planModeEnabled !== undefined) {
-        const next = !!(hb as any).planModeEnabled;
-        setPlanModeEnabled(next);
-        cachePatch.planModeEnabled = next;
-      }
-
-      if (hb.tokenUsage !== undefined) {
-        const next = hb.tokenUsage ?? null;
-        setTokenUsage(next);
-        cachePatch.tokenUsage = next;
       }
 
       if (typeof hb.ts === "number") {
         setLastHeartbeatAt(hb.ts);
         cachePatch.lastHeartbeatAt = hb.ts;
-      }
-
-      if ((hb as any).providerUsage !== undefined) {
-        const nextProviderUsage = (hb as any).providerUsage ?? null;
-        setProviderUsage(nextProviderUsage);
-        cachePatch.providerUsage = nextProviderUsage;
-      }
-
-      if ((hb as any).authSource !== undefined) {
-        const nextAuthSource = typeof (hb as any).authSource === "string" ? (hb as any).authSource : null;
-        setAuthSource(nextAuthSource);
-        cachePatch.authSource = nextAuthSource;
       }
 
       if (Object.prototype.hasOwnProperty.call(hb, "sessionName")) {
@@ -825,91 +1114,6 @@ export function App() {
         cachePatch.sessionName = nextName;
       }
 
-      if (Array.isArray((hb as any).todoList)) {
-        const todos = (hb as any).todoList as TodoItem[];
-        setTodoList(todos);
-        cachePatch.todoList = todos;
-      }
-
-      // Restore pending AskUserQuestion state when reconnecting to a session.
-      if (Object.prototype.hasOwnProperty.call(hb, "pendingQuestion")) {
-        const pq = (hb as any).pendingQuestion as { toolCallId: string; questions?: Array<{ question: string; options: string[] }>; display?: string; question?: string; options?: string[] } | null;
-        if (pq) {
-          const questions = parsePendingQuestions(pq);
-          if (questions.length > 0) {
-            const resolved = {
-              toolCallId: typeof pq.toolCallId === "string" ? pq.toolCallId : getFallbackPromptKey(questions),
-              questions,
-              display: parsePendingQuestionDisplayMode(pq, questions.length),
-            };
-            setPendingQuestion(resolved);
-            cachePatch.pendingQuestion = resolved;
-            setViewerStatus("Waiting for answer…");
-          } else {
-            setPendingQuestion(null);
-            cachePatch.pendingQuestion = null;
-          }
-        } else {
-          // Heartbeat explicitly says no pending question; clear any stale state.
-          setPendingQuestion(null);
-          cachePatch.pendingQuestion = null;
-        }
-      }
-
-      // Restore pending plan mode state when reconnecting to a session.
-      if (Object.prototype.hasOwnProperty.call(hb, "pendingPlan")) {
-        const pp = (hb as any).pendingPlan as {
-          toolCallId: string;
-          title: string;
-          description?: string | null;
-          steps?: Array<{ title: string; description?: string }>;
-        } | null;
-        if (pp && typeof pp.toolCallId === "string" && typeof pp.title === "string" && pp.title.trim()) {
-          const steps = Array.isArray(pp.steps)
-            ? pp.steps.filter((s): s is { title: string; description?: string } =>
-                s !== null && typeof s === "object" && typeof s.title === "string" && s.title.trim().length > 0,
-              )
-            : [];
-          const resolved = {
-            toolCallId: pp.toolCallId,
-            title: pp.title.trim(),
-            description: typeof pp.description === "string" && pp.description.trim() ? pp.description.trim() : null,
-            steps,
-          };
-          setPendingPlan(resolved);
-          cachePatch.pendingPlan = resolved;
-          setViewerStatus("Waiting for plan review…");
-        } else {
-          setPendingPlan(null);
-          cachePatch.pendingPlan = null;
-        }
-      }
-
-      // Track auto-retry state from CLI so we can show a retry indicator.
-      if (Object.prototype.hasOwnProperty.call(hb, "retryState")) {
-        const rs = (hb as any).retryState as { errorMessage: string; detectedAt: number } | null;
-        setRetryState(rs);
-      }
-
-      // Restore pending plugin trust prompt when reconnecting.
-      if (Object.prototype.hasOwnProperty.call(hb, "pendingPluginTrust")) {
-        const pt = (hb as any).pendingPluginTrust as {
-          promptId: string;
-          pluginNames: string[];
-          pluginSummaries: string[];
-        } | null;
-        if (pt && typeof pt.promptId === "string" && Array.isArray(pt.pluginNames) && pt.pluginNames.length > 0) {
-          setPluginTrustPrompt({
-            promptId: pt.promptId,
-            pluginNames: pt.pluginNames,
-            pluginSummaries: Array.isArray(pt.pluginSummaries) ? pt.pluginSummaries : pt.pluginNames,
-          });
-        } else {
-          setPluginTrustPrompt(null);
-        }
-      }
-
-      // Heartbeats also carry the current model; keep activeModel in sync.
       if (hb.model) {
         const m = normalizeModel(hb.model);
         if (m) {
@@ -918,65 +1122,8 @@ export function App() {
         }
       }
 
-      // Restore MCP startup diagnostics for reconnecting viewers. The runner
-      // includes the last report in every heartbeat; deduplicate by timestamp
-      // so it only renders once per report.
       if ((hb as any).mcpStartupReport && typeof (hb as any).mcpStartupReport === "object") {
-        const mcpReport = (hb as any).mcpStartupReport as {
-          slow?: boolean;
-          showSlowWarning?: boolean;
-          errors?: Array<{ server: string; error: string }>;
-          serverTimings?: Array<{ name: string; durationMs: number; toolCount: number; timedOut: boolean; error?: string }>;
-          totalDurationMs?: number;
-          ts?: number;
-        };
-        const reportTs = typeof mcpReport.ts === "number" ? mcpReport.ts : 0;
-        // Defer rendering until session_active has hydrated messages. Heartbeats
-        // can arrive before session_active; appending here would be immediately
-        // replaced by the snapshot, and the deduplication ref would prevent later
-        // re-rendering from subsequent heartbeats.
-        if (reportTs > 0 && reportTs !== renderedMcpReportTsRef.current && sessionHydratedRef.current) {
-          const hasErrors = Array.isArray(mcpReport.errors) && mcpReport.errors.length > 0;
-          const showSlow = mcpReport.showSlowWarning !== false;
-          const isSlow = mcpReport.slow === true && showSlow;
-          if (hasErrors || isSlow) {
-            renderedMcpReportTsRef.current = reportTs;
-            // Build the same system message the mcp_startup_report handler would.
-            const totalMs = typeof mcpReport.totalDurationMs === "number" ? mcpReport.totalDurationMs : 0;
-            const totalDur = totalMs >= 1000 ? `${(totalMs / 1000).toFixed(1)}s` : `${totalMs}ms`;
-            const parts: string[] = [];
-            if (isSlow) parts.push(`⏱ MCP startup took ${totalDur}`);
-            const timings = Array.isArray(mcpReport.serverTimings) ? mcpReport.serverTimings : [];
-            const noteworthy = timings.filter((t) => t.error || t.timedOut || t.durationMs >= 3000);
-            for (const t of noteworthy) {
-              const dur = t.durationMs >= 1000 ? `${(t.durationMs / 1000).toFixed(1)}s` : `${t.durationMs}ms`;
-              if (t.timedOut) parts.push(`  ⏱ ${t.name}: timed out (${dur})`);
-              else if (t.error) parts.push(`  ✗ ${t.name}: ${t.error} (${dur})`);
-              else parts.push(`  ● ${t.name}: ${dur}`);
-            }
-            if (hasErrors && !isSlow) {
-              const errLines = mcpReport.errors!.map((e) => `  ✗ ${e.server}: ${e.error}`);
-              parts.push(`⚠ MCP server errors:\n${errLines.join("\n")}`);
-            }
-            if (isSlow) parts.push("Tip: Use --safe-mode or --no-mcp for instant startup.");
-            if (parts.length > 0) {
-              const message: RelayMessage = {
-                key: `mcp_startup:${reportTs}:hb`,
-                role: "system",
-                timestamp: reportTs,
-                content: parts.join("\n"),
-                isError: hasErrors,
-              };
-              setMessages((prev) => {
-                // Avoid duplicate if the live event already rendered it.
-                if (prev.some((m) => m.key?.startsWith(`mcp_startup:${reportTs}`))) return prev;
-                const next = [...prev, message];
-                patchSessionCache({ messages: next });
-                return next;
-              });
-            }
-          }
-        }
+        applyMcpReport((hb as any).mcpStartupReport);
       }
 
       patchSessionCache(cachePatch);
@@ -1079,6 +1226,11 @@ export function App() {
       }
       setIsChangingModel(false);
       sessionHydratedRef.current = !isChunked; // defer until final chunk
+      // For non-chunked sessions, flush any pending MCP report immediately
+      if (!isChunked && pendingMcpReportRef.current) {
+        applyMcpReport(pendingMcpReportRef.current);
+        pendingMcpReportRef.current = null;
+      }
 
       // Clear queued messages — the snapshot contains the full conversation
       // including any follow-ups that were consumed by the agent.
@@ -1159,6 +1311,11 @@ export function App() {
         lastCompletedSnapshotRef.current = chunkSnapshotId || null;
         chunkedDeliveryRef.current = null;
         sessionHydratedRef.current = true;
+        // Flush any MCP startup report that arrived before hydration completed
+        if (pendingMcpReportRef.current) {
+          applyMcpReport(pendingMcpReportRef.current);
+          pendingMcpReportRef.current = null;
+        }
         setViewerStatus("Connected");
 
         // Now that all messages are assembled, run global dedupe to remove
@@ -1447,10 +1604,8 @@ export function App() {
 
     if (type === "mcp_startup_report") {
       const report = evt as {
-        toolCount?: number;
-        serverCount?: number;
-        totalDurationMs?: number;
         slow?: boolean;
+        showSlowWarning?: boolean;
         errors?: Array<{ server: string; error: string }>;
         serverTimings?: Array<{
           name: string;
@@ -1459,64 +1614,10 @@ export function App() {
           timedOut: boolean;
           error?: string;
         }>;
+        totalDurationMs?: number;
         ts?: number;
       };
-
-      // Only show a message if something noteworthy happened (errors, or slow startup
-      // when the user hasn't disabled slow-startup warnings via config).
-      const hasErrors = Array.isArray(report.errors) && report.errors.length > 0;
-      const showSlowWarning = (report as any).showSlowWarning !== false;
-      const isSlow = report.slow === true && showSlowWarning;
-
-      if (hasErrors || isSlow) {
-        const ts = typeof report.ts === "number" ? report.ts : Date.now();
-        const totalMs = typeof report.totalDurationMs === "number" ? report.totalDurationMs : 0;
-        const totalDur = totalMs >= 1000 ? `${(totalMs / 1000).toFixed(1)}s` : `${totalMs}ms`;
-
-        const parts: string[] = [];
-
-        if (isSlow) {
-          parts.push(`⏱ MCP startup took ${totalDur}`);
-        }
-
-        // Show per-server breakdown for slow or erroring servers
-        const timings = Array.isArray(report.serverTimings) ? report.serverTimings : [];
-        const noteworthy = timings.filter((t) => t.error || t.timedOut || t.durationMs >= 3000);
-        if (noteworthy.length > 0) {
-          for (const t of noteworthy) {
-            const dur = t.durationMs >= 1000 ? `${(t.durationMs / 1000).toFixed(1)}s` : `${t.durationMs}ms`;
-            if (t.timedOut) {
-              parts.push(`  ⏱ ${t.name}: timed out (${dur})`);
-            } else if (t.error) {
-              parts.push(`  ✗ ${t.name}: ${t.error} (${dur})`);
-            } else {
-              parts.push(`  ● ${t.name}: ${dur}`);
-            }
-          }
-        }
-
-        if (hasErrors && !isSlow) {
-          const errLines = report.errors!.map((e) => `  ✗ ${e.server}: ${e.error}`);
-          parts.push(`⚠ MCP server errors:\n${errLines.join("\n")}`);
-        }
-
-        if (isSlow) {
-          parts.push("Tip: Use --safe-mode or --no-mcp for instant startup.");
-        }
-
-        const message: RelayMessage = {
-          key: `mcp_startup:${ts}:${Math.random().toString(16).slice(2)}`,
-          role: "system",
-          timestamp: ts,
-          content: parts.join("\n"),
-          isError: hasErrors,
-        };
-        setMessages((prev) => {
-          const next = [...prev, message];
-          patchSessionCache({ messages: next });
-          return next;
-        });
-      }
+      applyMcpReport(report);
       return;
     }
 
@@ -1840,6 +1941,93 @@ export function App() {
     }
   }, [upsertMessage, upsertMessageDebounced, cancelPendingDeltas, appendLocalSystemMessage, scheduleToolStreamFlush]);
 
+  React.useEffect(() => {
+    const socket = io("/hub", { withCredentials: true });
+    hubSocketRef.current = socket;
+
+    const handleStateSnapshot = ({ sessionId, state }: { sessionId: string; state: SessionMetaState }) => {
+      const currentSessionId = activeSessionRef.current;
+      if (sessionId !== currentSessionId) return;
+      const seen = metaVersionsRef.current.get(sessionId) ?? 0;
+      if (state.version < seen) return;
+      metaVersionsRef.current.set(sessionId, state.version);
+      applyMetaStateSnapshot(state);
+    };
+
+    const handleMetaEvent = (payload: { sessionId: string; version: number } & Record<string, unknown>) => {
+      const currentSessionId = activeSessionRef.current;
+      if (payload.sessionId !== currentSessionId) return;
+      const { sessionId, version, ...event } = payload;
+      const seen = metaVersionsRef.current.get(sessionId) ?? 0;
+      if (version <= seen) return;
+      metaVersionsRef.current.set(sessionId, version);
+      applyMetaPatch(metaEventToStatePatch(event as any));
+      if ((event as any).type === "mcp_startup_report" && (event as any).report) {
+        // Buffer if session not yet hydrated — the new slim CLI no longer retries
+        // in heartbeats, so without this the report would be lost for live events
+        // that race session_active delivery.
+        if (sessionHydratedRef.current) {
+          applyMcpReport((event as any).report);
+        } else {
+          pendingMcpReportRef.current = (event as any).report as Record<string, unknown>;
+        }
+      }
+    };
+
+    // Re-subscribe to the current session's meta room after non-recovered reconnects
+    // (e.g., server restart). Without this, the client stops receiving meta_event
+    // updates until the user switches sessions or reloads.
+    // Also clear the stored meta version so that the first state_snapshot/meta_event
+    // arriving after reconnect (version ≥ 1) is not dropped as "stale" — the server
+    // resets its version counter to 0 on restart, so any previously-seen version
+    // would cause all new events to be silently ignored.
+    const handleReconnect = () => {
+      const currentSessionId = activeSessionRef.current;
+      if (currentSessionId) {
+        metaVersionsRef.current.delete(currentSessionId);
+        socket.emit("subscribe_session_meta", { sessionId: currentSessionId });
+      }
+    };
+
+    socket.on("state_snapshot", handleStateSnapshot);
+    socket.on("meta_event", handleMetaEvent);
+    socket.on("connect", handleReconnect);
+
+    const initialSessionId = activeSessionRef.current;
+    if (initialSessionId) {
+      socket.emit("subscribe_session_meta", { sessionId: initialSessionId });
+      prevMetaSessionRef.current = initialSessionId;
+    }
+
+    return () => {
+      socket.off("state_snapshot", handleStateSnapshot);
+      socket.off("meta_event", handleMetaEvent);
+      socket.off("connect", handleReconnect);
+      socket.disconnect();
+      hubSocketRef.current = null;
+    };
+  }, [applyMetaStateSnapshot, applyMetaPatch, applyMcpReport]);
+
+  React.useEffect(() => {
+    const hubSock = hubSocketRef.current;
+    if (!hubSock) return;
+
+    const prevId = prevMetaSessionRef.current;
+    const nextId = activeSessionId;
+
+    if (prevId && prevId !== nextId) {
+      hubSock.emit("unsubscribe_session_meta", { sessionId: prevId });
+      metaVersionsRef.current.delete(prevId);
+    }
+
+    if (nextId) {
+      hubSock.emit("subscribe_session_meta", { sessionId: nextId });
+      prevMetaSessionRef.current = nextId;
+    } else {
+      prevMetaSessionRef.current = null;
+    }
+  }, [activeSessionId]);
+
   const openSession = React.useCallback((relaySessionId: string) => {
     // Flush/cancel any pending RAF queues (streaming deltas & tool-stream
     // partials) from the previous session so they can't leak into the new one.
@@ -1864,6 +2052,7 @@ export function App() {
     awaitingSnapshotRef.current = true;
     renderedMcpReportTsRef.current = null;
     sessionHydratedRef.current = false;
+    pendingMcpReportRef.current = null;
     chunkedDeliveryRef.current = null;
     lastCompletedSnapshotRef.current = null;
     setActiveSessionId(relaySessionId);

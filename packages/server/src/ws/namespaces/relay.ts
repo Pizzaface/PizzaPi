@@ -56,6 +56,8 @@ import {
     notifyAgentNeedsInput,
     notifyAgentError,
 } from "../../push.js";
+import { isMetaRelayEvent, metaEventToPatch, type MetaRelayEvent } from "@pizzapi/protocol";
+import { updateSessionMetaState, broadcastToSessionMeta } from "../sio-registry/meta.js";
 
 // ── Thinking-block duration tracking ─────────────────────────────────────────
 // Keyed by sessionId → contentIndex → value.
@@ -452,6 +454,24 @@ export function registerRelayNamespace(io: SocketIOServer): void {
                 }
             } else if (event.type === "heartbeat") {
                 await updateSessionHeartbeat(sessionId, event);
+            } else if (isMetaRelayEvent(event as { type?: unknown }) &&
+                       // Old CLI emits mcp_startup_report in a flat format without
+                       // a nested `report` field. Only intercept the new nested format;
+                       // pass flat old-CLI events through the normal relay viewer path
+                       // so MCP diagnostics reach viewers without corrupting Redis.
+                       !(event.type === "mcp_startup_report" && !(event as any).report)) {
+                // Discrete meta event: update Redis + broadcast via hub session meta room.
+                // Meta events do NOT flow through to relay viewers — hub is the channel.
+                const metaEvent = event as MetaRelayEvent;
+                const patch = metaEventToPatch(metaEvent);
+                const version = await updateSessionMetaState(sessionId, patch);
+                await broadcastToSessionMeta(
+                  sessionId,
+                  metaEvent,
+                  version,
+                  socket.data.userId ?? undefined,
+                );
+                await touchSessionActivity(sessionId);
             } else {
                 await touchSessionActivity(sessionId);
             }
@@ -469,22 +489,31 @@ export function registerRelayNamespace(io: SocketIOServer): void {
                 clearThinkingMaps(sessionId);
             }
 
-            // For session_messages_chunk and chunked session_active, broadcast
-            // to viewers WITHOUT caching.  Chunks are transient and only needed
-            // during active hydration; the final assembled snapshot is cached
-            // separately when assembly completes.  The metadata-only chunked
-            // session_active must also skip the cache — if the stream is
-            // interrupted before the final chunk, the replay path would find
-            // this empty-messages snapshot and show a blank transcript instead
-            // of the last durable state.
-            const isChunkedSessionActive =
-                event.type === "session_active" &&
-                !!(event.state as Record<string, unknown> | undefined)?.chunked;
-            if (event.type === "session_messages_chunk" || isChunkedSessionActive) {
-                await broadcastSessionEventToViewers(sessionId, eventToPublish);
-            } else {
-                // Publish to viewers via Redis cache + Socket.IO rooms
-                await publishSessionEvent(sessionId, eventToPublish);
+            // Meta events are routed exclusively via hub session meta rooms — they
+            // must NOT flow through to relay viewers or be cached in the event
+            // store.  Skip the entire viewer publish path for them.
+            // Exception: old-CLI flat mcp_startup_report (no .report field) is not
+            // handled by the meta path above and must reach relay viewers.
+            const isOldCliMcpReport =
+                event.type === "mcp_startup_report" && !(event as any).report;
+            if (!isMetaRelayEvent(event as { type?: unknown }) || isOldCliMcpReport) {
+                // For session_messages_chunk and chunked session_active, broadcast
+                // to viewers WITHOUT caching.  Chunks are transient and only needed
+                // during active hydration; the final assembled snapshot is cached
+                // separately when assembly completes.  The metadata-only chunked
+                // session_active must also skip the cache — if the stream is
+                // interrupted before the final chunk, the replay path would find
+                // this empty-messages snapshot and show a blank transcript instead
+                // of the last durable state.
+                const isChunkedSessionActive =
+                    event.type === "session_active" &&
+                    !!(event.state as Record<string, unknown> | undefined)?.chunked;
+                if (event.type === "session_messages_chunk" || isChunkedSessionActive) {
+                    await broadcastSessionEventToViewers(sessionId, eventToPublish);
+                } else {
+                    // Publish to viewers via Redis cache + Socket.IO rooms
+                    await publishSessionEvent(sessionId, eventToPublish);
+                }
             }
 
             // Track push-pending state for AskUserQuestion (awaited to ensure

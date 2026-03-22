@@ -14,6 +14,7 @@ import type {
     AskUserQuestionDisplay,
     AskUserQuestionDetails,
 } from "./remote-types.js";
+import { emitQuestionPending, emitQuestionCleared } from "./remote-meta-events.js";
 
 const ASK_USER_TOOL_NAME = "AskUserQuestion";
 
@@ -62,7 +63,9 @@ export function consumePendingAskUserQuestionFromWeb(rctx: RelayContext, text: s
     if (!answer) return true;
 
     const pending = rctx.pendingAskUserQuestion;
+    const clearedToolCallId = pending.toolCallId;
     rctx.pendingAskUserQuestion = null;
+    emitQuestionCleared(rctx, clearedToolCallId);
     pending.resolve(answer);
     rctx.setRelayStatus(rctx.relay ? "Connected to Relay" : rctx.disconnectedStatusText());
     return true;
@@ -71,7 +74,9 @@ export function consumePendingAskUserQuestionFromWeb(rctx: RelayContext, text: s
 export function cancelPendingAskUserQuestion(rctx: RelayContext) {
     if (!rctx.pendingAskUserQuestion) return;
     const pending = rctx.pendingAskUserQuestion;
+    const clearedToolCallId = pending.toolCallId;
     rctx.pendingAskUserQuestion = null;
+    emitQuestionCleared(rctx, clearedToolCallId);
     pending.resolve(null);
     rctx.setRelayStatus(rctx.relay ? "Connected to Relay" : rctx.disconnectedStatusText());
 }
@@ -113,6 +118,7 @@ async function askUserQuestion(
 
             if (rctx.pendingAskUserQuestion?.toolCallId === toolCallId) {
                 rctx.pendingAskUserQuestion = null;
+                emitQuestionCleared(rctx, toolCallId);
             }
 
             localAbort.abort();
@@ -144,6 +150,11 @@ async function askUserQuestion(
                     }
                 },
             };
+            emitQuestionPending(rctx, {
+                toolCallId: rctx.pendingAskUserQuestion.toolCallId,
+                questions: rctx.pendingAskUserQuestion.questions,
+                display: rctx.pendingAskUserQuestion.display,
+            });
             rctx.setRelayStatus("Waiting for AskUserQuestion answer");
         }
 

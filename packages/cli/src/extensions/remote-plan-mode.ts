@@ -14,6 +14,7 @@ import type {
     PlanModeAction,
     PlanModeDetails,
 } from "./remote-types.js";
+import { emitPlanPending, emitPlanCleared } from "./remote-meta-events.js";
 
 const PLAN_MODE_TOOL_NAME = "plan_mode";
 
@@ -43,7 +44,9 @@ export function consumePendingPlanModeFromWeb(rctx: RelayContext, text: string):
     if (!response) return true;
 
     const pending = rctx.pendingPlanMode;
+    const clearedToolCallId = pending.toolCallId;
     rctx.pendingPlanMode = null;
+    emitPlanCleared(rctx, clearedToolCallId);
     pending.resolve(response);
     rctx.setRelayStatus(rctx.relay ? "Connected to Relay" : rctx.disconnectedStatusText());
     return true;
@@ -52,7 +55,9 @@ export function consumePendingPlanModeFromWeb(rctx: RelayContext, text: string):
 export function cancelPendingPlanMode(rctx: RelayContext) {
     if (!rctx.pendingPlanMode) return;
     const pending = rctx.pendingPlanMode;
+    const clearedToolCallId = pending.toolCallId;
     rctx.pendingPlanMode = null;
+    emitPlanCleared(rctx, clearedToolCallId);
     pending.resolve(null);
     rctx.setRelayStatus(rctx.relay ? "Connected to Relay" : rctx.disconnectedStatusText());
 }
@@ -94,6 +99,7 @@ async function askPlanMode(
 
             if (rctx.pendingPlanMode?.toolCallId === toolCallId) {
                 rctx.pendingPlanMode = null;
+                emitPlanCleared(rctx, toolCallId);
             }
 
             localAbort.abort();
@@ -126,6 +132,12 @@ async function askPlanMode(
                     }
                 },
             };
+            emitPlanPending(rctx, {
+                toolCallId: rctx.pendingPlanMode.toolCallId,
+                title: rctx.pendingPlanMode.title,
+                description: rctx.pendingPlanMode.description,
+                steps: rctx.pendingPlanMode.steps,
+            });
             rctx.setRelayStatus("Waiting for plan review");
         }
 
