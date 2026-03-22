@@ -267,32 +267,34 @@ function TabBar({
     runner: RunnerInfo;
 }) {
     return (
-        <div className="flex gap-1 border-b border-border/40">
-            {TABS.map((tab) => {
-                const isActive = activeTab === tab.key;
-                const countSource = tab.countKey ? runner[tab.countKey] : null;
-                const count = countSource != null ? (Array.isArray(countSource) ? countSource.length : 0) : null;
-                return (
-                    <button
-                        key={tab.key}
-                        type="button"
-                        onClick={() => onTabChange(tab.key)}
-                        className={cn(
-                            "px-3 py-2 text-xs font-medium transition-all flex items-center gap-1.5",
-                            isActive
-                                ? "border-b-2 border-blue-500 text-blue-300"
-                                : "opacity-40 hover:opacity-70",
-                        )}
-                    >
-                        {tab.label}
-                        {count !== null && (
-                            <span className="text-[9px] font-mono bg-muted/60 px-1.5 py-0.5 rounded-full">
-                                {count}
-                            </span>
-                        )}
-                    </button>
-                );
-            })}
+        <div className="overflow-x-auto -mx-4 sm:-mx-6 px-4 sm:px-6">
+            <div className="flex gap-1 border-b border-border/40 min-w-max">
+                {TABS.map((tab) => {
+                    const isActive = activeTab === tab.key;
+                    const countSource = tab.countKey ? runner[tab.countKey] : null;
+                    const count = countSource != null ? (Array.isArray(countSource) ? countSource.length : 0) : null;
+                    return (
+                        <button
+                            key={tab.key}
+                            type="button"
+                            onClick={() => onTabChange(tab.key)}
+                            className={cn(
+                                "px-3 py-2 text-xs font-medium transition-all flex items-center gap-1.5 whitespace-nowrap shrink-0",
+                                isActive
+                                    ? "border-b-2 border-blue-500 text-blue-300"
+                                    : "opacity-40 hover:opacity-70",
+                            )}
+                        >
+                            {tab.label}
+                            {count !== null && (
+                                <span className="text-[9px] font-mono bg-muted/60 px-1.5 py-0.5 rounded-full">
+                                    {count}
+                                </span>
+                            )}
+                        </button>
+                    );
+                })}
+            </div>
         </div>
     );
 }
