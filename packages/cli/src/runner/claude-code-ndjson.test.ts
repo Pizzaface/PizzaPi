@@ -189,4 +189,167 @@ describe("translateNdjsonLine", () => {
     const result = translateNdjsonLine("not-json!!!");
     expect(result.kind).toBe("unknown");
   });
+
+  // ── tool_result extraction from user messages ─────────────────────────
+
+  test("user message with string tool_result content → toolResult relay event", () => {
+    const line = JSON.stringify({
+      type: "user",
+      message: {
+        role: "user",
+        content: [
+          { type: "tool_result", tool_use_id: "toolu_abc123", content: "file1\nfile2" },
+        ],
+      },
+    });
+    const result = translateNdjsonLine(line);
+    expect(result.kind).toBe("relay_event");
+    // Single event → uses relayEvent (not relayEvents)
+    expect(result.relayEvent).toBeDefined();
+    const msg = (result.relayEvent as any).message;
+    expect(msg.role).toBe("toolResult");
+    expect(msg.toolCallId).toBe("toolu_abc123");
+    expect(msg.content).toBe("file1\nfile2");
+    expect(msg.isError).toBe(false);
+  });
+
+  test("user message with array tool_result content → toolResult relay event", () => {
+    const line = JSON.stringify({
+      type: "user",
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "toolu_xyz",
+            content: [{ type: "text", text: "some output" }],
+          },
+        ],
+      },
+    });
+    const result = translateNdjsonLine(line);
+    expect(result.kind).toBe("relay_event");
+    const msg = (result.relayEvent as any).message;
+    expect(msg.role).toBe("toolResult");
+    expect(msg.toolCallId).toBe("toolu_xyz");
+    expect(Array.isArray(msg.content)).toBe(true);
+    expect((msg.content as any[])[0]).toMatchObject({ type: "text", text: "some output" });
+    expect(msg.isError).toBe(false);
+  });
+
+  test("tool_result with is_error: true → isError: true on relay event", () => {
+    const line = JSON.stringify({
+      type: "user",
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: "toolu_err",
+            content: "Command failed",
+            is_error: true,
+          },
+        ],
+      },
+    });
+    const result = translateNdjsonLine(line);
+    const msg = (result.relayEvent as any).message;
+    expect(msg.role).toBe("toolResult");
+    expect(msg.isError).toBe(true);
+    expect(msg.content).toBe("Command failed");
+  });
+
+  test("multiple tool_result blocks in one user message → relayEvents array", () => {
+    const line = JSON.stringify({
+      type: "user",
+      message: {
+        role: "user",
+        content: [
+          { type: "tool_result", tool_use_id: "toolu_1", content: "result1" },
+          { type: "tool_result", tool_use_id: "toolu_2", content: "result2" },
+        ],
+      },
+    });
+    const result = translateNdjsonLine(line);
+    expect(result.kind).toBe("relay_event");
+    // Multiple events → uses relayEvents
+    expect(result.relayEvents).toBeDefined();
+    expect(result.relayEvent).toBeUndefined();
+    expect(result.relayEvents).toHaveLength(2);
+    const [ev1, ev2] = result.relayEvents!;
+    expect((ev1.message as any).role).toBe("toolResult");
+    expect((ev1.message as any).toolCallId).toBe("toolu_1");
+    expect((ev1.message as any).content).toBe("result1");
+    expect((ev2.message as any).role).toBe("toolResult");
+    expect((ev2.message as any).toolCallId).toBe("toolu_2");
+    expect((ev2.message as any).content).toBe("result2");
+  });
+
+  test("user message with tool_result AND text blocks → toolResult + user events", () => {
+    const line = JSON.stringify({
+      type: "user",
+      message: {
+        role: "user",
+        content: [
+          { type: "tool_result", tool_use_id: "toolu_3", content: "tool output" },
+          { type: "text", text: "follow-up user text" },
+        ],
+      },
+    });
+    const result = translateNdjsonLine(line);
+    expect(result.kind).toBe("relay_event");
+    // Two events: toolResult first, then user
+    expect(result.relayEvents).toBeDefined();
+    expect(result.relayEvent).toBeUndefined();
+    expect(result.relayEvents).toHaveLength(2);
+    const [toolEv, userEv] = result.relayEvents!;
+    expect((toolEv.message as any).role).toBe("toolResult");
+    expect((toolEv.message as any).toolCallId).toBe("toolu_3");
+    expect((toolEv.message as any).content).toBe("tool output");
+    expect((userEv.message as any).role).toBe("user");
+    expect((userEv.message as any).content).toEqual([{ type: "text", text: "follow-up user text" }]);
+  });
+
+  test("user message with no tool_results passes through as-is", () => {
+    const line = JSON.stringify({
+      type: "user",
+      message: { role: "user", content: [{ type: "text", text: "Hello!" }] },
+    });
+    const result = translateNdjsonLine(line);
+    expect(result.kind).toBe("relay_event");
+    expect(result.relayEvents).toBeUndefined();
+    const msg = (result.relayEvent as any).message;
+    expect(msg.role).toBe("user");
+  });
+
+  test("user message with no content array passes through as-is", () => {
+    const line = JSON.stringify({
+      type: "user",
+      message: { role: "user", content: "plain string content" },
+    });
+    const result = translateNdjsonLine(line);
+    expect(result.kind).toBe("relay_event");
+    expect(result.relayEvents).toBeUndefined();
+    const msg = (result.relayEvent as any).message;
+    expect(msg.role).toBe("user");
+  });
+
+  test("tool_result with empty/absent content → content defaults to empty string", () => {
+    const line = JSON.stringify({
+      type: "user",
+      message: {
+        role: "user",
+        content: [
+          { type: "tool_result", tool_use_id: "toolu_empty" },
+        ],
+      },
+    });
+    const result = translateNdjsonLine(line);
+    const msg = (result.relayEvent as any).message;
+    expect(msg.role).toBe("toolResult");
+    expect(msg.toolCallId).toBe("toolu_empty");
+    // Absent content defaults to empty string
+    expect(msg.content).toBe("");
+    expect(msg.isError).toBe(false);
+  });
 });

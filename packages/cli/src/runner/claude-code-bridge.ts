@@ -27,6 +27,7 @@ import { randomUUID } from "node:crypto";
 import { translateNdjsonLine } from "./claude-code-ndjson.js";
 import { serializeFrame, framesFromBuffer, type PluginMessage, type BridgeMessage } from "./claude-code-ipc.js";
 import { buildSpawnSessionBody } from "./claude-code-spawn-request.js";
+import { SET_SESSION_NAME_PROMPT } from "../config/system-prompt.js";
 import { renderTrigger } from "../extensions/triggers/registry.js";
 import type { ConversationTrigger } from "../extensions/triggers/types.js";
 import { normalizeRemoteInputAttachments, buildUserMessageFromRemoteInput } from "../extensions/remote-input.js";
@@ -539,6 +540,15 @@ async function handleMcpCall(
 
 async function dispatchMcpTool(tool: string, args: Record<string, unknown>): Promise<unknown> {
   switch (tool) {
+    case "set_session_name": {
+      // Also update currentSessionName here as a belt-and-suspenders backup —
+      // the primary extraction happens in the NDJSON translator when the
+      // tool_use block appears in the assistant message stream.
+      const name = typeof args.name === "string" ? args.name.trim() : "";
+      if (name) currentSessionName = name;
+      return "ok";
+    }
+
     case "pizzapi_get_session_id":
       return sessionId;
 
@@ -787,6 +797,11 @@ function spawnClaude(tmpDirPath: string, resume = false): void {
     "--mcp-config", mcpPath,
     "--settings", hooksPath,
     "--add-dir", cwd,
+    // Instruct Claude to call set_session_name at the start of each new
+    // conversation so PizzaPi can display a meaningful session title.
+    // Skipped on --resume because the session already has a name from its
+    // first turn, and re-injecting the instruction is unnecessary noise.
+    ...(!resume ? ["--append-system-prompt", SET_SESSION_NAME_PROMPT] : []),
     ...(initialModelId
       ? initialModelProvider && initialModelProvider !== "anthropic"
         ? []
@@ -910,7 +925,7 @@ function handleNdjsonLine(line: string): void {
     return;
   }
 
-  if (result.kind === "relay_event" && result.relayEvent) {
+  if (result.kind === "relay_event" && (result.relayEvent || result.relayEvents)) {
     // Update parity state from side-effects carried on the translation result
     if (result.todoList) {
       currentTodoList = result.todoList;
@@ -923,18 +938,22 @@ function handleNdjsonLine(line: string): void {
       currentTokenUsage = result.tokenUsage;
     }
 
-    const relayEvent = result.relayEvent;
-    if (!relayEvent) return;
-    const eventType = relayEvent.type;
-    if (eventType === "message_update") {
-      if (relayEvent.message) {
-        messages.push(relayEvent.message);
+    // Support both single (relayEvent) and multiple (relayEvents) events.
+    // relayEvents is used when one NDJSON line produces multiple relay events
+    // (e.g. a user message containing several tool_result blocks).
+    const events = result.relayEvents ?? (result.relayEvent ? [result.relayEvent] : []);
+    for (const relayEvent of events) {
+      const eventType = relayEvent.type;
+      if (eventType === "message_update") {
+        if (relayEvent.message) {
+          messages.push(relayEvent.message);
+        }
+        claudeIsWorking = true;  // Claude is actively working/outputting
+      } else if (eventType === "agent_end" || eventType === "turn_end") {
+        claudeIsWorking = false;  // Turn complete, Claude is now idle
       }
-      claudeIsWorking = true;  // Claude is actively working/outputting
-    } else if (eventType === "agent_end" || eventType === "turn_end") {
-      claudeIsWorking = false;  // Turn complete, Claude is now idle
+      forwardEvent(relayEvent);
     }
-    forwardEvent(relayEvent);
   }
 }
 

@@ -11,6 +11,10 @@ export interface TranslationResult {
     | "relay_event"       // normal relay event to forward
     | "unknown";          // unrecognised / malformed
   relayEvent?: Record<string, unknown>;
+  /** When one NDJSON line produces multiple relay events (e.g. a user message
+   *  containing several tool_result blocks), use this array instead of
+   *  `relayEvent`. The bridge iterates over all entries and forwards each one. */
+  relayEvents?: Array<Record<string, unknown>>;
   // control_request fields
   controlRequestId?: string;
   toolName?: string;
@@ -157,11 +161,84 @@ export function translateNdjsonLine(line: string): TranslationResult {
   }
 
   // ── User messages (replayed with --replay-user-messages) ──────────────
+  //
+  // Claude Code sends tool results inside user messages:
+  //   { type: "user", message: { role: "user", content: [{ type: "tool_result", ... }] } }
+  //
+  // The UI expects tool results as separate relay events with role "toolResult"
+  // and a top-level toolCallId field — not wrapped in a generic user message.
+  // Detect tool_result blocks in the content and split them into individual events.
   if (type === "user") {
-    return {
-      kind: "relay_event",
-      relayEvent: { type: "message_update", role: "user", message: msg.message },
-    };
+    const message = msg.message as Record<string, unknown> | undefined;
+    const rawContent = Array.isArray(message?.content)
+      ? (message!.content as unknown[])
+      : null;
+
+    // No content array — pass through as a plain user message
+    if (!rawContent) {
+      return {
+        kind: "relay_event",
+        relayEvent: { type: "message_update", role: "user", message },
+      };
+    }
+
+    // Partition content into tool_result blocks and everything else
+    const toolResultBlocks: Record<string, unknown>[] = [];
+    const otherBlocks: unknown[] = [];
+    for (const block of rawContent) {
+      if (block && typeof block === "object" &&
+          (block as Record<string, unknown>).type === "tool_result") {
+        toolResultBlocks.push(block as Record<string, unknown>);
+      } else {
+        otherBlocks.push(block);
+      }
+    }
+
+    // No tool_result blocks — pass through as a plain user message
+    if (toolResultBlocks.length === 0) {
+      return {
+        kind: "relay_event",
+        relayEvent: { type: "message_update", role: "user", message },
+      };
+    }
+
+    // Build one relay event per tool_result block, plus one user event for any
+    // remaining non-tool_result blocks.
+    const events: Array<Record<string, unknown>> = [];
+
+    for (const block of toolResultBlocks) {
+      const toolCallId = typeof block.tool_use_id === "string" ? block.tool_use_id : undefined;
+      // content can be a string, an array of content blocks, or absent
+      const blockContent = block.content ?? "";
+      const isError = block.is_error === true;
+
+      events.push({
+        type: "message_update",
+        message: {
+          role: "toolResult",
+          ...(toolCallId !== undefined ? { toolCallId } : {}),
+          content: blockContent,
+          isError,
+        },
+      });
+    }
+
+    // Remaining non-tool_result content (e.g. text blocks) → plain user message
+    if (otherBlocks.length > 0) {
+      events.push({
+        type: "message_update",
+        message: {
+          role: "user",
+          content: otherBlocks,
+        },
+      });
+    }
+
+    if (events.length === 1) {
+      return { kind: "relay_event", relayEvent: events[0] };
+    }
+
+    return { kind: "relay_event", relayEvents: events };
   }
 
   // ── Result (turn complete) ────────────────────────────────────────────
