@@ -1,12 +1,24 @@
-import { describe, expect, test, mock } from "bun:test";
-import { handleChatRoute } from "./chat";
-import * as middleware from "../middleware.js";
+import { describe, expect, test, mock, beforeAll } from "bun:test";
 
+// mock.module MUST be registered before any import of the module under test
+// (or modules that transitively import the mocked dependency).
+// Static imports are hoisted and resolved before module-level code runs,
+// so we register the mock here — at the very top — and then dynamically
+// import the module under test inside beforeAll().
 mock.module("../middleware.js", () => {
     return {
         requireSession: mock(() => Promise.resolve({ userId: "test-user", userName: "Test User" })),
         validateApiKey: mock(() => Promise.resolve({ userId: "test-user", userName: "Test User" })),
     };
+});
+
+let handleChatRoute: (req: Request, url: URL) => Promise<Response | undefined>;
+
+beforeAll(async () => {
+    // Dynamic import ensures the mock above is already in place when
+    // ./chat.js (and its transitive dependency ../middleware.js) are loaded.
+    const mod = await import("./chat.js");
+    handleChatRoute = mod.handleChatRoute;
 });
 
 describe("handleChatRoute", () => {
