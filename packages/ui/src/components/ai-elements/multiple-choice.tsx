@@ -520,15 +520,15 @@ export function MultipleChoiceQuestions({
   };
 
   return (
-    <div className={cn("overflow-hidden rounded-lg border border-violet-500/30 bg-gradient-to-b from-violet-500/[0.08] to-violet-500/[0.03] shadow-sm shadow-violet-500/5", className)}>
-      <div className="flex items-center gap-2 border-b border-violet-500/15 px-3 py-2">
+    <div className={cn("flex flex-col overflow-hidden rounded-lg border border-violet-500/30 bg-gradient-to-b from-violet-500/[0.08] to-violet-500/[0.03] shadow-sm shadow-violet-500/5 max-h-[65dvh]", className)}>
+      <div className="flex shrink-0 items-center gap-2 border-b border-violet-500/15 px-3 py-2">
         <div className="flex size-6 items-center justify-center rounded-full bg-violet-500/15">
           <MessageCircleQuestion className="size-3.5 text-violet-400" />
         </div>
         <span className="text-xs font-medium text-violet-300">Question {currentStep + 1} of {questions.length}</span>
       </div>
 
-      <div className="px-3 pt-2.5">
+      <div className="shrink-0 px-3 pt-2.5">
         <div className="h-1.5 w-full overflow-hidden rounded-full bg-violet-500/15">
           <div
             className="h-full rounded-full bg-violet-500/60 transition-all"
@@ -537,9 +537,11 @@ export function MultipleChoiceQuestions({
         </div>
       </div>
 
-      {questions.length > 0 && renderQuestion(questions[currentStep]!, currentStep)}
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+        {questions.length > 0 && renderQuestion(questions[currentStep]!, currentStep)}
+      </div>
 
-      <div className="flex items-center gap-2 border-t border-violet-500/15 px-3 py-2.5">
+      <div className="flex shrink-0 items-center gap-2 border-t border-violet-500/15 px-3 py-2.5">
         <Button
           size="sm"
           variant="outline"
