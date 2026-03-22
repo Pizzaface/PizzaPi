@@ -19,6 +19,8 @@ import {
     removeHubClient,
     getSessions,
 } from "../sio-registry.js";
+import { getSession } from "../sio-state.js";
+import { getSessionMetaState, sessionMetaRoom } from "../sio-registry/meta.js";
 
 export function registerHubNamespace(io: SocketIOServer): void {
     const hub: Namespace<
@@ -47,6 +49,35 @@ export function registerHubNamespace(io: SocketIOServer): void {
         socket.on("disconnect", async (reason) => {
             console.log(`[sio/hub] disconnected: ${socket.id} (${reason})`);
             await removeHubClient(socket, userId);
+        });
+
+        // ── Session meta subscription ─────────────────────────────────────────────
+        socket.on("subscribe_session_meta", async (data: unknown) => {
+          if (!data || typeof (data as Record<string, unknown>).sessionId !== "string") return;
+          const sessionId = (data as { sessionId: string }).sessionId;
+
+          // Validate ownership — only the session owner may subscribe
+          const session = await getSession(sessionId);
+          if (!session || session.userId !== userId) {
+            console.warn(`[sio/hub] subscribe_session_meta: unauthorized userId=${userId} sessionId=${sessionId}`);
+            return;
+          }
+
+          // Join room FIRST so any meta_event broadcast after join arrives before snapshot
+          await socket.join(sessionMetaRoom(sessionId));
+
+          // Send current state immediately
+          const state = await getSessionMetaState(sessionId);
+          socket.emit("state_snapshot", { sessionId, state });
+
+          console.log(`[sio/hub] meta subscribe: ${socket.id} → session ${sessionId}`);
+        });
+
+        socket.on("unsubscribe_session_meta", async (data: unknown) => {
+          if (!data || typeof (data as Record<string, unknown>).sessionId !== "string") return;
+          const sessionId = (data as { sessionId: string }).sessionId;
+          socket.leave(sessionMetaRoom(sessionId));
+          console.log(`[sio/hub] meta unsubscribe: ${socket.id} ← session ${sessionId}`);
         });
     });
 }
