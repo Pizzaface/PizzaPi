@@ -1,6 +1,7 @@
 import { describe, it, expect } from "bun:test";
 import type { RunnerInfo } from "@pizzapi/protocol";
 import { upsert } from "./runnerHelpers.js";
+import type { UseRunnersFeedOptions } from "./useRunnersFeed.js";
 
 function makeRunner(overrides: Partial<RunnerInfo> = {}): RunnerInfo {
     return {
@@ -58,5 +59,35 @@ describe("useRunnersFeed state helpers", () => {
             const result = runners.filter(r => r.runnerId !== "ghost");
             expect(result).toHaveLength(1);
         });
+    });
+});
+
+describe("UseRunnersFeedOptions type contract", () => {
+    // Pure type-level tests: verify the options shape is accepted correctly.
+    // These compile-time assertions catch regressions in the option interface.
+
+    it("accepts empty options (all defaults)", () => {
+        const opts: UseRunnersFeedOptions = {};
+        expect(opts).toBeDefined();
+    });
+
+    it("accepts enabled=false to disable feed", () => {
+        const opts: UseRunnersFeedOptions = { enabled: false };
+        expect(opts.enabled).toBe(false);
+    });
+
+    it("accepts enabled=true with a userId", () => {
+        const opts: UseRunnersFeedOptions = { enabled: true, userId: "user-abc" };
+        expect(opts.userId).toBe("user-abc");
+    });
+
+    it("accepts userId=null (logged out)", () => {
+        const opts: UseRunnersFeedOptions = { enabled: false, userId: null };
+        expect(opts.userId).toBeNull();
+    });
+
+    it("accepts userId=undefined (pending auth)", () => {
+        const opts: UseRunnersFeedOptions = { enabled: false, userId: undefined };
+        expect(opts.userId).toBeUndefined();
     });
 });

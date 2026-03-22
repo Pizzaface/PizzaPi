@@ -97,7 +97,11 @@ import {
 
 export function App() {
   const { data: session, isPending } = useSession();
-  const { runners: feedRunners, status: runnersStatus } = useRunnersFeed();
+  const { runners: feedRunners, status: runnersStatus } = useRunnersFeed({
+    // Only connect when auth is confirmed; reconnect if the user changes (e.g. logout → new login)
+    enabled: !isPending && !!session?.user?.id,
+    userId: session?.user?.id ?? undefined,
+  });
   const [isDark, setIsDark] = React.useState(() => {
     const saved = localStorage.getItem("theme");
     return saved === "dark" || (!saved && window.matchMedia("(prefers-color-scheme: dark)").matches);
