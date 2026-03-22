@@ -26,6 +26,7 @@ import type { RelayClientToServerEvents, RelayServerToClientEvents } from "@pizz
 import { randomUUID } from "node:crypto";
 import { translateNdjsonLine } from "./claude-code-ndjson.js";
 import { serializeFrame, framesFromBuffer, type PluginMessage, type BridgeMessage } from "./claude-code-ipc.js";
+import { SET_SESSION_NAME_PROMPT } from "../config/system-prompt.js";
 import { buildSpawnSessionBody } from "./claude-code-spawn-request.js";
 import { renderTrigger } from "../extensions/triggers/registry.js";
 import type { ConversationTrigger } from "../extensions/triggers/types.js";
@@ -248,6 +249,7 @@ function emitHeartbeat(status?: string): void {
     active: claudeIsWorking,
     isAgentActive: claudeIsWorking,
     model: currentModelObject ?? (currentModel ? parseModelString(currentModel) : null),
+    sessionName: currentSessionName,
     ts: Date.now(),
     ...(status ? { status } : {}),
   };
@@ -539,6 +541,17 @@ async function handleMcpCall(
 
 async function dispatchMcpTool(tool: string, args: Record<string, unknown>): Promise<unknown> {
   switch (tool) {
+    case "set_session_name": {
+      const name = typeof args.name === "string" ? args.name.trim() : "";
+      if (name) {
+        currentSessionName = name;
+        // Broadcast immediately so the server updates the session name without
+        // waiting for the next scheduled heartbeat.
+        emitHeartbeat();
+      }
+      return "ok";
+    }
+
     case "pizzapi_get_session_id":
       return sessionId;
 
@@ -787,6 +800,11 @@ function spawnClaude(tmpDirPath: string, resume = false): void {
     "--mcp-config", mcpPath,
     "--settings", hooksPath,
     "--add-dir", cwd,
+    // Only inject the naming instruction for new sessions. On resume the
+    // conversation history already contains the first set_session_name call
+    // (or the session is being continued mid-way), so we skip it to avoid
+    // a spurious rename.
+    ...(!resume ? ["--append-system-prompt", SET_SESSION_NAME_PROMPT] : []),
     ...(initialModelId
       ? initialModelProvider && initialModelProvider !== "anthropic"
         ? []
@@ -918,6 +936,9 @@ function handleNdjsonLine(line: string): void {
     }
     if (result.sessionName !== undefined) {
       currentSessionName = result.sessionName;
+      // Emit an immediate heartbeat so the relay picks up the new name without
+      // waiting for the next scheduled 10-second heartbeat.
+      emitHeartbeat();
     }
     if (result.tokenUsage) {
       currentTokenUsage = result.tokenUsage;
