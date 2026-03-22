@@ -3374,6 +3374,7 @@ export function App() {
           >
             <div
               id="main-content"
+              tabIndex={-1}
               className={cn(
               "flex flex-col flex-1 min-h-0",
               showTerminal && "overflow-hidden",
