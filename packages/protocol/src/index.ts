@@ -72,3 +72,11 @@ export type {
   MetaPluginTrustPrompt, MetaMcpReport,
 } from "./meta.js";
 export { defaultMetaState, isMetaRelayEvent, metaEventToPatch, META_RELAY_EVENT_TYPES } from "./meta.js";
+
+// /runners namespace (Browser runner feed)
+export type {
+  RunnersClientToServerEvents,
+  RunnersServerToClientEvents,
+  RunnersInterServerEvents,
+  RunnersSocketData,
+} from "./runners.js";
