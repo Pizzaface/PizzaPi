@@ -172,7 +172,7 @@ export function RunnerManager({
         runnerId: selectedRunnerRaw.runnerId,
         name: selectedRunnerRaw.name,
         roots: selectedRunnerRaw.roots,
-        sessionCount: selectedRunnerRaw.sessionCount,
+        sessionCount: sessions.filter(s => s.runnerId === selectedRunnerRaw.runnerId).length,
         skills: selectedRunnerRaw.skills,
         agents: selectedRunnerRaw.agents,
         plugins: (selectedRunnerRaw.plugins ?? []).map(p => ({
@@ -224,7 +224,14 @@ export function RunnerManager({
             <NewSessionWizardDialog
                 open={spawnRunnerId !== null}
                 onOpenChange={(open) => { if (!open) setSpawnRunnerId(null); }}
-                runners={runners.map((r) => ({ ...r, isOnline: true }))}
+                runners={runners.map((r) => ({
+                    runnerId: r.runnerId,
+                    name: r.name ?? null,
+                    roots: r.roots,
+                    sessionCount: sessions.filter(s => s.runnerId === r.runnerId).length,
+                    platform: r.platform ?? null,
+                    isOnline: true,
+                }))}
                 preselectedRunnerId={spawnRunnerId}
                 onSpawn={handleWizardSpawn}
             />
