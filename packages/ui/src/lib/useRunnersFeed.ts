@@ -44,13 +44,25 @@ export function useRunnersFeed(options: UseRunnersFeedOptions = {}): RunnersFeed
     const { enabled = true, userId } = options;
     const [runners, setRunners] = React.useState<RunnerInfo[]>([]);
     const [status, setStatus] = React.useState<RunnersFeedStatus>("connecting");
+    // Track the previous userId so we can clear stale runners before reconnecting
+    // under a different account. Without this, old-account runner metadata stays
+    // visible until the new socket delivers its first snapshot.
+    const prevUserIdRef = React.useRef<string | null | undefined>(userId);
 
     React.useEffect(() => {
         if (!enabled) {
             setRunners([]);
             setStatus("disconnected");
+            prevUserIdRef.current = userId;
             return;
         }
+
+        // Clear stale runners immediately when the user identity changes so
+        // the previous user's runner list never leaks into the new session.
+        if (userId !== prevUserIdRef.current) {
+            setRunners([]);
+        }
+        prevUserIdRef.current = userId;
 
         // Mark as connecting immediately so consumers don't treat the feed as
         // "fully loaded with zero runners" during the window between enabled
