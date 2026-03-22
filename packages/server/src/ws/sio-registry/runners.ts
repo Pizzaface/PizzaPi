@@ -36,6 +36,7 @@ import {
     modelFromHeartbeat,
 } from "./context.js";
 import { broadcastToHub } from "./hub.js";
+import { broadcastToRunnersNs } from "./runners-broadcast.js";
 
 // ── Internal helpers ─────────────────────────────────────────────────────────
 
@@ -192,6 +193,9 @@ export async function registerRunner(
     // the Redis adapter (see emitToRunner / endSharedSession).
     await socket.join(runnerRoom(runnerId));
 
+    // Broadcast runner_added to connected browsers
+    void broadcastToRunnersNs("runner_added", runnerDataToInfo(runnerData), opts.userId ?? undefined);
+
     return runnerId;
 }
 
@@ -199,12 +203,20 @@ export async function registerRunner(
 export async function updateRunnerSkills(runnerId: string, skills: RunnerSkill[]): Promise<void> {
     const normalized = normalizeSkills(skills);
     await updateRunnerFields(runnerId, { skills: JSON.stringify(normalized) });
+    const fresh = await getRunnerState(runnerId);
+    if (fresh) {
+        void broadcastToRunnersNs("runner_updated", runnerDataToInfo(fresh), fresh.userId ?? undefined);
+    }
 }
 
 /** Update agents for an already-registered runner. */
 export async function updateRunnerAgents(runnerId: string, agents: RunnerAgent[]): Promise<void> {
     const normalized = normalizeAgents(agents);
     await updateRunnerFields(runnerId, { agents: JSON.stringify(normalized) });
+    const fresh = await getRunnerState(runnerId);
+    if (fresh) {
+        void broadcastToRunnersNs("runner_updated", runnerDataToInfo(fresh), fresh.userId ?? undefined);
+    }
 }
 
 /**
@@ -220,6 +232,10 @@ export async function updateRunnerPlugins(runnerId: string, plugins: unknown[]):
             .filter((p): p is Record<string, unknown> => p !== null)
         : [];
     await updateRunnerFields(runnerId, { plugins: JSON.stringify(normalized) });
+    const fresh = await getRunnerState(runnerId);
+    if (fresh) {
+        void broadcastToRunnersNs("runner_updated", runnerDataToInfo(fresh), fresh.userId ?? undefined);
+    }
 }
 
 /** Record that a runner spawned a session. */
@@ -305,6 +321,25 @@ export async function getConnectedSessionsForRunner(runnerId: string): Promise<A
     return results;
 }
 
+/**
+ * Convert a single RedisRunnerData to RunnerInfo for WS broadcast.
+ * sessionCount is set to 0 — the client computes it from live sessions.
+ */
+function runnerDataToInfo(r: RedisRunnerData): RunnerInfo {
+    return {
+        runnerId: r.runnerId,
+        name: r.name,
+        roots: safeJsonParse(r.roots) ?? [],
+        sessionCount: 0,
+        skills: safeJsonParse(r.skills) ?? [],
+        agents: safeJsonParse(r.agents ?? "[]") ?? [],
+        plugins: safeJsonParse(r.plugins ?? "[]") ?? [],
+        hooks: safeJsonParse(r.hooks ?? "[]") ?? [],
+        version: r.version ?? null,
+        platform: r.platform ?? null,
+    };
+}
+
 /** Get all runners as RunnerInfo, optionally filtered by user. */
 export async function getRunners(filterUserId?: string): Promise<RunnerInfo[]> {
     const runners = await getAllRunners(filterUserId);
@@ -350,8 +385,17 @@ export function getLocalRunnerSocket(runnerId: string): Socket | undefined {
 
 /** Remove a runner from Redis and local socket map. */
 export async function removeRunner(runnerId: string): Promise<void> {
+    // Read userId before deleting so we can target the correct user room
+    const existing = await getRunnerState(runnerId);
     localRunnerSockets.delete(runnerId);
     await deleteRunnerState(runnerId);
+    if (existing) {
+        void broadcastToRunnersNs(
+            "runner_removed",
+            { runnerId },
+            existing.userId ?? undefined,
+        );
+    }
 }
 
 /** Refresh a runner's TTL in Redis (call on heartbeat/activity). */
