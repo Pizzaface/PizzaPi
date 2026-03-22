@@ -2954,10 +2954,10 @@ export function App() {
   }, [spawningSession, spawnRunnerId, spawnWorkerType, spawnCwd, handleOpenSession, waitForSessionToGoLive]);
 
   /** Spawn handler for the new wizard dialog. */
-  const handleWizardSpawn = React.useCallback(async (runnerId: string, cwd: string | undefined) => {
+  const handleWizardSpawn = React.useCallback(async (runnerId: string, cwd: string | undefined, workerType: "pi" | "claude-code" = "pi") => {
     setViewerStatus("Spawning session…");
 
-    const payload: any = { runnerId, ...(cwd ? { cwd } : {}) };
+    const payload: any = { runnerId, ...(cwd ? { cwd } : {}), ...(workerType !== "pi" ? { workerType } : {}) };
     const res = await fetch("/api/runners/spawn", {
       method: "POST",
       credentials: "include",
