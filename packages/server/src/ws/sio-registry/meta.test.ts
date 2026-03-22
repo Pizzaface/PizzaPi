@@ -66,3 +66,56 @@ describe("meta-state helpers (unit)", () => {
     expect(v2).toBe(2);
   });
 });
+
+// Inline extraction logic for unit testing (mirrors extractMetaFromHeartbeat)
+async function extractFromHeartbeat(sessionId: string, hb: Record<string, unknown>): Promise<void> {
+  const patch: Partial<SessionMetaState> = {};
+  if (Array.isArray(hb.todoList)) patch.todoList = hb.todoList as SessionMetaState["todoList"];
+  if (Object.prototype.hasOwnProperty.call(hb, "pendingQuestion")) {
+    patch.pendingQuestion = (hb.pendingQuestion as SessionMetaState["pendingQuestion"]) ?? null;
+  }
+  if (typeof hb.planModeEnabled === "boolean") patch.planModeEnabled = hb.planModeEnabled;
+  if (typeof hb.isCompacting === "boolean") patch.isCompacting = hb.isCompacting;
+  if (typeof hb.authSource === "string") patch.authSource = hb.authSource;
+  if (Object.keys(patch).length > 0) await updateMetaState(sessionId, patch);
+}
+
+describe("extractMetaFromHeartbeat logic", () => {
+  beforeEach(() => { sessionStore.clear(); });
+
+  test("extracts todoList from heartbeat", async () => {
+    const todos = [{ id: 1, text: "task", status: "pending" as const }];
+    await extractFromHeartbeat("s1", { todoList: todos });
+    const state = await getMetaState("s1");
+    expect(state.todoList).toEqual(todos);
+  });
+
+  test("extracts pendingQuestion null (clears it)", async () => {
+    await updateMetaState("s1", { pendingQuestion: { toolCallId: "tc1", questions: [] } });
+    await extractFromHeartbeat("s1", { pendingQuestion: null });
+    const state = await getMetaState("s1");
+    expect(state.pendingQuestion).toBeNull();
+  });
+
+  test("extracts planModeEnabled", async () => {
+    await extractFromHeartbeat("s1", { planModeEnabled: true });
+    expect((await getMetaState("s1")).planModeEnabled).toBe(true);
+  });
+
+  test("extracts isCompacting", async () => {
+    await extractFromHeartbeat("s1", { isCompacting: true });
+    expect((await getMetaState("s1")).isCompacting).toBe(true);
+  });
+
+  test("skips update when heartbeat has no known meta fields", async () => {
+    // No meta fields → no update → version stays at 0
+    await extractFromHeartbeat("s1", { active: true, ts: 12345 });
+    const state = await getMetaState("s1");
+    expect(state.version).toBe(0);
+  });
+
+  test("extracts authSource", async () => {
+    await extractFromHeartbeat("s1", { authSource: "oauth" });
+    expect((await getMetaState("s1")).authSource).toBe("oauth");
+  });
+});

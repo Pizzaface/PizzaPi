@@ -19,7 +19,9 @@ export async function broadcastToSessionMeta(
   sessionId: string,
   event: MetaRelayEvent,
   version: number,
-  userId?: string,
+  // Reserved for future per-user room filtering (all session meta rooms are already
+  // session-scoped, so userId is not needed for current fan-out logic).
+  _userId?: string,
 ): Promise<void> {
   const io = getIo();
   try {
