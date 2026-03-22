@@ -18,11 +18,12 @@ export const PASSWORD_REQUIREMENTS = [
   "At least one uppercase letter (A-Z)",
   "At least one lowercase letter (a-z)",
   "At least one number (0-9)",
+  `No more than ${MAX_PASSWORD_LENGTH} characters`,
 ] as const;
 
 /** Summary string for error messages. */
 export const PASSWORD_REQUIREMENTS_SUMMARY =
-  "Password must be at least 8 characters long and contain at least one uppercase letter, one lowercase letter, and one number";
+  `Password must be at least 8 characters long, no more than ${MAX_PASSWORD_LENGTH} characters, and contain at least one uppercase letter, one lowercase letter, and one number`;
 
 export interface PasswordCheck {
   /** Overall pass/fail. */
@@ -44,12 +45,32 @@ export interface PasswordCheckItem {
  * Use `.valid` for a quick boolean, or iterate `.checks` for per-rule feedback.
  */
 export function validatePassword(password: string): PasswordCheck {
+  // Guard against non-string values that bypass TypeScript at runtime (e.g. JS
+  // callers, JSON deserialization). Return a safe invalid result rather than
+  // throwing, so callers don't need try/catch around a validation function.
+  if (typeof password !== "string") {
+    return {
+      valid: false,
+      checks: PASSWORD_REQUIREMENTS.map((label) => ({ label, met: false })),
+    };
+  }
+
+  // Count Unicode codepoints (not UTF-16 code units) so that supplementary-plane
+  // characters (e.g. emoji) each count as 1 character, matching user expectation.
+  // Spread iterates by codepoint; ASCII/Latin passwords produce identical counts.
+  const codepoints = [...password].length;
+
+  // Compute all per-rule checks including max-length so that callers
+  // (e.g. UI components) receive truthful, complete feedback. Overall validity
+  // is derived entirely from checks.every() — no separate early return needed.
   const checks: PasswordCheckItem[] = [
-    { label: PASSWORD_REQUIREMENTS[0], met: password.length >= 8 },
+    { label: PASSWORD_REQUIREMENTS[0], met: codepoints >= 8 },
     { label: PASSWORD_REQUIREMENTS[1], met: /[A-Z]/.test(password) },
     { label: PASSWORD_REQUIREMENTS[2], met: /[a-z]/.test(password) },
     { label: PASSWORD_REQUIREMENTS[3], met: /[0-9]/.test(password) },
+    { label: PASSWORD_REQUIREMENTS[4], met: codepoints <= MAX_PASSWORD_LENGTH },
   ];
+
   return {
     valid: checks.every((c) => c.met),
     checks,

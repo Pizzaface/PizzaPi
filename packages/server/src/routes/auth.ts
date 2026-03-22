@@ -8,7 +8,7 @@
 
 import { getApiKeyRateLimitConfig, getAuth, getKysely, isSignupAllowed } from "../auth.js";
 import { RateLimiter, isValidEmail, isValidPassword, getClientIp } from "../security.js";
-import { PASSWORD_REQUIREMENTS_SUMMARY, MAX_PASSWORD_LENGTH } from "@pizzapi/protocol";
+import { PASSWORD_REQUIREMENTS_SUMMARY } from "@pizzapi/protocol";
 import { hashPassword as betterAuthHashPassword } from "better-auth/crypto";
 import type { RouteHandler } from "./types.js";
 
@@ -47,10 +47,6 @@ export const handleAuthRoute: RouteHandler = async (req, url) => {
 
         if (!isValidEmail(email)) {
             return Response.json({ error: "Invalid email format" }, { status: 400 });
-        }
-
-        if (password.length > MAX_PASSWORD_LENGTH) {
-            return Response.json({ error: PASSWORD_REQUIREMENTS_SUMMARY }, { status: 400 });
         }
 
         if (!isValidPassword(password)) {

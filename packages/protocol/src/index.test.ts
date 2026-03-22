@@ -42,10 +42,16 @@ import type {
 // index.ts public API surface - verify all runtime exports are present
 // ---------------------------------------------------------------------------
 
+import { MAX_PASSWORD_LENGTH } from "./index";
+
 describe("index - runtime exports", () => {
-  test("PASSWORD_REQUIREMENTS is exported and is a readonly tuple of 4 strings", () => {
+  test("MAX_PASSWORD_LENGTH is exported correctly", () => {
+    expect(MAX_PASSWORD_LENGTH).toBe(128);
+  });
+
+  test("PASSWORD_REQUIREMENTS is exported and is a readonly tuple of 5 strings", () => {
     expect(Array.isArray(PASSWORD_REQUIREMENTS)).toBe(true);
-    expect(PASSWORD_REQUIREMENTS).toHaveLength(4);
+    expect(PASSWORD_REQUIREMENTS).toHaveLength(5);
     for (const req of PASSWORD_REQUIREMENTS) {
       expect(typeof req).toBe("string");
       expect(req.length).toBeGreaterThan(0);
@@ -85,7 +91,7 @@ describe("index - runtime exports", () => {
     const result = validatePassword("Valid1Pass");
     expect(typeof result.valid).toBe("boolean");
     expect(Array.isArray(result.checks)).toBe(true);
-    expect(result.checks).toHaveLength(4);
+    expect(result.checks).toHaveLength(5);
     for (const check of result.checks) {
       expect(typeof check.label).toBe("string");
       expect(typeof check.met).toBe("boolean");
