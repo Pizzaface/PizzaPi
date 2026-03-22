@@ -3,7 +3,7 @@ import { serveStaticFile, setUiDir } from "./static.js";
 import { join } from "path";
 
 describe("serveStaticFile", () => {
-    const mockUiDir = join(process.cwd(), "tests/fixtures/ui");
+    const mockUiDir = join(import.meta.dirname, "../tests/fixtures/ui");
 
     beforeAll(() => {
         setUiDir(mockUiDir);
