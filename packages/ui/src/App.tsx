@@ -11,6 +11,7 @@ import { RunnerManager } from "@/components/RunnerManager";
 import { NewSessionWizardDialog } from "@/components/NewSessionWizardDialog";
 import { PizzaLogo } from "@/components/PizzaLogo";
 import { authClient, useSession, signOut } from "@/lib/auth-client";
+import { useRunnersFeed } from "@/lib/useRunnersFeed";
 import { io, type Socket } from "socket.io-client";
 import type {
   ViewerServerToClientEvents,
@@ -96,6 +97,11 @@ import {
 
 export function App() {
   const { data: session, isPending } = useSession();
+  const { runners: feedRunners, status: runnersStatus } = useRunnersFeed({
+    // Only connect when auth is confirmed; reconnect if the user changes (e.g. logout → new login)
+    enabled: !isPending && !!session?.user?.id,
+    userId: session?.user?.id ?? undefined,
+  });
   const [isDark, setIsDark] = React.useState(() => {
     const saved = localStorage.getItem("theme");
     return saved === "dark" || (!saved && window.matchMedia("(prefers-color-scheme: dark)").matches);
@@ -141,29 +147,6 @@ export function App() {
       try { sessionStorage.setItem(sidebarCacheKey, JSON.stringify(runners)); } catch { /* ignore */ }
     }
   }, [sidebarCacheKey]);
-  // Eager fetch: populate sidebar runners immediately on mount (before RunnerManager mounts)
-  React.useEffect(() => {
-    let cancelled = false;
-    void fetch("/api/runners", { credentials: "include" })
-      .then((res) => (res.ok ? res.json() : Promise.reject()))
-      .then((data) => {
-        if (cancelled) return;
-        const list: any[] = Array.isArray(data?.runners) ? data.runners : [];
-        const mapped = list
-          .filter((r) => typeof r?.runnerId === "string" && r.runnerId)
-          .map((r) => ({
-            runnerId: r.runnerId as string,
-            name: (typeof r.name === "string" ? r.name : null) as string | null,
-            sessionCount: (typeof r.sessionCount === "number" ? r.sessionCount : 0) as number,
-            version: (typeof r.version === "string" ? r.version : null) as string | null,
-            platform: (typeof r.platform === "string" ? r.platform : null) as string | null,
-            isOnline: true,
-          }));
-        setSidebarRunners(mapped);
-      })
-      .catch(() => { /* sidebar will stay with cached/empty data until RunnerManager loads */ });
-    return () => { cancelled = true; };
-  }, [setSidebarRunners]);
   const panelLayout = usePanelLayout(activeSessionId);
   const {
     showTerminal, setShowTerminal,
@@ -183,10 +166,7 @@ export function App() {
     handleFilesOuterPointerMove, handleFilesOuterPointerUp,
   } = panelLayout;
 
-  type RunnerInfo = { runnerId: string; name?: string | null; roots?: string[]; sessionCount: number; platform?: string | null };
   const [newSessionOpen, setNewSessionOpen] = React.useState(false);
-  const [runners, setRunners] = React.useState<RunnerInfo[]>([]);
-  const [runnersLoading, setRunnersLoading] = React.useState(false);
   const [spawnRunnerId, setSpawnRunnerId] = React.useState<string | undefined>(undefined);
   const [spawnCwd, setSpawnCwd] = React.useState<string>("");
   const [spawnPreselectedRunnerId, setSpawnPreselectedRunnerId] = React.useState<string | null>(null);
@@ -328,6 +308,18 @@ export function App() {
     handleSidebarPointerDown, handleSidebarPointerMove, handleSidebarPointerUp,
   } = useMobileSidebar();
   const [liveSessions, setLiveSessions] = React.useState<HubSession[]>([]);
+
+  // Derive sidebar runners from the /runners WS feed
+  React.useEffect(() => {
+    setSidebarRunners(feedRunners.map(r => ({
+      runnerId: r.runnerId,
+      name: r.name,
+      sessionCount: liveSessions.filter(s => s.runnerId === r.runnerId).length,
+      version: r.version,
+      isOnline: true,
+    })));
+  }, [feedRunners, liveSessions, setSidebarRunners]);
+
   const [sessionSwitcherOpen, setSessionSwitcherOpen] = React.useState(false);
 
   // Auto-reopen the last viewed session once live sessions arrive.
@@ -370,41 +362,6 @@ export function App() {
       cancelled = true;
     };
   }, [newSessionOpen, spawnRunnerId]);
-
-  React.useEffect(() => {
-    if (!newSessionOpen) return;
-
-    let cancelled = false;
-    setRunnersLoading(true);
-    void fetch("/api/runners", { credentials: "include" })
-      .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
-      .then((data) => {
-        if (cancelled) return;
-        const list = Array.isArray((data as any)?.runners) ? (data as any).runners as any[] : [];
-        const normalized = list
-          .map((r) => ({
-            runnerId: typeof r?.runnerId === "string" ? r.runnerId : "",
-            name: typeof r?.name === "string" ? r.name : null,
-            roots: Array.isArray(r?.roots) ? (r.roots as unknown[]).filter((x): x is string => typeof x === "string") : [],
-            sessionCount: typeof r?.sessionCount === "number" ? r.sessionCount : 0,
-            platform: typeof r?.platform === "string" ? r.platform : null,
-          }))
-          .filter((r) => r.runnerId);
-        setRunners(normalized);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setRunners([]);
-      })
-      .finally(() => {
-        if (cancelled) return;
-        setRunnersLoading(false);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [newSessionOpen]);
 
   const viewerWsRef = React.useRef<Socket<ViewerServerToClientEvents, ViewerClientToServerEvents> | null>(null);
   const hubSocketRef = React.useRef<Socket<HubServerToClientEvents, HubClientToServerEvents> | null>(null);
@@ -2706,24 +2663,39 @@ export function App() {
     setNewSessionOpen(true);
   }, []);
 
-  const waitForSessionToGoLive = React.useCallback(async (sessionId: string, timeoutMs: number) => {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      try {
-        const res = await fetch("/api/sessions", { credentials: "include" });
-        if (res.ok) {
-          const body = await res.json().catch(() => null) as any;
-          const sessions = Array.isArray(body?.sessions) ? body.sessions : [];
-          const live = sessions.some((s: any) => typeof s?.sessionId === "string" && s.sessionId === sessionId);
-          if (live) return true;
-        }
-      } catch {
-        // ignore
+  // ── Session live waiter — resolves via /hub feed, no polling ──────────────
+  const sessionWaitersRef = React.useRef<Map<string, {
+    resolve: (found: boolean) => void;
+    timer: ReturnType<typeof setTimeout>;
+  }>>(new Map());
+
+  // Resolve any pending waiters when liveSessions updates
+  React.useEffect(() => {
+    for (const [sessionId, waiter] of sessionWaitersRef.current) {
+      if (liveSessions.some(s => s.sessionId === sessionId)) {
+        clearTimeout(waiter.timer);
+        sessionWaitersRef.current.delete(sessionId);
+        waiter.resolve(true);
       }
-      await new Promise((r) => setTimeout(r, 1000));
     }
-    return false;
-  }, []);
+  }, [liveSessions]);
+
+  const waitForSessionToGoLive = React.useCallback(
+    (sessionId: string, timeoutMs: number): Promise<boolean> => {
+      // Fast path: already live
+      if (liveSessions.some(s => s.sessionId === sessionId)) {
+        return Promise.resolve(true);
+      }
+      return new Promise((resolve) => {
+        const timer = setTimeout(() => {
+          sessionWaitersRef.current.delete(sessionId);
+          resolve(false);
+        }, timeoutMs);
+        sessionWaitersRef.current.set(sessionId, { resolve, timer });
+      });
+    },
+    [liveSessions],
+  );
 
   const spawnNewRunnerSession = React.useCallback(async () => {
     if (spawningSession) return;
@@ -2947,6 +2919,11 @@ export function App() {
       cwd: liveSession.cwd ?? "",
     };
   }, [activeSessionId, liveSessions]);
+
+  const activeRunnerInfo = React.useMemo(
+    () => feedRunners.find(r => r.runnerId === activeSessionInfo?.runnerId) ?? null,
+    [feedRunners, activeSessionInfo?.runnerId],
+  );
 
   // When both panels are at the same position, combine them into a single tabbed panel
   const areCombined = showTerminal && showFileExplorer && terminalPosition === filesPosition
@@ -3575,8 +3552,10 @@ export function App() {
             )}>
               {showRunners ? (
                 <RunnerManager
+                    runners={feedRunners}
+                    runnersStatus={runnersStatus}
+                    sessions={liveSessions}
                     onOpenSession={(id) => { handleOpenSession(id); setShowRunners(false); }}
-                    onRunnersChange={setSidebarRunners}
                     selectedRunnerId={selectedRunnerId}
                     onSelectRunner={setSelectedRunnerId}
                   />
@@ -3623,6 +3602,7 @@ export function App() {
                   onQuestionDismiss={() => setPendingQuestion(null)}
                   onPlanDismiss={() => setPendingPlan(null)}
                   onDuplicateSession={activeSessionInfo?.runnerId ? () => handleDuplicateSession(activeSessionInfo.runnerId!, activeSessionInfo.cwd || "") : undefined}
+                  runnerInfo={activeRunnerInfo}
                 />
               )}
             </div>
@@ -3641,6 +3621,13 @@ export function App() {
                   sessionId={activeSessionId}
                   runnerId={activeSessionInfo?.runnerId ?? undefined}
                   defaultCwd={activeSessionInfo?.cwd || undefined}
+                  runners={feedRunners.map(r => ({
+                    runnerId: r.runnerId,
+                    name: r.name,
+                    roots: r.roots,
+                    sessionCount: liveSessions.filter(s => s.runnerId === r.runnerId).length,
+                  }))}
+                  runnersLoading={runnersStatus === "connecting"}
                   tabs={terminalTabs}
                   activeTabId={activeTerminalId}
                   onActiveTabChange={setActiveTerminalId}
@@ -3699,6 +3686,13 @@ export function App() {
                             sessionId={activeSessionId}
                             runnerId={activeSessionInfo?.runnerId ?? undefined}
                             defaultCwd={activeSessionInfo?.cwd || undefined}
+                            runners={feedRunners.map(r => ({
+                              runnerId: r.runnerId,
+                              name: r.name,
+                              roots: r.roots,
+                              sessionCount: liveSessions.filter(s => s.runnerId === r.runnerId).length,
+                            }))}
+                            runnersLoading={runnersStatus === "connecting"}
                             tabs={terminalTabs}
                             activeTabId={activeTerminalId}
                             onActiveTabChange={setActiveTerminalId}
@@ -3771,6 +3765,13 @@ export function App() {
                     sessionId={activeSessionId}
                     runnerId={activeSessionInfo?.runnerId ?? undefined}
                     defaultCwd={activeSessionInfo?.cwd || undefined}
+                    runners={feedRunners.map(r => ({
+                      runnerId: r.runnerId,
+                      name: r.name,
+                      roots: r.roots,
+                      sessionCount: liveSessions.filter(s => s.runnerId === r.runnerId).length,
+                    }))}
+                    runnersLoading={runnersStatus === "connecting"}
                     tabs={terminalTabs}
                     activeTabId={activeTerminalId}
                     onActiveTabChange={setActiveTerminalId}
@@ -3816,8 +3817,8 @@ export function App() {
         <NewSessionWizardDialog
           open={newSessionOpen}
           onOpenChange={(open) => { if (!spawningSession) setNewSessionOpen(open); }}
-          runners={runners.map((r) => ({ ...r, name: r.name ?? null, isOnline: true }))}
-          runnersLoading={runnersLoading}
+          runners={feedRunners.map((r) => ({ ...r, name: r.name ?? null, isOnline: true, sessionCount: liveSessions.filter(s => s.runnerId === r.runnerId).length }))}
+          runnersLoading={runnersStatus === "connecting"}
           preselectedRunnerId={spawnPreselectedRunnerId}
           initialCwd={spawnCwd}
           onSpawn={handleWizardSpawn}

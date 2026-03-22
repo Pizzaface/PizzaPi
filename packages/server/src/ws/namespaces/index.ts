@@ -4,6 +4,7 @@ import { registerViewerNamespace } from "./viewer.js";
 import { registerRunnerNamespace } from "./runner.js";
 import { registerTerminalNamespace } from "./terminal.js";
 import { registerHubNamespace } from "./hub.js";
+import { registerRunnersNamespace } from "./runners.js";
 
 export function registerNamespaces(io: SocketIOServer): void {
   registerRelayNamespace(io);
@@ -11,6 +12,7 @@ export function registerNamespaces(io: SocketIOServer): void {
   registerRunnerNamespace(io);
   registerTerminalNamespace(io);
   registerHubNamespace(io);
+  registerRunnersNamespace(io);
 }
 
 // Re-export runner command functions for use by REST API routes

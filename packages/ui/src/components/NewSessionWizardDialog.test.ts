@@ -1,21 +1,13 @@
 import { describe, test, expect } from "bun:test";
+import { filterFolders } from "../lib/filterFolders.js";
 
 /**
  * Unit tests for the recent-project filtering logic used in NewSessionWizardDialog.
  *
- * Mirrors the `filterFolders` function defined in the component:
+ * Tests the production `filterFolders` function from lib/filterFolders.ts:
  *   - Case-insensitive substring match
  *   - OR logic: match if found in full path OR basename
  */
-
-function filterFolders(folders: string[], query: string): string[] {
-    if (!query.trim()) return folders;
-    const q = query.toLowerCase();
-    return folders.filter((f) => {
-        const basename = f.split("/").filter(Boolean).pop() ?? f;
-        return f.toLowerCase().includes(q) || basename.toLowerCase().includes(q);
-    });
-}
 
 const FOLDERS = [
     "/home/user/src/project",

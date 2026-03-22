@@ -1,112 +1,67 @@
 import * as React from "react";
-import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
-import { Plus, Loader2, RefreshCw } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { RunnerDetailPanel } from "@/components/RunnerDetailPanel";
 import { NewSessionWizardDialog } from "@/components/NewSessionWizardDialog";
-import type { SkillInfo } from "@/components/SkillsManager";
-import type { AgentInfo } from "@/components/AgentsManager";
-import type { PluginInfo } from "@/components/PluginsManager";
-
-interface RunnerHook {
-    type: string;
-    scripts: string[];
-}
-
-interface RunnerInfo {
-    runnerId: string;
-    name: string | null;
-    roots: string[];
-    sessionCount: number;
-    skills: SkillInfo[];
-    agents: AgentInfo[];
-    plugins: PluginInfo[];
-    hooks?: RunnerHook[];
-    version: string | null;
-}
-
-interface LiveSession {
-    sessionId: string;
-    shareUrl: string;
-    cwd: string;
-    startedAt: string;
-    sessionName: string | null;
-    isActive: boolean;
-    lastHeartbeatAt: string | null;
-    runnerId: string | null;
-    runnerName: string | null;
-}
+import type { HubSession } from "@/components/SessionSidebar";
+import type { RunnerInfo } from "@pizzapi/protocol";
 
 export interface RunnerManagerProps {
+    /** Runner list from the /runners WS feed — passed from App.tsx (single hook instance) */
+    runners: RunnerInfo[];
+    /** Connection status of the /runners feed */
+    runnersStatus: "connecting" | "connected" | "disconnected";
+    /** Live sessions from the /hub feed — used for spawn-wait, per-runner counts, and RunnerDetailPanel */
+    sessions: HubSession[];
     onOpenSession?: (sessionId: string) => void;
-    onRunnersChange?: (runners: Array<{
-        runnerId: string;
-        name: string | null;
-        sessionCount: number;
-        version: string | null;
-        isOnline: boolean;
-    }>) => void;
     selectedRunnerId: string | null;
     onSelectRunner?: (runnerId: string) => void;
 }
 
-export function RunnerManager({ onOpenSession, onRunnersChange, selectedRunnerId, onSelectRunner }: RunnerManagerProps) {
-    const [runners, setRunners] = React.useState<RunnerInfo[]>([]);
-    const [sessions, setSessions] = React.useState<LiveSession[]>([]);
-    const [loading, setLoading] = React.useState(true);
-    const [latestVersion, setServerVersion] = React.useState<string | null>(null);
+export function RunnerManager({
+    runners,
+    runnersStatus,
+    sessions,
+    onOpenSession,
+    selectedRunnerId,
+    onSelectRunner,
+}: RunnerManagerProps) {
+    const loading = runnersStatus === "connecting" && runners.length === 0;
+
     const [restarting, setRestarting] = React.useState<Set<string>>(new Set());
     const [stopping, setStopping] = React.useState<Set<string>>(new Set());
+    const [latestVersion, setLatestVersion] = React.useState<string | null>(null);
+
+    // Fetch the latest available version from the server (used by RunnerDetailPanel for update-available badge)
+    React.useEffect(() => {
+        fetch("/api/version")
+            .then((res) => res.ok ? res.json() : null)
+            .then((data) => { if (data?.version) setLatestVersion(data.version); })
+            .catch(() => {});
+    }, []);
 
     // New session dialog
     const [spawnRunnerId, setSpawnRunnerId] = React.useState<string | null>(null);
 
-    const fetchData = React.useCallback(async () => {
-        try {
-            const [runnersRes, sessionsRes] = await Promise.all([
-                fetch("/api/runners", { credentials: "include" }),
-                fetch("/api/sessions", { credentials: "include" }),
-            ]);
-            if (runnersRes.ok) {
-                const data = await runnersRes.json();
-                const raw: any[] = data.runners || [];
-                setRunners(raw.map((r) => ({
-                    runnerId: r.runnerId,
-                    name: r.name,
-                    roots: r.roots ?? [],
-                    sessionCount: r.sessionCount ?? 0,
-                    skills: Array.isArray(r.skills) ? r.skills : [],
-                    agents: Array.isArray(r.agents) ? r.agents : [],
-                    plugins: Array.isArray(r.plugins) ? r.plugins : [],
-                    hooks: Array.isArray(r.hooks) ? r.hooks : [],
-                    version: r.version ?? null,
-                })));
-            }
-            if (sessionsRes.ok) {
-                const data = await sessionsRes.json();
-                setSessions(data.sessions || []);
-            }
-        } catch (error) {
-            console.error("Failed to fetch runners/sessions:", error);
-        } finally {
-            setLoading(false);
+    // Pending spawn: wait for session to appear in WS feed
+    const [pendingSessionId, setPendingSessionId] = React.useState<string | null>(null);
+
+    // Resolve pending spawn: when the spawned session appears in sessions, open it
+    React.useEffect(() => {
+        if (!pendingSessionId) return;
+        const found = sessions.some(s => s.sessionId === pendingSessionId);
+        if (found) {
+            const id = pendingSessionId;
+            setPendingSessionId(null);
+            onOpenSession?.(id);
         }
-    }, []);
+    }, [pendingSessionId, sessions, onOpenSession]);
 
+    // 30-second timeout guard: clear pendingSessionId if session never appears
     React.useEffect(() => {
-        fetchData();
-        const interval = setInterval(fetchData, 10000);
-        return () => clearInterval(interval);
-    }, [fetchData]);
-
-    // Fetch server version once
-    React.useEffect(() => {
-        fetch("/api/version")
-            .then((res) => res.ok ? res.json() : null)
-            .then((data) => { if (data?.version) setServerVersion(data.version); })
-            .catch(() => {});
-    }, []);
+        if (!pendingSessionId) return;
+        const timer = setTimeout(() => setPendingSessionId(null), 30_000);
+        return () => clearTimeout(timer);
+    }, [pendingSessionId]);
 
     // Auto-select when there's exactly one runner
     React.useEffect(() => {
@@ -114,17 +69,6 @@ export function RunnerManager({ onOpenSession, onRunnersChange, selectedRunnerId
             onSelectRunner?.(runners[0].runnerId);
         }
     }, [runners, selectedRunnerId, onSelectRunner]);
-
-    // Notify parent of runner list changes
-    React.useEffect(() => {
-        onRunnersChange?.(runners.map(r => ({
-            runnerId: r.runnerId,
-            name: r.name,
-            sessionCount: r.sessionCount,
-            version: r.version,
-            isOnline: true, // runners from API are always online
-        })));
-    }, [runners, onRunnersChange]);
 
     const handleRestart = async (runnerId: string) => {
         setRestarting((prev) => new Set(prev).add(runnerId));
@@ -148,7 +92,6 @@ export function RunnerManager({ onOpenSession, onRunnersChange, selectedRunnerId
                     next.delete(runnerId);
                     return next;
                 });
-                fetchData();
             }, 2000);
         }
     };
@@ -176,7 +119,6 @@ export function RunnerManager({ onOpenSession, onRunnersChange, selectedRunnerId
                     next.delete(runnerId);
                     return next;
                 });
-                fetchData();
             }, 3000);
         }
     };
@@ -200,29 +142,11 @@ export function RunnerManager({ onOpenSession, onRunnersChange, selectedRunnerId
         if (!sessionId) throw new Error("Spawn failed: missing sessionId in response");
 
         setSpawnRunnerId(null);
-
-        if (onOpenSession) {
-            const deadline = Date.now() + 30_000;
-            const poll = async (): Promise<void> => {
-                if (Date.now() > deadline) return;
-                try {
-                    const r = await fetch("/api/sessions", { credentials: "include" });
-                    if (r.ok) {
-                        const d = await r.json().catch(() => null) as any;
-                        const live = Array.isArray(d?.sessions) && d.sessions.some((s: any) => s?.sessionId === sessionId);
-                        if (live) { onOpenSession(sessionId); return; }
-                    }
-                } catch {}
-                await new Promise((r) => setTimeout(r, 1000));
-                return poll();
-            };
-            void poll();
-        }
-        fetchData();
+        setPendingSessionId(sessionId);
     };
 
     // Loading skeleton
-    if (loading && runners.length === 0) {
+    if (loading) {
         return (
             <div className="flex flex-col flex-1 p-6 gap-4 animate-in fade-in duration-700">
                 <div className="flex items-center justify-between">
@@ -250,8 +174,42 @@ export function RunnerManager({ onOpenSession, onRunnersChange, selectedRunnerId
         );
     }
 
-    const selectedRunner = runners.find(r => r.runnerId === selectedRunnerId) ?? null;
-    const runnerSessions = sessions.filter(s => s.runnerId === selectedRunnerId);
+    // Map protocol RunnerInfo → RunnerDetailPanel's local RunnerInfo shape
+    // (protocol has some optional fields that RunnerDetailPanel expects as required)
+    const selectedRunnerRaw = runners.find(r => r.runnerId === selectedRunnerId);
+    const selectedRunner = selectedRunnerRaw ? {
+        runnerId: selectedRunnerRaw.runnerId,
+        name: selectedRunnerRaw.name,
+        roots: selectedRunnerRaw.roots,
+        sessionCount: sessions.filter(s => s.runnerId === selectedRunnerRaw.runnerId).length,
+        skills: selectedRunnerRaw.skills,
+        agents: selectedRunnerRaw.agents,
+        plugins: (selectedRunnerRaw.plugins ?? []).map(p => ({
+            ...p,
+            rules: p.rules ?? [],
+        })),
+        hooks: selectedRunnerRaw.hooks,
+        version: selectedRunnerRaw.version,
+    } : null;
+
+    // Map HubSession → LiveSession shape expected by RunnerDetailPanel
+    const runnerSessions = sessions
+        .filter(s => s.runnerId === selectedRunnerId)
+        .map(s => ({
+            sessionId: s.sessionId,
+            shareUrl: s.shareUrl ?? "",
+            cwd: s.cwd ?? "",
+            startedAt: s.startedAt ?? "",
+            sessionName: s.sessionName ?? null,
+            isActive: s.isActive ?? false,
+            lastHeartbeatAt: s.lastHeartbeatAt ?? null,
+            runnerId: s.runnerId ?? null,
+            runnerName: s.runnerName ?? null,
+        }));
+
+    // latestVersion is fetched from /api/version above — it represents the latest npm release,
+    // not the runner's own version. This allows RunnerDetailPanel to show an "update available" badge
+    // when the runner's version is older than the latest available version.
 
     return (
         <>
@@ -267,16 +225,23 @@ export function RunnerManager({ onOpenSession, onRunnersChange, selectedRunnerId
                 onStop={() => selectedRunnerId && handleStop(selectedRunnerId)}
                 onNewSession={() => selectedRunnerId && handleOpenNewSession(selectedRunnerId)}
                 onOpenSession={onOpenSession}
-                onSkillsChange={(rid, skills) => setRunners(prev => prev.map(r => r.runnerId === rid ? { ...r, skills } : r))}
-                onAgentsChange={(rid, agents) => setRunners(prev => prev.map(r => r.runnerId === rid ? { ...r, agents } : r))}
-                onPluginsChange={(rid, plugins) => setRunners(prev => prev.map(r => r.runnerId === rid ? { ...r, plugins } : r))}
+                onSkillsChange={() => {}}
+                onAgentsChange={() => {}}
+                onPluginsChange={() => {}}
             />
 
             {/* New session dialog */}
             <NewSessionWizardDialog
                 open={spawnRunnerId !== null}
                 onOpenChange={(open) => { if (!open) setSpawnRunnerId(null); }}
-                runners={runners.map((r) => ({ ...r, isOnline: true }))}
+                runners={runners.map((r) => ({
+                    runnerId: r.runnerId,
+                    name: r.name ?? null,
+                    roots: r.roots,
+                    sessionCount: sessions.filter(s => s.runnerId === r.runnerId).length,
+                    platform: r.platform ?? null,
+                    isOnline: true,
+                }))}
                 preselectedRunnerId={spawnRunnerId}
                 onSpawn={handleWizardSpawn}
             />
