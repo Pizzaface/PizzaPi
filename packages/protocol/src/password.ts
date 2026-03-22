@@ -22,7 +22,7 @@ export const PASSWORD_REQUIREMENTS = [
 
 /** Summary string for error messages. */
 export const PASSWORD_REQUIREMENTS_SUMMARY =
-  "Password must be at least 8 characters long and contain at least one uppercase letter, one lowercase letter, and one number";
+  `Password must be at least 8 characters long, no more than ${MAX_PASSWORD_LENGTH} characters, and contain at least one uppercase letter, one lowercase letter, and one number`;
 
 export interface PasswordCheck {
   /** Overall pass/fail. */
@@ -53,20 +53,26 @@ export function validatePassword(password: string): PasswordCheck {
       checks: PASSWORD_REQUIREMENTS.map((label) => ({ label, met: false })),
     };
   }
-  // Reject passwords exceeding the maximum length. This mirrors server-side
-  // enforcement and prevents unbounded scrypt cost (DoS vector).
-  if (password.length > MAX_PASSWORD_LENGTH) {
-    return {
-      valid: false,
-      checks: PASSWORD_REQUIREMENTS.map((label) => ({ label, met: false })),
-    };
-  }
+
+  // Always compute per-rule checks against actual content so that callers
+  // (e.g. UI components) receive truthful per-requirement feedback regardless
+  // of the max-length path below.
   const checks: PasswordCheckItem[] = [
     { label: PASSWORD_REQUIREMENTS[0], met: password.length >= 8 },
     { label: PASSWORD_REQUIREMENTS[1], met: /[A-Z]/.test(password) },
     { label: PASSWORD_REQUIREMENTS[2], met: /[a-z]/.test(password) },
     { label: PASSWORD_REQUIREMENTS[3], met: /[0-9]/.test(password) },
   ];
+
+  // Reject passwords exceeding the maximum length. This mirrors server-side
+  // enforcement and prevents unbounded scrypt cost (DoS vector). We still
+  // return the truthfully-computed checks so the UI can show which of the
+  // standard requirements are met — the caller should surface the max-length
+  // error separately (e.g. via PASSWORD_REQUIREMENTS_SUMMARY).
+  if (password.length > MAX_PASSWORD_LENGTH) {
+    return { valid: false, checks };
+  }
+
   return {
     valid: checks.every((c) => c.met),
     checks,

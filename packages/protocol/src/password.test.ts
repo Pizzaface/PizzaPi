@@ -14,9 +14,15 @@ describe("password validation constants", () => {
     expect(PASSWORD_REQUIREMENTS[3]).toMatch(/number/);
   });
 
-  test("PASSWORD_REQUIREMENTS_SUMMARY is a string", () => {
+  test("PASSWORD_REQUIREMENTS_SUMMARY is a string mentioning key constraints", () => {
     expect(typeof PASSWORD_REQUIREMENTS_SUMMARY).toBe("string");
     expect(PASSWORD_REQUIREMENTS_SUMMARY.length).toBeGreaterThan(0);
+    const lower = PASSWORD_REQUIREMENTS_SUMMARY.toLowerCase();
+    expect(lower).toContain("8");
+    expect(lower).toContain("128");
+    expect(lower).toContain("uppercase");
+    expect(lower).toContain("lowercase");
+    expect(lower).toContain("number");
   });
 });
 
@@ -46,6 +52,19 @@ describe("validatePassword", () => {
   test("rejects passwords exceeding MAX_PASSWORD_LENGTH", () => {
     const tooLong = "A1a" + "b".repeat(MAX_PASSWORD_LENGTH - 2); // 129 chars total
     expect(validatePassword(tooLong).valid).toBe(false);
+  });
+
+  test("returns truthful per-rule checks for overlength passwords", () => {
+    // A 129-char password that meets all 4 complexity rules. The checks array
+    // must reflect actual rule status — not falsely show all as unmet — so UI
+    // components can give accurate per-requirement feedback.
+    const tooLong = "A1a" + "b".repeat(MAX_PASSWORD_LENGTH - 2); // 129 chars
+    const result = validatePassword(tooLong);
+    expect(result.valid).toBe(false); // rejected due to length
+    expect(result.checks[0].met).toBe(true); // length >= 8: genuinely met
+    expect(result.checks[1].met).toBe(true); // uppercase: genuinely met
+    expect(result.checks[2].met).toBe(true); // lowercase: genuinely met
+    expect(result.checks[3].met).toBe(true); // number: genuinely met
   });
 
   test("accepts passwords with spaces and emojis", () => {
