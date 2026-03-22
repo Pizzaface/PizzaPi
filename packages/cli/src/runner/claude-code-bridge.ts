@@ -26,8 +26,8 @@ import type { RelayClientToServerEvents, RelayServerToClientEvents } from "@pizz
 import { randomUUID } from "node:crypto";
 import { translateNdjsonLine } from "./claude-code-ndjson.js";
 import { serializeFrame, framesFromBuffer, type PluginMessage, type BridgeMessage } from "./claude-code-ipc.js";
-import { buildSpawnSessionBody } from "./claude-code-spawn-request.js";
 import { SET_SESSION_NAME_PROMPT } from "../config/system-prompt.js";
+import { buildSpawnSessionBody } from "./claude-code-spawn-request.js";
 import { renderTrigger } from "../extensions/triggers/registry.js";
 import type { ConversationTrigger } from "../extensions/triggers/types.js";
 import { normalizeRemoteInputAttachments, buildUserMessageFromRemoteInput } from "../extensions/remote-input.js";
@@ -249,6 +249,7 @@ function emitHeartbeat(status?: string): void {
     active: claudeIsWorking,
     isAgentActive: claudeIsWorking,
     model: currentModelObject ?? (currentModel ? parseModelString(currentModel) : null),
+    sessionName: currentSessionName,
     ts: Date.now(),
     ...(status ? { status } : {}),
   };
@@ -541,11 +542,13 @@ async function handleMcpCall(
 async function dispatchMcpTool(tool: string, args: Record<string, unknown>): Promise<unknown> {
   switch (tool) {
     case "set_session_name": {
-      // Also update currentSessionName here as a belt-and-suspenders backup —
-      // the primary extraction happens in the NDJSON translator when the
-      // tool_use block appears in the assistant message stream.
       const name = typeof args.name === "string" ? args.name.trim() : "";
-      if (name) currentSessionName = name;
+      if (name) {
+        currentSessionName = name;
+        // Broadcast immediately so the server updates the session name without
+        // waiting for the next scheduled heartbeat.
+        emitHeartbeat();
+      }
       return "ok";
     }
 
@@ -800,7 +803,9 @@ function spawnClaude(tmpDirPath: string, resume = false): void {
     // Instruct Claude to call set_session_name at the start of each new
     // conversation so PizzaPi can display a meaningful session title.
     // Skipped on --resume because the session already has a name from its
-    // first turn, and re-injecting the instruction is unnecessary noise.
+    // first turn (the conversation history already contains the first
+    // set_session_name call), so re-injecting the instruction is unnecessary
+    // noise and could cause a spurious rename.
     ...(!resume ? ["--append-system-prompt", SET_SESSION_NAME_PROMPT] : []),
     ...(initialModelId
       ? initialModelProvider && initialModelProvider !== "anthropic"
@@ -933,6 +938,9 @@ function handleNdjsonLine(line: string): void {
     }
     if (result.sessionName !== undefined) {
       currentSessionName = result.sessionName;
+      // Emit an immediate heartbeat so the relay picks up the new name without
+      // waiting for the next scheduled 10-second heartbeat.
+      emitHeartbeat();
     }
     if (result.tokenUsage) {
       currentTokenUsage = result.tokenUsage;

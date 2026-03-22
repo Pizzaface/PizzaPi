@@ -103,6 +103,18 @@ interface ToolDef {
 
 const TOOLS: ToolDef[] = [
   {
+    name: "set_session_name",
+    description:
+      "Set a short display name for this session. Call this exactly once at the start of your first response with a 3–6 word summary of the user's request.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "A 3–6 word summary of the session topic" },
+      },
+      required: ["name"],
+    },
+  },
+  {
     name: "pizzapi_get_session_id",
     description: "Get this session's PizzaPi session ID.",
     inputSchema: { type: "object", properties: {} },
