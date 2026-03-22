@@ -38,6 +38,11 @@ export function hubUserRoom(userId: string): string {
     return `hub:user:${userId}`;
 }
 
+/** Room name for a specific user's /runners feed. */
+export function runnersUserRoom(userId: string): string {
+    return `runners:user:${userId}`;
+}
+
 /** Room that all viewers of a session join (on the /viewer namespace). */
 export function viewerSessionRoom(sessionId: string): string {
     return `session:${sessionId}`;
