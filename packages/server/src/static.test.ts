@@ -50,6 +50,6 @@ describe("serveStaticFile", () => {
 
     test("Serves .map with correct MIME type", async () => {
         const res = await serveStaticFile("/test.map");
-        expect(res?.headers.get("content-type")).toBe("application/json");
+        expect(res?.headers.get("content-type")).toBe("application/json; charset=utf-8");
     });
 });

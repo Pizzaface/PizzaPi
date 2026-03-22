@@ -61,7 +61,7 @@ const MIME_TYPES: Record<string, string> = {
     ".webm": "video/webm",
     ".avif": "image/avif",
     ".mp4": "video/mp4",
-    ".map": "application/json",
+    ".map": "application/json; charset=utf-8",
 };
 
 export async function serveStaticFile(pathname: string): Promise<Response | null> {
