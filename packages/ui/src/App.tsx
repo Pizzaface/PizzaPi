@@ -285,6 +285,11 @@ export function App() {
   // messages, otherwise the report gets appended then immediately replaced.
   const sessionHydratedRef = React.useRef(false);
 
+  // Holds an MCP startup report that arrived (via hub state_snapshot) before
+  // session_active hydration completed. Flushed when hydration finishes.
+  // Needed for the new slim-heartbeat CLI that no longer retries in every heartbeat.
+  const pendingMcpReportRef = React.useRef<Record<string, unknown> | null>(null);
+
   // Tracks the highest meta state version seen per session, to prevent stale
   // state_snapshot from rolling back state already updated by meta_event.
   const metaVersionsRef = React.useRef<Map<string, number>>(new Map());
@@ -903,9 +908,15 @@ export function App() {
     }
 
     // Apply mcpStartupReport from snapshot so late-joining viewers see MCP startup warnings.
-    // applyMcpReport handles its own dedup (renderedMcpReportTsRef) and hydration gating.
+    // If session is not yet hydrated, save it for replay once session_active arrives —
+    // the new slim-heartbeat CLI no longer retries in every heartbeat, so without this
+    // the report would be permanently lost for any viewer connecting to an existing session.
     if (state.mcpStartupReport) {
-      applyMcpReport(state.mcpStartupReport);
+      if (sessionHydratedRef.current) {
+        applyMcpReport(state.mcpStartupReport as Record<string, unknown>);
+      } else {
+        pendingMcpReportRef.current = state.mcpStartupReport as Record<string, unknown>;
+      }
     }
 
     if (Object.keys(cachePatch).length > 0) {
@@ -1215,6 +1226,11 @@ export function App() {
       }
       setIsChangingModel(false);
       sessionHydratedRef.current = !isChunked; // defer until final chunk
+      // For non-chunked sessions, flush any pending MCP report immediately
+      if (!isChunked && pendingMcpReportRef.current) {
+        applyMcpReport(pendingMcpReportRef.current);
+        pendingMcpReportRef.current = null;
+      }
 
       // Clear queued messages — the snapshot contains the full conversation
       // including any follow-ups that were consumed by the agent.
@@ -1295,6 +1311,11 @@ export function App() {
         lastCompletedSnapshotRef.current = chunkSnapshotId || null;
         chunkedDeliveryRef.current = null;
         sessionHydratedRef.current = true;
+        // Flush any MCP startup report that arrived before hydration completed
+        if (pendingMcpReportRef.current) {
+          applyMcpReport(pendingMcpReportRef.current);
+          pendingMcpReportRef.current = null;
+        }
         setViewerStatus("Connected");
 
         // Now that all messages are assembled, run global dedupe to remove
@@ -2024,6 +2045,7 @@ export function App() {
     awaitingSnapshotRef.current = true;
     renderedMcpReportTsRef.current = null;
     sessionHydratedRef.current = false;
+    pendingMcpReportRef.current = null;
     chunkedDeliveryRef.current = null;
     lastCompletedSnapshotRef.current = null;
     setActiveSessionId(relaySessionId);

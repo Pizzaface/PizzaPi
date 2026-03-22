@@ -63,17 +63,22 @@ export function registerHubNamespace(io: SocketIOServer): void {
             return;
           }
 
-          // Read state BEFORE joining the room to avoid a race where a concurrent
-          // meta_event (version N+1) arrives after the join, causing the client to
-          // set seen=N+1, then the snapshot at version N is silently dropped.
+          // Read state, join room, then re-read to avoid a narrow race window:
           //
-          // With read-first:
-          //  - meta_event fires BEFORE join → version N+1 already in Redis → snapshot
-          //    contains N+1 → client applies snapshot(N+1) then no stale event follows.
-          //  - meta_event fires AFTER join → client receives snapshot(N) then
-          //    meta_event(N+1) → applies both in order → correct.
-          const state = await getSessionMetaState(sessionId);
+          // Between the initial read and the join, a relay meta_event can:
+          //   1. Write version N+1 to Redis AND broadcast to the room.
+          //   2. Since socket isn't in the room yet, it misses the broadcast.
+          //   3. We join and send stale snapshot(N) — client never sees N+1.
+          //
+          // The re-read after join closes this window: if anything wrote N+1
+          // during the join I/O, the second read picks it up. If a write races
+          // the second read, the client is already subscribed and will receive
+          // the meta_event(N+1) through the room — so the snapshot can be stale
+          // by at most the in-flight write, which the room broadcast corrects.
+          const stateBeforeJoin = await getSessionMetaState(sessionId);
           await socket.join(sessionMetaRoom(sessionId));
+          // Re-read after join to capture any write that raced the join
+          const state = await getSessionMetaState(sessionId) ?? stateBeforeJoin;
           socket.emit("state_snapshot", { sessionId, state });
 
           console.log(`[sio/hub] meta subscribe: ${socket.id} → session ${sessionId}`);
