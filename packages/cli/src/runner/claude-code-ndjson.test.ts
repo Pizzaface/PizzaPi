@@ -832,5 +832,21 @@ output without closing tag`;
     expect(toolCalls[0].name).toBe("bash");
     expect(toolCalls[1].name).toBe("bash");
     expect(toolCalls[0].id).not.toBe(toolCalls[1].id);
+
+    // Both tool results must be present and correctly attributed (parallel result matching)
+    const toolResults = result.filter(m => m.role === "toolResult") as any[];
+    expect(toolResults).toHaveLength(2);
+    expect(toolResults[0].toolCallId).toBe(toolCalls[0].id);
+    expect(toolResults[1].toolCallId).toBe(toolCalls[1].id);
+
+    // No stray assistant text message should contain raw <tool_result> markup
+    const leakedMarkup = result.filter(m =>
+      m.role === "assistant" &&
+      Array.isArray(m.content) &&
+      (m.content as any[]).some(
+        (c: any) => c.type === "text" && typeof c.text === "string" && c.text.includes("<tool_result>"),
+      ),
+    );
+    expect(leakedMarkup).toHaveLength(0);
   });
 });

@@ -411,7 +411,7 @@ function makeAssistantMessage(
   content: Record<string, unknown>[],
   stopReason = "stop",
 ): Record<string, unknown> {
-  return { role: "assistant", content, usage: { ...STUB_USAGE }, stopReason, timestamp: 0 };
+  return { role: "assistant", content, usage: { ...STUB_USAGE, cost: { ...STUB_USAGE.cost } }, stopReason, timestamp: 0 };
 }
 
 function makeToolResultMessage(
@@ -419,8 +419,8 @@ function makeToolResultMessage(
   toolName: string,
   rawContent: string,
 ): Record<string, unknown> {
-  const isError = rawContent.includes("<is_error>true</is_error>");
-  const text = rawContent.replace(/<is_error>.*?<\/is_error>/gs, "").trim();
+  const isError = /<is_error>\s*true\s*<\/is_error>/i.test(rawContent);
+  const text = rawContent.replace(/<is_error>.*?<\/is_error>/gsi, "").trim();
   return {
     role: "toolResult",
     toolCallId,
@@ -452,8 +452,8 @@ export function parseSubagentToolCalls(text: string): Record<string, unknown>[] 
   const messages: Record<string, unknown>[] = [];
   let assistantContent: Record<string, unknown>[] = [];
   let toolCallCounter = 0;
-  let lastToolName = "";
-  let lastToolCallId = "";
+  // FIFO queue of pending tool calls awaiting results; supports parallel tool calls.
+  const pendingResults: Array<{ id: string; name: string }> = [];
 
   type State = "outside" | "in_call" | "in_result";
   let state: State = "outside";
@@ -462,6 +462,18 @@ export function parseSubagentToolCalls(text: string): Record<string, unknown>[] 
   while (pos < text.length) {
     if (state === "outside") {
       const nextCall = text.indexOf("<tool_call>", pos);
+      // If there are pending results, also watch for the next <tool_result>
+      const nextResult = pendingResults.length > 0 ? text.indexOf("<tool_result>", pos) : -1;
+
+      if (nextResult !== -1 && (nextCall === -1 || nextResult < nextCall)) {
+        // A <tool_result> comes before the next <tool_call> — consume it
+        const before = text.slice(pos, nextResult).trim();
+        if (before) assistantContent.push({ type: "text", text: before });
+        pos = nextResult + "<tool_result>".length;
+        state = "in_result";
+        continue;
+      }
+
       if (nextCall === -1) {
         // Rest is plain text
         const remaining = text.slice(pos).trim();
@@ -497,8 +509,8 @@ export function parseSubagentToolCalls(text: string): Record<string, unknown>[] 
       }
 
       const toolCallId = `cc-tc-${toolCallCounter++}`;
-      lastToolName = toolName;
-      lastToolCallId = toolCallId;
+      // Push to FIFO queue so results are matched in order
+      pendingResults.push({ id: toolCallId, name: toolName });
 
       assistantContent.push({ type: "toolCall", id: toolCallId, name: toolName, arguments: toolInput });
 
@@ -536,15 +548,19 @@ export function parseSubagentToolCalls(text: string): Record<string, unknown>[] 
     if (state === "in_result") {
       // Only scan for </tool_result> — NOT <tool_call> (state machine safety)
       const endResult = text.indexOf("</tool_result>", pos);
+      // Dequeue the oldest pending tool call to match this result
+      const pending = pendingResults.shift();
+      const currentId = pending?.id ?? "";
+      const currentName = pending?.name ?? "";
       let resultText: string;
       if (endResult === -1) {
         // No closing tag — rest of text is the result
         resultText = text.slice(pos).trim();
-        messages.push(makeToolResultMessage(lastToolCallId, lastToolName, resultText));
+        messages.push(makeToolResultMessage(currentId, currentName, resultText));
         break;
       }
       resultText = text.slice(pos, endResult).trim();
-      messages.push(makeToolResultMessage(lastToolCallId, lastToolName, resultText));
+      messages.push(makeToolResultMessage(currentId, currentName, resultText));
       pos = endResult + "</tool_result>".length;
       state = "outside";
       continue;
