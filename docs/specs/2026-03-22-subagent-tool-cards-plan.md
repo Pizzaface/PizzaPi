@@ -30,13 +30,23 @@
 **Files:**
 - Modify: `packages/cli/src/runner/claude-code-ndjson.test.ts` (append new describe block)
 
-- [ ] **Step 1: Add test file imports and describe block**
+- [ ] **Step 1: Extend import and add describe block**
 
-At the bottom of `claude-code-ndjson.test.ts`, add a new describe block for `parseSubagentToolCalls`. Import the function (it doesn't exist yet — tests will fail):
+In `claude-code-ndjson.test.ts`, find the existing import at the top (line ~2):
 
 ```typescript
-import { parseSubagentToolCalls } from "./claude-code-ndjson";
+import { translateNdjsonLine, SUBAGENT_TOOL_NAMES } from "./claude-code-ndjson.js";
+```
 
+Extend it to include `parseSubagentToolCalls`:
+
+```typescript
+import { translateNdjsonLine, SUBAGENT_TOOL_NAMES, parseSubagentToolCalls } from "./claude-code-ndjson.js";
+```
+
+Then at the **bottom** of the file, add a new top-level describe block:
+
+```typescript
 describe("parseSubagentToolCalls", () => {
   // tests go here
 });
@@ -200,12 +210,30 @@ test("preserves JSON text in tool result (read tool output)", () => {
 });
 ```
 
-- [ ] **Step 10: Run tests to verify they all fail (function doesn't exist yet)**
+- [ ] **Step 10: Write test — consecutive (parallel) tool calls grouped in one assistant message**
 
-Run: `cd packages/cli && bun test src/runner/claude-code-ndjson.test.ts --grep "parseSubagentToolCalls"`
+```typescript
+test("groups consecutive tool calls into a single assistant message", () => {
+  const input = `<tool_call> <tool_name>bash</tool_name> <tool_input>{"command": "pwd"}</tool_input> </tool_call> <tool_call> <tool_name>bash</tool_name> <tool_input>{"command": "whoami"}</tool_input> </tool_call> <tool_result>/home/user</tool_result> <tool_result>jordan</tool_result>`;
+
+  const result = parseSubagentToolCalls(input);
+  // First message should be assistant with TWO toolCall content parts
+  const firstAssistant = result[0] as any;
+  expect(firstAssistant.role).toBe("assistant");
+  const toolCalls = firstAssistant.content.filter((c: any) => c.type === "toolCall");
+  expect(toolCalls).toHaveLength(2);
+  expect(toolCalls[0].name).toBe("bash");
+  expect(toolCalls[1].name).toBe("bash");
+  expect(toolCalls[0].id).not.toBe(toolCalls[1].id);
+});
+```
+
+- [ ] **Step 11: Run tests to verify they all fail (function doesn't exist yet)**
+
+Run: `cd packages/cli && bun test src/runner/claude-code-ndjson.test.ts -t "parseSubagentToolCalls"`
 Expected: All tests FAIL with import/reference error
 
-- [ ] **Step 11: Commit test file**
+- [ ] **Step 12: Commit test file**
 
 ```bash
 git add packages/cli/src/runner/claude-code-ndjson.test.ts
@@ -257,8 +285,10 @@ function makeAssistantMessage(content: Record<string, unknown>[], stopReason = "
   return { role: "assistant", content, usage: { ...STUB_USAGE }, stopReason, timestamp: 0 };
 }
 
-function makeToolResultMessage(toolCallId: string, toolName: string, content: string, isError = false): Record<string, unknown> {
-  return { role: "toolResult", toolCallId, toolName, content: [{ type: "text", text: content }], isError, timestamp: 0 };
+function makeToolResultMessage(toolCallId: string, toolName: string, rawContent: string): Record<string, unknown> {
+  const isError = rawContent.includes("<is_error>true</is_error>");
+  const text = rawContent.replace(/<is_error>.*?<\/is_error>/gs, "").trim();
+  return { role: "toolResult", toolCallId, toolName, content: [{ type: "text", text }], isError, timestamp: 0 };
 }
 ```
 
@@ -379,7 +409,7 @@ function makeToolResultMessage(toolCallId: string, toolName: string, content: st
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd packages/cli && bun test src/runner/claude-code-ndjson.test.ts --grep "parseSubagentToolCalls"`
+Run: `cd packages/cli && bun test src/runner/claude-code-ndjson.test.ts -t "parseSubagentToolCalls"`
 Expected: All tests PASS
 
 - [ ] **Step 5: Commit implementation**
@@ -657,12 +687,16 @@ Replace with:
       <SubagentToolCallsSection executions={toolExecutions} />
 ```
 
-- [ ] **Step 2: Verify typecheck passes**
+- [ ] **Step 2: Remove dead code**
+
+Delete the now-unused `getToolCallCount` function (~line 131) and the `ToolCallActivity` component (~line 253). Both are unreferenced after this change.
+
+- [ ] **Step 3: Verify typecheck passes**
 
 Run: `cd packages/ui && bunx tsc --noEmit`
 Expected: Clean
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add packages/ui/src/components/session-viewer/cards/SubagentResultCard.tsx
