@@ -49,13 +49,10 @@ export function useRunnersFeed(): RunnersFeedState {
         });
 
         socket.on("runner_updated", (incoming) => {
-            setRunners(prev => {
-                const idx = prev.findIndex(r => r.runnerId === incoming.runnerId);
-                if (idx === -1) return prev; // unknown runner — ignore
-                const next = [...prev];
-                next[idx] = incoming;
-                return next;
-            });
+            // Upsert: apply the update even if the initial snapshot hasn't arrived yet.
+            // This prevents updates from being silently dropped during the join→snapshot
+            // window, where runner_updated can arrive before the runners snapshot.
+            setRunners(prev => upsert(prev, incoming));
         });
 
         return () => {

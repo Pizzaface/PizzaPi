@@ -786,6 +786,8 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
             if (dispatchSessionId !== sessionIdRef.current) return;
             onAppendSystemMessage?.(`**Skills** — Failed to load: ${err.message}`);
           });
+      } else {
+        onAppendSystemMessage?.("**Skills** — Runner not connected yet. Try again in a moment.");
       }
       return true;
     }
