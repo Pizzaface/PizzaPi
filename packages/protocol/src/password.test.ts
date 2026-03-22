@@ -86,11 +86,12 @@ describe("validatePassword", () => {
     expect(result.checks[3].met).toBe(false); // number
   });
 
-  test("rejects non-string values gracefully or throws", () => {
-    // Even though TS enforces string, at runtime we might get other types.
-    // In this implementation, it throws a TypeError when accessing .length
-    expect(() => validatePassword(null as unknown as string)).toThrow(TypeError);
-    expect(() => validatePassword(undefined as unknown as string)).toThrow(TypeError);
+  test("returns invalid result for non-string inputs", () => {
+    // Even though TS enforces string, runtime callers (JS, JSON deserialization)
+    // may pass other types. The implementation guards and returns valid:false for
+    // all non-string inputs rather than throwing, so callers don't need try/catch.
+    expect(validatePassword(null as unknown as string).valid).toBe(false);
+    expect(validatePassword(undefined as unknown as string).valid).toBe(false);
     // @ts-expect-error testing invalid type
     expect(validatePassword(12345678).valid).toBe(false);
   });
@@ -119,8 +120,10 @@ describe("isValidPassword", () => {
   });
 
   test("returns false for non-string inputs", () => {
-    expect(() => isValidPassword(null as unknown as string)).toThrow(TypeError);
-    expect(() => isValidPassword(undefined as unknown as string)).toThrow(TypeError);
+    // isValidPassword delegates to validatePassword, which returns valid:false
+    // for all non-string inputs — no throws, consistent contract.
+    expect(isValidPassword(null as unknown as string)).toBe(false);
+    expect(isValidPassword(undefined as unknown as string)).toBe(false);
     // @ts-expect-error testing invalid type
     expect(isValidPassword(12345678)).toBe(false);
   });

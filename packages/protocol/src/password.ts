@@ -44,6 +44,15 @@ export interface PasswordCheckItem {
  * Use `.valid` for a quick boolean, or iterate `.checks` for per-rule feedback.
  */
 export function validatePassword(password: string): PasswordCheck {
+  // Guard against non-string values that bypass TypeScript at runtime (e.g. JS
+  // callers, JSON deserialization). Return a safe invalid result rather than
+  // throwing, so callers don't need try/catch around a validation function.
+  if (typeof password !== "string") {
+    return {
+      valid: false,
+      checks: PASSWORD_REQUIREMENTS.map((label) => ({ label, met: false })),
+    };
+  }
   const checks: PasswordCheckItem[] = [
     { label: PASSWORD_REQUIREMENTS[0], met: password.length >= 8 },
     { label: PASSWORD_REQUIREMENTS[1], met: /[A-Z]/.test(password) },
