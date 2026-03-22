@@ -545,7 +545,9 @@ async function dispatchMcpTool(tool: string, args: Record<string, unknown>): Pro
         let foundIdx = -1;
 
         if (!fromSessionIdFilter) {
-          foundIdx = 0;
+          // Only consume index 0 if the queue actually has an entry; an empty
+          // queue leaves foundIdx at -1 so we fall through to the waiter path.
+          foundIdx = messageQueue.length > 0 ? 0 : -1;
         } else {
           foundIdx = messageQueue.findIndex((m) => m.fromSessionId === fromSessionIdFilter);
         }

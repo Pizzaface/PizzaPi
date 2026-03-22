@@ -474,6 +474,7 @@ export function App() {
     setViewerStatus("Idle");
     setPendingQuestion(null);
     setPendingPlan(null);
+    setPendingPermission(null);
     setPluginTrustPrompt(null);
     setRetryState(null);
     setActiveToolCalls(new Map());

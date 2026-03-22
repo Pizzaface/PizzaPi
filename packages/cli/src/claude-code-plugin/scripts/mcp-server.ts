@@ -157,7 +157,6 @@ const TOOLS: ToolDef[] = [
         fromSessionId: { type: "string", description: "Session ID to wait for a message from" },
         timeout: { type: "number", description: "Timeout in ms (default 20000, max 25000)" },
       },
-      required: ["fromSessionId"],
     },
   },
   {
