@@ -49,6 +49,8 @@ export interface RunnerInfo {
   plugins?: RunnerPlugin[];
   hooks?: RunnerHook[];
   version: string | null;
+  /** Node.js process.platform value (e.g. "darwin", "linux", "win32") */
+  platform?: string | null;
 }
 
 /** A discovered Claude Code plugin on a runner */

@@ -216,6 +216,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 plugins,
                 hooks,
                 version: cliVersion,
+                platform: process.platform,
             });
         };
 

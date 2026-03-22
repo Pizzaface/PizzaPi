@@ -137,7 +137,7 @@ export async function unsubscribePush(userId: string, endpoint: string): Promise
         .where("endpoint", "=", endpoint)
         .execute();
 
-    return (result as any)[0]?.numDeletedRows > 0;
+    return Number((result as any)[0]?.numDeletedRows ?? 0) > 0;
 }
 
 export async function unsubscribePushById(userId: string, subscriptionId: string): Promise<void> {

@@ -231,6 +231,7 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
             const plugins = data.plugins ?? [];
             const hooks = data.hooks ?? [];
             const version = data.version ?? null;
+            const platform = typeof data.platform === "string" ? data.platform : null;
 
             const result = await registerRunner(socket, {
                 name,
@@ -242,6 +243,7 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
                 plugins,
                 hooks,
                 version,
+                platform,
                 userId: (socket.data as RunnerSocketData & { userId?: string }).userId ?? null,
                 userName: (socket.data as RunnerSocketData & { userName?: string }).userName ?? null,
             });

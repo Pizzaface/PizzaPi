@@ -155,6 +155,8 @@ export interface RedisRunnerData {
     hooks?: string;
     /** Runner CLI version (e.g. "0.1.30") */
     version: string | null;
+    /** Node.js process.platform value (e.g. "darwin", "linux", "win32") */
+    platform?: string | null;
 }
 
 export interface RedisTerminalData {
@@ -224,6 +226,7 @@ function parseRunnerFromHash(hash: Record<string, string>): RedisRunnerData | nu
         plugins: hash.plugins || "[]",
         hooks: hash.hooks || "[]",
         version: hash.version || null,
+        platform: hash.platform || null,
     };
 }
 

@@ -169,7 +169,8 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         // and registerTuiSession stores the relationship + calls addChildSession.
         // No pre-seeding needed — eliminates the race condition.
 
-        if (requestedCwd) {
+        // Only record for top-level user-initiated spawns (not child/linked sessions).
+        if (requestedCwd && !validatedParentSessionId) {
             void recordRecentFolder(identity.userId, runnerId, requestedCwd).catch(() => {});
         }
 
