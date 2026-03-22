@@ -6,3 +6,6 @@
 ## 2025-04-18 - Use adapter.sockets() for presence/count checks
 **Learning:** Using `allSockets()` or `fetchSockets()` pulls full `RemoteSocket` objects across the cluster via the Redis adapter. When only the presence of sockets or the count is needed, directly querying the adapter via `adapter.sockets(new Set([roomName]))` avoids this expensive network overhead.
 **Action:** Use `await io.of("namespace").adapter.sockets(new Set([roomName]))` to check for room presence or socket count instead of `fetchSockets()`.
+## 2024-05-20 - Fast Socket.IO presence checks
+**Learning:** In Socket.IO, using `fetchSockets()` to verify if clients are in a room incurs expensive network overhead because it pulls full `RemoteSocket` objects across the Redis cluster.
+**Action:** Query the adapter directly using `await io.of('...').adapter.sockets(new Set([room]))` to return a `Set` of socket IDs quickly.

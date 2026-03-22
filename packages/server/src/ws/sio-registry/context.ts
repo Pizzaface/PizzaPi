@@ -208,8 +208,9 @@ export async function emitToRelaySessionAwaitingAck(
     if (!io) return { hadListeners: false, acked: false };
     const room = relaySessionRoom(sessionId);
     try {
-        const sockets = await io.of("/relay").in(room).fetchSockets();
-        if (sockets.length === 0) return { hadListeners: false, acked: false };
+        // ⚡ Bolt: Fast socket presence check via adapter.sockets() avoids expensive cluster-wide network overhead of fetchSockets()
+        const sockets = await io.of("/relay").adapter.sockets(new Set([room]));
+        if (sockets.size === 0) return { hadListeners: false, acked: false };
 
         const relayNs = io.of("/relay") as any;
         const responses = await new Promise<unknown[]>((resolve, reject) => {
