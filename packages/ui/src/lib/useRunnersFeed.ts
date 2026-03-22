@@ -52,6 +52,11 @@ export function useRunnersFeed(options: UseRunnersFeedOptions = {}): RunnersFeed
             return;
         }
 
+        // Mark as connecting immediately so consumers don't treat the feed as
+        // "fully loaded with zero runners" during the window between enabled
+        // flipping true and the socket firing its "connect" event.
+        setStatus("connecting");
+
         const base = getSocketIOBase();
         const socket: Socket<RunnersServerToClientEvents, RunnersClientToServerEvents> = io(
             base ? `${base}/runners` : "/runners",
