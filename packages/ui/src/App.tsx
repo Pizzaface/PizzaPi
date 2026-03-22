@@ -3611,6 +3611,13 @@ export function App() {
                   sessionId={activeSessionId}
                   runnerId={activeSessionInfo?.runnerId ?? undefined}
                   defaultCwd={activeSessionInfo?.cwd || undefined}
+                  runners={feedRunners.map(r => ({
+                    runnerId: r.runnerId,
+                    name: r.name,
+                    roots: r.roots,
+                    sessionCount: liveSessions.filter(s => s.runnerId === r.runnerId).length,
+                  }))}
+                  runnersLoading={runnersStatus === "connecting"}
                   tabs={terminalTabs}
                   activeTabId={activeTerminalId}
                   onActiveTabChange={setActiveTerminalId}
@@ -3669,6 +3676,13 @@ export function App() {
                             sessionId={activeSessionId}
                             runnerId={activeSessionInfo?.runnerId ?? undefined}
                             defaultCwd={activeSessionInfo?.cwd || undefined}
+                            runners={feedRunners.map(r => ({
+                              runnerId: r.runnerId,
+                              name: r.name,
+                              roots: r.roots,
+                              sessionCount: liveSessions.filter(s => s.runnerId === r.runnerId).length,
+                            }))}
+                            runnersLoading={runnersStatus === "connecting"}
                             tabs={terminalTabs}
                             activeTabId={activeTerminalId}
                             onActiveTabChange={setActiveTerminalId}
@@ -3741,6 +3755,13 @@ export function App() {
                     sessionId={activeSessionId}
                     runnerId={activeSessionInfo?.runnerId ?? undefined}
                     defaultCwd={activeSessionInfo?.cwd || undefined}
+                    runners={feedRunners.map(r => ({
+                      runnerId: r.runnerId,
+                      name: r.name,
+                      roots: r.roots,
+                      sessionCount: liveSessions.filter(s => s.runnerId === r.runnerId).length,
+                    }))}
+                    runnersLoading={runnersStatus === "connecting"}
                     tabs={terminalTabs}
                     activeTabId={activeTerminalId}
                     onActiveTabChange={setActiveTerminalId}

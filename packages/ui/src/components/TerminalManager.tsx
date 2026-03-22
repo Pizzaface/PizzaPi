@@ -60,6 +60,17 @@ export interface TerminalManagerProps {
   /** Default working directory for new terminals (pre-filled from the session's cwd). */
   defaultCwd?: string;
 
+  // ── Runners (fed from App's WebSocket feed) ───────────────────────────────
+  /** Connected runners — passed from App so we don't fetch on dialog open. */
+  runners?: Array<{
+    runnerId: string;
+    name: string | null;
+    roots: string[];
+    sessionCount: number;
+  }>;
+  /** True while the runners feed is still connecting. */
+  runnersLoading?: boolean;
+
   // ── Controlled state (lifted to App so tabs survive panel remounts) ───────
   tabs: TerminalTab[];
   activeTabId: string | null;
@@ -80,16 +91,20 @@ export function TerminalManager({
   sessionId,
   runnerId,
   defaultCwd,
+  runners: runnersProp,
+  runnersLoading: runnersLoadingProp,
   tabs,
   activeTabId,
   onActiveTabChange,
   onTabAdd,
   onTabClose,
 }: TerminalManagerProps) {
+  // ── Derive effective runners from props (with safe defaults) ───────────
+  const effectiveRunners = runnersProp ?? [];
+  const effectiveRunnersLoading = runnersLoadingProp ?? false;
+
   // ── Dialog / spawn UI state (fully local) ──────────────────────────────
   const [dialogOpen, setDialogOpen] = React.useState(false);
-  const [runners, setRunners] = React.useState<RunnerInfo[]>([]);
-  const [runnersLoading, setRunnersLoading] = React.useState(false);
   const [selectedRunnerId, setSelectedRunnerId] = React.useState<string>("");
   const [cwd, setCwd] = React.useState("");
   const [spawning, setSpawning] = React.useState(false);
@@ -101,33 +116,12 @@ export function TerminalManager({
     [tabs, sessionId],
   );
 
-  // ── Fetch runners when dialog opens ──────────────────────────────────────
+  // ── Auto-select first runner when dialog opens and none selected ────────
   React.useEffect(() => {
-    if (!dialogOpen) return;
-    let cancelled = false;
-    setRunnersLoading(true);
-    void fetch("/api/runners", { credentials: "include" })
-      .then((res) => res.ok ? res.json() : Promise.reject())
-      .then((data) => {
-        if (cancelled) return;
-        const list = Array.isArray((data as any)?.runners) ? (data as any).runners : [];
-        const normalized = list
-          .map((r: any) => ({
-            runnerId: typeof r?.runnerId === "string" ? r.runnerId : "",
-            name: typeof r?.name === "string" ? r.name : null,
-            roots: Array.isArray(r?.roots) ? r.roots.filter((x: unknown): x is string => typeof x === "string") : [],
-            sessionCount: typeof r?.sessionCount === "number" ? r.sessionCount : 0,
-          }))
-          .filter((r: RunnerInfo) => r.runnerId);
-        setRunners(normalized);
-        if (normalized.length > 0 && !selectedRunnerId) {
-          setSelectedRunnerId(normalized[0].runnerId);
-        }
-      })
-      .catch(() => { if (!cancelled) setRunners([]); })
-      .finally(() => { if (!cancelled) setRunnersLoading(false); });
-    return () => { cancelled = true; };
-  }, [dialogOpen]);
+    if (dialogOpen && effectiveRunners.length > 0 && !selectedRunnerId) {
+      setSelectedRunnerId(effectiveRunners[0].runnerId);
+    }
+  }, [dialogOpen, effectiveRunners, selectedRunnerId]);
 
   // ── Fetch recent folders when runner changes ──────────────────────────────
   React.useEffect(() => {
@@ -228,7 +222,7 @@ export function TerminalManager({
         return;
       }
 
-      const runner = runners.find((r) => r.runnerId === selectedRunnerId);
+      const runner = effectiveRunners.find((r) => r.runnerId === selectedRunnerId);
       const label = cwd.trim()
         ? (cwd.trim().split("/").pop() || "terminal")
         : (runner?.name || "terminal");
@@ -245,7 +239,7 @@ export function TerminalManager({
     } finally {
       setSpawning(false);
     }
-  }, [selectedRunnerId, cwd, runners, sessionId, onTabAdd]);
+  }, [selectedRunnerId, cwd, effectiveRunners, sessionId, onTabAdd]);
 
   /**
    * Handle the "+" button — direct spawn when session context is available,
@@ -461,8 +455,8 @@ export function TerminalManager({
       <NewTerminalDialog
         open={dialogOpen}
         onOpenChange={setDialogOpen}
-        runners={runners}
-        runnersLoading={runnersLoading}
+        runners={effectiveRunners}
+        runnersLoading={effectiveRunnersLoading}
         selectedRunnerId={selectedRunnerId}
         onRunnerChange={setSelectedRunnerId}
         cwd={cwd}
