@@ -188,7 +188,6 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             pendingDelink = false;
             pendingDelinkEpoch = null;
             staleChildIds.clear();
-            console.log("pizzapi: delink_children confirmed by server — retry guard cleared");
         });
     }
 
