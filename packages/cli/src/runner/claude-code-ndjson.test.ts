@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test";
-import { translateNdjsonLine } from "./claude-code-ndjson.js";
+import { translateNdjsonLine, SUBAGENT_TOOL_NAMES } from "./claude-code-ndjson.js";
 
 describe("translateNdjsonLine", () => {
   test("ignores control_request frames (not relay events)", () => {
@@ -490,5 +490,84 @@ describe("translateNdjsonLine", () => {
     });
     const result = translateNdjsonLine(line);
     expect(result.toolResultIds).toBeUndefined();
+  });
+
+  // ── Claude Code subagent tool recognition ─────────────────────────────
+
+  test("SUBAGENT_TOOL_NAMES includes Task, Agent, and subagent", () => {
+    expect(SUBAGENT_TOOL_NAMES.has("Task")).toBe(true);
+    expect(SUBAGENT_TOOL_NAMES.has("Agent")).toBe(true);
+    expect(SUBAGENT_TOOL_NAMES.has("subagent")).toBe(true);
+    // Common non-subagent tools should NOT be in the set
+    expect(SUBAGENT_TOOL_NAMES.has("Bash")).toBe(false);
+    expect(SUBAGENT_TOOL_NAMES.has("Read")).toBe(false);
+  });
+
+  test("extracts toolCalls for Claude Code Task tool", () => {
+    const line = JSON.stringify({
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: "tc_task", name: "Task", input: {
+            subagent_type: "Explore",
+            description: "Find auth code",
+            prompt: "Search for authentication patterns",
+          } },
+        ],
+      },
+    });
+    const result = translateNdjsonLine(line);
+    expect(result.toolCalls).toHaveLength(1);
+    expect(result.toolCalls![0]).toMatchObject({
+      toolCallId: "tc_task",
+      toolName: "Task",
+      toolInput: {
+        subagent_type: "Explore",
+        description: "Find auth code",
+        prompt: "Search for authentication patterns",
+      },
+    });
+  });
+
+  test("extracts toolCalls for Claude Code Agent tool (newer SDK)", () => {
+    const line = JSON.stringify({
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: "tc_agent", name: "Agent", input: {
+            subagent_type: "general-purpose",
+            prompt: "Implement the feature",
+          } },
+        ],
+      },
+    });
+    const result = translateNdjsonLine(line);
+    expect(result.toolCalls).toHaveLength(1);
+    expect(result.toolCalls![0].toolName).toBe("Agent");
+  });
+
+  test("normalizes Task tool_use to toolCall format like any other tool", () => {
+    const line = JSON.stringify({
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "tool_use", id: "tc_task", name: "Task", input: {
+            subagent_type: "Explore",
+            prompt: "Find files",
+          } },
+        ],
+      },
+    });
+    const result = translateNdjsonLine(line);
+    const msg = (result.relayEvent as any)?.message;
+    expect(msg.content[0]).toMatchObject({
+      type: "toolCall",
+      toolCallId: "tc_task",
+      name: "Task",
+      arguments: JSON.stringify({ subagent_type: "Explore", prompt: "Find files" }),
+    });
   });
 });

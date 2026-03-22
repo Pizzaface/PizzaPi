@@ -2,6 +2,11 @@
  * Translates Claude Code CLI NDJSON output lines into PizzaPi relay events.
  */
 
+/** Tool names that Claude Code uses for subagent invocations.
+ *  "Task" is the older name, "Agent" is the current SDK name.
+ *  Pi uses "subagent". All are recognized for lifecycle tracking. */
+export const SUBAGENT_TOOL_NAMES = new Set(["Task", "Agent", "subagent"]);
+
 /** Info about a tool_use block extracted from an assistant message. */
 export interface ToolCallInfo {
   toolCallId: string;
