@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach } from "bun:test";
-import { defaultMetaState, type SessionMetaState } from "@pizzapi/protocol";
+import { defaultMetaState, type SessionMetaState } from "../../../../protocol/src/meta";
 
 // In-memory session store stub — no Redis needed
 const sessionStore = new Map<string, Record<string, unknown>>();

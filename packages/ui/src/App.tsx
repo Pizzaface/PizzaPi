@@ -902,12 +902,16 @@ export function App() {
       }
     }
 
-    // mcpStartupReport is NOT applied here — it needs dedup via renderedMcpReportTsRef
-    // and sessionHydratedRef gating. It will be handled by meta_event for mcp_startup_report.
+    // Apply mcpStartupReport from snapshot so late-joining viewers see MCP startup warnings.
+    // applyMcpReport handles its own dedup (renderedMcpReportTsRef) and hydration gating.
+    if (state.mcpStartupReport) {
+      applyMcpReport(state.mcpStartupReport);
+    }
+
     if (Object.keys(cachePatch).length > 0) {
       patchSessionCache(cachePatch);
     }
-  }, [getFallbackPromptKey, patchSessionCache]);
+  }, [applyMcpReport, getFallbackPromptKey, patchSessionCache]);
 
   const applyMetaPatch = React.useCallback((patch: MetaStatePatch) => {
     const cachePatch: Partial<SessionUiCacheEntry> = {};
@@ -1934,15 +1938,27 @@ export function App() {
       if (payload.sessionId !== currentSessionId) return;
       const { sessionId, version, ...event } = payload;
       const seen = metaVersionsRef.current.get(sessionId) ?? 0;
-      metaVersionsRef.current.set(sessionId, Math.max(seen, version));
+      if (version <= seen) return;
+      metaVersionsRef.current.set(sessionId, version);
       applyMetaPatch(metaEventToStatePatch(event as any));
       if ((event as any).type === "mcp_startup_report" && (event as any).report) {
         applyMcpReport((event as any).report);
       }
     };
 
+    // Re-subscribe to the current session's meta room after non-recovered reconnects
+    // (e.g., server restart). Without this, the client stops receiving meta_event
+    // updates until the user switches sessions or reloads.
+    const handleReconnect = () => {
+      const currentSessionId = activeSessionRef.current;
+      if (currentSessionId) {
+        socket.emit("subscribe_session_meta", { sessionId: currentSessionId });
+      }
+    };
+
     socket.on("state_snapshot", handleStateSnapshot);
     socket.on("meta_event", handleMetaEvent);
+    socket.on("connect", handleReconnect);
 
     const initialSessionId = activeSessionRef.current;
     if (initialSessionId) {
@@ -1953,6 +1969,7 @@ export function App() {
     return () => {
       socket.off("state_snapshot", handleStateSnapshot);
       socket.off("meta_event", handleMetaEvent);
+      socket.off("connect", handleReconnect);
       socket.disconnect();
       hubSocketRef.current = null;
     };

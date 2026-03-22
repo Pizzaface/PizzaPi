@@ -11,7 +11,7 @@ import {
   parsePendingQuestionDisplayMode,
   type ParsedQuestion,
   type QuestionDisplayMode,
-} from "@/lib/ask-user-questions";
+} from "./ask-user-questions";
 import type { MetaRelayEvent, SessionMetaState, MetaPendingQuestion } from "@pizzapi/protocol";
 import type { ProviderUsageMap } from "@/components/UsageIndicator";
 
