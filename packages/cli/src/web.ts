@@ -297,7 +297,7 @@ export function extractSettingsFromCompose(content: string): ExtractedComposeSet
     if (serverSectionStart !== -1) {
         const afterServer = content.slice(serverSectionStart);
         // Stop at the next top-level service key ("  <name>:") or end of file.
-        const nextServiceIdx = afterServer.slice(1).search(/\n  [a-z]/);
+        const nextServiceIdx = afterServer.slice(1).search(/\n  \S/);
         const serverBlock =
             nextServiceIdx !== -1 ? afterServer.slice(0, nextServiceIdx + 1) : afterServer;
         const imageMatch = serverBlock.match(/^\s{4}image:\s+(.+)/m);
