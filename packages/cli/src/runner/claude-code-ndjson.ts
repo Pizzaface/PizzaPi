@@ -399,3 +399,162 @@ export function translateNdjsonLine(line: string): TranslationResult {
 
   return { kind: "unknown" };
 }
+
+// ── Subagent tool call XML parser ──────────────────────────────────────
+
+const STUB_USAGE = {
+  input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+};
+
+function makeAssistantMessage(
+  content: Record<string, unknown>[],
+  stopReason = "stop",
+): Record<string, unknown> {
+  return { role: "assistant", content, usage: { ...STUB_USAGE }, stopReason, timestamp: 0 };
+}
+
+function makeToolResultMessage(
+  toolCallId: string,
+  toolName: string,
+  rawContent: string,
+): Record<string, unknown> {
+  const isError = rawContent.includes("<is_error>true</is_error>");
+  const text = rawContent.replace(/<is_error>.*?<\/is_error>/gs, "").trim();
+  return {
+    role: "toolResult",
+    toolCallId,
+    toolName,
+    content: [{ type: "text", text }],
+    isError,
+    timestamp: 0,
+  };
+}
+
+/**
+ * Parse Claude Code's XML-serialized subagent tool calls into structured
+ * Message-compatible objects. Uses a state machine to avoid misinterpreting
+ * <tool_call> text that appears inside <tool_result> blocks.
+ *
+ * Returns an array of synthetic messages matching pi-ai's Message shape:
+ * - AssistantMessage with ToolCall content parts (role: "assistant")
+ * - ToolResultMessage (role: "toolResult")
+ *
+ * If no <tool_call> tags are found, returns a single assistant text message
+ * (backward-compatible fallback).
+ */
+export function parseSubagentToolCalls(text: string): Record<string, unknown>[] {
+  // Quick check: if no tool_call tags, return plain text fallback
+  if (!text.includes("<tool_call>")) {
+    return [makeAssistantMessage([{ type: "text", text }])];
+  }
+
+  const messages: Record<string, unknown>[] = [];
+  let assistantContent: Record<string, unknown>[] = [];
+  let toolCallCounter = 0;
+  let lastToolName = "";
+  let lastToolCallId = "";
+
+  type State = "outside" | "in_call" | "in_result";
+  let state: State = "outside";
+  let pos = 0;
+
+  while (pos < text.length) {
+    if (state === "outside") {
+      const nextCall = text.indexOf("<tool_call>", pos);
+      if (nextCall === -1) {
+        // Rest is plain text
+        const remaining = text.slice(pos).trim();
+        if (remaining) assistantContent.push({ type: "text", text: remaining });
+        break;
+      }
+      // Text before the tool call
+      const before = text.slice(pos, nextCall).trim();
+      if (before) assistantContent.push({ type: "text", text: before });
+      pos = nextCall + "<tool_call>".length;
+      state = "in_call";
+      continue;
+    }
+
+    if (state === "in_call") {
+      const endCall = text.indexOf("</tool_call>", pos);
+      if (endCall === -1) break; // malformed — bail
+
+      const callBody = text.slice(pos, endCall);
+
+      // Extract tool_name
+      const nameMatch = callBody.match(/<tool_name>(.*?)<\/tool_name>/s);
+      const toolName = nameMatch ? nameMatch[1].trim() : "unknown";
+
+      // Extract tool_input
+      const inputMatch = callBody.match(/<tool_input>(.*?)<\/tool_input>/s);
+      const rawInput = inputMatch ? inputMatch[1].trim() : "";
+      let toolInput: Record<string, unknown>;
+      try {
+        toolInput = JSON.parse(rawInput) as Record<string, unknown>;
+      } catch {
+        toolInput = { raw: rawInput };
+      }
+
+      const toolCallId = `cc-tc-${toolCallCounter++}`;
+      lastToolName = toolName;
+      lastToolCallId = toolCallId;
+
+      assistantContent.push({ type: "toolCall", id: toolCallId, name: toolName, arguments: toolInput });
+
+      pos = endCall + "</tool_call>".length;
+
+      // Look ahead: another <tool_call> immediately (parallel), or <tool_result>, or return outside
+      const afterClose = text.slice(pos);
+      const resultStart = afterClose.match(/^\s*<tool_result>/);
+      if (resultStart) {
+        // Flush assistant message before entering result
+        if (assistantContent.length > 0) {
+          messages.push(makeAssistantMessage(assistantContent, "toolUse"));
+          assistantContent = [];
+        }
+        pos += resultStart[0].length;
+        state = "in_result";
+      } else {
+        const nextCallAhead = afterClose.match(/^\s*<tool_call>/);
+        if (nextCallAhead) {
+          // Another tool call — stay in in_call, accumulate in same assistant message
+          pos += nextCallAhead[0].length;
+          state = "in_call";
+        } else {
+          // Back to outside
+          if (assistantContent.length > 0) {
+            messages.push(makeAssistantMessage(assistantContent, "toolUse"));
+            assistantContent = [];
+          }
+          state = "outside";
+        }
+      }
+      continue;
+    }
+
+    if (state === "in_result") {
+      // Only scan for </tool_result> — NOT <tool_call> (state machine safety)
+      const endResult = text.indexOf("</tool_result>", pos);
+      let resultText: string;
+      if (endResult === -1) {
+        // No closing tag — rest of text is the result
+        resultText = text.slice(pos).trim();
+        messages.push(makeToolResultMessage(lastToolCallId, lastToolName, resultText));
+        break;
+      }
+      resultText = text.slice(pos, endResult).trim();
+      messages.push(makeToolResultMessage(lastToolCallId, lastToolName, resultText));
+      pos = endResult + "</tool_result>".length;
+      state = "outside";
+      continue;
+    }
+  }
+
+  // Flush any remaining assistant content
+  if (assistantContent.length > 0) {
+    messages.push(makeAssistantMessage(assistantContent));
+  }
+
+  return messages.length > 0 ? messages : [makeAssistantMessage([{ type: "text", text }])];
+}
