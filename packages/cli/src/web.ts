@@ -487,6 +487,8 @@ services:
     build:
       context: {{REPO_PATH}}
       dockerfile: Dockerfile
+      args:
+        PREBUILT_UI: "{{PREBUILT_UI}}"
     ports:
       - "{{PORT}}:7492"
     environment:
@@ -503,7 +505,59 @@ services:
     restart: unless-stopped
 `;
 
-function generateComposeFile(repoPath: string, config: WebConfig): string {
+// ─── Host-side UI pre-build ──────────────────────────────────────────────────
+
+/**
+ * Attempt to build the UI on the host using bun (native speed, ~15s) instead
+ * of inside Docker (minutes on Docker Desktop VMs).  Returns true if the
+ * pre-built dist is ready in `repoPath/packages/ui/dist`.
+ *
+ * Gracefully falls back to false (Docker will build it) when:
+ *   - `bun` is not on PATH (e.g. npm-installed binary without bun)
+ *   - `bun install` or `bun run build` fails for any reason
+ */
+function prebuildUI(repoPath: string): boolean {
+    const uiDist = join(repoPath, "packages", "ui", "dist");
+
+    // Check if bun is available on the host
+    try {
+        execFileSync("bun", ["--version"], { stdio: "ignore" });
+    } catch {
+        console.log("bun not found on host — UI will be built inside Docker (slower).");
+        return false;
+    }
+
+    console.log("Pre-building UI on host for faster Docker build...");
+    try {
+        // Install deps if node_modules is missing
+        if (!existsSync(join(repoPath, "node_modules"))) {
+            console.log("  Installing dependencies...");
+            execFileSync("bun", ["install"], { cwd: repoPath, stdio: "inherit" });
+        }
+
+        // Build protocol (UI imports @pizzapi/protocol which needs dist/)
+        const protocolDist = join(repoPath, "packages", "protocol", "dist");
+        if (!existsSync(protocolDist)) {
+            console.log("  Building protocol...");
+            execFileSync("bun", ["run", "build:protocol"], { cwd: repoPath, stdio: "inherit" });
+        }
+
+        // Build UI
+        console.log("  Building UI...");
+        execFileSync("bun", ["run", "build:ui"], { cwd: repoPath, stdio: "inherit" });
+
+        if (existsSync(join(uiDist, "index.html"))) {
+            console.log("  ✓ UI pre-built successfully.");
+            return true;
+        }
+    } catch (err) {
+        console.warn("Warning: Host UI build failed, falling back to Docker build.");
+        if (err instanceof Error) console.warn(`  ${err.message}`);
+    }
+    return false;
+}
+
+function generateComposeFile(repoPath: string, config: WebConfig, prebuiltUi: boolean): string {
     const composePath = join(WEB_DIR, "compose.yml");
     mkdirSync(WEB_DIR, { recursive: true });
 
@@ -563,7 +617,8 @@ function generateComposeFile(repoPath: string, config: WebConfig): string {
         .replace(/\{\{BETTER_AUTH_SECRET}}/g, config.betterAuthSecret)
         .replace(/\{\{EXTRA_ORIGINS_LINE}}/g, extraOriginsLine)
         .replace(/\{\{TRUST_PROXY_LINE}}/g, trustProxyLine)
-        .replace(/\{\{PROXY_DEPTH_LINE}}/g, proxyDepthLine);
+        .replace(/\{\{PROXY_DEPTH_LINE}}/g, proxyDepthLine)
+        .replace(/\{\{PREBUILT_UI}}/g, prebuiltUi ? "true" : "false");
 
     // Only write if changed
     const existing = existsSync(composePath) ? readFileSync(composePath, "utf-8") : null;
@@ -842,7 +897,11 @@ export async function runWeb(args: string[]): Promise<void> {
     }
 
     const repoPath = getRepoPath();
-    const composePath = generateComposeFile(repoPath, config);
+
+    // Pre-build UI on the host for much faster Docker builds.
+    // Falls back to building inside Docker if bun is not available.
+    const prebuiltUi = prebuildUI(repoPath);
+    const composePath = generateComposeFile(repoPath, config, prebuiltUi);
 
     console.log(`Starting PizzaPi web on port ${config.port}...`);
     console.log(`  Repo:    ${repoPath}`);

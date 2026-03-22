@@ -27,6 +27,8 @@ services:
     build:
       context: {{REPO_PATH}}
       dockerfile: Dockerfile
+      args:
+        PREBUILT_UI: "{{PREBUILT_UI}}"
     ports:
       - "{{PORT}}:7492"
     environment:
@@ -62,6 +64,7 @@ describe("web.ts compose template", () => {
         expect(COMPOSE_TEMPLATE).toContain("{{VAPID_PRIVATE_KEY}}");
         expect(COMPOSE_TEMPLATE).toContain("{{VAPID_SUBJECT}}");
         expect(COMPOSE_TEMPLATE).toContain("{{EXTRA_ORIGINS_LINE}}");
+        expect(COMPOSE_TEMPLATE).toContain("{{PREBUILT_UI}}");
     });
 
     test("template substitution produces valid compose structure", () => {
@@ -75,7 +78,8 @@ describe("web.ts compose template", () => {
             .replace(/\{\{VAPID_SUBJECT}}/g, "mailto:admin@pizzapi.local")
             .replace(/\{\{EXTRA_ORIGINS_LINE}}/g, "      - PIZZAPI_EXTRA_ORIGINS=https://example.com\n")
             .replace(/\{\{TRUST_PROXY_LINE}}/g, "      # - PIZZAPI_TRUST_PROXY=\n")
-            .replace(/\{\{PROXY_DEPTH_LINE}}/g, "      # - PIZZAPI_PROXY_DEPTH=\n");
+            .replace(/\{\{PROXY_DEPTH_LINE}}/g, "      # - PIZZAPI_PROXY_DEPTH=\n")
+            .replace(/\{\{PREBUILT_UI}}/g, "true");
 
         // No unsubstituted placeholders remain
         expect(composed).not.toContain("{{");
@@ -93,6 +97,7 @@ describe("web.ts compose template", () => {
         expect(composed).toContain("VAPID_SUBJECT=mailto:admin@pizzapi.local");
         expect(composed).toContain("PIZZAPI_EXTRA_ORIGINS=https://example.com");
         expect(composed).toContain("/home/user/.pizzapi/web/data:/app/data:Z");
+        expect(composed).toContain('PREBUILT_UI: "true"');
     });
 
     test("template with no extra origins produces commented-out line", () => {
@@ -106,7 +111,8 @@ describe("web.ts compose template", () => {
             .replace(/\{\{VAPID_SUBJECT}}/g, "mailto:test@test.com")
             .replace(/\{\{EXTRA_ORIGINS_LINE}}/g, "      # - PIZZAPI_EXTRA_ORIGINS=\n")
             .replace(/\{\{TRUST_PROXY_LINE}}/g, "      # - PIZZAPI_TRUST_PROXY=\n")
-            .replace(/\{\{PROXY_DEPTH_LINE}}/g, "      # - PIZZAPI_PROXY_DEPTH=\n");
+            .replace(/\{\{PROXY_DEPTH_LINE}}/g, "      # - PIZZAPI_PROXY_DEPTH=\n")
+            .replace(/\{\{PREBUILT_UI}}/g, "false");
 
         expect(composed).toContain("# - PIZZAPI_EXTRA_ORIGINS=");
         expect(composed).not.toContain("{{");
