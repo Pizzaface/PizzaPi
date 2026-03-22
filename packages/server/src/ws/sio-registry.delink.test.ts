@@ -48,9 +48,9 @@ describe("sio-registry delink helpers", () => {
 
     it("confirms parent_delinked delivery when a relay socket acks", async () => {
         const relayNamespace = {
-            in: (_room: string) => ({
-                fetchSockets: async () => [{ id: "socket-1" }],
-            }),
+            adapter: {
+                sockets: async (_rooms: Set<string>) => new Set(["socket-1"]),
+            },
             to: (_room: string) => ({
                 timeout: (_timeoutMs: number) => ({
                     emit: (_eventName: string, _data: unknown, ack: (err: unknown, responses?: unknown[]) => void) => {
@@ -72,9 +72,9 @@ describe("sio-registry delink helpers", () => {
 
     it("reports failure when listeners exist but none ack parent_delinked", async () => {
         const relayNamespace = {
-            in: (_room: string) => ({
-                fetchSockets: async () => [{ id: "socket-1" }],
-            }),
+            adapter: {
+                sockets: async (_rooms: Set<string>) => new Set(["socket-1"]),
+            },
             to: (_room: string) => ({
                 timeout: (_timeoutMs: number) => ({
                     emit: (_eventName: string, _data: unknown, ack: (err: unknown, responses?: unknown[]) => void) => {
