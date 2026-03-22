@@ -612,6 +612,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                     ? { provider: rctx.latestCtx.model.provider, id: rctx.latestCtx.model.id,
                         name: rctx.latestCtx.model.name, reasoning: rctx.latestCtx.model.reasoning }
                     : null);
+                emitAuthSourceChanged(rctx, getAuthSource(rctx.latestCtx));
                 emitSessionActive(rctx);
             }
         } catch (error) {
@@ -964,6 +965,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
     pi.on("tool_execution_end", (event) => rctx.forwardEvent(event));
     pi.on("model_select", (event) => {
         rctx.forwardEvent(event);
+        emitAuthSourceChanged(rctx, getAuthSource(rctx.latestCtx));
         emitSessionActive(rctx);
     });
 

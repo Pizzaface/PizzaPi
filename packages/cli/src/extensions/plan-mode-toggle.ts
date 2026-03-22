@@ -1220,6 +1220,7 @@ After completing a step, include a [DONE:n] tag in your response (e.g. [DONE:1])
         syncModuleState();
         if (wasEnabled) {
             _onPlanModeChange?.(false);
+            _planModeMetaEmitter?.(false);
         }
         persistState();
     });
