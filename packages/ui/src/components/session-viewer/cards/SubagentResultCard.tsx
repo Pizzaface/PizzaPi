@@ -142,6 +142,93 @@ function getToolCallCount(messages: Array<{ role: string; content: unknown[] }>)
   return count;
 }
 
+// ── Tool execution extraction ──────────────────────────────────────────
+
+interface ToolExecution {
+  toolKey: string;
+  toolName: string;
+  toolInput: unknown;
+  content: unknown;
+  isError: boolean;
+}
+
+/**
+ * Extract tool call + result pairs from the subagent's messages array.
+ * Works for both pi-native messages (uses `id` field, object arguments) and
+ * Claude Code synthetic messages (uses `id` field from the XML parser).
+ * Also handles the NDJSON normalizer convention of `toolCallId` field and
+ * stringified arguments defensively.
+ */
+function extractToolExecutions(messages: Array<{ role: string; content: unknown[] }>): ToolExecution[] {
+  const executions: ToolExecution[] = [];
+
+  // First pass: collect all tool calls from assistant messages
+  interface PendingCall { id: string; name: string; input: unknown }
+  const pendingCalls: PendingCall[] = [];
+
+  for (const msg of messages) {
+    if (msg.role === "assistant" && Array.isArray(msg.content)) {
+      for (const part of msg.content) {
+        if (!part || typeof part !== "object") continue;
+        const p = part as Record<string, unknown>;
+        if (p.type !== "toolCall") continue;
+
+        // Defensive: check both id and toolCallId (pi-ai uses id, NDJSON normalizer uses toolCallId)
+        const id = typeof p.toolCallId === "string" ? p.toolCallId
+          : typeof p.id === "string" ? p.id
+          : "";
+        const name = typeof p.name === "string" ? p.name : "unknown";
+
+        // Defensive: handle arguments as object or string (NDJSON normalizer produces string)
+        let input: unknown = p.arguments;
+        if (typeof input === "string") {
+          try { input = JSON.parse(input); } catch { input = {}; }
+        }
+
+        pendingCalls.push({ id, name, input });
+      }
+    }
+  }
+
+  // Second pass: match tool results to pending calls in order
+  const matchedIds = new Set<string>();
+
+  for (const msg of messages) {
+    if (msg.role !== "toolResult") continue;
+    const m = msg as Record<string, unknown>;
+    const toolCallId = typeof m.toolCallId === "string" ? m.toolCallId : "";
+
+    // Find matching pending call
+    const matchIdx = pendingCalls.findIndex(c => c.id && c.id === toolCallId && !matchedIds.has(c.id));
+    if (matchIdx < 0) continue;
+
+    const call = pendingCalls[matchIdx];
+    matchedIds.add(call.id);
+
+    executions.push({
+      toolKey: call.id || `tool-${executions.length}`,
+      toolName: typeof m.toolName === "string" ? m.toolName : call.name,
+      toolInput: call.input,
+      content: m.content,
+      isError: m.isError === true,
+    });
+  }
+
+  // Include unmatched calls (no result yet — e.g. truncated or still running)
+  for (const call of pendingCalls) {
+    if (call.id && matchedIds.has(call.id)) continue;
+    executions.push({
+      toolKey: call.id || `tool-${executions.length}`,
+      toolName: call.name,
+      toolInput: call.input,
+      content: null,
+      isError: false,
+    });
+  }
+
+  return executions;
+}
+
 // ── Parse details from top-level details prop ──────────────────────────
 
 function parseSubagentDetails(details: unknown): SubagentDetails | null {
