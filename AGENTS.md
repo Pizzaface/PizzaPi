@@ -104,6 +104,18 @@ bun run clean
 
 ---
 
+## Responsive Design (Mobile-First)
+
+PizzaPi is a PWA used heavily on mobile. **Every UI change must work on small screens.**
+
+- **Single-column on mobile.** Lists of cards (runners, sessions, folders) must stack vertically on narrow viewports. Never use `grid-cols-2` or multi-column grids without verifying the mobile experience — prefer single-column (`flex flex-col`) as the base and only expand columns at `sm:` or wider.
+- **Touch targets.** Interactive elements must be at least 44×44 CSS pixels per Apple HIG. Don't shrink buttons or cards to fit a grid — make them full-width rows instead.
+- **Test at 375px width.** Before shipping any layout change, verify it renders correctly at iPhone SE width (375px). Use browser DevTools responsive mode.
+- **Dialogs and modals.** Content inside `DialogContent` must be scrollable on small screens. Don't assume the viewport is tall enough to show all steps at once.
+- **Truncation over wrapping.** Runner names, session names, and paths should `truncate` rather than wrap and blow out card heights.
+
+---
+
 ## Upstream Patches
 
 PizzaPi patches two upstream pi packages via `patchedDependencies` in the root `package.json`. Patches live in `patches/` and are auto-applied on `bun install`. See `patches/README.md` for full details.
