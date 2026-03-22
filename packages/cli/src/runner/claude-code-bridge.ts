@@ -34,6 +34,7 @@ import { normalizeRemoteInputAttachments, buildUserMessageFromRemoteInput } from
 import {
   needsChunkedDelivery, capOversizedMessages, computeChunkBoundaries,
 } from "../extensions/remote.js";
+import { setLogComponent, setLogSessionId, logInfo, logWarn, logError } from "./logger.js";
 
 const RELAY_DEFAULT = "ws://localhost:7492";
 
@@ -46,6 +47,16 @@ const parentSessionId = process.env.PIZZAPI_WORKER_PARENT_SESSION_ID ?? null;
 let initialPrompt = process.env.PIZZAPI_WORKER_INITIAL_PROMPT ?? "";
 const initialModelProvider = process.env.PIZZAPI_WORKER_INITIAL_MODEL_PROVIDER?.trim() ?? "";
 const initialModelId = process.env.PIZZAPI_WORKER_INITIAL_MODEL_ID?.trim() ?? "";
+
+// ── Structured logging ────────────────────────────────────────────────────
+// Use the shared logger so cc-bridge output interleaves cleanly with pi
+// worker and daemon logs in runner.log / runner-error.log.
+setLogComponent("cc-bridge");
+setLogSessionId(sessionId);
+
+/** When true, log every NDJSON event and relay forward at info level.
+ *  Enable with PIZZAPI_CC_EVENT_LOG=1. Off by default to avoid log flood. */
+const VERBOSE_EVENT_LOG = process.env.PIZZAPI_CC_EVENT_LOG === "1";
 
 // Plugin dir: absolute path to the static plugin directory shipped with the CLI.
 // The runner may execute from either src/runner/*.ts or dist/runner/*.js, but the
@@ -259,6 +270,21 @@ function sioHttpUrl(): string {
 
 function forwardEvent(event: unknown): void {
   if (!sioSocket?.connected || !relayToken) return;
+  if (VERBOSE_EVENT_LOG) {
+    const e = event as Record<string, unknown>;
+    const parts = [`→relay seq=${seq + 1} type=${e.type ?? "?"}`];
+    if (e.role) parts.push(`role=${e.role}`);
+    if (e.toolName) parts.push(`tool=${e.toolName}`);
+    if (e.toolCallId) parts.push(`callId=${(e.toolCallId as string).slice(0, 12)}`);
+    // For message_update, peek inside the message for role/toolName
+    if (e.type === "message_update" && e.message && typeof e.message === "object") {
+      const m = e.message as Record<string, unknown>;
+      if (m.role) parts.push(`msg.role=${m.role}`);
+      if (m.toolName) parts.push(`msg.tool=${m.toolName}`);
+      if (m.toolCallId) parts.push(`msg.callId=${(m.toolCallId as string).slice(0, 12)}`);
+    }
+    logInfo(parts.join(" "));
+  }
   sioSocket.emit("event", { sessionId, token: relayToken, event, seq: ++seq });
 }
 
@@ -547,12 +573,15 @@ function handleIpcMessage(client: NetSocket, msg: PluginMessage): void {
         // Store subagent metadata keyed by agent_id so we can attach it
         // to the tool_result when SubagentStop fires later.
         const agentId = typeof hookData.agent_id === "string" ? hookData.agent_id : undefined;
+        const subagentType = typeof hookData.subagent_type === "string" ? hookData.subagent_type : undefined;
+        const parentAgentId = typeof hookData.parent_agent_id === "string" ? hookData.parent_agent_id : undefined;
+        logInfo(`hook: ${msg.event} agent=${agentId ?? "?"} type=${subagentType ?? "?"} parent=${parentAgentId ?? "?"}`);
         if (msg.event === "SubagentStart" && agentId) {
           subagentHookData.set(agentId, {
             agentId,
-            subagentType: typeof hookData.subagent_type === "string" ? hookData.subagent_type : undefined,
+            subagentType,
             description: typeof hookData.description === "string" ? hookData.description : undefined,
-            parentAgentId: typeof hookData.parent_agent_id === "string" ? hookData.parent_agent_id : undefined,
+            parentAgentId,
             startedAt: Date.now(),
           });
         }
@@ -827,6 +856,7 @@ async function escalateReceivedTrigger(triggerId: string, context?: string): Pro
 
 // ── Claude subprocess ─────────────────────────────────────────────────────
 function spawnClaude(tmpDirPath: string, resume = false): void {
+  logInfo(`spawning claude (resume=${resume}, generation=${processGeneration + 1}, cwd=${cwd})`);
   _stdoutBuf = "";  // reset on every spawn
   processGeneration++;
   const myGeneration = processGeneration;
@@ -864,7 +894,7 @@ function spawnClaude(tmpDirPath: string, resume = false): void {
   ];
 
   if (initialModelId && initialModelProvider && initialModelProvider !== "anthropic") {
-    console.warn(`[bridge] ignoring unsupported initial model provider for Claude Code worker: ${initialModelProvider}`);
+    logWarn(`ignoring unsupported initial model provider for Claude Code worker: ${initialModelProvider}`);
   }
 
   const command = resume
@@ -920,7 +950,7 @@ async function readClaudeStderr(): Promise<void> {
   if (!claudeProcess?.stderr) return;
   for await (const chunk of claudeProcess.stderr as AsyncIterable<Uint8Array>) {
     const text = _stderrDecoder.decode(chunk, { stream: true });
-    if (text.trim()) console.error("[claude stderr]", text.trimEnd());
+    if (text.trim()) logWarn(`[claude stderr] ${text.trimEnd()}`);
   }
 }
 
@@ -930,14 +960,18 @@ async function watchClaudeExit(tmpDirPath: string, generation: number): Promise<
   claudeProcess = null;
 
   // If a newer process has been spawned since, this watcher is stale
-  if (generation !== processGeneration) return;
+  if (generation !== processGeneration) {
+    logInfo(`stale exit watcher (generation=${generation}, current=${processGeneration}) — ignoring exit code ${exitCode}`);
+    return;
+  }
 
   if (exitCode === 43) {
-    console.log("[bridge] Claude exited with code 43 — restarting with --resume");
+    logInfo("claude exited with code 43 — restarting with --resume");
     spawnClaude(tmpDirPath, true);
     return;
   }
 
+  logInfo(`claude exited with code ${exitCode} — shutting down (${exitCode === 0 ? "completed" : "error"})`);
   shutdown(exitCode === 0 ? "completed" : "error");
 }
 
@@ -1012,6 +1046,35 @@ function synthesizeSubagentDetails(toolName: string, toolInput: unknown, resultC
 function handleNdjsonLine(line: string): void {
   const result = translateNdjsonLine(line);
 
+  if (VERBOSE_EVENT_LOG) {
+    const parts = [`←ndjson kind=${result.kind}`];
+    if (result.toolName) parts.push(`tool=${result.toolName}`);
+    if (result.toolCallId) parts.push(`callId=${result.toolCallId.slice(0, 12)}`);
+    if (result.sessionId) parts.push(`ccSessionId=${result.sessionId}`);
+    if (result.model) parts.push(`model=${result.model}`);
+    if (result.sessionName) parts.push(`name="${result.sessionName}"`);
+    if (result.toolCalls?.length) {
+      const tcSummary = result.toolCalls.map(tc => tc.toolName).join(",");
+      parts.push(`toolCalls=[${tcSummary}]`);
+    }
+    if (result.relayEvent) {
+      const e = result.relayEvent as Record<string, unknown>;
+      parts.push(`event.type=${e.type ?? "?"}`);
+      if (e.role) parts.push(`event.role=${e.role}`);
+      const m = e.message as Record<string, unknown> | undefined;
+      if (m?.role) parts.push(`msg.role=${m.role}`);
+      if (m?.toolName) parts.push(`msg.tool=${m.toolName}`);
+    }
+    if (result.relayEvents?.length) {
+      const roles = result.relayEvents.map(e => {
+        const m = (e as Record<string, unknown>).message as Record<string, unknown> | undefined;
+        return m?.role ?? (e as Record<string, unknown>).type ?? "?";
+      });
+      parts.push(`events=[${roles.join(",")}]`);
+    }
+    logInfo(parts.join(" "));
+  }
+
   if (result.kind === "control_request") {
     if (result.controlRequestId && result.toolName) {
       handleControlRequest(result.controlRequestId, result.toolName, result.toolInput);
@@ -1020,6 +1083,7 @@ function handleNdjsonLine(line: string): void {
   }
 
   if (result.kind === "session_init") {
+    logInfo(`session_init: ccSessionId=${result.sessionId ?? "?"} model=${result.model ?? "?"}`);
     if (result.sessionId) claudeSessionId = result.sessionId;
     if (result.model) {
       currentModel = result.model;
@@ -1302,7 +1366,7 @@ function sendChunkedMessages(snapshotId: string): void {
 // ── Relay connection ──────────────────────────────────────────────────────
 function connectRelay(): void {
   if (!apiKey) {
-    console.warn("[bridge] PIZZAPI_API_KEY not set — relay disabled");
+    logWarn("PIZZAPI_API_KEY not set — relay disabled");
     return;
   }
 
@@ -1320,6 +1384,7 @@ function connectRelay(): void {
   sioSocket = sock;
 
   sock.on("connect", () => {
+    logInfo(`relay connected (url=${sockUrl})`);
     sock.emit("register", {
       sessionId,
       cwd,
@@ -1330,6 +1395,7 @@ function connectRelay(): void {
   });
 
   sock.on("registered", (data) => {
+    logInfo("relay registered");
     relayToken = data.token;
     emitCapabilities();
     emitHeartbeat("Starting Claude Code…");
@@ -1349,7 +1415,7 @@ function connectRelay(): void {
 
   sock.on("trigger_response" as any, (data: { triggerId: string; response: string; action?: string }) => {
     void respondToReceivedTrigger(data).catch((err) => {
-      console.error("[bridge] failed to handle trigger response:", err);
+      logError(`failed to handle trigger response: ${err instanceof Error ? err.message : String(err)}`);
     });
   });
 
@@ -1378,7 +1444,7 @@ function connectRelay(): void {
           message: { role: "user", content },
         });
       } catch (err) {
-        console.error("[bridge] failed to deliver input:", err);
+        logError(`failed to deliver input: ${err instanceof Error ? err.message : String(err)}`);
       }
     })();
   });
@@ -1397,10 +1463,12 @@ function connectRelay(): void {
         sock.emit("exec_result", { id: execData.id, ok: true, command: execData.command });
         break;
       case "end_session":
+        logInfo("exec: end_session");
         sock.emit("exec_result", { id: execData.id, ok: true, command: execData.command });
         shutdown("completed");
         break;
       case "new_session":
+        logInfo("exec: new_session — killing claude, clearing state, respawning");
         claudeSessionId = randomUUID();
         initialPrompt = "";
         messages = [];
@@ -1416,6 +1484,7 @@ function connectRelay(): void {
         sock.emit("exec_result", { id: execData.id, ok: true, command: execData.command });
         break;
       case "reload":
+        logInfo("exec: reload — killing claude, respawning with --resume");
         clearPendingState();
         processGeneration++;
         if (claudeProcess) { try { claudeProcess.kill("SIGTERM"); } catch {} claudeProcess = null; }
@@ -1447,7 +1516,8 @@ function connectRelay(): void {
     emitSessionActive();
   });
 
-  sock.on("disconnect", () => {
+  sock.on("disconnect", (reason) => {
+    logInfo(`relay disconnected: ${reason}`);
     relayToken = null;
     stopHeartbeatTimer();
   });
@@ -1458,6 +1528,7 @@ let shutdownCalled = false;
 async function shutdown(reason: "completed" | "error" | "killed" = "completed"): Promise<void> {
   if (shutdownCalled) return;
   shutdownCalled = true;
+  logInfo(`shutdown: reason=${reason}`);
 
   clearPendingState();
 
@@ -1485,6 +1556,8 @@ process.on("SIGINT", () => { void shutdown("killed"); });
 
 // ── Main ──────────────────────────────────────────────────────────────────
 async function main(): Promise<void> {
+  logInfo(`started (cwd=${cwd}, parent=${parentSessionId ?? "none"}, verbose=${VERBOSE_EVENT_LOG})`);
+
   const { ipcSocketPath, hooksPath: _hooksPath, mcpPath: _mcpPath } = await setupTempDir();
   await startIpcServer(ipcSocketPath);
   connectRelay();
@@ -1499,7 +1572,7 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  console.error("[bridge] fatal:", err);
+  logError(`fatal: ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
   process.exit(1);
 });
 
