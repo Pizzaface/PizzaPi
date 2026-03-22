@@ -43,6 +43,7 @@ import {
 } from "../../sessions/store.js";
 import { appendRelayEventToCache } from "../../sessions/redis.js";
 import { storeAndReplaceImages, storeAndReplaceImagesInEvent } from "../strip-images.js";
+import { extractMetaFromHeartbeat } from "./meta.js";
 import { severStaleParentLink } from "../stale-parent-link.js";
 import type { SessionInfo } from "@pizzapi/protocol";
 import {
@@ -576,6 +577,12 @@ export async function updateSessionHeartbeat(
     }
 
     await updateSessionFields(sessionId, fields);
+
+    // Backward compat: extract meta-state from fat heartbeat payload.
+    // Old CLI sessions still send all meta fields in the heartbeat.
+    // New CLI sessions send slim heartbeats + discrete meta events separately.
+    // This ensures the Redis metaState is always populated regardless of CLI version.
+    await extractMetaFromHeartbeat(sessionId, heartbeat);
 
     // Heartbeats bypass touchSessionActivity, so refresh the runner
     // association TTL here to prevent it from expiring on long-lived

@@ -56,6 +56,8 @@ import {
     notifyAgentNeedsInput,
     notifyAgentError,
 } from "../../push.js";
+import { isMetaRelayEvent, metaEventToPatch, type MetaRelayEvent } from "@pizzapi/protocol";
+import { updateSessionMetaState, broadcastToSessionMeta } from "../sio-registry/meta.js";
 
 // ── Thinking-block duration tracking ─────────────────────────────────────────
 // Keyed by sessionId → contentIndex → value.
@@ -452,6 +454,19 @@ export function registerRelayNamespace(io: SocketIOServer): void {
                 }
             } else if (event.type === "heartbeat") {
                 await updateSessionHeartbeat(sessionId, event);
+            } else if (isMetaRelayEvent(event as { type?: unknown })) {
+                // Discrete meta event: update Redis + broadcast via hub session meta room.
+                // Meta events do NOT flow through to relay viewers — hub is the channel.
+                const metaEvent = event as MetaRelayEvent;
+                const patch = metaEventToPatch(metaEvent);
+                const version = await updateSessionMetaState(sessionId, patch);
+                await broadcastToSessionMeta(
+                  sessionId,
+                  metaEvent,
+                  version,
+                  socket.data.userId ?? undefined,
+                );
+                await touchSessionActivity(sessionId);
             } else {
                 await touchSessionActivity(sessionId);
             }
