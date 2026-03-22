@@ -1003,11 +1003,17 @@ export function App() {
       cachePatch.authSource = patch.authSource;
     }
 
-    if (patch.model !== undefined && patch.model) {
-      const m = normalizeModel(patch.model);
-      if (m) {
-        setActiveModel(m);
-        cachePatch.activeModel = m;
+    if (patch.model !== undefined) {
+      if (patch.model) {
+        const m = normalizeModel(patch.model);
+        if (m) {
+          setActiveModel(m);
+          cachePatch.activeModel = m;
+        }
+      } else {
+        // model_changed with null — clear the active model
+        setActiveModel(null);
+        cachePatch.activeModel = null;
       }
     }
 
