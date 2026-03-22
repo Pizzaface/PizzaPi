@@ -24,7 +24,7 @@ import type { Server as NetServer, Socket as NetSocket } from "node:net";
 import { io, type Socket } from "socket.io-client";
 import type { RelayClientToServerEvents, RelayServerToClientEvents } from "@pizzapi/protocol";
 import { randomUUID } from "node:crypto";
-import { translateNdjsonLine, SUBAGENT_TOOL_NAMES } from "./claude-code-ndjson.js";
+import { translateNdjsonLine, SUBAGENT_TOOL_NAMES, parseSubagentToolCalls } from "./claude-code-ndjson.js";
 import { serializeFrame, framesFromBuffer, type PluginMessage, type BridgeMessage } from "./claude-code-ipc.js";
 import { SET_SESSION_NAME_PROMPT } from "../config/system-prompt.js";
 import { buildSpawnSessionBody } from "./claude-code-spawn-request.js";
@@ -1016,7 +1016,7 @@ function synthesizeSubagentDetails(toolName: string, toolInput: unknown, resultC
     task,
     exitCode: 0,
     // Provide a minimal messages array with the final assistant response
-    messages: resultText ? [{ role: "assistant", content: [{ type: "text", text: resultText }] }] : [],
+    messages: resultText ? parseSubagentToolCalls(resultText) : [],
     stderr: "",
     usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0, turns: 0 },
   };
