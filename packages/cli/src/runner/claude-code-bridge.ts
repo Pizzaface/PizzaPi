@@ -126,6 +126,11 @@ let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 
 // Pending AskUserQuestion: tool_use_id → { resolve, timer }
 const pendingQuestions = new Map<string, { resolve: (answer: string) => void; timer: ReturnType<typeof setTimeout> }>();
+// Pending tool executions: tool_use_id → { toolName, toolInput }
+// Populated when tool_use blocks appear in assistant messages; consumed when
+// tool_result blocks arrive in user messages. Used to emit synthetic
+// tool_execution_start/end events and annotate toolResult messages.
+const pendingToolCallMap = new Map<string, { toolName: string; toolInput: unknown }>();
 // Pending permission requests: requestId → pending handler metadata
 interface PendingPermissionEntry {
   resolve: (decision: "allow" | "deny") => void;
@@ -165,6 +170,7 @@ function clearPendingState(): void {
   pendingPermissions.clear();
   for (const waiter of messageWaiters) clearTimeout(waiter.timer);
   messageWaiters.length = 0;
+  pendingToolCallMap.clear();
 }
 
 function trackReceivedTrigger(trigger: ConversationTrigger): void {
@@ -946,10 +952,70 @@ function handleNdjsonLine(line: string): void {
       currentTokenUsage = result.tokenUsage;
     }
 
+    // ── Emit synthetic tool_execution_start events ────────────────────
+    // When an assistant message contains tool_use blocks, emit start events
+    // so the UI can track active tool calls (spinning indicators).
+    if (result.toolCalls) {
+      for (const tc of result.toolCalls) {
+        pendingToolCallMap.set(tc.toolCallId, { toolName: tc.toolName, toolInput: tc.toolInput });
+        forwardEvent({
+          type: "tool_execution_start",
+          toolCallId: tc.toolCallId,
+          toolName: tc.toolName,
+          args: tc.toolInput,
+        });
+      }
+    }
+
     // Support both single (relayEvent) and multiple (relayEvents) events.
     // relayEvents is used when one NDJSON line produces multiple relay events
     // (e.g. a user message containing several tool_result blocks).
     const events = result.relayEvents ?? (result.relayEvent ? [result.relayEvent] : []);
+
+    // First pass: annotate toolResult messages with toolName from the
+    // pending tool call, and collect tool_execution_end events to emit.
+    const toolEndEvents: Array<{ toolCallId: string; toolName: string; isError: boolean }> = [];
+
+    for (const relayEvent of events) {
+      if (relayEvent.type !== "message_update") continue;
+      const msg = relayEvent.message as Record<string, unknown> | undefined;
+      if (!msg || msg.role !== "toolResult") continue;
+
+      const toolCallId = typeof msg.toolCallId === "string" ? msg.toolCallId : undefined;
+      if (!toolCallId) continue;
+
+      const pending = pendingToolCallMap.get(toolCallId);
+      if (!pending) continue;
+
+      // Annotate with toolName so the UI's rendering pipeline can select the
+      // correct card component (e.g. SubagentResultCard for "subagent").
+      if (!msg.toolName) {
+        msg.toolName = pending.toolName;
+      }
+
+      // Queue a synthetic tool_execution_end event
+      toolEndEvents.push({
+        toolCallId,
+        toolName: pending.toolName,
+        isError: msg.isError === true,
+      });
+      pendingToolCallMap.delete(toolCallId);
+    }
+
+    // Emit tool_execution_end events BEFORE forwarding the relay messages,
+    // matching the pi-native event order (end event clears activeToolCalls
+    // in the UI, then the message_update adds the final tool result).
+    for (const endEvt of toolEndEvents) {
+      forwardEvent({
+        type: "tool_execution_end",
+        toolCallId: endEvt.toolCallId,
+        toolName: endEvt.toolName,
+        result: null,
+        isError: endEvt.isError,
+      });
+    }
+
+    // Second pass: forward relay events and update bridge state.
     for (const relayEvent of events) {
       const eventType = relayEvent.type;
       if (eventType === "message_update") {
