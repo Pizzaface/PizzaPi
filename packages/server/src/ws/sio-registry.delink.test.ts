@@ -70,6 +70,30 @@ describe("sio-registry delink helpers", () => {
         });
     });
 
+    it("returns hadListeners:false immediately when no relay sockets are present (empty set)", async () => {
+        let emitCalled = false;
+        const relayNamespace = {
+            adapter: {
+                sockets: async (_rooms: Set<string>) => new Set<string>(),
+            },
+            to: (_room: string) => ({
+                timeout: (_timeoutMs: number) => ({
+                    emit: (_eventName: string, _data: unknown, _ack: (err: unknown, responses?: unknown[]) => void) => {
+                        emitCalled = true;
+                    },
+                }),
+            }),
+        };
+
+        initSioRegistry({
+            of: () => relayNamespace,
+        } as any);
+
+        const result = await emitToRelaySessionAwaitingAck("child-1", "parent_delinked", { parentSessionId: "parent-1" });
+        expect(result).toEqual({ hadListeners: false, acked: false });
+        expect(emitCalled).toBe(false);
+    });
+
     it("reports failure when listeners exist but none ack parent_delinked", async () => {
         const relayNamespace = {
             adapter: {
