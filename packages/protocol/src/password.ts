@@ -18,6 +18,7 @@ export const PASSWORD_REQUIREMENTS = [
   "At least one uppercase letter (A-Z)",
   "At least one lowercase letter (a-z)",
   "At least one number (0-9)",
+  `No more than ${MAX_PASSWORD_LENGTH} characters`,
 ] as const;
 
 /** Summary string for error messages. */
@@ -54,24 +55,16 @@ export function validatePassword(password: string): PasswordCheck {
     };
   }
 
-  // Always compute per-rule checks against actual content so that callers
-  // (e.g. UI components) receive truthful per-requirement feedback regardless
-  // of the max-length path below.
+  // Compute all per-rule checks including max-length so that callers
+  // (e.g. UI components) receive truthful, complete feedback. Overall validity
+  // is derived entirely from checks.every() — no separate early return needed.
   const checks: PasswordCheckItem[] = [
     { label: PASSWORD_REQUIREMENTS[0], met: password.length >= 8 },
     { label: PASSWORD_REQUIREMENTS[1], met: /[A-Z]/.test(password) },
     { label: PASSWORD_REQUIREMENTS[2], met: /[a-z]/.test(password) },
     { label: PASSWORD_REQUIREMENTS[3], met: /[0-9]/.test(password) },
+    { label: PASSWORD_REQUIREMENTS[4], met: password.length <= MAX_PASSWORD_LENGTH },
   ];
-
-  // Reject passwords exceeding the maximum length. This mirrors server-side
-  // enforcement and prevents unbounded scrypt cost (DoS vector). We still
-  // return the truthfully-computed checks so the UI can show which of the
-  // standard requirements are met — the caller should surface the max-length
-  // error separately (e.g. via PASSWORD_REQUIREMENTS_SUMMARY).
-  if (password.length > MAX_PASSWORD_LENGTH) {
-    return { valid: false, checks };
-  }
 
   return {
     valid: checks.every((c) => c.met),

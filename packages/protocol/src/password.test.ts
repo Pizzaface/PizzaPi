@@ -7,7 +7,7 @@ describe("password validation constants", () => {
   });
 
   test("PASSWORD_REQUIREMENTS covers length, uppercase, lowercase, number", () => {
-    expect(PASSWORD_REQUIREMENTS).toHaveLength(4);
+    expect(PASSWORD_REQUIREMENTS).toHaveLength(5);
     expect(PASSWORD_REQUIREMENTS[0]).toMatch(/8 characters/);
     expect(PASSWORD_REQUIREMENTS[1]).toMatch(/uppercase/);
     expect(PASSWORD_REQUIREMENTS[2]).toMatch(/lowercase/);
@@ -81,15 +81,15 @@ describe("validatePassword", () => {
   test("rejects empty string", () => {
     const result = validatePassword("");
     expect(result.valid).toBe(false);
-    // Should fail length, uppercase, lowercase, and number
-    expect(result.checks.filter((c) => c.met).length).toBe(0);
+    // Fails min-length, uppercase, lowercase, number; passes max-length (0 <= 128)
+    expect(result.checks.filter((c) => c.met).length).toBe(1);
   });
 
   test("rejects string with only whitespace", () => {
     const result = validatePassword("        ");
     expect(result.valid).toBe(false);
-    // Should fail uppercase, lowercase, and number
-    expect(result.checks.filter((c) => c.met).length).toBe(1); // Length check is met
+    // Passes min-length (8) and max-length (8 <= 128); fails uppercase, lowercase, number
+    expect(result.checks.filter((c) => c.met).length).toBe(2);
   });
 
   test("rejects passwords missing uppercase", () => {
@@ -120,9 +120,9 @@ describe("validatePassword", () => {
     expect(validatePassword(12345678).valid).toBe(false);
   });
 
-  test("returns 4 check items matching PASSWORD_REQUIREMENTS", () => {
+  test("returns 5 check items matching PASSWORD_REQUIREMENTS", () => {
     const result = validatePassword("anything");
-    expect(result.checks.length).toBe(4);
+    expect(result.checks.length).toBe(5);
     for (let i = 0; i < 4; i++) {
       expect(result.checks[i].label).toBe(PASSWORD_REQUIREMENTS[i]);
     }
