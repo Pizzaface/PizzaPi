@@ -30,6 +30,7 @@
 import * as React from "react";
 import {
   BotIcon,
+  ChevronDownIcon,
   Loader2Icon,
   CheckCircle2Icon,
   XCircleIcon,
@@ -40,6 +41,7 @@ import {
 import { ToolCardShell } from "@/components/ui/tool-card";
 import { MessageResponse } from "@/components/ai-elements/message";
 import { extractTextFromToolContent, parseToolInputArgs } from "@/components/session-viewer/utils";
+import { renderGroupedToolExecution } from "@/components/session-viewer/tool-rendering";
 
 // ── Types (mirroring CLI extension types) ──────────────────────────────
 
@@ -227,6 +229,46 @@ function extractToolExecutions(messages: Array<{ role: string; content: unknown[
   }
 
   return executions;
+}
+
+// ── Inline tool cards for subagent tool calls ──────────────────────────
+
+/** Renders inline tool cards for subagent tool calls. Must be a React
+ *  component (not a helper function) because renderGroupedToolExecution
+ *  creates child components that use hooks (useSessionActions). */
+function SubagentToolCallsSection({ executions }: { executions: ToolExecution[] }) {
+  if (executions.length === 0) return null;
+
+  const autoOpen = executions.length === 1;
+
+  return (
+    <details open={autoOpen || undefined} className="group/tools">
+      <summary className="cursor-pointer list-none">
+        <div className="flex items-center gap-1.5 text-[11px] text-zinc-500 px-1 py-0.5 hover:text-zinc-400 transition-colors">
+          <WrenchIcon className="size-3 shrink-0" />
+          <span>{executions.length} tool call{executions.length !== 1 ? "s" : ""}</span>
+          <ChevronDownIcon className="size-3 transition-transform group-open/tools:rotate-180" />
+        </div>
+      </summary>
+      <div className="flex flex-col gap-2 pl-1 border-l-2 border-zinc-800 ml-1.5 mt-1 mb-1">
+        {executions.map((exec) => (
+          <div key={exec.toolKey} className="[&>*]:text-xs">
+            {renderGroupedToolExecution(
+              exec.toolKey,
+              exec.toolName,
+              exec.toolInput,
+              exec.content,
+              exec.isError,
+              false,       // isStreaming — always false for completed subagents
+              undefined,   // thinking
+              undefined,   // thinkingDuration
+              undefined,   // details
+            )}
+          </div>
+        ))}
+      </div>
+    </details>
+  );
 }
 
 // ── Parse details from top-level details prop ──────────────────────────
