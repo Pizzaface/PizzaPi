@@ -13,7 +13,14 @@ export const handleChatRoute: RouteHandler = async (req, url) => {
     if (url.pathname === "/api/chat" && req.method === "POST") {
         const identity = await requireSession(req);
         if (identity instanceof Response) return identity;
-        const body = await req.json();
+
+        let body;
+        try {
+            body = await req.json();
+        } catch (error) {
+            return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+        }
+
         const { message, provider, model: modelId } = body;
 
         if (!message || !provider || !modelId) {
