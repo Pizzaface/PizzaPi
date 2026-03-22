@@ -61,30 +61,31 @@ Multiple tool calls may appear in sequence, with interleaved assistant text. Con
 
 **Location**: `packages/cli/src/runner/claude-code-ndjson.ts` (pure function, testable)
 
-**Algorithm**:
+**Algorithm** (state machine):
+
+The parser uses a simple state machine (`outside` → `in_call` → `in_result` → `outside`) to avoid misinterpreting `<tool_call>` text that appears inside a `<tool_result>` block (e.g., bash output that contains those literal tags).
 
 1. Scan the text for `<tool_call>` markers
 2. If none found, return fallback (single text message — current behavior)
-3. Split text into segments: plain text, tool call blocks, tool result blocks
-4. For each segment:
-   - **Plain text** → accumulate into an `AssistantMessage` with `{ type: "text", text }` content
-   - **`<tool_call>`** → extract `<tool_name>` and `<tool_input>` (JSON parse into `Record<string, any>`), create a `ToolCall` content part with generated ID (`cc-tc-N`). Consecutive tool calls before any result are grouped as multiple content parts in the same assistant message.
-   - **`<tool_result>`** → extract content up to `</tool_result>`, create a `ToolResultMessage` with matching `toolCallId` and `toolName` sourced from the preceding `<tool_call>` block
-5. Flush any trailing text as a final assistant message
+3. Walk text with state machine:
+   - **State: `outside`** — accumulate text into assistant message content. On `<tool_call>`, flush accumulated text, transition to `in_call`
+   - **State: `in_call`** — extract `<tool_name>` and `<tool_input>` (JSON parse into `Record<string, any>`), create `ToolCall` content part with generated ID (`cc-tc-N`). Consecutive tool calls before any result are grouped as multiple content parts in the same assistant message. On `<tool_result>`, transition to `in_result`
+   - **State: `in_result`** — scan **only** for `</tool_result>` (not `<tool_call>`!). All text within is result content. On `</tool_result>`, create `ToolResultMessage` with matching `toolCallId` and `toolName` from preceding `<tool_call>`, transition to `outside`
+4. Flush any trailing text as a final assistant message
 
 **Output shape**:
 
 ```typescript
 [
   { role: "assistant", content: [
-    { type: "toolCall", toolCallId: "cc-tc-0", name: "bash", arguments: { command: "head -20 README.md" } }
-  ]},
+    { type: "toolCall", id: "cc-tc-0", name: "bash", arguments: { command: "head -20 README.md" } }
+  ], usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { ... } }, stopReason: "toolUse", ... },
   { role: "toolResult", toolCallId: "cc-tc-0", toolName: "bash", content: [
     { type: "text", text: "# PizzaPi 🍕\nA self-hosted web..." }
   ], isError: false, timestamp: 0 },
   { role: "assistant", content: [
     { type: "text", text: "PizzaPi is a self-hosted web interface and relay server." }
-  ]}
+  ], usage: { ... }, stopReason: "stop", ... }
 ]
 ```
 
@@ -92,10 +93,12 @@ Multiple tool calls may appear in sequence, with interleaved assistant text. Con
 
 | Field | Value | Rationale |
 |-------|-------|-----------|
-| `toolCallId` (not `id`) on ToolCall | `"cc-tc-N"` | Matches NDJSON normalizer convention (`claude-code-ndjson.ts:196`) and UI pairing logic |
-| `arguments` on ToolCall | `Record<string, any>` (parsed object) | UI's `extractToolExecutions()` passes it directly as `toolInput` to `renderGroupedToolExecution()`, which calls `parseToolInputArgs()` expecting an object |
+| `id` on ToolCall | `"cc-tc-N"` | Matches pi-ai's `ToolCall` interface which uses `id` (not `toolCallId`). Note: the NDJSON normalizer uses `toolCallId` for top-level messages — `extractToolExecutions()` must check both `id` and `toolCallId` for compatibility (see below). |
+| `arguments` on ToolCall | `Record<string, any>` (parsed object) | UI's `extractToolExecutions()` passes it directly as `toolInput` to `renderGroupedToolExecution()`, which calls `parseToolInputArgs()` expecting an object. Note: the NDJSON normalizer produces `arguments` as a string (`JSON.stringify`), so `extractToolExecutions()` must defensively handle both object and string formats, matching the pattern in `grouping.ts:17–35`. |
 | `toolName` on ToolResultMessage | from `<tool_name>` | XML format doesn't carry tool name in `<tool_result>` — parser threads it from the preceding `<tool_call>` block |
 | `content` on ToolResultMessage | `[{ type: "text", text }]` array | Matches pi-ai's `(TextContent | ImageContent)[]` format, passed directly to `renderGroupedToolExecution` |
+| `isError` on ToolResultMessage | `false` (default) | Claude Code's XML doesn't include an explicit error flag. Parser checks for `<is_error>true</is_error>` if present, otherwise defaults to false. Limitation: bash failures won't be flagged unless Claude Code includes the tag. |
+| Required AssistantMessage fields | Stub values | Populate `usage: { input: 0, output: 0, ... }`, `stopReason: "stop"`, etc. so objects are genuinely shape-compatible with pi-ai's `Message` type, avoiding runtime crashes if accessed. |
 
 **Error handling**:
 - Malformed `<tool_input>` JSON → wrap raw text as `{ raw: text }` in the tool call arguments
@@ -136,9 +139,9 @@ interface ToolExecution {
 function extractToolExecutions(messages: Array<{ role: string; content: unknown[] }>): ToolExecution[]
 ```
 
-Walks the messages array, pairs `toolCall` blocks (from assistant messages, matched by `toolCallId`) with `ToolResultMessage` entries. Each pair becomes a `ToolExecution`. Unmatched tool calls (no result) are included with `content: null`.
+Walks the messages array, pairs `toolCall` blocks (from assistant messages) with `ToolResultMessage` entries matched by ID. Must check **both** `id` and `toolCallId` on ToolCall content parts for cross-format compatibility (pi-ai uses `id`, NDJSON normalizer uses `toolCallId`), matching the defensive pattern in `grouping.ts:691–695`. Must also handle `arguments` as either object or string (pi-native = object, NDJSON normalizer = string). Unmatched tool calls (no result) are included with `content: null`.
 
-**This function works identically for pi and Claude Code subagents** — both now produce the same messages shape.
+**This function works identically for pi and Claude Code subagents** — both produce the same messages shape.
 
 ### Rendering Changes in `AgentExchange`
 
@@ -174,8 +177,8 @@ Each call to `renderGroupedToolExecution` passes:
 
 `SubagentToolCallsSection` wraps tool cards in a `<details>` element:
 
-- **≤3 tool calls**: auto-open (`open` attribute)
-- **>3 tool calls**: collapsed with summary line "N tool calls"
+- **1 tool call**: auto-open
+- **≥2 tool calls**: collapsed with summary line "N tool calls" (mobile-first — even 2 bash terminals can overflow viewport at 375px width)
 
 ### Visual Treatment
 
@@ -246,6 +249,8 @@ Tool cards inside the subagent bubble have subtle visual nesting:
 ### UI Rendering
 
 - Manual verification: create a mock `SingleResult` with structured messages, verify tool cards render
+- Extract tool executions from pi-native `SingleResult.messages` (uses `id` field, object `arguments`) — verify pairing works
+- Extract tool executions from Claude Code synthetic messages (uses `id` field from parser) — verify pairing works
 - Existing `SubagentResultCard` rendering paths still work (no regression)
 - Verify bash, read, edit, write tool types all render correctly inside the subagent card
 
