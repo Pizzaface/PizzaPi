@@ -570,4 +570,133 @@ describe("translateNdjsonLine", () => {
       arguments: JSON.stringify({ subagent_type: "Explore", prompt: "Find files" }),
     });
   });
+
+  // ── parentToolUseId extraction ──────────────────────────────────────
+
+  test("extracts parentToolUseId from assistant message", () => {
+    const line = JSON.stringify({
+      type: "assistant",
+      parent_tool_use_id: "toolu_abc123",
+      message: { role: "assistant", content: [{ type: "text", text: "subagent response" }] },
+    });
+    const result = translateNdjsonLine(line);
+    expect(result.parentToolUseId).toBe("toolu_abc123");
+  });
+
+  test("parentToolUseId is undefined when parent_tool_use_id is null", () => {
+    const line = JSON.stringify({
+      type: "assistant",
+      parent_tool_use_id: null,
+      message: { role: "assistant", content: [{ type: "text", text: "top-level response" }] },
+    });
+    const result = translateNdjsonLine(line);
+    expect(result.parentToolUseId).toBeUndefined();
+  });
+
+  test("parentToolUseId is undefined when field is absent", () => {
+    const line = JSON.stringify({
+      type: "assistant",
+      message: { role: "assistant", content: [{ type: "text", text: "no parent" }] },
+    });
+    const result = translateNdjsonLine(line);
+    expect(result.parentToolUseId).toBeUndefined();
+  });
+
+  test("extracts parentToolUseId from user message", () => {
+    const line = JSON.stringify({
+      type: "user",
+      parent_tool_use_id: "toolu_xyz789",
+      message: { role: "user", content: "subagent prompt" },
+    });
+    const result = translateNdjsonLine(line);
+    expect(result.parentToolUseId).toBe("toolu_xyz789");
+  });
+
+  test("extracts parentToolUseId from stream_event", () => {
+    const line = JSON.stringify({
+      type: "stream_event",
+      parent_tool_use_id: "toolu_stream1",
+      event: "text_delta",
+      delta: "partial text",
+    });
+    const result = translateNdjsonLine(line);
+    expect(result.parentToolUseId).toBe("toolu_stream1");
+  });
+
+  // ── tool_progress events ────────────────────────────────────────────
+
+  test("translates tool_progress to relay event", () => {
+    const line = JSON.stringify({
+      type: "tool_progress",
+      tool_use_id: "tc_bash1",
+      tool_name: "Bash",
+      parent_tool_use_id: null,
+      elapsed_time_seconds: 12.5,
+    });
+    const result = translateNdjsonLine(line);
+    expect(result.kind).toBe("relay_event");
+    expect(result.relayEvent).toMatchObject({
+      type: "tool_progress",
+      toolCallId: "tc_bash1",
+      toolName: "Bash",
+      elapsedSeconds: 12.5,
+    });
+    expect(result.parentToolUseId).toBeUndefined();
+  });
+
+  test("tool_progress from subagent has parentToolUseId", () => {
+    const line = JSON.stringify({
+      type: "tool_progress",
+      tool_use_id: "tc_read1",
+      tool_name: "Read",
+      parent_tool_use_id: "toolu_agent1",
+      elapsed_time_seconds: 3,
+    });
+    const result = translateNdjsonLine(line);
+    expect(result.parentToolUseId).toBe("toolu_agent1");
+  });
+
+  // ── system/status events ────────────────────────────────────────────
+
+  test("translates system/status compacting to relay event", () => {
+    const line = JSON.stringify({
+      type: "system",
+      subtype: "status",
+      status: "compacting",
+    });
+    const result = translateNdjsonLine(line);
+    expect(result.kind).toBe("relay_event");
+    expect(result.relayEvent).toMatchObject({
+      type: "system_status",
+      status: "compacting",
+    });
+  });
+
+  test("translates system/status null (compaction ended) to relay event", () => {
+    const line = JSON.stringify({
+      type: "system",
+      subtype: "status",
+      status: null,
+    });
+    const result = translateNdjsonLine(line);
+    expect(result.kind).toBe("relay_event");
+    expect((result.relayEvent as any).status).toBeNull();
+  });
+
+  // ── compact_boundary events ─────────────────────────────────────────
+
+  test("translates system/compact_boundary to relay event", () => {
+    const line = JSON.stringify({
+      type: "system",
+      subtype: "compact_boundary",
+      compact_metadata: { trigger: "auto", pre_tokens: 180000 },
+    });
+    const result = translateNdjsonLine(line);
+    expect(result.kind).toBe("relay_event");
+    expect(result.relayEvent).toMatchObject({
+      type: "compact_boundary",
+      trigger: "auto",
+      preTokens: 180000,
+    });
+  });
 });

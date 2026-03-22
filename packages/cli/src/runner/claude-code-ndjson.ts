@@ -52,6 +52,12 @@ export interface TranslationResult {
   /** Tool call IDs extracted from tool_result blocks in user messages — used
    *  by the bridge to emit synthetic tool_execution_end events. */
   toolResultIds?: string[];
+  /** When non-null, this event belongs to a subagent invocation (Agent/Task
+   *  tool) and should not appear in the parent conversation.  The value is
+   *  the tool_use_id of the Agent/Task tool call that spawned the subagent.
+   *  Claude Code sets `parent_tool_use_id` on every NDJSON message; top-level
+   *  messages have it as `null`. */
+  parentToolUseId?: string;
 }
 
 export function translateNdjsonLine(line: string): TranslationResult {
@@ -63,6 +69,13 @@ export function translateNdjsonLine(line: string): TranslationResult {
   }
 
   const type = msg.type;
+
+  // ── Subagent nesting indicator ────────────────────────────────────────
+  // Claude Code sets `parent_tool_use_id` on every NDJSON message.
+  // - `null` → top-level (parent conversation)
+  // - string → subagent-internal (belongs to Agent/Task tool with that id)
+  const rawParent = msg.parent_tool_use_id;
+  const parentToolUseId = typeof rawParent === "string" ? rawParent : undefined;
 
   // ── Control protocol frames ───────────────────────────────────────────
   if (type === "control_request") {
@@ -190,6 +203,7 @@ export function translateNdjsonLine(line: string): TranslationResult {
     const result: TranslationResult = {
       kind: "relay_event",
       relayEvent: { type: "message_update", role: "assistant", message: normalizedMessage },
+      parentToolUseId,
     };
     if (todoList) result.todoList = todoList;
     if (sessionName) result.sessionName = sessionName;
@@ -216,6 +230,7 @@ export function translateNdjsonLine(line: string): TranslationResult {
       return {
         kind: "relay_event",
         relayEvent: { type: "message_update", role: "user", message },
+        parentToolUseId,
       };
     }
 
@@ -236,6 +251,7 @@ export function translateNdjsonLine(line: string): TranslationResult {
       return {
         kind: "relay_event",
         relayEvent: { type: "message_update", role: "user", message },
+        parentToolUseId,
       };
     }
 
@@ -275,8 +291,8 @@ export function translateNdjsonLine(line: string): TranslationResult {
     }
 
     const translationResult: TranslationResult = events.length === 1
-      ? { kind: "relay_event", relayEvent: events[0] }
-      : { kind: "relay_event", relayEvents: events };
+      ? { kind: "relay_event", relayEvent: events[0], parentToolUseId }
+      : { kind: "relay_event", relayEvents: events, parentToolUseId };
 
     if (toolResultIds.length > 0) translationResult.toolResultIds = toolResultIds;
     return translationResult;
@@ -336,6 +352,47 @@ export function translateNdjsonLine(line: string): TranslationResult {
           contentIndex,
           partial: msg,
         },
+      },
+      parentToolUseId,
+    };
+  }
+
+  // ── Tool progress heartbeats ──────────────────────────────────────────
+  // Claude Code emits these periodically for long-running tool executions.
+  if (type === "tool_progress") {
+    return {
+      kind: "relay_event",
+      relayEvent: {
+        type: "tool_progress",
+        toolCallId: typeof msg.tool_use_id === "string" ? msg.tool_use_id : undefined,
+        toolName: typeof msg.tool_name === "string" ? msg.tool_name : undefined,
+        elapsedSeconds: typeof msg.elapsed_time_seconds === "number" ? msg.elapsed_time_seconds : undefined,
+      },
+      parentToolUseId,
+    };
+  }
+
+  // ── System status changes (compaction, etc.) ──────────────────────────
+  if (type === "system" && msg.subtype === "status") {
+    return {
+      kind: "relay_event",
+      relayEvent: {
+        type: "system_status",
+        status: typeof msg.status === "string" ? msg.status : null,
+        permissionMode: typeof msg.permissionMode === "string" ? msg.permissionMode : undefined,
+      },
+    };
+  }
+
+  // ── Compact boundary ──────────────────────────────────────────────────
+  if (type === "system" && msg.subtype === "compact_boundary") {
+    const meta = msg.compact_metadata as Record<string, unknown> | undefined;
+    return {
+      kind: "relay_event",
+      relayEvent: {
+        type: "compact_boundary",
+        trigger: typeof meta?.trigger === "string" ? meta.trigger : "auto",
+        preTokens: typeof meta?.pre_tokens === "number" ? meta.pre_tokens : undefined,
       },
     };
   }

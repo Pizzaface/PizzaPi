@@ -142,6 +142,7 @@ const pendingQuestions = new Map<string, { resolve: (answer: string) => void; ti
 // tool_result blocks arrive in user messages. Used to emit synthetic
 // tool_execution_start/end events and annotate toolResult messages.
 const pendingToolCallMap = new Map<string, { toolName: string; toolInput: unknown }>();
+
 // Subagent hook data: agent_id → metadata from SubagentStart/SubagentStop hooks.
 // Claude Code fires these when the Task/Agent tool spawns or completes a subagent.
 // We cache this data so we can enrich toolResult messages with subagent details.
@@ -1125,6 +1126,20 @@ function handleNdjsonLine(line: string): void {
       currentTokenUsage = result.tokenUsage;
     }
 
+    // ── Suppress subagent-internal events early ──────────────────────
+    // Claude Code sets `parent_tool_use_id` on every NDJSON message.
+    // When non-null, the event belongs to a subagent (Agent/Task tool)
+    // and should not appear in the parent conversation.  The subagent's
+    // final result is delivered as a toolResult matching the parent's
+    // toolCallId, which has `parent_tool_use_id: null` — so it passes
+    // through normally.
+    if (result.parentToolUseId) {
+      if (VERBOSE_EVENT_LOG) {
+        logInfo(`suppressed subagent-internal (parent=${result.parentToolUseId.slice(0, 12)})`);
+      }
+      return;
+    }
+
     // ── Emit synthetic tool_execution_start events ────────────────────
     // When an assistant message contains tool_use blocks, emit start events
     // so the UI can track active tool calls (spinning indicators).
@@ -1497,10 +1512,52 @@ function connectRelay(): void {
         }
         sock.emit("exec_result", { id: execData.id, ok: true, command: execData.command });
         break;
-      case "set_model":
-        sock.emit("exec_result", { id: execData.id, ok: false, command: execData.command, error: "Model cannot be changed mid-session for Claude Code workers." });
+      case "set_model": {
+        // Use Claude Code's control protocol to change model mid-session.
+        const modelId = typeof execData.modelId === "string" ? execData.modelId : undefined;
+        if (!modelId) {
+          sock.emit("exec_result", { id: execData.id, ok: false, command: execData.command, error: "Missing modelId." });
+          break;
+        }
+        logInfo(`exec: set_model model=${modelId}`);
+        writeToClaudeStdin({
+          type: "control_request",
+          request_id: randomUUID(),
+          request: { subtype: "set_model", model: modelId },
+        });
+        // Update our tracking — the actual confirmation comes from Claude's
+        // next system/init or assistant message with the new model.
+        currentModel = modelId;
+        currentModelObject = parseModelString(modelId);
+        emitHeartbeat();
+        sock.emit("exec_result", { id: execData.id, ok: true, command: execData.command });
+        forwardEvent({ type: "model_set_result", ok: true, provider: currentModelObject?.provider, modelId });
         break;
-      case "set_thinking_level":
+      }
+      case "set_thinking_level": {
+        // Use Claude Code's control protocol to change thinking budget.
+        const level = typeof execData.level === "string" ? execData.level : undefined;
+        // Map PizzaPi thinking levels to token counts.
+        // null = default (let Claude decide), 0 = off, positive = budget.
+        const tokenMap: Record<string, number | null> = {
+          off: 0, low: 1024, medium: 8192, high: 32768, max: 128000,
+        };
+        const tokens = level && level in tokenMap ? tokenMap[level] : undefined;
+        if (tokens === undefined) {
+          sock.emit("exec_result", { id: execData.id, ok: false, command: execData.command, error: `Unknown thinking level: ${level}` });
+          break;
+        }
+        logInfo(`exec: set_thinking_level level=${level} tokens=${tokens}`);
+        writeToClaudeStdin({
+          type: "control_request",
+          request_id: randomUUID(),
+          request: { subtype: "set_max_thinking_tokens", max_thinking_tokens: tokens === 0 ? null : tokens },
+        });
+        currentThinkingLevel = level ?? null;
+        emitHeartbeat();
+        sock.emit("exec_result", { id: execData.id, ok: true, command: execData.command });
+        break;
+      }
       case "fork":
       case "navigate_tree":
       default:
@@ -1508,8 +1565,23 @@ function connectRelay(): void {
     }
   });
 
-  sock.on("model_set", () => {
-    forwardEvent({ type: "model_set_result", ok: false, message: "Model cannot be changed mid-session for Claude Code workers." });
+  sock.on("model_set", (data) => {
+    // Legacy model_set event from older UI — route through set_model control protocol
+    const modelId = typeof data?.modelId === "string" ? data.modelId : undefined;
+    if (!modelId) {
+      forwardEvent({ type: "model_set_result", ok: false, message: "Missing modelId." });
+      return;
+    }
+    logInfo(`model_set (legacy): model=${modelId}`);
+    writeToClaudeStdin({
+      type: "control_request",
+      request_id: randomUUID(),
+      request: { subtype: "set_model", model: modelId },
+    });
+    currentModel = modelId;
+    currentModelObject = parseModelString(modelId);
+    emitHeartbeat();
+    forwardEvent({ type: "model_set_result", ok: true, provider: currentModelObject?.provider, modelId });
   });
 
   sock.on("connected", () => {
