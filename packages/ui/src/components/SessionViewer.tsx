@@ -586,6 +586,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
 
   // @-mention agents — cached per runner so we don't re-fetch every time the popover opens
   const [atMentionAgents, setAtMentionAgents] = React.useState<Array<{ name: string; description?: string }>>([]);
+  const atMentionAgentsFetchedForRef = React.useRef<string | null>(null);
 
   // Track whether the highlighted @-mention item is an agent (entry will be null for agents)
   const [atMentionHighlightedAgent, setAtMentionHighlightedAgent] = React.useState<string | null>(null);
@@ -707,23 +708,56 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
       setInput("");
       setCommandOpen(false);
       setCommandQuery("");
-      // Use cached runner data from WS feed. Empty list if runner disconnected.
-      const plugins = runnerInfo?.plugins ?? [];
-      onAppendSystemMessage?.({
-        kind: "plugins",
-        plugins: plugins.map((p) => ({
-          name: p.name,
-          description: p.description,
-          version: p.version,
-          commands: (p.commands ?? []).map((c) => ({ name: c.name, description: c.description })),
-          hookCount: p.hookEvents?.length ?? 0,
-          skillCount: p.skills?.length ?? 0,
-          agentCount: p.agents?.length ?? 0,
-          ruleCount: p.rules?.length ?? 0,
-          hasMcp: !!p.hasMcp,
-          hasAgents: !!p.hasAgents,
-        })),
-      });
+      if (runnerInfo) {
+        // Fast path: use cached WS data
+        const plugins = runnerInfo.plugins ?? [];
+        onAppendSystemMessage?.({
+          kind: "plugins",
+          plugins: plugins.map((p) => ({
+            name: p.name,
+            description: p.description,
+            version: p.version,
+            commands: (p.commands ?? []).map((c) => ({ name: c.name, description: c.description })),
+            hookCount: p.hookEvents?.length ?? 0,
+            skillCount: p.skills?.length ?? 0,
+            agentCount: p.agents?.length ?? 0,
+            ruleCount: p.rules?.length ?? 0,
+            hasMcp: !!p.hasMcp,
+            hasAgents: !!p.hasAgents,
+          })),
+        });
+      } else if (runnerId) {
+        // Fallback: fetch from REST API
+        const dispatchSessionId = sessionId;
+        const pluginsUrl = sessionCwd
+          ? `/api/runners/${encodeURIComponent(runnerId)}/plugins?cwd=${encodeURIComponent(sessionCwd)}`
+          : `/api/runners/${encodeURIComponent(runnerId)}/plugins`;
+        fetch(pluginsUrl, { credentials: "include" })
+          .then((res) => res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))
+          .then((data: any) => {
+            if (dispatchSessionId !== sessionIdRef.current) return;
+            const raw: any[] = Array.isArray(data?.plugins) ? data.plugins : [];
+            onAppendSystemMessage?.({
+              kind: "plugins",
+              plugins: raw.map((p) => ({
+                name: p.name,
+                description: p.description,
+                version: p.version,
+                commands: (p.commands ?? []).map((c: any) => ({ name: c.name, description: c.description })),
+                hookCount: p.hookEvents?.length ?? 0,
+                skillCount: p.skills?.length ?? 0,
+                agentCount: p.agents?.length ?? 0,
+                ruleCount: p.rules?.length ?? 0,
+                hasMcp: !!p.hasMcp,
+                hasAgents: !!p.hasAgents,
+              })),
+            });
+          })
+          .catch((err: Error) => {
+            if (dispatchSessionId !== sessionIdRef.current) return;
+            onAppendSystemMessage?.(`**Plugins** — Failed to load: ${err.message}`);
+          });
+      }
       return true;
     }
 
@@ -731,20 +765,39 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
       setInput("");
       setCommandOpen(false);
       setCommandQuery("");
-      // Use cached runner data from WS feed. Empty list if runner disconnected mid-session.
-      const skills = runnerInfo?.skills ?? [];
-      const merged = new Map<string, { name: string; description?: string }>();
-      for (const s of skills) merged.set(s.name, s);
-      for (const cmd of skillCommands) {
-        const skillName = cmd.name.replace(/^skill:/, "");
-        if (!merged.has(skillName)) {
-          merged.set(skillName, { name: skillName, description: cmd.description });
+      if (runnerInfo) {
+        // Fast path: use cached WS data
+        const skills = runnerInfo.skills ?? [];
+        const merged = new Map<string, { name: string; description?: string }>();
+        for (const s of skills) merged.set(s.name, s);
+        for (const cmd of skillCommands) {
+          const skillName = cmd.name.replace(/^skill:/, "");
+          if (!merged.has(skillName)) {
+            merged.set(skillName, { name: skillName, description: cmd.description });
+          }
         }
+        onAppendSystemMessage?.({ kind: "skills", skills: Array.from(merged.values()) });
+      } else if (runnerId) {
+        // Fallback: fetch from REST API
+        const dispatchSessionId = sessionId;
+        fetch(`/api/runners/${encodeURIComponent(runnerId)}/skills`, { credentials: "include" })
+          .then((res) => res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))
+          .then((data: any) => {
+            if (dispatchSessionId !== sessionIdRef.current) return;
+            const fetchedSkills: Array<{ name: string; description?: string }> = Array.isArray(data?.skills) ? data.skills : [];
+            const merged = new Map<string, { name: string; description?: string }>();
+            for (const s of fetchedSkills) merged.set(s.name, s);
+            for (const cmd of skillCommands) {
+              const skillName = cmd.name.replace(/^skill:/, "");
+              if (!merged.has(skillName)) merged.set(skillName, { name: skillName, description: cmd.description });
+            }
+            onAppendSystemMessage?.({ kind: "skills", skills: Array.from(merged.values()) });
+          })
+          .catch((err: Error) => {
+            if (dispatchSessionId !== sessionIdRef.current) return;
+            onAppendSystemMessage?.(`**Skills** — Failed to load: ${err.message}`);
+          });
       }
-      onAppendSystemMessage?.({
-        kind: "skills",
-        skills: Array.from(merged.values()),
-      });
       return true;
     }
 
@@ -793,22 +846,43 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
         const agentName = args.trim();
         if (onSpawnAgentSession && runnerId) {
           const dispatchSessionId = sessionId;
-          const agentsList = runnerInfo?.agents ?? [];
-          const match = agentsList.find(a => a.name.toLowerCase() === agentName.toLowerCase());
-          if (match) {
-            // Fetch individual agent content (system prompt) — not in RunnerInfo.agents
-            fetch(`/api/runners/${encodeURIComponent(runnerId)}/agents/${encodeURIComponent(match.name)}`, { credentials: "include" })
-              .then(res => res.ok ? res.json() : Promise.reject())
+          const agentsList = runnerInfo?.agents ?? null;
+
+          if (agentsList !== null) {
+            // Fast path: use cached WS data for name lookup
+            const match = agentsList.find(a => a.name.toLowerCase() === agentName.toLowerCase());
+            if (match) {
+              fetch(`/api/runners/${encodeURIComponent(runnerId)}/agents/${encodeURIComponent(match.name)}`, { credentials: "include" })
+                .then(res => res.ok ? res.json() : Promise.reject())
+                .then((data: any) => {
+                  if (dispatchSessionId !== sessionIdRef.current) return;
+                  onSpawnAgentSession?.({ name: match.name, description: match.description, systemPrompt: data?.content });
+                })
+                .catch(() => {
+                  if (dispatchSessionId !== sessionIdRef.current) return;
+                  onSpawnAgentSession?.({ name: match.name, description: match.description });
+                });
+            } else {
+              onAppendSystemMessage?.(`**Agents** — Agent "${agentName}" not found.`);
+            }
+          } else {
+            // Fallback: fetch full list, then resolve by name
+            fetch(`/api/runners/${encodeURIComponent(runnerId)}/agents`, { credentials: "include" })
+              .then((res) => res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))
               .then((data: any) => {
                 if (dispatchSessionId !== sessionIdRef.current) return;
-                onSpawnAgentSession?.({ name: match.name, description: match.description, systemPrompt: data?.content });
+                const agents: Array<{ name: string; description?: string; content?: string }> = Array.isArray(data?.agents) ? data.agents : [];
+                const match = agents.find(a => a.name.toLowerCase() === agentName.toLowerCase());
+                if (match) {
+                  onSpawnAgentSession?.({ name: match.name, description: match.description, systemPrompt: match.content });
+                } else {
+                  onAppendSystemMessage?.(`**Agents** — Agent "${agentName}" not found.`);
+                }
               })
-              .catch(() => {
+              .catch((err: Error) => {
                 if (dispatchSessionId !== sessionIdRef.current) return;
-                onSpawnAgentSession?.({ name: match.name, description: match.description });
+                onAppendSystemMessage?.(`**Agents** — Failed to load: ${err.message}`);
               });
-          } else {
-            onAppendSystemMessage?.(`**Agents** — Agent "${agentName}" not found.`);
           }
         }
       }
@@ -1177,8 +1251,32 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
   // Populate agents from cached runner data when the @-mention popover opens
   React.useEffect(() => {
     if (!atMentionOpen || !runnerId) return;
-    const agents = (runnerInfo?.agents ?? []).map(a => ({ name: a.name, description: a.description }));
-    setAtMentionAgents(agents);
+    if (runnerInfo) {
+      // Fast path: use cached WS data
+      const agents = runnerInfo.agents.map(a => ({ name: a.name, description: a.description }));
+      setAtMentionAgents(agents);
+      return;
+    }
+    // Fallback: fetch from REST API
+    if (atMentionAgentsFetchedForRef.current === runnerId) return;
+    atMentionAgentsFetchedForRef.current = runnerId;
+    let stale = false;
+    fetch(`/api/runners/${encodeURIComponent(runnerId)}/agents`, { credentials: "include" })
+      .then((res) => res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))
+      .then((data: any) => {
+        if (stale) return;
+        const agents: Array<{ name: string; description?: string }> = Array.isArray(data?.agents)
+          ? data.agents.map((a: any) => ({ name: a.name, description: a.description }))
+          : [];
+        setAtMentionAgents(agents);
+      })
+      .catch(() => {
+        if (!stale) {
+          atMentionAgentsFetchedForRef.current = null;
+          setAtMentionAgents([]);
+        }
+      });
+    return () => { stale = true; };
   }, [atMentionOpen, runnerId, runnerInfo]);
 
   const trimmedInput = input.trimStart();
