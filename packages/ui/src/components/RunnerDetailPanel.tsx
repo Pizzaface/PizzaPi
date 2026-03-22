@@ -410,105 +410,110 @@ export function RunnerDetailPanel({
     }
 
     return (
-        <div className="flex flex-col flex-1 p-4 sm:p-6 overflow-y-auto">
-            {/* ---- Header ---- */}
-            <div className="flex flex-col gap-1 mb-4">
-                {/* Row 1 */}
-                <div className="flex items-center justify-between gap-3">
-                    {/* Left: name + version */}
-                    <div className="flex items-center gap-2 min-w-0 flex-wrap">
-                        <h2 className="text-lg font-semibold truncate">
-                            {runner.name ?? runner.runnerId}
-                        </h2>
+        <div className="flex flex-col flex-1 overflow-hidden">
+            {/* ---- Sticky header + tabs (never scrolls away on mobile) ---- */}
+            <div className="shrink-0 px-4 sm:px-6 pt-4 sm:pt-6">
+                {/* ---- Header ---- */}
+                <div className="flex flex-col gap-1 mb-4">
+                    {/* Row 1 */}
+                    <div className="flex items-center justify-between gap-3">
+                        {/* Left: name + version */}
+                        <div className="flex items-center gap-2 min-w-0 flex-wrap">
+                            <h2 className="text-lg font-semibold truncate">
+                                {runner.name ?? runner.runnerId}
+                            </h2>
 
-                        {runner.version && (
-                            <span
-                                className={cn(
-                                    "inline-flex items-center text-[10px] font-mono px-1.5 py-0.5 rounded-full border",
-                                    outdated
-                                        ? "bg-amber-500/10 border-amber-500/40 text-amber-600 dark:text-amber-400"
-                                        : "bg-muted/60 border-border/40 text-muted-foreground",
-                                )}
+                            {runner.version && (
+                                <span
+                                    className={cn(
+                                        "inline-flex items-center text-[10px] font-mono px-1.5 py-0.5 rounded-full border",
+                                        outdated
+                                            ? "bg-amber-500/10 border-amber-500/40 text-amber-600 dark:text-amber-400"
+                                            : "bg-muted/60 border-border/40 text-muted-foreground",
+                                    )}
+                                >
+                                    {outdated && <AlertTriangle className="h-2.5 w-2.5 mr-1" />}
+                                    v{runner.version.replace(/^v/, "")}
+                                </span>
+                            )}
+
+                            {outdated && latestVersion && (
+                                <span className="text-[10px] text-amber-600 dark:text-amber-400">
+                                    Update available (v{latestVersion.replace(/^v/, "")})
+                                </span>
+                            )}
+                        </div>
+
+                        {/* Right: actions */}
+                        <div className="flex items-center gap-1.5 shrink-0">
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={onNewSession}
+                                disabled={actionsDisabled}
                             >
-                                {outdated && <AlertTriangle className="h-2.5 w-2.5 mr-1" />}
-                                v{runner.version.replace(/^v/, "")}
-                            </span>
-                        )}
-
-                        {outdated && latestVersion && (
-                            <span className="text-[10px] text-amber-600 dark:text-amber-400">
-                                Update available (v{latestVersion.replace(/^v/, "")})
-                            </span>
-                        )}
+                                <Plus className="h-3.5 w-3.5 mr-1" />
+                                New Session
+                            </Button>
+                            <TooltipProvider>
+                                <Tooltip>
+                                    <TooltipTrigger asChild>
+                                        <Button
+                                            variant="ghost"
+                                            size="icon"
+                                            className="h-8 w-8"
+                                            onClick={onRestart}
+                                            disabled={actionsDisabled}
+                                            aria-label="Restart runner"
+                                        >
+                                            {isRestarting ? (
+                                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                            ) : (
+                                                <RefreshCw className="h-3.5 w-3.5" />
+                                            )}
+                                        </Button>
+                                    </TooltipTrigger>
+                                    <TooltipContent>Restart runner</TooltipContent>
+                                </Tooltip>
+                            </TooltipProvider>
+                            <TooltipProvider>
+                                <Tooltip>
+                                    <TooltipTrigger asChild>
+                                        <Button
+                                            variant="ghost"
+                                            size="icon"
+                                            className="h-8 w-8"
+                                            onClick={onStop}
+                                            disabled={actionsDisabled}
+                                            aria-label="Stop runner"
+                                        >
+                                            {isStopping ? (
+                                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                            ) : (
+                                                <Power className="h-3.5 w-3.5" />
+                                            )}
+                                        </Button>
+                                    </TooltipTrigger>
+                                    <TooltipContent>Stop runner</TooltipContent>
+                                </Tooltip>
+                            </TooltipProvider>
+                        </div>
                     </div>
 
-                    {/* Right: actions */}
-                    <div className="flex items-center gap-1.5 shrink-0">
-                        <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={onNewSession}
-                            disabled={actionsDisabled}
-                        >
-                            <Plus className="h-3.5 w-3.5 mr-1" />
-                            New Session
-                        </Button>
-                        <TooltipProvider>
-                            <Tooltip>
-                                <TooltipTrigger asChild>
-                                    <Button
-                                        variant="ghost"
-                                        size="icon"
-                                        className="h-8 w-8"
-                                        onClick={onRestart}
-                                        disabled={actionsDisabled}
-                                        aria-label="Restart runner"
-                                    >
-                                        {isRestarting ? (
-                                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                        ) : (
-                                            <RefreshCw className="h-3.5 w-3.5" />
-                                        )}
-                                    </Button>
-                                </TooltipTrigger>
-                                <TooltipContent>Restart runner</TooltipContent>
-                            </Tooltip>
-                        </TooltipProvider>
-                        <TooltipProvider>
-                            <Tooltip>
-                                <TooltipTrigger asChild>
-                                    <Button
-                                        variant="ghost"
-                                        size="icon"
-                                        className="h-8 w-8"
-                                        onClick={onStop}
-                                        disabled={actionsDisabled}
-                                        aria-label="Stop runner"
-                                    >
-                                        {isStopping ? (
-                                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                        ) : (
-                                            <Power className="h-3.5 w-3.5" />
-                                        )}
-                                    </Button>
-                                </TooltipTrigger>
-                                <TooltipContent>Stop runner</TooltipContent>
-                            </Tooltip>
-                        </TooltipProvider>
-                    </div>
+                    {/* Row 2: runner ID */}
+                    <span className="text-[10px] font-mono text-muted-foreground/35">
+                        {runner.runnerId}
+                    </span>
                 </div>
 
-                {/* Row 2: runner ID */}
-                <span className="text-[10px] font-mono text-muted-foreground/35">
-                    {runner.runnerId}
-                </span>
+                {/* ---- Tabs ---- */}
+                <TabBar activeTab={activeTab} onTabChange={setActiveTab} runner={runner} />
             </div>
 
-            {/* ---- Tabs ---- */}
-            <TabBar activeTab={activeTab} onTabChange={setActiveTab} runner={runner} />
-
-            {/* ---- Tab Content ---- */}
-            <div className="mt-4 flex-1">{tabContent}</div>
+            {/* ---- Tab Content (only this area scrolls) ---- */}
+            <div className="flex-1 overflow-y-auto px-4 sm:px-6 pb-4 sm:pb-6">
+                <div className="mt-4">{tabContent}</div>
+            </div>
         </div>
     );
 }
