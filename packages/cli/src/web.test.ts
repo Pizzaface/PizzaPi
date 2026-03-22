@@ -6,6 +6,9 @@ import {
     extractSettingsFromCompose,
     resolveBetterAuthSecret,
     resolveMissingProxySettings,
+    shouldInstallDependencies,
+    shouldRebuildHostUi,
+    readBooleanEnv,
 } from "./web";
 
 /**
@@ -54,6 +57,90 @@ describe("web.ts compose template", () => {
         const external = readFileSync(externalPath, "utf-8");
         expect(COMPOSE_TEMPLATE).toBe(external);
     });
+
+describe("shouldInstallDependencies", () => {
+    test("requires install when node_modules missing", () => {
+        expect(
+            shouldInstallDependencies({
+                nodeModulesPresent: false,
+                currentLockHash: "abc",
+                lastLockHash: "abc",
+            })
+        ).toBe(true);
+    });
+
+    test("skips install when hashes match", () => {
+        expect(
+            shouldInstallDependencies({
+                nodeModulesPresent: true,
+                currentLockHash: "abc",
+                lastLockHash: "abc",
+            })
+        ).toBe(false);
+    });
+
+    test("installs when lock hash changed", () => {
+        expect(
+            shouldInstallDependencies({
+                nodeModulesPresent: true,
+                currentLockHash: "new",
+                lastLockHash: "old",
+            })
+        ).toBe(true);
+    });
+});
+
+describe("shouldRebuildHostUi", () => {
+    test("rebuilds when dist missing", () => {
+        expect(
+            shouldRebuildHostUi({
+                distReady: false,
+                currentSignature: "sig",
+                lastSignature: "sig",
+            })
+        ).toBe(true);
+    });
+
+    test("skips rebuild when signature unchanged", () => {
+        expect(
+            shouldRebuildHostUi({
+                distReady: true,
+                currentSignature: "sig",
+                lastSignature: "sig",
+            })
+        ).toBe(false);
+    });
+
+    test("rebuilds when signature missing", () => {
+        expect(
+            shouldRebuildHostUi({
+                distReady: true,
+                currentSignature: null,
+                lastSignature: "sig",
+            })
+        ).toBe(true);
+    });
+});
+
+describe("readBooleanEnv", () => {
+    test("falls back to default when undefined", () => {
+        expect(readBooleanEnv(undefined, true)).toBe(true);
+    });
+
+    test("parses truthy strings", () => {
+        expect(readBooleanEnv("YES", false)).toBe(true);
+        expect(readBooleanEnv("1", false)).toBe(true);
+    });
+
+    test("parses falsy strings", () => {
+        expect(readBooleanEnv("no", true)).toBe(false);
+        expect(readBooleanEnv("0", true)).toBe(false);
+    });
+
+    test("returns default for unknown values", () => {
+        expect(readBooleanEnv("maybe", true)).toBe(true);
+    });
+});
 
     test("template contains all required placeholders", () => {
         expect(COMPOSE_TEMPLATE).toContain("{{REPO_PATH}}");
