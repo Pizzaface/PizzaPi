@@ -58,6 +58,10 @@ const MIME_TYPES: Record<string, string> = {
     ".woff2": "font/woff2",
     ".ttf": "font/ttf",
     ".webmanifest": "application/manifest+json",
+    ".webm": "video/webm",
+    ".avif": "image/avif",
+    ".mp4": "video/mp4",
+    ".map": "application/json",
 };
 
 export async function serveStaticFile(pathname: string): Promise<Response | null> {
