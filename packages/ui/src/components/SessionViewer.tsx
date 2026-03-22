@@ -705,59 +705,48 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
 
     // /plugins and /skills use HTTP fetch, not onExec — handle before the exec guard
     if (rawCommand === "plugins") {
+      if (!runnerId) {
+        setInput("");
+        setCommandOpen(false);
+        setCommandQuery("");
+        onAppendSystemMessage?.("**Plugins** — Runner not connected yet. Try again in a moment.");
+        return true;
+      }
       setInput("");
       setCommandOpen(false);
       setCommandQuery("");
-      if (runnerInfo) {
-        // Fast path: use cached WS data
-        const plugins = runnerInfo.plugins ?? [];
-        onAppendSystemMessage?.({
-          kind: "plugins",
-          plugins: plugins.map((p) => ({
-            name: p.name,
-            description: p.description,
-            version: p.version,
-            commands: (p.commands ?? []).map((c) => ({ name: c.name, description: c.description })),
-            hookCount: p.hookEvents?.length ?? 0,
-            skillCount: p.skills?.length ?? 0,
-            agentCount: p.agents?.length ?? 0,
-            ruleCount: p.rules?.length ?? 0,
-            hasMcp: !!p.hasMcp,
-            hasAgents: !!p.hasAgents,
-          })),
-        });
-      } else if (runnerId) {
-        // Fallback: fetch from REST API
-        const dispatchSessionId = sessionId;
-        const pluginsUrl = sessionCwd
-          ? `/api/runners/${encodeURIComponent(runnerId)}/plugins?cwd=${encodeURIComponent(sessionCwd)}`
-          : `/api/runners/${encodeURIComponent(runnerId)}/plugins`;
-        fetch(pluginsUrl, { credentials: "include" })
-          .then((res) => res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))
-          .then((data: any) => {
-            if (dispatchSessionId !== sessionIdRef.current) return;
-            const raw: any[] = Array.isArray(data?.plugins) ? data.plugins : [];
-            onAppendSystemMessage?.({
-              kind: "plugins",
-              plugins: raw.map((p) => ({
-                name: p.name,
-                description: p.description,
-                version: p.version,
-                commands: (p.commands ?? []).map((c: any) => ({ name: c.name, description: c.description })),
-                hookCount: p.hookEvents?.length ?? 0,
-                skillCount: p.skills?.length ?? 0,
-                agentCount: p.agents?.length ?? 0,
-                ruleCount: p.rules?.length ?? 0,
-                hasMcp: !!p.hasMcp,
-                hasAgents: !!p.hasAgents,
-              })),
-            });
-          })
-          .catch((err: Error) => {
-            if (dispatchSessionId !== sessionIdRef.current) return;
-            onAppendSystemMessage?.(`**Plugins** — Failed to load: ${err.message}`);
+      // Always fetch via REST so the server runs a cwd-scoped scan.
+      // The WS feed's RunnerInfo.plugins is the global cache and misses
+      // project-local plugins (those discovered via sessionCwd).
+      const dispatchSessionId = sessionId;
+      const pluginsUrl = sessionCwd
+        ? `/api/runners/${encodeURIComponent(runnerId)}/plugins?cwd=${encodeURIComponent(sessionCwd)}`
+        : `/api/runners/${encodeURIComponent(runnerId)}/plugins`;
+      fetch(pluginsUrl, { credentials: "include" })
+        .then((res) => res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))
+        .then((data: any) => {
+          if (dispatchSessionId !== sessionIdRef.current) return;
+          const raw: Array<{ name: string; description?: string; commands?: Array<{ name: string; description?: string }>; hookEvents?: string[]; skills?: Array<{ name: string }>; agents?: Array<{ name: string }>; rules?: Array<{ name: string }>; version?: string; hasMcp?: boolean; hasAgents?: boolean }> = Array.isArray(data?.plugins) ? data.plugins : [];
+          onAppendSystemMessage?.({
+            kind: "plugins",
+            plugins: raw.map((p) => ({
+              name: p.name,
+              description: p.description,
+              version: p.version,
+              commands: (p.commands ?? []).map((c) => ({ name: c.name, description: c.description })),
+              hookCount: p.hookEvents?.length ?? 0,
+              skillCount: p.skills?.length ?? 0,
+              agentCount: p.agents?.length ?? 0,
+              ruleCount: p.rules?.length ?? 0,
+              hasMcp: !!p.hasMcp,
+              hasAgents: !!p.hasAgents,
+            })),
           });
-      }
+        })
+        .catch((err: Error) => {
+          if (dispatchSessionId !== sessionIdRef.current) return;
+          onAppendSystemMessage?.(`**Plugins** — Failed to load: ${err.message}`);
+        });
       return true;
     }
 
