@@ -1102,6 +1102,11 @@ export function FileExplorer({ runnerId, cwd, className, onClose, position = "le
     };
   }, [viewingFile]);
 
+  // outerRef covers the full FileExplorer panel including tab strip, breadcrumb,
+  // and desktop controls.  GitChangesView uses it so Escape still closes the diff
+  // preview when focus is on those chrome elements rather than inside the diff body.
+  const outerRef = React.useRef<HTMLDivElement>(null);
+
   // If viewing a file, show the appropriate viewer
   if (viewingFile) {
     const viewingFileName = viewingFile.split("/").pop() ?? viewingFile;
@@ -1125,11 +1130,6 @@ export function FileExplorer({ runnerId, cwd, className, onClose, position = "le
       </div>
     );
   }
-
-  // outerRef covers the full FileExplorer panel including tab strip, breadcrumb,
-  // and desktop controls.  GitChangesView uses it so Escape still closes the diff
-  // preview when focus is on those chrome elements rather than inside the diff body.
-  const outerRef = React.useRef<HTMLDivElement>(null);
 
   return (
     <div ref={outerRef} className={cn("flex flex-col bg-background text-foreground", className)}>
