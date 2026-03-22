@@ -2769,7 +2769,7 @@ export function App() {
   }
 
   if (!session) {
-    return <AuthPage onAuthenticated={() => authClient.$store.notify("$sessionSignal")} />;
+    return <AuthPage onAuthenticated={() => authClient.$store.notify("$sessionSignal")} />
   }
 
   const rawUser = session && typeof session === "object" ? (session as any).user : undefined;
@@ -2809,6 +2809,12 @@ export function App() {
   return (
     <TooltipProvider delayDuration={0}>
     <div className="flex h-[100dvh] w-full flex-col overflow-hidden bg-background pp-safe-left pp-safe-right">
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:p-4 focus:bg-background focus:text-foreground"
+      >
+        Skip to content
+      </a>
       {/* ── Desktop header ────────────────────────────────────────────── */}
       <header className="hidden md:flex items-center justify-between gap-3 border-b bg-background px-4 pb-2 pt-[calc(0.5rem_+_env(safe-area-inset-top))] flex-shrink-0">
         <div className="flex items-center gap-3 flex-shrink-0">
@@ -3366,7 +3372,9 @@ export function App() {
             onPointerUp={showTerminal ? handleOuterPointerUp : undefined}
             onPointerCancel={showTerminal ? handleOuterPointerUp : undefined}
           >
-            <div className={cn(
+            <div
+              id="main-content"
+              className={cn(
               "flex flex-col flex-1 min-h-0",
               showTerminal && "overflow-hidden",
               showTerminal && terminalPosition !== "bottom" && "min-w-0",
