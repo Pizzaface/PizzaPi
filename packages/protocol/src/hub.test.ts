@@ -87,12 +87,19 @@ describe("hub — HubServerToClientEvents payloads", () => {
   });
 });
 
-describe("hub — HubClientToServerEvents (read-only, no events)", () => {
-  test("HubClientToServerEvents has no event keys", () => {
-    // The hub is read-only — clients emit nothing.
-    // We verify via TypeScript that the interface is empty.
-    const events: HubClientToServerEvents = {};
-    expect(Object.keys(events)).toHaveLength(0);
+describe("hub — HubClientToServerEvents meta subscription events", () => {
+  test("subscribe_session_meta and unsubscribe_session_meta expect sessionId", () => {
+    const events: HubClientToServerEvents = {
+      subscribe_session_meta: ({ sessionId }) => {
+        expect(sessionId).toBe("s1");
+      },
+      unsubscribe_session_meta: ({ sessionId }) => {
+        expect(sessionId).toBe("s2");
+      },
+    };
+
+    events.subscribe_session_meta({ sessionId: "s1" });
+    events.unsubscribe_session_meta({ sessionId: "s2" });
   });
 });
 

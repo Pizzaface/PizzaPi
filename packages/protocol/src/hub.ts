@@ -3,6 +3,7 @@
 // ============================================================================
 
 import type { ModelInfo, SessionInfo } from "./shared.js";
+import type { SessionMetaState, MetaRelayEvent } from "./meta.js";
 
 // ---------------------------------------------------------------------------
 // Server → Client (Server sends session list updates to browsers)
@@ -32,6 +33,9 @@ export interface HubServerToClientEvents {
     runnerId?: string;
     runnerName?: string | null;
   }) => void;
+
+  state_snapshot: (data: { sessionId: string; state: SessionMetaState }) => void;
+  meta_event: (data: { sessionId: string; version: number } & MetaRelayEvent) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -39,7 +43,8 @@ export interface HubServerToClientEvents {
 // ---------------------------------------------------------------------------
 
 export interface HubClientToServerEvents {
-  // Hub is read-only; clients do not emit events
+  subscribe_session_meta:   (data: { sessionId: string }) => void;
+  unsubscribe_session_meta: (data: { sessionId: string }) => void;
 }
 
 // ---------------------------------------------------------------------------
