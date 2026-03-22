@@ -58,3 +58,10 @@ export {
     sendToTerminalViewer,
     getTerminalIdsForRunner,
 } from "./terminals.js";
+export {
+    getSessionMetaState,
+    updateSessionMetaState,
+    broadcastToSessionMeta,
+    extractMetaFromHeartbeat,
+    sessionMetaRoom,
+} from "./meta.js";
