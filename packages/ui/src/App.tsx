@@ -2916,6 +2916,11 @@ export function App() {
     };
   }, [activeSessionId, liveSessions]);
 
+  const activeRunnerInfo = React.useMemo(
+    () => feedRunners.find(r => r.runnerId === activeSessionInfo?.runnerId) ?? null,
+    [feedRunners, activeSessionInfo?.runnerId],
+  );
+
   // When both panels are at the same position, combine them into a single tabbed panel
   const areCombined = showTerminal && showFileExplorer && terminalPosition === filesPosition
     && !!activeSessionInfo?.runnerId && !!activeSessionInfo?.cwd;
@@ -3593,6 +3598,7 @@ export function App() {
                   onQuestionDismiss={() => setPendingQuestion(null)}
                   onPlanDismiss={() => setPendingPlan(null)}
                   onDuplicateSession={activeSessionInfo?.runnerId ? () => handleDuplicateSession(activeSessionInfo.runnerId!, activeSessionInfo.cwd || "") : undefined}
+                  runnerInfo={activeRunnerInfo}
                 />
               )}
             </div>

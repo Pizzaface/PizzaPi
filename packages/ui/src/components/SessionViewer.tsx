@@ -155,6 +155,8 @@ export interface SessionViewerProps {
   onPlanDismiss?: () => void;
   /** Open the new-session dialog pre-filled with the same runner & working directory */
   onDuplicateSession?: () => void;
+  /** Full runner data for the active session's runner — from the /runners WS feed */
+  runnerInfo?: import("@pizzapi/protocol").RunnerInfo | null;
 }
 
 function formatTokenCount(n: number): string {
@@ -540,7 +542,7 @@ function SessionSkeleton() {
   );
 }
 
-export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, pendingPlan, pluginTrustPrompt, onPluginTrustResponse, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, isCompacting, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onEditQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], planModeEnabled, runnerId, sessionCwd, onAppendSystemMessage, onSpawnAgentSession, onTriggerResponse, onQuestionDismiss, onPlanDismiss, onDuplicateSession }: SessionViewerProps) {
+export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, pendingPlan, pluginTrustPrompt, onPluginTrustResponse, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, isCompacting, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onEditQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], planModeEnabled, runnerId, sessionCwd, onAppendSystemMessage, onSpawnAgentSession, onTriggerResponse, onQuestionDismiss, onPlanDismiss, onDuplicateSession, runnerInfo }: SessionViewerProps) {
   const [input, setInput] = React.useState("");
   // Per-session draft storage so switching sessions preserves unsent text
   const draftsRef = React.useRef<Map<string, string>>(new Map());
@@ -584,7 +586,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
 
   // @-mention agents — cached per runner so we don't re-fetch every time the popover opens
   const [atMentionAgents, setAtMentionAgents] = React.useState<Array<{ name: string; description?: string }>>([]);
-  const atMentionAgentsFetchedForRef = React.useRef<string | null>(null);
+
   // Track whether the highlighted @-mention item is an agent (entry will be null for agents)
   const [atMentionHighlightedAgent, setAtMentionHighlightedAgent] = React.useState<string | null>(null);
 
@@ -702,88 +704,47 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
 
     // /plugins and /skills use HTTP fetch, not onExec — handle before the exec guard
     if (rawCommand === "plugins") {
-      if (!runnerId) {
-        setInput("");
-        setCommandOpen(false);
-        setCommandQuery("");
-        onAppendSystemMessage?.("**Plugins** — Runner not connected yet. Try again in a moment.");
-        return true;
-      }
       setInput("");
       setCommandOpen(false);
       setCommandQuery("");
-      const pluginsUrl = sessionCwd
-        ? `/api/runners/${encodeURIComponent(runnerId)}/plugins?cwd=${encodeURIComponent(sessionCwd)}`
-        : `/api/runners/${encodeURIComponent(runnerId)}/plugins`;
-      // Capture sessionId at dispatch time; compare against mutable ref
-      // to detect session switches while the fetch is in-flight.
-      const dispatchSessionId = sessionId;
-      fetch(pluginsUrl, { credentials: "include" })
-        .then((res) => res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))
-        .then((data: any) => {
-          if (dispatchSessionId !== sessionIdRef.current) return; // session changed, discard
-          const raw: Array<{ name: string; description?: string; commands?: Array<{ name: string; description?: string }>; hookEvents?: string[]; skills?: Array<{ name: string }>; agents?: Array<{ name: string }>; rules?: Array<{ name: string }>; version?: string; hasMcp?: boolean; hasAgents?: boolean }> = Array.isArray(data?.plugins) ? data.plugins : [];
-          onAppendSystemMessage?.({
-            kind: "plugins",
-            plugins: raw.map((p) => ({
-              name: p.name,
-              description: p.description,
-              version: p.version,
-              commands: (p.commands ?? []).map((c) => ({ name: c.name, description: c.description })),
-              hookCount: p.hookEvents?.length ?? 0,
-              skillCount: p.skills?.length ?? 0,
-              agentCount: p.agents?.length ?? 0,
-              ruleCount: p.rules?.length ?? 0,
-              hasMcp: !!p.hasMcp,
-              hasAgents: !!p.hasAgents,
-            })),
-          });
-        })
-        .catch((err: Error) => {
-          if (dispatchSessionId !== sessionIdRef.current) return;
-          onAppendSystemMessage?.(`**Plugins** — Failed to load: ${err.message}`);
-        });
+      // Use cached runner data from WS feed. Empty list if runner disconnected.
+      const plugins = runnerInfo?.plugins ?? [];
+      onAppendSystemMessage?.({
+        kind: "plugins",
+        plugins: plugins.map((p) => ({
+          name: p.name,
+          description: p.description,
+          version: p.version,
+          commands: (p.commands ?? []).map((c) => ({ name: c.name, description: c.description })),
+          hookCount: p.hookEvents?.length ?? 0,
+          skillCount: p.skills?.length ?? 0,
+          agentCount: p.agents?.length ?? 0,
+          ruleCount: p.rules?.length ?? 0,
+          hasMcp: !!p.hasMcp,
+          hasAgents: !!p.hasAgents,
+        })),
+      });
       return true;
     }
 
     if (rawCommand === "skills") {
-      if (!runnerId) {
-        setInput("");
-        setCommandOpen(false);
-        setCommandQuery("");
-        onAppendSystemMessage?.("**Skills** — Runner not connected yet. Try again in a moment.");
-        return true;
-      }
       setInput("");
       setCommandOpen(false);
       setCommandQuery("");
-      // Capture sessionId at dispatch time to discard stale responses
-      // when the user switches sessions while the fetch is in-flight.
-      const dispatchSessionId = sessionId;
-      fetch(`/api/runners/${encodeURIComponent(runnerId)}/skills`, { credentials: "include" })
-        .then((res) => res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))
-        .then((data: any) => {
-          if (dispatchSessionId !== sessionIdRef.current) return; // session changed, discard
-          const skills: Array<{ name: string; description?: string }> = Array.isArray(data?.skills) ? data.skills : [];
-          // Merge CLI-advertised skill commands (which include project-local skills the
-          // runner sees but the REST cache may not) so the user gets the full picture.
-          const merged = new Map<string, { name: string; description?: string }>();
-          for (const s of skills) merged.set(s.name, s);
-          for (const cmd of skillCommands) {
-            const skillName = cmd.name.replace(/^skill:/, "");
-            if (!merged.has(skillName)) {
-              merged.set(skillName, { name: skillName, description: cmd.description });
-            }
-          }
-          onAppendSystemMessage?.({
-            kind: "skills",
-            skills: Array.from(merged.values()),
-          });
-        })
-        .catch((err: Error) => {
-          if (dispatchSessionId !== sessionIdRef.current) return;
-          onAppendSystemMessage?.(`**Skills** — Failed to load: ${err.message}`);
-        });
+      // Use cached runner data from WS feed. Empty list if runner disconnected mid-session.
+      const skills = runnerInfo?.skills ?? [];
+      const merged = new Map<string, { name: string; description?: string }>();
+      for (const s of skills) merged.set(s.name, s);
+      for (const cmd of skillCommands) {
+        const skillName = cmd.name.replace(/^skill:/, "");
+        if (!merged.has(skillName)) {
+          merged.set(skillName, { name: skillName, description: cmd.description });
+        }
+      }
+      onAppendSystemMessage?.({
+        kind: "skills",
+        skills: Array.from(merged.values()),
+      });
       return true;
     }
 
@@ -831,25 +792,24 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
         // User typed "/agents researcher" — find and spawn that agent
         const agentName = args.trim();
         if (onSpawnAgentSession && runnerId) {
-          // Capture sessionId at dispatch time to discard stale responses
-          // when the user switches sessions while the fetch is in-flight.
           const dispatchSessionId = sessionId;
-          fetch(`/api/runners/${encodeURIComponent(runnerId)}/agents`, { credentials: "include" })
-            .then((res) => res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))
-            .then((data: any) => {
-              if (dispatchSessionId !== sessionIdRef.current) return; // session changed, discard
-              const agents: Array<{ name: string; description?: string; content?: string }> = Array.isArray(data?.agents) ? data.agents : [];
-              const match = agents.find(a => a.name.toLowerCase() === agentName.toLowerCase());
-              if (match) {
-                onSpawnAgentSession({ name: match.name, description: match.description, systemPrompt: match.content });
-              } else {
-                onAppendSystemMessage?.(`**Agents** — Agent "${agentName}" not found.`);
-              }
-            })
-            .catch((err: Error) => {
-              if (dispatchSessionId !== sessionIdRef.current) return;
-              onAppendSystemMessage?.(`**Agents** — Failed to load: ${err.message}`);
-            });
+          const agentsList = runnerInfo?.agents ?? [];
+          const match = agentsList.find(a => a.name.toLowerCase() === agentName.toLowerCase());
+          if (match) {
+            // Fetch individual agent content (system prompt) — not in RunnerInfo.agents
+            fetch(`/api/runners/${encodeURIComponent(runnerId)}/agents/${encodeURIComponent(match.name)}`, { credentials: "include" })
+              .then(res => res.ok ? res.json() : Promise.reject())
+              .then((data: any) => {
+                if (dispatchSessionId !== sessionIdRef.current) return;
+                onSpawnAgentSession?.({ name: match.name, description: match.description, systemPrompt: data?.content });
+              })
+              .catch(() => {
+                if (dispatchSessionId !== sessionIdRef.current) return;
+                onSpawnAgentSession?.({ name: match.name, description: match.description });
+              });
+          } else {
+            onAppendSystemMessage?.(`**Agents** — Agent "${agentName}" not found.`);
+          }
         }
       }
       // Without args, the popover handles it (isAgentMode)
@@ -973,7 +933,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     }
 
     return false;
-  }, [onExec, onSendInput, resumeSessions, runnerId, onAppendSystemMessage, skillCommands, sessionCwd, onShowModelSelector, isCompacting, sessionId, onSpawnAgentSession]);
+  }, [onExec, onSendInput, resumeSessions, runnerId, onAppendSystemMessage, skillCommands, sessionCwd, onShowModelSelector, isCompacting, sessionId, onSpawnAgentSession, runnerInfo]);
 
   const handleSubmit = React.useCallback(
     (message: PromptInputMessage) => {
@@ -1214,30 +1174,12 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     setAtMentionHighlightedIndex(0);
   }, [input, atMentionTriggerOffset]);
 
-  // Fetch agents when the @-mention popover opens (cached per runner)
+  // Populate agents from cached runner data when the @-mention popover opens
   React.useEffect(() => {
     if (!atMentionOpen || !runnerId) return;
-    if (atMentionAgentsFetchedForRef.current === runnerId) return;
-    atMentionAgentsFetchedForRef.current = runnerId;
-    let stale = false;
-    fetch(`/api/runners/${encodeURIComponent(runnerId)}/agents`, { credentials: "include" })
-      .then((res) => res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))
-      .then((data: any) => {
-        if (stale) return;
-        const agents: Array<{ name: string; description?: string }> = Array.isArray(data?.agents)
-          ? data.agents.map((a: any) => ({ name: a.name, description: a.description }))
-          : [];
-        setAtMentionAgents(agents);
-      })
-      .catch(() => {
-        if (!stale) {
-          // Clear the fetched marker so a subsequent popover open will retry
-          atMentionAgentsFetchedForRef.current = null;
-          setAtMentionAgents([]);
-        }
-      });
-    return () => { stale = true; };
-  }, [atMentionOpen, runnerId]);
+    const agents = (runnerInfo?.agents ?? []).map(a => ({ name: a.name, description: a.description }));
+    setAtMentionAgents(agents);
+  }, [atMentionOpen, runnerId, runnerInfo]);
 
   const trimmedInput = input.trimStart();
   const isResumeMode = /^\/resume(?:\s|$)/i.test(trimmedInput);
@@ -1275,28 +1217,32 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
     });
   }, [agentsList, agentQuery]);
 
-  // Fetch agents when agent mode activates
+  // Pre-populate agents from cached runner data, then fetch full content in background
   React.useEffect(() => {
     if (!sessionId || !commandOpen || !isAgentMode || !runnerId) return;
     const requestKey = `${sessionId}-${runnerId}`;
     if (agentsRequestedRef.current === requestKey) return;
     agentsRequestedRef.current = requestKey;
     let stale = false;
+
+    // Pre-populate display from cached runner data immediately (no loading flicker)
+    const cachedAgents = (runnerInfo?.agents ?? []).map(a => ({ name: a.name, description: a.description }));
+    setAgentsList(cachedAgents);
+
+    // Fetch full agent data in background (list endpoint doesn't include content,
+    // but this keeps the list fresh and provides content for spawning via picker)
     setAgentsLoading(true);
     fetch(`/api/runners/${encodeURIComponent(runnerId)}/agents`, { credentials: "include" })
       .then((res) => res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`)))
       .then((data: any) => {
-        if (stale) return; // session/runner changed while fetch was in-flight
+        if (stale) return;
         const agents: Array<{ name: string; description?: string; content?: string }> = Array.isArray(data?.agents) ? data.agents : [];
         setAgentsList(agents);
       })
-      .catch(() => {
-        if (stale) return;
-        setAgentsList([]);
-      })
+      .catch(() => { if (stale) return; /* keep cached data on error */ })
       .finally(() => { if (!stale) setAgentsLoading(false); });
     return () => { stale = true; };
-  }, [sessionId, commandOpen, isAgentMode, runnerId]);
+  }, [sessionId, commandOpen, isAgentMode, runnerId, runnerInfo]);
 
   // Reset agent request ref when agent mode closes
   React.useEffect(() => {
