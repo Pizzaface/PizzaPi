@@ -247,7 +247,7 @@ function emitHeartbeat(status?: string): void {
     workerType: "claude-code",
     active: claudeIsWorking,
     isAgentActive: claudeIsWorking,
-    model: currentModel ? { provider: "anthropic", id: currentModel, name: currentModel } : null,
+    model: currentModelObject ?? (currentModel ? parseModelString(currentModel) : null),
     ts: Date.now(),
     ...(status ? { status } : {}),
   };
@@ -314,13 +314,43 @@ function stopHeartbeatTimer(): void {
 }
 
 // ── Model string parser ──────────────────────────────────────────────────
-/** Parse a Claude model ID string into a structured model object. */
+/** Strip Claude CLI model suffixes like `[1m]` (thinking budget indicators). */
+function stripModelSuffix(modelStr: string): string {
+  return modelStr.replace(/\[.*?\]$/, "").trim();
+}
+
+/** Parse a Claude model ID string into a structured model object.
+ *  Looks up the well-known models list to find a clean display name.
+ *  Falls back to a prettified version of the raw ID if not found.
+ */
 function parseModelString(modelStr: string): { provider: string; id: string; name: string; reasoning?: boolean } {
+  const baseId = stripModelSuffix(modelStr);
+
+  // Try to find a matching well-known model by exact ID or stripped ID
+  const match = WELL_KNOWN_MODELS.find(
+    (m) => m.id === baseId || m.id === modelStr,
+  );
+
+  if (match) {
+    return {
+      provider: match.provider,
+      id: baseId,
+      name: match.name,
+      ...(match.reasoning ? { reasoning: true } : {}),
+    };
+  }
+
+  // Fallback: prettify the raw model string (e.g. "claude-opus-4-6" → "Claude Opus 4 6")
+  const prettyName = baseId
+    .replace(/^claude-/, "Claude ")
+    .replace(/-/g, " ")
+    .replace(/\b\w/g, (c) => c.toUpperCase());
   const reasoning = /opus|sonnet|claude-4|claude-3/.test(modelStr);
+
   return {
     provider: "anthropic",
-    id: modelStr,
-    name: modelStr,
+    id: baseId,
+    name: prettyName,
     ...(reasoning ? { reasoning: true } : {}),
   };
 }
@@ -329,6 +359,9 @@ function parseModelString(modelStr: string): { provider: string; id: string; nam
 /** Well-known models per provider — used to populate pizzapi_list_models. */
 const WELL_KNOWN_MODELS: Array<{ provider: string; id: string; name: string; reasoning?: boolean }> = [
   // Anthropic
+  { provider: "anthropic", id: "claude-opus-4-6",    name: "Claude Opus 4.6",   reasoning: true },
+  { provider: "anthropic", id: "claude-sonnet-4-6",  name: "Claude Sonnet 4.6", reasoning: true },
+  { provider: "anthropic", id: "claude-haiku-4-6",   name: "Claude Haiku 4.6" },
   { provider: "anthropic", id: "claude-opus-4-5",    name: "Claude Opus 4.5",   reasoning: true },
   { provider: "anthropic", id: "claude-sonnet-4-5",  name: "Claude Sonnet 4.5", reasoning: true },
   { provider: "anthropic", id: "claude-haiku-4-5",   name: "Claude Haiku 4.5" },
@@ -1001,7 +1034,7 @@ function deliverAskUserAnswer(toolCallId: string, answer: string): void {
 // ── session_active snapshot ───────────────────────────────────────────────
 function emitSessionActive(): void {
   const sessionState: Record<string, unknown> = {
-    model: currentModelObject ?? (currentModel ? { provider: "anthropic", id: currentModel, name: currentModel } : null),
+    model: currentModelObject ?? (currentModel ? parseModelString(currentModel) : null),
     messages: capOversizedMessages(messages),
     cwd,
     sessionName: currentSessionName,

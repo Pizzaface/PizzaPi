@@ -1535,7 +1535,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
             {workerType === "claude-code" && (
               <Badge variant="outline" className="text-[0.65rem] shrink-0 font-mono py-0.5">Claude Code</Badge>
             )}
-            {(activeModel?.reasoning || effortLevel != null) && (
+            {workerType !== "claude-code" && (activeModel?.reasoning || effortLevel != null) && (
               <button
                 className="rounded-full border border-border bg-muted px-2 py-0.5 text-[0.65rem] font-medium text-muted-foreground uppercase tracking-wide hover:bg-muted/80 transition-colors cursor-pointer"
                 onClick={() => {
