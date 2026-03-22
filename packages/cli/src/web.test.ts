@@ -511,6 +511,46 @@ describe("extractSettingsFromCompose", () => {
         const result = extractSettingsFromCompose(content);
         expect(result.trustProxy).toBe(true);
     });
+
+    test("extracts server image, not redis image, when both services have image: lines (P1 regression)", () => {
+        // Regression: the old regex matched the FIRST `image:` in the file, which is
+        // `redis:7-alpine` (under the redis service), not the server image.
+        const content = `services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+
+  server:
+    image: ghcr.io/pizzaface/pizzapi:0.1.42
+    pull_policy: if_not_present
+    ports:
+      - "8080:7492"
+    environment:
+      - BETTER_AUTH_SECRET=TestSecret`;
+        const result = extractSettingsFromCompose(content);
+        expect(result.image).toBe("ghcr.io/pizzaface/pizzapi");
+        expect(result.imageTag).toBe("0.1.42");
+        // Must NOT have picked up redis:7-alpine
+        expect(result.image).not.toContain("redis");
+    });
+
+    test("does not set image when compose is build mode (no image: under server)", () => {
+        // Build mode: server service has `build:` instead of `image:`.
+        // extractSettingsFromCompose must return no image/imageTag fields.
+        const content = `services:
+  redis:
+    image: redis:7-alpine
+
+  server:
+    build:
+      context: /repo
+      dockerfile: Dockerfile
+    ports:
+      - "8080:7492"`;
+        const result = extractSettingsFromCompose(content);
+        expect(result.image).toBeUndefined();
+        expect(result.imageTag).toBeUndefined();
+    });
 });
 
 describe("extractVapidFromCompose (backward compat)", () => {

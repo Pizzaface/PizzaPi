@@ -289,34 +289,40 @@ export function extractSettingsFromCompose(content: string): ExtractedComposeSet
         if (!isNaN(val) && val >= 1) result.proxyDepth = val;
     }
 
-    // Detect image mode: look for `image:` line in the server service.
-    // The compose template puts `image:` directly under the server service
-    // (indented 4 spaces) only in image mode; build mode uses `build:` instead.
-    // We also skip the redis `image: redis:7-alpine` line by matching only
-    // refs that don't look like the redis image.
-    const imageMatch = content.match(/^\s{4}image:\s+(.+)/m);
-    if (imageMatch?.[1]) {
-        const rawRef = imageMatch[1].trim();
-        // Skip the redis service image (e.g. "redis", "redis:7-alpine")
-        if (!rawRef.startsWith("redis:") && rawRef !== "redis") {
-            result.image = rawRef;
-            // Parse tag from the reference
-            if (rawRef.includes("@")) {
-                // Digest-pinned: store the full ref as image, tag as "digest"
+    // Detect image mode: look for `image:` line in the server service block only.
+    // The compose template defines redis before server, so a naive first-match
+    // regex would return `redis:7-alpine` instead of the server image.
+    // We fix this by scoping the search to the content that follows `  server:`.
+    const serverSectionStart = content.search(/^  server:/m);
+    if (serverSectionStart !== -1) {
+        const afterServer = content.slice(serverSectionStart);
+        // Stop at the next top-level service key ("  <name>:") or end of file.
+        const nextServiceIdx = afterServer.slice(1).search(/\n  [a-z]/);
+        const serverBlock =
+            nextServiceIdx !== -1 ? afterServer.slice(0, nextServiceIdx + 1) : afterServer;
+        const imageMatch = serverBlock.match(/^\s{4}image:\s+(.+)/m);
+        if (imageMatch?.[1]) {
+            const rawRef = imageMatch[1].trim();
+            if (rawRef) {
                 result.image = rawRef;
-                result.imageTag = "digest";
-            } else {
-                const lastSlash = rawRef.lastIndexOf("/");
-                const afterSlash = lastSlash === -1 ? rawRef : rawRef.slice(lastSlash + 1);
-                const colonIdx = afterSlash.indexOf(":");
-                if (colonIdx !== -1) {
-                    // Has tag: split into repo + tag
-                    result.image = rawRef.slice(0, rawRef.lastIndexOf(":"));
-                    result.imageTag = afterSlash.slice(colonIdx + 1);
-                } else {
-                    // No tag — implicit latest
+                // Parse tag from the reference
+                if (rawRef.includes("@")) {
+                    // Digest-pinned: store the full ref as image, tag as "digest"
                     result.image = rawRef;
-                    result.imageTag = "latest";
+                    result.imageTag = "digest";
+                } else {
+                    const lastSlash = rawRef.lastIndexOf("/");
+                    const afterSlash = lastSlash === -1 ? rawRef : rawRef.slice(lastSlash + 1);
+                    const colonIdx = afterSlash.indexOf(":");
+                    if (colonIdx !== -1) {
+                        // Has tag: split into repo + tag
+                        result.image = rawRef.slice(0, rawRef.lastIndexOf(":"));
+                        result.imageTag = afterSlash.slice(colonIdx + 1);
+                    } else {
+                        // No tag — implicit latest
+                        result.image = rawRef;
+                        result.imageTag = "latest";
+                    }
                 }
             }
         }
