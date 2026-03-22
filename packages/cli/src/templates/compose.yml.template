@@ -10,6 +10,8 @@ services:
     build:
       context: {{REPO_PATH}}
       dockerfile: Dockerfile
+      args:
+        PREBUILT_UI: "{{PREBUILT_UI}}"
     ports:
       - "{{PORT}}:7492"
     environment:

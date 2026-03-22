@@ -13,7 +13,7 @@
  */
 
 import { execFileSync, spawn } from "child_process";
-import { createECDH, randomBytes } from "crypto";
+import { createECDH, createHash, randomBytes } from "crypto";
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
@@ -41,7 +41,77 @@ export interface WebConfig {
 
 const WEB_DIR = join(homedir(), ".pizzapi", "web");
 const CONFIG_PATH = join(WEB_DIR, "config.json");
+const HOST_BUILD_STATE_PATH = join(WEB_DIR, "host-build.json");
 const REPO_URL = "https://github.com/Pizzaface/PizzaPi.git";
+
+interface HostBuildState {
+    lastLockHash?: string | null;
+    lastUiSignature?: string | null;
+}
+
+function loadHostBuildState(): HostBuildState {
+    try {
+        return JSON.parse(readFileSync(HOST_BUILD_STATE_PATH, "utf-8"));
+    } catch {
+        return {};
+    }
+}
+
+function saveHostBuildState(state: HostBuildState): void {
+    mkdirSync(WEB_DIR, { recursive: true });
+    writeFileSync(HOST_BUILD_STATE_PATH, JSON.stringify(state, null, 2) + "\n");
+}
+
+function hashFile(path: string): string | null {
+    try {
+        return createHash("sha256").update(readFileSync(path)).digest("hex");
+    } catch {
+        return null;
+    }
+}
+
+function computeUiSignature(repoPath: string): string | null {
+    try {
+        const head = execFileSync("git", ["-C", repoPath, "rev-parse", "HEAD"], { encoding: "utf-8" }).trim();
+        const status = execFileSync(
+            "git",
+            ["-C", repoPath, "status", "--short", "packages/ui", "packages/protocol"],
+            { encoding: "utf-8" }
+        ).trim();
+        const lockHash = hashFile(join(repoPath, "bun.lock")) ?? "";
+        return createHash("sha256").update(head).update("\n").update(status).update("\n").update(lockHash).digest("hex");
+    } catch {
+        return null;
+    }
+}
+
+export function shouldInstallDependencies(opts: {
+    nodeModulesPresent: boolean;
+    currentLockHash: string | null;
+    lastLockHash: string | null | undefined;
+}): boolean {
+    if (!opts.nodeModulesPresent) return true;
+    if (!opts.currentLockHash) return false;
+    return opts.currentLockHash !== (opts.lastLockHash ?? null);
+}
+
+export function shouldRebuildHostUi(opts: {
+    distReady: boolean;
+    currentSignature: string | null;
+    lastSignature: string | null | undefined;
+}): boolean {
+    if (!opts.distReady) return true;
+    if (!opts.currentSignature) return true;
+    return opts.currentSignature !== (opts.lastSignature ?? null);
+}
+
+export function readBooleanEnv(value: string | undefined, defaultValue: boolean): boolean {
+    if (value === undefined) return defaultValue;
+    const normalized = value.trim().toLowerCase();
+    if (["1", "true", "yes", "on"].includes(normalized)) return true;
+    if (["0", "false", "no", "off"].includes(normalized)) return false;
+    return defaultValue;
+}
 
 // ─── VAPID key generation ─────────────────────────────────────────────────────
 
@@ -487,6 +557,8 @@ services:
     build:
       context: {{REPO_PATH}}
       dockerfile: Dockerfile
+      args:
+        PREBUILT_UI: "{{PREBUILT_UI}}"
     ports:
       - "{{PORT}}:7492"
     environment:
@@ -503,7 +575,91 @@ services:
     restart: unless-stopped
 `;
 
-function generateComposeFile(repoPath: string, config: WebConfig): string {
+// ─── Host-side UI pre-build ──────────────────────────────────────────────────
+
+/**
+ * Attempt to build the UI on the host using bun (native speed, ~15s) instead
+ * of inside Docker (minutes on Docker Desktop VMs).  Returns true if the
+ * pre-built dist is ready in `repoPath/packages/ui/dist`.
+ *
+ * Gracefully falls back to false (Docker will build it) when:
+ *   - `bun` is not on PATH (e.g. npm-installed binary without bun)
+ *   - `bun install` or `bun run build` fails for any reason
+ */
+function prebuildUI(repoPath: string): boolean {
+    const uiDist = join(repoPath, "packages", "ui", "dist");
+    const uiDistIndex = join(uiDist, "index.html");
+    const nodeModulesPath = join(repoPath, "node_modules");
+    const protocolDist = join(repoPath, "packages", "protocol", "dist");
+
+    try {
+        execFileSync("bun", ["--version"], { stdio: "ignore" });
+    } catch {
+        console.log("bun not found on host — UI will be built inside Docker (slower).");
+        return false;
+    }
+
+    console.log("Pre-building UI on host for faster Docker build...");
+
+    const state = loadHostBuildState();
+    let stateDirty = false;
+
+    const lockHash = hashFile(join(repoPath, "bun.lock"));
+    const needsInstall = shouldInstallDependencies({
+        nodeModulesPresent: existsSync(nodeModulesPath),
+        currentLockHash: lockHash,
+        lastLockHash: state.lastLockHash,
+    });
+
+    try {
+        if (needsInstall) {
+            console.log("  Installing dependencies (bun install)...");
+            execFileSync("bun", ["install"], { cwd: repoPath, stdio: "inherit" });
+            state.lastLockHash = lockHash ?? null;
+            stateDirty = true;
+        }
+
+        const uiSignature = computeUiSignature(repoPath);
+        const distReady = existsSync(uiDistIndex);
+        const needsUiBuild = shouldRebuildHostUi({
+            distReady,
+            currentSignature: uiSignature,
+            lastSignature: state.lastUiSignature,
+        });
+
+        if (!needsUiBuild && distReady) {
+            console.log("  Host UI build is up to date (reusing dist/).");
+            if (stateDirty) saveHostBuildState(state);
+            return true;
+        }
+
+        console.log("  Building protocol...");
+        execFileSync("bun", ["run", "build:protocol"], { cwd: repoPath, stdio: "inherit" });
+
+        console.log("  Building UI...");
+        execFileSync("bun", ["run", "build:ui"], { cwd: repoPath, stdio: "inherit" });
+
+        if (existsSync(uiDistIndex)) {
+            console.log("  ✓ UI pre-built successfully.");
+            if (uiSignature) {
+                state.lastUiSignature = uiSignature;
+                stateDirty = true;
+            }
+            if (stateDirty) saveHostBuildState(state);
+            return true;
+        }
+    } catch (err) {
+        console.warn("Warning: Host UI build failed, falling back to Docker build.");
+        if (err instanceof Error) console.warn(`  ${err.message}`);
+        if (stateDirty) saveHostBuildState(state);
+        return false;
+    }
+
+    if (stateDirty) saveHostBuildState(state);
+    return false;
+}
+
+function generateComposeFile(repoPath: string, config: WebConfig, prebuiltUi: boolean): string {
     const composePath = join(WEB_DIR, "compose.yml");
     mkdirSync(WEB_DIR, { recursive: true });
 
@@ -563,7 +719,8 @@ function generateComposeFile(repoPath: string, config: WebConfig): string {
         .replace(/\{\{BETTER_AUTH_SECRET}}/g, config.betterAuthSecret)
         .replace(/\{\{EXTRA_ORIGINS_LINE}}/g, extraOriginsLine)
         .replace(/\{\{TRUST_PROXY_LINE}}/g, trustProxyLine)
-        .replace(/\{\{PROXY_DEPTH_LINE}}/g, proxyDepthLine);
+        .replace(/\{\{PROXY_DEPTH_LINE}}/g, proxyDepthLine)
+        .replace(/\{\{PREBUILT_UI}}/g, prebuiltUi ? "true" : "false");
 
     // Only write if changed
     const existing = existsSync(composePath) ? readFileSync(composePath, "utf-8") : null;
@@ -842,7 +999,15 @@ export async function runWeb(args: string[]): Promise<void> {
     }
 
     const repoPath = getRepoPath();
-    const composePath = generateComposeFile(repoPath, config);
+
+    const useHostPrebuild = readBooleanEnv(process.env.PIZZAPI_PREBUILD_UI, true);
+    if (!useHostPrebuild) {
+        console.log("Skipping host UI pre-build (PIZZAPI_PREBUILD_UI=false).");
+    }
+
+    // Pre-build UI on the host for much faster Docker builds when enabled.
+    const prebuiltUi = useHostPrebuild ? prebuildUI(repoPath) : false;
+    const composePath = generateComposeFile(repoPath, config, prebuiltUi);
 
     console.log(`Starting PizzaPi web on port ${config.port}...`);
     console.log(`  Repo:    ${repoPath}`);

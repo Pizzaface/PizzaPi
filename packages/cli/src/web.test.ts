@@ -6,6 +6,9 @@ import {
     extractSettingsFromCompose,
     resolveBetterAuthSecret,
     resolveMissingProxySettings,
+    shouldInstallDependencies,
+    shouldRebuildHostUi,
+    readBooleanEnv,
 } from "./web";
 
 /**
@@ -27,6 +30,8 @@ services:
     build:
       context: {{REPO_PATH}}
       dockerfile: Dockerfile
+      args:
+        PREBUILT_UI: "{{PREBUILT_UI}}"
     ports:
       - "{{PORT}}:7492"
     environment:
@@ -53,6 +58,90 @@ describe("web.ts compose template", () => {
         expect(COMPOSE_TEMPLATE).toBe(external);
     });
 
+describe("shouldInstallDependencies", () => {
+    test("requires install when node_modules missing", () => {
+        expect(
+            shouldInstallDependencies({
+                nodeModulesPresent: false,
+                currentLockHash: "abc",
+                lastLockHash: "abc",
+            })
+        ).toBe(true);
+    });
+
+    test("skips install when hashes match", () => {
+        expect(
+            shouldInstallDependencies({
+                nodeModulesPresent: true,
+                currentLockHash: "abc",
+                lastLockHash: "abc",
+            })
+        ).toBe(false);
+    });
+
+    test("installs when lock hash changed", () => {
+        expect(
+            shouldInstallDependencies({
+                nodeModulesPresent: true,
+                currentLockHash: "new",
+                lastLockHash: "old",
+            })
+        ).toBe(true);
+    });
+});
+
+describe("shouldRebuildHostUi", () => {
+    test("rebuilds when dist missing", () => {
+        expect(
+            shouldRebuildHostUi({
+                distReady: false,
+                currentSignature: "sig",
+                lastSignature: "sig",
+            })
+        ).toBe(true);
+    });
+
+    test("skips rebuild when signature unchanged", () => {
+        expect(
+            shouldRebuildHostUi({
+                distReady: true,
+                currentSignature: "sig",
+                lastSignature: "sig",
+            })
+        ).toBe(false);
+    });
+
+    test("rebuilds when signature missing", () => {
+        expect(
+            shouldRebuildHostUi({
+                distReady: true,
+                currentSignature: null,
+                lastSignature: "sig",
+            })
+        ).toBe(true);
+    });
+});
+
+describe("readBooleanEnv", () => {
+    test("falls back to default when undefined", () => {
+        expect(readBooleanEnv(undefined, true)).toBe(true);
+    });
+
+    test("parses truthy strings", () => {
+        expect(readBooleanEnv("YES", false)).toBe(true);
+        expect(readBooleanEnv("1", false)).toBe(true);
+    });
+
+    test("parses falsy strings", () => {
+        expect(readBooleanEnv("no", true)).toBe(false);
+        expect(readBooleanEnv("0", true)).toBe(false);
+    });
+
+    test("returns default for unknown values", () => {
+        expect(readBooleanEnv("maybe", true)).toBe(true);
+    });
+});
+
     test("template contains all required placeholders", () => {
         expect(COMPOSE_TEMPLATE).toContain("{{REPO_PATH}}");
         expect(COMPOSE_TEMPLATE).toContain("{{PORT}}");
@@ -62,6 +151,7 @@ describe("web.ts compose template", () => {
         expect(COMPOSE_TEMPLATE).toContain("{{VAPID_PRIVATE_KEY}}");
         expect(COMPOSE_TEMPLATE).toContain("{{VAPID_SUBJECT}}");
         expect(COMPOSE_TEMPLATE).toContain("{{EXTRA_ORIGINS_LINE}}");
+        expect(COMPOSE_TEMPLATE).toContain("{{PREBUILT_UI}}");
     });
 
     test("template substitution produces valid compose structure", () => {
@@ -75,7 +165,8 @@ describe("web.ts compose template", () => {
             .replace(/\{\{VAPID_SUBJECT}}/g, "mailto:admin@pizzapi.local")
             .replace(/\{\{EXTRA_ORIGINS_LINE}}/g, "      - PIZZAPI_EXTRA_ORIGINS=https://example.com\n")
             .replace(/\{\{TRUST_PROXY_LINE}}/g, "      # - PIZZAPI_TRUST_PROXY=\n")
-            .replace(/\{\{PROXY_DEPTH_LINE}}/g, "      # - PIZZAPI_PROXY_DEPTH=\n");
+            .replace(/\{\{PROXY_DEPTH_LINE}}/g, "      # - PIZZAPI_PROXY_DEPTH=\n")
+            .replace(/\{\{PREBUILT_UI}}/g, "true");
 
         // No unsubstituted placeholders remain
         expect(composed).not.toContain("{{");
@@ -93,6 +184,7 @@ describe("web.ts compose template", () => {
         expect(composed).toContain("VAPID_SUBJECT=mailto:admin@pizzapi.local");
         expect(composed).toContain("PIZZAPI_EXTRA_ORIGINS=https://example.com");
         expect(composed).toContain("/home/user/.pizzapi/web/data:/app/data:Z");
+        expect(composed).toContain('PREBUILT_UI: "true"');
     });
 
     test("template with no extra origins produces commented-out line", () => {
@@ -106,7 +198,8 @@ describe("web.ts compose template", () => {
             .replace(/\{\{VAPID_SUBJECT}}/g, "mailto:test@test.com")
             .replace(/\{\{EXTRA_ORIGINS_LINE}}/g, "      # - PIZZAPI_EXTRA_ORIGINS=\n")
             .replace(/\{\{TRUST_PROXY_LINE}}/g, "      # - PIZZAPI_TRUST_PROXY=\n")
-            .replace(/\{\{PROXY_DEPTH_LINE}}/g, "      # - PIZZAPI_PROXY_DEPTH=\n");
+            .replace(/\{\{PROXY_DEPTH_LINE}}/g, "      # - PIZZAPI_PROXY_DEPTH=\n")
+            .replace(/\{\{PREBUILT_UI}}/g, "false");
 
         expect(composed).toContain("# - PIZZAPI_EXTRA_ORIGINS=");
         expect(composed).not.toContain("{{");

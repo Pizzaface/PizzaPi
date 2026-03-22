@@ -148,6 +148,12 @@ Flags:
   -f, --foreground    Run in the foreground (don't detach)
   -h, --help          Show this help
 
+Host build:
+  PIZZAPI_PREBUILD_UI=false   Skip the host-side UI build and let Docker build it instead
+
+Docker build args:
+  PREBUILT_UI (auto)    Set by pizza web based on the host prebuild result
+
 Configuration (~/.pizzapi/web/config.json):
   port            Host port (default: 7492)
   vapidSubject    VAPID subject for push notifications
@@ -175,6 +181,10 @@ pizzapi web status
 
 <Aside type="note">
   Requires **Docker** with Docker Compose installed. If you're not running from the PizzaPi repository, the command will automatically clone it to `~/.pizzapi/web/repo`.
+</Aside>
+
+<Aside type="tip">
+  On each start `pizza web` attempts to build the UI on the host using Bun (typically ~15 seconds) and injects the result into the Docker build. Set `PIZZAPI_PREBUILD_UI=false` if you prefer Docker to perform the UI build or if Bun is unavailable on the host.
 </Aside>
 
 | Subcommand | Description |

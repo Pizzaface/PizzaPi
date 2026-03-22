@@ -1,3 +1,8 @@
+# syntax=docker/dockerfile:1
+
+# ── Shared dependency layer ──────────────────────────────────────────────────
+# Installs node_modules and copies configs shared by both build stages.
+# The docker/compose.yml dev profile targets this stage (target: builder).
 FROM oven/bun:1 AS builder
 WORKDIR /app
 
@@ -13,6 +18,7 @@ RUN cat /tmp/full-package.json | bun -e ' \
     const slim = { \
         name: f.name, version: f.version, \
         workspaces: ["packages/protocol","packages/tools","packages/server","packages/ui"], \
+        devDependencies: { typescript: f.devDependencies?.typescript ?? "^5.7.0" }, \
         patchedDependencies: f.patchedDependencies \
     }; \
     await Bun.write("/app/package.json", JSON.stringify(slim, null, 2));'
@@ -25,38 +31,53 @@ COPY packages/ui/package.json packages/ui/
 # --ignore-scripts skips native builds (better-sqlite3 from @better-auth/cli)
 # that aren't needed at runtime since the server uses bun:sqlite.
 # Can't use --frozen-lockfile since we trimmed the workspace list.
-RUN bun install --ignore-scripts
+RUN --mount=type=cache,target=/root/.bun/install/cache \
+    bun install --ignore-scripts
 
-# Copy source for needed packages only
-COPY tsconfig.base.json ./
+# Root tsconfigs needed by tsc --build project references
+COPY tsconfig.base.json tsconfig.json ./
+
+# Protocol source is shared by both server (tsc reference) and UI (bundled dep)
 COPY packages/protocol/ packages/protocol/
+
+# ── Build server (runs in parallel with build-ui) ───────────────────────────
+# tsc --build follows project references: protocol → tools → server
+FROM builder AS build-server
 COPY packages/tools/ packages/tools/
 COPY packages/server/ packages/server/
+RUN node_modules/typescript/bin/tsc --build packages/server/tsconfig.json
+
+# ── Build UI ─────────────────────────────────────────────────────────────────
+# When PREBUILT_UI=true (default), `pizza web` builds the UI on the host first
+# (native speed, ~15s) and the Dockerfile just copies the dist from context.
+# Set PREBUILT_UI=false to build inside Docker (slow on Docker Desktop VMs).
+ARG PREBUILT_UI=false
+FROM builder AS build-ui
+ARG PREBUILT_UI
+COPY packages/tools/ packages/tools/
 COPY packages/ui/ packages/ui/
+RUN if [ "$PREBUILT_UI" = "true" ] && [ -d packages/ui/dist ]; then \
+        echo "Using pre-built UI dist from host"; \
+    else \
+        node_modules/typescript/bin/tsc --build packages/protocol/tsconfig.json \
+        && cd packages/ui && bun run build; \
+    fi
 
-# Copy root tsconfig (needed for tsc --build project references)
-COPY tsconfig.json ./
-
-# tsc --build follows project references to resolve workspace deps
-# that bun doesn't symlink in node_modules.
-RUN bunx tsc --build packages/server/tsconfig.json \
-    && cd /app/packages/ui && bun run build
-
-# --- Production image ---
+# ── Production image ─────────────────────────────────────────────────────────
 FROM oven/bun:1-slim
 WORKDIR /app
 
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/packages/protocol/dist ./packages/protocol/dist
-COPY --from=builder /app/packages/protocol/package.json ./packages/protocol/
-COPY --from=builder /app/packages/tools/dist ./packages/tools/dist
-COPY --from=builder /app/packages/tools/package.json ./packages/tools/
-COPY --from=builder /app/packages/tools/node_modules ./packages/tools/node_modules
-COPY --from=builder /app/packages/server/dist ./packages/server/dist
-COPY --from=builder /app/packages/server/package.json ./packages/server/
-COPY --from=builder /app/packages/server/node_modules ./packages/server/node_modules
-COPY --from=builder /app/packages/ui/dist ./packages/ui/dist
-COPY --from=builder /app/package.json ./
+COPY --from=build-server /app/node_modules ./node_modules
+COPY --from=build-server /app/packages/protocol/dist ./packages/protocol/dist
+COPY --from=build-server /app/packages/protocol/package.json ./packages/protocol/
+COPY --from=build-server /app/packages/tools/dist ./packages/tools/dist
+COPY --from=build-server /app/packages/tools/package.json ./packages/tools/
+COPY --from=build-server /app/packages/tools/node_modules ./packages/tools/node_modules
+COPY --from=build-server /app/packages/server/dist ./packages/server/dist
+COPY --from=build-server /app/packages/server/package.json ./packages/server/
+COPY --from=build-server /app/packages/server/node_modules ./packages/server/node_modules
+COPY --from=build-ui /app/packages/ui/dist ./packages/ui/dist
+COPY --from=build-server /app/package.json ./
 
 ENV PIZZAPI_UI_DIR=/app/packages/ui/dist
 ENV AUTH_DB_PATH=/app/data/auth.db

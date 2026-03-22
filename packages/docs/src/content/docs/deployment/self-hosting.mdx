@@ -20,7 +20,8 @@ pizzapi web
 This automatically:
 1. Clones the PizzaPi repo (if not already present) to `~/.pizzapi/web/repo`
 2. Generates required secrets (including `BETTER_AUTH_SECRET` and VAPID keys) and a Docker Compose file in `~/.pizzapi/web/`
-3. Builds and starts Redis + the relay server
+3. Builds the UI on your host with Bun (cached between runs unless sources change)
+4. Builds and starts Redis + the relay server
 4. Serves the web UI at **http://localhost:7492**
 
 On subsequent runs, it pulls the latest changes and rebuilds if needed.
@@ -51,7 +52,7 @@ All settings are persisted in `~/.pizzapi/web/config.json` and applied on every 
 Persistent data (SQLite database) is stored in `~/.pizzapi/web/data/`.
 
 <Aside type="tip">
-  `pizza web` is ideal for personal use or quick evaluation. For production deployments with custom domains and TLS, see the manual Docker Compose setup below. See the [CLI Reference](/PizzaPi/running/cli-reference/#pizzapi-web) for the full list of commands and config keys.
+  `pizza web` is ideal for personal use or quick evaluation. For production deployments with custom domains and TLS, see the manual Docker Compose setup below. See the [CLI Reference](/PizzaPi/running/cli-reference/#pizzapi-web) for the full list of commands and config keys. Set `PIZZAPI_PREBUILD_UI=false` if you would rather have Docker perform the UI build.
 </Aside>
 
 ---

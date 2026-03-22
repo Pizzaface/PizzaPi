@@ -1,7 +1,25 @@
 node_modules
 */node_modules
-**/dist
+packages/protocol/dist
+packages/tools/dist
+packages/server/dist
+packages/cli/dist
+packages/docs/dist
 **/*.tsbuildinfo
 .git
 .env
 *.log
+
+# Packages not needed for the web hub Docker image
+packages/cli
+packages/docs
+packages/npm
+
+# Dev / CI artifacts
+docker
+certs
+.windsurf
+.github
+.vscode
+*.md
+LICENSE
