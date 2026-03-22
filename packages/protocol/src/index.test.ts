@@ -42,7 +42,13 @@ import type {
 // index.ts public API surface - verify all runtime exports are present
 // ---------------------------------------------------------------------------
 
+import { MAX_PASSWORD_LENGTH } from "./index";
+
 describe("index - runtime exports", () => {
+  test("MAX_PASSWORD_LENGTH is exported correctly", () => {
+    expect(MAX_PASSWORD_LENGTH).toBe(128);
+  });
+
   test("PASSWORD_REQUIREMENTS is exported and is a readonly tuple of 4 strings", () => {
     expect(Array.isArray(PASSWORD_REQUIREMENTS)).toBe(true);
     expect(PASSWORD_REQUIREMENTS).toHaveLength(4);

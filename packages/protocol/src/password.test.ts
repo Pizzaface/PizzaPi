@@ -1,5 +1,24 @@
 import { describe, expect, test } from "bun:test";
-import { validatePassword, isValidPassword, PASSWORD_REQUIREMENTS } from "./password";
+import { validatePassword, isValidPassword, MAX_PASSWORD_LENGTH, PASSWORD_REQUIREMENTS, PASSWORD_REQUIREMENTS_SUMMARY } from "./password";
+
+describe("password validation constants", () => {
+  test("MAX_PASSWORD_LENGTH is 128", () => {
+    expect(MAX_PASSWORD_LENGTH).toBe(128);
+  });
+
+  test("PASSWORD_REQUIREMENTS covers length, uppercase, lowercase, number", () => {
+    expect(PASSWORD_REQUIREMENTS).toHaveLength(4);
+    expect(PASSWORD_REQUIREMENTS[0]).toMatch(/8 characters/);
+    expect(PASSWORD_REQUIREMENTS[1]).toMatch(/uppercase/);
+    expect(PASSWORD_REQUIREMENTS[2]).toMatch(/lowercase/);
+    expect(PASSWORD_REQUIREMENTS[3]).toMatch(/number/);
+  });
+
+  test("PASSWORD_REQUIREMENTS_SUMMARY is a string", () => {
+    expect(typeof PASSWORD_REQUIREMENTS_SUMMARY).toBe("string");
+    expect(PASSWORD_REQUIREMENTS_SUMMARY.length).toBeGreaterThan(0);
+  });
+});
 
 describe("validatePassword", () => {
   test("accepts valid passwords", () => {
@@ -14,6 +33,20 @@ describe("validatePassword", () => {
     expect(validatePassword("P@ssw0rd!").valid).toBe(true);
   });
 
+  test("accepts passwords exactly 8 characters long", () => {
+    expect(validatePassword("Abcdefg1").valid).toBe(true);
+    expect(validatePassword("1Bcdefgh").valid).toBe(true);
+  });
+
+  test("accepts passwords up to MAX_PASSWORD_LENGTH", () => {
+    const longPassword = "A1a" + "b".repeat(125); // 128 chars total
+    expect(validatePassword(longPassword).valid).toBe(true);
+  });
+
+  test("accepts passwords with spaces and emojis", () => {
+    expect(validatePassword("Valid Pass 1! 🍕").valid).toBe(true);
+  });
+
   test("rejects passwords shorter than 8 characters", () => {
     const result = validatePassword("Ab1cdef");
     expect(result.valid).toBe(false);
@@ -26,6 +59,13 @@ describe("validatePassword", () => {
     expect(result.valid).toBe(false);
     // Should fail length, uppercase, lowercase, and number
     expect(result.checks.filter((c) => c.met).length).toBe(0);
+  });
+
+  test("rejects string with only whitespace", () => {
+    const result = validatePassword("        ");
+    expect(result.valid).toBe(false);
+    // Should fail uppercase, lowercase, and number
+    expect(result.checks.filter((c) => c.met).length).toBe(1); // Length check is met
   });
 
   test("rejects passwords missing uppercase", () => {
@@ -44,6 +84,15 @@ describe("validatePassword", () => {
     const result = validatePassword("Abcdefgh");
     expect(result.valid).toBe(false);
     expect(result.checks[3].met).toBe(false); // number
+  });
+
+  test("rejects non-string values gracefully or throws", () => {
+    // Even though TS enforces string, at runtime we might get other types.
+    // In this implementation, it throws a TypeError when accessing .length
+    expect(() => validatePassword(null as unknown as string)).toThrow(TypeError);
+    expect(() => validatePassword(undefined as unknown as string)).toThrow(TypeError);
+    // @ts-expect-error testing invalid type
+    expect(validatePassword(12345678).valid).toBe(false);
   });
 
   test("returns 4 check items matching PASSWORD_REQUIREMENTS", () => {
@@ -67,5 +116,12 @@ describe("isValidPassword", () => {
     expect(isValidPassword("NOLOWERCASE1")).toBe(false);
     expect(isValidPassword("NoNumbers")).toBe(false);
     expect(isValidPassword("")).toBe(false);
+  });
+
+  test("returns false for non-string inputs", () => {
+    expect(() => isValidPassword(null as unknown as string)).toThrow(TypeError);
+    expect(() => isValidPassword(undefined as unknown as string)).toThrow(TypeError);
+    // @ts-expect-error testing invalid type
+    expect(isValidPassword(12345678)).toBe(false);
   });
 });
