@@ -8,3 +8,9 @@ interface ImportMetaEnv {
 interface ImportMeta {
     readonly env: ImportMetaEnv;
 }
+
+interface Navigator {
+    userAgentData?: {
+        platform: string;
+    };
+}

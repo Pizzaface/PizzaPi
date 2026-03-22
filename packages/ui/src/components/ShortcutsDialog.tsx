@@ -15,7 +15,8 @@ interface ShortcutsDialogProps {
 
 function isMacPlatform(): boolean {
   if (typeof navigator === "undefined") return false;
-  return /Mac|iPhone|iPad/i.test(navigator.platform);
+  const platform = navigator.userAgentData?.platform ?? navigator.platform ?? "";
+  return /Mac|iPhone|iPad/i.test(platform);
 }
 
 export function ShortcutsDialog({ open, onOpenChange }: ShortcutsDialogProps) {
