@@ -3,7 +3,7 @@
 # ── Shared dependency layer ──────────────────────────────────────────────────
 # Installs node_modules and copies configs shared by both build stages.
 # The docker/compose.yml dev profile targets this stage (target: builder).
-FROM oven/bun:1 AS builder
+FROM oven/bun:1.3.10 AS builder
 WORKDIR /app
 
 # Copy patches and lockfile first for layer caching
@@ -64,7 +64,7 @@ RUN if [ "$PREBUILT_UI" = "true" ] && [ -d packages/ui/dist ]; then \
     fi
 
 # ── Production image ─────────────────────────────────────────────────────────
-FROM oven/bun:1-slim
+FROM oven/bun:1.3.10-slim
 WORKDIR /app
 
 COPY --from=build-server /app/node_modules ./node_modules
