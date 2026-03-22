@@ -1,5 +1,6 @@
 import { describe, it, expect } from "bun:test";
 import type { RunnerInfo } from "@pizzapi/protocol";
+import { upsert } from "./runnerHelpers.js";
 
 function makeRunner(overrides: Partial<RunnerInfo> = {}): RunnerInfo {
     return {
@@ -15,14 +16,6 @@ function makeRunner(overrides: Partial<RunnerInfo> = {}): RunnerInfo {
         platform: null,
         ...overrides,
     };
-}
-
-function upsert(list: RunnerInfo[], incoming: RunnerInfo): RunnerInfo[] {
-    const idx = list.findIndex(r => r.runnerId === incoming.runnerId);
-    if (idx === -1) return [...list, incoming];
-    const next = [...list];
-    next[idx] = incoming;
-    return next;
 }
 
 describe("useRunnersFeed state helpers", () => {

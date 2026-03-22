@@ -6,6 +6,7 @@ import type {
     RunnerInfo,
 } from "@pizzapi/protocol";
 import { getSocketIOBase } from "./relay.js";
+import { upsert } from "./runnerHelpers.js";
 
 export type RunnersFeedStatus = "connecting" | "connected" | "disconnected";
 
@@ -40,13 +41,7 @@ export function useRunnersFeed(): RunnersFeedState {
         });
 
         socket.on("runner_added", (incoming) => {
-            setRunners(prev => {
-                const idx = prev.findIndex(r => r.runnerId === incoming.runnerId);
-                if (idx === -1) return [...prev, incoming];
-                const next = [...prev];
-                next[idx] = incoming;
-                return next;
-            });
+            setRunners(prev => upsert(prev, incoming));
         });
 
         socket.on("runner_removed", ({ runnerId }) => {

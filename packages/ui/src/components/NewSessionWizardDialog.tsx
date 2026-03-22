@@ -11,6 +11,7 @@ import { FolderOpen, Loader2, X, ChevronLeft, Monitor } from "lucide-react";
 import { SiApple, SiLinux } from "react-icons/si";
 import { cn } from "@/lib/utils";
 import { formatPathTail } from "@/lib/path";
+import { filterFolders } from "@/lib/filterFolders";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -91,15 +92,6 @@ function platformName(platform: string | null | undefined): string | null {
         case "win32":   return "Windows";
         default:        return platform;
     }
-}
-
-function filterFolders(folders: string[], query: string): string[] {
-    if (!query.trim()) return folders;
-    const q = query.toLowerCase();
-    return folders.filter((f) => {
-        const basename = f.split("/").filter(Boolean).pop() ?? f;
-        return f.toLowerCase().includes(q) || basename.toLowerCase().includes(q);
-    });
 }
 
 // ── Component ──────────────────────────────────────────────────────────────

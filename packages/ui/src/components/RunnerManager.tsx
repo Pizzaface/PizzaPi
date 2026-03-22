@@ -29,6 +29,15 @@ export function RunnerManager({
 
     const [restarting, setRestarting] = React.useState<Set<string>>(new Set());
     const [stopping, setStopping] = React.useState<Set<string>>(new Set());
+    const [latestVersion, setLatestVersion] = React.useState<string | null>(null);
+
+    // Fetch the latest available version from the server (used by RunnerDetailPanel for update-available badge)
+    React.useEffect(() => {
+        fetch("/api/version")
+            .then((res) => res.ok ? res.json() : null)
+            .then((data) => { if (data?.version) setLatestVersion(data.version); })
+            .catch(() => {});
+    }, []);
 
     // New session dialog
     const [spawnRunnerId, setSpawnRunnerId] = React.useState<string | null>(null);
@@ -198,8 +207,9 @@ export function RunnerManager({
             runnerName: s.runnerName ?? null,
         }));
 
-    // Use selected runner's version for update-available check (latestVersion was previously fetched from /api/version)
-    const latestVersion = selectedRunner?.version ?? runners[0]?.version ?? null;
+    // latestVersion is fetched from /api/version above — it represents the latest npm release,
+    // not the runner's own version. This allows RunnerDetailPanel to show an "update available" badge
+    // when the runner's version is older than the latest available version.
 
     return (
         <>
