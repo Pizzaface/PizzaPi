@@ -47,11 +47,17 @@ export async function handleFetch(req: Request): Promise<Response> {
             // x-pizzapi-client-ip (see auth.ts advanced.ipAddress.ipAddressHeaders), so
             // this ensures per-client rate limiting works correctly in proxy deployments
             // while remaining immune to X-Forwarded-For spoofing.
+            //
+            // IMPORTANT: We mutate the headers on the original Request rather than
+            // constructing `new Request(req, { headers })`. In Bun's node:http compat
+            // layer, Requests created from a Node.js IncomingMessage carry a streaming
+            // body; `new Request(original, { headers })` fails to transfer that body
+            // (reads hang forever). Mutating in-place avoids the Bun bug entirely and
+            // is safe here because we own the Headers object (created in
+            // nodeReqToFetchRequest).
             const resolvedIp = getClientIp(req);
-            const authHeaders = new Headers(req.headers);
-            authHeaders.set("x-pizzapi-client-ip", resolvedIp);
-            const authReq = new Request(req, { headers: authHeaders });
-            return await getAuth().handler(authReq);
+            req.headers.set("x-pizzapi-client-ip", resolvedIp);
+            return await getAuth().handler(req);
         } catch (e) {
             console.error("[auth] handler threw:", e);
             return Response.json({ error: "Auth error" }, { status: 500 });
