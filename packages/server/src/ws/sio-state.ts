@@ -136,6 +136,10 @@ export interface RedisSessionData {
     seq: number;
     /** ID of the parent session that spawned this one, or null for top-level. */
     parentSessionId: string | null;
+    /** JSON-stringified SessionMetaState. Written by updateSessionMetaState.
+     *  Absent for sessions created before this feature; callers must use
+     *  defaultMetaState() as fallback. */
+    metaState?: string | null;
 }
 
 export interface RedisRunnerData {
@@ -210,6 +214,7 @@ function parseSessionFromHash(hash: Record<string, string>): RedisSessionData | 
         runnerName: hash.runnerName || null,
         seq: parseInt(hash.seq ?? "0", 10) || 0,
         parentSessionId: hash.parentSessionId || null,
+        metaState: hash.metaState || null,
     };
 }
 
