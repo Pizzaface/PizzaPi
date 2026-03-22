@@ -21,6 +21,10 @@ export const handleChatRoute: RouteHandler = async (req, url) => {
             return Response.json({ error: "Invalid JSON body" }, { status: 400 });
         }
 
+        if (body === null || typeof body !== "object" || Array.isArray(body)) {
+            return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+        }
+
         const { message, provider, model: modelId } = body;
 
         if (!message || !provider || !modelId) {

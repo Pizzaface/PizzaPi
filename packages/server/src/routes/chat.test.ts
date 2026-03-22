@@ -25,6 +25,51 @@ describe("handleChatRoute", () => {
         expect(data).toEqual({ error: "Invalid JSON body" });
     });
 
+    test("returns 400 for valid JSON null body", async () => {
+        const url = new URL("http://localhost/api/chat");
+        const req = new Request(url, {
+            method: "POST",
+            body: JSON.stringify(null),
+        });
+
+        const res = await handleChatRoute(req, url);
+        expect(res).toBeDefined();
+        expect(res!.status).toBe(400);
+
+        const data = await res!.json();
+        expect(data).toEqual({ error: "Invalid JSON body" });
+    });
+
+    test("returns 400 for valid JSON array body", async () => {
+        const url = new URL("http://localhost/api/chat");
+        const req = new Request(url, {
+            method: "POST",
+            body: JSON.stringify([]),
+        });
+
+        const res = await handleChatRoute(req, url);
+        expect(res).toBeDefined();
+        expect(res!.status).toBe(400);
+
+        const data = await res!.json();
+        expect(data).toEqual({ error: "Invalid JSON body" });
+    });
+
+    test("returns 400 for valid JSON primitive body", async () => {
+        const url = new URL("http://localhost/api/chat");
+        const req = new Request(url, {
+            method: "POST",
+            body: JSON.stringify(42),
+        });
+
+        const res = await handleChatRoute(req, url);
+        expect(res).toBeDefined();
+        expect(res!.status).toBe(400);
+
+        const data = await res!.json();
+        expect(data).toEqual({ error: "Invalid JSON body" });
+    });
+
     test("returns 400 for valid JSON body with missing fields", async () => {
         const url = new URL("http://localhost/api/chat");
         const req = new Request(url, {
