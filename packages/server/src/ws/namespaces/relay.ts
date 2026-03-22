@@ -492,7 +492,11 @@ export function registerRelayNamespace(io: SocketIOServer): void {
             // Meta events are routed exclusively via hub session meta rooms — they
             // must NOT flow through to relay viewers or be cached in the event
             // store.  Skip the entire viewer publish path for them.
-            if (!isMetaRelayEvent(event as { type?: unknown })) {
+            // Exception: old-CLI flat mcp_startup_report (no .report field) is not
+            // handled by the meta path above and must reach relay viewers.
+            const isOldCliMcpReport =
+                event.type === "mcp_startup_report" && !(event as any).report;
+            if (!isMetaRelayEvent(event as { type?: unknown }) || isOldCliMcpReport) {
                 // For session_messages_chunk and chunked session_active, broadcast
                 // to viewers WITHOUT caching.  Chunks are transient and only needed
                 // during active hydration; the final assembled snapshot is cached

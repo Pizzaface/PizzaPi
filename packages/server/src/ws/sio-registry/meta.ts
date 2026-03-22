@@ -44,15 +44,39 @@ export async function getSessionMetaState(sessionId: string): Promise<SessionMet
   }
 }
 
+// Per-session promise chain to serialize meta state updates.
+// Prevents concurrent read-modify-write races where two handlers read the same
+// version N, both compute N+1, and the second write silently overwrites the first.
+const metaUpdateQueues = new Map<string, Promise<unknown>>();
+
 export async function updateSessionMetaState(
   sessionId: string,
   patch: Partial<SessionMetaState>,
 ): Promise<number> {
-  const current = await getSessionMetaState(sessionId);
-  const nextVersion = current.version + 1;
-  const next: SessionMetaState = { ...current, ...patch, version: nextVersion };
-  await updateSessionFields(sessionId, { metaState: JSON.stringify(next) });
-  return nextVersion;
+  // Chain this update behind any in-flight update for the same session so
+  // reads always see the result of the previous write.
+  const prev = metaUpdateQueues.get(sessionId) ?? Promise.resolve();
+  let resolve!: (v: number) => void;
+  const current = new Promise<number>((res) => { resolve = res; });
+  metaUpdateQueues.set(sessionId, current);
+
+  await prev;
+  try {
+    const state = await getSessionMetaState(sessionId);
+    const nextVersion = state.version + 1;
+    const next: SessionMetaState = { ...state, ...patch, version: nextVersion };
+    await updateSessionFields(sessionId, { metaState: JSON.stringify(next) });
+    resolve(nextVersion);
+    return nextVersion;
+  } catch (err) {
+    resolve(0);
+    throw err;
+  } finally {
+    // Clean up the queue entry once this is the last pending update
+    if (metaUpdateQueues.get(sessionId) === current) {
+      metaUpdateQueues.delete(sessionId);
+    }
+  }
 }
 
 export async function extractMetaFromHeartbeat(
