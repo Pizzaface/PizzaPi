@@ -888,11 +888,17 @@ export function App() {
       cachePatch.authSource = state.authSource;
     }
 
-    if (state.model) {
-      const m = normalizeModel(state.model);
-      if (m) {
-        setActiveModel(m);
-        cachePatch.activeModel = m;
+    if (state.model !== undefined) {
+      if (state.model) {
+        const m = normalizeModel(state.model);
+        if (m) {
+          setActiveModel(m);
+          cachePatch.activeModel = m;
+        }
+      } else {
+        // snapshot explicitly clears model
+        setActiveModel(null);
+        cachePatch.activeModel = null;
       }
     }
 
