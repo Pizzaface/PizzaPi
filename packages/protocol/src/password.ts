@@ -53,6 +53,14 @@ export function validatePassword(password: string): PasswordCheck {
       checks: PASSWORD_REQUIREMENTS.map((label) => ({ label, met: false })),
     };
   }
+  // Reject passwords exceeding the maximum length. This mirrors server-side
+  // enforcement and prevents unbounded scrypt cost (DoS vector).
+  if (password.length > MAX_PASSWORD_LENGTH) {
+    return {
+      valid: false,
+      checks: PASSWORD_REQUIREMENTS.map((label) => ({ label, met: false })),
+    };
+  }
   const checks: PasswordCheckItem[] = [
     { label: PASSWORD_REQUIREMENTS[0], met: password.length >= 8 },
     { label: PASSWORD_REQUIREMENTS[1], met: /[A-Z]/.test(password) },

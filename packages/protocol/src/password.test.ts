@@ -43,6 +43,11 @@ describe("validatePassword", () => {
     expect(validatePassword(longPassword).valid).toBe(true);
   });
 
+  test("rejects passwords exceeding MAX_PASSWORD_LENGTH", () => {
+    const tooLong = "A1a" + "b".repeat(MAX_PASSWORD_LENGTH - 2); // 129 chars total
+    expect(validatePassword(tooLong).valid).toBe(false);
+  });
+
   test("accepts passwords with spaces and emojis", () => {
     expect(validatePassword("Valid Pass 1! 🍕").valid).toBe(true);
   });
