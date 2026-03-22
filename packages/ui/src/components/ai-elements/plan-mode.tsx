@@ -118,7 +118,7 @@ export function PlanModePanel({
       </div>
 
       {/* Scrollable plan content */}
-      <div className="flex-1 overflow-y-auto min-h-0">
+      <div className="flex-1 overflow-y-auto min-h-0 overscroll-contain">
         <div className="px-3 py-3 space-y-2.5">
           {/* Title */}
           <h3 className="text-sm font-semibold text-foreground/90 leading-snug">
