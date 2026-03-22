@@ -123,7 +123,7 @@ describe("validatePassword", () => {
   test("returns 5 check items matching PASSWORD_REQUIREMENTS", () => {
     const result = validatePassword("anything");
     expect(result.checks.length).toBe(5);
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < result.checks.length; i++) {
       expect(result.checks[i].label).toBe(PASSWORD_REQUIREMENTS[i]);
     }
   });

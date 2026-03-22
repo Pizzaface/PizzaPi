@@ -55,15 +55,20 @@ export function validatePassword(password: string): PasswordCheck {
     };
   }
 
+  // Count Unicode codepoints (not UTF-16 code units) so that supplementary-plane
+  // characters (e.g. emoji) each count as 1 character, matching user expectation.
+  // Spread iterates by codepoint; ASCII/Latin passwords produce identical counts.
+  const codepoints = [...password].length;
+
   // Compute all per-rule checks including max-length so that callers
   // (e.g. UI components) receive truthful, complete feedback. Overall validity
   // is derived entirely from checks.every() — no separate early return needed.
   const checks: PasswordCheckItem[] = [
-    { label: PASSWORD_REQUIREMENTS[0], met: password.length >= 8 },
+    { label: PASSWORD_REQUIREMENTS[0], met: codepoints >= 8 },
     { label: PASSWORD_REQUIREMENTS[1], met: /[A-Z]/.test(password) },
     { label: PASSWORD_REQUIREMENTS[2], met: /[a-z]/.test(password) },
     { label: PASSWORD_REQUIREMENTS[3], met: /[0-9]/.test(password) },
-    { label: PASSWORD_REQUIREMENTS[4], met: password.length <= MAX_PASSWORD_LENGTH },
+    { label: PASSWORD_REQUIREMENTS[4], met: codepoints <= MAX_PASSWORD_LENGTH },
   ];
 
   return {

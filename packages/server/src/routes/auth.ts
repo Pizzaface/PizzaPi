@@ -49,7 +49,7 @@ export const handleAuthRoute: RouteHandler = async (req, url) => {
             return Response.json({ error: "Invalid email format" }, { status: 400 });
         }
 
-        if (password.length > MAX_PASSWORD_LENGTH) {
+        if ([...password].length > MAX_PASSWORD_LENGTH) {
             return Response.json({ error: PASSWORD_REQUIREMENTS_SUMMARY }, { status: 400 });
         }
 
