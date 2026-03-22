@@ -1071,6 +1071,10 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             };
             emitMcpStartupReport(rctx, rctx.lastMcpStartupReport);
         }
-        rctx.forwardEvent(report);
+        // Do NOT call rctx.forwardEvent(report) here. The raw pi event uses a
+        // flat shape (no `report` field) so metaEventToPatch produces
+        // { mcpStartupReport: undefined }, which JSON.stringify silently drops,
+        // wiping the field from Redis. emitMcpStartupReport above already sends
+        // the correctly-shaped nested event.
     });
 };
