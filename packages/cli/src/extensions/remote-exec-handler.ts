@@ -13,6 +13,7 @@ import { isSandboxActive, getSandboxMode, getViolations, getResolvedConfig } fro
 import { refreshAllUsage, buildProviderUsage } from "./remote-provider-usage.js";
 import type { RemoteExecRequest, RemoteExecResponse } from "./remote-commands.js";
 import type { RelayContext, RelayModelInfo } from "./remote-types.js";
+import { emitThinkingLevelChanged, emitCompactStarted, emitCompactEnded, emitRetryStateChanged, emitPluginTrustResolved } from "./remote-meta-events.js";
 
 export interface ExecHandlerCallbacks {
     setModelFromWeb(provider: string, modelId: string): Promise<void>;
@@ -174,6 +175,7 @@ export async function handleExecFromWeb(
                 return;
             }
             api.setThinkingLevel(level);
+            emitThinkingLevelChanged(rctx, api.getThinkingLevel());
             replyOk({ thinkingLevel: api.getThinkingLevel() });
             rctx.emitSessionActive();
             return;
@@ -202,6 +204,7 @@ export async function handleExecFromWeb(
                 if (appliedLevel !== current) break;
             }
 
+            emitThinkingLevelChanged(rctx, appliedLevel);
             replyOk({ thinkingLevel: appliedLevel });
             rctx.emitSessionActive();
             return;
@@ -256,6 +259,7 @@ export async function handleExecFromWeb(
                 return;
             }
             rctx.isCompacting = true;
+            emitCompactStarted(rctx);
             rctx.forwardEvent(rctx.buildHeartbeat());
             try {
                 const result = await new Promise<unknown>((resolve, reject) => {
@@ -268,11 +272,14 @@ export async function handleExecFromWeb(
                 rctx.isAgentActive = false;
                 rctx.lastRetryableError = null;
                 rctx.isCompacting = false;
+                emitCompactEnded(rctx);
+                emitRetryStateChanged(rctx, null);
                 replyOk(result ?? null);
                 rctx.emitSessionActive();
                 rctx.forwardEvent(rctx.buildHeartbeat());
             } catch (err) {
                 rctx.isCompacting = false;
+                emitCompactEnded(rctx);
                 rctx.forwardEvent(rctx.buildHeartbeat());
                 throw err;
             }
@@ -504,8 +511,10 @@ export async function handleExecFromWeb(
                 return;
             }
             const trusted = req.trusted === true;
+            const resolvedPromptId = rctx.pendingPluginTrust.promptId;
             rctx.pendingPluginTrust.respond(trusted);
             rctx.pendingPluginTrust = null;
+            emitPluginTrustResolved(rctx, resolvedPromptId);
             replyOk({ trusted });
             return;
         }

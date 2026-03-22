@@ -761,6 +761,12 @@ export function setPlanModeChangeCallback(cb: (enabled: boolean) => void): void 
     _onPlanModeChange = cb;
 }
 
+/** Meta event emitter for discrete plan_mode_toggled events. */
+let _planModeMetaEmitter: ((enabled: boolean) => void) | null = null;
+export function setPlanModeMetaEmitter(cb: (enabled: boolean) => void): void {
+    _planModeMetaEmitter = cb;
+}
+
 /** Toggle function exposed for the remote extension (/plan from web UI). */
 let _toggleFn: (() => void) | null = null;
 
@@ -833,6 +839,7 @@ export const planModeToggleExtension: ExtensionFactory = (pi) => {
         }
         syncModuleState();
         _onPlanModeChange?.(planModeEnabled);
+        if (_planModeMetaEmitter) _planModeMetaEmitter(planModeEnabled);
         persistState();
     }
 

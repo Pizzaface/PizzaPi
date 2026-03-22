@@ -13,6 +13,8 @@ import { getMcpBridge } from "../mcp-bridge.js";
 import { messageBus } from "../session-message-bus.js";
 import { refreshAllUsage } from "../remote-provider-usage.js";
 import { startHeartbeat, stopHeartbeat } from "../remote-heartbeat.js";
+import { emitAuthSourceChanged, emitThinkingLevelChanged, emitMcpStartupReport } from "../remote-meta-events.js";
+import { getAuthSource } from "../remote-auth-source.js";
 import { cancelPendingAskUserQuestion, consumePendingAskUserQuestionFromWeb } from "../remote-ask-user.js";
 import { cancelPendingPlanMode, consumePendingPlanModeFromWeb } from "../remote-plan-mode.js";
 import { normalizeRemoteInputAttachments, buildUserMessageFromRemoteInput } from "../remote-input.js";
@@ -288,6 +290,13 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
         emitSessionActive(rctx);
         void refreshAllUsage();
         startHeartbeat(rctx);
+
+        // Emit initial meta values so late-joining viewers get current state.
+        const authSource = getAuthSource(rctx.latestCtx);
+        if (authSource) emitAuthSourceChanged(rctx, authSource);
+        const thinkingLevel = rctx.getCurrentThinkingLevel();
+        if (thinkingLevel) emitThinkingLevelChanged(rctx, thinkingLevel);
+
         updateMcpRelayContext(rctx);
         signalRelayRegistered();
 

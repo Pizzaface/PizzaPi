@@ -33,9 +33,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildSessionContext, type ExtensionContext, type ExtensionFactory } from "@mariozechner/pi-coding-agent";
 import { loadConfig } from "../../config.js";
-import { setTodoUpdateCallback, type TodoItem } from "../update-todo.js";
+import { setTodoUpdateCallback, setTodoMetaEmitter, type TodoItem } from "../update-todo.js";
 import { getCurrentTodoList } from "../update-todo.js";
-import { setPlanModeChangeCallback } from "../plan-mode-toggle.js";
+import { setPlanModeChangeCallback, setPlanModeMetaEmitter } from "../plan-mode-toggle.js";
 import type { RemoteExecResponse } from "../remote-commands.js";
 import { clearAndCancelPendingTriggers } from "../triggers/extension.js";
 import type { ConversationTrigger } from "../triggers/types.js";
@@ -47,7 +47,15 @@ import type {
     TriggerResponse,
 } from "../remote-types.js";
 import { installFooter } from "../remote-footer.js";
-import { buildHeartbeat, stopHeartbeat } from "../remote-heartbeat.js";
+import { buildHeartbeat, buildTokenUsage, stopHeartbeat } from "../remote-heartbeat.js";
+import {
+    emitTodoUpdated, emitPlanModeToggled,
+    emitRetryStateChanged, emitPluginTrustRequired, emitPluginTrustResolved,
+    emitTokenUsageUpdated, emitModelChanged, emitAuthSourceChanged,
+    emitMcpStartupReport,
+} from "../remote-meta-events.js";
+import { getAuthSource } from "../remote-auth-source.js";
+import { buildProviderUsage } from "../remote-provider-usage.js";
 import { registerAskUserTool } from "../remote-ask-user.js";
 import { registerPlanModeTool } from "../remote-plan-mode.js";
 import { createTriggerWaitManager } from "../trigger-wait-manager.js";
@@ -542,9 +550,13 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         rctx.forwardEvent({ type: "todo_update", todos: list, ts: Date.now() });
     });
 
+    setTodoMetaEmitter((list) => emitTodoUpdated(rctx, list as any));
+
     setPlanModeChangeCallback((_enabled: boolean) => {
         rctx.forwardEvent(rctx.buildHeartbeat());
     });
+
+    setPlanModeMetaEmitter((enabled) => emitPlanModeToggled(rctx, enabled));
 
     // ── Session name sync ─────────────────────────────────────────────────
 
@@ -596,6 +608,10 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 message: ok ? undefined : "Model selected, but no valid credentials were found.",
             });
             if (ok) {
+                emitModelChanged(rctx, rctx.latestCtx?.model
+                    ? { provider: rctx.latestCtx.model.provider, id: rctx.latestCtx.model.id,
+                        name: rctx.latestCtx.model.name, reasoning: rctx.latestCtx.model.reasoning }
+                    : null);
                 emitSessionActive(rctx);
             }
         } catch (error) {
@@ -874,6 +890,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
     pi.on("agent_start", (event) => {
         rctx.isAgentActive = true;
         rctx.lastRetryableError = null;
+        emitRetryStateChanged(rctx, null);
         rctx.forwardEvent(event);
         rctx.forwardEvent(rctx.buildHeartbeat());
     });
@@ -881,6 +898,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
     pi.on("agent_end", (event, ctx) => {
         rctx.isAgentActive = false;
         rctx.lastRetryableError = null;
+        emitRetryStateChanged(rctx, null);
         rctx.forwardEvent(event);
         rctx.forwardEvent(rctx.buildHeartbeat());
 
@@ -922,7 +940,12 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         }
     });
 
-    pi.on("turn_end", (event) => rctx.forwardEvent(event));
+    pi.on("turn_end", (event) => {
+        rctx.forwardEvent(event);
+        const tokenUsage = buildTokenUsage(rctx);
+        const providerUsage = buildProviderUsage();
+        emitTokenUsageUpdated(rctx, tokenUsage as any, providerUsage as any);
+    });
     pi.on("message_start", (event) => rctx.forwardEvent(event));
     pi.on("message_update", (event) => rctx.forwardEvent(event));
     pi.on("message_end", (event) => {
@@ -931,6 +954,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         if (msg && msg.role === "assistant" && msg.stopReason === "error" && msg.errorMessage) {
             const errorText = String(msg.errorMessage);
             rctx.lastRetryableError = { errorMessage: errorText, detectedAt: Date.now() };
+            emitRetryStateChanged(rctx, rctx.lastRetryableError);
             rctx.forwardEvent({ type: "cli_error", message: errorText, source: "provider", ts: Date.now() });
             rctx.forwardEvent(rctx.buildHeartbeat());
         }
@@ -995,6 +1019,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             pluginSummaries: event.pluginSummaries as string[],
             respond: event.respond as (trusted: boolean) => void,
         };
+        emitPluginTrustRequired(rctx, rctx.pendingPluginTrust);
 
         rctx.forwardEvent({
             type: "plugin_trust_prompt",
@@ -1009,7 +1034,9 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         const event = data as Record<string, unknown> | null;
         if (!event || typeof event.promptId !== "string") return;
         if (rctx.pendingPluginTrust?.promptId === event.promptId) {
+            const resolvedPromptId = event.promptId as string;
             rctx.pendingPluginTrust = null;
+            emitPluginTrustResolved(rctx, resolvedPromptId);
             rctx.forwardEvent({
                 type: "plugin_trust_expired",
                 promptId: event.promptId,
@@ -1040,6 +1067,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 serverTimings: Array.isArray(r.serverTimings) ? r.serverTimings as any : [],
                 ts: typeof r.ts === "number" ? r.ts : Date.now(),
             };
+            emitMcpStartupReport(rctx, rctx.lastMcpStartupReport);
         }
         rctx.forwardEvent(report);
     });
