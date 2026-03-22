@@ -246,7 +246,10 @@ export function App() {
   const [authSource, setAuthSource] = React.useState<string | null>(null);
 
   // Keyboard shortcuts
-  const isMac = React.useMemo(() => /Mac|iPhone|iPad/i.test(navigator.platform), []);
+  const isMac = React.useMemo(() => {
+    const platform = navigator.userAgentData?.platform ?? navigator.platform ?? "";
+    return /Mac|iPhone|iPad/i.test(platform);
+  }, []);
   const [showShortcutsHelp, setShowShortcutsHelp] = React.useState(false);
 
   // Sequence tracking for gap detection
