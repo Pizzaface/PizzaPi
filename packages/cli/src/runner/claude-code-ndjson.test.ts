@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test";
-import { translateNdjsonLine, SUBAGENT_TOOL_NAMES } from "./claude-code-ndjson.js";
+import { translateNdjsonLine, SUBAGENT_TOOL_NAMES, parseSubagentToolCalls } from "./claude-code-ndjson.js";
 
 describe("translateNdjsonLine", () => {
   test("ignores control_request frames (not relay events)", () => {
@@ -698,5 +698,139 @@ describe("translateNdjsonLine", () => {
       trigger: "auto",
       preTokens: 180000,
     });
+  });
+});
+
+describe("parseSubagentToolCalls", () => {
+  test("returns single text message when no <tool_call> tags found", () => {
+    const result = parseSubagentToolCalls("Just a plain text response.");
+    expect(result).toHaveLength(1);
+    expect(result[0].role).toBe("assistant");
+    expect(result[0].content).toEqual([{ type: "text", text: "Just a plain text response." }]);
+  });
+
+  test("returns single text message for empty input", () => {
+    const result = parseSubagentToolCalls("");
+    expect(result).toHaveLength(1);
+    expect(result[0].role).toBe("assistant");
+    expect(result[0].content).toEqual([{ type: "text", text: "" }]);
+  });
+
+  test("parses single tool call with result", () => {
+    const input = `<tool_call> <tool_name>bash</tool_name> <tool_input>{"command": "ls"}</tool_input> </tool_call> <tool_result>
+file1.ts
+file2.ts
+</tool_result>`;
+
+    const result = parseSubagentToolCalls(input);
+
+    expect(result.length).toBeGreaterThanOrEqual(2);
+
+    const assistant = result.find(m => m.role === "assistant" && Array.isArray(m.content) && (m.content as any[]).some((c: any) => c.type === "toolCall"));
+    expect(assistant).toBeDefined();
+
+    const toolCall = (assistant!.content as any[]).find((c: any) => c.type === "toolCall");
+    expect(toolCall.name).toBe("bash");
+    expect(toolCall.arguments).toEqual({ command: "ls" });
+    expect(toolCall.id).toMatch(/^cc-tc-/);
+
+    const toolResult = result.find(m => m.role === "toolResult") as any;
+    expect(toolResult).toBeDefined();
+    expect(toolResult.toolCallId).toBe(toolCall.id);
+    expect(toolResult.toolName).toBe("bash");
+    expect(toolResult.isError).toBe(false);
+  });
+
+  test("parses multiple sequential tool calls", () => {
+    const input = `<tool_call> <tool_name>bash</tool_name> <tool_input>{"command": "pwd"}</tool_input> </tool_call> <tool_result>/home/user</tool_result>
+
+<tool_call> <tool_name>read</tool_name> <tool_input>{"path": "README.md"}</tool_input> </tool_call> <tool_result>
+# Hello
+</tool_result>`;
+
+    const result = parseSubagentToolCalls(input);
+    const toolResults = result.filter(m => m.role === "toolResult");
+    expect(toolResults).toHaveLength(2);
+    expect((toolResults[0] as any).toolName).toBe("bash");
+    expect((toolResults[1] as any).toolName).toBe("read");
+  });
+
+  test("captures interleaved text between tool calls", () => {
+    const input = `Let me check the files.
+
+<tool_call> <tool_name>bash</tool_name> <tool_input>{"command": "ls"}</tool_input> </tool_call> <tool_result>file1.ts</tool_result>
+
+Found the file. Now reading it.
+
+<tool_call> <tool_name>read</tool_name> <tool_input>{"path": "file1.ts"}</tool_input> </tool_call> <tool_result>content</tool_result>
+
+Done reviewing.`;
+
+    const result = parseSubagentToolCalls(input);
+
+    const textMessages = result.filter(m =>
+      m.role === "assistant" && Array.isArray(m.content) &&
+      (m.content as any[]).some((c: any) => c.type === "text")
+    );
+    expect(textMessages.length).toBeGreaterThanOrEqual(1);
+
+    const lastAssistant = [...result].reverse().find(m => m.role === "assistant");
+    const lastText = (lastAssistant!.content as any[]).find((c: any) => c.type === "text");
+    expect(lastText?.text).toContain("Done reviewing");
+  });
+
+  test("does not parse <tool_call> inside <tool_result>", () => {
+    const input = `<tool_call> <tool_name>bash</tool_name> <tool_input>{"command": "cat example.xml"}</tool_input> </tool_call> <tool_result>
+Here is the file:
+<tool_call> <tool_name>fake</tool_name> <tool_input>{"not": "real"}</tool_input> </tool_call>
+</tool_result>`;
+
+    const result = parseSubagentToolCalls(input);
+    const toolResults = result.filter(m => m.role === "toolResult");
+    expect(toolResults).toHaveLength(1);
+    expect((toolResults[0] as any).toolName).toBe("bash");
+
+    const resultText = (toolResults[0] as any).content[0].text;
+    expect(resultText).toContain("<tool_call>");
+  });
+
+  test("handles malformed JSON in tool_input", () => {
+    const input = `<tool_call> <tool_name>bash</tool_name> <tool_input>not valid json</tool_input> </tool_call> <tool_result>output</tool_result>`;
+
+    const result = parseSubagentToolCalls(input);
+    const assistant = result.find(m => m.role === "assistant" && Array.isArray(m.content) && (m.content as any[]).some((c: any) => c.type === "toolCall"));
+    const toolCall = (assistant!.content as any[]).find((c: any) => c.type === "toolCall");
+    expect(toolCall.arguments).toEqual({ raw: "not valid json" });
+  });
+
+  test("handles missing </tool_result> tag", () => {
+    const input = `<tool_call> <tool_name>bash</tool_name> <tool_input>{"command": "ls"}</tool_input> </tool_call> <tool_result>
+output without closing tag`;
+
+    const result = parseSubagentToolCalls(input);
+    const toolResult = result.find(m => m.role === "toolResult") as any;
+    expect(toolResult).toBeDefined();
+    expect(toolResult.content[0].text).toContain("output without closing tag");
+  });
+
+  test("preserves JSON text in tool result (read tool output)", () => {
+    const input = `<tool_call> <tool_name>read</tool_name> <tool_input>{"path": "data.json"}</tool_input> </tool_call> <tool_result>{"key": "value", "nested": {"a": 1}}</tool_result>`;
+
+    const result = parseSubagentToolCalls(input);
+    const toolResult = result.find(m => m.role === "toolResult") as any;
+    expect(toolResult.content[0].text).toBe('{"key": "value", "nested": {"a": 1}}');
+  });
+
+  test("groups consecutive tool calls into a single assistant message", () => {
+    const input = `<tool_call> <tool_name>bash</tool_name> <tool_input>{"command": "pwd"}</tool_input> </tool_call> <tool_call> <tool_name>bash</tool_name> <tool_input>{"command": "whoami"}</tool_input> </tool_call> <tool_result>/home/user</tool_result> <tool_result>jordan</tool_result>`;
+
+    const result = parseSubagentToolCalls(input);
+    const firstAssistant = result[0] as any;
+    expect(firstAssistant.role).toBe("assistant");
+    const toolCalls = firstAssistant.content.filter((c: any) => c.type === "toolCall");
+    expect(toolCalls).toHaveLength(2);
+    expect(toolCalls[0].name).toBe("bash");
+    expect(toolCalls[1].name).toBe("bash");
+    expect(toolCalls[0].id).not.toBe(toolCalls[1].id);
   });
 });
