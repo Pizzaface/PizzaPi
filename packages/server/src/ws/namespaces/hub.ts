@@ -63,11 +63,17 @@ export function registerHubNamespace(io: SocketIOServer): void {
             return;
           }
 
-          // Join room FIRST so any meta_event broadcast after join arrives before snapshot
-          await socket.join(sessionMetaRoom(sessionId));
-
-          // Send current state immediately
+          // Read state BEFORE joining the room to avoid a race where a concurrent
+          // meta_event (version N+1) arrives after the join, causing the client to
+          // set seen=N+1, then the snapshot at version N is silently dropped.
+          //
+          // With read-first:
+          //  - meta_event fires BEFORE join → version N+1 already in Redis → snapshot
+          //    contains N+1 → client applies snapshot(N+1) then no stale event follows.
+          //  - meta_event fires AFTER join → client receives snapshot(N) then
+          //    meta_event(N+1) → applies both in order → correct.
           const state = await getSessionMetaState(sessionId);
+          await socket.join(sessionMetaRoom(sessionId));
           socket.emit("state_snapshot", { sessionId, state });
 
           console.log(`[sio/hub] meta subscribe: ${socket.id} → session ${sessionId}`);
