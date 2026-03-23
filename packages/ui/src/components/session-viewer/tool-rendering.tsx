@@ -799,7 +799,7 @@ export function renderGroupedToolExecution(
         isStreaming={isStreaming}
       />
     );
-  } else if (norm === "subagent" || norm.endsWith(".subagent") || norm === "task" || norm.endsWith(".task")) {
+  } else if (norm === "subagent" || norm.endsWith(".subagent") || norm === "task" || norm.endsWith(".task") || norm === "agent" || norm.endsWith(".agent")) {
     card = (
       <SubagentResultCard
         toolInput={toolInput}
@@ -831,6 +831,26 @@ export function renderGroupedToolExecution(
     const inputArgs = parseToolInputArgs(toolInput);
     const enabled = inputArgs.enabled === true;
     card = <TogglePlanModeCard enabled={enabled} />;
+  } else if (norm === "toolsearch") {
+    // Claude Code internal tool — hide from UI (implementation detail)
+    card = null;
+  } else if (norm === "enterplanmode") {
+    card = <TogglePlanModeCard enabled={true} />;
+  } else if (norm === "exitplanmode") {
+    // ExitPlanMode may carry a plan submission — show plan file if available
+    const inputArgs = parseToolInputArgs(toolInput);
+    const plan = typeof inputArgs.plan === "string" ? inputArgs.plan : null;
+    const planFilePath = typeof inputArgs.planFilePath === "string" ? inputArgs.planFilePath : null;
+    if (plan && planFilePath) {
+      const fileName = planFilePath.split(/[\\/]/).pop() ?? "plan.md";
+      card = (
+        <FileTypeCard path={planFilePath} fileName={fileName} mimeType="text/markdown">
+          <CopyableCodeBlock code={plan} language="markdown" className="border-0 rounded-none" />
+        </FileTypeCard>
+      );
+    } else {
+      card = <TogglePlanModeCard enabled={false} />;
+    }
   } else {
     // Default / Generic tool card
     const outputText = hasOutput ? extractTextFromToolContent(content) : null;

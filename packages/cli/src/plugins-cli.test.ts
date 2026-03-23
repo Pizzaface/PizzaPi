@@ -1,4 +1,7 @@
-import { describe, test, expect, afterAll } from "bun:test";
+import { describe, test, expect, beforeAll, afterAll } from "bun:test";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
 import {
     getTrustedPlugins,
     isPluginTrusted,
@@ -10,13 +13,33 @@ import {
  * Tests for the plugin trust config helpers.
  *
  * These use unique path names to avoid collisions with any real trusted
- * plugins. All test paths are cleaned up in afterAll.
- *
- * NOTE: Bun caches homedir() from process start, so overriding
- * process.env.HOME doesn't change where config is written. These
- * tests write to the real ~/.pizzapi/config.json but only touch the
- * trustedPlugins array with unique test paths that are removed after.
+ * plugins. The real ~/.pizzapi/config.json is snapshotted before tests
+ * and unconditionally restored after, so even a crash mid-test cannot
+ * corrupt the user's config.
  */
+
+const CONFIG_PATH = join(homedir(), ".pizzapi", "config.json");
+let configSnapshot: string | null = null;
+
+beforeAll(() => {
+    // Snapshot the real config so we can restore it no matter what
+    try {
+        configSnapshot = existsSync(CONFIG_PATH) ? readFileSync(CONFIG_PATH, "utf-8") : null;
+    } catch {
+        configSnapshot = null;
+    }
+});
+
+afterAll(() => {
+    // Unconditionally restore the original config — this runs even if tests crash
+    try {
+        if (configSnapshot !== null) {
+            writeFileSync(CONFIG_PATH, configSnapshot, "utf-8");
+        }
+    } catch {
+        // Best-effort restore
+    }
+});
 
 const TEST_PREFIX = "/tmp/__plugins-cli-test__";
 const testPaths: string[] = [];
@@ -26,13 +49,6 @@ function testPath(suffix: string): string {
     testPaths.push(p);
     return p;
 }
-
-afterAll(() => {
-    // Clean up any test paths that were trusted
-    for (const p of testPaths) {
-        untrustPlugin(p);
-    }
-});
 
 describe("plugin trust config helpers", () => {
     test("isPluginTrusted returns false for unknown plugin", () => {

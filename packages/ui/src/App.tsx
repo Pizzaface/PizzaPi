@@ -47,6 +47,7 @@ import {
 import { Spinner } from "@/components/ui/spinner";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ErrorBoundary } from "@/components/ui/error-boundary";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -174,6 +175,8 @@ interface SessionState {
   availableCommands: Array<{ name: string; description?: string; source?: string }>;
   resumeSessions: ResumeSessionOption[];
   resumeSessionsLoading: boolean;
+  pendingPermission: { requestId: string; toolName: string; toolInput: unknown; ts: number } | null;
+  workerType: string;
 }
 
 function createInitialSessionState(): SessionState {
@@ -204,6 +207,8 @@ function createInitialSessionState(): SessionState {
     availableCommands: [],
     resumeSessions: [],
     resumeSessionsLoading: false,
+    pendingPermission: null,
+    workerType: "pi",
   };
 }
 // ─────────────────────────────────────────────────────────────────────────────
@@ -229,6 +234,7 @@ export function App() {
     modelSelectorOpen, isChangingModel, agentActive, effortLevel, authSource,
     tokenUsage, providerUsage, usageRefreshing, lastHeartbeatAt,
     availableCommands, resumeSessions, resumeSessionsLoading,
+    pendingPermission, workerType,
   } = sessionState;
 
   // Thin setter wrappers — identical signatures to the original useState setters
@@ -364,6 +370,16 @@ export function App() {
       setSessionState((p: SessionState) => ({ ...p, resumeSessionsLoading: typeof v === "function" ? v(p.resumeSessionsLoading) : v })),
     []
   );
+  const setPendingPermission = React.useCallback(
+    (v: React.SetStateAction<SessionState["pendingPermission"]>) =>
+      setSessionState((p: SessionState) => ({ ...p, pendingPermission: typeof v === "function" ? v(p.pendingPermission) : v })),
+    []
+  );
+  const setWorkerType = React.useCallback(
+    (v: React.SetStateAction<string>) =>
+      setSessionState((p: SessionState) => ({ ...p, workerType: typeof v === "function" ? v(p.workerType) : v })),
+    []
+  );
   // ────────────────────────────────────────────────────────────────────────────
   // Ref kept in sync with `messages` via useLayoutEffect so we can read the
   // latest committed value in event handlers without needing functional updaters.
@@ -440,6 +456,7 @@ export function App() {
 
   const [newSessionOpen, setNewSessionOpen] = React.useState(false);
   const [spawnRunnerId, setSpawnRunnerId] = React.useState<string | undefined>(undefined);
+  const [spawnWorkerType, setSpawnWorkerType] = React.useState<"pi" | "claude-code">("pi");
   const [spawnCwd, setSpawnCwd] = React.useState<string>("");
   const [spawnPreselectedRunnerId, setSpawnPreselectedRunnerId] = React.useState<string | null>(null);
   const [spawningSession, setSpawningSession] = React.useState(false);
@@ -451,6 +468,7 @@ export function App() {
 
   /** Set of session IDs that are actively compacting their context window. */
   const [sessionsCompacting, setSessionsCompacting] = React.useState<Set<string>>(new Set());
+
 
   // Cached fallback promptKey for when toolCallId is absent (legacy/compat).
   // Only changes when the question content changes, preventing heartbeat
@@ -478,6 +496,7 @@ export function App() {
   const [isCompacting, setIsCompacting] = React.useState(false);
   const [planModeEnabled, setPlanModeEnabled] = React.useState(false);
   const [todoList, setTodoList] = React.useState<TodoItem[]>([]);
+
 
   // Keyboard shortcuts
   const isMac = React.useMemo(() => {
@@ -682,6 +701,7 @@ export function App() {
       todoList: prev?.todoList ?? [],
       pendingQuestion: prev?.pendingQuestion ?? null,
       pendingPlan: prev?.pendingPlan ?? null,
+      workerType: prev?.workerType ?? "pi",
       ...patch,
       lastAccessed: Date.now(),
     };
@@ -1428,11 +1448,138 @@ export function App() {
         cachePatch.lastHeartbeatAt = hb.ts;
       }
 
+
+      if ((hb as any).providerUsage !== undefined) {
+        const nextProviderUsage = (hb as any).providerUsage ?? null;
+        setProviderUsage(nextProviderUsage);
+        cachePatch.providerUsage = nextProviderUsage;
+      }
+
+      if ((hb as any).authSource !== undefined) {
+        const nextAuthSource = typeof (hb as any).authSource === "string" ? (hb as any).authSource : null;
+        setAuthSource(nextAuthSource);
+        cachePatch.authSource = nextAuthSource;
+      }
+
+      if ((hb as any).workerType !== undefined) {
+        const nextWorkerType = typeof (hb as any).workerType === "string" ? (hb as any).workerType : "pi";
+        setWorkerType(nextWorkerType);
+        cachePatch.workerType = nextWorkerType;
+      }
+
+
       if (Object.prototype.hasOwnProperty.call(hb, "sessionName")) {
         const nextName = normalizeSessionName(hb.sessionName);
         setSessionName(nextName);
         cachePatch.sessionName = nextName;
       }
+
+
+      if (Array.isArray((hb as any).todoList)) {
+        const todos = (hb as any).todoList as TodoItem[];
+        setTodoList(todos);
+        cachePatch.todoList = todos;
+      }
+
+      // Restore pending AskUserQuestion state when reconnecting to a session.
+      if (Object.prototype.hasOwnProperty.call(hb, "pendingQuestion")) {
+        const pq = (hb as any).pendingQuestion as { toolCallId: string; questions?: Array<{ question: string; options: string[] }>; display?: string; question?: string; options?: string[] } | null;
+        if (pq) {
+          const questions = parsePendingQuestions(pq);
+          if (questions.length > 0) {
+            const resolved = {
+              toolCallId: typeof pq.toolCallId === "string" ? pq.toolCallId : getFallbackPromptKey(questions),
+              questions,
+              display: parsePendingQuestionDisplayMode(pq, questions.length),
+            };
+            setPendingQuestion(resolved);
+            cachePatch.pendingQuestion = resolved;
+            setViewerStatus("Waiting for answer…");
+          } else {
+            setPendingQuestion(null);
+            cachePatch.pendingQuestion = null;
+          }
+        } else {
+          // Heartbeat explicitly says no pending question; clear any stale state.
+          setPendingQuestion(null);
+          cachePatch.pendingQuestion = null;
+        }
+      }
+
+      // Restore pending plan mode state when reconnecting to a session.
+      if (Object.prototype.hasOwnProperty.call(hb, "pendingPlan")) {
+        const pp = (hb as any).pendingPlan as {
+          toolCallId: string;
+          title: string;
+          description?: string | null;
+          steps?: Array<{ title: string; description?: string }>;
+        } | null;
+        if (pp && typeof pp.toolCallId === "string" && typeof pp.title === "string" && pp.title.trim()) {
+          const steps = Array.isArray(pp.steps)
+            ? pp.steps.filter((s): s is { title: string; description?: string } =>
+                s !== null && typeof s === "object" && typeof s.title === "string" && s.title.trim().length > 0,
+              )
+            : [];
+          const resolved = {
+            toolCallId: pp.toolCallId,
+            title: pp.title.trim(),
+            description: typeof pp.description === "string" && pp.description.trim() ? pp.description.trim() : null,
+            steps,
+          };
+          setPendingPlan(resolved);
+          cachePatch.pendingPlan = resolved;
+          setViewerStatus("Waiting for plan review…");
+        } else {
+          setPendingPlan(null);
+          cachePatch.pendingPlan = null;
+        }
+      }
+
+      // Restore pending permission prompts when reconnecting.
+      if (Object.prototype.hasOwnProperty.call(hb, "pendingPermission")) {
+        const pp = (hb as any).pendingPermission as {
+          requestId: string;
+          toolName?: string;
+          toolInput?: unknown;
+          ts?: number;
+        } | null;
+        if (pp && typeof pp.requestId === "string") {
+          setPendingPermission({
+            requestId: pp.requestId,
+            toolName: typeof pp.toolName === "string" ? pp.toolName : "Unknown",
+            toolInput: pp.toolInput ?? null,
+            ts: typeof pp.ts === "number" ? pp.ts : Date.now(),
+          });
+        } else {
+          setPendingPermission(null);
+        }
+      }
+
+      // Track auto-retry state from CLI so we can show a retry indicator.
+      if (Object.prototype.hasOwnProperty.call(hb, "retryState")) {
+        const rs = (hb as any).retryState as { errorMessage: string; detectedAt: number } | null;
+        setRetryState(rs);
+      }
+
+      // Restore pending plugin trust prompt when reconnecting.
+      if (Object.prototype.hasOwnProperty.call(hb, "pendingPluginTrust")) {
+        const pt = (hb as any).pendingPluginTrust as {
+          promptId: string;
+          pluginNames: string[];
+          pluginSummaries: string[];
+        } | null;
+        if (pt && typeof pt.promptId === "string" && Array.isArray(pt.pluginNames) && pt.pluginNames.length > 0) {
+          setPluginTrustPrompt({
+            promptId: pt.promptId,
+            pluginNames: pt.pluginNames,
+            pluginSummaries: Array.isArray(pt.pluginSummaries) ? pt.pluginSummaries : pt.pluginNames,
+          });
+        } else {
+          setPluginTrustPrompt(null);
+        }
+      }
+
+      // Heartbeats also carry the current model; keep activeModel in sync.
 
       if (hb.model) {
         const m = normalizeModel(hb.model);
@@ -1613,6 +1760,28 @@ export function App() {
       const stateTodos = Array.isArray(state?.todoList) ? (state.todoList as TodoItem[]) : [];
       setTodoList(stateTodos);
 
+      // Extract workerType from session snapshot (defaults to "pi")
+      const stateWorkerType = typeof state?.workerType === "string" ? state.workerType : "pi";
+      setWorkerType(stateWorkerType);
+
+      // Rehydrate pending permission request from the snapshot so that the
+      // permission card is shown immediately on reconnect, without waiting
+      // for the next heartbeat.  The heartbeat also carries pendingPermission
+      // and acts as the authoritative state, but the snapshot restores it
+      // synchronously so there is no visible gap while the HB travels.
+      const snapshotPP = state?.pendingPermission as Record<string, unknown> | null | undefined;
+      if (snapshotPP && typeof snapshotPP.requestId === "string") {
+        setPendingPermission({
+          requestId: snapshotPP.requestId,
+          toolName: typeof snapshotPP.toolName === "string" ? snapshotPP.toolName : "Unknown",
+          toolInput: snapshotPP.toolInput ?? null,
+          ts: typeof snapshotPP.ts === "number" ? snapshotPP.ts : Date.now(),
+        });
+      } else if (Object.prototype.hasOwnProperty.call(state ?? {}, "pendingPermission")) {
+        // Snapshot explicitly carries null — clear any stale card.
+        setPendingPermission(null);
+      }
+
       patchSessionCache({
         messages: normalizedMessages,
         activeModel: stateModel,
@@ -1620,6 +1789,7 @@ export function App() {
         availableModels: stateModels,
         effortLevel: thinkingLevel,
         todoList: stateTodos,
+        workerType: stateWorkerType,
       });
       return;
     }
@@ -1749,6 +1919,7 @@ export function App() {
       patchSessionCache({ messages: withInjected });
       setPendingQuestion(null);
       setPendingPlan(null);
+      setPendingPermission(null);
       setRetryState(null);
       setActiveToolCalls(new Map());
       // Clear message queue — the agent processed any queued steer/followUp messages
@@ -2182,6 +2353,20 @@ export function App() {
       return;
     }
 
+    // ── Permission request from Claude Code worker ─────────────────────────
+    if (type === "permission_request") {
+      const e = evt as Record<string, unknown>;
+      if (typeof e.requestId === "string") {
+        setPendingPermission({
+          requestId: e.requestId,
+          toolName: typeof e.toolName === "string" ? e.toolName : "Unknown",
+          toolInput: e.toolInput ?? null,
+          ts: typeof e.ts === "number" ? e.ts : Date.now(),
+        });
+      }
+      return;
+    }
+
     if (type === "tool_execution_start") {
       const toolCallId = typeof evt.toolCallId === "string" ? evt.toolCallId : "";
       const toolName = typeof evt.toolName === "string" ? evt.toolName : "unknown";
@@ -2373,6 +2558,7 @@ export function App() {
     if (type === "agent_end") {
       cancelHaptic();
       setActiveToolCalls(new Map());
+      setPendingPermission(null);
     }
 
     if (type === "message_update") {
@@ -2688,6 +2874,8 @@ export function App() {
     setIsCompacting(cached?.isCompacting ?? false);
     setEffortLevel(cached?.effortLevel ?? null);
     setPlanModeEnabled(cached?.planModeEnabled ?? false);
+    setAuthSource(cached?.authSource ?? null);
+    setWorkerType(cached?.workerType ?? "pi");
     setTokenUsage(cached?.tokenUsage ?? null);
     setLastHeartbeatAt(cached?.lastHeartbeatAt ?? null);
     setTodoList(cached?.todoList ?? []);
@@ -2706,6 +2894,7 @@ export function App() {
     // authoritative values from the runner.
     setPendingQuestion(null);
     setPendingPlan(null);
+    setPendingPermission(null);
 
     let socket = viewerWsRef.current;
     if (!socket) {
@@ -3175,6 +3364,18 @@ export function App() {
     }
   }, [sendRemoteExec, pluginTrustPrompt]);
 
+  /** Respond to a permission request from the Claude Code worker. */
+  const handlePermissionDecision = React.useCallback((requestId: string, decision: "allow" | "deny") => {
+    setPendingPermission(null);
+    sendRemoteExec({
+      type: "exec",
+      id: `permission-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      command: "permission_response",
+      requestId,
+      decision,
+    });
+  }, [sendRemoteExec]);
+
   /**
    * End a session by session ID. If it's the currently active session the
    * existing viewer socket is used; otherwise a temporary socket is opened
@@ -3380,6 +3581,7 @@ export function App() {
   const handleNewSession = React.useCallback(() => {
     setSpawnRunnerId(undefined);
     setSpawnPreselectedRunnerId(null);
+    setSpawnWorkerType("pi");
     setSpawnCwd("");
     setRecentFolders([]);
     setNewSessionOpen(true);
@@ -3388,6 +3590,7 @@ export function App() {
   const handleDuplicateSession = React.useCallback((runnerId: string, cwd: string) => {
     setSpawnRunnerId(runnerId);
     setSpawnPreselectedRunnerId(runnerId);
+    setSpawnWorkerType("pi");
     setSpawnCwd(cwd);
     setRecentFolders([]);
     setNewSessionOpen(true);
@@ -3442,6 +3645,7 @@ export function App() {
     const payload: any = {
       runnerId: spawnRunnerId,
       ...(spawnCwd.trim() ? { cwd: spawnCwd.trim() } : {}),
+      ...(spawnWorkerType !== "pi" ? { workerType: spawnWorkerType } : {}),
     };
 
     let sessionId: string | null = null;
@@ -3498,13 +3702,13 @@ export function App() {
     } finally {
       setSpawningSession(false);
     }
-  }, [spawningSession, spawnRunnerId, spawnCwd, handleOpenSession, waitForSessionToGoLive]);
+  }, [spawningSession, spawnRunnerId, spawnWorkerType, spawnCwd, handleOpenSession, waitForSessionToGoLive]);
 
   /** Spawn handler for the new wizard dialog. */
-  const handleWizardSpawn = React.useCallback(async (runnerId: string, cwd: string | undefined) => {
+  const handleWizardSpawn = React.useCallback(async (runnerId: string, cwd: string | undefined, workerType: "pi" | "claude-code" = "pi") => {
     setViewerStatus("Spawning session…");
 
-    const payload: any = { runnerId, ...(cwd ? { cwd } : {}) };
+    const payload: any = { runnerId, ...(cwd ? { cwd } : {}), ...(workerType !== "pi" ? { workerType } : {}) };
     const res = await fetch("/api/runners/spawn", {
       method: "POST",
       credentials: "include",
@@ -4394,6 +4598,9 @@ export function App() {
                         onPlanDismiss={() => setPendingPlan(null)}
                         onDuplicateSession={activeSessionInfo?.runnerId ? () => handleDuplicateSession(activeSessionInfo.runnerId!, activeSessionInfo.cwd || "") : undefined}
                         runnerInfo={activeRunnerInfo}
+                        pendingPermission={pendingPermission}
+                        onPermissionDecision={handlePermissionDecision}
+                        workerType={workerType}
                         mcpOAuthPastes={mcpOAuthPastes}
                         onMcpOAuthPaste={(nonce, code, state) => {
                           const socket = viewerWsRef.current;

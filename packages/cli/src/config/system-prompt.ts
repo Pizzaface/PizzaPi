@@ -1,6 +1,16 @@
 import { ASK_USER_QUESTION_PROMPT_FRAGMENT } from "../prompts/ask-user-question.js";
 
 /**
+ * Instruction fragment for session naming.
+ *
+ * Tells the agent to call `set_session_name` once at the start of its first
+ * response. Used by Pi sessions (injected via Pi TUI) and explicitly passed
+ * to Claude Code sessions via `--append-system-prompt`.
+ */
+export const SET_SESSION_NAME_PROMPT =
+    "At the start of your FIRST response only, call the `set_session_name` tool with a 3–6 word summary of the user's request. Do NOT output the session name as text in your response.";
+
+/**
  * Built-in system prompt additions — always appended by the CLI.
  * User config `appendSystemPrompt` is concatenated after this.
  */

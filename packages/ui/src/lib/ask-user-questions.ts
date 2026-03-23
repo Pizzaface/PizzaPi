@@ -26,11 +26,28 @@ export function parsePendingQuestions(data: Record<string, unknown> | undefined 
     const result: ParsedQuestion[] = [];
     for (const q of data.questions) {
       if (q && typeof q === "object" && typeof (q as any).question === "string" && (q as any).question.trim()) {
+        // Handle both string options and object options { label, description }
+        // (Claude Code sends objects; pi sends strings)
         const opts = Array.isArray((q as any).options)
-          ? ((q as any).options as unknown[]).filter((o): o is string => typeof o === "string" && o.trim().length > 0).map((o) => o.trim())
+          ? ((q as any).options as unknown[])
+              .map((o) => {
+                if (typeof o === "string") return o.trim();
+                if (o && typeof o === "object") {
+                  const obj = o as Record<string, unknown>;
+                  return typeof obj.label === "string" ? obj.label.trim() : null;
+                }
+                return null;
+              })
+              .filter((o): o is string => o !== null && o.length > 0)
           : [];
+        // Handle both `type` (pi) and `multiSelect` (Claude Code) formats
         const rawType = (q as any).type;
-        const type: QuestionType = rawType === "checkbox" ? "checkbox" : rawType === "ranked" ? "ranked" : "radio";
+        const multiSelect = (q as any).multiSelect;
+        const type: QuestionType = rawType === "checkbox" || multiSelect === true
+          ? "checkbox"
+          : rawType === "ranked"
+            ? "ranked"
+            : "radio";
         result.push({ question: (q as any).question.trim(), options: opts, type });
       }
     }
@@ -40,7 +57,16 @@ export function parsePendingQuestions(data: Record<string, unknown> | undefined 
   // Legacy format: { question, options }
   if (typeof data.question === "string" && data.question.trim()) {
     const opts = Array.isArray(data.options)
-      ? (data.options as unknown[]).filter((o): o is string => typeof o === "string" && o.trim().length > 0).map((o) => o.trim())
+      ? (data.options as unknown[])
+          .map((o) => {
+            if (typeof o === "string") return o.trim();
+            if (o && typeof o === "object") {
+              const obj = o as Record<string, unknown>;
+              return typeof obj.label === "string" ? obj.label.trim() : null;
+            }
+            return null;
+          })
+          .filter((o): o is string => o !== null && o.length > 0)
       : [];
     return [{ question: (data.question as string).trim(), options: opts, type: "radio" as QuestionType }];
   }

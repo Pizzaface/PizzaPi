@@ -140,12 +140,19 @@ for (const platform of PLATFORMS) {
         chmodSync(destBinary, 0o755);
     }
 
-    // Copy assets (package.json from pi, theme/, export-html/, PTY native lib)
+    // Copy assets (package.json from pi, theme/, export-html/, templates/)
     const assetDir = join(BINARIES_DIR, platform.binaryDir);
     for (const asset of ["package.json", "theme", "export-html", "templates"]) {
         const src = join(assetDir, asset);
         if (existsSync(src)) {
             cpSync(src, join(binDir, asset), { recursive: true });
+        }
+    }
+
+    for (const dirName of ["runner", "claude-code-plugin"]) {
+        const src = join(assetDir, dirName);
+        if (existsSync(src)) {
+            cpSync(src, join(binDir, dirName), { recursive: true });
         }
     }
 
