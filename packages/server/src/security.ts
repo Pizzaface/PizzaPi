@@ -48,6 +48,10 @@ export class RateLimiter {
         const now = Date.now();
         const record = this.hits.get(key);
         if (!record || now > record.resetTime) {
+            // Dead code in production: callers only invoke getRetryAfter() after
+            // check() has returned false, which guarantees an active (non-expired)
+            // record exists for this key. This branch exists as a safe fallback for
+            // direct / test usage where that invariant isn't enforced.
             return Math.ceil(this.windowMs / 1000);
         }
         return Math.ceil((record.resetTime - now) / 1000);

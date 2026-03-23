@@ -1,10 +1,10 @@
-import { describe, expect, test, mock, beforeAll } from "bun:test";
+import { describe, expect, test, mock, spyOn, beforeAll, afterEach } from "bun:test";
+import type { Mock } from "bun:test";
 
-// mock.module MUST be registered before any import of the module under test
-// (or modules that transitively import the mocked dependency).
-// Static imports are hoisted and resolved before module-level code runs,
-// so we register the mock here — at the very top — and then dynamically
-// import the module under test inside beforeAll().
+// mock.module for middleware must be registered before the dynamic import below.
+// The rate-limiter mock is no longer needed here — we spy directly on the exported
+// chatRateLimiter instance, which avoids the module-cache ordering problem that
+// previously caused failures when this file and index.test.ts ran together.
 mock.module("../middleware.js", () => {
     return {
         requireSession: mock(() => Promise.resolve({ userId: "test-user", userName: "Test User" })),
@@ -12,32 +12,26 @@ mock.module("../middleware.js", () => {
     };
 });
 
-// Controls the rate limiter behaviour for tests.
-// Mutate these variables in individual tests to simulate allowed / blocked states.
-let mockCheckAllowed = true;
-let mockRetryAfterSeconds = 42;
-
-mock.module("../security.js", () => {
-    return {
-        RateLimiter: class {
-            check(_key: string): boolean {
-                return mockCheckAllowed;
-            }
-            getRetryAfter(_key: string): number {
-                return mockRetryAfterSeconds;
-            }
-            destroy() {}
-        },
-    };
-});
-
 let handleChatRoute: (req: Request, url: URL) => Promise<Response | undefined>;
+let checkSpy: Mock<(key: string) => boolean>;
+let getRetryAfterSpy: Mock<(key: string) => number>;
 
 beforeAll(async () => {
-    // Dynamic import ensures the mock above is already in place when
-    // ./chat.js (and its transitive dependency ../middleware.js) are loaded.
+    // Dynamic import ensures the middleware mock above is in place before chat.js loads.
+    // The 30_000 ms timeout accounts for cold-loading heavy transitive dependencies.
     const mod = await import("./chat.js");
     handleChatRoute = mod.handleChatRoute;
+
+    // Spy on the exported rate-limiter instance so tests can control its behavior
+    // regardless of which order this file and index.test.ts are loaded.
+    checkSpy = spyOn(mod.chatRateLimiter, "check").mockReturnValue(true) as Mock<(key: string) => boolean>;
+    getRetryAfterSpy = spyOn(mod.chatRateLimiter, "getRetryAfter").mockReturnValue(42) as Mock<(key: string) => number>;
+}, 30_000);
+
+afterEach(() => {
+    // Restore default spy return values so tests start from a known state.
+    checkSpy.mockReturnValue(true);
+    getRetryAfterSpy.mockReturnValue(42);
 });
 
 describe("handleChatRoute", () => {
@@ -119,8 +113,8 @@ describe("handleChatRoute", () => {
 
 describe("handleChatRoute — rate limiting", () => {
     test("returns 429 when rate limit is exceeded", async () => {
-        mockCheckAllowed = false;
-        mockRetryAfterSeconds = 42;
+        checkSpy.mockReturnValue(false);
+        getRetryAfterSpy.mockReturnValue(42);
 
         const url = new URL("http://localhost/api/chat");
         const req = new Request(url, {
@@ -134,8 +128,8 @@ describe("handleChatRoute — rate limiting", () => {
     });
 
     test("returns Retry-After header when rate limited", async () => {
-        mockCheckAllowed = false;
-        mockRetryAfterSeconds = 42;
+        checkSpy.mockReturnValue(false);
+        getRetryAfterSpy.mockReturnValue(42);
 
         const url = new URL("http://localhost/api/chat");
         const req = new Request(url, {
@@ -149,8 +143,8 @@ describe("handleChatRoute — rate limiting", () => {
     });
 
     test("returns JSON error body when rate limited", async () => {
-        mockCheckAllowed = false;
-        mockRetryAfterSeconds = 30;
+        checkSpy.mockReturnValue(false);
+        getRetryAfterSpy.mockReturnValue(30);
 
         const url = new URL("http://localhost/api/chat");
         const req = new Request(url, {
@@ -166,7 +160,7 @@ describe("handleChatRoute — rate limiting", () => {
     });
 
     test("proceeds past rate limit check when allowed", async () => {
-        mockCheckAllowed = true;
+        checkSpy.mockReturnValue(true);
 
         const url = new URL("http://localhost/api/chat");
         const req = new Request(url, {

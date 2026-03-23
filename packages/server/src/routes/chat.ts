@@ -11,7 +11,7 @@ import { RateLimiter } from "../security.js";
 import type { RouteHandler } from "./types.js";
 
 // 10 requests per minute per authenticated user
-const chatRateLimiter = new RateLimiter(10, 60_000);
+export const chatRateLimiter = new RateLimiter(10, 60_000);
 
 export const handleChatRoute: RouteHandler = async (req, url) => {
     if (url.pathname === "/api/chat" && req.method === "POST") {
