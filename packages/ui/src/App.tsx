@@ -2072,9 +2072,15 @@ export function App() {
     const prev = backgroundMetaIdsRef.current;
 
     // Unsubscribe from sessions that are no longer in the live list.
+    // Do NOT unsubscribe the active session — it may have just been promoted
+    // from background and its subscription is now managed by the active-session
+    // effect above. Emitting unsubscribe here would silently break all meta
+    // updates for the newly-opened session.
     for (const id of prev) {
       if (!currentIds.has(id)) {
-        hubSock.emit("unsubscribe_session_meta", { sessionId: id });
+        if (id !== activeSessionId) {
+          hubSock.emit("unsubscribe_session_meta", { sessionId: id });
+        }
         prev.delete(id);
       }
     }
