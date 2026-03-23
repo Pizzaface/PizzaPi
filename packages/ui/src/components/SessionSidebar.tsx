@@ -17,6 +17,7 @@ import { ProviderIcon } from "@/components/ProviderIcon";
 import { PanelLeftClose, PanelLeftOpen, Plus, X, HardDrive, FolderOpen, CheckSquare, Square, CheckCheck, Trash2, Pin, PinOff, ChevronDown, ChevronRight, MessageSquare, Copy } from "lucide-react";
 import { buildSessionTree, flattenSessionTree, getSessionIndent, getDescendantSessionIds, getGroupCwd } from "@/lib/session-tree";
 import { pruneSwipeOffsets } from "@/lib/swipe-reveal";
+import { getSessionVisualState } from "@/lib/session-visual-state";
 
 interface HubSession {
     sessionId: string;
@@ -1155,6 +1156,12 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                             const showCwd = runnerGroup.projects.length === 1;
                                             const isActiveSession = !showRunners && activeSessionId === s.sessionId;
                                             const isChecked = selectedSessionIds.has(s.sessionId);
+                                            const visualState = getSessionVisualState({
+                                                isSelected: isActiveSession || (selectMode && isChecked),
+                                                isAwaiting: !!sessionsWithPendingQuestion?.has(s.sessionId),
+                                                isActive: !!s.isActive,
+                                                isCompletedUnread: completedUnreadSessions.has(s.sessionId),
+                                            });
                                             const provider = s.model?.provider ??
                                                 (activeSessionId === s.sessionId ? activeModel?.provider : undefined) ??
                                                 "unknown";
@@ -1280,17 +1287,11 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                             "relative flex items-center gap-2.5 w-full min-w-0 px-2.5 py-3 md:py-2.5 text-left rounded-md",
                                                             "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
                                                             !hasOffset && "transition-transform duration-200 ease-out",
-                                                            selectMode && isChecked
-                                                                ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                                                                : isActiveSession
-                                                                    ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                                                                    : sessionsWithPendingQuestion?.has(s.sessionId)
-                                                                        ? "text-sidebar-foreground animate-awaiting-chase"
-                                                                        : s.isActive
-                                                                            ? "text-sidebar-foreground animate-working-chase"
-                                                                            : completedUnreadSessions.has(s.sessionId)
-                                                                                ? "text-sidebar-foreground animate-completed-chase"
-                                                                                : "bg-sidebar text-sidebar-foreground hover:bg-sidebar-accent/50",
+                                                            visualState === "selected" && "bg-sidebar-accent text-sidebar-accent-foreground",
+                                                            visualState === "awaiting" && "text-sidebar-foreground animate-awaiting-pulse",
+                                                            visualState === "active" && "text-sidebar-foreground animate-working-chase",
+                                                            visualState === "completedUnread" && "text-sidebar-foreground animate-completed-pulse",
+                                                            visualState === "idle" && "bg-sidebar text-sidebar-foreground hover:bg-sidebar-accent/50",
                                                         )}
                                                         style={{
                                                             transform: !selectMode && hasOffset ? `translateX(${swipeOffset}px)` : undefined,
