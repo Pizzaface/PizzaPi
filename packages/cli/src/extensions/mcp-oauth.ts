@@ -212,8 +212,9 @@ export type McpOAuthOptions = {
   serverName: string;
   /**
    * Override the `client_name` sent during OAuth dynamic client registration.
-   * Some servers (e.g. Figma) restrict registration to an allowlist of names.
-   * Default: `"PizzaPi"`.
+   * When set, the value is used **verbatim** (no server-name suffix) so it
+   * can match an exact allowlist entry (e.g. Figma only accepts `"Codex"`).
+   * When unset, defaults to `"PizzaPi (<serverName>)"`.
    */
   clientName?: string;
   /** Callback port override for local mode. 0 = auto. */
@@ -255,6 +256,8 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
   private _serverUrl: string;
   private _serverName: string;
   private _clientName: string;
+  /** True when clientName was explicitly provided (use verbatim, no suffix). */
+  private _clientNameExplicit: boolean;
   private _persisted: PersistedAuth;
   private _callbackPort: number;
   private _callbackServer: ReturnType<typeof startCallbackServer> | null = null;
@@ -293,6 +296,7 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
   constructor(opts: McpOAuthOptions) {
     this._serverUrl = opts.serverUrl;
     this._serverName = opts.serverName;
+    this._clientNameExplicit = !!opts.clientName;
     this._clientName = opts.clientName || "PizzaPi";
     this._callbackPort = opts.callbackPort ?? 0;
     this._onAuthStart = opts.onAuthStart;
@@ -448,8 +452,14 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
   }
 
   get clientMetadata(): OAuthClientMetadata {
+    // When the user explicitly sets oauthClientName, send it verbatim so it
+    // matches exact allowlists (e.g. Figma only accepts "Codex", not "Codex (figma)").
+    // Only append the server-name suffix for the default PizzaPi branding.
+    const name = this._clientNameExplicit
+      ? this._clientName
+      : `${this._clientName} (${this._serverName})`;
     return {
-      client_name: `${this._clientName} (${this._serverName})`,
+      client_name: name,
       redirect_uris: [typeof this.redirectUrl === "string" ? this.redirectUrl : this.redirectUrl.toString()],
       grant_types: ["authorization_code", "refresh_token"],
       response_types: ["code"],
