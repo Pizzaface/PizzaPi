@@ -48,6 +48,7 @@ import {
     markChildAsDelinked,
     isChildDelinked,
     isChildOfParent,
+    isLinkedChildForSuppression,
     refreshChildSessionsTTL,
     clearParentSessionId,
 } from "../sio-state.js";
@@ -256,22 +257,24 @@ async function checkPushNotifications(
 
     const sName = session?.sessionName ?? null;
 
-    // Determine whether this session is an active linked child.
+    // Determine whether this session is an active linked child for push-suppression.
     //
-    // Use linkedParentId as the stable parent reference (persists through
-    // transient parent outages; cleared only on explicit delink). Fall back to
-    // parentSessionId for sessions registered before this field was added.
+    // Use linkedParentId as the stable parent reference (persists through transient
+    // parent outages; cleared only on explicit delink). Fall back to parentSessionId
+    // for sessions registered before this field was added.
     //
-    // Then call isChildOfParent() for liveness: it checks the Redis membership
-    // set (refreshed while the link is active; has SESSION_TTL_SECONDS TTL) and
-    // internally applies the delink-marker guard. This means:
+    // isLinkedChildForSuppression is purpose-built for suppression decisions:
+    //   • Explicit delink → false (delink marker check)
+    //   • Membership set present → true (parent online or temporarily offline)
+    //   • Set miss → falls back to parent-key existence (bounds suppression to
+    //     SESSION_TTL_SECONDS after a parent crash, without re-hydrating the set)
     //
-    //   • Parent temporarily offline → membership set still valid → suppressed ✓
-    //   • Parent permanently gone (crash/expire without delink_children) →
-    //     membership set expires after SESSION_TTL_SECONDS → not suppressed ✓
-    //   • Explicitly delinked → delink marker present → isChildOfParent → false ✓
+    // isChildOfParent is intentionally NOT used here: its TTL-recovery fallback
+    // re-hydrates the membership set from the child's parentSessionId hash field,
+    // which would break when parentSessionId is null (offline-reconnect path) and
+    // would extend suppression beyond the parent-key TTL.
     const effectiveParentId = session?.linkedParentId ?? session?.parentSessionId ?? null;
-    const isChildSession = !!effectiveParentId && await isChildOfParent(effectiveParentId, sessionId);
+    const isChildSession = !!effectiveParentId && await isLinkedChildForSuppression(effectiveParentId, sessionId);
 
     if (event.type === "agent_end") {
         notifyAgentFinished(userId, sessionId, sName, isChildSession);

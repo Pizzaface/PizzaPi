@@ -193,17 +193,22 @@ export async function updateEnabledEvents(
         .execute();
 }
 
+/**
+ * Returns the number of rows updated (0 if no matching subscription exists).
+ * Callers should treat 0 as a 404 — the subscription endpoint is unknown.
+ */
 export async function updateSuppressChildNotifications(
     userId: string,
     endpoint: string,
     suppress: boolean,
-): Promise<void> {
-    await getKysely()
+): Promise<number> {
+    const result = await getKysely()
         .updateTable("push_subscription" as any)
         .set({ suppressChildNotifications: suppress ? 1 : 0 })
         .where("userId", "=", userId)
         .where("endpoint", "=", endpoint)
         .execute();
+    return Number((result as any)[0]?.numUpdatedRows ?? 0);
 }
 
 // ── Send push notifications ─────────────────────────────────────────────────

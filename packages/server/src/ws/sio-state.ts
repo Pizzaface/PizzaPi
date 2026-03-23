@@ -716,16 +716,10 @@ export async function getChildSessions(parentSessionId: string): Promise<string[
 /** Check whether a session is still listed as a child of the given parent.
  *  Returns false if delink_children was called (which clears the set).
  *
- *  Fallback 1: if the Redis children set has expired (24 h TTL) but the child's
+ *  Fallback: if the Redis children set has expired (24 h TTL) but the child's
  *  session hash still records `parentSessionId` pointing at this parent, the
  *  relationship is still live.  We re-hydrate the set in that case so that
- *  subsequent calls are fast again (self-healing after TTL expiry).
- *
- *  Fallback 2: if the child reconnected while the parent was temporarily offline,
- *  `parentSessionId` is null in the child's hash but `linkedParentId` still records
- *  the parent.  We re-hydrate from `linkedParentId` only when the parent session
- *  itself still exists in Redis, so that once a crashed parent's Redis key expires
- *  this returns false and push-notification suppression correctly stops. */
+ *  subsequent calls are fast again (self-healing after TTL expiry). */
 export async function isChildOfParent(parentSessionId: string, childSessionId: string): Promise<boolean> {
     const r = requireRedis();
     const inSet = await r.sIsMember(childrenKey(parentSessionId), childSessionId);
@@ -738,17 +732,10 @@ export async function isChildOfParent(parentSessionId: string, childSessionId: s
     // stale parent/child traffic.
     if (await isChildDelinked(childSessionId)) return false;
 
-    // Fallback 1: the Redis children set may have expired without an explicit
-    // delink.  Verify via the child's durable session hash (parentSessionId field).
+    // Fallback: the Redis children set may have expired without an explicit
+    // delink.  Verify via the child's durable session hash.
     const childSession = await getSession(childSessionId);
     if (childSession?.parentSessionId === parentSessionId) {
-        // Gate re-hydration on the parent session key still existing in Redis.
-        // Without this check, Fallback 1 would keep re-hydrating the membership
-        // set indefinitely after a parent crash — the same parent-liveness guard
-        // applied in Fallback 2 below.
-        const parentKeyExists = (await r.exists(sessionKey(parentSessionId))) > 0;
-        if (!parentKeyExists) return false;
-
         // Re-hydrate the children set and reset its TTL so future checks are
         // fast and the delink guard (clearAllChildren / clearParentSessionId)
         // still works correctly.
@@ -759,23 +746,40 @@ export async function isChildOfParent(parentSessionId: string, childSessionId: s
         return true;
     }
 
-    // Fallback 2: child reconnected while parent was temporarily offline.
-    // In that path, registerTuiSession() clears parentSessionId to null but
-    // preserves linkedParentId.  Re-hydrate only when the parent session key
-    // still exists in Redis — this gates re-hydration on parent liveness so
-    // that suppression stops once a crashed parent's key expires (same TTL).
-    if (childSession?.linkedParentId === parentSessionId) {
-        const parentKeyExists = (await r.exists(sessionKey(parentSessionId))) > 0;
-        if (parentKeyExists) {
-            const multi = r.multi();
-            multi.sAdd(childrenKey(parentSessionId), childSessionId);
-            multi.expire(childrenKey(parentSessionId), SESSION_TTL_SECONDS);
-            await multi.exec();
-            return true;
-        }
-    }
-
     return false;
+}
+
+/**
+ * Liveness check for push-notification suppression.
+ *
+ * Unlike `isChildOfParent` (which is an authorization helper with TTL-recovery
+ * semantics), this function is designed specifically for suppression decisions:
+ *
+ *   1. Explicitly delinked → false (suppress stops immediately).
+ *   2. Child is in the parent's membership set → true (parent online OR
+ *      temporarily offline with membership preserved via addChildSessionMembership).
+ *   3. Set miss: fall back to parent-key existence in Redis.  This covers the
+ *      case where the membership set has expired but the parent hasn't crashed
+ *      (same SESSION_TTL_SECONDS bound).  Once the parent key expires, this
+ *      returns false and suppression stops.
+ *
+ * `linkedParentId` is used as the parent reference so the check is durable
+ * through parent-offline reconnects where `parentSessionId` is cleared to null.
+ */
+export async function isLinkedChildForSuppression(parentSessionId: string, childSessionId: string): Promise<boolean> {
+    if (await isChildDelinked(childSessionId)) return false;
+
+    const r = requireRedis();
+
+    // Fast path: membership set is the primary liveness signal.
+    const inSet = await r.sIsMember(childrenKey(parentSessionId), childSessionId);
+    if (inSet) return true;
+
+    // Membership set expired — fall back to parent-key existence.
+    // If the parent's Redis key is still present, the session either recently
+    // disconnected or is still active; continue suppressing.
+    // If the key is gone (crashed without delink_children, TTL expired), stop.
+    return (await r.exists(sessionKey(parentSessionId))) > 0;
 }
 
 /** Refresh the TTL on an existing parent→children membership set. */

@@ -98,7 +98,10 @@ export const handlePushRoute: RouteHandler = async (req, url) => {
             return Response.json({ error: "Missing endpoint or suppress (boolean)" }, { status: 400 });
         }
 
-        await updateSuppressChildNotifications(identity.userId, body.endpoint, body.suppress);
+        const updated = await updateSuppressChildNotifications(identity.userId, body.endpoint, body.suppress);
+        if (updated === 0) {
+            return Response.json({ error: "No matching subscription found for this endpoint" }, { status: 404 });
+        }
         return Response.json({ ok: true });
     }
 

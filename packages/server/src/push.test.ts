@@ -145,3 +145,20 @@ describe("updateSuppressChildNotifications", () => {
         expect(subB?.suppressChildNotifications).toBe(0);
     });
 });
+
+    it("returns 0 when no matching subscription exists", async () => {
+        const count = await updateSuppressChildNotifications("user-x", "https://example.com/push/nonexistent", true);
+        expect(count).toBe(0);
+    });
+
+    it("returns 1 when the subscription is updated", async () => {
+        await insertSub("sub-scn-5", "user-5", "https://example.com/push/scn-5");
+        const count = await updateSuppressChildNotifications("user-5", "https://example.com/push/scn-5", true);
+        expect(count).toBe(1);
+    });
+
+    it("returns 0 when userId does not match endpoint", async () => {
+        await insertSub("sub-scn-6", "user-6a", "https://example.com/push/scn-6");
+        const count = await updateSuppressChildNotifications("user-6b", "https://example.com/push/scn-6", true);
+        expect(count).toBe(0);
+    });
