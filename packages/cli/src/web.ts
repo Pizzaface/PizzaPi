@@ -653,9 +653,7 @@ services:
     restart: unless-stopped
 
   server:
-{{SERVER_BUILD_BLOCK}}      args:
-        PREBUILT_UI: "{{PREBUILT_UI}}"
-{{SERVER_IMAGE_LINE}}    ports:
+{{SERVER_BUILD_BLOCK}}{{SERVER_IMAGE_LINE}}    ports:
       - "{{PORT}}:7492"
     environment:
       - PORT=7492
@@ -832,6 +830,8 @@ export function resolveComposeMode(repoPath: string, config: Pick<WebConfig, "im
             buildBlock: `    build:
       context: ${repoPath}
       dockerfile: Dockerfile
+      args:
+        PREBUILT_UI: "{{PREBUILT_UI}}"
 `,
             imageLine: "",
             hubImage: "local-build",

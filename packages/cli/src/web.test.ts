@@ -32,9 +32,7 @@ services:
     restart: unless-stopped
 
   server:
-{{SERVER_BUILD_BLOCK}}      args:
-        PREBUILT_UI: "{{PREBUILT_UI}}"
-{{SERVER_IMAGE_LINE}}    ports:
+{{SERVER_BUILD_BLOCK}}{{SERVER_IMAGE_LINE}}    ports:
       - "{{PORT}}:7492"
     environment:
       - PORT=7492
@@ -164,13 +162,15 @@ describe("readBooleanEnv", () => {
         expect(COMPOSE_TEMPLATE).toContain("{{VAPID_PRIVATE_KEY}}");
         expect(COMPOSE_TEMPLATE).toContain("{{VAPID_SUBJECT}}");
         expect(COMPOSE_TEMPLATE).toContain("{{EXTRA_ORIGINS_LINE}}");
-        expect(COMPOSE_TEMPLATE).toContain("{{PREBUILT_UI}}");
-        expect(COMPOSE_TEMPLATE).toContain("{{UI_DIST_HASH}}");
+        // Note: {{PREBUILT_UI}} is embedded inside the build-mode buildBlock
+        // returned by resolveComposeMode(), not a top-level template placeholder.
     });
 
     test("template substitution produces valid compose structure", () => {
+        // SERVER_BUILD_BLOCK now includes the args: section (with {{PREBUILT_UI}} embedded),
+        // so it must be substituted before {{PREBUILT_UI}} to allow the nested replacement.
         const composed = COMPOSE_TEMPLATE
-            .replace(/\{\{SERVER_BUILD_BLOCK}}/g, "    build:\n      context: /home/user/.pizzapi/web/repo\n      dockerfile: Dockerfile\n")
+            .replace(/\{\{SERVER_BUILD_BLOCK}}/g, "    build:\n      context: /home/user/.pizzapi/web/repo\n      dockerfile: Dockerfile\n      args:\n        PREBUILT_UI: \"{{PREBUILT_UI}}\"\n")
             .replace(/\{\{SERVER_IMAGE_LINE}}/g, "")
             .replace(/\{\{HUB_IMAGE}}/g, "local-build")
             .replace(/\{\{HUB_VERSION}}/g, "local")
@@ -207,7 +207,7 @@ describe("readBooleanEnv", () => {
 
     test("template with no extra origins produces commented-out line", () => {
         const composed = COMPOSE_TEMPLATE
-            .replace(/\{\{SERVER_BUILD_BLOCK}}/g, "    build:\n      context: /repo\n      dockerfile: Dockerfile\n")
+            .replace(/\{\{SERVER_BUILD_BLOCK}}/g, "    build:\n      context: /repo\n      dockerfile: Dockerfile\n      args:\n        PREBUILT_UI: \"{{PREBUILT_UI}}\"\n")
             .replace(/\{\{SERVER_IMAGE_LINE}}/g, "")
             .replace(/\{\{HUB_IMAGE}}/g, "local-build")
             .replace(/\{\{HUB_VERSION}}/g, "local")
@@ -226,12 +226,46 @@ describe("readBooleanEnv", () => {
         expect(composed).toContain("# - PIZZAPI_EXTRA_ORIGINS=");
         expect(composed).not.toContain("{{");
     });
+
+    test("image mode compose output has no orphaned top-level args: key (P0 regression)", () => {
+        // When buildBlock is "" (image mode), the args: section must be absent entirely.
+        // A stray top-level `args:` under `server:` is not a valid Docker Compose
+        // service property and will cause `docker compose up` to fail.
+        const imageModeComposed = COMPOSE_TEMPLATE
+            // image mode: buildBlock is empty, imageLine provides the image reference
+            .replace(/\{\{SERVER_BUILD_BLOCK}}/g, "")
+            .replace(/\{\{SERVER_IMAGE_LINE}}/g, "    image: ghcr.io/acme/pizzapi:0.1.42\n    pull_policy: if_not_present\n")
+            .replace(/\{\{HUB_IMAGE}}/g, "ghcr.io/acme/pizzapi:0.1.42")
+            .replace(/\{\{HUB_VERSION}}/g, "0.1.42")
+            .replace(/\{\{PORT}}/g, "7492")
+            .replace(/\{\{DATA_DIR}}/g, "/data")
+            .replace(/\{\{BETTER_AUTH_SECRET}}/g, "Secret")
+            .replace(/\{\{VAPID_PUBLIC_KEY}}/g, "key")
+            .replace(/\{\{VAPID_PRIVATE_KEY}}/g, "key")
+            .replace(/\{\{VAPID_SUBJECT}}/g, "mailto:test@test.com")
+            .replace(/\{\{EXTRA_ORIGINS_LINE}}/g, "      # - PIZZAPI_EXTRA_ORIGINS=\n")
+            .replace(/\{\{TRUST_PROXY_LINE}}/g, "      # - PIZZAPI_TRUST_PROXY=\n")
+            .replace(/\{\{PROXY_DEPTH_LINE}}/g, "      # - PIZZAPI_PROXY_DEPTH=\n");
+
+        // No unsubstituted placeholders remain
+        expect(imageModeComposed).not.toContain("{{");
+        expect(imageModeComposed).not.toContain("}}");
+
+        // Must have the image reference but no build-specific keys
+        expect(imageModeComposed).toContain("image: ghcr.io/acme/pizzapi:0.1.42");
+        expect(imageModeComposed).toContain("pull_policy: if_not_present");
+        expect(imageModeComposed).not.toContain("build:");
+        // args: must be absent — it is only valid nested under `build:` and
+        // must not appear as a bare top-level service key in image mode.
+        expect(imageModeComposed).not.toContain("args:");
+        expect(imageModeComposed).not.toContain("PREBUILT_UI");
+    });
 });
 
 describe("resolveComposeMode", () => {
     test("returns build mode fields when image is empty", () => {
         expect(resolveComposeMode("/repo", { image: "", imageTag: "latest" })).toEqual({
-            buildBlock: "    build:\n      context: /repo\n      dockerfile: Dockerfile\n",
+            buildBlock: '    build:\n      context: /repo\n      dockerfile: Dockerfile\n      args:\n        PREBUILT_UI: "{{PREBUILT_UI}}"\n',
             imageLine: "",
             hubImage: "local-build",
             hubVersion: "local",
