@@ -26,8 +26,8 @@ export type McpConfig = {
   mcp?: {
     servers?: Array<
       | { name: string; transport: "stdio"; command: string; args?: string[]; env?: Record<string, string>; cwd?: string }
-      | { name: string; transport: "http"; url: string; headers?: Record<string, string> }
-      | { name: string; transport: "streamable"; url: string; headers?: Record<string, string> }
+      | { name: string; transport: "http"; url: string; headers?: Record<string, string>; oauthClientName?: string }
+      | { name: string; transport: "streamable"; url: string; headers?: Record<string, string>; oauthClientName?: string }
     >;
   };
 
@@ -35,7 +35,8 @@ export type McpConfig = {
   // {
   //   "mcpServers": {
   //     "playwright": { "command": "npx", "args": ["@playwright/mcp@latest"] },
-  //     "myserver":   { "url": "http://localhost:3000/mcp", "transport": "streamable" }
+  //     "myserver":   { "url": "http://localhost:3000/mcp", "transport": "streamable" },
+  //     "figma":      { "type": "http", "url": "https://mcp.figma.com/mcp", "oauthClientName": "Codex" }
   //   }
   // }
   //
@@ -47,7 +48,7 @@ export type McpConfig = {
   mcpServers?: Record<
     string,
     | { command: string; args?: string[]; env?: Record<string, string>; cwd?: string }
-    | { url: string; transport?: "http" | "streamable"; type?: "http" | "sse"; headers?: Record<string, string> }
+    | { url: string; transport?: "http" | "streamable"; type?: "http" | "sse"; headers?: Record<string, string>; oauthClientName?: string }
   >;
 };
 
@@ -154,6 +155,7 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
   activeOAuthProviders.length = 0;
 
   const disabled = new Set(config.disabledMcpServers ?? []);
+  const oauthClientName = config.oauthClientName;
 
   const clients: McpClient[] = [];
 
@@ -189,6 +191,7 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
       const provider = new PizzaPiOAuthProvider({
         serverUrl: s.url,
         serverName: s.name,
+        clientName: s.oauthClientName || oauthClientName,
         deferRelayWaitTimeoutUntilAnchor: deferOAuthRelayWaitTimeoutUntilAnchor,
       });
       activeOAuthProviders.push(provider);
@@ -228,7 +231,7 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
     }
 
     if ("url" in def && typeof (def as any).url === "string") {
-      const d = def as { url: string; transport?: string; type?: string; headers?: Record<string, string> };
+      const d = def as { url: string; transport?: string; type?: string; headers?: Record<string, string>; oauthClientName?: string };
 
       // Domain gating for URL-based MCP servers
       if (!isMcpDomainAllowed(d.url, name)) continue;
@@ -244,6 +247,7 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
         const provider = new PizzaPiOAuthProvider({
           serverUrl: d.url,
           serverName: name,
+          clientName: d.oauthClientName || oauthClientName,
           deferRelayWaitTimeoutUntilAnchor: deferOAuthRelayWaitTimeoutUntilAnchor,
         });
         activeOAuthProviders.push(provider);

@@ -124,6 +124,40 @@ Some HTTP MCP servers require OAuth authentication. PizzaPi handles the OAuth fl
   OAuth support for MCP servers is somewhat experimental. If you encounter issues with token refresh or callback URLs, try disconnecting and re-authenticating by removing the stored token and reloading the server with `/mcp reload`.
 </Aside>
 
+### Client Name Override
+
+Some MCP servers (notably Figma) restrict OAuth dynamic client registration to an allowlist of known `client_name` values, rejecting unknown clients with `403 Forbidden`. You can override the name PizzaPi sends during registration with `oauthClientName` — either per-server or globally.
+
+**Per-server** (recommended) — only affects the server that needs it:
+
+```jsonc
+// ~/.pizzapi/config.json
+{
+  "mcpServers": {
+    "figma": {
+      "type": "http",
+      "url": "https://mcp.figma.com/mcp",
+      "oauthClientName": "Codex"
+    }
+  }
+}
+```
+
+**Global** — applies to all MCP servers that don't set their own override:
+
+```jsonc
+// ~/.pizzapi/config.json
+{
+  "oauthClientName": "Codex"
+}
+```
+
+Per-server values take precedence over the global setting.
+
+<Aside type="tip">
+  Figma's remote MCP server currently accepts `"Claude Code"` and `"Codex"` as client names. If you're getting `403 Forbidden` during OAuth registration, try setting `oauthClientName` to one of those values.
+</Aside>
+
 ## Managing Servers at Runtime
 
 Use the `/mcp` slash command to inspect and manage MCP servers without restarting your session:

@@ -4,6 +4,7 @@
  */
 
 import { existsSync } from "fs";
+import { stat } from "node:fs/promises";
 import { join, extname, resolve, sep } from "path";
 
 // Resolve UI dist directory. Check in order:
@@ -87,8 +88,19 @@ export async function serveStaticFile(pathname: string): Promise<Response | null
     const uiDirWithTrailingSlash = UI_DIR.endsWith(sep) ? UI_DIR : UI_DIR + sep;
     if (!filePath.startsWith(uiDirWithTrailingSlash)) return null;
 
+    // Directories must not fall through to SPA fallback — Bun.file(<dir>).exists()
+    // returns false for directories, which would incorrectly serve index.html.
+    let pathIsDir = false;
+    try {
+        const s = await stat(filePath);
+        pathIsDir = s.isDirectory();
+    } catch {
+        // Path doesn't exist or is not accessible — treat as non-directory
+    }
+    if (pathIsDir) return null;
+
     // If file doesn't exist, serve index.html for SPA routing
-    if (!existsSync(filePath)) {
+    if (!(await Bun.file(filePath).exists())) {
         filePath = join(UI_DIR, "index.html");
     }
 

@@ -136,6 +136,17 @@ export interface RedisSessionData {
     seq: number;
     /** ID of the parent session that spawned this one, or null for top-level. */
     parentSessionId: string | null;
+    /**
+     * Durable "is this a linked child?" signal.
+     *
+     * Set to the parent session ID when the child first links to a parent.
+     * Unlike `parentSessionId`, this is NOT cleared when the parent is
+     * transiently offline during a child reconnect — it is only cleared on an
+     * explicit delink (delink_children / delink_own_parent) or a cross-user
+     * link attempt. Absent on sessions created before this field was added;
+     * callers fall back to `parentSessionId` in that case.
+     */
+    linkedParentId?: string | null;
     /** JSON-stringified SessionMetaState. Written by updateSessionMetaState.
      *  Absent for sessions created before this feature; callers must use
      *  defaultMetaState() as fallback. */
@@ -214,6 +225,7 @@ function parseSessionFromHash(hash: Record<string, string>): RedisSessionData | 
         runnerName: hash.runnerName || null,
         seq: parseInt(hash.seq ?? "0", 10) || 0,
         parentSessionId: hash.parentSessionId || null,
+        linkedParentId: hash.linkedParentId || null,
         metaState: hash.metaState || null,
     };
 }
@@ -737,6 +749,39 @@ export async function isChildOfParent(parentSessionId: string, childSessionId: s
     return false;
 }
 
+/**
+ * Liveness check for push-notification suppression.
+ *
+ * Unlike `isChildOfParent` (which is an authorization helper with TTL-recovery
+ * semantics), this function is designed specifically for suppression decisions:
+ *
+ *   1. Explicitly delinked → false (suppress stops immediately).
+ *   2. Child is in the parent's membership set → true (parent online OR
+ *      temporarily offline with membership preserved via addChildSessionMembership).
+ *   3. Set miss: fall back to parent-key existence in Redis.  This covers the
+ *      case where the membership set has expired but the parent hasn't crashed
+ *      (same SESSION_TTL_SECONDS bound).  Once the parent key expires, this
+ *      returns false and suppression stops.
+ *
+ * `linkedParentId` is used as the parent reference so the check is durable
+ * through parent-offline reconnects where `parentSessionId` is cleared to null.
+ */
+export async function isLinkedChildForSuppression(parentSessionId: string, childSessionId: string): Promise<boolean> {
+    if (await isChildDelinked(childSessionId)) return false;
+
+    const r = requireRedis();
+
+    // Fast path: membership set is the primary liveness signal.
+    const inSet = await r.sIsMember(childrenKey(parentSessionId), childSessionId);
+    if (inSet) return true;
+
+    // Membership set expired — fall back to parent-key existence.
+    // If the parent's Redis key is still present, the session either recently
+    // disconnected or is still active; continue suppressing.
+    // If the key is gone (crashed without delink_children, TTL expired), stop.
+    return (await r.exists(sessionKey(parentSessionId))) > 0;
+}
+
 /** Refresh the TTL on an existing parent→children membership set. */
 export async function refreshChildSessionsTTL(parentSessionId: string): Promise<void> {
     const r = requireRedis();
@@ -844,10 +889,13 @@ export async function removeChildren(parentSessionId: string, childIds: string[]
     await r.sRem(childrenKey(parentSessionId), childIds);
 }
 
-/** Clear the parentSessionId field on a child session's Redis hash. */
+/** Clear the parentSessionId and linkedParentId fields on a child session's Redis hash. */
 export async function clearParentSessionId(childSessionId: string): Promise<void> {
     const r = requireRedis();
-    await r.hSet(sessionKey(childSessionId), "parentSessionId", "");
+    // Clear both the active link (parentSessionId) and the durable linked-child
+    // signal (linkedParentId) so that push-notification suppression correctly
+    // stops for sessions that have been explicitly delinked.
+    await r.hSet(sessionKey(childSessionId), { parentSessionId: "", linkedParentId: "" });
 }
 
 // ── Push pending question tracking ──────────────────────────────────────────

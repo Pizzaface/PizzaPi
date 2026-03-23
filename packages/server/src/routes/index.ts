@@ -8,6 +8,7 @@
  */
 
 import { getLatestNpmVersion } from "../version.js";
+import { serverHealth } from "../health.js";
 import { handleAuthRoute } from "./auth.js";
 import { handleRunnersRoute } from "./runners.js";
 import { handleSessionsRoute } from "./sessions.js";
@@ -39,7 +40,17 @@ const routers: RouteHandler[] = [
 export async function handleApi(req: Request, url: URL): Promise<Response | undefined> {
     // ── Global endpoints (no auth required, no domain router) ──────────
     if (url.pathname === "/health") {
-        return Response.json({ status: "ok" });
+        const { redis, socketio, startedAt } = serverHealth;
+        const ok = redis && socketio;
+        return Response.json(
+            {
+                status: ok ? "ok" : "degraded",
+                redis,
+                socketio,
+                uptime: Math.floor((Date.now() - startedAt) / 1000),
+            },
+            { status: ok ? 200 : 503 },
+        );
     }
 
     if (url.pathname === "/api/version" && req.method === "GET") {

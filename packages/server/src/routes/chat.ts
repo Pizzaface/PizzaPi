@@ -7,12 +7,37 @@ import { Agent } from "@mariozechner/pi-agent-core";
 import type { AgentEvent } from "@mariozechner/pi-agent-core";
 import { createToolkit } from "@pizzapi/tools";
 import { requireSession } from "../middleware.js";
+import { RateLimiter } from "../security.js";
 import type { RouteHandler } from "./types.js";
+
+/**
+ * Per-process in-memory rate limiter: 10 requests/minute per authenticated user.
+ *
+ * **Multi-instance limitation:** This limiter is scoped to a single process. In
+ * horizontally-scaled deployments each instance tracks its own counters, so the
+ * effective limit across N instances is N × 10 req/min. For a hard global cap,
+ * replace this with a Redis-backed limiter (see `RateLimiter` class docs in
+ * security.ts for guidance). The `check`/`getRetryAfter` interface is kept
+ * intentionally minimal so the swap is a drop-in replacement.
+ */
+export const chatRateLimiter = new RateLimiter(10, 60_000);
 
 export const handleChatRoute: RouteHandler = async (req, url) => {
     if (url.pathname === "/api/chat" && req.method === "POST") {
         const identity = await requireSession(req);
         if (identity instanceof Response) return identity;
+
+        // Rate limit by user ID (10 req/min per authenticated user)
+        if (!chatRateLimiter.check(identity.userId)) {
+            const retryAfter = chatRateLimiter.getRetryAfter(identity.userId);
+            return Response.json(
+                { error: "Rate limit exceeded. Please try again later." },
+                {
+                    status: 429,
+                    headers: { "Retry-After": String(retryAfter) },
+                },
+            );
+        }
 
         let body;
         try {

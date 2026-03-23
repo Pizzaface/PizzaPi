@@ -43,6 +43,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
+import { ErrorBoundary } from "@/components/ui/error-boundary";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -72,6 +73,7 @@ import {
 } from "@/components/ai-elements/model-selector";
 import { HiddenModelsManager, loadHiddenModels, fetchHiddenModels, modelKey } from "@/components/HiddenModelsManager";
 import { ChangePasswordDialog } from "@/components/ChangePasswordDialog";
+import { DegradedBanner } from "@/components/DegradedBanner";
 import { ShortcutsDialog } from "@/components/ShortcutsDialog";
 import {
   beginInputAttempt,
@@ -94,6 +96,8 @@ import {
   augmentThinkingDurations,
   normalizeModelList,
 } from "@/lib/message-helpers";
+import { evictLruIfNeeded, touchSessionCache, MAX_SESSION_UI_CACHE_SIZE } from "@/lib/session-ui-cache";
+import { analyzeIncomingSeq, mergeConnectedSeq, shouldDeferEventForHydration } from "@/lib/session-seq";
 
 export function App() {
   const { data: session, isPending } = useSession();
@@ -326,6 +330,16 @@ export function App() {
   // (restoredRef is declared here; the effect is placed after openSession is defined below)
   const restoredRef = React.useRef(false);
 
+  // Deep-link: if the page was loaded with a /session/<id> URL, capture the
+  // session ID on mount so we can open it once auth + liveSessions are ready.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const deepLinkSessionIdRef = React.useRef<string | null>(
+    (() => {
+      const m = window.location.pathname.match(/^\/session\/([^/]+)(?:\/|$)/);
+      return m ? decodeURIComponent(m[1]) : null;
+    })(),
+  );
+
   // Tracks a session that was restarted via the remote exec "restart" command.
   // When the session comes back live (hub sends session_added), we auto-reconnect.
   const restartPendingSessionIdRef = React.useRef<string | null>(null);
@@ -393,7 +407,11 @@ export function App() {
       pendingQuestion: prev?.pendingQuestion ?? null,
       pendingPlan: prev?.pendingPlan ?? null,
       ...patch,
+      lastAccessed: Date.now(),
     };
+
+    // Evict the least-recently-accessed entry if we're over the size limit.
+    evictLruIfNeeded(sessionUiCacheRef.current, sessionId, MAX_SESSION_UI_CACHE_SIZE, activeSessionRef.current);
 
     sessionUiCacheRef.current.set(sessionId, next);
   }, []);
@@ -2022,6 +2040,8 @@ export function App() {
     setResumeSessionsLoading(false);
 
     const cached = sessionUiCacheRef.current.get(relaySessionId);
+    // Update lastAccessed so this entry is not evicted while actively being viewed.
+    touchSessionCache(sessionUiCacheRef.current, relaySessionId);
     setMessages(cached?.messages ?? []);
     setActiveModel(cached?.activeModel ?? null);
     setSessionName(cached?.sessionName ?? null);
@@ -2071,9 +2091,10 @@ export function App() {
       const replayOnly = data.replayOnly === true;
       setViewerStatus(replayOnly ? "Snapshot replay" : "Connected");
 
-      // Seed the last known sequence number so gap detection works from the start.
+      // Seed sequence for gap detection, but never move backward if live
+      // events already advanced the cursor before "connected" arrives.
       if (typeof data.lastSeq === "number") {
-        lastSeqRef.current = data.lastSeq;
+        lastSeqRef.current = mergeConnectedSeq(lastSeqRef.current, data.lastSeq);
       }
 
       // Reflect initial active status from connected message.
@@ -2096,22 +2117,41 @@ export function App() {
       if (activeSessionRef.current !== relaySessionId) return;
       lastViewerEventAtRef.current = Date.now();
 
-      // Detect sequence gaps; request a resync if we missed events.
+      const rawEvent = data.event;
+      const eventType =
+        rawEvent && typeof rawEvent === "object" && typeof (rawEvent as any).type === "string"
+          ? (rawEvent as any).type as string
+          : "";
+
+      // Ignore pre-snapshot/chunk-hydration events BEFORE sequence analysis,
+      // otherwise dropped events can still advance lastSeq and block hydration.
+      if (shouldDeferEventForHydration(
+        eventType,
+        awaitingSnapshotRef.current,
+        !!chunkedDeliveryRef.current,
+      )) {
+        return;
+      }
+
+      // Detect sequence gaps and reject out-of-order stale events.
       // This is safe during chunked delivery because the server's resync
       // handler now falls back to getPendingChunkedSnapshot() when lastState
       // hasn't been assembled yet, and the resync response is a non-chunked
       // session_active that sets lastCompletedSnapshotRef, rejecting any
       // subsequently arriving stale chunks.
       const seq = typeof data.seq === "number" ? data.seq : null;
-      if (seq !== null && lastSeqRef.current !== null) {
-        const expected = lastSeqRef.current + 1;
-        if (seq > expected) {
+      if (seq !== null) {
+        const decision = analyzeIncomingSeq(lastSeqRef.current, seq);
+        if (!decision.accept) {
+          return;
+        }
+        if (decision.gap && decision.expected !== null) {
           // Gap detected — request a resync snapshot from the server.
-          console.warn(`[relay] Sequence gap: expected ${expected}, got ${seq}. Requesting resync.`);
+          console.warn(`[relay] Sequence gap: expected ${decision.expected}, got ${seq}. Requesting resync.`);
           socket.emit("resync", {});
         }
+        lastSeqRef.current = decision.nextSeq;
       }
-      if (seq !== null) lastSeqRef.current = seq;
 
       handleRelayEvent(data.event, seq ?? undefined);
     });
@@ -2197,15 +2237,26 @@ export function App() {
   }, [handleRelayEvent, patchSessionCache, cancelPendingDeltas]);
 
   // Auto-reopen the last viewed session once live sessions arrive.
+  // Deep-links (/session/<id>) take priority over the stored lastSessionId.
   React.useEffect(() => {
     if (restoredRef.current) return;
     if (liveSessions.length === 0) return;
-    const lastId = localStorage.getItem("pp.lastSessionId");
-    if (!lastId) return;
-    const still_live = liveSessions.some((s) => s.sessionId === lastId);
+
+    // Prefer the deep-link session ID from the URL over the stored last session.
+    const deepLinkId = deepLinkSessionIdRef.current;
+    const targetId = deepLinkId ?? localStorage.getItem("pp.lastSessionId");
+    if (!targetId) return;
+    const still_live = liveSessions.some((s) => s.sessionId === targetId);
     if (!still_live) return;
+
     restoredRef.current = true;
-    openSession(lastId);
+    // Clear the deep-link ref so it doesn't interfere with future navigation,
+    // and replace the URL so a reload doesn't re-trigger the deep-link.
+    if (deepLinkId) {
+      deepLinkSessionIdRef.current = null;
+      history.replaceState(null, "", "/");
+    }
+    openSession(targetId);
   }, [liveSessions, openSession]);
 
   // When a restarted session comes back live, automatically reconnect to it.
@@ -2230,7 +2281,7 @@ export function App() {
   const inputDedupeRef = React.useRef<InputDedupeState | null>(null);
   const inputAttemptIdRef = React.useRef(0);
 
-  const sendSessionInput = React.useCallback(async (message: { text: string; files?: Array<{ mediaType?: string; filename?: string; url?: string }>; deliverAs?: "steer" | "followUp" } | string) => {
+  const sendSessionInput = React.useCallback(async (message: { text: string; files?: Array<{ file?: File; mediaType?: string; filename?: string; url?: string }>; deliverAs?: "steer" | "followUp" } | string) => {
     const socket = viewerWsRef.current;
     const sessionId = activeSessionRef.current;
     if (!socket || !socket.connected || !sessionId) {
@@ -2261,6 +2312,7 @@ export function App() {
     const rawFiles = (payload.files ?? [])
       .filter((f) => typeof f?.url === "string" && f.url.length > 0)
       .map((f) => ({
+        file: f.file instanceof File ? f.file : undefined,
         mediaType: typeof f.mediaType === "string" ? f.mediaType : undefined,
         filename: typeof f.filename === "string" ? f.filename : undefined,
         url: f.url as string,
@@ -2277,10 +2329,18 @@ export function App() {
 
         const formData = new FormData();
         try {
-          const blob = await fetch(file.url).then((res) => res.blob());
-          const uploadFile = new File([blob], displayName, {
-            type: file.mediaType || blob.type || "application/octet-stream",
-          });
+          const uploadFile = file.file
+            ? new File([file.file], displayName, {
+                type: file.mediaType || file.file.type || "application/octet-stream",
+              })
+            : await fetch(file.url)
+                .then((res) => res.blob())
+                .then(
+                  (blob) =>
+                    new File([blob], displayName, {
+                      type: file.mediaType || blob.type || "application/octet-stream",
+                    })
+                );
           formData.append("files", uploadFile);
         } catch {
           setViewerStatus(`Failed to prepare attachment: ${displayName}`);
@@ -2602,7 +2662,8 @@ export function App() {
         !e.metaKey &&
         !e.ctrlKey &&
         !e.altKey &&
-        !e.shiftKey
+        !e.shiftKey &&
+        !document.querySelector('[role="dialog"]')
       ) {
         setShowShortcutsHelp(true);
         return;
@@ -2984,6 +3045,7 @@ export function App() {
       >
         Skip to content
       </a>
+      <DegradedBanner />
       {/* ── Desktop header ────────────────────────────────────────────── */}
       <header className="hidden md:flex items-center justify-between gap-3 border-b bg-background px-4 pb-2 pt-[calc(0.5rem_+_env(safe-area-inset-top))] flex-shrink-0">
         <div className="flex items-center gap-3 flex-shrink-0">
@@ -3362,24 +3424,26 @@ export function App() {
           }
           style={sidebarSwipeOffset !== 0 ? { transform: `translateX(${sidebarSwipeOffset}px)` } : undefined}
         >
-          <SessionSidebar
-            onOpenSession={handleOpenSession}
-            onNewSession={handleNewSession}
-            onClearSelection={handleClearSelection}
-            onShowRunners={() => { setShowRunners(true); setShowApiKeys(false); setActiveSessionId(null); }}
-            activeSessionId={activeSessionId}
-            showRunners={showRunners}
-            activeModel={activeModel}
-            onRelayStatusChange={setRelayStatus}
-            onSessionsChange={setLiveSessions}
-            onClose={() => setSidebarOpen(false)}
-            onEndSession={handleEndSession}
-            onDuplicateSession={handleDuplicateSession}
-            runners={runnersForSidebar}
-            selectedRunnerId={selectedRunnerId}
-            onSelectRunner={setSelectedRunnerId}
-            onShowSessions={() => setShowRunners(false)}
-          />
+          <ErrorBoundary level="section" resetKeys={[activeSessionId]}>
+            <SessionSidebar
+              onOpenSession={handleOpenSession}
+              onNewSession={handleNewSession}
+              onClearSelection={handleClearSelection}
+              onShowRunners={() => { setShowRunners(true); setShowApiKeys(false); setActiveSessionId(null); }}
+              activeSessionId={activeSessionId}
+              showRunners={showRunners}
+              activeModel={activeModel}
+              onRelayStatusChange={setRelayStatus}
+              onSessionsChange={setLiveSessions}
+              onClose={() => setSidebarOpen(false)}
+              onEndSession={handleEndSession}
+              onDuplicateSession={handleDuplicateSession}
+              runners={runnersForSidebar}
+              selectedRunnerId={selectedRunnerId}
+              onSelectRunner={setSelectedRunnerId}
+              onShowSessions={() => setShowRunners(false)}
+            />
+          </ErrorBoundary>
         </div>
 
         {/* Mobile overlay — fades in/out with the sidebar.
@@ -3560,50 +3624,52 @@ export function App() {
                     onSelectRunner={setSelectedRunnerId}
                   />
               ) : (
-                <SessionViewer
-                  sessionId={activeSessionId}
-                  sessionName={sessionName}
-                  messages={messages}
-                  activeModel={activeModel}
-                  activeToolCalls={activeToolCalls}
-                  pendingQuestion={pendingQuestion}
-                  pendingPlan={pendingPlan}
-                  pluginTrustPrompt={pluginTrustPrompt}
-                  onPluginTrustResponse={respondPluginTrust}
-                  availableCommands={availableCommands}
-                  resumeSessions={resumeSessions}
-                  resumeSessionsLoading={resumeSessionsLoading}
-                  onRequestResumeSessions={requestResumeSessions}
-                  onSendInput={sendSessionInput}
-                  onExec={sendRemoteExec}
-                  onShowModelSelector={() => setModelSelectorOpen(true)}
-                  agentActive={agentActive}
-                  isCompacting={isCompacting}
-                  effortLevel={effortLevel}
-                  tokenUsage={tokenUsage}
-                  lastHeartbeatAt={lastHeartbeatAt}
-                  viewerStatus={viewerStatus}
-                  retryState={retryState}
-                  messageQueue={messageQueue}
-                  onRemoveQueuedMessage={removeQueuedMessage}
-                  onEditQueuedMessage={editQueuedMessage}
-                  onClearMessageQueue={clearMessageQueue}
-                  onToggleTerminal={() => setShowTerminal((v) => !v)}
-                  showTerminalButton
-                  onToggleFileExplorer={() => setShowFileExplorer((v) => !v)}
-                  showFileExplorerButton={!!activeSessionInfo?.runnerId && !!activeSessionInfo?.cwd}
-                  todoList={todoList}
-                  planModeEnabled={planModeEnabled}
-                  runnerId={activeSessionInfo?.runnerId ?? undefined}
-                  sessionCwd={activeSessionInfo?.cwd || undefined}
-                  onAppendSystemMessage={appendLocalSystemMessage}
-                  onSpawnAgentSession={handleSpawnAgentSession}
-                  onTriggerResponse={handleTriggerResponse}
-                  onQuestionDismiss={() => setPendingQuestion(null)}
-                  onPlanDismiss={() => setPendingPlan(null)}
-                  onDuplicateSession={activeSessionInfo?.runnerId ? () => handleDuplicateSession(activeSessionInfo.runnerId!, activeSessionInfo.cwd || "") : undefined}
-                  runnerInfo={activeRunnerInfo}
-                />
+                <ErrorBoundary level="section" resetKeys={[activeSessionId]}>
+                  <SessionViewer
+                    sessionId={activeSessionId}
+                    sessionName={sessionName}
+                    messages={messages}
+                    activeModel={activeModel}
+                    activeToolCalls={activeToolCalls}
+                    pendingQuestion={pendingQuestion}
+                    pendingPlan={pendingPlan}
+                    pluginTrustPrompt={pluginTrustPrompt}
+                    onPluginTrustResponse={respondPluginTrust}
+                    availableCommands={availableCommands}
+                    resumeSessions={resumeSessions}
+                    resumeSessionsLoading={resumeSessionsLoading}
+                    onRequestResumeSessions={requestResumeSessions}
+                    onSendInput={sendSessionInput}
+                    onExec={sendRemoteExec}
+                    onShowModelSelector={() => setModelSelectorOpen(true)}
+                    agentActive={agentActive}
+                    isCompacting={isCompacting}
+                    effortLevel={effortLevel}
+                    tokenUsage={tokenUsage}
+                    lastHeartbeatAt={lastHeartbeatAt}
+                    viewerStatus={viewerStatus}
+                    retryState={retryState}
+                    messageQueue={messageQueue}
+                    onRemoveQueuedMessage={removeQueuedMessage}
+                    onEditQueuedMessage={editQueuedMessage}
+                    onClearMessageQueue={clearMessageQueue}
+                    onToggleTerminal={() => setShowTerminal((v) => !v)}
+                    showTerminalButton
+                    onToggleFileExplorer={() => setShowFileExplorer((v) => !v)}
+                    showFileExplorerButton={!!activeSessionInfo?.runnerId && !!activeSessionInfo?.cwd}
+                    todoList={todoList}
+                    planModeEnabled={planModeEnabled}
+                    runnerId={activeSessionInfo?.runnerId ?? undefined}
+                    sessionCwd={activeSessionInfo?.cwd || undefined}
+                    onAppendSystemMessage={appendLocalSystemMessage}
+                    onSpawnAgentSession={handleSpawnAgentSession}
+                    onTriggerResponse={handleTriggerResponse}
+                    onQuestionDismiss={() => setPendingQuestion(null)}
+                    onPlanDismiss={() => setPendingPlan(null)}
+                    onDuplicateSession={activeSessionInfo?.runnerId ? () => handleDuplicateSession(activeSessionInfo.runnerId!, activeSessionInfo.cwd || "") : undefined}
+                    runnerInfo={activeRunnerInfo}
+                  />
+                </ErrorBoundary>
               )}
             </div>
             {/* Mobile: terminal overlay (always separate from combined) */}

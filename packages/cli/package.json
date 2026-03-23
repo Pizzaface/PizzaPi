@@ -2,6 +2,9 @@
   "name": "@pizzapi/cli",
   "version": "0.3.1-dev.4",
   "type": "module",
+  "piConfig": {
+    "configDir": ".pizzapi"
+  },
   "bin": {
     "pizza": "src/index.ts",
     "pizzapi": "src/index.ts"
@@ -9,7 +12,7 @@
   "scripts": {
     "dev": "bun src/index.ts",
     "dev:runner": "bun src/index.ts runner",
-    "build": "tsc && rm -rf dist/templates && cp -r src/templates dist/templates",
+    "build": "tsc --build --force && rm -rf dist/templates && cp -r src/templates dist/templates",
     "start": "bun dist/index.js",
     "build:binary": "bun build-binaries.ts --target",
     "build:binary:linux-x64": "bun build-binaries.ts --target linux-x64",

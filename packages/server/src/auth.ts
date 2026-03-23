@@ -239,7 +239,28 @@ let _initialized = false;
 export function initAuth(config: AuthConfig = {}): void {
     const dbPath = config.dbPath ?? process.env.AUTH_DB_PATH ?? "auth.db";
     const baseURL = config.baseURL ?? process.env.BETTER_AUTH_BASE_URL ?? `http://localhost:${process.env.PORT ?? "7492"}`;
-    const secret = config.secret ?? process.env.BETTER_AUTH_SECRET;
+    let secret = config.secret ?? process.env.BETTER_AUTH_SECRET;
+
+    // Validate the auth secret
+    const isProd = process.env.NODE_ENV === "production";
+    if (!secret || secret.trim() === "") {
+        const msg =
+            "BETTER_AUTH_SECRET is not set. Sessions will be signed with an insecure key.\n" +
+            "  Set it via the BETTER_AUTH_SECRET environment variable (min 32 characters).\n" +
+            "  Example: BETTER_AUTH_SECRET=$(openssl rand -hex 32)";
+        if (isProd) {
+            throw new Error(`[auth] ${msg}`);
+        } else {
+            const fallback = crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "");
+            console.warn(`[auth] WARNING: ${msg}\n  Using a random ephemeral secret for this development session.`);
+            secret = fallback;
+        }
+    } else if (secret.length < 32) {
+        console.warn(
+            `[auth] WARNING: BETTER_AUTH_SECRET is shorter than 32 characters (got ${secret.length}). ` +
+            "A longer secret is strongly recommended for security.",
+        );
+    }
 
     _disableSignupAfterFirstUser = config.disableSignupAfterFirstUser ??
         parseBooleanEnv(process.env.PIZZAPI_DISABLE_SIGNUP_AFTER_FIRST_USER, true);
