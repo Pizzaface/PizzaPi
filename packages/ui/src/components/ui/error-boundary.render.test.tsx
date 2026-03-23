@@ -9,11 +9,21 @@
  * cover the pure state-machine behaviour without a DOM dependency.
  */
 
-import { beforeAll, afterEach, describe, test, expect } from "bun:test";
+import { beforeAll, afterEach, describe, test, expect, mock } from "bun:test";
 import { Window } from "happy-dom";
 import { render, fireEvent, act, cleanup } from "@testing-library/react";
 import React from "react";
-import { ErrorBoundary } from "./error-boundary";
+
+// Mock @/lib/utils (cn) so this test runs from the repo root where
+// packages/ui/bunfig.toml path aliases aren't applied.
+// Must be called before the dynamic import of the component.
+mock.module("@/lib/utils", () => ({
+	cn: (...classes: (string | undefined | null | false)[]) =>
+		classes.filter(Boolean).join(" "),
+}));
+
+// Dynamically imported after mock.module so the alias is already intercepted.
+const { ErrorBoundary } = await import("./error-boundary");
 
 // ── DOM setup ────────────────────────────────────────────────────────────────
 
