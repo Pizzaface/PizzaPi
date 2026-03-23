@@ -1938,7 +1938,25 @@ export function App() {
 
     const handleStateSnapshot = ({ sessionId, state }: { sessionId: string; state: SessionMetaState }) => {
       const currentSessionId = activeSessionRef.current;
-      if (sessionId !== currentSessionId) return;
+
+      // For background sessions: extract pendingQuestion from the initial
+      // state_snapshot so badges are correct on load/reconnect even when the
+      // session is already blocked waiting for user input.
+      if (sessionId !== currentSessionId) {
+        if (Object.prototype.hasOwnProperty.call(state, "pendingQuestion")) {
+          setSessionsWithPendingQuestion((prev) => {
+            const next = new Set(prev);
+            if (state.pendingQuestion) {
+              next.add(sessionId);
+            } else {
+              next.delete(sessionId);
+            }
+            return next;
+          });
+        }
+        return;
+      }
+
       const seen = metaVersionsRef.current.get(sessionId) ?? 0;
       if (state.version < seen) return;
       metaVersionsRef.current.set(sessionId, state.version);
@@ -1980,18 +1998,23 @@ export function App() {
       }
     };
 
-    // Re-subscribe to the current session's meta room after non-recovered reconnects
-    // (e.g., server restart). Without this, the client stops receiving meta_event
-    // updates until the user switches sessions or reloads.
-    // Also clear the stored meta version so that the first state_snapshot/meta_event
-    // arriving after reconnect (version ≥ 1) is not dropped as "stale" — the server
-    // resets its version counter to 0 on restart, so any previously-seen version
-    // would cause all new events to be silently ignored.
+    // Re-subscribe to ALL meta rooms after non-recovered reconnects (e.g., server
+    // restart). Without this, the client stops receiving meta_event updates until
+    // the user switches sessions or reloads.
+    // Also clear stored meta versions so the first state_snapshot/meta_event
+    // arriving after reconnect is not dropped as "stale" — the server resets its
+    // version counter to 0 on restart, so any previously-seen version would cause
+    // all new events to be silently ignored.
     const handleReconnect = () => {
       const currentSessionId = activeSessionRef.current;
       if (currentSessionId) {
         metaVersionsRef.current.delete(currentSessionId);
         socket.emit("subscribe_session_meta", { sessionId: currentSessionId });
+      }
+      // Re-subscribe background sessions and clear their version state.
+      for (const id of backgroundMetaIdsRef.current) {
+        metaVersionsRef.current.delete(id);
+        socket.emit("subscribe_session_meta", { sessionId: id });
       }
     };
 
