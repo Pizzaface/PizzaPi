@@ -1946,6 +1946,21 @@ export function App() {
     };
 
     const handleMetaEvent = (payload: { sessionId: string; version: number } & Record<string, unknown>) => {
+      // Update the sidebar pending-question badge for ANY session's meta event,
+      // not just the active one.  Background sessions emit pendingQuestion
+      // updates into their own meta rooms; the badge must reflect all of them.
+      if (Object.prototype.hasOwnProperty.call(payload, "pendingQuestion")) {
+        setSessionsWithPendingQuestion((prev) => {
+          const next = new Set(prev);
+          if (payload.pendingQuestion) {
+            next.add(payload.sessionId);
+          } else {
+            next.delete(payload.sessionId);
+          }
+          return next;
+        });
+      }
+
       const currentSessionId = activeSessionRef.current;
       if (payload.sessionId !== currentSessionId) return;
       const { sessionId, version, ...event } = payload;
@@ -2018,6 +2033,37 @@ export function App() {
       prevMetaSessionRef.current = null;
     }
   }, [activeSessionId]);
+
+  // Subscribe to meta rooms for ALL live sessions (not just the active one) so
+  // that background sessions can update the sidebar pending-question badge.
+  // The active session's subscription is managed by the effect above; this
+  // effect handles every other live session.
+  const backgroundMetaIdsRef = React.useRef<Set<string>>(new Set());
+  React.useEffect(() => {
+    const hubSock = hubSocketRef.current;
+    if (!hubSock) return;
+
+    const currentIds = new Set(
+      liveSessions.map((s) => s.sessionId).filter((id) => id !== activeSessionId),
+    );
+    const prev = backgroundMetaIdsRef.current;
+
+    // Unsubscribe from sessions that are no longer in the live list.
+    for (const id of prev) {
+      if (!currentIds.has(id)) {
+        hubSock.emit("unsubscribe_session_meta", { sessionId: id });
+        prev.delete(id);
+      }
+    }
+
+    // Subscribe to newly-appeared background sessions.
+    for (const id of currentIds) {
+      if (!prev.has(id)) {
+        hubSock.emit("subscribe_session_meta", { sessionId: id });
+        prev.add(id);
+      }
+    }
+  }, [liveSessions, activeSessionId]);
 
   const openSession = React.useCallback((relaySessionId: string) => {
     // Flush/cancel any pending RAF queues (streaming deltas & tool-stream
