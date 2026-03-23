@@ -55,8 +55,11 @@ export class RateLimiter {
 }
 
 export function isValidEmail(email: string): boolean {
-    // Simple but effective regex for most use cases
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (email.length > 254) {
+        return false;
+    }
+    // Regex ensuring local part is 1-64 chars, has @, domain, and TLD >= 2 chars
+    const emailRegex = /^[^\s@]{1,64}@[^\s@]+\.[^\s@.]{2,}$/;
     return emailRegex.test(email);
 }
 

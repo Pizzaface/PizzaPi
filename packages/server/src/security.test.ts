@@ -71,7 +71,37 @@ describe("isValidEmail", () => {
     test("accepts standard emails", () => {
         expect(isValidEmail("test@example.com")).toBe(true);
         expect(isValidEmail("user.name+tag@sub.domain.co.uk")).toBe(true);
-        expect(isValidEmail("a@b.c")).toBe(true);
+    });
+
+    test("accepts emails with local part exactly 64 chars", () => {
+        const localPart = "a".repeat(64);
+        expect(isValidEmail(`${localPart}@example.com`)).toBe(true);
+    });
+
+    test("accepts valid emails near the 254 char limit", () => {
+        const domain = "example.com";
+        const localPartLen = 254 - domain.length - 1; // -1 for @
+        // Limit local part to 64 chars
+        const localPart = "a".repeat(Math.min(64, localPartLen));
+        const remainingDomainLen = 254 - localPart.length - 1 - 4; // -4 for .com
+        const fullDomain = "d".repeat(remainingDomainLen) + ".com";
+        expect(isValidEmail(`${localPart}@${fullDomain}`)).toBe(true);
+    });
+
+    test("rejects emails with > 64 chars in local part", () => {
+        const localPart = "a".repeat(65);
+        expect(isValidEmail(`${localPart}@example.com`)).toBe(false);
+    });
+
+    test("rejects emails > 254 chars total length", () => {
+        const localPart = "a".repeat(60);
+        // Make domain large enough to exceed 254 chars
+        const domain = "d".repeat(200) + ".com";
+        expect(isValidEmail(`${localPart}@${domain}`)).toBe(false);
+    });
+
+    test("rejects emails with single char TLD", () => {
+        expect(isValidEmail("a@b.c")).toBe(false);
     });
 
     test("rejects emails without @", () => {
