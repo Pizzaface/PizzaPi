@@ -120,19 +120,14 @@ const CodeBlockContext = createContext<CodeBlockContextType>({
   code: "",
 });
 
-// Cache size limits — prevent unbounded memory growth in long sessions
-const MAX_HIGHLIGHTER_CACHE_SIZE = 50;
-const MAX_TOKENS_CACHE_SIZE = 200;
-
-/** Evict the oldest (first-inserted) entry when the cache exceeds its limit. */
-function evictOldestIfNeeded<K, V>(map: Map<K, V>, maxSize: number): void {
-  if (map.size >= maxSize) {
-    const oldest = map.keys().next().value;
-    if (oldest !== undefined) {
-      map.delete(oldest);
-    }
-  }
-}
+// Cache size limits and FIFO eviction logic — imported from shared utility so
+// they can be unit-tested independently of React / Shiki.
+import {
+  evictOldestIfNeeded,
+  getTokensCacheKey,
+  MAX_HIGHLIGHTER_CACHE_SIZE,
+  MAX_TOKENS_CACHE_SIZE,
+} from "./code-block-cache";
 
 // Highlighter cache (singleton per language)
 const highlighterCache = new Map<
@@ -145,12 +140,6 @@ const tokensCache = new Map<string, TokenizedCode>();
 
 // Subscribers for async token updates
 const subscribers = new Map<string, Set<(result: TokenizedCode) => void>>();
-
-const getTokensCacheKey = (code: string, language: BundledLanguage) => {
-  const start = code.slice(0, 100);
-  const end = code.length > 100 ? code.slice(-100) : "";
-  return `${language}:${code.length}:${start}:${end}`;
-};
 
 const getHighlighter = (
   language: BundledLanguage
