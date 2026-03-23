@@ -210,6 +210,12 @@ export type McpOAuthOptions = {
   serverUrl: string;
   /** Human-readable server name for log messages. */
   serverName: string;
+  /**
+   * Override the `client_name` sent during OAuth dynamic client registration.
+   * Some servers (e.g. Figma) restrict registration to an allowlist of names.
+   * Default: `"PizzaPi"`.
+   */
+  clientName?: string;
   /** Callback port override for local mode. 0 = auto. */
   callbackPort?: number;
   /** Callback when auth starts (for TUI/web notifications). */
@@ -248,6 +254,7 @@ export type RelayContext = {
 export class PizzaPiOAuthProvider implements OAuthClientProvider {
   private _serverUrl: string;
   private _serverName: string;
+  private _clientName: string;
   private _persisted: PersistedAuth;
   private _callbackPort: number;
   private _callbackServer: ReturnType<typeof startCallbackServer> | null = null;
@@ -286,6 +293,7 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
   constructor(opts: McpOAuthOptions) {
     this._serverUrl = opts.serverUrl;
     this._serverName = opts.serverName;
+    this._clientName = opts.clientName || "PizzaPi";
     this._callbackPort = opts.callbackPort ?? 0;
     this._onAuthStart = opts.onAuthStart;
     this._onAuthComplete = opts.onAuthComplete;
@@ -441,7 +449,7 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
 
   get clientMetadata(): OAuthClientMetadata {
     return {
-      client_name: `PizzaPi (${this._serverName})`,
+      client_name: `${this._clientName} (${this._serverName})`,
       redirect_uris: [typeof this.redirectUrl === "string" ? this.redirectUrl : this.redirectUrl.toString()],
       grant_types: ["authorization_code", "refresh_token"],
       response_types: ["code"],

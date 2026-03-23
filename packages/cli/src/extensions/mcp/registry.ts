@@ -154,6 +154,7 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
   activeOAuthProviders.length = 0;
 
   const disabled = new Set(config.disabledMcpServers ?? []);
+  const oauthClientName = config.oauthClientName;
 
   const clients: McpClient[] = [];
 
@@ -189,6 +190,7 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
       const provider = new PizzaPiOAuthProvider({
         serverUrl: s.url,
         serverName: s.name,
+        clientName: oauthClientName,
         deferRelayWaitTimeoutUntilAnchor: deferOAuthRelayWaitTimeoutUntilAnchor,
       });
       activeOAuthProviders.push(provider);
@@ -244,6 +246,7 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
         const provider = new PizzaPiOAuthProvider({
           serverUrl: d.url,
           serverName: name,
+          clientName: oauthClientName,
           deferRelayWaitTimeoutUntilAnchor: deferOAuthRelayWaitTimeoutUntilAnchor,
         });
         activeOAuthProviders.push(provider);
