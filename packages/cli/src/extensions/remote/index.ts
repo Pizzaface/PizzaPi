@@ -48,6 +48,7 @@ import type {
 } from "../remote-types.js";
 import { installFooter } from "../remote-footer.js";
 import { buildHeartbeat, buildTokenUsage, stopHeartbeat } from "../remote-heartbeat.js";
+import { maybeFireSessionError } from "./session-error-trigger.js";
 import {
     emitTodoUpdated, emitPlanModeToggled,
     emitRetryStateChanged, emitPluginTrustRequired, emitPluginTrustResolved,
@@ -117,6 +118,7 @@ export function waitForRelayRegistration(timeoutMs: number = 10_000): Promise<vo
 export const remoteExtension: ExtensionFactory = (pi) => {
     // ── Orchestrator-local state (NOT in RelayContext) ─────────────────────
     let sessionCompleteFired = false;
+    let sessionErrorFired = false;
     // Set when /new fires so we can retry delink_children on reconnect if
     // the initial emit is lost.  Cleared by the server ack callback.
     let pendingDelink = false;
@@ -870,6 +872,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
 
     pi.on("turn_start", (event) => {
         sessionCompleteFired = false;
+        sessionErrorFired = false;
         rctx.wasAborted = false;
         clearFollowUpGrace();
         rctx.forwardEvent(event);
@@ -881,7 +884,8 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         stopHeartbeat();
         stopSessionNameSync();
         _ctx = null;
-        fireSessionComplete(undefined, undefined, rctx.wasAborted ? "killed" : "completed");
+        const shutdownExitReason = rctx.wasAborted ? "killed" : rctx.lastRetryableError ? "error" : "completed";
+        fireSessionComplete(undefined, undefined, shutdownExitReason);
         doDisconnect();
     });
 
@@ -897,6 +901,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
 
     pi.on("agent_end", (event, ctx) => {
         rctx.isAgentActive = false;
+        const lastError = rctx.lastRetryableError;
         rctx.lastRetryableError = null;
         emitRetryStateChanged(rctx, null);
         rctx.forwardEvent(event);
@@ -933,7 +938,23 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                     }
                 }
             }
-            fireSessionComplete(summary, fullOutputPath, rctx.wasAborted ? "killed" : "completed");
+            const exitReason = rctx.wasAborted ? "killed" : lastError ? "error" : "completed";
+            fireSessionComplete(summary, fullOutputPath, exitReason);
+            // Fire session_error for terminal usage-limit errors (one-shot, only at agent_end)
+            if (maybeFireSessionError({
+                sessionErrorFired,
+                errorMessage: lastError?.errorMessage,
+                isChildSession: rctx.isChildSession,
+                parentSessionId: rctx.parentSessionId,
+                socketConnected: rctx.sioSocket?.connected ?? false,
+                emitFn: rctx.sioSocket
+                    ? (event, payload) => (rctx.sioSocket as any).emit(event, payload)
+                    : null,
+                relayToken: rctx.relay?.token,
+                relaySessionId: rctx.relay?.sessionId,
+            })) {
+                sessionErrorFired = true;
+            }
             if (rctx.isChildSession) {
                 startFollowUpGrace(ctx);
             }
@@ -951,12 +972,19 @@ export const remoteExtension: ExtensionFactory = (pi) => {
     pi.on("message_end", (event) => {
         rctx.forwardEvent(event);
         const msg = (event as any).message;
-        if (msg && msg.role === "assistant" && msg.stopReason === "error" && msg.errorMessage) {
-            const errorText = String(msg.errorMessage);
-            rctx.lastRetryableError = { errorMessage: errorText, detectedAt: Date.now() };
-            emitRetryStateChanged(rctx, rctx.lastRetryableError);
-            rctx.forwardEvent({ type: "cli_error", message: errorText, source: "provider", ts: Date.now() });
-            rctx.forwardEvent(rctx.buildHeartbeat());
+        if (msg && msg.role === "assistant") {
+            if (msg.stopReason === "error" && msg.errorMessage) {
+                const errorText = String(msg.errorMessage);
+                rctx.lastRetryableError = { errorMessage: errorText, detectedAt: Date.now() };
+                emitRetryStateChanged(rctx, rctx.lastRetryableError);
+                rctx.forwardEvent({ type: "cli_error", message: errorText, source: "provider", ts: Date.now() });
+                rctx.forwardEvent(rctx.buildHeartbeat());
+            } else if (msg.stopReason !== "error" && rctx.lastRetryableError) {
+                // Agent recovered successfully after a retryable error — clear
+                // the latch so we don't report a false-positive error exit.
+                rctx.lastRetryableError = null;
+                emitRetryStateChanged(rctx, null);
+            }
         }
     });
     pi.on("tool_execution_start", (event) => rctx.forwardEvent(event));
