@@ -85,6 +85,27 @@ export function findLatestSnapshotEvent(cachedEvents: unknown[]): Record<string,
     return null;
 }
 
+/** @internal — exported for unit tests only */
+export function onViewerConnectedSignal(
+    viewerReadyForRunnerSignal: boolean,
+    pendingConnectedSignal: boolean,
+): { pendingConnectedSignal: boolean; forwardNow: boolean } {
+    if (viewerReadyForRunnerSignal) {
+        return { pendingConnectedSignal, forwardNow: true };
+    }
+    return { pendingConnectedSignal: true, forwardNow: false };
+}
+
+/** @internal — exported for unit tests only */
+export function onViewerReadyForRunnerSignal(
+    pendingConnectedSignal: boolean,
+): { pendingConnectedSignal: boolean; forwardNow: boolean } {
+    if (!pendingConnectedSignal) {
+        return { pendingConnectedSignal: false, forwardNow: false };
+    }
+    return { pendingConnectedSignal: false, forwardNow: true };
+}
+
 /**
  * Try to send the latest snapshot event from the Redis event cache.
  * Returns true if a snapshot was sent, false otherwise.
@@ -217,11 +238,21 @@ export function registerViewerNamespace(io: SocketIOServer): void {
         // for non-active sessions (especially when ending 3+ sessions at
         // once — the concurrent async work widens the race window).
 
+        // Gate forwarding of viewer "connected" → runner until this viewer has
+        // joined the room. Otherwise a fast runner can emit session_active/chunks
+        // before addViewer() completes, forcing a resync and visible startup lag.
+        let viewerReadyForRunnerSignal = false;
+        let pendingConnectedSignal = false;
+
         // ── connected — viewer greeting, notify TUI ─────────────────────────
         // Use emitToRelaySession for cluster-wide reach — the runner may
         // be on a different server node in multi-node deployments.
         socket.on("connected", () => {
-            emitToRelaySession(sessionId, "connected" as string, {});
+            const next = onViewerConnectedSignal(viewerReadyForRunnerSignal, pendingConnectedSignal);
+            pendingConnectedSignal = next.pendingConnectedSignal;
+            if (next.forwardNow) {
+                emitToRelaySession(sessionId, "connected" as string, {});
+            }
         });
 
         // ── resync — send fresh snapshot ─────────────────────────────────────
@@ -412,37 +443,9 @@ export function registerViewerNamespace(io: SocketIOServer): void {
         });
 
         // ── Now do async snapshot/room work ──────────────────────────────────
-        // Session is live — send connection info and initial snapshot BEFORE
-        // joining the broadcast room. This avoids a race where live streaming
-        // deltas arrive (via the room) before the snapshot, causing the UI to
-        // show partial content that then gets replaced by the snapshot — making
-        // messages visibly "jump".
-        //
-        // Any events emitted between snapshot read and room join are detected
-        // by the client's sequence-gap logic (seq gap > 1 → resync request).
-        const lastSeq = await getSessionSeq(sessionId);
-        socket.emit("connected", {
-            sessionId,
-            lastSeq,
-            isActive: session.isActive,
-            lastHeartbeatAt: session.lastHeartbeatAt,
-            sessionName: session.sessionName,
-        });
-
-        // Send the snapshot while the viewer is NOT yet in the room.
-        // Inline the snapshot send using already-fetched session data to avoid
-        // an extra Redis round-trip (which would widen the race window).
-        if (session.lastHeartbeat) {
-            try {
-                socket.emit("event", { event: JSON.parse(session.lastHeartbeat), seq: lastSeq });
-            } catch {}
-        }
-        // Join the room BEFORE sending snapshots or notifying the runner,
-        // so the viewer is already receiving live events when the runner
-        // responds to the "connected" notification with a fresh snapshot.
-        // Without this, a fast runner response can publish session_active
-        // and early chunks before addViewer() completes, causing the
-        // viewer to miss the restart snapshot.
+        // Join the room first, then allow the viewer's "connected" signal to
+        // reach the runner. This avoids losing the first live snapshot/chunks
+        // and reduces startup resync churn.
         const ok = await addViewer(sessionId, socket);
         if (!ok) {
             socket.emit("disconnected", { reason: "Session ended" });
@@ -452,14 +455,45 @@ export function registerViewerNamespace(io: SocketIOServer): void {
             return;
         }
 
+        viewerReadyForRunnerSignal = true;
+        const flush = onViewerReadyForRunnerSignal(pendingConnectedSignal);
+        pendingConnectedSignal = flush.pendingConnectedSignal;
+        if (flush.forwardNow) {
+            emitToRelaySession(sessionId, "connected" as string, {});
+        }
+
         // Re-fetch session state and seq AFTER addViewer() to avoid emitting
         // stale data. Between the initial fetch and here, the runner may have
         // published a newer session_active (especially for chunked delivery).
         // Using the old lastState + old lastSeq would overwrite the fresh
         // snapshot and rewind lastSeqRef on the client, triggering a bogus
         // resync on actively changing sessions.
-        const freshSession = await getSharedSession(sessionId);
-        const freshSeq = await getSessionSeq(sessionId);
+        const [freshSession, freshSeq] = await Promise.all([
+            getSharedSession(sessionId),
+            getSessionSeq(sessionId),
+        ]);
+
+        if (!freshSession) {
+            socket.emit("disconnected", { reason: "Session ended" });
+            socket.disconnect();
+            return;
+        }
+
+        socket.emit("connected", {
+            sessionId,
+            lastSeq: freshSeq,
+            isActive: freshSession.isActive,
+            lastHeartbeatAt: freshSession.lastHeartbeatAt,
+            sessionName: freshSession.sessionName,
+        });
+
+        // Emit an immediate heartbeat snapshot while the runner pushes a fresh
+        // session_active in response to "connected".
+        if (freshSession.lastHeartbeat) {
+            try {
+                socket.emit("event", { event: JSON.parse(freshSession.lastHeartbeat), seq: freshSeq });
+            } catch {}
+        }
 
         // If a chunked delivery is in-flight, lastState is stale (chunked
         // session_active intentionally skips updating it).  Emitting the old

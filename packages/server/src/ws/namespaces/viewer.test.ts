@@ -7,7 +7,13 @@
 // ============================================================================
 
 import { describe, test, expect } from "bun:test";
-import { isAgentEndEvent, isSessionActiveEvent, findLatestSnapshotEvent } from "./viewer.js";
+import {
+    isAgentEndEvent,
+    isSessionActiveEvent,
+    findLatestSnapshotEvent,
+    onViewerConnectedSignal,
+    onViewerReadyForRunnerSignal,
+} from "./viewer.js";
 
 // ── isAgentEndEvent ──────────────────────────────────────────────────────────
 
@@ -124,5 +130,37 @@ describe("findLatestSnapshotEvent", () => {
     test("handles a single snapshot event", () => {
         const sa = { type: "session_active", state: {} };
         expect(findLatestSnapshotEvent([sa])).toBe(sa);
+    });
+});
+
+// ── viewer connected signal gating ──────────────────────────────────────────
+
+describe("viewer connected signal gating", () => {
+    test("defers forwarding when viewer is not yet ready", () => {
+        expect(onViewerConnectedSignal(false, false)).toEqual({
+            pendingConnectedSignal: true,
+            forwardNow: false,
+        });
+    });
+
+    test("forwards immediately when viewer is ready", () => {
+        expect(onViewerConnectedSignal(true, false)).toEqual({
+            pendingConnectedSignal: false,
+            forwardNow: true,
+        });
+    });
+
+    test("flushes pending signal when viewer becomes ready", () => {
+        expect(onViewerReadyForRunnerSignal(true)).toEqual({
+            pendingConnectedSignal: false,
+            forwardNow: true,
+        });
+    });
+
+    test("does nothing on ready transition with no pending signal", () => {
+        expect(onViewerReadyForRunnerSignal(false)).toEqual({
+            pendingConnectedSignal: false,
+            forwardNow: false,
+        });
     });
 });

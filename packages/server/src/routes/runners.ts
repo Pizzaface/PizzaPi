@@ -142,6 +142,8 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
             }
         }
 
+        const ackPromise = waitForSpawnAck(sessionId, 5_000);
+
         try {
             runnerSocket.emit("new_session", {
                 sessionId,
@@ -156,7 +158,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
             return Response.json({ error: "Failed to send spawn request to runner" }, { status: 502 });
         }
 
-        const ack = await waitForSpawnAck(sessionId, 5_000);
+        const ack = await ackPromise;
         if (ack.ok === false && !(ack as any).timeout) {
             return Response.json({ error: ack.message }, { status: 400 });
         }
