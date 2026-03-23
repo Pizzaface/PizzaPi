@@ -1,6 +1,7 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test, beforeEach } from "bun:test";
 import { handleApi, parseJsonArray } from "./index";
 import { normalizePath, cwdMatchesRoots } from "../security";
+import { serverHealth } from "../health";
 
 // ── normalizePath ───────────────────────────────────────────────────────────
 
@@ -64,7 +65,30 @@ describe("parseJsonArray", () => {
 // ── Dispatcher: global endpoints ────────────────────────────────────────────
 
 describe("handleApi — global endpoints", () => {
-    test("GET /health returns ok", async () => {
+    // Reset health state before each test so tests don't bleed into each other
+    beforeEach(() => {
+        serverHealth.redis = false;
+        serverHealth.socketio = false;
+    });
+
+    test("GET /health returns degraded when redis/socketio are down", async () => {
+        const url = new URL("http://localhost/health");
+        const req = new Request(url, { method: "GET" });
+
+        const res = await handleApi(req, url);
+        expect(res).toBeTruthy();
+        expect(res!.status).toBe(503);
+        const data = await res!.json();
+        expect(data.status).toBe("degraded");
+        expect(data.redis).toBe(false);
+        expect(data.socketio).toBe(false);
+        expect(typeof data.uptime).toBe("number");
+    });
+
+    test("GET /health returns ok when redis and socketio are healthy", async () => {
+        serverHealth.redis = true;
+        serverHealth.socketio = true;
+
         const url = new URL("http://localhost/health");
         const req = new Request(url, { method: "GET" });
 
@@ -73,6 +97,9 @@ describe("handleApi — global endpoints", () => {
         expect(res!.status).toBe(200);
         const data = await res!.json();
         expect(data.status).toBe("ok");
+        expect(data.redis).toBe(true);
+        expect(data.socketio).toBe(true);
+        expect(typeof data.uptime).toBe("number");
     });
 
     test("returns undefined for unmatched paths", async () => {

@@ -34,6 +34,14 @@ import { initStateRedis } from "./ws/sio-state.js";
 
 const PORT = parseInt(process.env.PORT ?? "7492");
 
+// ── Server health state ───────────────────────────────────────────────────
+// The re-export below makes serverHealth available to callers who import from
+// this entry point (e.g. tests), while the local import lets startup code
+// mutate the flags directly.  Both statements reference the same module so
+// there is only one shared object at runtime — not two copies.
+export { serverHealth } from "./health.js";
+import { serverHealth } from "./health.js";
+
 await runAllMigrations();
 void initializeRelayRedisCache();
 
@@ -151,42 +159,128 @@ const httpServer = createServer(async (req, res) => {
 
 let io: SocketIOServer | undefined;
 
+// Tracks whether Socket.IO was successfully initialized so the Redis
+// "ready" event handler can restore serverHealth.socketio on reconnect.
+let sioInitialized = false;
+
 try {
     const pubClient = createClient({ url: REDIS_URL });
     const subClient = pubClient.duplicate();
-    await Promise.all([pubClient.connect(), subClient.connect()]);
 
-    io = new SocketIOServer(httpServer, {
-        cors: {
-            origin: getTrustedOrigins(),
-            credentials: true,
-        },
-        // Socket.IO default maxHttpBufferSize is 1 MB, which silently drops
-        // connections when a session state payload exceeds it.
-        // 10 MB — sufficient for attachment relay while limiting DoS exposure (was 100MB)
-        maxHttpBufferSize: 10 * 1024 * 1024, // 10 MB
-        // Generous ping settings to prevent disconnects during heavy agent
-        // processing (long bash commands, large file reads, etc.).
-        // Defaults are pingInterval=25s, pingTimeout=20s which is too tight
-        // when the runner/worker event loop is briefly saturated.
-        pingInterval: 30_000,   // 30 s between pings
-        pingTimeout: 60_000,    // 60 s to respond before disconnect
-        connectionStateRecovery: {
-            maxDisconnectionDuration: 2 * 60 * 1000, // 2 minutes
-            skipMiddlewares: true,
-        },
-        adapter: createAdapter(pubClient, subClient, { key: "pizzapi-sio" }),
-        transports: ["websocket", "polling"],
+    // ── Runtime health event listeners ────────────────────────────────────
+    // Wire these BEFORE connecting so every state transition is captured,
+    // including errors that happen during the initial connection attempt.
+    //
+    // Redis "ready"       → connection is established and accepting commands.
+    // Redis "error"       → connection error (client will auto-reconnect).
+    // Redis "reconnecting"→ client is actively attempting to reconnect.
+    //
+    // Socket.IO uses BOTH pubClient and subClient for its adapter — if either
+    // disconnects, cross-node event propagation is degraded.  We track each
+    // client's ready state independently and only report healthy when both
+    // are connected.
+
+    let pubReady = false;
+    let subReady = false;
+
+    function syncRedisHealth(): void {
+        const allReady = pubReady && subReady;
+        serverHealth.redis = allReady;
+        if (sioInitialized) serverHealth.socketio = allReady;
+    }
+
+    pubClient.on("ready", () => {
+        pubReady = true;
+        syncRedisHealth();
+        console.log("[health] Redis pub connected — health flags updated");
     });
 
-    // Initialize Redis-backed state layer for Socket.IO registry
-    await initStateRedis();
-    initSioRegistry(io);
+    pubClient.on("error", (err: Error) => {
+        const wasHealthy = serverHealth.redis;
+        pubReady = false;
+        syncRedisHealth();
+        if (wasHealthy) {
+            console.warn("[health] Redis pub connection error — health flags set to degraded:", err.message);
+        }
+    });
 
-    registerNamespaces(io);
+    pubClient.on("reconnecting", () => {
+        pubReady = false;
+        syncRedisHealth();
+        console.warn("[health] Redis pub reconnecting — health flags set to degraded");
+    });
+
+    subClient.on("ready", () => {
+        subReady = true;
+        syncRedisHealth();
+        console.log("[health] Redis sub connected — health flags updated");
+    });
+
+    subClient.on("error", (err: Error) => {
+        const wasHealthy = serverHealth.redis;
+        subReady = false;
+        syncRedisHealth();
+        if (wasHealthy) {
+            console.warn("[health] Redis sub connection error — health flags set to degraded:", err.message);
+        }
+    });
+
+    subClient.on("reconnecting", () => {
+        subReady = false;
+        syncRedisHealth();
+        console.warn("[health] Redis sub reconnecting — health flags set to degraded");
+    });
+
+    await Promise.all([pubClient.connect(), subClient.connect()]);
+    // Explicitly set flags to true after successful initial connection
+    // (the "ready" events will have already fired, but this is a safety net).
+    pubReady = true;
+    subReady = true;
+    serverHealth.redis = true;
+
+    try {
+        io = new SocketIOServer(httpServer, {
+            cors: {
+                origin: getTrustedOrigins(),
+                credentials: true,
+            },
+            // Socket.IO default maxHttpBufferSize is 1 MB, which silently drops
+            // connections when a session state payload exceeds it (e.g., sessions
+            // with embedded screenshots can easily reach 10–50 MB). The transport
+            // close happens with no error surfaced to the user. Bump to 100 MB
+            // as a safety valve so large sessions remain accessible.
+            maxHttpBufferSize: 100 * 1024 * 1024, // 100 MB
+            // Generous ping settings to prevent disconnects during heavy agent
+            // processing (long bash commands, large file reads, etc.).
+            // Defaults are pingInterval=25s, pingTimeout=20s which is too tight
+            // when the runner/worker event loop is briefly saturated.
+            pingInterval: 30_000,   // 30 s between pings
+            pingTimeout: 60_000,    // 60 s to respond before disconnect
+            connectionStateRecovery: {
+                maxDisconnectionDuration: 2 * 60 * 1000, // 2 minutes
+                skipMiddlewares: true,
+            },
+            adapter: createAdapter(pubClient, subClient, { key: "pizzapi-sio" }),
+            transports: ["websocket", "polling"],
+        });
+
+        // Initialize Redis-backed state layer for Socket.IO registry
+        await initStateRedis();
+        initSioRegistry(io);
+
+        registerNamespaces(io);
+
+        // Mark Socket.IO as initialized so the Redis event listeners above
+        // can also flip serverHealth.socketio on future reconnects/disconnects.
+        sioInitialized = true;
+        serverHealth.socketio = true;
+    } catch (sioErr) {
+        console.error("[Socket.IO] Failed to initialize Socket.IO layer:", sioErr);
+        console.error("[Socket.IO] The server will continue without real-time Socket.IO support.");
+    }
 } catch (err) {
-    console.error("[Socket.IO] Failed to initialize (Redis may be unavailable):", err);
-    console.error("[Socket.IO] The server will continue without Socket.IO support.");
+    console.error("[Socket.IO] Failed to connect to Redis:", err);
+    console.error("[Socket.IO] The server will continue without Redis and Socket.IO support.");
 }
 
 httpServer.listen(PORT, () => {
