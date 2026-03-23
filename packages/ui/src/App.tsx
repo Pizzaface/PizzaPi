@@ -3364,7 +3364,7 @@ export function App() {
           }
           style={sidebarSwipeOffset !== 0 ? { transform: `translateX(${sidebarSwipeOffset}px)` } : undefined}
         >
-          <ErrorBoundary level="section">
+          <ErrorBoundary level="section" resetKeys={[activeSessionId]}>
             <SessionSidebar
               onOpenSession={handleOpenSession}
               onNewSession={handleNewSession}
@@ -3564,7 +3564,7 @@ export function App() {
                     onSelectRunner={setSelectedRunnerId}
                   />
               ) : (
-                <ErrorBoundary level="section">
+                <ErrorBoundary level="section" resetKeys={[activeSessionId]}>
                   <SessionViewer
                     sessionId={activeSessionId}
                     sessionName={sessionName}

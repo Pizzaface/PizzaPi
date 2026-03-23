@@ -10,6 +10,12 @@ export interface ErrorBoundaryProps {
   fallback?: React.ReactNode;
   /** Controls the size/style of the default fallback UI. */
   level?: ErrorBoundaryLevel;
+  /**
+   * When any value in this array changes between renders, the boundary
+   * automatically resets its error state so children re-render fresh.
+   * Use this to clear sticky crashes when context changes (e.g. switching sessions).
+   */
+  resetKeys?: unknown[];
 }
 
 interface ErrorBoundaryState {
@@ -37,6 +43,19 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
 
   componentDidCatch(error: Error, info: React.ErrorInfo): void {
     console.error("[ErrorBoundary] Caught render error:", error, info.componentStack);
+  }
+
+  componentDidUpdate(prevProps: ErrorBoundaryProps): void {
+    // Auto-reset when any resetKey changes — clears sticky crashes on context switches
+    // (e.g. switching to a different session after one crashed).
+    if (this.state.hasError && this.props.resetKeys) {
+      const prevKeys = prevProps.resetKeys ?? [];
+      const nextKeys = this.props.resetKeys;
+      const changed = nextKeys.some((key, i) => !Object.is(key, prevKeys[i]));
+      if (changed) {
+        this.setState({ hasError: false, error: null });
+      }
+    }
   }
 
   /** Reset error state so children can be re-rendered without a full page reload. */
