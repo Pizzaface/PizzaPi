@@ -16,6 +16,7 @@ import { extractWorktreeName, formatPathTail, worktreeRoots } from "@/lib/path";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { PanelLeftClose, PanelLeftOpen, Plus, X, HardDrive, FolderOpen, CheckSquare, Square, CheckCheck, Trash2, Pin, PinOff, ChevronDown, ChevronRight, MessageSquare, Copy } from "lucide-react";
 import { buildSessionTree, flattenSessionTree, getSessionIndent, getDescendantSessionIds, getGroupCwd } from "@/lib/session-tree";
+import { pruneSwipeOffsets } from "@/lib/swipe-reveal";
 
 interface HubSession {
     sessionId: string;
@@ -218,6 +219,13 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     const REVEAL_WIDTH = 198; // px — Duplicate + Pin + End (session has a runner)
     const REVEAL_WIDTH_NO_RUNNER = 132; // px — Pin + End only (session has no runner)
 
+    // If we enter multi-select mode, ensure no swipe-reveal UI remains open.
+    React.useEffect(() => {
+        if (!selectMode) return;
+        setSwipeOffsets(new Map());
+        setRevealedSessionId(null);
+    }, [selectMode]);
+
     const swipeRef = React.useRef<{
         sessionId: string;
         pointerId: number;
@@ -251,6 +259,13 @@ export const SessionSidebar = React.memo(function SessionSidebar({
         // handler, which would steal pointer capture and interpret any horizontal
         // movement on a session card as a "close sidebar" gesture.
         e.stopPropagation();
+
+        // Ensure only one session can be revealed at a time.
+        // This prevents stale offsets from previous reveals (which can make the
+        // action buttons look duplicated/misaligned).
+        setSwipeOffsets((prev) => pruneSwipeOffsets(prev, sessionId));
+        setRevealedSessionId((prev) => (prev && prev !== sessionId ? null : prev));
+
         swipeRef.current = {
             sessionId,
             pointerId: e.pointerId,
@@ -319,7 +334,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
         const clamped = Math.max(-rw - 20, Math.min(raw, wasRevealed ? 0 : 10));
 
         setSwipeOffsets((prev) => {
-            const next = new Map(prev);
+            const next = pruneSwipeOffsets(prev, s.sessionId);
             next.set(s.sessionId, clamped);
             return next;
         });
@@ -350,18 +365,12 @@ export const SessionSidebar = React.memo(function SessionSidebar({
 
         // Snap open if swiped past half the reveal width, otherwise snap closed
         if (offset < -rw / 2) {
-            setSwipeOffsets((prev) => {
-                const next = new Map(prev);
-                next.set(s.sessionId, -rw);
-                return next;
-            });
+            // Ensure this is the ONLY revealed session.
+            setSwipeOffsets(() => new Map([[s.sessionId, -rw]]));
             setRevealedSessionId(s.sessionId);
         } else {
-            setSwipeOffsets((prev) => {
-                const next = new Map(prev);
-                next.delete(s.sessionId);
-                return next;
-            });
+            // Close everything.
+            setSwipeOffsets(() => new Map());
             if (wasRevealed) setRevealedSessionId(null);
         }
     }, [revealedSessionId, swipeOffsets, clearLongPress]);
@@ -369,11 +378,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     // Close revealed item when clicking elsewhere
     const handleCloseRevealed = React.useCallback(() => {
         if (revealedSessionId) {
-            setSwipeOffsets((prev) => {
-                const next = new Map(prev);
-                next.delete(revealedSessionId);
-                return next;
-            });
+            setSwipeOffsets(() => new Map());
             setRevealedSessionId(null);
         }
     }, [revealedSessionId]);
