@@ -258,20 +258,20 @@ async function checkPushNotifications(
 
     // Determine whether this session is an active linked child.
     //
-    // We use linkedParentId as the primary signal: it is set when a child first
-    // links to a parent and is only cleared on explicit delink or a cross-user
-    // link attempt.  Unlike parentSessionId, it is NOT cleared when the parent
-    // is transiently offline during a child reconnect — so suppression stays
-    // active through short parent outages.
+    // Use linkedParentId as the stable parent reference (persists through
+    // transient parent outages; cleared only on explicit delink). Fall back to
+    // parentSessionId for sessions registered before this field was added.
     //
-    // Fall back to parentSessionId for sessions registered before linkedParentId
-    // was introduced (backward-compatible).
+    // Then call isChildOfParent() for liveness: it checks the Redis membership
+    // set (refreshed while the link is active; has SESSION_TTL_SECONDS TTL) and
+    // internally applies the delink-marker guard. This means:
     //
-    // We still check !isChildDelinked() because delink_children intentionally
-    // leaves parentSessionId (and linkedParentId) stale in Redis for a short
-    // window while in-flight trigger_response messages drain.
+    //   • Parent temporarily offline → membership set still valid → suppressed ✓
+    //   • Parent permanently gone (crash/expire without delink_children) →
+    //     membership set expires after SESSION_TTL_SECONDS → not suppressed ✓
+    //   • Explicitly delinked → delink marker present → isChildOfParent → false ✓
     const effectiveParentId = session?.linkedParentId ?? session?.parentSessionId ?? null;
-    const isChildSession = !!effectiveParentId && !await isChildDelinked(sessionId);
+    const isChildSession = !!effectiveParentId && await isChildOfParent(effectiveParentId, sessionId);
 
     if (event.type === "agent_end") {
         notifyAgentFinished(userId, sessionId, sName, isChildSession);
@@ -1105,6 +1105,16 @@ export function registerRelayNamespace(io: SocketIOServer): void {
                         if (typeof ack === "function") ack({ ok: false, error: err instanceof Error ? err.message : String(err) });
                         return;
                     }
+                }
+                // parentSessionId was already null in Redis, but linkedParentId
+                // may still be set (preserved when the parent was offline during
+                // the child's reconnect). Clear both fields so push-notification
+                // suppression correctly stops for this now-independent session.
+                try {
+                    await clearParentSessionId(sessionId);
+                } catch (err) {
+                    console.error("[sio/relay] delink_own_parent: failed to clear linkedParentId:", err);
+                    // Non-fatal: suppression will self-correct once the membership set expires.
                 }
                 // Already delinked or never linked — confirm success so the
                 // client stops retrying.
