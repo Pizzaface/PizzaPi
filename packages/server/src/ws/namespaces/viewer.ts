@@ -24,7 +24,7 @@ import {
     emitToRelaySession,
     emitToRelaySessionVerified,
 } from "../sio-registry.js";
-import { getPendingChunkedSnapshot } from "./relay.js";
+import { getPendingChunkedSnapshot } from "./relay/index.js";
 import { getPersistedRelaySessionSnapshot } from "../../sessions/store.js";
 import { getCachedRelayEvents } from "../../sessions/redis.js";
 
