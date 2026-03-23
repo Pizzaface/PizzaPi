@@ -19,4 +19,4 @@ docs/superpowers/
 Library/Caches/
 
 # Night Shift reports (local-only, not committed)
-reports/
+/reports/
