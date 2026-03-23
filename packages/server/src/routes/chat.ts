@@ -10,7 +10,16 @@ import { requireSession } from "../middleware.js";
 import { RateLimiter } from "../security.js";
 import type { RouteHandler } from "./types.js";
 
-// 10 requests per minute per authenticated user
+/**
+ * Per-process in-memory rate limiter: 10 requests/minute per authenticated user.
+ *
+ * **Multi-instance limitation:** This limiter is scoped to a single process. In
+ * horizontally-scaled deployments each instance tracks its own counters, so the
+ * effective limit across N instances is N × 10 req/min. For a hard global cap,
+ * replace this with a Redis-backed limiter (see `RateLimiter` class docs in
+ * security.ts for guidance). The `check`/`getRetryAfter` interface is kept
+ * intentionally minimal so the swap is a drop-in replacement.
+ */
 export const chatRateLimiter = new RateLimiter(10, 60_000);
 
 export const handleChatRoute: RouteHandler = async (req, url) => {
