@@ -25,15 +25,18 @@ describe("analyzeIncomingSeq", () => {
     });
   });
 
-  test("drops older or duplicate seq", () => {
+  test("drops older seq", () => {
     expect(analyzeIncomingSeq(10, 9)).toEqual({
       accept: false,
       nextSeq: 10,
       gap: false,
       expected: 11,
     });
+  });
+
+  test("accepts same seq without advancing cursor", () => {
     expect(analyzeIncomingSeq(10, 10)).toEqual({
-      accept: false,
+      accept: true,
       nextSeq: 10,
       gap: false,
       expected: 11,

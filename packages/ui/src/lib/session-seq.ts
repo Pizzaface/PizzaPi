@@ -23,8 +23,12 @@ export function analyzeIncomingSeq(
     return { accept: true, nextSeq: incomingSeq, gap: false, expected: null };
   }
 
-  if (incomingSeq <= currentSeq) {
+  if (incomingSeq < currentSeq) {
     return { accept: false, nextSeq: currentSeq, gap: false, expected: currentSeq + 1 };
+  }
+
+  if (incomingSeq === currentSeq) {
+    return { accept: true, nextSeq: currentSeq, gap: false, expected: currentSeq + 1 };
   }
 
   const expected = currentSeq + 1;
