@@ -1385,31 +1385,6 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                             />
                                                         </div>
 
-                                                        {/* Pin toggle */}
-                                                        {!selectMode && (
-                                                            <span
-                                                                role="button"
-                                                                tabIndex={-1}
-                                                                className={cn(
-                                                                    "flex-shrink-0 flex items-center justify-center w-5 h-5 rounded transition-colors",
-                                                                    isPinned
-                                                                        ? "text-blue-400 hover:text-blue-300"
-                                                                        : "text-sidebar-foreground/20 hover:text-sidebar-foreground/40",
-                                                                    isPinPending && "opacity-50 pointer-events-none",
-                                                                )}
-                                                                onClick={(e) => {
-                                                                    e.stopPropagation();
-                                                                    e.preventDefault();
-                                                                    if (!isPinPending) togglePinSession(s.sessionId, isPinned);
-                                                                }}
-                                                                onPointerDown={(e) => e.stopPropagation()}
-                                                                aria-label={isPinned ? "Unpin session" : "Pin session"}
-                                                                title={isPinned ? "Unpin" : "Pin"}
-                                                            >
-                                                                <Pin className={cn("h-3.5 w-3.5", isPinned && "fill-blue-400/30")} />
-                                                            </span>
-                                                        )}
-
                                                         {/* Text info */}
                                                         <div className="flex-1 min-w-0">
                                                             <div className="flex items-baseline justify-between gap-1 min-w-0">
