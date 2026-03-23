@@ -4,12 +4,69 @@ import { handleApi } from "./routes/index.js";
 import { serveStaticFile } from "./static.js";
 import { getClientIp } from "./security.js";
 
+/** Default body size limit for API routes (1 MB). */
+export const MAX_BODY_SIZE = 1 * 1024 * 1024;
+
+/** Body size limit for attachment upload routes (50 MB). */
+export const MAX_ATTACHMENT_BODY_SIZE = 50 * 1024 * 1024;
+
+/**
+ * Returns true if the URL path is an attachment upload route.
+ * Pattern: POST /api/sessions/:id/attachments
+ */
+function isAttachmentUploadPath(pathname: string, method: string): boolean {
+    return (
+        method === "POST" &&
+        /^\/api\/sessions\/[^/]+\/attachments$/.test(pathname)
+    );
+}
+
+/**
+ * Check the Content-Length header against the allowed body size limit.
+ * Returns a 413 Response if the declared size exceeds the limit, otherwise undefined.
+ */
+function checkContentLength(req: Request, url: URL): Response | undefined {
+    const method = req.method;
+    if (method !== "POST" && method !== "PUT" && method !== "PATCH") {
+        return undefined;
+    }
+
+    const contentLengthHeader = req.headers.get("content-length");
+    if (!contentLengthHeader) {
+        return undefined;
+    }
+
+    const contentLength = parseInt(contentLengthHeader, 10);
+    if (!Number.isFinite(contentLength) || contentLength < 0) {
+        return undefined;
+    }
+
+    const limit = isAttachmentUploadPath(url.pathname, method)
+        ? MAX_ATTACHMENT_BODY_SIZE
+        : MAX_BODY_SIZE;
+
+    if (contentLength > limit) {
+        return Response.json(
+            {
+                error: `Payload Too Large: body exceeds ${limit} bytes`,
+            },
+            { status: 413 },
+        );
+    }
+
+    return undefined;
+}
+
 /**
  * Fetch-style request handler (REST + auth + static).
  * Extracted so it can be used both by the production server and integration tests.
  */
 export async function handleFetch(req: Request): Promise<Response> {
     const url = new URL(req.url);
+
+    // ── Body size guard (Content-Length fast path) ─────────────────────
+    const sizeError = checkContentLength(req, url);
+    if (sizeError) return sizeError;
 
     // ── better-auth handler ────────────────────────────────────────────────
     if (url.pathname.startsWith("/api/auth")) {

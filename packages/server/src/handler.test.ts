@@ -1,0 +1,187 @@
+import { describe, expect, test } from "bun:test";
+import { handleFetch, MAX_BODY_SIZE, MAX_ATTACHMENT_BODY_SIZE } from "./handler";
+
+// ── Constants ───────────────────────────────────────────────────────────────
+
+describe("body size constants", () => {
+    test("MAX_BODY_SIZE is 1MB", () => {
+        expect(MAX_BODY_SIZE).toBe(1 * 1024 * 1024);
+    });
+
+    test("MAX_ATTACHMENT_BODY_SIZE is 50MB", () => {
+        expect(MAX_ATTACHMENT_BODY_SIZE).toBe(50 * 1024 * 1024);
+    });
+
+    test("attachment limit is larger than default limit", () => {
+        expect(MAX_ATTACHMENT_BODY_SIZE).toBeGreaterThan(MAX_BODY_SIZE);
+    });
+});
+
+// ── Body size enforcement via Content-Length ─────────────────────────────────
+
+describe("handleFetch — body size limits", () => {
+    test("POST with Content-Length within 1MB limit passes through (returns non-413)", async () => {
+        const req = new Request("http://localhost/api/runners", {
+            method: "POST",
+            headers: {
+                "content-type": "application/json",
+                "content-length": String(MAX_BODY_SIZE), // exactly at the limit
+            },
+            body: "{}",
+        });
+        const res = await handleFetch(req);
+        expect(res.status).not.toBe(413);
+    });
+
+    test("POST with Content-Length exceeding 1MB returns 413", async () => {
+        const req = new Request("http://localhost/api/runners", {
+            method: "POST",
+            headers: {
+                "content-type": "application/json",
+                "content-length": String(MAX_BODY_SIZE + 1),
+            },
+            body: "{}",
+        });
+        const res = await handleFetch(req);
+        expect(res.status).toBe(413);
+        const data = await res.json() as { error: string };
+        expect(data.error).toContain("Payload Too Large");
+    });
+
+    test("PUT with Content-Length exceeding 1MB returns 413", async () => {
+        const req = new Request("http://localhost/api/settings", {
+            method: "PUT",
+            headers: {
+                "content-type": "application/json",
+                "content-length": String(MAX_BODY_SIZE + 100),
+            },
+            body: "{}",
+        });
+        const res = await handleFetch(req);
+        expect(res.status).toBe(413);
+    });
+
+    test("PATCH with Content-Length exceeding 1MB returns 413", async () => {
+        const req = new Request("http://localhost/api/sessions/s-123", {
+            method: "PATCH",
+            headers: {
+                "content-type": "application/json",
+                "content-length": String(MAX_BODY_SIZE + 100),
+            },
+            body: "{}",
+        });
+        const res = await handleFetch(req);
+        expect(res.status).toBe(413);
+    });
+
+    test("GET with large Content-Length is not rejected (GET has no body)", async () => {
+        const req = new Request("http://localhost/api/runners", {
+            method: "GET",
+            headers: {
+                "content-length": String(MAX_BODY_SIZE + 1),
+            },
+        });
+        const res = await handleFetch(req);
+        expect(res.status).not.toBe(413);
+    });
+
+    test("POST without Content-Length header is not rejected by size check", async () => {
+        const req = new Request("http://localhost/health", {
+            method: "POST",
+            headers: {
+                "content-type": "application/json",
+            },
+            body: "{}",
+        });
+        const res = await handleFetch(req);
+        // Should not be 413 — no Content-Length so no fast-path rejection
+        expect(res.status).not.toBe(413);
+    });
+
+    test("attachment upload route allows up to 50MB", async () => {
+        const req = new Request("http://localhost/api/sessions/abc-123/attachments", {
+            method: "POST",
+            headers: {
+                "content-type": "multipart/form-data; boundary=----",
+                "content-length": String(MAX_ATTACHMENT_BODY_SIZE), // exactly at limit
+            },
+            body: "{}",
+        });
+        const res = await handleFetch(req);
+        // Should not be 413 (will likely be 401 or similar since not authenticated)
+        expect(res.status).not.toBe(413);
+    });
+
+    test("attachment upload route rejects body larger than 50MB", async () => {
+        const req = new Request("http://localhost/api/sessions/abc-123/attachments", {
+            method: "POST",
+            headers: {
+                "content-type": "multipart/form-data; boundary=----",
+                "content-length": String(MAX_ATTACHMENT_BODY_SIZE + 1),
+            },
+            body: "{}",
+        });
+        const res = await handleFetch(req);
+        expect(res.status).toBe(413);
+        const data = await res.json() as { error: string };
+        expect(data.error).toContain("Payload Too Large");
+    });
+
+    test("attachment upload route rejects body much larger than 1MB but within 50MB (uses higher limit)", async () => {
+        // A body of 2MB should pass for attachment routes (but fail for regular routes)
+        const twoMB = 2 * 1024 * 1024;
+        const req = new Request("http://localhost/api/sessions/abc-123/attachments", {
+            method: "POST",
+            headers: {
+                "content-type": "multipart/form-data; boundary=----",
+                "content-length": String(twoMB),
+            },
+            body: "{}",
+        });
+        const res = await handleFetch(req);
+        // 2MB is within the 50MB attachment limit — should not be 413
+        expect(res.status).not.toBe(413);
+    });
+
+    test("non-attachment route rejects body of 2MB (over 1MB limit)", async () => {
+        const twoMB = 2 * 1024 * 1024;
+        const req = new Request("http://localhost/api/runners", {
+            method: "POST",
+            headers: {
+                "content-type": "application/json",
+                "content-length": String(twoMB),
+            },
+            body: "{}",
+        });
+        const res = await handleFetch(req);
+        expect(res.status).toBe(413);
+    });
+
+    test("413 error message includes the byte limit", async () => {
+        const req = new Request("http://localhost/api/runners", {
+            method: "POST",
+            headers: {
+                "content-type": "application/json",
+                "content-length": String(MAX_BODY_SIZE + 1),
+            },
+            body: "{}",
+        });
+        const res = await handleFetch(req);
+        expect(res.status).toBe(413);
+        const data = await res.json() as { error: string };
+        expect(data.error).toContain(String(MAX_BODY_SIZE));
+    });
+
+    test("auth routes respect the 1MB body size limit", async () => {
+        const req = new Request("http://localhost/api/auth/sign-in/email", {
+            method: "POST",
+            headers: {
+                "content-type": "application/json",
+                "content-length": String(MAX_BODY_SIZE + 1),
+            },
+            body: "{}",
+        });
+        const res = await handleFetch(req);
+        expect(res.status).toBe(413);
+    });
+});
