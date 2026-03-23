@@ -2279,7 +2279,7 @@ export function App() {
   const inputDedupeRef = React.useRef<InputDedupeState | null>(null);
   const inputAttemptIdRef = React.useRef(0);
 
-  const sendSessionInput = React.useCallback(async (message: { text: string; files?: Array<{ mediaType?: string; filename?: string; url?: string }>; deliverAs?: "steer" | "followUp" } | string) => {
+  const sendSessionInput = React.useCallback(async (message: { text: string; files?: Array<{ file?: File; mediaType?: string; filename?: string; url?: string }>; deliverAs?: "steer" | "followUp" } | string) => {
     const socket = viewerWsRef.current;
     const sessionId = activeSessionRef.current;
     if (!socket || !socket.connected || !sessionId) {
@@ -2310,6 +2310,7 @@ export function App() {
     const rawFiles = (payload.files ?? [])
       .filter((f) => typeof f?.url === "string" && f.url.length > 0)
       .map((f) => ({
+        file: f.file instanceof File ? f.file : undefined,
         mediaType: typeof f.mediaType === "string" ? f.mediaType : undefined,
         filename: typeof f.filename === "string" ? f.filename : undefined,
         url: f.url as string,
@@ -2326,10 +2327,18 @@ export function App() {
 
         const formData = new FormData();
         try {
-          const blob = await fetch(file.url).then((res) => res.blob());
-          const uploadFile = new File([blob], displayName, {
-            type: file.mediaType || blob.type || "application/octet-stream",
-          });
+          const uploadFile = file.file
+            ? new File([file.file], displayName, {
+                type: file.mediaType || file.file.type || "application/octet-stream",
+              })
+            : await fetch(file.url)
+                .then((res) => res.blob())
+                .then(
+                  (blob) =>
+                    new File([blob], displayName, {
+                      type: file.mediaType || blob.type || "application/octet-stream",
+                    })
+                );
           formData.append("files", uploadFile);
         } catch {
           setViewerStatus(`Failed to prepare attachment: ${displayName}`);

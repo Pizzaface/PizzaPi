@@ -18,7 +18,7 @@ export function withSecurityHeaders(res: Response): Response {
     headers.set("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
     headers.set(
         "Content-Security-Policy",
-        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws: wss:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'",
+        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws: wss: blob:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'",
     );
     return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
 }
