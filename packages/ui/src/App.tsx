@@ -3587,10 +3587,10 @@ export function App() {
     setNewSessionOpen(true);
   }, []);
 
-  const handleDuplicateSession = React.useCallback((runnerId: string, cwd: string) => {
+  const handleDuplicateSession = React.useCallback((runnerId: string, cwd: string, sourceWorkerType?: "pi" | "claude-code") => {
     setSpawnRunnerId(runnerId);
     setSpawnPreselectedRunnerId(runnerId);
-    setSpawnWorkerType("pi");
+    setSpawnWorkerType(sourceWorkerType ?? "pi");
     setSpawnCwd(cwd);
     setRecentFolders([]);
     setNewSessionOpen(true);
@@ -4596,7 +4596,7 @@ export function App() {
                         onTriggerResponse={handleTriggerResponse}
                         onQuestionDismiss={() => setPendingQuestion(null)}
                         onPlanDismiss={() => setPendingPlan(null)}
-                        onDuplicateSession={activeSessionInfo?.runnerId ? () => handleDuplicateSession(activeSessionInfo.runnerId!, activeSessionInfo.cwd || "") : undefined}
+                        onDuplicateSession={activeSessionInfo?.runnerId ? () => handleDuplicateSession(activeSessionInfo.runnerId!, activeSessionInfo.cwd || "", workerType as "pi" | "claude-code") : undefined}
                         runnerInfo={activeRunnerInfo}
                         pendingPermission={pendingPermission}
                         onPermissionDecision={handlePermissionDecision}

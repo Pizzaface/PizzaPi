@@ -114,6 +114,7 @@ function getMcpServerCommand(): { command: string; args: string[] } {
 
 // ── State ─────────────────────────────────────────────────────────────────
 let tmpDir: string | null = null;
+let ipcSocketPath: string | null = null;
 let ipcServer: NetServer | null = null;
 let sioSocket: Socket<RelayServerToClientEvents, RelayClientToServerEvents> | null = null;
 let claudeProcess: ReturnType<typeof Bun.spawn> | null = null;
@@ -195,7 +196,8 @@ function clearPendingState(): void {
   pendingQuestionState.clear();
   for (const { timer } of pendingPermissions.values()) clearTimeout(timer);
   pendingPermissions.clear();
-  pendingAskUserPermissionId = null;
+  pendingAskUserPermissionQueue.length = 0;
+  askUserPermissionByToolCallId.clear();
   for (const waiter of messageWaiters) {
     clearTimeout(waiter.timer);
     waiter.cancel();
@@ -505,15 +507,20 @@ async function setupTempDir(): Promise<{ ipcSocketPath: string; hooksPath: strin
   tmpDir = await mkdtemp(join(tmpdir(), "pizzapi-cc-"));
   await chmod(tmpDir, 0o700);
 
-  const ipcSocketPath = IS_WINDOWS
+  // Compute the IPC path once and store it in the module-level variable so
+  // spawnClaude() can reuse the exact same path.  Always re-deriving it with
+  // join(tmpDir, "bridge.sock") would silently produce the wrong path on
+  // Windows, where a named pipe is required instead of a filesystem socket.
+  const resolvedIpcPath = IS_WINDOWS
     ? `\\\\.\\pipe\\pizzapi-cc-${randomUUID()}`
     : join(tmpDir, "bridge.sock");
+  ipcSocketPath = resolvedIpcPath;
 
   const hooksJson = {
     hooks: Object.fromEntries(
       ["SessionStart","SessionEnd","PostToolUse","PostToolUseFailure",
        "Stop","SubagentStart","SubagentStop","Notification","UserPromptSubmit","PreCompact"].map(
-        (evt) => [evt, [{ hooks: [{ type: "command", command: getHookHandlerCommand(ipcSocketPath) }] }]]
+        (evt) => [evt, [{ hooks: [{ type: "command", command: getHookHandlerCommand(resolvedIpcPath) }] }]]
       )
     ),
   };
@@ -527,7 +534,7 @@ async function setupTempDir(): Promise<{ ipcSocketPath: string; hooksPath: strin
         command: mcpServerCommand.command,
         args: mcpServerCommand.args,
         env: {
-          PIZZAPI_CC_BRIDGE_IPC: ipcSocketPath,
+          PIZZAPI_CC_BRIDGE_IPC: resolvedIpcPath,
           PIZZAPI_SESSION_ID: sessionId,
         },
       },
@@ -536,7 +543,7 @@ async function setupTempDir(): Promise<{ ipcSocketPath: string; hooksPath: strin
   const mcpPath = join(tmpDir, "mcp.json");
   await writeFile(mcpPath, JSON.stringify(mcpJson, null, 2), { mode: 0o600 });
 
-  return { ipcSocketPath, hooksPath, mcpPath };
+  return { ipcSocketPath: resolvedIpcPath, hooksPath, mcpPath };
 }
 
 async function cleanupTempDir(): Promise<void> {
@@ -921,7 +928,10 @@ function spawnClaude(tmpDirPath: string, resume = false): void {
     stderr: "pipe",
     env: {
       ...process.env,
-      PIZZAPI_CC_BRIDGE_IPC: join(tmpDirPath, "bridge.sock"),
+      // Use the pre-computed ipcSocketPath (set by setupTempDir) so Windows
+      // named pipe paths are preserved.  Falling back to a Unix socket path
+      // constructed from tmpDirPath would break on Windows.
+      PIZZAPI_CC_BRIDGE_IPC: ipcSocketPath ?? join(tmpDirPath, "bridge.sock"),
       PIZZAPI_SESSION_ID: sessionId,
     },
   });
@@ -1257,9 +1267,13 @@ function shouldAutoAllow(toolName: string): boolean {
   return false;
 }
 
-// Pending AskUserQuestion permission: held open until user answers the question.
-// The control_response is sent in deliverAskUserAnswer() to unblock Claude Code.
-let pendingAskUserPermissionId: string | null = null;
+// Pending AskUserQuestion permissions: queue of unmatched controlRequestIds waiting
+// to be paired with a toolCallId once the ask_user_question event arrives.
+// Using a queue (FIFO) + per-toolCallId map handles multiple concurrent requests
+// correctly without overwriting earlier IDs.
+const pendingAskUserPermissionQueue: string[] = [];
+// toolCallId → controlRequestId, populated when ask_user_question is processed
+const askUserPermissionByToolCallId = new Map<string, string>();
 
 function handleControlRequest(requestId: string, toolName: string, toolInput: unknown): void {
   // Auto-allow safe internal tools — no permission card needed
@@ -1268,12 +1282,11 @@ function handleControlRequest(requestId: string, toolName: string, toolInput: un
     return;
   }
 
-  // AskUserQuestion: hold the permission open (don't respond yet).
-  // The NDJSON-based question system handles user interaction.  When the
-  // user answers, deliverAskUserAnswer() sends both the tool_result AND
-  // the permission response to unblock Claude Code.
+  // AskUserQuestion: enqueue the permission request ID.  It will be matched to
+  // a toolCallId when the corresponding ask_user_question event is processed.
+  // Using a queue preserves ordering and supports multiple concurrent requests.
   if (toolName === "AskUserQuestion") {
-    pendingAskUserPermissionId = requestId;
+    pendingAskUserPermissionQueue.push(requestId);
     return;
   }
 
@@ -1335,6 +1348,13 @@ const pendingQuestionState = new Map<string, PendingQuestion>();
 function handleAskUserQuestion(toolCallId: string, questions: Array<{ question: string; options: string[]; type?: string }>): void {
   forwardEvent({ type: "tool_execution_start", toolName: "AskUserQuestion", toolCallId, args: { questions } });
 
+  // Pair this toolCallId with the next queued permission request ID (FIFO order
+  // matches the order in which control_request events arrive).
+  const permId = pendingAskUserPermissionQueue.shift();
+  if (permId) {
+    askUserPermissionByToolCallId.set(toolCallId, permId);
+  }
+
   const timer = setTimeout(() => {
     pendingQuestionState.delete(toolCallId);
     pendingQuestions.delete(toolCallId);
@@ -1363,9 +1383,10 @@ function deliverAskUserAnswer(toolCallId: string, answer: string): void {
 
   // Unblock Claude Code by responding to the held permission request.
   // Must happen BEFORE the tool_result so Claude Code is ready to receive it.
-  if (pendingAskUserPermissionId) {
-    sendPermissionResponse(pendingAskUserPermissionId, "allow");
-    pendingAskUserPermissionId = null;
+  const permId = askUserPermissionByToolCallId.get(toolCallId);
+  if (permId) {
+    sendPermissionResponse(permId, "allow");
+    askUserPermissionByToolCallId.delete(toolCallId);
   }
 
   writeToClaudeStdin({
