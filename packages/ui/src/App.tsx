@@ -2977,7 +2977,6 @@ export function App() {
   }
 
   return (
-    <ErrorBoundary level="root">
     <TooltipProvider delayDuration={0}>
     <div className="flex h-[100dvh] w-full flex-col overflow-hidden bg-background pp-safe-left pp-safe-right">
       <a
@@ -3862,6 +3861,5 @@ export function App() {
       </div>
     </div>
     </TooltipProvider>
-    </ErrorBoundary>
   );
 }
