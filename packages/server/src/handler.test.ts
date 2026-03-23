@@ -33,7 +33,7 @@ describe("withSecurityHeaders", () => {
         expect(csp).not.toBeNull();
         expect(csp).toContain("default-src 'self'");
         expect(csp).toContain("script-src 'self'");
-        expect(csp).toContain("connect-src 'self' ws: wss:");
+        expect(csp).toContain("connect-src 'self' ws: wss: blob:");
         expect(csp).toContain("object-src 'none'");
     });
 
