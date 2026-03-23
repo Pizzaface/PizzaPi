@@ -48,6 +48,7 @@ import type {
 } from "../remote-types.js";
 import { installFooter } from "../remote-footer.js";
 import { buildHeartbeat, buildTokenUsage, stopHeartbeat } from "../remote-heartbeat.js";
+import { isUsageLimitError } from "./usage-limit-error.js";
 import {
     emitTodoUpdated, emitPlanModeToggled,
     emitRetryStateChanged, emitPluginTrustRequired, emitPluginTrustResolved,
@@ -949,13 +950,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                 rctx.relay
             ) {
                 const errText = lastError.errorMessage;
-                const lower = errText.toLowerCase();
-                const isUsageLimitError =
-                    lower.includes("usage") ||
-                    lower.includes("limit") ||
-                    lower.includes("rate") ||
-                    lower.includes("quota");
-                if (isUsageLimitError) {
+                if (isUsageLimitError(errText)) {
                     sessionErrorFired = true;
                     rctx.sioSocket.emit("session_trigger" as any, {
                         token: rctx.relay.token,
@@ -992,12 +987,19 @@ export const remoteExtension: ExtensionFactory = (pi) => {
     pi.on("message_end", (event) => {
         rctx.forwardEvent(event);
         const msg = (event as any).message;
-        if (msg && msg.role === "assistant" && msg.stopReason === "error" && msg.errorMessage) {
-            const errorText = String(msg.errorMessage);
-            rctx.lastRetryableError = { errorMessage: errorText, detectedAt: Date.now() };
-            emitRetryStateChanged(rctx, rctx.lastRetryableError);
-            rctx.forwardEvent({ type: "cli_error", message: errorText, source: "provider", ts: Date.now() });
-            rctx.forwardEvent(rctx.buildHeartbeat());
+        if (msg && msg.role === "assistant") {
+            if (msg.stopReason === "error" && msg.errorMessage) {
+                const errorText = String(msg.errorMessage);
+                rctx.lastRetryableError = { errorMessage: errorText, detectedAt: Date.now() };
+                emitRetryStateChanged(rctx, rctx.lastRetryableError);
+                rctx.forwardEvent({ type: "cli_error", message: errorText, source: "provider", ts: Date.now() });
+                rctx.forwardEvent(rctx.buildHeartbeat());
+            } else if (msg.stopReason !== "error" && rctx.lastRetryableError) {
+                // Agent recovered successfully after a retryable error — clear
+                // the latch so we don't report a false-positive error exit.
+                rctx.lastRetryableError = null;
+                emitRetryStateChanged(rctx, null);
+            }
         }
     });
     pi.on("tool_execution_start", (event) => rctx.forwardEvent(event));
