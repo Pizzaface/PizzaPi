@@ -88,7 +88,7 @@ export async function serveStaticFile(pathname: string): Promise<Response | null
     if (!filePath.startsWith(uiDirWithTrailingSlash)) return null;
 
     // If file doesn't exist, serve index.html for SPA routing
-    if (!existsSync(filePath)) {
+    if (!(await Bun.file(filePath).exists())) {
         filePath = join(UI_DIR, "index.html");
     }
 
