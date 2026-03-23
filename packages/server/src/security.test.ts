@@ -128,6 +128,60 @@ describe("isValidEmail", () => {
     test("rejects emails without TLD dot", () => {
         expect(isValidEmail("user@domain")).toBe(false);
     });
+
+    // --- Multibyte / Unicode byte-length tests (P1) ---
+
+    test("accepts multibyte local part at exactly 64 UTF-8 bytes (32 × 'é')", () => {
+        // 'é' (U+00E9) encodes to 2 bytes in UTF-8; 32 × 2 = 64 bytes — at the RFC limit.
+        // A character-count check would see only 32 chars, well under 64.
+        const localPart = "é".repeat(32);
+        expect(isValidEmail(`${localPart}@example.com`)).toBe(true);
+    });
+
+    test("rejects multibyte local part that exceeds 64 UTF-8 bytes but not 64 characters", () => {
+        // 33 × 'é' = 66 UTF-8 bytes > 64-byte RFC limit, but only 33 JS characters.
+        // Old character-count regex {1,64} would incorrectly accept this.
+        const localPart = "é".repeat(33);
+        expect(isValidEmail(`${localPart}@example.com`)).toBe(false);
+    });
+
+    test("rejects email whose total byte length exceeds 254 but character count does not", () => {
+        // ASCII local part: 64 bytes.  '@': 1 byte.  Domain uses 'é' (2 bytes each).
+        // domain = 94 × 'é' + ".com" = 188 + 4 = 192 bytes  →  total = 257 bytes > 254.
+        // Character count: 64 + 1 + 94 + 4 = 163 — well under 254, so old code passes it.
+        const localPart = "a".repeat(64);
+        const domainLabel = "é".repeat(94);
+        expect(isValidEmail(`${localPart}@${domainLabel}.com`)).toBe(false);
+    });
+
+    test("accepts email whose total UTF-8 byte length is within 254 using multibyte domain chars", () => {
+        // ASCII local (32 bytes) + '@' (1 byte) + domain with 'é' (2 bytes each).
+        // 32 × 'é' = 64 bytes + ".com" (4 bytes) = 68 bytes → total = 32 + 1 + 68 = 101 bytes ≤ 254.
+        const localPart = "a".repeat(32);
+        const domainLabel = "é".repeat(32);
+        expect(isValidEmail(`${localPart}@${domainLabel}.com`)).toBe(true);
+    });
+
+    // --- Malformed domain tests (P2) ---
+
+    test("rejects domain with consecutive dots", () => {
+        expect(isValidEmail("a@..example.com")).toBe(false);
+        expect(isValidEmail("a@example..com")).toBe(false);
+        expect(isValidEmail("a@sub..example.com")).toBe(false);
+    });
+
+    test("rejects domain with a leading dot", () => {
+        expect(isValidEmail("a@.example.com")).toBe(false);
+    });
+
+    test("rejects domain with a trailing dot", () => {
+        expect(isValidEmail("a@example.com.")).toBe(false);
+    });
+
+    test("rejects domain that is only dots", () => {
+        expect(isValidEmail("a@...")).toBe(false);
+        expect(isValidEmail("a@.")).toBe(false);
+    });
 });
 
 describe("isValidPassword", () => {

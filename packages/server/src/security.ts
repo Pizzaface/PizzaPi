@@ -55,12 +55,43 @@ export class RateLimiter {
 }
 
 export function isValidEmail(email: string): boolean {
-    if (email.length > 254) {
+    const encoder = new TextEncoder();
+
+    // RFC 5321: total email address path limit is 254 bytes (measured in UTF-8 bytes,
+    // not JavaScript UTF-16 code units, to correctly handle non-ASCII characters).
+    if (encoder.encode(email).length > 254) {
         return false;
     }
-    // Regex ensuring local part is 1-64 chars, has @, domain, and TLD >= 2 chars
-    const emailRegex = /^[^\s@]{1,64}@[^\s@]+\.[^\s@.]{2,}$/;
-    return emailRegex.test(email);
+
+    // Split on the last '@' to separate local part from domain.
+    const atIndex = email.lastIndexOf("@");
+    if (atIndex <= 0 || atIndex === email.length - 1) {
+        // No '@', empty local part (@ at position 0), or empty domain (@ at end).
+        return false;
+    }
+
+    const localPart = email.slice(0, atIndex);
+    const domain = email.slice(atIndex + 1);
+
+    // Local part must not contain whitespace or a second '@'.
+    if (/[\s@]/.test(localPart)) return false;
+
+    // RFC 5321: local part must be ≤ 64 bytes (UTF-8 bytes, not character count).
+    // A multibyte character (e.g. 'é' = 2 bytes) can allow a local part that passes
+    // a character-count check but exceeds the RFC byte limit.
+    if (encoder.encode(localPart).length > 64) return false;
+
+    // Domain must not contain whitespace or '@'.
+    if (/[\s@]/.test(domain)) return false;
+
+    // Reject consecutive dots (e.g. "a@..example.com", "a@example..com").
+    if (domain.includes("..")) return false;
+
+    // Reject leading or trailing dots (e.g. "a@.example.com", "a@example.com.").
+    if (domain.startsWith(".") || domain.endsWith(".")) return false;
+
+    // Domain must have at least one dot and a TLD of ≥ 2 non-dot, non-space chars.
+    return /^[^\s@]+\.[^\s@.]{2,}$/.test(domain);
 }
 
 // Re-export from the shared protocol package so existing imports keep working.
