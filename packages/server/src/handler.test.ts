@@ -27,6 +27,16 @@ describe("withSecurityHeaders", () => {
         expect(res.headers.get("Permissions-Policy")).toBe("camera=(), microphone=(), geolocation=()");
     });
 
+    test("injects Content-Security-Policy", () => {
+        const res = withSecurityHeaders(new Response("ok", { status: 200 }));
+        const csp = res.headers.get("Content-Security-Policy");
+        expect(csp).not.toBeNull();
+        expect(csp).toContain("default-src 'self'");
+        expect(csp).toContain("script-src 'self'");
+        expect(csp).toContain("connect-src 'self' ws: wss:");
+        expect(csp).toContain("object-src 'none'");
+    });
+
     test("preserves existing headers", () => {
         const original = new Response("hello", {
             status: 201,
@@ -74,5 +84,6 @@ describe("withSecurityHeaders", () => {
         expect(collected["x-xss-protection"]).toBe("0");
         expect(collected["referrer-policy"]).toBe("strict-origin-when-cross-origin");
         expect(collected["permissions-policy"]).toBe("camera=(), microphone=(), geolocation=()");
+        expect(typeof collected["content-security-policy"]).toBe("string");
     });
 });
