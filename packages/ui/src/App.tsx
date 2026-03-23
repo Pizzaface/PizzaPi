@@ -4808,6 +4808,7 @@ export function App() {
           runnersLoading={runnersStatus === "connecting"}
           preselectedRunnerId={spawnPreselectedRunnerId}
           initialCwd={spawnCwd}
+          initialWorkerType={spawnWorkerType}
           onSpawn={handleWizardSpawn}
         />
 

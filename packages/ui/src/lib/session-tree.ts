@@ -20,6 +20,7 @@ export interface HubSession {
   runnerName?: string | null;
   isPinned?: boolean;
   parentSessionId?: string | null;
+  workerType?: "pi" | "claude-code";
 }
 
 export interface SessionTreeNode {

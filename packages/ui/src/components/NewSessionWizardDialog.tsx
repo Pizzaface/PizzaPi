@@ -57,6 +57,12 @@ export interface NewSessionWizardDialogProps {
     initialCwd?: string;
 
     /**
+     * Optional initial worker type (e.g. when duplicating a session).
+     * Defaults to "pi" if not provided.
+     */
+    initialWorkerType?: "pi" | "claude-code";
+
+    /**
      * Called when the user clicks "Start Session".
      * `cwd` is `undefined` when the field is blank.
      */
@@ -104,6 +110,7 @@ export function NewSessionWizardDialog({
     runnersLoading,
     preselectedRunnerId,
     initialCwd,
+    initialWorkerType,
     onSpawn,
 }: NewSessionWizardDialogProps) {
     const isPreselected = preselectedRunnerId != null;
@@ -118,7 +125,7 @@ export function NewSessionWizardDialog({
     const selectedRunnerIdRef = React.useRef(selectedRunnerId);
     selectedRunnerIdRef.current = selectedRunnerId;
     const [cwd, setCwd] = React.useState(initialCwd ?? "");
-    const [workerType, setWorkerType] = React.useState<"pi" | "claude-code">("pi");
+    const [workerType, setWorkerType] = React.useState<"pi" | "claude-code">(initialWorkerType ?? "pi");
     const [spawning, setSpawning] = React.useState(false);
     const [spawnError, setSpawnError] = React.useState<string | null>(null);
     const [disconnectedMsg, setDisconnectedMsg] = React.useState<string | null>(null);
@@ -151,7 +158,7 @@ export function NewSessionWizardDialog({
         setStep(isPreselected ? "folder" : "runner");
         setSelectedRunnerId(preselectedRunnerId ?? null);
         setCwd(initialCwd ?? "");
-        setWorkerType("pi");
+        setWorkerType(initialWorkerType ?? "pi");
         setSpawnError(null);
         setDisconnectedMsg(null);
         setRecentFolders([]);
