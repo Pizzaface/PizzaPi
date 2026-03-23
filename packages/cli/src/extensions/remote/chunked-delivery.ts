@@ -1,7 +1,7 @@
 /**
  * Chunked session delivery.
  *
- * The server's maxHttpBufferSize is 100 MB. If the serialized session_active
+ * The server's maxHttpBufferSize is 10 MB. If the serialized session_active
  * event exceeds that, Socket.IO silently kills the WebSocket connection
  * (reason: "transport close") and the client auto-reconnects — causing an
  * infinite boot loop.
@@ -20,7 +20,7 @@ import { getCurrentTodoList } from "../update-todo.js";
 import type { RelayContext } from "../remote-types.js";
 
 /** Estimated payload size (bytes) above which we chunk messages. */
-const CHUNK_THRESHOLD = 10 * 1024 * 1024; // 10 MB
+const CHUNK_THRESHOLD = 5 * 1024 * 1024; // 5 MB — safely below 10 MB server limit
 
 /** Maximum messages per chunk — keeps individual Socket.IO frames reasonable. */
 const CHUNK_SIZE = 200;
@@ -30,22 +30,22 @@ const CHUNK_SIZE = 200;
  * CHUNK_SIZE messages, it will be split if the cumulative byte size exceeds
  * this limit.  This prevents a handful of huge messages (e.g. large tool
  * outputs or inline images) from producing a single oversized frame that
- * exceeds the server's maxHttpBufferSize (100 MB).
+ * exceeds the server's maxHttpBufferSize (10 MB).
  */
-const CHUNK_BYTE_LIMIT = 8 * 1024 * 1024; // 8 MB per chunk
+const CHUNK_BYTE_LIMIT = 6 * 1024 * 1024; // 6 MB per chunk — leaves margin for Socket.IO framing overhead below 10 MB server limit
 
 /**
  * Hard cap for a single message's serialized size.  Messages exceeding this
  * are truncated before chunking so that no individual chunk frame can exceed
- * the server's maxHttpBufferSize (100 MB).  We set this well below the
+ * the server's maxHttpBufferSize (10 MB).  We set this well below the
  * transport cap to leave room for event wrapper overhead.
  */
-const MAX_MESSAGE_SIZE = 50 * 1024 * 1024; // 50 MB
+const MAX_MESSAGE_SIZE = 5 * 1024 * 1024; // 5 MB
 
 /**
  * Estimate the serialized wire size (in bytes) of a messages array.
  * We stringify each message individually rather than the whole array
- * to avoid allocating a single 100 MB+ string.  Uses Buffer.byteLength
+ * to avoid allocating a single large string.  Uses Buffer.byteLength
  * for accurate UTF-8 byte counts (JSON.stringify().length counts UTF-16
  * code units, which underestimates multibyte content like emoji/CJK by 2-4x).
  */
