@@ -1007,7 +1007,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                 </p>
                             </div>
                         ) : (
-                            runners.map((r) => (
+                            [...runners].sort((a, b) => (a.name ?? "").localeCompare(b.name ?? "")).map((r) => (
                                 <button
                                     key={r.runnerId}
                                     onClick={() => { onSelectRunner?.(r.runnerId); if (window.innerWidth < 768) onClose?.(); }}
@@ -1228,7 +1228,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                             selectMode && isChecked
                                                                 ? "bg-sidebar-accent text-sidebar-accent-foreground"
                                                                 : isActiveSession
-                                                                    ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                                                                    ? "bg-sidebar-accent text-sidebar-accent-foreground border border-yellow-400/40 animate-border-glow"
                                                                     : "bg-sidebar text-sidebar-foreground hover:bg-sidebar-accent/50",
                                                         )}
                                                         style={{
