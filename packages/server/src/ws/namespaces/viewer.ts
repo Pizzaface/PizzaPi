@@ -473,19 +473,25 @@ export function registerViewerNamespace(io: SocketIOServer): void {
             getSessionSeq(sessionId),
         ]);
 
+        if (!freshSession) {
+            socket.emit("disconnected", { reason: "Session ended" });
+            socket.disconnect();
+            return;
+        }
+
         socket.emit("connected", {
             sessionId,
             lastSeq: freshSeq,
-            isActive: session.isActive,
-            lastHeartbeatAt: session.lastHeartbeatAt,
-            sessionName: session.sessionName,
+            isActive: freshSession.isActive,
+            lastHeartbeatAt: freshSession.lastHeartbeatAt,
+            sessionName: freshSession.sessionName,
         });
 
         // Emit an immediate heartbeat snapshot while the runner pushes a fresh
         // session_active in response to "connected".
-        if (session.lastHeartbeat) {
+        if (freshSession.lastHeartbeat) {
             try {
-                socket.emit("event", { event: JSON.parse(session.lastHeartbeat), seq: freshSeq });
+                socket.emit("event", { event: JSON.parse(freshSession.lastHeartbeat), seq: freshSeq });
             } catch {}
         }
 

@@ -95,6 +95,7 @@ import {
   normalizeModelList,
 } from "@/lib/message-helpers";
 import { evictLruIfNeeded, touchSessionCache, MAX_SESSION_UI_CACHE_SIZE } from "@/lib/session-ui-cache";
+import { mergeConnectedSeq } from "@/lib/session-seq";
 
 export function App() {
   const { data: session, isPending } = useSession();
@@ -2078,9 +2079,10 @@ export function App() {
       const replayOnly = data.replayOnly === true;
       setViewerStatus(replayOnly ? "Snapshot replay" : "Connected");
 
-      // Seed the last known sequence number so gap detection works from the start.
+      // Seed sequence for gap detection, but never move backward if live
+      // events already advanced the cursor before "connected" arrives.
       if (typeof data.lastSeq === "number") {
-        lastSeqRef.current = data.lastSeq;
+        lastSeqRef.current = mergeConnectedSeq(lastSeqRef.current, data.lastSeq);
       }
 
       // Reflect initial active status from connected message.
