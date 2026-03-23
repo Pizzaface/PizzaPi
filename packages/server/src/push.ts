@@ -83,14 +83,21 @@ export async function ensurePushSubscriptionTable(): Promise<void> {
         .execute();
 
     // Migration: add suppressChildNotifications column if it doesn't exist yet.
-    // SQLite doesn't support ADD COLUMN IF NOT EXISTS, so we try/catch.
+    // SQLite doesn't support ADD COLUMN IF NOT EXISTS, so we attempt the ALTER
+    // and ignore only the "duplicate column" error. Any other failure (lock,
+    // I/O, malformed schema) is rethrown so startup fails loudly rather than
+    // booting with a partially-migrated schema.
     try {
         await getKysely().schema
             .alterTable("push_subscription")
             .addColumn("suppressChildNotifications", "integer", (col) => col.notNull().defaultTo(0))
             .execute();
-    } catch {
-        // Column already exists — safe to ignore.
+    } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!msg.includes("duplicate column name")) {
+            throw err;
+        }
+        // Column already exists — safe to continue.
     }
 
     await getKysely().schema

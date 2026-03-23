@@ -143,7 +143,13 @@ export function NotificationToggle() {
                 <DropdownMenuContent align="end" className="w-64">
                     <DropdownMenuLabel>Notification settings</DropdownMenuLabel>
                     <DropdownMenuSeparator />
-                    {/* Suppress child session notifications toggle */}
+                    {/*
+                     * Suppress child session notifications.
+                     * The Switch is a pure visual indicator — clicking anywhere on the
+                     * row (text or switch) fires onSelect exactly once via the MenuItem.
+                     * We do NOT attach onCheckedChange to Switch to avoid a double-toggle
+                     * where both onSelect and onCheckedChange fire on a single click.
+                     */}
                     <DropdownMenuItem
                         className="flex items-center justify-between gap-2 cursor-default"
                         onSelect={(e) => {
@@ -158,9 +164,6 @@ export function NotificationToggle() {
                         <Switch
                             checked={suppressChild}
                             disabled={suppressChildLoading}
-                            aria-label="Suppress child session notifications"
-                            onClick={(e) => e.stopPropagation()}
-                            onCheckedChange={() => toggleSuppressChild()}
                         />
                     </DropdownMenuItem>
                     <DropdownMenuSeparator />
@@ -241,9 +244,6 @@ export function MobileNotificationMenuItem() {
                     <Switch
                         checked={suppressChild}
                         disabled={suppressChildLoading}
-                        aria-label="Suppress child session notifications"
-                        onClick={(e) => e.stopPropagation()}
-                        onCheckedChange={() => toggleSuppressChild()}
                     />
                 </DropdownMenuItem>
             )}
