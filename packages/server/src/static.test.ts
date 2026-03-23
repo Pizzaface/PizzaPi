@@ -53,6 +53,14 @@ describe("serveStaticFile", () => {
         expect(res?.headers.get("content-type")).toBe("application/json; charset=utf-8");
     });
 
+    test("Returns null for requests matching an existing directory (no SPA fallback)", async () => {
+        // /assets maps to tests/fixtures/ui/assets which is a real directory.
+        // Bun.file(<dir>).exists() returns false, so without a directory check this
+        // would incorrectly serve index.html instead of returning null.
+        const res = await serveStaticFile("/assets");
+        expect(res).toBeNull();
+    });
+
     test("Falls back to index.html for nonexistent SPA routes", async () => {
         // Request a path that doesn't exist as a file — should serve index.html for SPA routing
         const res = await serveStaticFile("/some-spa-route");
