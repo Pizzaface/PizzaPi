@@ -24,7 +24,7 @@ The sidebar currently makes "waiting for a trigger" and "completed" feel too sim
 **Visual treatment:**
 - This remains the only clearly busy state.
 - Keep the stronger working animation (`spin` / `chase` / equivalent active motion).
-- Keep the existing blue/working color family unless implementation details show a very close variant reads better.
+- Use the existing active/working color family unless implementation details suggest a nearby variant is clearer.
 
 **User impression:** “This session is currently running.”
 
@@ -35,12 +35,11 @@ The sidebar currently makes "waiting for a trigger" and "completed" feel too sim
 **Visual treatment:**
 - Remove any spin/busy treatment.
 - Use a soft amber pulse.
-- Replace the existing purple/chase-style awaiting treatment with the new amber pending treatment.
 - Make the state feel paused/pending rather than active.
 
 **User impression:** “This session needs something before it can continue.”
 
-### 3. Completed (Unread)
+### 3. Complete
 
 **Meaning:** The session completed since the user last viewed it.
 
@@ -51,16 +50,6 @@ The sidebar currently makes "waiting for a trigger" and "completed" feel too sim
 
 **User impression:** “This session is finished and ready to review.”
 
-### 4. Idle
-
-**Meaning:** The session is neither actively working, nor waiting on a trigger, nor newly completed/unread.
-
-**Visual treatment:**
-- Keep this subdued and largely static.
-- It should not compete visually with the three attention-worthy states above.
-
-**User impression:** “This session is inactive right now.”
-
 ## UI Surface Areas
 
 ### Session row styling
@@ -68,32 +57,17 @@ The sidebar currently makes "waiting for a trigger" and "completed" feel too sim
 Update the session row state styling so:
 - **Active** keeps the stronger working animation.
 - **Awaiting** gets a lighter pulse-based pending treatment.
-- **Completed (Unread)** gets a lighter pulse-based resolved treatment.
-- **Idle** remains subdued.
+- **Complete** gets a lighter pulse-based resolved treatment.
 
 Avoid making awaiting and completed rows feel identical; the distinction should come from both motion and color semantics.
 
-Priority note: if multiple booleans could apply at once, preserve the existing semantic priority used by the current sidebar logic unless a real bug is found. In particular, awaiting should continue to win over active if both appear true at render time.
+### Provider/activity dot
 
-### Provider icon as sole status indicator
-
-**Remove the small activity dot** that currently overlays the provider badge. Instead, the provider icon container itself becomes the status indicator:
-
-- **Active:** the provider icon gets the spin/chase animation — it is the "working" indicator.
-- **Awaiting:** the provider icon gets a soft amber pulse/glow.
-- **Completed (Unread):** the provider icon gets a soft green pulse/glow.
-- **Idle:** the provider icon is static/subdued (no animation, no glow).
-
-This requires threading `sessionsWithPendingQuestion` and `completedUnreadSessions` into the icon container's class logic, which currently only branches on `s.isActive`.
-
-### Remove inline pin icon
-
-Remove the always-visible pin toggle icon from the session row. Pinning remains accessible via:
-- Swipe-reveal action buttons
-- Long-press context action
-- Keyboard shortcut (`P`)
-
-This declutters the compact row layout and lets the status indicator and session text take more space.
+Update the small dot on the provider badge so it communicates state consistently:
+- **Active:** animated working indicator
+- **Awaiting:** amber pulse
+- **Complete/unread:** green pulse
+- **Idle/default:** subdued static indicator
 
 ## Constraints
 
@@ -104,19 +78,10 @@ This declutters the compact row layout and lets the status indicator and session
 
 ## Testing Strategy
 
-Prefer focused testing of state-to-style mapping if the mapping can be extracted cleanly into a pure helper without unnecessary abstraction. A good target would be a helper that maps the sidebar inputs to a visual state such as:
-
-- `active`
-- `awaiting`
-- `completedUnread`
-- `idle`
-
-Otherwise:
+Prefer focused testing of state-to-style mapping if the mapping can be extracted cleanly into a pure helper without unnecessary abstraction. Otherwise:
 - run UI package tests,
 - run typecheck,
 - and verify the affected sidebar behavior manually or via targeted UI tests if available.
-
-If the implementation changes custom animation classes, update the existing sidebar animation definitions rather than introducing redundant near-duplicates unless that materially improves clarity.
 
 ## Non-Goals
 
