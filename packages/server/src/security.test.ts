@@ -65,6 +65,77 @@ describe("RateLimiter", () => {
         expect(limiter.check("b")).toBe(true);
         limiter.destroy();
     });
+
+    test("getRetryAfter returns seconds until window reset", () => {
+        const limiter = new RateLimiter(1, 60_000); // 60s window
+        const key = "retry-test-key";
+
+        limiter.check(key); // first request — window starts
+        limiter.check(key); // second request — now rate limited
+
+        const retryAfter = limiter.getRetryAfter(key);
+        // Should be > 0 and <= 60 (window is 60s, and we just started it)
+        expect(retryAfter).toBeGreaterThan(0);
+        expect(retryAfter).toBeLessThanOrEqual(60);
+        limiter.destroy();
+    });
+
+    test("getRetryAfter returns full window when no active record", () => {
+        const limiter = new RateLimiter(1, 60_000);
+        const key = "no-record-key";
+
+        // No check() call — no record exists
+        const retryAfter = limiter.getRetryAfter(key);
+        expect(retryAfter).toBe(60); // Math.ceil(60_000 / 1000)
+        limiter.destroy();
+    });
+
+    test("getRetryAfter never returns 0 (boundary: now === resetTime)", () => {
+        // Simulate the exact boundary moment where now === resetTime.
+        // check() treats now === resetTime as still-in-window (uses `now > resetTime`
+        // to detect expiry), so it returns false (rate-limited). At that instant
+        // resetTime - now = 0, and a naive Math.ceil(0/1000) = 0 would produce
+        // Retry-After: 0 — causing client retry thrash.
+        // The fix clamps to Math.max(1, ...).
+        const limiter = new RateLimiter(1, 1000);
+        const key = "boundary-key";
+
+        // Exhaust the limit
+        limiter.check(key); // allowed — starts window
+        limiter.check(key); // blocked — limit hit
+
+        // Manipulate the record so resetTime === now
+        const hits = (limiter as unknown as { hits: Map<string, { count: number; resetTime: number }> }).hits;
+        const record = hits.get(key)!;
+        record.resetTime = Date.now(); // boundary: now === resetTime
+
+        // check() with now === resetTime: `now > resetTime` is false → still rate-limited
+        const blocked = limiter.check(key);
+        expect(blocked).toBe(false);
+
+        // getRetryAfter() must return >= 1 even at this exact boundary
+        const retryAfter = limiter.getRetryAfter(key);
+        expect(retryAfter).toBeGreaterThanOrEqual(1);
+
+        limiter.destroy();
+    });
+
+    test("getRetryAfter always >= 1 while check() returns false", () => {
+        // Property: whenever check() returns false, getRetryAfter() must return >= 1.
+        // This guards against any Retry-After: 0 response that would cause thrash.
+        const limiter = new RateLimiter(2, 5000);
+        const key = "always-positive-key";
+
+        limiter.check(key);
+        limiter.check(key);
+        // Third call is blocked
+        const blocked = limiter.check(key);
+        expect(blocked).toBe(false);
+
+        const retryAfter = limiter.getRetryAfter(key);
+        expect(retryAfter).toBeGreaterThanOrEqual(1);
+        limiter.destroy();
+    });
 });
 
 describe("isValidEmail", () => {
