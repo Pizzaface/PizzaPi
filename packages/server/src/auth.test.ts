@@ -38,12 +38,14 @@ describe("secret validation", () => {
         process.env.NODE_ENV = "production";
         delete process.env.BETTER_AUTH_SECRET;
 
-        const dbPath = join(mkdtempSync(join(tmpdir(), "auth-secret-test-")), "test.db");
+        const tmpD = mkdtempSync(join(tmpdir(), "auth-secret-test-"));
+        const dbPath = join(tmpD, "test.db");
         try {
             expect(() => initAuth({ dbPath })).toThrow(/BETTER_AUTH_SECRET is not set/);
         } finally {
             process.env.NODE_ENV = origEnv;
             if (origSecret !== undefined) process.env.BETTER_AUTH_SECRET = origSecret;
+            rmSync(tmpD, { recursive: true, force: true });
         }
     });
 
