@@ -331,8 +331,8 @@ export function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const deepLinkSessionIdRef = React.useRef<string | null>(
     (() => {
-      const m = window.location.pathname.match(/^\/session\/([0-9a-f-]{36})(?:\/|$)/i);
-      return m ? m[1] : null;
+      const m = window.location.pathname.match(/^\/session\/([^/]+)(?:\/|$)/);
+      return m ? decodeURIComponent(m[1]) : null;
     })(),
   );
 
