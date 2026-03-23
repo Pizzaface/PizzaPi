@@ -21,14 +21,17 @@ import {
 import { isValidElement } from "react";
 
 import { CodeBlock } from "./code-block";
+import { ErrorBoundary } from "@/components/ui/error-boundary";
 
 export type ToolProps = ComponentProps<typeof Collapsible>;
 
 export const Tool = ({ className, ...props }: ToolProps) => (
-  <Collapsible
-    className={cn("group not-prose mb-4 w-full rounded-md border", className)}
-    {...props}
-  />
+  <ErrorBoundary level="widget">
+    <Collapsible
+      className={cn("group not-prose mb-4 w-full rounded-md border", className)}
+      {...props}
+    />
+  </ErrorBoundary>
 );
 
 export type ToolPart = ToolUIPart | DynamicToolUIPart;
