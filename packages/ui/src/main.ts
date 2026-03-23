@@ -16,5 +16,5 @@ const root = document.getElementById("app")!;
 // so the boundary must be *outside* App — hence it lives here in main.ts rather than
 // inside App's own render method.
 createRoot(root).render(
-    createElement(ErrorBoundary, { level: "root" }, createElement(App)),
+    createElement(ErrorBoundary, { level: "root", children: createElement(App) }),
 );
