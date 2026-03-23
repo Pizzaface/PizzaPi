@@ -75,15 +75,25 @@ Avoid making awaiting and completed rows feel identical; the distinction should 
 
 Priority note: if multiple booleans could apply at once, preserve the existing semantic priority used by the current sidebar logic unless a real bug is found. In particular, awaiting should continue to win over active if both appear true at render time.
 
-### Provider/activity dot
+### Provider icon as sole status indicator
 
-Update the small dot on the provider badge so it communicates state consistently:
-- **Active:** animated working indicator
-- **Awaiting:** amber pulse
-- **Completed (Unread):** green pulse
-- **Idle/default:** subdued static indicator
+**Remove the small activity dot** that currently overlays the provider badge. Instead, the provider icon container itself becomes the status indicator:
 
-Implementation note: the current dot logic only branches on `s.isActive`, so this change requires threading the same awaiting/completed state information used by the row styling into the dot styling logic as well. The idle dot should be dimmed relative to the completed-unread green pulse so the completed state remains the more attention-grabbing of the two.
+- **Active:** the provider icon gets the spin/chase animation — it is the "working" indicator.
+- **Awaiting:** the provider icon gets a soft amber pulse/glow.
+- **Completed (Unread):** the provider icon gets a soft green pulse/glow.
+- **Idle:** the provider icon is static/subdued (no animation, no glow).
+
+This requires threading `sessionsWithPendingQuestion` and `completedUnreadSessions` into the icon container's class logic, which currently only branches on `s.isActive`.
+
+### Remove inline pin icon
+
+Remove the always-visible pin toggle icon from the session row. Pinning remains accessible via:
+- Swipe-reveal action buttons
+- Long-press context action
+- Keyboard shortcut (`P`)
+
+This declutters the compact row layout and lets the status indicator and session text take more space.
 
 ## Constraints
 
