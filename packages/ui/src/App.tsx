@@ -94,6 +94,7 @@ import {
   augmentThinkingDurations,
   normalizeModelList,
 } from "@/lib/message-helpers";
+import { evictLruIfNeeded, touchSessionCache, MAX_SESSION_UI_CACHE_SIZE } from "@/lib/session-ui-cache";
 
 export function App() {
   const { data: session, isPending } = useSession();
@@ -393,7 +394,11 @@ export function App() {
       pendingQuestion: prev?.pendingQuestion ?? null,
       pendingPlan: prev?.pendingPlan ?? null,
       ...patch,
+      lastAccessed: Date.now(),
     };
+
+    // Evict the least-recently-accessed entry if we're over the size limit.
+    evictLruIfNeeded(sessionUiCacheRef.current, sessionId, MAX_SESSION_UI_CACHE_SIZE, activeSessionRef.current);
 
     sessionUiCacheRef.current.set(sessionId, next);
   }, []);
@@ -2022,6 +2027,8 @@ export function App() {
     setResumeSessionsLoading(false);
 
     const cached = sessionUiCacheRef.current.get(relaySessionId);
+    // Update lastAccessed so this entry is not evicted while actively being viewed.
+    touchSessionCache(sessionUiCacheRef.current, relaySessionId);
     setMessages(cached?.messages ?? []);
     setActiveModel(cached?.activeModel ?? null);
     setSessionName(cached?.sessionName ?? null);
