@@ -1169,7 +1169,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                             <span>{isPinPending ? "Saving" : isPinned ? "Unpin" : "Pin"}</span>
                                                         </button>
                                                         <button
-                                                            className="flex flex-col items-center justify-center flex-1 text-xs font-semibold gap-0.5 bg-red-600 text-white active:bg-red-700 transition-colors leading-none"
+                                                            className="flex flex-col items-center justify-center flex-1 pl-1 text-xs font-semibold gap-0.5 bg-red-600 text-white active:bg-red-700 transition-colors leading-none"
                                                             onClick={(e) => {
                                                                 e.stopPropagation();
                                                                 setConfirmEndSessionId(s.sessionId);
