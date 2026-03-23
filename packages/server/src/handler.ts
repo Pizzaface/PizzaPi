@@ -5,10 +5,34 @@ import { serveStaticFile } from "./static.js";
 import { getClientIp } from "./security.js";
 
 /**
+ * Clone a Response and inject the standard security headers.
+ * Called on every response returned by handleFetch.
+ * Exported for testing.
+ */
+export function withSecurityHeaders(res: Response): Response {
+    const headers = new Headers(res.headers);
+    headers.set("X-Content-Type-Options", "nosniff");
+    headers.set("X-Frame-Options", "DENY");
+    headers.set("X-XSS-Protection", "0");
+    headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
+    headers.set("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+    headers.set(
+        "Content-Security-Policy",
+        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws: wss:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'",
+    );
+    return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+}
+
+/**
  * Fetch-style request handler (REST + auth + static).
  * Extracted so it can be used both by the production server and integration tests.
  */
 export async function handleFetch(req: Request): Promise<Response> {
+    const res = await _handleFetch(req);
+    return withSecurityHeaders(res);
+}
+
+async function _handleFetch(req: Request): Promise<Response> {
     const url = new URL(req.url);
 
     // ── better-auth handler ────────────────────────────────────────────────

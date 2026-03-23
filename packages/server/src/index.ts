@@ -82,12 +82,9 @@ function nodeReqToFetchRequest(req: IncomingMessage): Request {
 }
 
 async function sendFetchResponse(res: ServerResponse, response: Response): Promise<void> {
-    const headers: Record<string, string | string[]> = {
-        "x-content-type-options": "nosniff",
-        "x-frame-options": "DENY",
-        "x-xss-protection": "0",
-        "referrer-policy": "strict-origin-when-cross-origin"
-    };
+    // Security headers are already injected by withSecurityHeaders in handleFetch.
+    // Do NOT add them here — duplicating would produce header arrays on the wire.
+    const headers: Record<string, string | string[]> = {};
     response.headers.forEach((value, key) => {
         const existing = headers[key];
         if (existing !== undefined) {
@@ -142,7 +139,10 @@ const httpServer = createServer(async (req, res) => {
                 "x-content-type-options": "nosniff",
                 "x-frame-options": "DENY",
                 "x-xss-protection": "0",
-                "referrer-policy": "strict-origin-when-cross-origin"
+                "referrer-policy": "strict-origin-when-cross-origin",
+                "permissions-policy": "camera=(), microphone=(), geolocation=()",
+                "content-security-policy":
+                    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws: wss:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'",
             });
         }
         res.end(JSON.stringify({ error: "Internal server error" }));
