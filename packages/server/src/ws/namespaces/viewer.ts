@@ -390,12 +390,12 @@ export function registerViewerNamespace(io: SocketIOServer): void {
                 if (!targetSession) {
                     // Target session no longer exists (child exited) — don't ack so the
                     // UI keeps retry controls visible, and emit trigger_error for feedback.
-                    (socket as any).emit("trigger_error", { message: `Child session ${targetSessionId} is no longer available`, triggerId });
+                    socket.emit("trigger_error", { message: `Child session ${targetSessionId} is no longer available`, triggerId });
                     return;
                 }
                 if (targetSession.userId !== viewerUserId) {
                     // Security: belongs to a different user — nack with trigger_error.
-                    (socket as any).emit("trigger_error", { message: `Target session ${targetSessionId} not found or unauthorized`, triggerId });
+                    socket.emit("trigger_error", { message: `Target session ${targetSessionId} not found or unauthorized`, triggerId });
                     return;
                 }
                 const triggerPayload = {
@@ -413,7 +413,7 @@ export function registerViewerNamespace(io: SocketIOServer): void {
                 } else if (await emitToRelaySessionVerified(targetSessionId, "trigger_response", triggerPayload)) {
                     if (typeof ack === "function") ack();
                 } else {
-                    (socket as any).emit("trigger_error", { message: `Failed to deliver trigger response to child session ${targetSessionId}`, triggerId });
+                    socket.emit("trigger_error", { message: `Failed to deliver trigger response to child session ${targetSessionId}`, triggerId });
                 }
                 return;
             }
@@ -432,7 +432,7 @@ export function registerViewerNamespace(io: SocketIOServer): void {
             } else if (await emitToRelaySessionVerified(sessionId, "trigger_response", triggerPayloadForParent)) {
                 if (typeof ack === "function") ack();
             } else {
-                (socket as any).emit("trigger_error", { message: `Failed to deliver trigger response to session ${sessionId}`, triggerId });
+                socket.emit("trigger_error", { message: `Failed to deliver trigger response to session ${sessionId}`, triggerId });
             }
         });
 

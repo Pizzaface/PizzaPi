@@ -217,6 +217,8 @@ export async function emitToRelaySessionAwaitingAck(
         const sockets = await io.of("/relay").adapter.sockets(new Set([room]));
         if (sockets.size === 0) return { hadListeners: false, acked: false };
 
+        // Cast needed: Socket.IO typed namespace doesn't expose the .timeout().emit()
+        // ack pattern in its TypeScript interface. This is a valid Socket.IO v4 API.
         const relayNs = io.of("/relay") as any;
         const responses = await new Promise<unknown[]>((resolve, reject) => {
             relayNs.to(room).timeout(timeoutMs).emit(eventName, data, (err: unknown, ackResponses: unknown[] = []) => {
@@ -241,15 +243,16 @@ export async function emitToRelaySessionAwaitingAck(
 
 /** Extract a ModelInfo from a raw heartbeat payload (or return null). */
 export function modelFromHeartbeat(rawHeartbeat: unknown): ModelInfo | null {
-    const rawModel = (rawHeartbeat as any)?.model;
-    return rawModel &&
-        typeof rawModel === "object" &&
-        typeof (rawModel as any).provider === "string" &&
-        typeof (rawModel as any).id === "string"
-        ? {
-              provider: (rawModel as any).provider as string,
-              id: (rawModel as any).id as string,
-              name: typeof (rawModel as any).name === "string" ? ((rawModel as any).name as string) : undefined,
-          }
+    const hb = rawHeartbeat && typeof rawHeartbeat === "object"
+        ? rawHeartbeat as Record<string, unknown>
         : null;
+    const rawModel = hb?.model;
+    if (!rawModel || typeof rawModel !== "object") return null;
+    const m = rawModel as Record<string, unknown>;
+    if (typeof m.provider !== "string" || typeof m.id !== "string") return null;
+    return {
+        provider: m.provider,
+        id: m.id,
+        name: typeof m.name === "string" ? m.name : undefined,
+    };
 }

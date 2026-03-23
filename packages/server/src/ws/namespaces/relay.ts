@@ -151,7 +151,7 @@ export function getPendingChunkedSnapshot(sessionId: string): { metadata: Record
         metadata: pending.metadata,
         messages,
         snapshotId: pending.snapshotId,
-        totalMessages: (pending.metadata as any).totalMessages ?? messages.length,
+        totalMessages: (pending.metadata.totalMessages as number | undefined) ?? messages.length,
         receivedChunks: pending.receivedChunks,
         totalChunks: pending.totalChunks,
     };
@@ -290,12 +290,13 @@ async function checkPushNotifications(
         let questionCount = 0;
         if (Array.isArray(args?.questions)) {
             for (const q of args!.questions as unknown[]) {
-                if (q && typeof q === "object" && typeof (q as any).question === "string" && (q as any).question.trim()) {
+                const qObj = q as Record<string, unknown>;
+                if (q && typeof q === "object" && typeof qObj.question === "string" && qObj.question.trim()) {
                     questionCount++;
                     if (!question) {
-                        question = ((q as any).question as string).trim();
-                        if (Array.isArray((q as any).options)) {
-                            options = ((q as any).options as unknown[]).filter((o): o is string => typeof o === "string" && o.trim().length > 0);
+                        question = qObj.question.trim();
+                        if (Array.isArray(qObj.options)) {
+                            options = (qObj.options as unknown[]).filter((o): o is string => typeof o === "string" && o.trim().length > 0);
                         }
                     }
                 }
@@ -479,7 +480,7 @@ export function registerRelayNamespace(io: SocketIOServer): void {
                        // a nested `report` field. Only intercept the new nested format;
                        // pass flat old-CLI events through the normal relay viewer path
                        // so MCP diagnostics reach viewers without corrupting Redis.
-                       !(event.type === "mcp_startup_report" && !(event as any).report)) {
+                       !(event.type === "mcp_startup_report" && !event.report)) {
                 // Discrete meta event: update Redis + broadcast via hub session meta room.
                 // Meta events do NOT flow through to relay viewers — hub is the channel.
                 const metaEvent = event as MetaRelayEvent;
@@ -515,7 +516,7 @@ export function registerRelayNamespace(io: SocketIOServer): void {
             // Exception: old-CLI flat mcp_startup_report (no .report field) is not
             // handled by the meta path above and must reach relay viewers.
             const isOldCliMcpReport =
-                event.type === "mcp_startup_report" && !(event as any).report;
+                event.type === "mcp_startup_report" && !event.report;
             if (!isMetaRelayEvent(event as { type?: unknown }) || isOldCliMcpReport) {
                 // For session_messages_chunk and chunked session_active, broadcast
                 // to viewers WITHOUT caching.  Chunks are transient and only needed
@@ -763,7 +764,8 @@ export function registerRelayNamespace(io: SocketIOServer): void {
                 } else {
                     trigger.sourceSessionId = sessionId;
                 }
-                targetSocket.emit("session_trigger" as any, { trigger });
+                // targetSocket is a generic untyped Socket — no cast needed for event name
+                targetSocket.emit("session_trigger", { trigger });
             } catch {
                 socket.emit("session_message_error", {
                     targetSessionId,
@@ -773,6 +775,9 @@ export function registerRelayNamespace(io: SocketIOServer): void {
         });
 
         // ── trigger_response — parent-to-child response routing ────────────
+        // Cast needed: Socket.IO typed listener doesn't support ack callbacks on
+        // events whose interface signature lacks them. The ack is supplied at
+        // runtime by the sender; we receive it here and call it to confirm delivery.
         socket.on("trigger_response" as any, async (data: {
             token: string;
             triggerId: string;
@@ -829,7 +834,8 @@ export function registerRelayNamespace(io: SocketIOServer): void {
             const targetSocket = getLocalTuiSocket(targetSessionId);
             if (targetSocket?.connected) {
                 try {
-                    targetSocket.emit("trigger_response" as any, triggerPayload);
+                    // targetSocket is a generic untyped Socket — no cast needed for event name
+                    targetSocket.emit("trigger_response", triggerPayload);
                     if (typeof ack === "function") ack({ ok: true });
                 } catch {
                     socket.emit("session_message_error", {
@@ -915,7 +921,8 @@ export function registerRelayNamespace(io: SocketIOServer): void {
 
                 // ⚡ Bolt: Fast socket presence check via adapter.sockets() avoids expensive cluster-wide network overhead of fetchSockets()
                 const relaySockets = await io.of("/relay").adapter.sockets(new Set([`session:${childSessionId}`]));
-                const hasRelayRecipient = relaySockets instanceof Set ? relaySockets.size > 0 : (relaySockets as any[]).length > 0;
+                // adapter.sockets() always returns Set<string> in Socket.IO v4
+                const hasRelayRecipient = relaySockets.size > 0;
 
                 // Clean up child-index entry
                 void removeChildSession(sessionId, childSessionId);

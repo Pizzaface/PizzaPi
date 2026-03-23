@@ -191,7 +191,7 @@ export function sendToTerminalViewer(terminalId: string, msg: unknown): void {
         if (buffer) {
             buffer.push(msg);
         } else {
-            const type = msg && typeof msg === "object" ? (msg as any).type : "?";
+            const type = msg && typeof msg === "object" ? (msg as Record<string, unknown>).type : "?";
             console.warn(`[sio-terminal] sendToTerminalViewer: no entry for ${terminalId} (msg.type=${type}) — dropped`);
         }
         return;
