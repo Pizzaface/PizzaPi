@@ -255,7 +255,22 @@ async function checkPushNotifications(
     if (viewerCount > 0) return;
 
     const sName = session?.sessionName ?? null;
-    const isChildSession = !!session?.parentSessionId;
+
+    // Determine whether this session is an active linked child.
+    //
+    // We check two conditions:
+    //   1. session.parentSessionId is set — the fast path; populated on registration.
+    //   2. !isChildDelinked — a delink_children call sets a marker but intentionally
+    //      leaves parentSessionId stale in Redis for a short window (to avoid races
+    //      with in-flight trigger_response messages). Without this guard we would
+    //      incorrectly suppress notifications for a child that the user just delinked.
+    //
+    // Known edge case: when a parent session is transiently offline, the child's
+    // reconnect path clears parentSessionId to null while preserving membership-set
+    // membership. In that narrow window isChildSession will be false and notifications
+    // will bypass suppression. This resolves itself once the parent reconnects and
+    // re-registers, restoring parentSessionId.
+    const isChildSession = !!session?.parentSessionId && !await isChildDelinked(sessionId);
 
     if (event.type === "agent_end") {
         notifyAgentFinished(userId, sessionId, sName, isChildSession);
