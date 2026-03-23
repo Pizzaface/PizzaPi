@@ -17,3 +17,6 @@ docs/superpowers/
 .worktrees/
 .beads/
 Library/Caches/
+
+# Night Shift reports (local-only, not committed)
+reports/
