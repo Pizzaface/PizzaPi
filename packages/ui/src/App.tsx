@@ -95,6 +95,8 @@ import {
   normalizeModelList,
 } from "@/lib/message-helpers";
 
+const MAX_SESSION_UI_CACHE_SIZE = 50;
+
 export function App() {
   const { data: session, isPending } = useSession();
   const { runners: feedRunners, status: runnersStatus } = useRunnersFeed({
@@ -392,8 +394,24 @@ export function App() {
       todoList: prev?.todoList ?? [],
       pendingQuestion: prev?.pendingQuestion ?? null,
       pendingPlan: prev?.pendingPlan ?? null,
+      lastAccessed: Date.now(),
       ...patch,
     };
+
+    // Evict the least-recently-accessed entry if we're over the size limit.
+    if (!sessionUiCacheRef.current.has(sessionId) && sessionUiCacheRef.current.size >= MAX_SESSION_UI_CACHE_SIZE) {
+      let lruKey: string | null = null;
+      let lruTime = Infinity;
+      for (const [key, entry] of sessionUiCacheRef.current) {
+        if (entry.lastAccessed < lruTime) {
+          lruTime = entry.lastAccessed;
+          lruKey = key;
+        }
+      }
+      if (lruKey !== null) {
+        sessionUiCacheRef.current.delete(lruKey);
+      }
+    }
 
     sessionUiCacheRef.current.set(sessionId, next);
   }, []);
@@ -2022,6 +2040,10 @@ export function App() {
     setResumeSessionsLoading(false);
 
     const cached = sessionUiCacheRef.current.get(relaySessionId);
+    // Update lastAccessed so this entry is not evicted while actively being viewed.
+    if (cached) {
+      sessionUiCacheRef.current.set(relaySessionId, { ...cached, lastAccessed: Date.now() });
+    }
     setMessages(cached?.messages ?? []);
     setActiveModel(cached?.activeModel ?? null);
     setSessionName(cached?.sessionName ?? null);
