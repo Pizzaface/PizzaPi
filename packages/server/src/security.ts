@@ -54,8 +54,11 @@ export class RateLimiter {
     }
 }
 
+// Module-level encoder avoids a new allocation on every isValidEmail call.
+const _emailEncoder = new TextEncoder();
+
 export function isValidEmail(email: string): boolean {
-    const encoder = new TextEncoder();
+    const encoder = _emailEncoder;
 
     // RFC 5321: total email address path limit is 254 bytes (measured in UTF-8 bytes,
     // not JavaScript UTF-16 code units, to correctly handle non-ASCII characters).
@@ -90,8 +93,20 @@ export function isValidEmail(email: string): boolean {
     // Reject leading or trailing dots (e.g. "a@.example.com", "a@example.com.").
     if (domain.startsWith(".") || domain.endsWith(".")) return false;
 
-    // Domain must have at least one dot and a TLD of ≥ 2 non-dot, non-space chars.
-    return /^[^\s@]+\.[^\s@.]{2,}$/.test(domain);
+    // Validate DNS structure: domain total ≤ 253 chars, each label 1–63 chars,
+    // only [a-zA-Z0-9-], no leading/trailing hyphen per label, TLD ≥ 2 chars.
+    if (domain.length > 253) return false;
+    const labels = domain.split(".");
+    if (labels.length < 2) return false;
+    // Each label must start and end with an alphanumeric character; hyphens are
+    // only permitted in interior positions (RFC 1035 §2.3.4).
+    const labelRe = /^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$/;
+    for (const label of labels) {
+        if (label.length < 1 || label.length > 63) return false;
+        if (!labelRe.test(label)) return false;
+    }
+    // TLD must be at least 2 characters.
+    return labels[labels.length - 1].length >= 2;
 }
 
 // Re-export from the shared protocol package so existing imports keep working.
