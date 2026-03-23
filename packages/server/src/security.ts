@@ -96,10 +96,59 @@ export class RateLimiter {
     }
 }
 
+// Module-level encoder avoids a new allocation on every isValidEmail call.
+const _emailEncoder = new TextEncoder();
+
 export function isValidEmail(email: string): boolean {
-    // Simple but effective regex for most use cases
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    return emailRegex.test(email);
+    const encoder = _emailEncoder;
+
+    // RFC 5321: total email address path limit is 254 bytes (measured in UTF-8 bytes,
+    // not JavaScript UTF-16 code units, to correctly handle non-ASCII characters).
+    if (encoder.encode(email).length > 254) {
+        return false;
+    }
+
+    // Split on the last '@' to separate local part from domain.
+    const atIndex = email.lastIndexOf("@");
+    if (atIndex <= 0 || atIndex === email.length - 1) {
+        // No '@', empty local part (@ at position 0), or empty domain (@ at end).
+        return false;
+    }
+
+    const localPart = email.slice(0, atIndex);
+    const domain = email.slice(atIndex + 1);
+
+    // Local part must not contain whitespace or a second '@'.
+    if (/[\s@]/.test(localPart)) return false;
+
+    // RFC 5321: local part must be ≤ 64 bytes (UTF-8 bytes, not character count).
+    // A multibyte character (e.g. 'é' = 2 bytes) can allow a local part that passes
+    // a character-count check but exceeds the RFC byte limit.
+    if (encoder.encode(localPart).length > 64) return false;
+
+    // Domain must not contain whitespace or '@'.
+    if (/[\s@]/.test(domain)) return false;
+
+    // Reject consecutive dots (e.g. "a@..example.com", "a@example..com").
+    if (domain.includes("..")) return false;
+
+    // Reject leading or trailing dots (e.g. "a@.example.com", "a@example.com.").
+    if (domain.startsWith(".") || domain.endsWith(".")) return false;
+
+    // Validate DNS structure: domain total ≤ 253 chars, each label 1–63 chars,
+    // only [a-zA-Z0-9-], no leading/trailing hyphen per label, TLD ≥ 2 chars.
+    if (domain.length > 253) return false;
+    const labels = domain.split(".");
+    if (labels.length < 2) return false;
+    // Each label must start and end with an alphanumeric character; hyphens are
+    // only permitted in interior positions (RFC 1035 §2.3.4).
+    const labelRe = /^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$/;
+    for (const label of labels) {
+        if (label.length < 1 || label.length > 63) return false;
+        if (!labelRe.test(label)) return false;
+    }
+    // TLD must be at least 2 characters.
+    return labels[labels.length - 1].length >= 2;
 }
 
 // Re-export from the shared protocol package so existing imports keep working.

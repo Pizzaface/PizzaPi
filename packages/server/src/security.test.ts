@@ -142,7 +142,38 @@ describe("isValidEmail", () => {
     test("accepts standard emails", () => {
         expect(isValidEmail("test@example.com")).toBe(true);
         expect(isValidEmail("user.name+tag@sub.domain.co.uk")).toBe(true);
-        expect(isValidEmail("a@b.c")).toBe(true);
+    });
+
+    test("accepts emails with local part exactly 64 chars", () => {
+        const localPart = "a".repeat(64);
+        expect(isValidEmail(`${localPart}@example.com`)).toBe(true);
+    });
+
+    test("accepts valid emails near the 254 char limit", () => {
+        // Build a domain using multiple labels each ≤ 63 chars (DNS max per label).
+        // Three labels: 63 + 63 + 58 chars, plus dots and a 2-char TLD = 189 chars.
+        // localPart (64) + "@" (1) + domain (189) = 254 bytes — exactly at the RFC limit.
+        const label63 = "d".repeat(63);
+        const label58 = "d".repeat(58);
+        const fullDomain = `${label63}.${label63}.${label58}.co`;
+        const localPart = "a".repeat(64);
+        expect(isValidEmail(`${localPart}@${fullDomain}`)).toBe(true);
+    });
+
+    test("rejects emails with > 64 chars in local part", () => {
+        const localPart = "a".repeat(65);
+        expect(isValidEmail(`${localPart}@example.com`)).toBe(false);
+    });
+
+    test("rejects emails > 254 chars total length", () => {
+        const localPart = "a".repeat(60);
+        // Make domain large enough to exceed 254 chars
+        const domain = "d".repeat(200) + ".com";
+        expect(isValidEmail(`${localPart}@${domain}`)).toBe(false);
+    });
+
+    test("rejects emails with single char TLD", () => {
+        expect(isValidEmail("a@b.c")).toBe(false);
     });
 
     test("rejects emails without @", () => {
@@ -168,6 +199,112 @@ describe("isValidEmail", () => {
 
     test("rejects emails without TLD dot", () => {
         expect(isValidEmail("user@domain")).toBe(false);
+    });
+
+    // --- Multibyte / Unicode byte-length tests (P1) ---
+
+    test("accepts multibyte local part at exactly 64 UTF-8 bytes (32 × 'é')", () => {
+        // 'é' (U+00E9) encodes to 2 bytes in UTF-8; 32 × 2 = 64 bytes — at the RFC limit.
+        // A character-count check would see only 32 chars, well under 64.
+        const localPart = "é".repeat(32);
+        expect(isValidEmail(`${localPart}@example.com`)).toBe(true);
+    });
+
+    test("rejects multibyte local part that exceeds 64 UTF-8 bytes but not 64 characters", () => {
+        // 33 × 'é' = 66 UTF-8 bytes > 64-byte RFC limit, but only 33 JS characters.
+        // Old character-count regex {1,64} would incorrectly accept this.
+        const localPart = "é".repeat(33);
+        expect(isValidEmail(`${localPart}@example.com`)).toBe(false);
+    });
+
+    test("rejects email whose total byte length exceeds 254 but character count does not", () => {
+        // ASCII local part: 64 bytes.  '@': 1 byte.  Domain uses 'é' (2 bytes each).
+        // domain = 94 × 'é' + ".com" = 188 + 4 = 192 bytes  →  total = 257 bytes > 254.
+        // Character count: 64 + 1 + 94 + 4 = 163 — well under 254, so old code passes it.
+        const localPart = "a".repeat(64);
+        const domainLabel = "é".repeat(94);
+        expect(isValidEmail(`${localPart}@${domainLabel}.com`)).toBe(false);
+    });
+
+    test("rejects email with non-ASCII chars in domain (strict DNS label validation)", () => {
+        // DNS labels are restricted to [a-zA-Z0-9-] (RFC 1035). Non-ASCII characters
+        // such as 'é' are not valid in a literal domain label and must be rejected,
+        // regardless of whether the total byte length is within the 254-byte limit.
+        const localPart = "a".repeat(32);
+        const domainLabel = "é".repeat(32); // Total bytes well under 254, but invalid DNS chars.
+        expect(isValidEmail(`${localPart}@${domainLabel}.com`)).toBe(false);
+    });
+
+    // --- Malformed domain tests (P2) ---
+
+    test("rejects domain with consecutive dots", () => {
+        expect(isValidEmail("a@..example.com")).toBe(false);
+        expect(isValidEmail("a@example..com")).toBe(false);
+        expect(isValidEmail("a@sub..example.com")).toBe(false);
+    });
+
+    test("rejects domain with a leading dot", () => {
+        expect(isValidEmail("a@.example.com")).toBe(false);
+    });
+
+    test("rejects domain with a trailing dot", () => {
+        expect(isValidEmail("a@example.com.")).toBe(false);
+    });
+
+    test("rejects domain that is only dots", () => {
+        expect(isValidEmail("a@...")).toBe(false);
+        expect(isValidEmail("a@.")).toBe(false);
+    });
+
+    // --- DNS label constraint tests (RFC 1035) ---
+
+    test("accepts domain labels up to 63 chars", () => {
+        const label = "a".repeat(63);
+        expect(isValidEmail(`user@${label}.com`)).toBe(true);
+    });
+
+    test("rejects domain label exceeding 63 chars", () => {
+        const label = "a".repeat(64);
+        expect(isValidEmail(`user@${label}.com`)).toBe(false);
+    });
+
+    test("rejects domain label starting with a hyphen", () => {
+        expect(isValidEmail("user@-label.com")).toBe(false);
+        expect(isValidEmail("user@sub.-label.com")).toBe(false);
+    });
+
+    test("rejects domain label ending with a hyphen", () => {
+        expect(isValidEmail("user@label-.com")).toBe(false);
+        expect(isValidEmail("user@sub.label-.com")).toBe(false);
+    });
+
+    test("accepts domain labels with interior hyphens", () => {
+        expect(isValidEmail("user@my-domain.com")).toBe(true);
+        expect(isValidEmail("user@my-long-domain-name.co.uk")).toBe(true);
+    });
+
+    test("rejects domain label with invalid characters (underscores, dots within label)", () => {
+        expect(isValidEmail("user@_dmarc.example.com")).toBe(false);
+        expect(isValidEmail("user@exam_ple.com")).toBe(false);
+    });
+
+    test("rejects domain total length > 253 chars", () => {
+        // 4 labels of 63 chars + dots = 63*4 + 3 = 255 > 253
+        const label = "d".repeat(63);
+        const domain = `${label}.${label}.${label}.${label}`;
+        expect(isValidEmail(`user@${domain}`)).toBe(false);
+    });
+
+    test("accepts domain near max length (252 chars) with 1-char local part", () => {
+        // A 253-char domain cannot appear in a valid email: even with the minimum
+        // 1-char local part, total = 1 + "@"(1) + 253 = 255 bytes > 254-byte RFC limit.
+        // 252-char domain with 1-char local = 254 bytes — exactly at the RFC limit.
+        // Build: 3 × 63-char labels + 1 × 60-char label + 3 dots = 63*3+60+3 = 252 chars.
+        const label63 = "d".repeat(63);
+        const label60 = "d".repeat(60);
+        const domain = `${label63}.${label63}.${label63}.${label60}`;
+        expect(domain.length).toBe(252);
+        expect(isValidEmail(`a@${domain}`)).toBe(true);
     });
 });
 
