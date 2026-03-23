@@ -4,7 +4,8 @@ import { promisify } from "node:util";
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 import { readdir, stat } from "node:fs/promises";
-import { hostname } from "node:os";
+import { existsSync, mkdirSync, renameSync, cpSync, rmSync } from "node:fs";
+import { hostname, homedir } from "node:os";
 import {
     spawnTerminal,
     writeTerminalInput,
@@ -45,6 +46,59 @@ import {
     scanAllPluginInfo,
 } from "../plugins.js";
 
+import {
+    initUsage,
+    triggerScan,
+    getData as getUsageData,
+    closeUsage,
+} from "../usage/index.js";
+import type { UsageRange } from "../usage/types.js";
+
+/**
+ * Migrate session storage from ~/.pi/agent to ~/.pizzapi/agent.
+ * Runs on daemon startup and is idempotent (safe to call repeatedly).
+ */
+function migrateSessionStorage(): void {
+    const oldDir = join(homedir(), ".pi", "agent");
+    const newDir = join(homedir(), ".pizzapi", "agent");
+    const newSessions = join(newDir, "sessions");
+
+    // Skip if old dir doesn't exist or new sessions dir already exists
+    if (!existsSync(oldDir) || existsSync(newSessions)) return;
+
+    // Ensure the parent directory exists but do NOT pre-create newDir itself —
+    // renameSync requires the target to not exist, or on some platforms it will
+    // fail with EEXIST/ENOTEMPTY when renaming onto an existing directory.
+    mkdirSync(join(newDir, ".."), { recursive: true });
+
+    if (existsSync(newDir)) {
+        // newDir already exists (e.g. a fresh install created it) but newSessions
+        // does not — merge any files from oldDir into newDir and remove oldDir.
+        try {
+            cpSync(oldDir, newDir, { recursive: true });
+            rmSync(oldDir, { recursive: true, force: true });
+            logInfo(`Merged session data from ~/.pi/agent into ~/.pizzapi/agent`);
+        } catch (e: any) {
+            logWarn(`Failed to merge session storage: ${e.message}`);
+        }
+        return;
+    }
+
+    try {
+        renameSync(oldDir, newDir);
+        logInfo(`Migrated session data from ~/.pi/agent to ~/.pizzapi/agent`);
+    } catch (e: any) {
+        if (e.code === "EXDEV") {
+            // Cross-device move failed — fall back to copy
+            cpSync(oldDir, newDir, { recursive: true });
+            rmSync(oldDir, { recursive: true, force: true });
+            logInfo(`Migrated session data from ~/.pi/agent to ~/.pizzapi/agent (cross-device copy)`);
+        } else {
+            logWarn(`Failed to migrate session storage: ${e.message}`);
+        }
+    }
+}
+
 /**
  * Read the `relayUrl` from ~/.pizzapi/config.json, returning undefined
  * if not set or set to "off".  Used as a fallback when PIZZAPI_RELAY_URL
@@ -75,6 +129,12 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
     setLogComponent("daemon");
     const statePath = defaultStatePath();
     const identity = acquireStateAndIdentity(statePath);
+
+    // Migrate session storage from ~/.pi to ~/.pizzapi on startup
+    migrateSessionStorage();
+
+    // Initialize usage tracking
+    initUsage();
 
     // Read CLI version for reporting to the server.
     // Use module import instead of filesystem path math so this works in:
@@ -179,12 +239,19 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
 
         logInfo(`connecting to relay at ${sioUrl}/runner…`);
 
+        // Start periodic usage scan (every 5 minutes)
+        const usageScanInterval = setInterval(() => {
+            triggerScan();
+        }, 5 * 60 * 1000);
+
         const shutdown = (code: number) => {
             if (isShuttingDown) return;
             isShuttingDown = true;
             clearInterval(endedSessionSweep);
+            clearInterval(usageScanInterval);
             killAllTerminals();
             stopUsageRefreshLoop();
+            closeUsage();
             releaseStateLock(statePath);
             socket.disconnect();
             resolve(code);
@@ -1149,6 +1216,30 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     requestId,
                     ok: false,
                     message: err instanceof Error ? err.message : String(err),
+                });
+            }
+        });
+
+        // ── Usage dashboard ───────────────────────────────────────────────
+
+        socket.on("get_usage", (data: any) => {
+            if (isShuttingDown) return;
+            const requestId = data.requestId ?? "";
+            try {
+                const range = (data.range as UsageRange) || "90d";
+                const usageData = getUsageData(range);
+                if (!usageData) {
+                    socket.emit("usage_error", {
+                        requestId,
+                        error: "Usage data not available yet — initial scan in progress",
+                    });
+                    return;
+                }
+                socket.emit("usage_data", { requestId, data: usageData });
+            } catch (e: any) {
+                socket.emit("usage_error", {
+                    requestId,
+                    error: e.message ?? "Unknown error",
                 });
             }
         });

@@ -757,5 +757,33 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         }
     }
 
+    // GET /api/runners/:id/usage
+    const usageMatch = url.pathname.match(/^\/api\/runners\/([^/]+)\/usage$/);
+    if (usageMatch && req.method === "GET") {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        const runnerId = decodeURIComponent(usageMatch[1]);
+        const runner = await getRunnerData(runnerId);
+        if (!runner) return Response.json({ error: "Runner not found" }, { status: 404 });
+        if (runner.userId !== identity.userId) return Response.json({ error: "Forbidden" }, { status: 403 });
+
+        const range = url.searchParams.get("range") || "90d";
+        const validRanges = ["7d", "30d", "90d", "all"];
+        if (!validRanges.includes(range)) {
+            return Response.json({ error: "Invalid range parameter" }, { status: 400 });
+        }
+
+        try {
+            const result = await sendRunnerCommand(runnerId, { type: "get_usage", range }, 30_000) as any;
+            if (result && result.error) {
+                return Response.json({ error: result.error }, { status: 502 });
+            }
+            return Response.json(result);
+        } catch (err) {
+            return Response.json({ error: err instanceof Error ? err.message : String(err) }, { status: 502 });
+        }
+    }
+
     return undefined;
 };

@@ -154,6 +154,7 @@ export async function sendAgentCommand(
 
 interface PendingRunnerCommand {
     resolve: (result: Record<string, unknown>) => void;
+    reject: (err: Error) => void;
     timer: ReturnType<typeof setTimeout>;
 }
 
@@ -184,7 +185,7 @@ export async function sendRunnerCommand(
             reject(new Error("Runner command timed out"));
         }, timeoutMs);
 
-        pendingRunnerCommands.set(requestId, { resolve, timer });
+        pendingRunnerCommands.set(requestId, { resolve, reject, timer });
 
         try {
             const { type: _type, ...rest } = command;
@@ -396,6 +397,32 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
                     pendingRunnerCommands.delete(requestId);
                     const { requestId: _rid, ...rest } = data;
                     pending.resolve(rest);
+                }
+            }
+        });
+
+        // ── usage_data — respond with usage dashboard data ────────────────────
+        socket.on("usage_data", (data) => {
+            const requestId = data.requestId;
+            if (requestId) {
+                const pending = pendingRunnerCommands.get(requestId);
+                if (pending) {
+                    clearTimeout(pending.timer);
+                    pendingRunnerCommands.delete(requestId);
+                    pending.resolve((data.data as Record<string, unknown>) ?? {});
+                }
+            }
+        });
+
+        // ── usage_error — usage data request failed ──────────────────────────
+        socket.on("usage_error", (data) => {
+            const requestId = data.requestId;
+            if (requestId) {
+                const pending = pendingRunnerCommands.get(requestId);
+                if (pending) {
+                    clearTimeout(pending.timer);
+                    pendingRunnerCommands.delete(requestId);
+                    pending.reject(new Error(data.error ?? "Unknown usage error"));
                 }
             }
         });

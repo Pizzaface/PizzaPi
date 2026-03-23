@@ -74,6 +74,18 @@ export interface RunnerClientToServerEvents {
     [key: string]: unknown;
   }) => void;
 
+  /** Runner responds with usage dashboard data */
+  usage_data: (data: {
+    requestId?: string;
+    data: unknown; // UsageData shape — typed as unknown here to avoid protocol depending on CLI types
+  }) => void;
+
+  /** Runner reports a usage data error */
+  usage_error: (data: {
+    requestId?: string;
+    error: string;
+  }) => void;
+
   /** Runner forwards a session event from a worker */
   runner_session_event: (data: {
     sessionId: string;
@@ -327,6 +339,12 @@ export interface RunnerServerToClientEvents {
   sandbox_update_config: (data: {
     requestId?: string;
     config: Record<string, unknown>;
+  }) => void;
+
+  /** Requests usage dashboard data from the runner */
+  get_usage: (data: {
+    requestId?: string;
+    range?: "7d" | "30d" | "90d" | "all";
   }) => void;
 
   /** Generic error */
