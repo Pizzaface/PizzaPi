@@ -37,6 +37,7 @@ interface HubSession {
     runnerName?: string | null;
     isPinned?: boolean;
     parentSessionId?: string | null;
+    workerType?: "pi" | "claude-code";
 }
 
 interface PinnedSession {
@@ -88,7 +89,7 @@ export interface SessionSidebarProps {
     /** Called when the user confirms ending a session via the swipe gesture */
     onEndSession?: (sessionId: string) => void;
     /** Called when the user wants to duplicate a session (same runner + working directory) */
-    onDuplicateSession?: (runnerId: string, cwd: string) => void;
+    onDuplicateSession?: (runnerId: string, cwd: string, workerType?: "pi" | "claude-code") => void;
     /** Called when the user wants to return from Runners view to Sessions */
     onShowSessions?: () => void;
     /** List of runners to display when showRunners is true */
@@ -1284,7 +1285,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                             className="flex flex-col items-center justify-center flex-1 pb-[3px] text-xs font-semibold gap-0.5 bg-violet-500 text-white active:bg-violet-600 transition-colors leading-none"
                                                             onClick={(e) => {
                                                                 e.stopPropagation();
-                                                                onDuplicateSession?.(s.runnerId!, s.cwd || "");
+                                                                onDuplicateSession?.(s.runnerId!, s.cwd || "", s.workerType);
                                                                 // Close the revealed state
                                                                 setSwipeOffsets((prev) => {
                                                                     const next = new Map(prev);
