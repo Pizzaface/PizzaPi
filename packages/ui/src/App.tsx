@@ -95,7 +95,7 @@ import {
   normalizeModelList,
 } from "@/lib/message-helpers";
 import { evictLruIfNeeded, touchSessionCache, MAX_SESSION_UI_CACHE_SIZE } from "@/lib/session-ui-cache";
-import { mergeConnectedSeq } from "@/lib/session-seq";
+import { analyzeIncomingSeq, mergeConnectedSeq } from "@/lib/session-seq";
 
 export function App() {
   const { data: session, isPending } = useSession();
@@ -2105,22 +2105,25 @@ export function App() {
       if (activeSessionRef.current !== relaySessionId) return;
       lastViewerEventAtRef.current = Date.now();
 
-      // Detect sequence gaps; request a resync if we missed events.
+      // Detect sequence gaps and reject out-of-order stale events.
       // This is safe during chunked delivery because the server's resync
       // handler now falls back to getPendingChunkedSnapshot() when lastState
       // hasn't been assembled yet, and the resync response is a non-chunked
       // session_active that sets lastCompletedSnapshotRef, rejecting any
       // subsequently arriving stale chunks.
       const seq = typeof data.seq === "number" ? data.seq : null;
-      if (seq !== null && lastSeqRef.current !== null) {
-        const expected = lastSeqRef.current + 1;
-        if (seq > expected) {
+      if (seq !== null) {
+        const decision = analyzeIncomingSeq(lastSeqRef.current, seq);
+        if (!decision.accept) {
+          return;
+        }
+        if (decision.gap && decision.expected !== null) {
           // Gap detected — request a resync snapshot from the server.
-          console.warn(`[relay] Sequence gap: expected ${expected}, got ${seq}. Requesting resync.`);
+          console.warn(`[relay] Sequence gap: expected ${decision.expected}, got ${seq}. Requesting resync.`);
           socket.emit("resync", {});
         }
+        lastSeqRef.current = decision.nextSeq;
       }
-      if (seq !== null) lastSeqRef.current = seq;
 
       handleRelayEvent(data.event, seq ?? undefined);
     });

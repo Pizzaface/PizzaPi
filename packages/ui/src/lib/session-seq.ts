@@ -10,3 +10,28 @@ export function mergeConnectedSeq(
   if (currentSeq === null) return connectedLastSeq;
   return Math.max(currentSeq, connectedLastSeq);
 }
+
+export function analyzeIncomingSeq(
+  currentSeq: number | null,
+  incomingSeq: number,
+): { accept: boolean; nextSeq: number | null; gap: boolean; expected: number | null } {
+  if (!Number.isFinite(incomingSeq)) {
+    return { accept: false, nextSeq: currentSeq, gap: false, expected: null };
+  }
+
+  if (currentSeq === null) {
+    return { accept: true, nextSeq: incomingSeq, gap: false, expected: null };
+  }
+
+  if (incomingSeq <= currentSeq) {
+    return { accept: false, nextSeq: currentSeq, gap: false, expected: currentSeq + 1 };
+  }
+
+  const expected = currentSeq + 1;
+  return {
+    accept: true,
+    nextSeq: incomingSeq,
+    gap: incomingSeq > expected,
+    expected,
+  };
+}
