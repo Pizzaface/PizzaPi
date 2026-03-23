@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { handleFetch, MAX_BODY_SIZE, MAX_ATTACHMENT_BODY_SIZE } from "./handler";
+import { handleFetch, MAX_BODY_SIZE, MAX_ATTACHMENT_BODY_SIZE, enforceBodySizeLimit } from "./handler";
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -218,5 +218,69 @@ describe("handleFetch — body size limits", () => {
         });
         const res = await handleFetch(req);
         expect(res.status).toBe(413);
+    });
+});
+
+// ── Body reconstruction — streaming path ─────────────────────────────────────
+
+describe("enforceBodySizeLimit — streaming path body reconstruction", () => {
+    test("body buffered via streaming path is fully readable by downstream req.text()", async () => {
+        // Use a ReadableStream body so the Request has no Content-Length header,
+        // guaranteeing the streaming byte-counter path is exercised.
+        const payload = '{"hello":"world"}';
+        const encoded = new TextEncoder().encode(payload);
+        const streamBody = new ReadableStream<Uint8Array>({
+            start(controller) {
+                controller.enqueue(encoded);
+                controller.close();
+            },
+        });
+
+        const req = new Request("http://localhost/api/test", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: streamBody,
+        });
+
+        // Confirm the streaming path is taken (no Content-Length present).
+        expect(req.headers.get("content-length")).toBeNull();
+
+        const url = new URL(req.url);
+        const result = await enforceBodySizeLimit(req, url);
+
+        // Must return a Request (not a 413/4xx Response).
+        expect(result).not.toBeInstanceOf(Response);
+
+        // The reconstructed Request body must be fully readable by downstream
+        // consumers (req.json() / req.text() etc.) — this is the regression the
+        // original /health test could not catch.
+        const text = await (result as Request).text();
+        expect(text).toBe(payload);
+    });
+
+    test("body buffered via streaming path is parseable as JSON by downstream req.json()", async () => {
+        const payload = { key: "value", num: 42 };
+        const encoded = new TextEncoder().encode(JSON.stringify(payload));
+        const streamBody = new ReadableStream<Uint8Array>({
+            start(controller) {
+                controller.enqueue(encoded);
+                controller.close();
+            },
+        });
+
+        const req = new Request("http://localhost/api/test", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: streamBody,
+        });
+
+        expect(req.headers.get("content-length")).toBeNull();
+
+        const url = new URL(req.url);
+        const result = await enforceBodySizeLimit(req, url);
+        expect(result).not.toBeInstanceOf(Response);
+
+        const parsed = await (result as Request).json() as typeof payload;
+        expect(parsed).toEqual(payload);
     });
 });

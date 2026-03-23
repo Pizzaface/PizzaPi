@@ -34,7 +34,7 @@ function isAttachmentUploadPath(pathname: string, method: string): boolean {
  *
  * Returns either a Response (error) or the Request to continue with.
  */
-async function enforceBodySizeLimit(req: Request, url: URL): Promise<Response | Request> {
+export async function enforceBodySizeLimit(req: Request, url: URL): Promise<Response | Request> {
     const method = req.method;
     if (method !== "POST" && method !== "PUT" && method !== "PATCH") {
         return req;
@@ -106,6 +106,11 @@ async function enforceBodySizeLimit(req: Request, url: URL): Promise<Response | 
 
     // Reassemble the buffered bytes and reconstruct the request so downstream
     // handlers can still call req.json() / req.formData() etc.
+    // NOTE: Using a contiguous ArrayBuffer rather than a ReadableStream here is
+    // intentional — in Bun, when a reconstructed Request with a ReadableStream
+    // body is subsequently wrapped via `new Request(req, { headers })` (as the
+    // auth handler does), the body stream fails to propagate and hangs.
+    // ArrayBuffer bodies do not have this problem.
     const buffered = new Uint8Array(totalBytes);
     let offset = 0;
     for (const chunk of chunks) {
