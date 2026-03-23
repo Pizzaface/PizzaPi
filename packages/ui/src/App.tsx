@@ -394,8 +394,8 @@ export function App() {
       todoList: prev?.todoList ?? [],
       pendingQuestion: prev?.pendingQuestion ?? null,
       pendingPlan: prev?.pendingPlan ?? null,
-      lastAccessed: Date.now(),
       ...patch,
+      lastAccessed: Date.now(),
     };
 
     // Evict the least-recently-accessed entry if we're over the size limit.
