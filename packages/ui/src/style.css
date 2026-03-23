@@ -48,6 +48,100 @@
   50% { border-color: oklch(0.85 0.15 85 / 0.7); box-shadow: 0 0 8px oklch(0.85 0.15 85 / 0.3); }
 }
 
+/* ── Conic dot-chase: shared @property + keyframe ── */
+@property --chase-angle {
+  syntax: '<angle>';
+  inherits: false;
+  initial-value: 0deg;
+}
+
+@keyframes chase-spin {
+  from { --chase-angle: 0deg; }
+  to   { --chase-angle: 360deg; }
+}
+
+/* Shared inner bg mask so the conic gradient only shows on the border */
+.animate-working-chase,
+.animate-awaiting-chase,
+.animate-completed-chase {
+  isolation: isolate;
+}
+
+.animate-working-chase::after,
+.animate-awaiting-chase::after,
+.animate-completed-chase::after {
+  content: '';
+  position: absolute;
+  inset: 1.5px;
+  border-radius: 5px;
+  background: var(--sidebar);
+  z-index: -1;
+  pointer-events: none;
+}
+
+/* Working — blue dot chase */
+.animate-working-chase::before {
+  content: '';
+  position: absolute;
+  inset: -1.5px;
+  border-radius: 8px;
+  background: conic-gradient(from var(--chase-angle),
+    transparent                  0deg,
+    transparent                  290deg,
+    oklch(0.5  0.22 220 / 0)     290deg,
+    oklch(0.6  0.25 220 / 0.4)   310deg,
+    oklch(0.75 0.28 215 / 0.8)   330deg,
+    oklch(0.92 0.2  205 / 1)     345deg,
+    oklch(0.75 0.28 215 / 0.5)   355deg,
+    oklch(0.5  0.22 220 / 0)     360deg
+  );
+  animation: chase-spin 2s linear infinite;
+  z-index: -1;
+  pointer-events: none;
+}
+
+/* Awaiting input — purple dot chase */
+.animate-awaiting-chase::before {
+  content: '';
+  position: absolute;
+  inset: -1.5px;
+  border-radius: 8px;
+  background: conic-gradient(from var(--chase-angle),
+    transparent                  0deg,
+    transparent                  290deg,
+    oklch(0.5  0.28 280 / 0)     290deg,
+    oklch(0.6  0.32 283 / 0.4)   310deg,
+    oklch(0.72 0.35 285 / 0.85)  330deg,
+    oklch(0.9  0.25 292 / 1)     345deg,
+    oklch(0.72 0.35 285 / 0.5)   355deg,
+    oklch(0.5  0.28 280 / 0)     360deg
+  );
+  animation: chase-spin 2s linear infinite;
+  z-index: -1;
+  pointer-events: none;
+}
+
+/* Completed unread — green dot chase */
+.animate-completed-chase::before {
+  content: '';
+  position: absolute;
+  inset: -1.5px;
+  border-radius: 8px;
+  background: conic-gradient(from var(--chase-angle),
+    transparent                  0deg,
+    transparent                  290deg,
+    oklch(0.5  0.22 145 / 0)     290deg,
+    oklch(0.6  0.25 147 / 0.4)   310deg,
+    oklch(0.72 0.28 148 / 0.85)  330deg,
+    oklch(0.9  0.2  152 / 1)     345deg,
+    oklch(0.72 0.28 148 / 0.5)   355deg,
+    oklch(0.5  0.22 145 / 0)     360deg
+  );
+  animation: chase-spin 2s linear infinite;
+  z-index: -1;
+  pointer-events: none;
+}
+
 :root {
   --radius: 0.625rem;
   --checker-dark: #e4e4e7;
