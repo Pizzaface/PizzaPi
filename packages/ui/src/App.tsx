@@ -95,7 +95,7 @@ import {
   normalizeModelList,
 } from "@/lib/message-helpers";
 import { evictLruIfNeeded, touchSessionCache, MAX_SESSION_UI_CACHE_SIZE } from "@/lib/session-ui-cache";
-import { analyzeIncomingSeq, mergeConnectedSeq } from "@/lib/session-seq";
+import { analyzeIncomingSeq, mergeConnectedSeq, shouldDeferEventForHydration } from "@/lib/session-seq";
 
 export function App() {
   const { data: session, isPending } = useSession();
@@ -2104,6 +2104,22 @@ export function App() {
     socket.on("event", (data) => {
       if (activeSessionRef.current !== relaySessionId) return;
       lastViewerEventAtRef.current = Date.now();
+
+      const rawEvent = data.event;
+      const eventType =
+        rawEvent && typeof rawEvent === "object" && typeof (rawEvent as any).type === "string"
+          ? (rawEvent as any).type as string
+          : "";
+
+      // Ignore pre-snapshot/chunk-hydration events BEFORE sequence analysis,
+      // otherwise dropped events can still advance lastSeq and block hydration.
+      if (shouldDeferEventForHydration(
+        eventType,
+        awaitingSnapshotRef.current,
+        !!chunkedDeliveryRef.current,
+      )) {
+        return;
+      }
 
       // Detect sequence gaps and reject out-of-order stale events.
       // This is safe during chunked delivery because the server's resync

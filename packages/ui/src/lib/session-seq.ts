@@ -11,6 +11,32 @@ export function mergeConnectedSeq(
   return Math.max(currentSeq, connectedLastSeq);
 }
 
+export function shouldDeferEventForHydration(
+  eventType: string,
+  awaitingSnapshot: boolean,
+  chunkedDeliveryActive: boolean,
+): boolean {
+  const deferStreamingDeltas =
+    eventType === "message_update" ||
+    eventType === "message_start" ||
+    eventType === "message_end" ||
+    eventType === "turn_end" ||
+    eventType === "tool_execution_start" ||
+    eventType === "tool_execution_update" ||
+    eventType === "tool_execution_end";
+
+  if ((awaitingSnapshot || chunkedDeliveryActive) && deferStreamingDeltas) {
+    return true;
+  }
+
+  // Chunks arriving before their session_active chunked header must be ignored.
+  if (eventType === "session_messages_chunk" && awaitingSnapshot && !chunkedDeliveryActive) {
+    return true;
+  }
+
+  return false;
+}
+
 export function analyzeIncomingSeq(
   currentSeq: number | null,
   incomingSeq: number,
