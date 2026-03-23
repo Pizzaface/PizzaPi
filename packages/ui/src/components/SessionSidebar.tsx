@@ -1171,6 +1171,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                 <div
                                                     key={s.sessionId}
                                                     className="relative overflow-hidden rounded-md"
+                                                    style={depth > 0 ? { marginLeft: `${getSessionIndent(depth)}px` } : undefined}
                                                 >
                                                     {/* "Duplicate" + "Pin" + "End" actions behind the card — only rendered during swipe/reveal (not in select mode) */}
                                                     {/* Width adapts: 3 buttons when session has a runner, 2 buttons otherwise */}
@@ -1294,7 +1295,6 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                         style={{
                                                             transform: !selectMode && hasOffset ? `translateX(${swipeOffset}px)` : undefined,
                                                             touchAction: selectMode ? undefined : "pan-y",
-                                                            marginLeft: `${getSessionIndent(depth)}px`,
                                                         }}
                                                     >
                                                         {/* Expand/collapse toggle for parent sessions */}

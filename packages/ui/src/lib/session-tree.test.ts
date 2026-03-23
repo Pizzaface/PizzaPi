@@ -187,6 +187,31 @@ describe("session-tree", () => {
       expect(flattened[2].session.sessionId).toBe("level2");
     });
 
+    test("assigns monotonically increasing depth for arbitrarily deep nesting", () => {
+      // Builds a 5-level chain (0 → 1 → 2 → 3 → 4) and verifies depths are
+      // exactly [0, 1, 2, 3, 4] when all nodes are expanded.
+      // This is the invariant the sidebar's outer-wrapper marginLeft approach relies on:
+      // each level should receive its own distinct indent, not be clamped or repeated.
+      const now = Date.now();
+      const sessions = [
+        { ...createSession("d0"),           startedAt: new Date(now - 5000).toISOString() },
+        { ...createSession("d1", "d0"),     startedAt: new Date(now - 4000).toISOString() },
+        { ...createSession("d2", "d1"),     startedAt: new Date(now - 3000).toISOString() },
+        { ...createSession("d3", "d2"),     startedAt: new Date(now - 2000).toISOString() },
+        { ...createSession("d4", "d3"),     startedAt: new Date(now - 1000).toISOString() },
+      ];
+
+      const tree = buildSessionTree(sessions);
+      const allIds = new Set(sessions.map((s) => s.sessionId));
+      const flattened = flattenSessionTree(tree, allIds);
+
+      expect(flattened).toHaveLength(5);
+      for (let i = 0; i < 5; i++) {
+        expect(flattened[i].depth).toBe(i);
+        expect(flattened[i].session.sessionId).toBe(`d${i}`);
+      }
+    });
+
     test("returns empty array for empty tree", () => {
       const flattened = flattenSessionTree([], new Set());
       expect(flattened).toHaveLength(0);
@@ -206,6 +231,17 @@ describe("session-tree", () => {
 
     test("handles large depth values", () => {
       expect(getSessionIndent(10)).toBe(160);
+    });
+
+    test("indent is always strictly positive for depth > 0 (wrapper must receive nonzero margin)", () => {
+      // This directly guards the sidebar layout fix: the outer wrapper <div> receives
+      // marginLeft = getSessionIndent(depth) for depth > 0.  If indent were 0 for any
+      // depth > 0, child sessions would visually overlap their parents.
+      for (let d = 1; d <= 8; d++) {
+        expect(getSessionIndent(d)).toBeGreaterThan(0);
+        // Also verify it's strictly larger than the previous level
+        expect(getSessionIndent(d)).toBeGreaterThan(getSessionIndent(d - 1));
+      }
     });
   });
 
