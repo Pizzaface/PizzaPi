@@ -326,6 +326,16 @@ export function App() {
   // (restoredRef is declared here; the effect is placed after openSession is defined below)
   const restoredRef = React.useRef(false);
 
+  // Deep-link: if the page was loaded with a /session/<id> URL, capture the
+  // session ID on mount so we can open it once auth + liveSessions are ready.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const deepLinkSessionIdRef = React.useRef<string | null>(
+    (() => {
+      const m = window.location.pathname.match(/^\/session\/([0-9a-f-]{36})(?:\/|$)/i);
+      return m ? m[1] : null;
+    })(),
+  );
+
   // Tracks a session that was restarted via the remote exec "restart" command.
   // When the session comes back live (hub sends session_added), we auto-reconnect.
   const restartPendingSessionIdRef = React.useRef<string | null>(null);
@@ -2197,15 +2207,26 @@ export function App() {
   }, [handleRelayEvent, patchSessionCache, cancelPendingDeltas]);
 
   // Auto-reopen the last viewed session once live sessions arrive.
+  // Deep-links (/session/<id>) take priority over the stored lastSessionId.
   React.useEffect(() => {
     if (restoredRef.current) return;
     if (liveSessions.length === 0) return;
-    const lastId = localStorage.getItem("pp.lastSessionId");
-    if (!lastId) return;
-    const still_live = liveSessions.some((s) => s.sessionId === lastId);
+
+    // Prefer the deep-link session ID from the URL over the stored last session.
+    const deepLinkId = deepLinkSessionIdRef.current;
+    const targetId = deepLinkId ?? localStorage.getItem("pp.lastSessionId");
+    if (!targetId) return;
+    const still_live = liveSessions.some((s) => s.sessionId === targetId);
     if (!still_live) return;
+
     restoredRef.current = true;
-    openSession(lastId);
+    // Clear the deep-link ref so it doesn't interfere with future navigation,
+    // and replace the URL so a reload doesn't re-trigger the deep-link.
+    if (deepLinkId) {
+      deepLinkSessionIdRef.current = null;
+      history.replaceState(null, "", "/");
+    }
+    openSession(targetId);
   }, [liveSessions, openSession]);
 
   // When a restarted session comes back live, automatically reconnect to it.
