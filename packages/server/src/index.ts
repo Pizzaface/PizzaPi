@@ -175,33 +175,67 @@ try {
     // Redis "error"       → connection error (client will auto-reconnect).
     // Redis "reconnecting"→ client is actively attempting to reconnect.
     //
-    // Socket.IO uses the same Redis clients for its adapter, so its health
-    // is directly tied to the Redis connection state.
+    // Socket.IO uses BOTH pubClient and subClient for its adapter — if either
+    // disconnects, cross-node event propagation is degraded.  We track each
+    // client's ready state independently and only report healthy when both
+    // are connected.
+
+    let pubReady = false;
+    let subReady = false;
+
+    function syncRedisHealth(): void {
+        const allReady = pubReady && subReady;
+        serverHealth.redis = allReady;
+        if (sioInitialized) serverHealth.socketio = allReady;
+    }
 
     pubClient.on("ready", () => {
-        serverHealth.redis = true;
-        if (sioInitialized) serverHealth.socketio = true;
-        console.log("[health] Redis connected — health flags restored");
+        pubReady = true;
+        syncRedisHealth();
+        console.log("[health] Redis pub connected — health flags updated");
     });
 
     pubClient.on("error", (err: Error) => {
         const wasHealthy = serverHealth.redis;
-        serverHealth.redis = false;
-        if (sioInitialized) serverHealth.socketio = false;
+        pubReady = false;
+        syncRedisHealth();
         if (wasHealthy) {
-            console.warn("[health] Redis connection error — health flags set to degraded:", err.message);
+            console.warn("[health] Redis pub connection error — health flags set to degraded:", err.message);
         }
     });
 
     pubClient.on("reconnecting", () => {
-        serverHealth.redis = false;
-        if (sioInitialized) serverHealth.socketio = false;
-        console.warn("[health] Redis reconnecting — health flags set to degraded");
+        pubReady = false;
+        syncRedisHealth();
+        console.warn("[health] Redis pub reconnecting — health flags set to degraded");
+    });
+
+    subClient.on("ready", () => {
+        subReady = true;
+        syncRedisHealth();
+        console.log("[health] Redis sub connected — health flags updated");
+    });
+
+    subClient.on("error", (err: Error) => {
+        const wasHealthy = serverHealth.redis;
+        subReady = false;
+        syncRedisHealth();
+        if (wasHealthy) {
+            console.warn("[health] Redis sub connection error — health flags set to degraded:", err.message);
+        }
+    });
+
+    subClient.on("reconnecting", () => {
+        subReady = false;
+        syncRedisHealth();
+        console.warn("[health] Redis sub reconnecting — health flags set to degraded");
     });
 
     await Promise.all([pubClient.connect(), subClient.connect()]);
     // Explicitly set flags to true after successful initial connection
-    // (the "ready" event will have already fired, but this is a safety net).
+    // (the "ready" events will have already fired, but this is a safety net).
+    pubReady = true;
+    subReady = true;
     serverHealth.redis = true;
 
     try {

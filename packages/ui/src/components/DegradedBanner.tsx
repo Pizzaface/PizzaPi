@@ -11,25 +11,16 @@ export function DegradedBanner() {
     const [degraded, setDegraded] = React.useState(false);
     const [dismissed, setDismissed] = React.useState(false);
 
-    // Check on mount; cancel the in-flight fetch if the component unmounts.
+    // Poll on mount and every 30s afterwards using a single shared poller so
+    // the in-flight guard covers both the immediate call and each interval tick.
+    // A separate poller per effect would allow the mount call and the first
+    // interval tick to overlap, defeating the "no stacking" guarantee.
     React.useEffect(() => {
         const controller = new AbortController();
         const poll = createHealthPoller(setDegraded, controller.signal);
+        // Immediate check on mount.
         void poll();
-        return () => controller.abort();
-    }, []);
-
-    // When the server recovers, lift the dismiss so the banner disappears.
-    React.useEffect(() => {
-        if (!degraded) setDismissed(false);
-    }, [degraded]);
-
-    // Auto-retry every 30s using a poller with an in-flight guard.
-    // If a /health request stalls past 30s the next tick is skipped rather
-    // than stacking an additional concurrent fetch.
-    React.useEffect(() => {
-        const controller = new AbortController();
-        const poll = createHealthPoller(setDegraded, controller.signal);
+        // Periodic re-check; skipped automatically if a fetch is still in flight.
         const id = setInterval(() => {
             void poll();
         }, 30_000);
@@ -38,6 +29,11 @@ export function DegradedBanner() {
             controller.abort();
         };
     }, []);
+
+    // When the server recovers, lift the dismiss so the banner disappears.
+    React.useEffect(() => {
+        if (!degraded) setDismissed(false);
+    }, [degraded]);
 
     if (!degraded || dismissed) return null;
 

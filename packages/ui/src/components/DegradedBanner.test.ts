@@ -83,6 +83,41 @@ describe("fetchHealthDegraded", () => {
         expect(result).toBe(true);
     });
 
+    test("returns true when response is valid JSON but missing status field (fail-safe)", async () => {
+        // Schema-invalid — status is absent; should not silently return false.
+        globalThis.fetch = mock(() =>
+            Promise.resolve(new Response(JSON.stringify({ redis: true, socketio: true, uptime: 42 }), {
+                headers: { "content-type": "application/json" },
+            }))
+        ) as unknown as typeof fetch;
+
+        const result = await fetchHealthDegraded();
+        expect(result).toBe(true);
+    });
+
+    test("returns true when response has an unknown status value (fail-safe)", async () => {
+        // Unexpected value for status — treat as degraded, not ok.
+        globalThis.fetch = mock(() =>
+            Promise.resolve(new Response(JSON.stringify({ status: "unknown", redis: true, socketio: true, uptime: 42 }), {
+                headers: { "content-type": "application/json" },
+            }))
+        ) as unknown as typeof fetch;
+
+        const result = await fetchHealthDegraded();
+        expect(result).toBe(true);
+    });
+
+    test("returns true when response is a non-object JSON value (fail-safe)", async () => {
+        globalThis.fetch = mock(() =>
+            Promise.resolve(new Response(JSON.stringify(null), {
+                headers: { "content-type": "application/json" },
+            }))
+        ) as unknown as typeof fetch;
+
+        const result = await fetchHealthDegraded();
+        expect(result).toBe(true);
+    });
+
     test("re-throws AbortError so callers can detect cancellation", async () => {
         const abortErr = Object.assign(new Error("The operation was aborted"), { name: "AbortError" });
         globalThis.fetch = mock(() => Promise.reject(abortErr)) as unknown as typeof fetch;

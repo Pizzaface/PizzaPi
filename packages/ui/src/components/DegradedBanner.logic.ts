@@ -29,8 +29,20 @@ export function parseHealthDegraded(data: HealthResponse): boolean {
 export async function fetchHealthDegraded(signal?: AbortSignal): Promise<boolean> {
     try {
         const res = await fetch("/health", { signal });
-        const data: HealthResponse = await res.json();
-        return parseHealthDegraded(data);
+        const raw: unknown = await res.json();
+        // Validate the schema before trusting it.  If the response is missing
+        // the `status` field or carries an unknown value, treat the server as
+        // degraded (fail-safe) rather than silently returning false.
+        if (
+            typeof raw !== "object" ||
+            raw === null ||
+            !("status" in raw) ||
+            ((raw as Record<string, unknown>).status !== "ok" &&
+                (raw as Record<string, unknown>).status !== "degraded")
+        ) {
+            return true;
+        }
+        return parseHealthDegraded(raw as HealthResponse);
     } catch (err) {
         // Let intentional cancellations propagate so callers can ignore them.
         if (err instanceof Error && err.name === "AbortError") throw err;
