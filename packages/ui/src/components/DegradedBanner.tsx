@@ -17,39 +17,43 @@ export function DegradedBanner() {
     const [degraded, setDegraded] = React.useState(false);
     const [dismissed, setDismissed] = React.useState(false);
 
-    const checkHealth = React.useCallback(async () => {
+    const checkHealth = React.useCallback(async (signal?: AbortSignal) => {
         try {
-            const res = await fetch("/health");
+            const res = await fetch("/health", { signal });
             const data: HealthResponse = await res.json();
             setDegraded(data.status === "degraded");
-        } catch {
+        } catch (err) {
+            // Ignore intentional cancellations (component unmounted mid-fetch)
+            if (err instanceof Error && err.name === "AbortError") return;
             // Network failure — treat as degraded
             setDegraded(true);
         }
     }, []);
 
-    // Check on mount
+    // Check on mount; cancel the in-flight fetch if the component unmounts.
     React.useEffect(() => {
-        void checkHealth();
+        const controller = new AbortController();
+        void checkHealth(controller.signal);
+        return () => controller.abort();
     }, [checkHealth]);
 
-    // Auto-retry every 30s; if the server recovers, un-dismiss so the banner
-    // can disappear naturally (we reset dismissed on recovery).
+    // When the server recovers, lift the dismiss so the banner disappears.
     React.useEffect(() => {
-        const id = setInterval(async () => {
-            try {
-                const res = await fetch("/health");
-                const data: HealthResponse = await res.json();
-                const nowDegraded = data.status === "degraded";
-                setDegraded(nowDegraded);
-                // If it recovered, lift the dismiss so it disappears
-                if (!nowDegraded) setDismissed(false);
-            } catch {
-                setDegraded(true);
-            }
+        if (!degraded) setDismissed(false);
+    }, [degraded]);
+
+    // Auto-retry every 30s, reusing checkHealth to avoid logic duplication.
+    // Cancel any in-flight fetch when the interval is torn down on unmount.
+    React.useEffect(() => {
+        const controller = new AbortController();
+        const id = setInterval(() => {
+            void checkHealth(controller.signal);
         }, 30_000);
-        return () => clearInterval(id);
-    }, []);
+        return () => {
+            clearInterval(id);
+            controller.abort();
+        };
+    }, [checkHealth]);
 
     if (!degraded || dismissed) return null;
 
@@ -59,7 +63,8 @@ export function DegradedBanner() {
             className="flex items-center justify-between gap-3 px-4 py-2 text-sm bg-amber-500/10 text-amber-600 dark:text-amber-400 border-b border-amber-500/20"
         >
             <span>
-                ⚠️ Server running in degraded mode — real-time updates unavailable
+                <span aria-hidden="true">⚠️</span>{" "}
+                Server running in degraded mode — real-time updates unavailable
             </span>
             <button
                 type="button"
