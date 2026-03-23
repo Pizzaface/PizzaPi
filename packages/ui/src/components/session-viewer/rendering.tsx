@@ -232,6 +232,18 @@ export function renderContent(
                   : ({} as Record<string, unknown>);
 
             const normalizedToolName = normalizeToolName(toolName);
+
+            // Hide Claude Code internal tools from assistant message content —
+            // they're rendered as grouped tool executions via tool-rendering.tsx
+            // or are pure side-effects (session name, todos).
+            const HIDDEN_TOOL_CALLS = new Set([
+              "toolsearch", "enterplanmode", "exitplanmode",
+              "askuserquestion", "todowrite", "set_session_name",
+            ]);
+            if (HIDDEN_TOOL_CALLS.has(normalizedToolName)) {
+              return null;
+            }
+
             const isEdit =
               (normalizedToolName === "edit" || normalizedToolName.endsWith(".edit")) &&
               typeof args.path === "string" &&

@@ -60,7 +60,18 @@ export function tryParseJsonObject(text: string): Record<string, unknown> | null
 }
 
 export function normalizeToolName(toolName?: string): string {
-  return (toolName ?? "").trim().toLowerCase();
+  let name = (toolName ?? "").trim().toLowerCase();
+  // Strip Claude Code MCP prefix: mcp__servername__toolname → toolname
+  if (name.startsWith("mcp__")) {
+    const sep = name.indexOf("__", 5); // 5 = "mcp__".length
+    if (sep !== -1) name = name.slice(sep + 2);
+  }
+  // Strip pizzapi_ prefix used by PizzaPi MCP tools
+  // (e.g. pizzapi_spawn_session → spawn_session)
+  if (name.startsWith("pizzapi_")) {
+    name = name.slice(8);
+  }
+  return name;
 }
 
 export function extractTextFromToolContent(content: unknown): string | null {

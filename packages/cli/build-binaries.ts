@@ -84,6 +84,26 @@ function copyAssets(piPkgDir: string, outDir: string): void {
     if (existsSync(templatesSrc)) {
         cpSync(templatesSrc, join(outDir, "templates"), { recursive: true });
     }
+
+    const cliDist = join(import.meta.dirname, "dist");
+    const runnerDist = join(cliDist, "runner");
+    const runnerSrc = join(import.meta.dirname, "src", "runner");
+    const runnerSource = existsSync(runnerDist) ? runnerDist : runnerSrc;
+    if (existsSync(runnerSource)) {
+        cpSync(runnerSource, join(outDir, "runner"), { recursive: true });
+    }
+
+    // Always copy static assets from src first, then overlay compiled scripts
+    // from dist if present. Using dist-only would miss static files (plugin.json,
+    // skill markdown, etc.) that are never compiled into dist.
+    const pluginDist = join(cliDist, "claude-code-plugin");
+    const pluginSrc = join(import.meta.dirname, "src", "claude-code-plugin");
+    if (existsSync(pluginSrc)) {
+        cpSync(pluginSrc, join(outDir, "claude-code-plugin"), { recursive: true });
+    }
+    if (existsSync(pluginDist)) {
+        cpSync(pluginDist, join(outDir, "claude-code-plugin"), { recursive: true });
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -295,7 +315,7 @@ for (const target of targets) {
     copyAssets(piPkgDir, outDir);
     console.log(`  ✓ Assets copied`);
 
-    if (copyPtyLib(target, outDir)) {
+    if (await copyPtyLib(target, outDir)) {
         console.log(`  ✓ PTY native library copied (${target.ptyLibName})`);
     } else {
         console.log(`  ⚠ PTY native library not available for ${target.ptyOs}-${target.ptyCpu} (cross-compile — must be added separately)`);

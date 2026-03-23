@@ -26,7 +26,7 @@ let _component: string = "unknown";
 let _sessionId: string | null = null;
 
 /** Set the component name (call once at process start). */
-export function setLogComponent(component: "supervisor" | "daemon" | "worker"): void {
+export function setLogComponent(component: "supervisor" | "daemon" | "worker" | "cc-bridge"): void {
     _component = component;
 }
 

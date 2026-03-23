@@ -1,10 +1,14 @@
-import { exec } from "node:child_process";
+import { exec, execFile, execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 
 const execAsync = promisify(exec);
-import { existsSync, mkdirSync, renameSync, cpSync, rmSync } from "node:fs";
+const execFileAsync = promisify(execFile);
+import { readdir, stat } from "node:fs/promises";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, statSync, realpathSync, renameSync, cpSync, rmSync } from "node:fs";
 import { hostname, homedir } from "node:os";
-import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { randomUUID, randomBytes } from "node:crypto";
+import { join, basename, resolve } from "node:path";
 import { ServiceRegistry } from "./service-handler.js";
 import { TerminalService } from "./services/terminal-service.js";
 import { FileExplorerService } from "./services/file-explorer-service.js";
@@ -12,15 +16,25 @@ import { GitService } from "./services/git-service.js";
 import { TunnelService } from "./services/tunnel-service.js";
 import { discoverServices } from "./service-loader.js";
 import { globalPluginDirs } from "../plugins/discover.js";
+import {
+    spawnTerminal,
+    writeTerminalInput,
+    resizeTerminal,
+    killTerminal,
+    listTerminals,
+    killAllTerminals,
+} from "./terminal.js";
 import { io, type Socket } from "socket.io-client";
 import type { RunnerClientToServerEvents, RunnerServerToClientEvents } from "@pizzapi/protocol";
 import { TunnelClient } from "@pizzapi/tunnel";
 import { loadGlobalConfig } from "../config.js";
 import { cleanupSessionAttachments, sweepOrphanedAttachments } from "../extensions/session-attachments.js";
-import { setLogComponent, logInfo, logWarn, logError } from "./logger.js";
+import { spawnClaudeCodeSession } from "./claude-code-bridge-spawn.js";
+import { getRefreshedOAuthToken, parseGeminiQuotaCredential } from "./usage-auth.js";
+import { setLogComponent, logInfo, logWarn, logError, logAuth } from "./logger.js";
 import { extractHookSummary } from "./hook-summary.js";
 import { defaultStatePath, acquireStateAndIdentity, releaseStateLock } from "./runner-state.js";
-import { startUsageRefreshLoop, stopUsageRefreshLoop } from "./runner-usage-cache.js";
+import { startUsageRefreshLoop, stopUsageRefreshLoop, runnerUsageCacheFilePath, trackSessionCwd, untrackSessionCwd } from "./runner-usage-cache.js";
 import { getWorkspaceRoots, isCwdAllowed } from "./workspace.js";
 import { type RunnerSession, spawnSession } from "./session-spawner.js";
 
@@ -482,11 +496,13 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     let adopted = 0;
                     for (const { sessionId, cwd } of existingSessions) {
                         if (runningSessions.has(sessionId)) continue; // already tracked
+                        if (typeof cwd === "string" && cwd.length > 0) trackSessionCwd(sessionId, cwd);
                         runningSessions.set(sessionId, {
                             sessionId,
                             child: null,
                             startedAt: Date.now(),
                             adopted: true,
+                            cwd: typeof cwd === "string" && cwd.length > 0 ? cwd : undefined,
                         });
                         adopted++;
                     }
@@ -508,6 +524,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         socket.on("new_session", (data: any) => {
             if (isShuttingDown) return;
             const { sessionId, cwd: requestedCwd, prompt: requestedPrompt, model: requestedModel, hiddenModels: requestedHiddenModels, agent: requestedAgent, parentSessionId: requestedParentSessionId } = data;
+            const workerType: "pi" | "claude-code" = data.workerType === "claude-code" ? "claude-code" : "pi";
 
             if (!sessionId) {
                 socket.emit("session_error", { sessionId: sessionId ?? "", message: "Missing sessionId" });
@@ -575,7 +592,62 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     });
                 }
             };
-            doSpawn();
+            // Validate cwd against allowed workspace roots (same guard as the pi path in spawnSession)
+            if (requestedCwd && !isCwdAllowed(requestedCwd)) {
+                socket.emit("session_error", {
+                    sessionId,
+                    message: `cwd not allowed: ${requestedCwd}`,
+                });
+                return;
+            }
+
+            if (workerType === "claude-code") {
+                // Claude Code bridge path — session_ready fires synchronously after spawn
+                // (same pattern as the pi path inside doSpawn). The bridge owns the
+                // relay connection, so the daemon tracks it as an adopted session.
+                try {
+                    const effectiveCwd = requestedCwd ?? process.cwd();
+                    const bridge = spawnClaudeCodeSession({
+                        sessionId,
+                        apiKey: apiKey!,
+                        relayUrl: relayRaw,
+                        cwd: requestedCwd,
+                        prompt: requestedPrompt,
+                        parentSessionId: requestedParentSessionId,
+                        model: requestedModel,
+                        hiddenModels: requestedHiddenModels,
+                    });
+                    trackSessionCwd(sessionId, effectiveCwd);
+                    runningSessions.set(sessionId, {
+                        sessionId,
+                        child: null,
+                        startedAt: Date.now(),
+                        adopted: true,
+                        bridgeManaged: true,
+                        bridgeAlive: true,
+                        parentSessionId: requestedParentSessionId,
+                        cwd: effectiveCwd,
+                    });
+                    void bridge.exited.then((code) => {
+                        const entry = runningSessions.get(sessionId);
+                        if (entry) entry.bridgeAlive = false;
+                        if (entry?.adopted) {
+                            runningSessions.delete(sessionId);
+                            if (entry.cwd) untrackSessionCwd(sessionId, entry.cwd);
+                            void cleanupSessionAttachments(sessionId).catch(() => {});
+                            logInfo(`Claude Code bridge for session ${sessionId} exited (code=${code})`);
+                        }
+                    }).catch(() => {});
+                    socket.emit("session_ready", { sessionId });
+                } catch (err) {
+                    socket.emit("session_error", {
+                        sessionId,
+                        message: err instanceof Error ? err.message : String(err),
+                    });
+                }
+            } else {
+                doSpawn(); // existing pi worker path — unchanged
+            }
         });
 
         socket.on("kill_session", (data: any) => {
@@ -596,6 +668,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     // socket, which sends end_session then force-disconnects.
                     socket.emit("disconnect_session", { sessionId });
                 }
+                if (entry.cwd) untrackSessionCwd(sessionId, entry.cwd);
                 runningSessions.delete(sessionId);
                 logInfo(`killed session ${sessionId}${entry.adopted ? " (adopted)" : ""}`);
                 socket.emit("session_killed", { sessionId });
@@ -635,11 +708,13 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 // (expired/orphaned), always honor the removal — the session
                 // is legitimately dead and the worker should exit on its own.
                 const childAlive = entry.child && !entry.child.killed && entry.child.exitCode === null;
+                const bridgeAlive = entry.bridgeManaged && entry.bridgeAlive;
                 const isTransientDisconnect = !reason || reason === "Session ended";
-                if (childAlive && isTransientDisconnect) {
+                if ((childAlive || bridgeAlive) && isTransientDisconnect) {
                     logInfo(`session_ended for ${sessionId} but worker still alive — keeping entry for reconnect`);
                     return;
                 }
+                if (entry.cwd) untrackSessionCwd(sessionId, entry.cwd);
                 runningSessions.delete(sessionId);
                 killedSessions.delete(sessionId);
                 endedSessionIds.set(sessionId, Date.now());
@@ -1060,4 +1135,53 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             logError(`server error: ${data.message}`);
         });
     });
+}
+export function isPidRunning(pid: number): boolean {
+    if (!Number.isFinite(pid) || pid <= 0) return false;
+    try {
+        process.kill(pid, 0);
+    } catch (err: any) {
+        // ESRCH = process does not exist. EPERM = exists but no permission.
+        if (err?.code === "ESRCH") return false;
+        // On Windows, process.kill(pid, 0) throws EPERM when the process exists
+        // but we lack permission, and throws with code ESRCH (or sometimes just
+        // a generic error) when it doesn't.  If we get here without ESRCH, assume alive.
+    }
+
+    // The PID is alive, but it may have been reused by an unrelated process.
+    // Verify the command line contains a pizzapi / runner signature.
+    try {
+        let cmd: string;
+        if (process.platform === "win32") {
+            // On Windows, use WMIC to inspect the process command line.
+            // wmic is available on Windows 7+ and returns the full command line.
+            cmd = execFileSync(
+                "wmic",
+                ["process", "where", `ProcessId=${pid}`, "get", "CommandLine", "/format:list"],
+                { encoding: "utf-8", timeout: 5000 },
+            ).trim();
+        } else {
+            cmd = execFileSync("ps", ["-p", String(pid), "-o", "command="], { encoding: "utf-8", timeout: 3000 }).trim();
+        }
+        // Match against known runner process patterns:
+        //   - "bun ... runner"          (dev: bun packages/cli/src/index.ts runner)
+        //   - "bun ... daemon.ts"       (dev: direct daemon run)
+        //   - "bun ... _daemon"         (supervisor-spawned child)
+        //   - "pizzapi ... runner"      (production CLI)
+        //   - "node ... runner"         (unlikely but possible)
+        const isRunner =
+            /\brunner\b/i.test(cmd) ||
+            /\bdaemon\b/i.test(cmd) ||
+            /\bpizzapi\b/i.test(cmd) ||
+            /\b_daemon\b/i.test(cmd);
+        if (!isRunner) {
+            // PID exists but belongs to an unrelated process — stale lock.
+            return false;
+        }
+    } catch {
+        // If we can't check the command (e.g. ps/wmic not available), fall back to
+        // assuming the process is the runner (safe default — avoids double-start).
+    }
+
+    return true;
 }

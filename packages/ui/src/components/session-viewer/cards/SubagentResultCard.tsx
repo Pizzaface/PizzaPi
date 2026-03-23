@@ -30,6 +30,7 @@
 import * as React from "react";
 import {
   BotIcon,
+  ChevronDownIcon,
   Loader2Icon,
   CheckCircle2Icon,
   XCircleIcon,
@@ -40,6 +41,7 @@ import {
 import { ToolCardShell } from "@/components/ui/tool-card";
 import { MessageResponse } from "@/components/ai-elements/message";
 import { extractTextFromToolContent, parseToolInputArgs } from "@/components/session-viewer/utils";
+import { renderGroupedToolExecution } from "@/components/session-viewer/tool-rendering";
 
 // ── Types (mirroring CLI extension types) ──────────────────────────────
 
@@ -128,18 +130,131 @@ function getFinalOutput(messages: Array<{ role: string; content: unknown[] }>): 
   return "";
 }
 
-function getToolCallCount(messages: Array<{ role: string; content: unknown[] }>): number {
-  let count = 0;
+// ── Tool execution extraction ──────────────────────────────────────────
+
+interface ToolExecution {
+  toolKey: string;
+  toolName: string;
+  toolInput: unknown;
+  content: unknown;
+  isError: boolean;
+}
+
+/**
+ * Extract tool call + result pairs from the subagent's messages array.
+ * Works for both pi-native messages (uses `id` field, object arguments) and
+ * Claude Code synthetic messages (uses `id` field from the XML parser).
+ * Also handles the NDJSON normalizer convention of `toolCallId` field and
+ * stringified arguments defensively.
+ */
+function extractToolExecutions(messages: Array<{ role: string; content: unknown[] }>): ToolExecution[] {
+  const executions: ToolExecution[] = [];
+
+  // First pass: collect all tool calls from assistant messages
+  interface PendingCall { id: string; name: string; input: unknown }
+  const pendingCalls: PendingCall[] = [];
+
   for (const msg of messages) {
-    if (msg.role === "assistant") {
+    if (msg.role === "assistant" && Array.isArray(msg.content)) {
       for (const part of msg.content) {
-        if (part && typeof part === "object" && "type" in part && (part as any).type === "toolCall") {
-          count++;
+        if (!part || typeof part !== "object") continue;
+        const p = part as Record<string, unknown>;
+        if (p.type !== "toolCall") continue;
+
+        // Defensive: check both id and toolCallId (pi-ai uses id, NDJSON normalizer uses toolCallId)
+        const id = typeof p.toolCallId === "string" ? p.toolCallId
+          : typeof p.id === "string" ? p.id
+          : "";
+        const name = typeof p.name === "string" ? p.name : "unknown";
+
+        // Defensive: handle arguments as object or string (NDJSON normalizer produces string)
+        let input: unknown = p.arguments;
+        if (typeof input === "string") {
+          try { input = JSON.parse(input); } catch { input = {}; }
         }
+
+        pendingCalls.push({ id, name, input });
       }
     }
   }
-  return count;
+
+  // Second pass: match tool results to pending calls in order
+  const matchedIds = new Set<string>();
+
+  for (const msg of messages) {
+    if (msg.role !== "toolResult") continue;
+    const m = msg as Record<string, unknown>;
+    const toolCallId = typeof m.toolCallId === "string" ? m.toolCallId : "";
+
+    // Find matching pending call
+    const matchIdx = pendingCalls.findIndex(c => c.id && c.id === toolCallId && !matchedIds.has(c.id));
+    if (matchIdx < 0) continue;
+
+    const call = pendingCalls[matchIdx];
+    matchedIds.add(call.id);
+
+    executions.push({
+      toolKey: call.id || `tool-${executions.length}`,
+      toolName: typeof m.toolName === "string" ? m.toolName : call.name,
+      toolInput: call.input,
+      content: m.content,
+      isError: m.isError === true,
+    });
+  }
+
+  // Include unmatched calls (no result yet — e.g. truncated or still running)
+  for (const call of pendingCalls) {
+    if (call.id && matchedIds.has(call.id)) continue;
+    executions.push({
+      toolKey: call.id || `tool-${executions.length}`,
+      toolName: call.name,
+      toolInput: call.input,
+      content: null,
+      isError: false,
+    });
+  }
+
+  return executions;
+}
+
+// ── Inline tool cards for subagent tool calls ──────────────────────────
+
+/** Renders inline tool cards for subagent tool calls. Must be a React
+ *  component (not a helper function) because renderGroupedToolExecution
+ *  creates child components that use hooks (useSessionActions). */
+function SubagentToolCallsSection({ executions }: { executions: ToolExecution[] }) {
+  if (executions.length === 0) return null;
+
+  const autoOpen = executions.length === 1;
+
+  return (
+    <details open={autoOpen || undefined} className="group/tools">
+      <summary className="cursor-pointer list-none">
+        <div className="flex items-center gap-1.5 text-[11px] text-zinc-500 px-1 py-0.5 hover:text-zinc-400 transition-colors">
+          <WrenchIcon className="size-3 shrink-0" />
+          <span>{executions.length} tool call{executions.length !== 1 ? "s" : ""}</span>
+          <ChevronDownIcon className="size-3 transition-transform group-open/tools:rotate-180" />
+        </div>
+      </summary>
+      <div className="flex flex-col gap-2 pl-1 border-l-2 border-zinc-800 ml-1.5 mt-1 mb-1">
+        {executions.map((exec) => (
+          <div key={exec.toolKey} className="[&>*]:text-xs">
+            {renderGroupedToolExecution(
+              exec.toolKey,
+              exec.toolName,
+              exec.toolInput,
+              exec.content,
+              exec.isError,
+              false,       // isStreaming — always false for completed subagents
+              undefined,   // thinking
+              undefined,   // thinkingDuration
+              undefined,   // details
+            )}
+          </div>
+        ))}
+      </div>
+    </details>
+  );
 }
 
 // ── Parse details from top-level details prop ──────────────────────────
@@ -249,17 +364,6 @@ function ErrorBubble({ message, agentName }: { message: string; agentName: strin
   );
 }
 
-/** Small inline activity line between bubbles */
-function ToolCallActivity({ count }: { count: number }) {
-  if (count === 0) return null;
-  return (
-    <div className="flex items-center gap-1.5 text-[11px] text-zinc-600 px-1">
-      <WrenchIcon className="size-3 shrink-0" />
-      <span>{count} tool call{count !== 1 ? "s" : ""}</span>
-    </div>
-  );
-}
-
 /** Animated typing/thinking indicator */
 function ThinkingBubble() {
   return (
@@ -288,7 +392,7 @@ function AgentExchange({
 }) {
   const isError = result.exitCode !== 0 || result.stopReason === "error" || result.stopReason === "aborted";
   const finalOutput = getFinalOutput(result.messages);
-  const toolCallCount = getToolCallCount(result.messages);
+  const toolExecutions = extractToolExecutions(result.messages);
 
   return (
     <>
@@ -306,8 +410,8 @@ function AgentExchange({
       {/* Task bubble (sent) */}
       <TaskBubble task={result.task} />
 
-      {/* Tool call activity */}
-      <ToolCallActivity count={toolCallCount} />
+      {/* Inline tool cards */}
+      <SubagentToolCallsSection executions={toolExecutions} />
 
       {/* Agent response or running state */}
       {isRunning ? (

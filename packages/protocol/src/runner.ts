@@ -187,6 +187,8 @@ export interface RunnerServerToClientEvents {
     };
     /** ID of the parent session that spawned this one. */
     parentSessionId?: string;
+    /** Worker type to spawn. Defaults to "pi" if absent (backward-compatible). */
+    workerType?: "pi" | "claude-code";
   }) => void;
 
   /** Instructs runner to kill a session */

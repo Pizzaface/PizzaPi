@@ -67,6 +67,7 @@ export interface SessionUiCacheEntry {
     description: string | null;
     steps: Array<{ title: string; description?: string }>;
   } | null;
+  workerType: string;
 
   // ── Runner-scoped (preserved on same-runner session switch) ───────────
   // These values are identical across sessions on the same runner.

@@ -16,8 +16,14 @@ export interface RunnerSession {
      * running independently with its own relay connection.
      */
     adopted?: boolean;
+    /** True when this daemon owns the adopted Claude Code bridge process. */
+    bridgeManaged?: boolean;
+    /** Whether the adopted Claude Code bridge process is still believed alive. */
+    bridgeAlive?: boolean;
     /** ID of the parent session that spawned this one. */
     parentSessionId?: string;
+    /** Effective cwd for usage-auth tracking and cleanup. */
+    cwd?: string;
 }
 
 /** Is this process running inside a compiled Bun single-file binary? */
