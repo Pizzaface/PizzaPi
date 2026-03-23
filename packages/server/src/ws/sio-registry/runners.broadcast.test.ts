@@ -37,7 +37,10 @@ const mockMulti = () => {
             });
             return mockMulti();
         }),
-        exec: mock(async () => { for (const op of ops) op(); return []; }),
+        exec: mock(async () => {
+            for (const op of ops) op();
+            return [];
+        }),
     };
 };
 
@@ -57,7 +60,9 @@ const mockRedis = {
     multi: mock(() => mockMulti()),
     on: mock(() => mockRedis),
     connect: mock(async () => {}),
-    set: mock(async (key: string, value: string) => { store.set(key, value); }),
+    set: mock(async (key: string, value: string) => {
+        store.set(key, value);
+    }),
     get: mock(async (key: string) => store.get(key) ?? null),
     del: mock(async (key: string) => {
         store.delete(key);
@@ -65,7 +70,7 @@ const mockRedis = {
     }),
     hGetAll: mock(async (key: string) => {
         const raw = store.get(`__hash__:${key}`);
-        return raw ? JSON.parse(raw) as Record<string, string> : {};
+        return raw ? (JSON.parse(raw) as Record<string, string>) : {};
     }),
     hGet: mock(async () => null),
     hSet: mock(async (key: string, field: string, value: string) => {
@@ -86,23 +91,61 @@ mock.module("../../sessions/store.js", () => ({
     updateRelaySessionRunner: mock(async () => {}),
 }));
 
-const broadcastCalls: Array<{ event: string; data: unknown; userId?: string }> = [];
-mock.module("./runners-broadcast.js", () => ({
-    broadcastToRunnersNs: mock(async (event: string, data: unknown, userId?: string) => {
-        broadcastCalls.push({ event, data, userId });
-    }),
-}));
+// Instead of mocking ./runners-broadcast.js (which is brittle if another test
+// imports it first), we provide a fake Socket.IO server via initSioRegistry()
+// and assert on emitted events.
 
+type EmitCall = {
+    namespace: string;
+    room?: string;
+    event: string;
+    data: unknown;
+    local: boolean;
+};
+
+const emitCalls: EmitCall[] = [];
+
+function createFakeIo() {
+    const nsCache = new Map<string, any>();
+
+    const makeNs = (namespace: string) => {
+        const record = (event: string, data: unknown, room: string | undefined, local: boolean) => {
+            emitCalls.push({ namespace, room, event, data, local });
+        };
+
+        const mkTo = (room: string, local: boolean) => ({
+            emit: (event: string, data: unknown) => record(event, data, room, local),
+        });
+
+        return {
+            emit: (event: string, data: unknown) => record(event, data, undefined, false),
+            to: (room: string) => mkTo(room, false),
+            local: {
+                emit: (event: string, data: unknown) => record(event, data, undefined, true),
+                to: (room: string) => mkTo(room, true),
+            },
+        };
+    };
+
+    return {
+        of: (namespace: string) => {
+            if (!nsCache.has(namespace)) nsCache.set(namespace, makeNs(namespace));
+            return nsCache.get(namespace);
+        },
+    };
+}
+
+const { initSioRegistry, runnersUserRoom } = await import("./context.js");
 const { initStateRedis } = await import("../sio-state.js");
-const { registerRunner, removeRunner, updateRunnerSkills, updateRunnerAgents, updateRunnerPlugins } = await import("./runners.js");
-
-// Note: updateRunnerHooks not yet implemented — excluded intentionally.
+const { registerRunner, removeRunner, updateRunnerSkills, updateRunnerAgents, updateRunnerPlugins } =
+    await import("./runners.js");
 
 describe("runners broadcast", () => {
     beforeEach(async () => {
         store.clear();
         setStore.clear();
-        broadcastCalls.length = 0;
+        emitCalls.length = 0;
+        initSioRegistry(createFakeIo() as any);
         await initStateRedis();
     });
 
@@ -126,11 +169,12 @@ describe("runners broadcast", () => {
         expect(result instanceof Error).toBe(false);
         const runnerId = result as string;
 
-        const added = broadcastCalls.find(c => c.event === "runner_added");
+        const added = emitCalls.find(
+            (c) => c.namespace === "/runners" && c.room === runnersUserRoom("user1") && c.event === "runner_added",
+        );
         expect(added).toBeDefined();
         expect((added!.data as any).runnerId).toBe(runnerId);
         expect((added!.data as any).name).toBe("my-runner");
-        expect(added!.userId).toBe("user1");
     });
 
     it("broadcasts runner_removed when removeRunner is called", async () => {
@@ -151,14 +195,15 @@ describe("runners broadcast", () => {
         });
         expect(result instanceof Error).toBe(false);
         const runnerId = result as string;
-        broadcastCalls.length = 0;
+        emitCalls.length = 0;
 
         await removeRunner(runnerId);
 
-        const removed = broadcastCalls.find(c => c.event === "runner_removed");
+        const removed = emitCalls.find(
+            (c) => c.namespace === "/runners" && c.room === runnersUserRoom("user2") && c.event === "runner_removed",
+        );
         expect(removed).toBeDefined();
         expect((removed!.data as any).runnerId).toBe(runnerId);
-        expect(removed!.userId).toBe("user2");
     });
 
     it("broadcasts runner_updated after updateRunnerSkills", async () => {
@@ -179,15 +224,17 @@ describe("runners broadcast", () => {
         });
         expect(result instanceof Error).toBe(false);
         const runnerId = result as string;
-        broadcastCalls.length = 0;
+        emitCalls.length = 0;
 
         await updateRunnerSkills(runnerId, [{ name: "my-skill", description: "does stuff", filePath: "/path/to/skill.md" }]);
 
-        const updated = broadcastCalls.find(c => c.event === "runner_updated");
+        const updated = emitCalls.find(
+            (c) => c.namespace === "/runners" && c.room === runnersUserRoom("user3") && c.event === "runner_updated",
+        );
         expect(updated).toBeDefined();
         expect((updated!.data as any).runnerId).toBe(runnerId);
         const skills = (updated!.data as any).skills as Array<{ name: string }>;
-        expect(skills.some(s => s.name === "my-skill")).toBe(true);
+        expect(skills.some((s) => s.name === "my-skill")).toBe(true);
     });
 
     it("broadcasts runner_updated after updateRunnerAgents", async () => {
@@ -208,14 +255,16 @@ describe("runners broadcast", () => {
         });
         expect(result instanceof Error).toBe(false);
         const runnerId = result as string;
-        broadcastCalls.length = 0;
+        emitCalls.length = 0;
 
         await updateRunnerAgents(runnerId, [{ name: "my-agent", description: "an agent", filePath: "/path/to/agent.md" }]);
 
-        const updated = broadcastCalls.find(c => c.event === "runner_updated");
+        const updated = emitCalls.find(
+            (c) => c.namespace === "/runners" && c.room === runnersUserRoom("user4") && c.event === "runner_updated",
+        );
         expect(updated).toBeDefined();
         const agents = (updated!.data as any).agents as Array<{ name: string }>;
-        expect(agents.some(a => a.name === "my-agent")).toBe(true);
+        expect(agents.some((a) => a.name === "my-agent")).toBe(true);
     });
 
     it("broadcasts runner_updated after updateRunnerPlugins", async () => {
@@ -236,19 +285,33 @@ describe("runners broadcast", () => {
         });
         expect(result instanceof Error).toBe(false);
         const runnerId = result as string;
-        broadcastCalls.length = 0;
+        emitCalls.length = 0;
 
-        await updateRunnerPlugins(runnerId, [{ name: "my-plugin", description: "a plugin", rootPath: "/path", commands: [], hookEvents: [], skills: [], hasMcp: false, hasAgents: false, hasLsp: false }]);
+        await updateRunnerPlugins(runnerId, [
+            {
+                name: "my-plugin",
+                description: "a plugin",
+                rootPath: "/path",
+                commands: [],
+                hookEvents: [],
+                skills: [],
+                hasMcp: false,
+                hasAgents: false,
+                hasLsp: false,
+            },
+        ]);
 
-        const updated = broadcastCalls.find(c => c.event === "runner_updated");
+        const updated = emitCalls.find(
+            (c) => c.namespace === "/runners" && c.room === runnersUserRoom("user5") && c.event === "runner_updated",
+        );
         expect(updated).toBeDefined();
         const plugins = (updated!.data as any).plugins as Array<{ name: string }>;
-        expect(plugins.some(p => p.name === "my-plugin")).toBe(true);
+        expect(plugins.some((p) => p.name === "my-plugin")).toBe(true);
     });
 
     it("skips runner_removed broadcast gracefully when runner not in Redis", async () => {
         await removeRunner("ghost-runner");
-        const removed = broadcastCalls.find(c => c.event === "runner_removed");
+        const removed = emitCalls.find((c) => c.event === "runner_removed");
         expect(removed).toBeUndefined();
     });
 });
