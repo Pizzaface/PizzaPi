@@ -105,7 +105,7 @@ You can also override any setting with **environment variables**.
 | `skills` | `string[]` | `[]` | Additional skill directories. Supports `~` expansion. |
 | `allowProjectHooks` | `boolean` | `false` | Trust gate: allow project-local hooks to run. **Global config only.** |
 | `trustedPlugins` | `string[]` | `[]` | Trusted Claude Code plugin paths. **Global config only.** Managed via `pizza plugins trust`. |
-| `oauthClientName` | `string` | `"PizzaPi"` | Override the `client_name` sent during MCP OAuth dynamic client registration. Some servers (e.g. Figma) restrict registration to an allowlist of client names — set this to a name the server accepts (e.g. `"Codex"`). |
+| `oauthClientName` | `string` | `"PizzaPi"` | Global default `client_name` for MCP OAuth registration. Can also be set per-server in `mcpServers` entries. Per-server values take precedence. See [Client Name Override](/PizzaPi/customization/mcp-servers/#client-name-override). |
 | `mcpTimeout` | `number` | `30000` | Timeout (ms) for each MCP server's `tools/list` call during startup. Set to `0` to disable. See [Safe Mode](/PizzaPi/security/sandbox/). |
 | `sandbox` | `object` | *(see below)* | OS-level sandbox config. See [Agent Sandbox](/PizzaPi/security/sandbox/). |
 | `sandbox.mode` | `string` | `"basic"` | Preset: `"none"`, `"basic"`, or `"full"`. |
