@@ -24,7 +24,7 @@ import { setLogComponent, setLogSessionId, logInfo, logWarn, logError, logAuth }
  * and if all retries fail, falls back to a lockless read so the worker
  * at least has stale-but-valid credentials rather than none.
  */
-function createAuthStorageWithRetry(authPath: string, maxAttempts = 5): AuthStorage {
+async function createAuthStorageWithRetry(authPath: string, maxAttempts = 5): Promise<AuthStorage> {
     let lastError: unknown;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
@@ -50,7 +50,7 @@ function createAuthStorageWithRetry(authPath: string, maxAttempts = 5): AuthStor
                         lastError = new Error("Lock contention: auth.json has data but AuthStorage loaded empty");
                         if (attempt < maxAttempts) {
                             // Exponential backoff: 100ms, 200ms, 400ms, 800ms
-                            Bun.sleepSync(100 * Math.pow(2, attempt - 1));
+                            await Bun.sleep(100 * Math.pow(2, attempt - 1));
                             continue;
                         }
                         // Final attempt still hit lock contention — break out of the
@@ -63,7 +63,7 @@ function createAuthStorageWithRetry(authPath: string, maxAttempts = 5): AuthStor
                     // retry instead of returning the empty storage (P1 fix).
                     lastError = new Error("Lockless auth.json probe got unreadable/partial JSON");
                     if (attempt < maxAttempts) {
-                        Bun.sleepSync(100 * Math.pow(2, attempt - 1));
+                        await Bun.sleep(100 * Math.pow(2, attempt - 1));
                         continue;
                     }
                     break;
@@ -74,7 +74,7 @@ function createAuthStorageWithRetry(authPath: string, maxAttempts = 5): AuthStor
         } catch (err) {
             lastError = err;
             if (attempt < maxAttempts) {
-                Bun.sleepSync(100 * Math.pow(2, attempt - 1));
+                await Bun.sleep(100 * Math.pow(2, attempt - 1));
             }
         }
     }
@@ -93,7 +93,7 @@ function createAuthStorageWithRetry(authPath: string, maxAttempts = 5): AuthStor
             if (!raw || !raw.trim()) {
                 // Empty file — likely mid-write; wait and retry
                 if (lr < locklessRetries) {
-                    Bun.sleepSync(50 * lr);
+                    await Bun.sleep(50 * lr);
                     continue;
                 }
                 break;
@@ -131,7 +131,7 @@ function createAuthStorageWithRetry(authPath: string, maxAttempts = 5): AuthStor
                 console.warn(
                     `pizzapi worker: lockless read attempt ${lr}/${locklessRetries} got bad JSON, retrying...`,
                 );
-                Bun.sleepSync(50 * lr);
+                await Bun.sleep(50 * lr);
                 continue;
             }
             console.warn(
@@ -297,7 +297,7 @@ async function main(): Promise<void> {
     // Create AuthStorage with retry logic to handle lock contention when
     // multiple workers spawn simultaneously (common with parallel sub-sessions).
     const authPath = join(agentDir, "auth.json");
-    const authStorage = createAuthStorageWithRetry(authPath);
+    const authStorage = await createAuthStorageWithRetry(authPath);
 
     // ── Auth diagnostics — log credential state before first API call ────
     // This helps diagnose intermittent "No API key found" failures in
