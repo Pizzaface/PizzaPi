@@ -219,6 +219,37 @@ function sendChunkedMessages(rctx: RelayContext, rawMessages: unknown[], snapsho
  */
 let activeChunkedSnapshotId: string | null = null;
 
+// ── Message-state tracking for lightweight heartbeat emissions ────────────────
+// We compare the current messages array length and leaf ID against the last
+// emitted snapshot to decide whether to send a full session_active or a
+// cheaper session_metadata_update.
+interface LastEmittedMessageState {
+    length: number;
+    leafId: string | null;
+}
+let lastEmittedMessageState: LastEmittedMessageState | null = null;
+
+/** Record the current message state as "last emitted" after a full session_active. */
+function recordEmittedMessageState(rctx: RelayContext, messages: unknown[]): void {
+    lastEmittedMessageState = {
+        length: messages.length,
+        leafId: rctx.latestCtx?.sessionManager.getLeafId() ?? null,
+    };
+}
+
+/**
+ * Returns true when the messages array has changed since the last full
+ * session_active emission (or when no emission has been recorded yet).
+ */
+function messagesChangedSinceLastEmit(rctx: RelayContext, messages: unknown[]): boolean {
+    if (!lastEmittedMessageState) return true; // no baseline yet
+    const currentLeafId = rctx.latestCtx?.sessionManager.getLeafId() ?? null;
+    return (
+        messages.length !== lastEmittedMessageState.length ||
+        currentLeafId !== lastEmittedMessageState.leafId
+    );
+}
+
 /**
  * Emit session_active — either as a single event (small sessions) or as
  * metadata-only + chunked messages (large sessions).
@@ -257,6 +288,7 @@ export function emitSessionActive(rctx: RelayContext): void {
                 totalMessages: messages.length,
             },
         });
+        recordEmittedMessageState(rctx, messages);
         sendChunkedMessages(rctx, messages, snapshotId);
     } else {
         // Small session — single event (original path).
@@ -270,5 +302,44 @@ export function emitSessionActive(rctx: RelayContext): void {
                 messages: capOversizedMessages(messages),
             },
         });
+        recordEmittedMessageState(rctx, messages);
     }
+}
+
+/**
+ * Emit either a full session_active or a lightweight session_metadata_update,
+ * depending on whether the messages array has changed since the last emission.
+ *
+ * Call this from the heartbeat interval instead of emitSessionActive() to
+ * avoid re-serializing the full message history when nothing changed.
+ *
+ * - Messages unchanged → session_metadata_update (metadata only, ~80% smaller)
+ * - Messages changed   → emitSessionActive() as usual
+ */
+export function emitSessionMetadataUpdate(rctx: RelayContext): void {
+    if (!rctx.latestCtx) return;
+
+    const { messages, model } = buildSessionContext(
+        rctx.latestCtx.sessionManager.getEntries(),
+        rctx.latestCtx.sessionManager.getLeafId(),
+    );
+
+    if (messagesChangedSinceLastEmit(rctx, messages)) {
+        // Messages changed since last full snapshot — send a complete session_active.
+        emitSessionActive(rctx);
+        return;
+    }
+
+    // Messages unchanged — send lightweight metadata-only update.
+    rctx.forwardEvent({
+        type: "session_metadata_update",
+        metadata: {
+            model,
+            thinkingLevel: rctx.getCurrentThinkingLevel(),
+            sessionName: rctx.getCurrentSessionName(),
+            cwd: rctx.latestCtx.cwd,
+            availableModels: rctx.getConfiguredModels(),
+            todoList: getCurrentTodoList(),
+        },
+    });
 }

@@ -3,6 +3,7 @@
  */
 
 import type { RelayContext } from "./remote-types.js";
+import { emitSessionMetadataUpdate } from "./remote/chunked-delivery.js";
 
 export function buildTokenUsage(rctx: RelayContext): { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number } {
     if (!rctx.latestCtx) return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
@@ -43,6 +44,10 @@ export function startHeartbeat(rctx: RelayContext) {
     rctx.forwardEvent(buildHeartbeat(rctx));
     heartbeatTimer = setInterval(() => {
         rctx.forwardEvent(buildHeartbeat(rctx));
+        // Emit metadata-only update when messages haven't changed, or a full
+        // session_active when they have.  This avoids re-serializing 10-50 MB
+        // of message history every 10 s during idle/thinking sessions.
+        emitSessionMetadataUpdate(rctx);
     }, 10_000);
 }
 

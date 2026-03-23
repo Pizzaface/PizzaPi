@@ -1145,6 +1145,50 @@ export function App() {
       return;
     }
 
+    if (type === "session_metadata_update") {
+      // Lightweight metadata-only heartbeat — messages haven't changed.
+      // Update metadata state without touching the messages array.
+      const meta = (evt.metadata ?? {}) as Record<string, unknown>;
+      const cachePatch: Partial<SessionUiCacheEntry> = {};
+
+      const metaModel = normalizeModel(meta.model);
+      if (metaModel) {
+        setActiveModel(metaModel);
+        cachePatch.activeModel = metaModel;
+      }
+
+      const metaModels = Array.isArray(meta.availableModels)
+        ? normalizeModelList(meta.availableModels as unknown[])
+        : null;
+      if (metaModels) {
+        setAvailableModels(metaModels);
+        cachePatch.availableModels = metaModels;
+      }
+
+      if (Object.prototype.hasOwnProperty.call(meta, "sessionName")) {
+        const nextName = normalizeSessionName(meta.sessionName);
+        setSessionName(nextName);
+        cachePatch.sessionName = nextName;
+      }
+
+      if (Object.prototype.hasOwnProperty.call(meta, "thinkingLevel")) {
+        const level = typeof meta.thinkingLevel === "string" ? meta.thinkingLevel : null;
+        setEffortLevel(level);
+        cachePatch.effortLevel = level;
+      }
+
+      if (Array.isArray(meta.todoList)) {
+        const todos = meta.todoList as TodoItem[];
+        setTodoList(todos);
+        cachePatch.todoList = todos;
+      }
+
+      if (Object.keys(cachePatch).length > 0) {
+        patchSessionCache(cachePatch);
+      }
+      return;
+    }
+
     if (type === "session_active") {
       const state = evt.state as Record<string, unknown> | undefined;
       const rawMessages = Array.isArray(state?.messages) ? (state?.messages as unknown[]) : [];

@@ -474,6 +474,13 @@ export function registerRelayNamespace(io: SocketIOServer): void {
                 }
             } else if (event.type === "heartbeat") {
                 await updateSessionHeartbeat(sessionId, event);
+            } else if (event.type === "session_metadata_update") {
+                // Lightweight metadata-only heartbeat: touch activity but do NOT
+                // update lastState or append to the Redis event cache.  The full
+                // message history hasn't changed — viewers get the metadata delta
+                // via the broadcast below, and the existing lastState in Redis
+                // remains the authoritative snapshot for reconnecting viewers.
+                await touchSessionActivity(sessionId);
             } else if (isMetaRelayEvent(event as { type?: unknown }) &&
                        // Old CLI emits mcp_startup_report in a flat format without
                        // a nested `report` field. Only intercept the new nested format;
@@ -528,7 +535,11 @@ export function registerRelayNamespace(io: SocketIOServer): void {
                 const isChunkedSessionActive =
                     event.type === "session_active" &&
                     !!(event.state as Record<string, unknown> | undefined)?.chunked;
-                if (event.type === "session_messages_chunk" || isChunkedSessionActive) {
+                // session_metadata_update is a lightweight heartbeat-only event:
+                // broadcast to currently-connected viewers but do NOT cache in Redis.
+                // Reconnecting viewers will get the full lastState snapshot instead.
+                const isMetadataOnlyUpdate = event.type === "session_metadata_update";
+                if (event.type === "session_messages_chunk" || isChunkedSessionActive || isMetadataOnlyUpdate) {
                     await broadcastSessionEventToViewers(sessionId, eventToPublish);
                 } else {
                     // Publish to viewers via Redis cache + Socket.IO rooms
