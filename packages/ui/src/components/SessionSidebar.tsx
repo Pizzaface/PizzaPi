@@ -1126,7 +1126,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                     >
                                                         {s.runnerId && (
                                                         <button
-                                                            className="flex flex-col items-center justify-center flex-1 pt-[3px] text-xs font-semibold gap-0.5 bg-violet-500 text-white active:bg-violet-600 transition-colors leading-none"
+                                                            className="flex flex-col items-center justify-center flex-1 pb-[3px] text-xs font-semibold gap-0.5 bg-violet-500 text-white active:bg-violet-600 transition-colors leading-none"
                                                             onClick={(e) => {
                                                                 e.stopPropagation();
                                                                 onDuplicateSession?.(s.runnerId!, s.cwd || "");
@@ -1147,7 +1147,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                         )}
                                                         <button
                                                             className={cn(
-                                                                "flex flex-col items-center justify-center flex-1 pt-[3px] text-xs font-semibold gap-0.5 bg-blue-500 text-white transition-colors leading-none",
+                                                                "flex flex-col items-center justify-center flex-1 pb-[3px] text-xs font-semibold gap-0.5 bg-blue-500 text-white transition-colors leading-none",
                                                                 isPinPending ? "opacity-60 cursor-not-allowed" : "active:bg-blue-600",
                                                             )}
                                                             onClick={(e) => {
@@ -1169,7 +1169,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                             <span>{isPinPending ? "Saving" : isPinned ? "Unpin" : "Pin"}</span>
                                                         </button>
                                                         <button
-                                                            className="flex flex-col items-center justify-center flex-1 pt-[3px] text-xs font-semibold gap-0.5 bg-red-600 text-white active:bg-red-700 transition-colors leading-none"
+                                                            className="flex flex-col items-center justify-center flex-1 pb-[3px] text-xs font-semibold gap-0.5 bg-red-600 text-white active:bg-red-700 transition-colors leading-none"
                                                             onClick={(e) => {
                                                                 e.stopPropagation();
                                                                 setConfirmEndSessionId(s.sessionId);
