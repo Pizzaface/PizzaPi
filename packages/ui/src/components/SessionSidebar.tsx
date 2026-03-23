@@ -551,8 +551,17 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     }, [liveSessions, onSessionsChange]);
 
     // Detect isActive: true → false transitions to mark sessions as completed+unread.
+    // Also prune stale entries for sessions no longer in the live list to avoid
+    // unbounded growth of both tracking structures over time.
     React.useEffect(() => {
         const prev = prevActiveMapRef.current;
+        const liveIds = new Set(liveSessions.map((s) => s.sessionId));
+
+        // Prune sessions that are no longer present in the live list.
+        for (const id of prev.keys()) {
+            if (!liveIds.has(id)) prev.delete(id);
+        }
+
         const nowCompleted: string[] = [];
         for (const s of liveSessions) {
             const wasActive = prev.get(s.sessionId) ?? false;
@@ -569,6 +578,12 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                 return next;
             });
         }
+        // Also prune completedUnreadSessions for sessions no longer live.
+        setCompletedUnreadSessions((prev) => {
+            const pruned = new Set([...prev].filter((id) => liveIds.has(id)));
+            if (pruned.size === prev.size) return prev;
+            return pruned;
+        });
     }, [liveSessions]);
 
     // Clear completed-unread when the user navigates to a session.
