@@ -1364,8 +1364,14 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                             </div>
                                                         )}
 
-                                                        {/* Provider icon + activity dot */}
-                                                        <div className="relative flex-shrink-0 flex items-center justify-center w-7 h-7 rounded-md bg-sidebar-accent/50">
+                                                        {/* Provider icon — status indicated via background/glow */}
+                                                        <div className={cn(
+                                                            "relative flex-shrink-0 flex items-center justify-center w-7 h-7 rounded-md transition-all duration-300",
+                                                            visualState === "active" && "bg-blue-500/20 shadow-[0_0_8px_#3b82f680] animate-pulse",
+                                                            visualState === "awaiting" && "bg-amber-500/20 shadow-[0_0_8px_#f59e0b60]",
+                                                            visualState === "completedUnread" && "bg-green-500/20 shadow-[0_0_8px_#22c55e60]",
+                                                            (visualState === "idle" || visualState === "selected") && "bg-sidebar-accent/50",
+                                                        )}>
                                                             <ProviderIcon
                                                                 provider={provider}
                                                                 className="size-4 text-sidebar-foreground/70"
@@ -1376,15 +1382,6 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                                           ? `${activeModel.provider} · ${activeModel.name ?? activeModel.id}`
                                                                           : "unknown"
                                                                 }
-                                                            />
-                                                            <span
-                                                                className={cn(
-                                                                    "absolute -top-0.5 -right-0.5 inline-block h-2 w-2 rounded-full border border-sidebar ring-1 ring-sidebar transition-colors",
-                                                                    s.isActive
-                                                                        ? "bg-blue-400 shadow-[0_0_4px_#60a5fa80] animate-pulse ring-blue-400/20"
-                                                                        : "bg-green-600 ring-green-600/20",
-                                                                )}
-                                                                title={s.isActive ? "Actively generating" : "Session idle"}
                                                             />
                                                         </div>
 
