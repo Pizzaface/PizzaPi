@@ -61,15 +61,11 @@
 }
 
 /* Shared inner bg mask so the conic gradient only shows on the border */
-.animate-working-chase,
-.animate-awaiting-chase,
-.animate-completed-chase {
+.animate-working-chase {
   isolation: isolate;
 }
 
-.animate-working-chase::after,
-.animate-awaiting-chase::after,
-.animate-completed-chase::after {
+.animate-working-chase::after {
   content: '';
   position: absolute;
   inset: 1.5px;
@@ -100,46 +96,34 @@
   pointer-events: none;
 }
 
-/* Awaiting input — purple dot chase */
-.animate-awaiting-chase::before {
-  content: '';
-  position: absolute;
-  inset: -1.5px;
-  border-radius: 8px;
-  background: conic-gradient(from var(--chase-angle),
-    transparent                  0deg,
-    transparent                  290deg,
-    oklch(0.5  0.28 280 / 0)     290deg,
-    oklch(0.6  0.32 283 / 0.4)   310deg,
-    oklch(0.72 0.35 285 / 0.85)  330deg,
-    oklch(0.9  0.25 292 / 1)     345deg,
-    oklch(0.72 0.35 285 / 0.5)   355deg,
-    oklch(0.5  0.28 280 / 0)     360deg
-  );
-  animation: chase-spin 2s linear infinite;
-  z-index: -1;
-  pointer-events: none;
+/* Awaiting input — soft amber pulse */
+@keyframes awaiting-pulse {
+  0%, 100% {
+    box-shadow: inset 0 0 0 1.5px oklch(0.78 0.16 70 / 0.25);
+  }
+  50% {
+    box-shadow: inset 0 0 0 1.5px oklch(0.78 0.16 70 / 0.6);
+  }
 }
 
-/* Completed unread — green dot chase */
-.animate-completed-chase::before {
-  content: '';
-  position: absolute;
-  inset: -1.5px;
-  border-radius: 8px;
-  background: conic-gradient(from var(--chase-angle),
-    transparent                  0deg,
-    transparent                  290deg,
-    oklch(0.5  0.22 145 / 0)     290deg,
-    oklch(0.6  0.25 147 / 0.4)   310deg,
-    oklch(0.72 0.28 148 / 0.85)  330deg,
-    oklch(0.9  0.2  152 / 1)     345deg,
-    oklch(0.72 0.28 148 / 0.5)   355deg,
-    oklch(0.5  0.22 145 / 0)     360deg
-  );
-  animation: chase-spin 2s linear infinite;
-  z-index: -1;
-  pointer-events: none;
+.animate-awaiting-pulse {
+  animation: awaiting-pulse 2.5s ease-in-out infinite;
+  border-radius: 6px;
+}
+
+/* Completed unread — soft green pulse */
+@keyframes completed-pulse {
+  0%, 100% {
+    box-shadow: inset 0 0 0 1.5px oklch(0.72 0.19 152 / 0.25);
+  }
+  50% {
+    box-shadow: inset 0 0 0 1.5px oklch(0.72 0.19 152 / 0.6);
+  }
+}
+
+.animate-completed-pulse {
+  animation: completed-pulse 2.5s ease-in-out infinite;
+  border-radius: 6px;
 }
 
 :root {

@@ -17,6 +17,7 @@ import { ProviderIcon } from "@/components/ProviderIcon";
 import { PanelLeftClose, PanelLeftOpen, Plus, X, HardDrive, FolderOpen, CheckSquare, Square, CheckCheck, Trash2, Pin, PinOff, ChevronDown, ChevronRight, MessageSquare, Copy } from "lucide-react";
 import { buildSessionTree, flattenSessionTree, getSessionIndent, getDescendantSessionIds, getGroupCwd } from "@/lib/session-tree";
 import { pruneSwipeOffsets } from "@/lib/swipe-reveal";
+import { getSessionVisualState } from "@/lib/session-visual-state";
 
 interface HubSession {
     sessionId: string;
@@ -1155,6 +1156,12 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                             const showCwd = runnerGroup.projects.length === 1;
                                             const isActiveSession = !showRunners && activeSessionId === s.sessionId;
                                             const isChecked = selectedSessionIds.has(s.sessionId);
+                                            const visualState = getSessionVisualState({
+                                                isSelected: isActiveSession || (selectMode && isChecked),
+                                                isAwaiting: !!sessionsWithPendingQuestion?.has(s.sessionId),
+                                                isActive: !!s.isActive,
+                                                isCompletedUnread: completedUnreadSessions.has(s.sessionId),
+                                            });
                                             const provider = s.model?.provider ??
                                                 (activeSessionId === s.sessionId ? activeModel?.provider : undefined) ??
                                                 "unknown";
@@ -1171,6 +1178,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                 <div
                                                     key={s.sessionId}
                                                     className="relative overflow-hidden rounded-md"
+                                                    style={depth > 0 ? { marginLeft: `${getSessionIndent(depth)}px` } : undefined}
                                                 >
                                                     {/* "Duplicate" + "Pin" + "End" actions behind the card — only rendered during swipe/reveal (not in select mode) */}
                                                     {/* Width adapts: 3 buttons when session has a runner, 2 buttons otherwise */}
@@ -1279,22 +1287,15 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                             "relative flex items-center gap-2.5 w-full min-w-0 px-2.5 py-3 md:py-2.5 text-left rounded-md",
                                                             "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
                                                             !hasOffset && "transition-transform duration-200 ease-out",
-                                                            selectMode && isChecked
-                                                                ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                                                                : isActiveSession
-                                                                    ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                                                                    : sessionsWithPendingQuestion?.has(s.sessionId)
-                                                                        ? "text-sidebar-foreground animate-awaiting-chase"
-                                                                        : s.isActive
-                                                                            ? "text-sidebar-foreground animate-working-chase"
-                                                                            : completedUnreadSessions.has(s.sessionId)
-                                                                                ? "text-sidebar-foreground animate-completed-chase"
-                                                                                : "bg-sidebar text-sidebar-foreground hover:bg-sidebar-accent/50",
+                                                            visualState === "selected" && "bg-sidebar-accent text-sidebar-accent-foreground",
+                                                            visualState === "awaiting" && "text-sidebar-foreground animate-awaiting-pulse",
+                                                            visualState === "active" && "text-sidebar-foreground animate-working-chase",
+                                                            visualState === "completedUnread" && "text-sidebar-foreground animate-completed-pulse",
+                                                            visualState === "idle" && "bg-sidebar text-sidebar-foreground hover:bg-sidebar-accent/50",
                                                         )}
                                                         style={{
                                                             transform: !selectMode && hasOffset ? `translateX(${swipeOffset}px)` : undefined,
                                                             touchAction: selectMode ? undefined : "pan-y",
-                                                            marginLeft: `${getSessionIndent(depth)}px`,
                                                         }}
                                                     >
                                                         {/* Expand/collapse toggle for parent sessions */}
@@ -1363,8 +1364,14 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                             </div>
                                                         )}
 
-                                                        {/* Provider icon + activity dot */}
-                                                        <div className="relative flex-shrink-0 flex items-center justify-center w-7 h-7 rounded-md bg-sidebar-accent/50">
+                                                        {/* Provider icon — status indicated via background/glow */}
+                                                        <div className={cn(
+                                                            "relative flex-shrink-0 flex items-center justify-center w-7 h-7 rounded-md transition-all duration-300",
+                                                            visualState === "active" && "bg-blue-500/20 shadow-[0_0_8px_#3b82f680] animate-pulse",
+                                                            visualState === "awaiting" && "bg-amber-500/20 shadow-[0_0_8px_#f59e0b60]",
+                                                            visualState === "completedUnread" && "bg-green-500/20 shadow-[0_0_8px_#22c55e60]",
+                                                            (visualState === "idle" || visualState === "selected") && "bg-sidebar-accent/50",
+                                                        )}>
                                                             <ProviderIcon
                                                                 provider={provider}
                                                                 className="size-4 text-sidebar-foreground/70"
@@ -1376,41 +1383,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                                           : "unknown"
                                                                 }
                                                             />
-                                                            <span
-                                                                className={cn(
-                                                                    "absolute -top-0.5 -right-0.5 inline-block h-2 w-2 rounded-full border border-sidebar ring-1 ring-sidebar transition-colors",
-                                                                    s.isActive
-                                                                        ? "bg-blue-400 shadow-[0_0_4px_#60a5fa80] animate-pulse ring-blue-400/20"
-                                                                        : "bg-green-600 ring-green-600/20",
-                                                                )}
-                                                                title={s.isActive ? "Actively generating" : "Session idle"}
-                                                            />
                                                         </div>
-
-                                                        {/* Pin toggle */}
-                                                        {!selectMode && (
-                                                            <span
-                                                                role="button"
-                                                                tabIndex={-1}
-                                                                className={cn(
-                                                                    "flex-shrink-0 flex items-center justify-center w-5 h-5 rounded transition-colors",
-                                                                    isPinned
-                                                                        ? "text-blue-400 hover:text-blue-300"
-                                                                        : "text-sidebar-foreground/20 hover:text-sidebar-foreground/40",
-                                                                    isPinPending && "opacity-50 pointer-events-none",
-                                                                )}
-                                                                onClick={(e) => {
-                                                                    e.stopPropagation();
-                                                                    e.preventDefault();
-                                                                    if (!isPinPending) togglePinSession(s.sessionId, isPinned);
-                                                                }}
-                                                                onPointerDown={(e) => e.stopPropagation()}
-                                                                aria-label={isPinned ? "Unpin session" : "Pin session"}
-                                                                title={isPinned ? "Unpin" : "Pin"}
-                                                            >
-                                                                <Pin className={cn("h-3.5 w-3.5", isPinned && "fill-blue-400/30")} />
-                                                            </span>
-                                                        )}
 
                                                         {/* Text info */}
                                                         <div className="flex-1 min-w-0">
