@@ -117,6 +117,7 @@ export function waitForRelayRegistration(timeoutMs: number = 10_000): Promise<vo
 export const remoteExtension: ExtensionFactory = (pi) => {
     // ── Orchestrator-local state (NOT in RelayContext) ─────────────────────
     let sessionCompleteFired = false;
+    let sessionErrorFired = false;
     // Set when /new fires so we can retry delink_children on reconnect if
     // the initial emit is lost.  Cleared by the server ack callback.
     let pendingDelink = false;
@@ -870,6 +871,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
 
     pi.on("turn_start", (event) => {
         sessionCompleteFired = false;
+        sessionErrorFired = false;
         rctx.wasAborted = false;
         clearFollowUpGrace();
         rctx.forwardEvent(event);
@@ -937,6 +939,42 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             }
             const exitReason = rctx.wasAborted ? "killed" : lastError ? "error" : "completed";
             fireSessionComplete(summary, fullOutputPath, exitReason);
+            // Fire session_error for terminal usage-limit errors (one-shot, only at agent_end)
+            if (
+                !sessionErrorFired &&
+                lastError &&
+                rctx.isChildSession &&
+                rctx.parentSessionId &&
+                rctx.sioSocket?.connected &&
+                rctx.relay
+            ) {
+                const errText = lastError.errorMessage;
+                const lower = errText.toLowerCase();
+                const isUsageLimitError =
+                    lower.includes("usage") ||
+                    lower.includes("limit") ||
+                    lower.includes("rate") ||
+                    lower.includes("quota");
+                if (isUsageLimitError) {
+                    sessionErrorFired = true;
+                    rctx.sioSocket.emit("session_trigger" as any, {
+                        token: rctx.relay.token,
+                        trigger: {
+                            type: "session_error",
+                            sourceSessionId: rctx.relay.sessionId,
+                            sourceSessionName: undefined,
+                            targetSessionId: rctx.parentSessionId,
+                            payload: {
+                                message: errText,
+                            },
+                            deliverAs: "steer" as const,
+                            expectsResponse: true,
+                            triggerId: crypto.randomUUID(),
+                            ts: new Date().toISOString(),
+                        },
+                    });
+                }
+            }
             if (rctx.isChildSession) {
                 startFollowUpGrace(ctx);
             }
@@ -960,25 +998,6 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             emitRetryStateChanged(rctx, rctx.lastRetryableError);
             rctx.forwardEvent({ type: "cli_error", message: errorText, source: "provider", ts: Date.now() });
             rctx.forwardEvent(rctx.buildHeartbeat());
-            if (rctx.isChildSession && rctx.parentSessionId && rctx.sioSocket?.connected && rctx.relay) {
-                rctx.sioSocket.emit("session_trigger" as any, {
-                    token: rctx.relay.token,
-                    trigger: {
-                        type: "session_error",
-                        sourceSessionId: rctx.relay.sessionId,
-                        sourceSessionName: undefined,
-                        targetSessionId: rctx.parentSessionId,
-                        payload: {
-                            message: errorText,
-                            error: errorText,
-                        },
-                        deliverAs: "steer" as const,
-                        expectsResponse: true,
-                        triggerId: crypto.randomUUID(),
-                        ts: new Date().toISOString(),
-                    },
-                });
-            }
         }
     });
     pi.on("tool_execution_start", (event) => rctx.forwardEvent(event));
