@@ -66,7 +66,24 @@ function migrateSessionStorage(): void {
     // Skip if old dir doesn't exist or new sessions dir already exists
     if (!existsSync(oldDir) || existsSync(newSessions)) return;
 
-    mkdirSync(newDir, { recursive: true });
+    // Ensure the parent directory exists but do NOT pre-create newDir itself —
+    // renameSync requires the target to not exist, or on some platforms it will
+    // fail with EEXIST/ENOTEMPTY when renaming onto an existing directory.
+    mkdirSync(join(newDir, ".."), { recursive: true });
+
+    if (existsSync(newDir)) {
+        // newDir already exists (e.g. a fresh install created it) but newSessions
+        // does not — merge any files from oldDir into newDir and remove oldDir.
+        try {
+            cpSync(oldDir, newDir, { recursive: true });
+            rmSync(oldDir, { recursive: true, force: true });
+            logInfo(`Merged session data from ~/.pi/agent into ~/.pizzapi/agent`);
+        } catch (e: any) {
+            logWarn(`Failed to merge session storage: ${e.message}`);
+        }
+        return;
+    }
+
     try {
         renameSync(oldDir, newDir);
         logInfo(`Migrated session data from ~/.pi/agent to ~/.pizzapi/agent`);

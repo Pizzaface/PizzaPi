@@ -75,12 +75,12 @@ export function SummaryCards({ summary, daily }: SummaryCardsProps) {
 
       <Card>
         <CardHeader className="pb-2">
-          <CardTitle className="text-sm font-medium text-muted-foreground">Avg Daily Cost</CardTitle>
+          <CardTitle className="text-sm font-medium text-muted-foreground">Avg Cost / Active Day</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="text-2xl font-bold">{summary.sessionsWithCost === 0 ? "—" : formatCurrency(avgDailyCost)}</div>
           <p className="text-xs text-muted-foreground mt-1">
-            {daily.length} days of data
+            across {daily.length} active day{daily.length === 1 ? "" : "s"}
           </p>
         </CardContent>
       </Card>

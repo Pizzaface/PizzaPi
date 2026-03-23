@@ -86,14 +86,14 @@ export function SessionStats({ summary }: SessionStatsProps) {
 
       <Card>
         <CardHeader className="pb-2">
-          <CardTitle className="text-sm font-medium text-muted-foreground">Avg Turns</CardTitle>
+          <CardTitle className="text-sm font-medium text-muted-foreground">Avg Input Tokens</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="text-2xl font-bold">
             {summary.totalSessions > 0 ? Math.round(summary.totalInputTokens / summary.totalSessions) : "—"}
           </div>
           <p className="text-xs text-muted-foreground mt-1">
-            messages per session
+            input tokens per session
           </p>
         </CardContent>
       </Card>
