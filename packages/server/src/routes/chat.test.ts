@@ -12,6 +12,25 @@ mock.module("../middleware.js", () => {
     };
 });
 
+// Controls the rate limiter behaviour for tests.
+// Mutate these variables in individual tests to simulate allowed / blocked states.
+let mockCheckAllowed = true;
+let mockRetryAfterSeconds = 42;
+
+mock.module("../security.js", () => {
+    return {
+        RateLimiter: class {
+            check(_key: string): boolean {
+                return mockCheckAllowed;
+            }
+            getRetryAfter(_key: string): number {
+                return mockRetryAfterSeconds;
+            }
+            destroy() {}
+        },
+    };
+});
+
 let handleChatRoute: (req: Request, url: URL) => Promise<Response | undefined>;
 
 beforeAll(async () => {
@@ -95,5 +114,70 @@ describe("handleChatRoute", () => {
 
         const data = await res!.json();
         expect(data).toEqual({ error: "Missing required fields: message, provider, model" });
+    });
+});
+
+describe("handleChatRoute — rate limiting", () => {
+    test("returns 429 when rate limit is exceeded", async () => {
+        mockCheckAllowed = false;
+        mockRetryAfterSeconds = 42;
+
+        const url = new URL("http://localhost/api/chat");
+        const req = new Request(url, {
+            method: "POST",
+            body: JSON.stringify({ message: "Hello", provider: "anthropic", model: "claude-3-haiku" }),
+        });
+
+        const res = await handleChatRoute(req, url);
+        expect(res).toBeDefined();
+        expect(res!.status).toBe(429);
+    });
+
+    test("returns Retry-After header when rate limited", async () => {
+        mockCheckAllowed = false;
+        mockRetryAfterSeconds = 42;
+
+        const url = new URL("http://localhost/api/chat");
+        const req = new Request(url, {
+            method: "POST",
+            body: JSON.stringify({ message: "Hello", provider: "anthropic", model: "claude-3-haiku" }),
+        });
+
+        const res = await handleChatRoute(req, url);
+        expect(res).toBeDefined();
+        expect(res!.headers.get("Retry-After")).toBe("42");
+    });
+
+    test("returns JSON error body when rate limited", async () => {
+        mockCheckAllowed = false;
+        mockRetryAfterSeconds = 30;
+
+        const url = new URL("http://localhost/api/chat");
+        const req = new Request(url, {
+            method: "POST",
+            body: JSON.stringify({ message: "Hello", provider: "anthropic", model: "claude-3-haiku" }),
+        });
+
+        const res = await handleChatRoute(req, url);
+        expect(res).toBeDefined();
+        const data = await res!.json();
+        expect(data).toHaveProperty("error");
+        expect(typeof data.error).toBe("string");
+    });
+
+    test("proceeds past rate limit check when allowed", async () => {
+        mockCheckAllowed = true;
+
+        const url = new URL("http://localhost/api/chat");
+        const req = new Request(url, {
+            method: "POST",
+            // Missing 'model' field — triggers a 400, which confirms we passed the rate limit check
+            body: JSON.stringify({ message: "Hello", provider: "anthropic" }),
+        });
+
+        const res = await handleChatRoute(req, url);
+        expect(res).toBeDefined();
+        // Must NOT be 429; a 400 (missing fields) means we got past the rate limiter
+        expect(res!.status).toBe(400);
     });
 });

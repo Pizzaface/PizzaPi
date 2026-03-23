@@ -7,12 +7,28 @@ import { Agent } from "@mariozechner/pi-agent-core";
 import type { AgentEvent } from "@mariozechner/pi-agent-core";
 import { createToolkit } from "@pizzapi/tools";
 import { requireSession } from "../middleware.js";
+import { RateLimiter } from "../security.js";
 import type { RouteHandler } from "./types.js";
+
+// 10 requests per minute per authenticated user
+const chatRateLimiter = new RateLimiter(10, 60_000);
 
 export const handleChatRoute: RouteHandler = async (req, url) => {
     if (url.pathname === "/api/chat" && req.method === "POST") {
         const identity = await requireSession(req);
         if (identity instanceof Response) return identity;
+
+        // Rate limit by user ID (10 req/min per authenticated user)
+        if (!chatRateLimiter.check(identity.userId)) {
+            const retryAfter = chatRateLimiter.getRetryAfter(identity.userId);
+            return Response.json(
+                { error: "Rate limit exceeded. Please try again later." },
+                {
+                    status: 429,
+                    headers: { "Retry-After": String(retryAfter) },
+                },
+            );
+        }
 
         let body;
         try {

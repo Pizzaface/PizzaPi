@@ -19,7 +19,7 @@ export class RateLimiter {
 
     /**
      * Checks if a request from the given key is allowed.
-     * @param key Unique identifier (e.g., IP address)
+     * @param key Unique identifier (e.g., IP address or user ID)
      * @returns true if allowed, false if limit exceeded
      */
     check(key: string): boolean {
@@ -37,6 +37,20 @@ export class RateLimiter {
 
         record.count++;
         return true;
+    }
+
+    /**
+     * Returns the number of seconds until the rate limit window resets for the given key.
+     * Call this after check() returns false to populate the Retry-After response header.
+     * Returns the full window duration (in seconds) if no active window is found.
+     */
+    getRetryAfter(key: string): number {
+        const now = Date.now();
+        const record = this.hits.get(key);
+        if (!record || now > record.resetTime) {
+            return Math.ceil(this.windowMs / 1000);
+        }
+        return Math.ceil((record.resetTime - now) / 1000);
     }
 
     private cleanup() {

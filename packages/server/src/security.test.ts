@@ -65,6 +65,30 @@ describe("RateLimiter", () => {
         expect(limiter.check("b")).toBe(true);
         limiter.destroy();
     });
+
+    test("getRetryAfter returns seconds until window reset", () => {
+        const limiter = new RateLimiter(1, 60_000); // 60s window
+        const key = "retry-test-key";
+
+        limiter.check(key); // first request — window starts
+        limiter.check(key); // second request — now rate limited
+
+        const retryAfter = limiter.getRetryAfter(key);
+        // Should be > 0 and <= 60 (window is 60s, and we just started it)
+        expect(retryAfter).toBeGreaterThan(0);
+        expect(retryAfter).toBeLessThanOrEqual(60);
+        limiter.destroy();
+    });
+
+    test("getRetryAfter returns full window when no active record", () => {
+        const limiter = new RateLimiter(1, 60_000);
+        const key = "no-record-key";
+
+        // No check() call — no record exists
+        const retryAfter = limiter.getRetryAfter(key);
+        expect(retryAfter).toBe(60); // Math.ceil(60_000 / 1000)
+        limiter.destroy();
+    });
 });
 
 describe("isValidEmail", () => {
