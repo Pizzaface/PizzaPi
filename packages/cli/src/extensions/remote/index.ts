@@ -881,7 +881,8 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         stopHeartbeat();
         stopSessionNameSync();
         _ctx = null;
-        fireSessionComplete(undefined, undefined, rctx.wasAborted ? "killed" : "completed");
+        const shutdownExitReason = rctx.wasAborted ? "killed" : rctx.lastRetryableError ? "error" : "completed";
+        fireSessionComplete(undefined, undefined, shutdownExitReason);
         doDisconnect();
     });
 
@@ -897,6 +898,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
 
     pi.on("agent_end", (event, ctx) => {
         rctx.isAgentActive = false;
+        const lastError = rctx.lastRetryableError;
         rctx.lastRetryableError = null;
         emitRetryStateChanged(rctx, null);
         rctx.forwardEvent(event);
@@ -933,7 +935,8 @@ export const remoteExtension: ExtensionFactory = (pi) => {
                     }
                 }
             }
-            fireSessionComplete(summary, fullOutputPath, rctx.wasAborted ? "killed" : "completed");
+            const exitReason = rctx.wasAborted ? "killed" : lastError ? "error" : "completed";
+            fireSessionComplete(summary, fullOutputPath, exitReason);
             if (rctx.isChildSession) {
                 startFollowUpGrace(ctx);
             }
@@ -957,6 +960,25 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             emitRetryStateChanged(rctx, rctx.lastRetryableError);
             rctx.forwardEvent({ type: "cli_error", message: errorText, source: "provider", ts: Date.now() });
             rctx.forwardEvent(rctx.buildHeartbeat());
+            if (rctx.isChildSession && rctx.parentSessionId && rctx.sioSocket?.connected && rctx.relay) {
+                rctx.sioSocket.emit("session_trigger" as any, {
+                    token: rctx.relay.token,
+                    trigger: {
+                        type: "session_error",
+                        sourceSessionId: rctx.relay.sessionId,
+                        sourceSessionName: undefined,
+                        targetSessionId: rctx.parentSessionId,
+                        payload: {
+                            message: errorText,
+                            error: errorText,
+                        },
+                        deliverAs: "steer" as const,
+                        expectsResponse: true,
+                        triggerId: crypto.randomUUID(),
+                        ts: new Date().toISOString(),
+                    },
+                });
+            }
         }
     });
     pi.on("tool_execution_start", (event) => rctx.forwardEvent(event));
