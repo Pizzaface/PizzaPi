@@ -24,7 +24,7 @@ The sidebar currently makes "waiting for a trigger" and "completed" feel too sim
 **Visual treatment:**
 - This remains the only clearly busy state.
 - Keep the stronger working animation (`spin` / `chase` / equivalent active motion).
-- Use the existing active/working color family unless implementation details suggest a nearby variant is clearer.
+- Keep the existing blue/working color family unless implementation details show a very close variant reads better.
 
 **User impression:** “This session is currently running.”
 
@@ -39,7 +39,7 @@ The sidebar currently makes "waiting for a trigger" and "completed" feel too sim
 
 **User impression:** “This session needs something before it can continue.”
 
-### 3. Complete
+### 3. Completed (Unread)
 
 **Meaning:** The session completed since the user last viewed it.
 
@@ -50,6 +50,16 @@ The sidebar currently makes "waiting for a trigger" and "completed" feel too sim
 
 **User impression:** “This session is finished and ready to review.”
 
+### 4. Idle
+
+**Meaning:** The session is neither actively working, nor waiting on a trigger, nor newly completed/unread.
+
+**Visual treatment:**
+- Keep this subdued and largely static.
+- It should not compete visually with the three attention-worthy states above.
+
+**User impression:** “This session is inactive right now.”
+
 ## UI Surface Areas
 
 ### Session row styling
@@ -57,17 +67,22 @@ The sidebar currently makes "waiting for a trigger" and "completed" feel too sim
 Update the session row state styling so:
 - **Active** keeps the stronger working animation.
 - **Awaiting** gets a lighter pulse-based pending treatment.
-- **Complete** gets a lighter pulse-based resolved treatment.
+- **Completed (Unread)** gets a lighter pulse-based resolved treatment.
+- **Idle** remains subdued.
 
 Avoid making awaiting and completed rows feel identical; the distinction should come from both motion and color semantics.
+
+Priority note: if multiple booleans could apply at once, preserve the existing semantic priority used by the current sidebar logic unless a real bug is found. In particular, awaiting should continue to win over active if both appear true at render time.
 
 ### Provider/activity dot
 
 Update the small dot on the provider badge so it communicates state consistently:
 - **Active:** animated working indicator
 - **Awaiting:** amber pulse
-- **Complete/unread:** green pulse
+- **Completed (Unread):** green pulse
 - **Idle/default:** subdued static indicator
+
+Implementation note: the current dot logic only branches on `s.isActive`, so this change requires threading the same awaiting/completed state information used by the row styling into the dot styling logic as well.
 
 ## Constraints
 
@@ -78,10 +93,19 @@ Update the small dot on the provider badge so it communicates state consistently
 
 ## Testing Strategy
 
-Prefer focused testing of state-to-style mapping if the mapping can be extracted cleanly into a pure helper without unnecessary abstraction. Otherwise:
+Prefer focused testing of state-to-style mapping if the mapping can be extracted cleanly into a pure helper without unnecessary abstraction. A good target would be a helper that maps the sidebar inputs to a visual state such as:
+
+- `active`
+- `awaiting`
+- `completedUnread`
+- `idle`
+
+Otherwise:
 - run UI package tests,
 - run typecheck,
 - and verify the affected sidebar behavior manually or via targeted UI tests if available.
+
+If the implementation changes custom animation classes, update the existing sidebar animation definitions rather than introducing redundant near-duplicates unless that materially improves clarity.
 
 ## Non-Goals
 
