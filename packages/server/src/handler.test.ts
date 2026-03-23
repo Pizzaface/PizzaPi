@@ -85,17 +85,52 @@ describe("handleFetch — body size limits", () => {
         expect(res.status).not.toBe(413);
     });
 
-    test("POST without Content-Length header is not rejected by size check", async () => {
+    test("POST without Content-Length and small body passes through (within size limit)", async () => {
+        // Small body well under the limit — streaming byte-counter should allow it
         const req = new Request("http://localhost/health", {
             method: "POST",
             headers: {
                 "content-type": "application/json",
+                // Deliberately omit Content-Length to trigger the streaming path
             },
             body: "{}",
         });
         const res = await handleFetch(req);
-        // Should not be 413 — no Content-Length so no fast-path rejection
         expect(res.status).not.toBe(413);
+    });
+
+    test("POST without Content-Length and oversized body returns 413 (streaming limit)", async () => {
+        // Exceeds MAX_BODY_SIZE without a Content-Length header — exercises the
+        // streaming byte-counter that closes the missing-header bypass.
+        const oversizedBody = "x".repeat(MAX_BODY_SIZE + 1);
+        const req = new Request("http://localhost/api/runners", {
+            method: "POST",
+            headers: {
+                "content-type": "application/json",
+                // Deliberately omit Content-Length
+            },
+            body: oversizedBody,
+        });
+        const res = await handleFetch(req);
+        expect(res.status).toBe(413);
+        const data = await res.json() as { error: string };
+        expect(data.error).toContain("Payload Too Large");
+    });
+
+    test("POST with malformed Content-Length (numeric prefix like '1abc') returns 400", async () => {
+        // parseInt("1abc", 10) === 1 but the strict digits-only check should reject it
+        const req = new Request("http://localhost/api/runners", {
+            method: "POST",
+            headers: {
+                "content-type": "application/json",
+                "content-length": "1abc",
+            },
+            body: "{}",
+        });
+        const res = await handleFetch(req);
+        expect(res.status).toBe(400);
+        const data = await res.json() as { error: string };
+        expect(data.error).toContain("malformed Content-Length");
     });
 
     test("attachment upload route allows up to 50MB", async () => {

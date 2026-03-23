@@ -22,39 +22,98 @@ function isAttachmentUploadPath(pathname: string, method: string): boolean {
 }
 
 /**
- * Check the Content-Length header against the allowed body size limit.
- * Returns a 413 Response if the declared size exceeds the limit, otherwise undefined.
+ * Enforces body size limits for POST/PUT/PATCH requests.
+ *
+ * - If Content-Length is present, it is validated with strict digits-only parsing.
+ *   Malformed values (e.g. "1abc") are rejected with 400.
+ *   Values exceeding the limit are rejected with 413.
+ * - If Content-Length is absent (e.g. chunked transfer encoding), the request
+ *   body is consumed via a streaming reader and rejected with 413 if the total
+ *   bytes read exceed the limit.  The buffered bytes are then reassembled into
+ *   a new Request so downstream handlers can still call req.json() / req.formData().
+ *
+ * Returns either a Response (error) or the Request to continue with.
  */
-function checkContentLength(req: Request, url: URL): Response | undefined {
+async function enforceBodySizeLimit(req: Request, url: URL): Promise<Response | Request> {
     const method = req.method;
     if (method !== "POST" && method !== "PUT" && method !== "PATCH") {
-        return undefined;
-    }
-
-    const contentLengthHeader = req.headers.get("content-length");
-    if (!contentLengthHeader) {
-        return undefined;
-    }
-
-    const contentLength = parseInt(contentLengthHeader, 10);
-    if (!Number.isFinite(contentLength) || contentLength < 0) {
-        return undefined;
+        return req;
     }
 
     const limit = isAttachmentUploadPath(url.pathname, method)
         ? MAX_ATTACHMENT_BODY_SIZE
         : MAX_BODY_SIZE;
 
-    if (contentLength > limit) {
+    const contentLengthHeader = req.headers.get("content-length");
+
+    if (contentLengthHeader !== null) {
+        // Strict digits-only validation — rejects malformed values like "1abc"
+        if (!/^\d+$/.test(contentLengthHeader)) {
+            return Response.json(
+                { error: "Bad Request: malformed Content-Length header" },
+                { status: 400 },
+            );
+        }
+        const contentLength = parseInt(contentLengthHeader, 10);
+        if (!Number.isFinite(contentLength) || contentLength < 0) {
+            return Response.json(
+                { error: "Bad Request: invalid Content-Length header" },
+                { status: 400 },
+            );
+        }
+        if (contentLength > limit) {
+            return Response.json(
+                { error: `Payload Too Large: body exceeds ${limit} bytes` },
+                { status: 413 },
+            );
+        }
+        return req;
+    }
+
+    // No Content-Length header — enforce limit via streaming byte-counter.
+    // This covers chunked transfer encoding and any other scenario where a body
+    // is present but the header is absent, which would otherwise bypass the
+    // fast-path check above.
+    if (!req.body) {
+        return req;
+    }
+
+    const reader = req.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let totalBytes = 0;
+
+    try {
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            totalBytes += value.byteLength;
+            if (totalBytes > limit) {
+                reader.cancel().catch(() => undefined);
+                return Response.json(
+                    { error: `Payload Too Large: body exceeds ${limit} bytes` },
+                    { status: 413 },
+                );
+            }
+            chunks.push(value);
+        }
+    } catch {
+        reader.cancel().catch(() => undefined);
         return Response.json(
-            {
-                error: `Payload Too Large: body exceeds ${limit} bytes`,
-            },
-            { status: 413 },
+            { error: "Bad Request: failed to read request body" },
+            { status: 400 },
         );
     }
 
-    return undefined;
+    // Reassemble the buffered bytes and reconstruct the request so downstream
+    // handlers can still call req.json() / req.formData() etc.
+    const buffered = new Uint8Array(totalBytes);
+    let offset = 0;
+    for (const chunk of chunks) {
+        buffered.set(chunk, offset);
+        offset += chunk.byteLength;
+    }
+
+    return new Request(req, { body: buffered.buffer as ArrayBuffer });
 }
 
 /**
@@ -64,9 +123,13 @@ function checkContentLength(req: Request, url: URL): Response | undefined {
 export async function handleFetch(req: Request): Promise<Response> {
     const url = new URL(req.url);
 
-    // ── Body size guard (Content-Length fast path) ─────────────────────
-    const sizeError = checkContentLength(req, url);
-    if (sizeError) return sizeError;
+    // ── Body size guard ────────────────────────────────────────────────
+    // Validates Content-Length when present (strict numeric parsing) and falls
+    // back to a streaming byte-counter when Content-Length is absent, so that
+    // chunked-encoding or header-omitting requests cannot bypass the limit.
+    const sizeResult = await enforceBodySizeLimit(req, url);
+    if (sizeResult instanceof Response) return sizeResult;
+    req = sizeResult; // may be a new Request wrapping the pre-buffered body
 
     // ── better-auth handler ────────────────────────────────────────────────
     if (url.pathname.startsWith("/api/auth")) {
