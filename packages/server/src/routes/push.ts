@@ -9,6 +9,7 @@ import {
     unsubscribePush,
     getSubscriptionsForUser,
     updateEnabledEvents,
+    updateSuppressChildNotifications,
 } from "../push.js";
 import { getSharedSession, getLocalTuiSocket } from "../ws/sio-registry.js";
 import { getPushPendingQuestion, consumePushPendingQuestionIfMatches } from "../ws/sio-state.js";
@@ -70,6 +71,7 @@ export const handlePushRoute: RouteHandler = async (req, url) => {
                 endpoint: s.endpoint,
                 createdAt: s.createdAt,
                 enabledEvents: s.enabledEvents,
+                suppressChildNotifications: !!s.suppressChildNotifications,
             })),
         });
     }
@@ -84,6 +86,19 @@ export const handlePushRoute: RouteHandler = async (req, url) => {
         }
 
         await updateEnabledEvents(identity.userId, body.endpoint, body.enabledEvents);
+        return Response.json({ ok: true });
+    }
+
+    if (url.pathname === "/api/push/child-notifications" && req.method === "PUT") {
+        const identity = await requireSession(req);
+        if (identity instanceof Response) return identity;
+
+        const body = (await req.json()) as { endpoint?: string; suppress?: boolean };
+        if (!body.endpoint || typeof body.suppress !== "boolean") {
+            return Response.json({ error: "Missing endpoint or suppress (boolean)" }, { status: 400 });
+        }
+
+        await updateSuppressChildNotifications(identity.userId, body.endpoint, body.suppress);
         return Response.json({ ok: true });
     }
 

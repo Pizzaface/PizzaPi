@@ -66,6 +66,8 @@ export interface PushSubscriptionTable {
     createdAt: string;
     /** Comma-separated list of enabled event types, or "*" for all */
     enabledEvents: string;
+    /** Whether to suppress notifications from linked child sessions (0 = no, 1 = yes) */
+    suppressChildNotifications: number;
 }
 
 export async function ensurePushSubscriptionTable(): Promise<void> {
@@ -79,6 +81,17 @@ export async function ensurePushSubscriptionTable(): Promise<void> {
         .addColumn("createdAt", "text", (col) => col.notNull())
         .addColumn("enabledEvents", "text", (col) => col.notNull().defaultTo("*"))
         .execute();
+
+    // Migration: add suppressChildNotifications column if it doesn't exist yet.
+    // SQLite doesn't support ADD COLUMN IF NOT EXISTS, so we try/catch.
+    try {
+        await getKysely().schema
+            .alterTable("push_subscription")
+            .addColumn("suppressChildNotifications", "integer", (col) => col.notNull().defaultTo(0))
+            .execute();
+    } catch {
+        // Column already exists — safe to ignore.
+    }
 
     await getKysely().schema
         .createIndex("push_subscription_user_idx")
@@ -102,6 +115,7 @@ export interface PushSubscribeInput {
     endpoint: string;
     keys: { p256dh: string; auth: string };
     enabledEvents?: string;
+    suppressChildNotifications?: boolean;
 }
 
 export async function subscribePush(input: PushSubscribeInput): Promise<string> {
@@ -124,6 +138,7 @@ export async function subscribePush(input: PushSubscribeInput): Promise<string> 
             keys: JSON.stringify(input.keys),
             createdAt: now,
             enabledEvents: input.enabledEvents ?? "*",
+            suppressChildNotifications: input.suppressChildNotifications ? 1 : 0,
         })
         .execute();
 
@@ -171,6 +186,19 @@ export async function updateEnabledEvents(
         .execute();
 }
 
+export async function updateSuppressChildNotifications(
+    userId: string,
+    endpoint: string,
+    suppress: boolean,
+): Promise<void> {
+    await getKysely()
+        .updateTable("push_subscription" as any)
+        .set({ suppressChildNotifications: suppress ? 1 : 0 })
+        .where("userId", "=", userId)
+        .where("endpoint", "=", endpoint)
+        .execute();
+}
+
 // ── Send push notifications ─────────────────────────────────────────────────
 
 export type PushEventType =
@@ -201,8 +229,11 @@ function isEventEnabled(enabledEvents: string, eventType: PushEventType): boolea
 /**
  * Send a push notification to all subscriptions for a given user.
  * Silently removes subscriptions that are no longer valid (410 Gone).
+ *
+ * @param isChildSession - When true, subscriptions with suppressChildNotifications
+ *   enabled will not receive this notification.
  */
-export async function sendPushToUser(userId: string, payload: PushPayload): Promise<void> {
+export async function sendPushToUser(userId: string, payload: PushPayload, isChildSession = false): Promise<void> {
     const subscriptions = await getSubscriptionsForUser(userId);
     if (subscriptions.length === 0) return;
 
@@ -212,6 +243,7 @@ export async function sendPushToUser(userId: string, payload: PushPayload): Prom
     await Promise.allSettled(
         subscriptions.map(async (sub) => {
             if (!isEventEnabled(sub.enabledEvents, payload.type)) return;
+            if (isChildSession && sub.suppressChildNotifications) return;
 
             let keys: { p256dh: string; auth: string };
             try {
@@ -251,14 +283,14 @@ export async function sendPushToUser(userId: string, payload: PushPayload): Prom
 /**
  * Convenience: notify a user that their agent finished working.
  */
-export function notifyAgentFinished(userId: string, sessionId: string, sessionName?: string | null): void {
+export function notifyAgentFinished(userId: string, sessionId: string, sessionName?: string | null, isChildSession = false): void {
     const label = sessionName ?? sessionId.slice(0, 8);
     void sendPushToUser(userId, {
         type: "agent_finished",
         title: "Agent finished",
         body: `Your agent in "${label}" has finished its task.`,
         sessionId,
-    }).catch((err) => {
+    }, isChildSession).catch((err) => {
         console.error("[push] notifyAgentFinished failed:", err);
     });
 }
@@ -275,6 +307,7 @@ export function notifyAgentNeedsInput(
     sessionName?: string | null,
     options?: string[],
     toolCallId?: string,
+    isChildSession = false,
 ): void {
     const label = sessionName ?? sessionId.slice(0, 8);
     const body = question
@@ -316,7 +349,7 @@ export function notifyAgentNeedsInput(
             ...(options && options.length > 0 ? { options } : {}),
             ...(toolCallId ? { toolCallId } : {}),
         },
-    }).catch((err) => {
+    }, isChildSession).catch((err) => {
         console.error("[push] notifyAgentNeedsInput failed:", err);
     });
 }
@@ -324,7 +357,7 @@ export function notifyAgentNeedsInput(
 /**
  * Convenience: notify a user that an error occurred.
  */
-export function notifyAgentError(userId: string, sessionId: string, errorMessage?: string, sessionName?: string | null): void {
+export function notifyAgentError(userId: string, sessionId: string, errorMessage?: string, sessionName?: string | null, isChildSession = false): void {
     const label = sessionName ?? sessionId.slice(0, 8);
     const body = errorMessage
         ? `Error in "${label}": ${errorMessage.slice(0, 120)}`
@@ -334,7 +367,7 @@ export function notifyAgentError(userId: string, sessionId: string, errorMessage
         title: "Agent error",
         body,
         sessionId,
-    }).catch((err) => {
+    }, isChildSession).catch((err) => {
         console.error("[push] notifyAgentError failed:", err);
     });
 }

@@ -255,9 +255,10 @@ async function checkPushNotifications(
     if (viewerCount > 0) return;
 
     const sName = session?.sessionName ?? null;
+    const isChildSession = !!session?.parentSessionId;
 
     if (event.type === "agent_end") {
-        notifyAgentFinished(userId, sessionId, sName);
+        notifyAgentFinished(userId, sessionId, sName, isChildSession);
     }
 
     if (event.type === "tool_execution_start" && event.toolName === "AskUserQuestion") {
@@ -294,12 +295,12 @@ async function checkPushNotifications(
         // reject with 400 — so don't show action buttons in any of those cases.
         const toolCallId = typeof event.toolCallId === "string" ? event.toolCallId : undefined;
         const canQuickReply = questionCount <= 1 && session?.collabMode === true && !!toolCallId;
-        notifyAgentNeedsInput(userId, sessionId, question, sName, canQuickReply ? options : undefined, toolCallId);
+        notifyAgentNeedsInput(userId, sessionId, question, sName, canQuickReply ? options : undefined, toolCallId, isChildSession);
     }
 
     if (event.type === "cli_error") {
         const errMsg = typeof event.message === "string" ? event.message : undefined;
-        notifyAgentError(userId, sessionId, errMsg, sName);
+        notifyAgentError(userId, sessionId, errMsg, sName, isChildSession);
     }
 }
 
