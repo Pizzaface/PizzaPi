@@ -81,19 +81,21 @@ export function processFile(
   // Handle incremental processing: if we have a lastOffset, process only new lines
   let linesToProcess: string[];
   if (lastOffset !== undefined && lastOffset > 0) {
-    // lastOffset points to the byte position we've already processed up to
-    // If lastOffset >= fullContent.length, there's no new content
-    if (lastOffset >= fullContent.length) {
+    // lastOffset is a UTF-8 byte count. We must use Buffer-based slicing so
+    // that multi-byte Unicode characters in cwd/session names don't cause
+    // offset drift (JS string .slice() counts UTF-16 code units, not bytes).
+    const fullBuf = Buffer.from(fullContent, "utf-8");
+    if (lastOffset >= fullBuf.length) {
       linesToProcess = [];
     } else {
-      // Start from lastOffset
-      // If there's a newline at lastOffset (shouldn't happen), skip it
+      // Start from lastOffset (byte position)
+      // If there's a newline byte at lastOffset (shouldn't happen), skip it
       let startPos = lastOffset;
-      if (startPos < fullContent.length && fullContent[startPos] === "\n") {
+      if (startPos < fullBuf.length && fullBuf[startPos] === 0x0a /* '\n' */) {
         startPos++;
       }
-      // Process only the new content
-      const newContent = fullContent.slice(startPos);
+      // Slice by bytes then decode — correctly handles multi-byte characters
+      const newContent = fullBuf.slice(startPos).toString("utf-8");
       linesToProcess = newContent.split("\n");
     }
   } else {
@@ -277,40 +279,45 @@ export function processFile(
       );
     }
 
-    // Upsert session summary
-    db.run(
-      `INSERT INTO sessions 
-       (id, project, session_name, started_at, ended_at, message_count,
-        total_input, total_output, total_cache_read, total_cache_write,
-        total_cost, primary_model, primary_provider)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET
-       session_name = COALESCE(excluded.session_name, session_name),
-       ended_at = CASE WHEN excluded.ended_at IS NULL THEN ended_at ELSE MAX(ended_at, excluded.ended_at) END,
-       message_count = excluded.message_count,
-       total_input = excluded.total_input,
-       total_output = excluded.total_output,
-       total_cache_read = excluded.total_cache_read,
-       total_cache_write = excluded.total_cache_write,
-       total_cost = excluded.total_cost,
-       primary_model = excluded.primary_model,
-       primary_provider = excluded.primary_provider`,
-      [
-        sessionId,
-        project,
-        sessionName,
-        startedAtMs,
-        messageCount > 0 ? lastMessageTimestamp : null,
-        messageCount,
-        totalInput,
-        totalOutput,
-        totalCacheRead,
-        totalCacheWrite,
-        totalCost,
-        primaryModel,
-        primaryProvider,
-      ],
-    );
+    // Only upsert session summary when we have new usage events to write.
+    // Skipping when events.length === 0 prevents an incremental rescan from
+    // zeroing out existing aggregates (message_count, totals, primary_model)
+    // on files that contain no new assistant-usage entries.
+    if (events.length > 0) {
+      db.run(
+        `INSERT INTO sessions 
+         (id, project, session_name, started_at, ended_at, message_count,
+          total_input, total_output, total_cache_read, total_cache_write,
+          total_cost, primary_model, primary_provider)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+         session_name = COALESCE(excluded.session_name, session_name),
+         ended_at = CASE WHEN excluded.ended_at IS NULL THEN ended_at ELSE MAX(ended_at, excluded.ended_at) END,
+         message_count = excluded.message_count,
+         total_input = excluded.total_input,
+         total_output = excluded.total_output,
+         total_cache_read = excluded.total_cache_read,
+         total_cache_write = excluded.total_cache_write,
+         total_cost = excluded.total_cost,
+         primary_model = excluded.primary_model,
+         primary_provider = excluded.primary_provider`,
+        [
+          sessionId,
+          project,
+          sessionName,
+          startedAtMs,
+          messageCount > 0 ? lastMessageTimestamp : null,
+          messageCount,
+          totalInput,
+          totalOutput,
+          totalCacheRead,
+          totalCacheWrite,
+          totalCost,
+          primaryModel,
+          primaryProvider,
+        ],
+      );
+    }
 
     // Update processing state with byte offset (only for the lines we actually processed)
     const fileStats = statSync(filePath);

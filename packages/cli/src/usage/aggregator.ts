@@ -179,7 +179,7 @@ export function getUsageData(db: Database, range: UsageRange = "90d"): UsageData
   `,
   ).all(fromTimestamp);
 
-  const byProject = byProjectRaw.map((p) => ({
+  const byProject = byProjectRaw.map((p: (typeof byProjectRaw)[number]) => ({
     project: p.project,
     projectShort: p.project.split("/").pop() || p.project,
     sessions: p.sessions,
@@ -219,7 +219,7 @@ export function getUsageData(db: Database, range: UsageRange = "90d"): UsageData
   `,
   ).all(fromTimestamp);
 
-  const recentSessions = recentSessionsRaw.map((s) => ({
+  const recentSessions = recentSessionsRaw.map((s: (typeof recentSessionsRaw)[number]) => ({
     id: s.id,
     project: s.project,
     projectShort: s.project.split("/").pop() || s.project,

@@ -27,7 +27,12 @@ function formatTokens(value: number): string {
 }
 
 export function SummaryCards({ summary, daily }: SummaryCardsProps) {
-  // Calculate average daily cost from daily data
+  // Calculate average daily cost from daily data.
+  // TODO: This divides by the number of *active* days (days with at least one
+  // usage event), not the total calendar days in the selected range.
+  // "Avg Daily Cost" over a 30-day range with only 10 active days will be 3×
+  // higher than a pure calendar average.  Consider whether to display both, or
+  // rename the label to "Avg Cost (active days)" to avoid confusion.
   const avgDailyCost = daily.length > 0 ? daily.reduce((sum, d) => sum + d.cost, 0) / daily.length : 0;
 
   return (
