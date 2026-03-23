@@ -43,6 +43,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
+import { ErrorBoundary } from "@/components/ui/error-boundary";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -2976,6 +2977,7 @@ export function App() {
   }
 
   return (
+    <ErrorBoundary level="root">
     <TooltipProvider delayDuration={0}>
     <div className="flex h-[100dvh] w-full flex-col overflow-hidden bg-background pp-safe-left pp-safe-right">
       <a
@@ -3362,24 +3364,26 @@ export function App() {
           }
           style={sidebarSwipeOffset !== 0 ? { transform: `translateX(${sidebarSwipeOffset}px)` } : undefined}
         >
-          <SessionSidebar
-            onOpenSession={handleOpenSession}
-            onNewSession={handleNewSession}
-            onClearSelection={handleClearSelection}
-            onShowRunners={() => { setShowRunners(true); setShowApiKeys(false); setActiveSessionId(null); }}
-            activeSessionId={activeSessionId}
-            showRunners={showRunners}
-            activeModel={activeModel}
-            onRelayStatusChange={setRelayStatus}
-            onSessionsChange={setLiveSessions}
-            onClose={() => setSidebarOpen(false)}
-            onEndSession={handleEndSession}
-            onDuplicateSession={handleDuplicateSession}
-            runners={runnersForSidebar}
-            selectedRunnerId={selectedRunnerId}
-            onSelectRunner={setSelectedRunnerId}
-            onShowSessions={() => setShowRunners(false)}
-          />
+          <ErrorBoundary level="section">
+            <SessionSidebar
+              onOpenSession={handleOpenSession}
+              onNewSession={handleNewSession}
+              onClearSelection={handleClearSelection}
+              onShowRunners={() => { setShowRunners(true); setShowApiKeys(false); setActiveSessionId(null); }}
+              activeSessionId={activeSessionId}
+              showRunners={showRunners}
+              activeModel={activeModel}
+              onRelayStatusChange={setRelayStatus}
+              onSessionsChange={setLiveSessions}
+              onClose={() => setSidebarOpen(false)}
+              onEndSession={handleEndSession}
+              onDuplicateSession={handleDuplicateSession}
+              runners={runnersForSidebar}
+              selectedRunnerId={selectedRunnerId}
+              onSelectRunner={setSelectedRunnerId}
+              onShowSessions={() => setShowRunners(false)}
+            />
+          </ErrorBoundary>
         </div>
 
         {/* Mobile overlay — fades in/out with the sidebar.
@@ -3560,50 +3564,52 @@ export function App() {
                     onSelectRunner={setSelectedRunnerId}
                   />
               ) : (
-                <SessionViewer
-                  sessionId={activeSessionId}
-                  sessionName={sessionName}
-                  messages={messages}
-                  activeModel={activeModel}
-                  activeToolCalls={activeToolCalls}
-                  pendingQuestion={pendingQuestion}
-                  pendingPlan={pendingPlan}
-                  pluginTrustPrompt={pluginTrustPrompt}
-                  onPluginTrustResponse={respondPluginTrust}
-                  availableCommands={availableCommands}
-                  resumeSessions={resumeSessions}
-                  resumeSessionsLoading={resumeSessionsLoading}
-                  onRequestResumeSessions={requestResumeSessions}
-                  onSendInput={sendSessionInput}
-                  onExec={sendRemoteExec}
-                  onShowModelSelector={() => setModelSelectorOpen(true)}
-                  agentActive={agentActive}
-                  isCompacting={isCompacting}
-                  effortLevel={effortLevel}
-                  tokenUsage={tokenUsage}
-                  lastHeartbeatAt={lastHeartbeatAt}
-                  viewerStatus={viewerStatus}
-                  retryState={retryState}
-                  messageQueue={messageQueue}
-                  onRemoveQueuedMessage={removeQueuedMessage}
-                  onEditQueuedMessage={editQueuedMessage}
-                  onClearMessageQueue={clearMessageQueue}
-                  onToggleTerminal={() => setShowTerminal((v) => !v)}
-                  showTerminalButton
-                  onToggleFileExplorer={() => setShowFileExplorer((v) => !v)}
-                  showFileExplorerButton={!!activeSessionInfo?.runnerId && !!activeSessionInfo?.cwd}
-                  todoList={todoList}
-                  planModeEnabled={planModeEnabled}
-                  runnerId={activeSessionInfo?.runnerId ?? undefined}
-                  sessionCwd={activeSessionInfo?.cwd || undefined}
-                  onAppendSystemMessage={appendLocalSystemMessage}
-                  onSpawnAgentSession={handleSpawnAgentSession}
-                  onTriggerResponse={handleTriggerResponse}
-                  onQuestionDismiss={() => setPendingQuestion(null)}
-                  onPlanDismiss={() => setPendingPlan(null)}
-                  onDuplicateSession={activeSessionInfo?.runnerId ? () => handleDuplicateSession(activeSessionInfo.runnerId!, activeSessionInfo.cwd || "") : undefined}
-                  runnerInfo={activeRunnerInfo}
-                />
+                <ErrorBoundary level="section">
+                  <SessionViewer
+                    sessionId={activeSessionId}
+                    sessionName={sessionName}
+                    messages={messages}
+                    activeModel={activeModel}
+                    activeToolCalls={activeToolCalls}
+                    pendingQuestion={pendingQuestion}
+                    pendingPlan={pendingPlan}
+                    pluginTrustPrompt={pluginTrustPrompt}
+                    onPluginTrustResponse={respondPluginTrust}
+                    availableCommands={availableCommands}
+                    resumeSessions={resumeSessions}
+                    resumeSessionsLoading={resumeSessionsLoading}
+                    onRequestResumeSessions={requestResumeSessions}
+                    onSendInput={sendSessionInput}
+                    onExec={sendRemoteExec}
+                    onShowModelSelector={() => setModelSelectorOpen(true)}
+                    agentActive={agentActive}
+                    isCompacting={isCompacting}
+                    effortLevel={effortLevel}
+                    tokenUsage={tokenUsage}
+                    lastHeartbeatAt={lastHeartbeatAt}
+                    viewerStatus={viewerStatus}
+                    retryState={retryState}
+                    messageQueue={messageQueue}
+                    onRemoveQueuedMessage={removeQueuedMessage}
+                    onEditQueuedMessage={editQueuedMessage}
+                    onClearMessageQueue={clearMessageQueue}
+                    onToggleTerminal={() => setShowTerminal((v) => !v)}
+                    showTerminalButton
+                    onToggleFileExplorer={() => setShowFileExplorer((v) => !v)}
+                    showFileExplorerButton={!!activeSessionInfo?.runnerId && !!activeSessionInfo?.cwd}
+                    todoList={todoList}
+                    planModeEnabled={planModeEnabled}
+                    runnerId={activeSessionInfo?.runnerId ?? undefined}
+                    sessionCwd={activeSessionInfo?.cwd || undefined}
+                    onAppendSystemMessage={appendLocalSystemMessage}
+                    onSpawnAgentSession={handleSpawnAgentSession}
+                    onTriggerResponse={handleTriggerResponse}
+                    onQuestionDismiss={() => setPendingQuestion(null)}
+                    onPlanDismiss={() => setPendingPlan(null)}
+                    onDuplicateSession={activeSessionInfo?.runnerId ? () => handleDuplicateSession(activeSessionInfo.runnerId!, activeSessionInfo.cwd || "") : undefined}
+                    runnerInfo={activeRunnerInfo}
+                  />
+                </ErrorBoundary>
               )}
             </div>
             {/* Mobile: terminal overlay (always separate from combined) */}
@@ -3856,5 +3862,6 @@ export function App() {
       </div>
     </div>
     </TooltipProvider>
+    </ErrorBoundary>
   );
 }
