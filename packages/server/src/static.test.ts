@@ -52,4 +52,13 @@ describe("serveStaticFile", () => {
         const res = await serveStaticFile("/test.map");
         expect(res?.headers.get("content-type")).toBe("application/json; charset=utf-8");
     });
+
+    test("Falls back to index.html for nonexistent SPA routes", async () => {
+        // Request a path that doesn't exist as a file — should serve index.html for SPA routing
+        const res = await serveStaticFile("/some-spa-route");
+        expect(res).not.toBeNull();
+        expect(res?.headers.get("content-type")).toBe("text/html; charset=utf-8");
+        // index.html should use no-cache control
+        expect(res?.headers.get("cache-control")).toBe("no-cache");
+    });
 });
