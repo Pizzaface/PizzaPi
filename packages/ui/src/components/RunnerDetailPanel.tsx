@@ -1,5 +1,5 @@
 import * as React from "react";
-import { useState, useEffect } from "react";
+import { useState, useEffect, Suspense } from "react";
 import { Button } from "@/components/ui/button";
 import {
     Tooltip,
@@ -13,6 +13,11 @@ import { SkillsManager, type SkillInfo } from "@/components/SkillsManager";
 import { AgentsManager, type AgentInfo } from "@/components/AgentsManager";
 import { PluginsManager, type PluginInfo } from "@/components/PluginsManager";
 import { SandboxManager } from "@/components/SandboxManager";
+const UsageDashboard = React.lazy(() =>
+    import("@/components/usage-dashboard/UsageDashboard").then((m) => ({
+        default: m.UsageDashboard,
+    }))
+);
 import {
     Plus,
     RefreshCw,
@@ -30,7 +35,7 @@ import {
 // Types
 // ---------------------------------------------------------------------------
 
-export type RunnerTab = "sessions" | "skills" | "agents" | "plugins" | "sandbox" | "hooks";
+export type RunnerTab = "sessions" | "skills" | "agents" | "plugins" | "sandbox" | "hooks" | "usage";
 
 interface RunnerHook {
     type: string;
@@ -254,6 +259,7 @@ const TABS: { key: RunnerTab; label: string; countKey?: "skills" | "agents" | "p
     { key: "agents", label: "Agents", countKey: "agents" },
     { key: "plugins", label: "Plugins", countKey: "plugins" },
     { key: "hooks", label: "Hooks", countKey: "hooks" },
+    { key: "usage", label: "Usage" },
     { key: "sandbox", label: "Sandbox" },
 ];
 
@@ -403,6 +409,20 @@ export function RunnerDetailPanel({
             break;
         case "hooks":
             tabContent = <HooksList hooks={runner.hooks} />;
+            break;
+        case "usage":
+            tabContent = (
+                <Suspense
+                    fallback={
+                        <div className="flex items-center justify-center p-8">
+                            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                            <span className="ml-2 text-muted-foreground">Loading usage dashboard...</span>
+                        </div>
+                    }
+                >
+                    <UsageDashboard runnerId={runner.runnerId} />
+                </Suspense>
+            );
             break;
         case "sandbox":
             tabContent = <SandboxManager runnerId={runner.runnerId} bare />;
