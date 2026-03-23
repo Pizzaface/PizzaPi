@@ -72,6 +72,7 @@ import {
 } from "@/components/ai-elements/model-selector";
 import { HiddenModelsManager, loadHiddenModels, fetchHiddenModels, modelKey } from "@/components/HiddenModelsManager";
 import { ChangePasswordDialog } from "@/components/ChangePasswordDialog";
+import { DegradedBanner } from "@/components/DegradedBanner";
 import { ShortcutsDialog } from "@/components/ShortcutsDialog";
 import {
   beginInputAttempt,
@@ -2984,6 +2985,7 @@ export function App() {
       >
         Skip to content
       </a>
+      <DegradedBanner />
       {/* ── Desktop header ────────────────────────────────────────────── */}
       <header className="hidden md:flex items-center justify-between gap-3 border-b bg-background px-4 pb-2 pt-[calc(0.5rem_+_env(safe-area-inset-top))] flex-shrink-0">
         <div className="flex items-center gap-3 flex-shrink-0">

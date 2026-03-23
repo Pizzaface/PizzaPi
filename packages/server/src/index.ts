@@ -34,6 +34,12 @@ import { initStateRedis } from "./ws/sio-state.js";
 
 const PORT = parseInt(process.env.PORT ?? "7492");
 
+// ── Server health state ───────────────────────────────────────────────────
+// Imported from a separate module to avoid circular imports:
+// index.ts → handler.ts → routes/index.ts → health.ts (no cycle).
+export { serverHealth } from "./health.js";
+import { serverHealth } from "./health.js";
+
 await runAllMigrations();
 void initializeRelayRedisCache();
 
@@ -186,6 +192,8 @@ try {
     initSioRegistry(io);
 
     registerNamespaces(io);
+    serverHealth.redis = true;
+    serverHealth.socketio = true;
 } catch (err) {
     console.error("[Socket.IO] Failed to initialize (Redis may be unavailable):", err);
     console.error("[Socket.IO] The server will continue without Socket.IO support.");
