@@ -2,6 +2,17 @@ import * as React from "react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { RunnerDetailPanel } from "@/components/RunnerDetailPanel";
 import { NewSessionWizardDialog } from "@/components/NewSessionWizardDialog";
+import {
+    AlertDialog,
+    AlertDialogAction,
+    AlertDialogCancel,
+    AlertDialogContent,
+    AlertDialogDescription,
+    AlertDialogFooter,
+    AlertDialogHeader,
+    AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { ErrorAlert } from "@/components/ui/error-alert";
 import type { HubSession } from "@/components/SessionSidebar";
 import type { RunnerInfo } from "@pizzapi/protocol";
 
@@ -31,6 +42,12 @@ export function RunnerManager({
     const [stopping, setStopping] = React.useState<Set<string>>(new Set());
     const [latestVersion, setLatestVersion] = React.useState<string | null>(null);
 
+    // Error state for inline error display
+    const [error, setError] = React.useState<string | null>(null);
+
+    // Stop confirmation dialog state
+    const [stopConfirmRunnerId, setStopConfirmRunnerId] = React.useState<string | null>(null);
+
     // Fetch the latest available version from the server (used by RunnerDetailPanel for update-available badge)
     React.useEffect(() => {
         fetch("/api/version")
@@ -38,6 +55,13 @@ export function RunnerManager({
             .then((data) => { if (data?.version) setLatestVersion(data.version); })
             .catch(() => {});
     }, []);
+
+    // Auto-dismiss error after 5 seconds
+    React.useEffect(() => {
+        if (!error) return;
+        const timer = setTimeout(() => setError(null), 5000);
+        return () => clearTimeout(timer);
+    }, [error]);
 
     // New session dialog
     const [spawnRunnerId, setSpawnRunnerId] = React.useState<string | null>(null);
@@ -81,10 +105,10 @@ export function RunnerManager({
             });
             if (!res.ok) {
                 const data = await res.json();
-                alert(`Failed to restart runner: ${data.error || "Unknown error"}`);
+                setError(`Failed to restart runner: ${data.error || "Unknown error"}`);
             }
-        } catch (error) {
-            console.error("Failed to restart runner:", error);
+        } catch (err) {
+            console.error("Failed to restart runner:", err);
         } finally {
             setTimeout(() => {
                 setRestarting((prev) => {
@@ -96,8 +120,15 @@ export function RunnerManager({
         }
     };
 
-    const handleStop = async (runnerId: string) => {
-        if (!confirm("Stop this runner? It will shut down completely and won't restart automatically.")) return;
+    const handleStopRequest = (runnerId: string) => {
+        setStopConfirmRunnerId(runnerId);
+    };
+
+    const handleStopConfirm = async () => {
+        const runnerId = stopConfirmRunnerId;
+        setStopConfirmRunnerId(null);
+        if (!runnerId) return;
+
         setStopping((prev) => new Set(prev).add(runnerId));
         try {
             const res = await fetch("/api/runners/stop", {
@@ -108,10 +139,10 @@ export function RunnerManager({
             });
             if (!res.ok) {
                 const data = await res.json();
-                alert(`Failed to stop runner: ${data.error || "Unknown error"}`);
+                setError(`Failed to stop runner: ${data.error || "Unknown error"}`);
             }
-        } catch (error) {
-            console.error("Failed to stop runner:", error);
+        } catch (err) {
+            console.error("Failed to stop runner:", err);
         } finally {
             setTimeout(() => {
                 setStopping((prev) => {
@@ -213,6 +244,13 @@ export function RunnerManager({
 
     return (
         <>
+            {/* Inline error banner — auto-dismisses after 5 seconds */}
+            {error && (
+                <div className="px-4 pt-3">
+                    <ErrorAlert>{error}</ErrorAlert>
+                </div>
+            )}
+
             <RunnerDetailPanel
                 runner={selectedRunner}
                 hasRunners={runners.length > 0}
@@ -222,7 +260,7 @@ export function RunnerManager({
                 isStopping={stopping.has(selectedRunnerId ?? "")}
                 isOffline={!selectedRunner}
                 onRestart={() => selectedRunnerId && handleRestart(selectedRunnerId)}
-                onStop={() => selectedRunnerId && handleStop(selectedRunnerId)}
+                onStop={() => selectedRunnerId && handleStopRequest(selectedRunnerId)}
                 onNewSession={() => selectedRunnerId && handleOpenNewSession(selectedRunnerId)}
                 onOpenSession={onOpenSession}
                 onSkillsChange={() => {}}
@@ -245,6 +283,25 @@ export function RunnerManager({
                 preselectedRunnerId={spawnRunnerId}
                 onSpawn={handleWizardSpawn}
             />
+
+            {/* Stop runner confirmation dialog */}
+            <AlertDialog
+                open={stopConfirmRunnerId !== null}
+                onOpenChange={(open) => { if (!open) setStopConfirmRunnerId(null); }}
+            >
+                <AlertDialogContent>
+                    <AlertDialogHeader>
+                        <AlertDialogTitle>Stop runner?</AlertDialogTitle>
+                        <AlertDialogDescription>
+                            This runner will shut down completely and won&apos;t restart automatically.
+                        </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                        <AlertDialogCancel>Cancel</AlertDialogCancel>
+                        <AlertDialogAction onClick={handleStopConfirm}>Stop runner</AlertDialogAction>
+                    </AlertDialogFooter>
+                </AlertDialogContent>
+            </AlertDialog>
         </>
     );
 }
