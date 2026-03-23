@@ -32,7 +32,7 @@ const CHUNK_SIZE = 200;
  * outputs or inline images) from producing a single oversized frame that
  * exceeds the server's maxHttpBufferSize (10 MB).
  */
-const CHUNK_BYTE_LIMIT = 8 * 1024 * 1024; // 8 MB per chunk
+const CHUNK_BYTE_LIMIT = 6 * 1024 * 1024; // 6 MB per chunk — leaves margin for Socket.IO framing overhead below 10 MB server limit
 
 /**
  * Hard cap for a single message's serialized size.  Messages exceeding this
