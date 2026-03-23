@@ -102,6 +102,8 @@ export interface SessionSidebarProps {
     selectedRunnerId?: string | null;
     /** Called when a runner is selected */
     onSelectRunner?: (runnerId: string) => void;
+    /** Set of session IDs that currently have a pending AskUserQuestion (awaiting user input). */
+    sessionsWithPendingQuestion?: Set<string>;
 }
 
 function formatRelativeDate(isoString: string): string {
@@ -187,8 +189,13 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     selectedRunnerId,
     onSelectRunner,
     onShowSessions,
+    sessionsWithPendingQuestion,
 }: SessionSidebarProps) {
     const [collapsed, setCollapsed] = React.useState(false);
+
+    // Track sessions that completed (isActive: true→false) but haven't been viewed yet.
+    const [completedUnreadSessions, setCompletedUnreadSessions] = React.useState<Set<string>>(new Set());
+    const prevActiveMapRef = React.useRef<Map<string, boolean>>(new Map());
 
     // Multi-select mode state
     const [selectMode, setSelectMode] = React.useState(false);
@@ -542,6 +549,38 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     React.useEffect(() => {
         onSessionsChange?.(liveSessions);
     }, [liveSessions, onSessionsChange]);
+
+    // Detect isActive: true → false transitions to mark sessions as completed+unread.
+    React.useEffect(() => {
+        const prev = prevActiveMapRef.current;
+        const nowCompleted: string[] = [];
+        for (const s of liveSessions) {
+            const wasActive = prev.get(s.sessionId) ?? false;
+            const isNowActive = s.isActive ?? false;
+            if (wasActive && !isNowActive) {
+                nowCompleted.push(s.sessionId);
+            }
+            prev.set(s.sessionId, isNowActive);
+        }
+        if (nowCompleted.length > 0) {
+            setCompletedUnreadSessions((prev) => {
+                const next = new Set(prev);
+                for (const id of nowCompleted) next.add(id);
+                return next;
+            });
+        }
+    }, [liveSessions]);
+
+    // Clear completed-unread when the user navigates to a session.
+    React.useEffect(() => {
+        if (!activeSessionId) return;
+        setCompletedUnreadSessions((prev) => {
+            if (!prev.has(activeSessionId)) return prev;
+            const next = new Set(prev);
+            next.delete(activeSessionId);
+            return next;
+        });
+    }, [activeSessionId]);
 
     React.useEffect(() => {
         const socket = io("/hub", { withCredentials: true });
@@ -1228,8 +1267,14 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                             selectMode && isChecked
                                                                 ? "bg-sidebar-accent text-sidebar-accent-foreground"
                                                                 : isActiveSession
-                                                                    ? "bg-sidebar-accent text-sidebar-accent-foreground border border-yellow-400/40 animate-border-glow"
-                                                                    : "bg-sidebar text-sidebar-foreground hover:bg-sidebar-accent/50",
+                                                                    ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                                                                    : sessionsWithPendingQuestion?.has(s.sessionId)
+                                                                        ? "text-sidebar-foreground animate-awaiting-chase"
+                                                                        : s.isActive
+                                                                            ? "text-sidebar-foreground animate-working-chase"
+                                                                            : completedUnreadSessions.has(s.sessionId)
+                                                                                ? "text-sidebar-foreground animate-completed-chase"
+                                                                                : "bg-sidebar text-sidebar-foreground hover:bg-sidebar-accent/50",
                                                         )}
                                                         style={{
                                                             transform: !selectMode && hasOffset ? `translateX(${swipeOffset}px)` : undefined,

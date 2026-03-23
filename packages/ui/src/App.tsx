@@ -180,6 +180,9 @@ export function App() {
 
   const [pendingQuestion, setPendingQuestion] = React.useState<{ toolCallId: string; questions: Array<{ question: string; options: string[]; type?: import("@/lib/ask-user-questions").QuestionType }>; display: QuestionDisplayMode } | null>(null);
 
+  /** Set of session IDs that currently have a pending AskUserQuestion. */
+  const [sessionsWithPendingQuestion, setSessionsWithPendingQuestion] = React.useState<Set<string>>(new Set());
+
   /** Pending plan mode prompt from the worker — shown as a plan review panel in the viewer. */
   const [pendingPlan, setPendingPlan] = React.useState<{
     toolCallId: string;
@@ -414,7 +417,20 @@ export function App() {
     evictLruIfNeeded(sessionUiCacheRef.current, sessionId, MAX_SESSION_UI_CACHE_SIZE, activeSessionRef.current);
 
     sessionUiCacheRef.current.set(sessionId, next);
-  }, []);
+
+    // Keep the sidebar indicator in sync: track which sessions are awaiting input.
+    if (Object.prototype.hasOwnProperty.call(patch, "pendingQuestion")) {
+      setSessionsWithPendingQuestion((prev) => {
+        const next = new Set(prev);
+        if (patch.pendingQuestion) {
+          next.add(sessionId);
+        } else {
+          next.delete(sessionId);
+        }
+        return next;
+      });
+    }
+  }, [setSessionsWithPendingQuestion]);
 
   // Debounce streaming delta updates (toolcall_delta, text_delta, thinking_delta) so we
   // flush at most once per animation frame instead of once per character.
@@ -3442,6 +3458,7 @@ export function App() {
               selectedRunnerId={selectedRunnerId}
               onSelectRunner={setSelectedRunnerId}
               onShowSessions={() => setShowRunners(false)}
+              sessionsWithPendingQuestion={sessionsWithPendingQuestion}
             />
           </ErrorBoundary>
         </div>
