@@ -2602,7 +2602,8 @@ export function App() {
         !e.metaKey &&
         !e.ctrlKey &&
         !e.altKey &&
-        !e.shiftKey
+        !e.shiftKey &&
+        !document.querySelector('[role="dialog"]')
       ) {
         setShowShortcutsHelp(true);
         return;
