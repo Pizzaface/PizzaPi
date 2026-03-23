@@ -29,8 +29,12 @@ describe("isUsageLimitError", () => {
             expect(isUsageLimitError("Resource exhausted: RESOURCE_EXHAUSTED")).toBe(true);
         });
 
-        test("'RESOURCE_EXHAUSTED' uppercase", () => {
-            expect(isUsageLimitError("grpc status RESOURCE_EXHAUSTED")).toBe(false); // "resource exhausted" requires space not underscore
+        test("'RESOURCE_EXHAUSTED' gRPC/Gemini style (underscore)", () => {
+            expect(isUsageLimitError("grpc status RESOURCE_EXHAUSTED")).toBe(true);
+        });
+
+        test("'QUOTA_EXCEEDED' gRPC style (underscore)", () => {
+            expect(isUsageLimitError("grpc status QUOTA_EXCEEDED")).toBe(true);
         });
 
         test("'resource exhausted' lowercase", () => {

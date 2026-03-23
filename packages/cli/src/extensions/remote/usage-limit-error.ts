@@ -20,8 +20,8 @@ const USAGE_LIMIT_PHRASES: ReadonlyArray<RegExp> = [
     // Multi-word phrases — match literally (no \b needed; they're long enough)
     /usage\s+limit/i,
     /rate\s+limit/i,
-    /quota\s+exceeded/i,
-    /resource\s+exhausted/i,
+    /quota[\s_]+exceeded/i, // matches "quota exceeded" and gRPC "QUOTA_EXCEEDED"
+    /resource[\s_]+exhausted/i, // matches "resource exhausted" and gRPC "RESOURCE_EXHAUSTED"
     /tokens\s+per\s+minute/i,
     /requests\s+per\s+minute/i,
     /output\s+tokens\s+per/i,
@@ -41,6 +41,8 @@ const USAGE_LIMIT_PHRASES: ReadonlyArray<RegExp> = [
  *   "Rate limit reached for requests per minute"
  *   "Quota exceeded for your current plan"
  *   "Resource exhausted: RESOURCE_EXHAUSTED"
+ *   "grpc status RESOURCE_EXHAUSTED"          — gRPC/Gemini quota error
+ *   "grpc status QUOTA_EXCEEDED"              — gRPC quota variant
  *   "Tokens per minute limit reached"
  *   "Service capacity exceeded"
  *

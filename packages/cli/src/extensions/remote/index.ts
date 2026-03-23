@@ -48,7 +48,7 @@ import type {
 } from "../remote-types.js";
 import { installFooter } from "../remote-footer.js";
 import { buildHeartbeat, buildTokenUsage, stopHeartbeat } from "../remote-heartbeat.js";
-import { isUsageLimitError } from "./usage-limit-error.js";
+import { maybeFireSessionError } from "./session-error-trigger.js";
 import {
     emitTodoUpdated, emitPlanModeToggled,
     emitRetryStateChanged, emitPluginTrustRequired, emitPluginTrustResolved,
@@ -941,34 +941,19 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             const exitReason = rctx.wasAborted ? "killed" : lastError ? "error" : "completed";
             fireSessionComplete(summary, fullOutputPath, exitReason);
             // Fire session_error for terminal usage-limit errors (one-shot, only at agent_end)
-            if (
-                !sessionErrorFired &&
-                lastError &&
-                rctx.isChildSession &&
-                rctx.parentSessionId &&
-                rctx.sioSocket?.connected &&
-                rctx.relay
-            ) {
-                const errText = lastError.errorMessage;
-                if (isUsageLimitError(errText)) {
-                    sessionErrorFired = true;
-                    rctx.sioSocket.emit("session_trigger" as any, {
-                        token: rctx.relay.token,
-                        trigger: {
-                            type: "session_error",
-                            sourceSessionId: rctx.relay.sessionId,
-                            sourceSessionName: undefined,
-                            targetSessionId: rctx.parentSessionId,
-                            payload: {
-                                message: errText,
-                            },
-                            deliverAs: "steer" as const,
-                            expectsResponse: true,
-                            triggerId: crypto.randomUUID(),
-                            ts: new Date().toISOString(),
-                        },
-                    });
-                }
+            if (maybeFireSessionError({
+                sessionErrorFired,
+                errorMessage: lastError?.errorMessage,
+                isChildSession: rctx.isChildSession,
+                parentSessionId: rctx.parentSessionId,
+                socketConnected: rctx.sioSocket?.connected ?? false,
+                emitFn: rctx.sioSocket
+                    ? (event, payload) => (rctx.sioSocket as any).emit(event, payload)
+                    : null,
+                relayToken: rctx.relay?.token,
+                relaySessionId: rctx.relay?.sessionId,
+            })) {
+                sessionErrorFired = true;
             }
             if (rctx.isChildSession) {
                 startFollowUpGrace(ctx);
