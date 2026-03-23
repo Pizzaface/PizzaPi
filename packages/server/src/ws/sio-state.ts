@@ -136,6 +136,17 @@ export interface RedisSessionData {
     seq: number;
     /** ID of the parent session that spawned this one, or null for top-level. */
     parentSessionId: string | null;
+    /**
+     * Durable "is this a linked child?" signal.
+     *
+     * Set to the parent session ID when the child first links to a parent.
+     * Unlike `parentSessionId`, this is NOT cleared when the parent is
+     * transiently offline during a child reconnect — it is only cleared on an
+     * explicit delink (delink_children / delink_own_parent) or a cross-user
+     * link attempt. Absent on sessions created before this field was added;
+     * callers fall back to `parentSessionId` in that case.
+     */
+    linkedParentId?: string | null;
     /** JSON-stringified SessionMetaState. Written by updateSessionMetaState.
      *  Absent for sessions created before this feature; callers must use
      *  defaultMetaState() as fallback. */
@@ -214,6 +225,7 @@ function parseSessionFromHash(hash: Record<string, string>): RedisSessionData | 
         runnerName: hash.runnerName || null,
         seq: parseInt(hash.seq ?? "0", 10) || 0,
         parentSessionId: hash.parentSessionId || null,
+        linkedParentId: hash.linkedParentId || null,
         metaState: hash.metaState || null,
     };
 }
@@ -844,10 +856,13 @@ export async function removeChildren(parentSessionId: string, childIds: string[]
     await r.sRem(childrenKey(parentSessionId), childIds);
 }
 
-/** Clear the parentSessionId field on a child session's Redis hash. */
+/** Clear the parentSessionId and linkedParentId fields on a child session's Redis hash. */
 export async function clearParentSessionId(childSessionId: string): Promise<void> {
     const r = requireRedis();
-    await r.hSet(sessionKey(childSessionId), "parentSessionId", "");
+    // Clear both the active link (parentSessionId) and the durable linked-child
+    // signal (linkedParentId) so that push-notification suppression correctly
+    // stops for sessions that have been explicitly delinked.
+    await r.hSet(sessionKey(childSessionId), { parentSessionId: "", linkedParentId: "" });
 }
 
 // ── Push pending question tracking ──────────────────────────────────────────

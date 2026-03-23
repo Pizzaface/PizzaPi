@@ -258,19 +258,20 @@ async function checkPushNotifications(
 
     // Determine whether this session is an active linked child.
     //
-    // We check two conditions:
-    //   1. session.parentSessionId is set — the fast path; populated on registration.
-    //   2. !isChildDelinked — a delink_children call sets a marker but intentionally
-    //      leaves parentSessionId stale in Redis for a short window (to avoid races
-    //      with in-flight trigger_response messages). Without this guard we would
-    //      incorrectly suppress notifications for a child that the user just delinked.
+    // We use linkedParentId as the primary signal: it is set when a child first
+    // links to a parent and is only cleared on explicit delink or a cross-user
+    // link attempt.  Unlike parentSessionId, it is NOT cleared when the parent
+    // is transiently offline during a child reconnect — so suppression stays
+    // active through short parent outages.
     //
-    // Known edge case: when a parent session is transiently offline, the child's
-    // reconnect path clears parentSessionId to null while preserving membership-set
-    // membership. In that narrow window isChildSession will be false and notifications
-    // will bypass suppression. This resolves itself once the parent reconnects and
-    // re-registers, restoring parentSessionId.
-    const isChildSession = !!session?.parentSessionId && !await isChildDelinked(sessionId);
+    // Fall back to parentSessionId for sessions registered before linkedParentId
+    // was introduced (backward-compatible).
+    //
+    // We still check !isChildDelinked() because delink_children intentionally
+    // leaves parentSessionId (and linkedParentId) stale in Redis for a short
+    // window while in-flight trigger_response messages drain.
+    const effectiveParentId = session?.linkedParentId ?? session?.parentSessionId ?? null;
+    const isChildSession = !!effectiveParentId && !await isChildDelinked(sessionId);
 
     if (event.type === "agent_end") {
         notifyAgentFinished(userId, sessionId, sName, isChildSession);
