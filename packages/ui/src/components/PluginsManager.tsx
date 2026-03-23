@@ -87,6 +87,7 @@ function PluginRow({ plugin, onClick }: PluginRowProps) {
         <button
             type="button"
             onClick={onClick}
+            aria-label={`View details for ${plugin.name}`}
             className="flex items-start justify-between gap-3 w-full text-left px-3 py-2.5 rounded-lg border border-border/40 bg-muted/20 hover:bg-muted/40 transition-colors group"
         >
             <div className="flex items-start gap-2.5 min-w-0">
