@@ -337,6 +337,19 @@ export interface PizzaPiConfig {
     };
 
     /**
+     * Global default `client_name` for MCP OAuth dynamic client registration.
+     *
+     * Some MCP servers (e.g. Figma) restrict registration to an allowlist of
+     * known client names. Set this to a value the server accepts (e.g. `"Codex"`).
+     *
+     * Can also be set per-server via `oauthClientName` in individual
+     * `mcpServers` entries — per-server values take precedence.
+     *
+     * Default: `"PizzaPi"`.
+     */
+    oauthClientName?: string;
+
+    /**
      * Provider-specific settings (web search, etc.).
      * Keys are provider names (e.g., "anthropic").
      *

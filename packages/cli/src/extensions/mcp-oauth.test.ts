@@ -336,6 +336,36 @@ describe("PizzaPiOAuthProvider", () => {
         });
     });
 
+    describe("clientName override", () => {
+        test("default client_name uses PizzaPi with server suffix", () => {
+            const provider = createProvider();
+            const meta = provider.clientMetadata;
+            expect(meta.client_name).toBe("PizzaPi (test-server)");
+        });
+
+        test("custom clientName is sent verbatim (no suffix)", () => {
+            const provider = new PizzaPiOAuthProvider({
+                serverUrl: `https://custom-name-${Date.now()}.example.com/mcp`,
+                serverName: "figma",
+                clientName: "Codex",
+            });
+            const meta = provider.clientMetadata;
+            // Must be exactly "Codex" — no "(figma)" suffix — so it matches
+            // exact allowlists like Figma's registration endpoint.
+            expect(meta.client_name).toBe("Codex");
+        });
+
+        test("clientName of empty string falls back to PizzaPi with suffix", () => {
+            const provider = new PizzaPiOAuthProvider({
+                serverUrl: `https://empty-name-${Date.now()}.example.com/mcp`,
+                serverName: "test",
+                clientName: "",
+            });
+            const meta = provider.clientMetadata;
+            expect(meta.client_name).toBe("PizzaPi (test)");
+        });
+    });
+
     describe("hasTokens", () => {
         test("returns false when no tokens are saved", () => {
             // Use a unique URL so persisted state from other tests doesn't interfere

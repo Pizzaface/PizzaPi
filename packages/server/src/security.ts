@@ -1,5 +1,21 @@
 import { posix as path } from "path";
 
+/**
+ * In-memory, per-process rate limiter using a sliding fixed window.
+ *
+ * **IMPORTANT — SINGLE-PROCESS LIMITATION:**
+ * This limiter stores state in a `Map` local to the Node/Bun process. In
+ * multi-instance deployments (e.g. horizontal scaling behind a load balancer),
+ * each instance maintains independent counters. An attacker can bypass the
+ * per-user cap by distributing requests across instances — each instance will
+ * individually allow up to `limit` requests per window.
+ *
+ * For production multi-instance deployments, replace this with a Redis-backed
+ * implementation (e.g. using `ioredis` with a Lua INCR script or a library such
+ * as `rate-limiter-flexible` with its `RedisRateLimiter` store). The interface
+ * (`check(key)` / `getRetryAfter(key)`) is intentionally minimal so the swap is
+ * a drop-in replacement with no changes to callers.
+ */
 export class RateLimiter {
     private hits = new Map<string, { count: number; resetTime: number }>();
     private cleanupInterval: ReturnType<typeof setInterval>;
@@ -19,7 +35,7 @@ export class RateLimiter {
 
     /**
      * Checks if a request from the given key is allowed.
-     * @param key Unique identifier (e.g., IP address)
+     * @param key Unique identifier (e.g., IP address or user ID)
      * @returns true if allowed, false if limit exceeded
      */
     check(key: string): boolean {
@@ -39,6 +55,32 @@ export class RateLimiter {
         return true;
     }
 
+    /**
+     * Returns the number of seconds until the rate limit window resets for the given key.
+     * Call this after check() returns false to populate the Retry-After response header.
+     * Returns the full window duration (in seconds) if no active window is found.
+     *
+     * **Boundary note:** `check()` treats `now === resetTime` as still in-window and
+     * returns false (rate-limited). At that exact millisecond `resetTime - now === 0`,
+     * so a naive `Math.ceil(0 / 1000)` would produce 0 — causing a `Retry-After: 0`
+     * header that drives clients into an immediate retry storm. We clamp to a minimum
+     * of 1 second so every `429` always carries a non-zero retry interval.
+     */
+    getRetryAfter(key: string): number {
+        const now = Date.now();
+        const record = this.hits.get(key);
+        if (!record || now > record.resetTime) {
+            // Dead code in production: callers only invoke getRetryAfter() after
+            // check() has returned false, which guarantees an active (non-expired)
+            // record exists for this key. This branch exists as a safe fallback for
+            // direct / test usage where that invariant isn't enforced.
+            return Math.ceil(this.windowMs / 1000);
+        }
+        // Math.max(1, ...) prevents Retry-After: 0 at the window-expiry boundary
+        // (when now === resetTime, resetTime - now is 0, but check() still said no).
+        return Math.max(1, Math.ceil((record.resetTime - now) / 1000));
+    }
+
     private cleanup() {
         const now = Date.now();
         for (const [key, record] of this.hits.entries()) {
@@ -54,10 +96,59 @@ export class RateLimiter {
     }
 }
 
+// Module-level encoder avoids a new allocation on every isValidEmail call.
+const _emailEncoder = new TextEncoder();
+
 export function isValidEmail(email: string): boolean {
-    // Simple but effective regex for most use cases
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    return emailRegex.test(email);
+    const encoder = _emailEncoder;
+
+    // RFC 5321: total email address path limit is 254 bytes (measured in UTF-8 bytes,
+    // not JavaScript UTF-16 code units, to correctly handle non-ASCII characters).
+    if (encoder.encode(email).length > 254) {
+        return false;
+    }
+
+    // Split on the last '@' to separate local part from domain.
+    const atIndex = email.lastIndexOf("@");
+    if (atIndex <= 0 || atIndex === email.length - 1) {
+        // No '@', empty local part (@ at position 0), or empty domain (@ at end).
+        return false;
+    }
+
+    const localPart = email.slice(0, atIndex);
+    const domain = email.slice(atIndex + 1);
+
+    // Local part must not contain whitespace or a second '@'.
+    if (/[\s@]/.test(localPart)) return false;
+
+    // RFC 5321: local part must be ≤ 64 bytes (UTF-8 bytes, not character count).
+    // A multibyte character (e.g. 'é' = 2 bytes) can allow a local part that passes
+    // a character-count check but exceeds the RFC byte limit.
+    if (encoder.encode(localPart).length > 64) return false;
+
+    // Domain must not contain whitespace or '@'.
+    if (/[\s@]/.test(domain)) return false;
+
+    // Reject consecutive dots (e.g. "a@..example.com", "a@example..com").
+    if (domain.includes("..")) return false;
+
+    // Reject leading or trailing dots (e.g. "a@.example.com", "a@example.com.").
+    if (domain.startsWith(".") || domain.endsWith(".")) return false;
+
+    // Validate DNS structure: domain total ≤ 253 chars, each label 1–63 chars,
+    // only [a-zA-Z0-9-], no leading/trailing hyphen per label, TLD ≥ 2 chars.
+    if (domain.length > 253) return false;
+    const labels = domain.split(".");
+    if (labels.length < 2) return false;
+    // Each label must start and end with an alphanumeric character; hyphens are
+    // only permitted in interior positions (RFC 1035 §2.3.4).
+    const labelRe = /^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$/;
+    for (const label of labels) {
+        if (label.length < 1 || label.length > 63) return false;
+        if (!labelRe.test(label)) return false;
+    }
+    // TLD must be at least 2 characters.
+    return labels[labels.length - 1].length >= 2;
 }
 
 // Re-export from the shared protocol package so existing imports keep working.

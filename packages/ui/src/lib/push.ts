@@ -148,6 +148,45 @@ export async function isPushSubscribed(): Promise<boolean> {
 }
 
 /**
+ * Fetch the suppressChildNotifications preference for the current endpoint.
+ * Returns null if not subscribed or the setting cannot be read.
+ */
+export async function getSuppressChildNotifications(): Promise<boolean | null> {
+    try {
+        const res = await fetch("/api/push/subscriptions", { credentials: "include" });
+        if (!res.ok) return null;
+        const body = await res.json();
+        const sub = await getExistingSubscription();
+        if (!sub) return null;
+        const match = (body.subscriptions as Array<{ endpoint: string; suppressChildNotifications: boolean }>)
+            .find((s) => s.endpoint === sub.endpoint);
+        return match?.suppressChildNotifications ?? false;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Update the suppressChildNotifications preference for the current endpoint.
+ * Returns true on success.
+ */
+export async function setSuppressChildNotifications(suppress: boolean): Promise<boolean> {
+    const sub = await getExistingSubscription();
+    if (!sub) return false;
+    try {
+        const res = await fetch("/api/push/child-notifications", {
+            method: "PUT",
+            credentials: "include",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ endpoint: sub.endpoint, suppress }),
+        });
+        return res.ok;
+    } catch {
+        return false;
+    }
+}
+
+/**
  * Dismiss push notifications matching a tag prefix for a given session.
  * Call this when the app handles a pending question (via in-app UI) so
  * stale push notifications can no longer inject unexpected input.

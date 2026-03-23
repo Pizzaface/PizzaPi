@@ -16,6 +16,7 @@ import { extractWorktreeName, formatPathTail, worktreeRoots } from "@/lib/path";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { PanelLeftClose, PanelLeftOpen, Plus, X, HardDrive, FolderOpen, CheckSquare, Square, CheckCheck, Trash2, Pin, PinOff, ChevronDown, ChevronRight, MessageSquare, Copy } from "lucide-react";
 import { buildSessionTree, flattenSessionTree, getSessionIndent, getDescendantSessionIds, getGroupCwd } from "@/lib/session-tree";
+import { pruneSwipeOffsets } from "@/lib/swipe-reveal";
 
 interface HubSession {
     sessionId: string;
@@ -218,6 +219,13 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     const REVEAL_WIDTH = 198; // px — Duplicate + Pin + End (session has a runner)
     const REVEAL_WIDTH_NO_RUNNER = 132; // px — Pin + End only (session has no runner)
 
+    // If we enter multi-select mode, ensure no swipe-reveal UI remains open.
+    React.useEffect(() => {
+        if (!selectMode) return;
+        setSwipeOffsets(new Map());
+        setRevealedSessionId(null);
+    }, [selectMode]);
+
     const swipeRef = React.useRef<{
         sessionId: string;
         pointerId: number;
@@ -251,6 +259,13 @@ export const SessionSidebar = React.memo(function SessionSidebar({
         // handler, which would steal pointer capture and interpret any horizontal
         // movement on a session card as a "close sidebar" gesture.
         e.stopPropagation();
+
+        // Ensure only one session can be revealed at a time.
+        // This prevents stale offsets from previous reveals (which can make the
+        // action buttons look duplicated/misaligned).
+        setSwipeOffsets((prev) => pruneSwipeOffsets(prev, sessionId));
+        setRevealedSessionId((prev) => (prev && prev !== sessionId ? null : prev));
+
         swipeRef.current = {
             sessionId,
             pointerId: e.pointerId,
@@ -319,7 +334,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
         const clamped = Math.max(-rw - 20, Math.min(raw, wasRevealed ? 0 : 10));
 
         setSwipeOffsets((prev) => {
-            const next = new Map(prev);
+            const next = pruneSwipeOffsets(prev, s.sessionId);
             next.set(s.sessionId, clamped);
             return next;
         });
@@ -350,18 +365,12 @@ export const SessionSidebar = React.memo(function SessionSidebar({
 
         // Snap open if swiped past half the reveal width, otherwise snap closed
         if (offset < -rw / 2) {
-            setSwipeOffsets((prev) => {
-                const next = new Map(prev);
-                next.set(s.sessionId, -rw);
-                return next;
-            });
+            // Ensure this is the ONLY revealed session.
+            setSwipeOffsets(() => new Map([[s.sessionId, -rw]]));
             setRevealedSessionId(s.sessionId);
         } else {
-            setSwipeOffsets((prev) => {
-                const next = new Map(prev);
-                next.delete(s.sessionId);
-                return next;
-            });
+            // Close everything.
+            setSwipeOffsets(() => new Map());
             if (wasRevealed) setRevealedSessionId(null);
         }
     }, [revealedSessionId, swipeOffsets, clearLongPress]);
@@ -369,11 +378,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     // Close revealed item when clicking elsewhere
     const handleCloseRevealed = React.useCallback(() => {
         if (revealedSessionId) {
-            setSwipeOffsets((prev) => {
-                const next = new Map(prev);
-                next.delete(revealedSessionId);
-                return next;
-            });
+            setSwipeOffsets(() => new Map());
             setRevealedSessionId(null);
         }
     }, [revealedSessionId]);
@@ -1002,7 +1007,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                 </p>
                             </div>
                         ) : (
-                            runners.map((r) => (
+                            [...runners].sort((a, b) => (a.name ?? "").localeCompare(b.name ?? "")).map((r) => (
                                 <button
                                     key={r.runnerId}
                                     onClick={() => { onSelectRunner?.(r.runnerId); if (window.innerWidth < 768) onClose?.(); }}
@@ -1111,17 +1116,17 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                             return (
                                                 <div
                                                     key={s.sessionId}
-                                                    className="relative overflow-hidden rounded-lg"
+                                                    className="relative overflow-hidden rounded-md"
                                                 >
                                                     {/* "Duplicate" + "Pin" + "End" actions behind the card — only rendered during swipe/reveal (not in select mode) */}
                                                     {/* Width adapts: 3 buttons when session has a runner, 2 buttons otherwise */}
                                                     {!selectMode && (hasOffset || isRevealed) && <div
-                                                        className="absolute inset-y-0 right-0 flex items-stretch rounded-r-lg overflow-hidden"
+                                                        className="absolute inset-y-0 right-0 flex items-stretch rounded-r-md overflow-hidden"
                                                         style={{ width: s.runnerId ? REVEAL_WIDTH : REVEAL_WIDTH_NO_RUNNER }}
                                                     >
                                                         {s.runnerId && (
                                                         <button
-                                                            className="flex flex-col items-center justify-center flex-1 text-xs font-semibold gap-0.5 bg-violet-500 text-white active:bg-violet-600 transition-colors"
+                                                            className="flex flex-col items-center justify-center flex-1 pb-[3px] text-xs font-semibold gap-0.5 bg-violet-500 text-white active:bg-violet-600 transition-colors leading-none"
                                                             onClick={(e) => {
                                                                 e.stopPropagation();
                                                                 onDuplicateSession?.(s.runnerId!, s.cwd || "");
@@ -1142,7 +1147,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                         )}
                                                         <button
                                                             className={cn(
-                                                                "flex flex-col items-center justify-center flex-1 text-xs font-semibold gap-0.5 bg-blue-500 text-white transition-colors",
+                                                                "flex flex-col items-center justify-center flex-1 pb-[3px] text-xs font-semibold gap-0.5 bg-blue-500 text-white transition-colors leading-none",
                                                                 isPinPending ? "opacity-60 cursor-not-allowed" : "active:bg-blue-600",
                                                             )}
                                                             onClick={(e) => {
@@ -1164,7 +1169,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                             <span>{isPinPending ? "Saving" : isPinned ? "Unpin" : "Pin"}</span>
                                                         </button>
                                                         <button
-                                                            className="flex flex-col items-center justify-center flex-1 pt-1 text-xs font-semibold gap-0.5 bg-red-600 text-white active:bg-red-700 transition-colors"
+                                                            className="flex flex-col items-center justify-center flex-1 pb-[3px] text-xs font-semibold gap-0.5 bg-red-600 text-white active:bg-red-700 transition-colors leading-none"
                                                             onClick={(e) => {
                                                                 e.stopPropagation();
                                                                 setConfirmEndSessionId(s.sessionId);
@@ -1223,7 +1228,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                             selectMode && isChecked
                                                                 ? "bg-sidebar-accent text-sidebar-accent-foreground"
                                                                 : isActiveSession
-                                                                    ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                                                                    ? "bg-sidebar-accent text-sidebar-accent-foreground border border-yellow-400/40 animate-border-glow"
                                                                     : "bg-sidebar text-sidebar-foreground hover:bg-sidebar-accent/50",
                                                         )}
                                                         style={{
@@ -1433,11 +1438,11 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                     return (
                                         <div
                                             key={p.sessionId}
-                                            className="relative overflow-hidden rounded-lg"
+                                            className="relative overflow-hidden rounded-md"
                                         >
                                             {/* "Unpin" action behind the card — uses REVEAL_WIDTH to match swipe snap distance */}
                                             {(hasOffset || isRevealed) && <div
-                                                className="absolute inset-y-0 right-0 flex items-stretch rounded-r-lg overflow-hidden"
+                                                className="absolute inset-y-0 right-0 flex items-stretch rounded-r-md overflow-hidden"
                                                 style={{ width: REVEAL_WIDTH }}
                                             >
                                                 <button

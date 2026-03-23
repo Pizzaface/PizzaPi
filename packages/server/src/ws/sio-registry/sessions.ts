@@ -169,6 +169,14 @@ export async function registerTuiSession(
     // parent explicitly delinked this child (via delink_children on /new).
     let wasExplicitlyDelinked = false;
 
+    // linkedParentId is a durable "is this a linked child?" signal.
+    // It mirrors resolvedParentSessionId for the normal case, but — unlike
+    // parentSessionId — is NOT cleared when the parent is transiently offline
+    // during a child reconnect.  It is only cleared on explicit delink or a
+    // cross-user link attempt.  Absent on pre-existing sessions; callers fall
+    // back to parentSessionId.
+    let linkedParentId: string | null = resolvedParentSessionId;
+
     // Validate parent session exists and belongs to the same user.
     // If the parent disconnected or the ID is stale, clear it to avoid
     // dangling trigger flows that would time out.
@@ -193,7 +201,10 @@ export async function registerTuiSession(
                     removeChildSession,
                 });
                 wasExplicitlyDelinked = true;
+                linkedParentId = null; // explicit delink — clear durable signal
             } else {
+                // Parent offline but not delinked: preserve linkedParentId so
+                // push-notification suppression remains active during the outage.
                 // Keep the child in the membership set so future delink_children
                 // snapshots can still find it. The child CLI still preserves
                 // parentSessionId and will re-send it when the parent reconnects.
@@ -203,6 +214,7 @@ export async function registerTuiSession(
                 // been set by a previous /new and should still take effect when
                 // the parent comes back online.
                 await addChildSessionMembership(candidateParentId, sessionId);
+                // linkedParentId stays as candidateParentId — intentional.
             }
             resolvedParentSessionId = null;
         } else if (parentSession.userId !== userId) {
@@ -214,6 +226,7 @@ export async function registerTuiSession(
                 removeChildSession,
             });
             resolvedParentSessionId = null;
+            linkedParentId = null; // cross-user link: clear durable signal too
         }
     }
 
@@ -231,6 +244,7 @@ export async function registerTuiSession(
             });
             wasExplicitlyDelinked = true;
             resolvedParentSessionId = null;
+            linkedParentId = null; // explicit delink — clear durable signal
         }
     }
 
@@ -254,6 +268,7 @@ export async function registerTuiSession(
         runnerName,
         seq: 0,
         parentSessionId: resolvedParentSessionId,
+        linkedParentId,
     };
 
     await setSession(sessionId, sessionData);

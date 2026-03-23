@@ -390,51 +390,67 @@ function ImageViewer({
       {/* Toolbar */}
       {dataUrl && (
         <div className="flex items-center gap-1 px-3 py-1.5 border-b border-border/50 bg-muted/30">
-          <button
-            type="button"
-            onClick={zoomOut}
-            className="p-1 text-muted-foreground hover:text-foreground hover:bg-accent rounded transition-colors"
-            title="Zoom out"
-            aria-label="Zoom out"
-          >
-            <ZoomOut className="size-3.5" />
-          </button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={zoomOut}
+                className="p-1 text-muted-foreground hover:text-foreground hover:bg-accent rounded transition-colors"
+                aria-label="Zoom out"
+              >
+                <ZoomOut className="size-3.5" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>Zoom out</TooltipContent>
+          </Tooltip>
           <span className="text-[0.65rem] text-muted-foreground tabular-nums w-12 text-center">
             {Math.round(zoom * 100)}%
           </span>
-          <button
-            type="button"
-            onClick={zoomIn}
-            className="p-1 text-muted-foreground hover:text-foreground hover:bg-accent rounded transition-colors"
-            title="Zoom in"
-            aria-label="Zoom in"
-          >
-            <ZoomIn className="size-3.5" />
-          </button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={zoomIn}
+                className="p-1 text-muted-foreground hover:text-foreground hover:bg-accent rounded transition-colors"
+                aria-label="Zoom in"
+              >
+                <ZoomIn className="size-3.5" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>Zoom in</TooltipContent>
+          </Tooltip>
           <div className="w-px h-4 bg-border mx-1" />
-          <button
-            type="button"
-            onClick={toggleFit}
-            className={cn(
-              "p-1 rounded transition-colors",
-              fitMode === "actual"
-                ? "text-foreground bg-accent"
-                : "text-muted-foreground hover:text-foreground hover:bg-accent",
-            )}
-            title={fitMode === "contain" ? "Show actual size" : "Fit to view"}
-            aria-label={fitMode === "contain" ? "Show actual size" : "Fit to view"}
-          >
-            <Maximize2 className="size-3.5" />
-          </button>
-          <button
-            type="button"
-            onClick={resetZoom}
-            className="p-1 text-muted-foreground hover:text-foreground hover:bg-accent rounded transition-colors"
-            title="Reset zoom"
-            aria-label="Reset zoom"
-          >
-            <RotateCw className="size-3.5" />
-          </button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={toggleFit}
+                className={cn(
+                  "p-1 rounded transition-colors",
+                  fitMode === "actual"
+                    ? "text-foreground bg-accent"
+                    : "text-muted-foreground hover:text-foreground hover:bg-accent",
+                )}
+                aria-label={fitMode === "contain" ? "Show actual size" : "Fit to view"}
+              >
+                <Maximize2 className="size-3.5" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>{fitMode === "contain" ? "Show actual size" : "Fit to view"}</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={resetZoom}
+                className="p-1 text-muted-foreground hover:text-foreground hover:bg-accent rounded transition-colors"
+                aria-label="Reset zoom"
+              >
+                <RotateCw className="size-3.5" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>Reset zoom</TooltipContent>
+          </Tooltip>
         </div>
       )}
 

@@ -48,6 +48,7 @@ import {
     markChildAsDelinked,
     isChildDelinked,
     isChildOfParent,
+    isLinkedChildForSuppression,
     refreshChildSessionsTTL,
     clearParentSessionId,
 } from "../sio-state.js";
@@ -256,8 +257,27 @@ async function checkPushNotifications(
 
     const sName = session?.sessionName ?? null;
 
+    // Determine whether this session is an active linked child for push-suppression.
+    //
+    // Use linkedParentId as the stable parent reference (persists through transient
+    // parent outages; cleared only on explicit delink). Fall back to parentSessionId
+    // for sessions registered before this field was added.
+    //
+    // isLinkedChildForSuppression is purpose-built for suppression decisions:
+    //   • Explicit delink → false (delink marker check)
+    //   • Membership set present → true (parent online or temporarily offline)
+    //   • Set miss → falls back to parent-key existence (bounds suppression to
+    //     SESSION_TTL_SECONDS after a parent crash, without re-hydrating the set)
+    //
+    // isChildOfParent is intentionally NOT used here: its TTL-recovery fallback
+    // re-hydrates the membership set from the child's parentSessionId hash field,
+    // which would break when parentSessionId is null (offline-reconnect path) and
+    // would extend suppression beyond the parent-key TTL.
+    const effectiveParentId = session?.linkedParentId ?? session?.parentSessionId ?? null;
+    const isChildSession = !!effectiveParentId && await isLinkedChildForSuppression(effectiveParentId, sessionId);
+
     if (event.type === "agent_end") {
-        notifyAgentFinished(userId, sessionId, sName);
+        notifyAgentFinished(userId, sessionId, sName, isChildSession);
     }
 
     if (event.type === "tool_execution_start" && event.toolName === "AskUserQuestion") {
@@ -294,12 +314,12 @@ async function checkPushNotifications(
         // reject with 400 — so don't show action buttons in any of those cases.
         const toolCallId = typeof event.toolCallId === "string" ? event.toolCallId : undefined;
         const canQuickReply = questionCount <= 1 && session?.collabMode === true && !!toolCallId;
-        notifyAgentNeedsInput(userId, sessionId, question, sName, canQuickReply ? options : undefined, toolCallId);
+        notifyAgentNeedsInput(userId, sessionId, question, sName, canQuickReply ? options : undefined, toolCallId, isChildSession);
     }
 
     if (event.type === "cli_error") {
         const errMsg = typeof event.message === "string" ? event.message : undefined;
-        notifyAgentError(userId, sessionId, errMsg, sName);
+        notifyAgentError(userId, sessionId, errMsg, sName, isChildSession);
     }
 }
 
@@ -1088,6 +1108,16 @@ export function registerRelayNamespace(io: SocketIOServer): void {
                         if (typeof ack === "function") ack({ ok: false, error: err instanceof Error ? err.message : String(err) });
                         return;
                     }
+                }
+                // parentSessionId was already null in Redis, but linkedParentId
+                // may still be set (preserved when the parent was offline during
+                // the child's reconnect). Clear both fields so push-notification
+                // suppression correctly stops for this now-independent session.
+                try {
+                    await clearParentSessionId(sessionId);
+                } catch (err) {
+                    console.error("[sio/relay] delink_own_parent: failed to clear linkedParentId:", err);
+                    // Non-fatal: suppression will self-correct once the membership set expires.
                 }
                 // Already delinked or never linked — confirm success so the
                 // client stops retrying.

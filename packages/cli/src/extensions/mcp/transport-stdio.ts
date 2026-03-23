@@ -7,7 +7,6 @@
 
 import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
 import { expandHome } from "../../config.js";
-import { getSandboxEnv, isSandboxActive } from "@pizzapi/tools";
 import {
   MCP_PROTOCOL_VERSION,
   MCP_SUPPORTED_VERSIONS,
@@ -25,21 +24,13 @@ export async function createStdioMcpClient(opts: {
   env?: Record<string, string>;
   cwd?: string;
 }): Promise<McpClient> {
-  // Sandbox: inject proxy env vars so sandboxed MCP servers route traffic
-  // through the sandbox network proxy. User-provided env takes precedence.
-  const sandboxEnv = isSandboxActive() ? getSandboxEnv() : {};
-  // Sandbox env vars (proxy settings) spread LAST so MCP server config cannot
-  // override them to bypass network filtering.
-  const mergedEnv = { ...process.env, ...(opts.env ?? {}), ...sandboxEnv };
+  const mergedEnv = { ...process.env, ...(opts.env ?? {}) };
 
   // STDIO MCP servers are trusted local processes spawned from the user's
   // config — NOT agent-generated commands. We do NOT wrap them with the
   // filesystem sandbox (wrapCommand). They need full filesystem access to
   // read/write their own data directories (e.g. Godmother → ~/Documents/AgentMemory).
   //
-  // Network sandboxing still applies via the proxy env vars injected above —
-  // outbound traffic is routed through srt's proxy for domain filtering when
-  // sandbox is active in "full" mode.
   // Expand ~ in command, args, and cwd so paths resolve correctly even when
   // launched by macOS launchd (LaunchAgent/LaunchDaemon) where shell tilde
   // expansion doesn't occur.

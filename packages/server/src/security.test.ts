@@ -65,13 +65,115 @@ describe("RateLimiter", () => {
         expect(limiter.check("b")).toBe(true);
         limiter.destroy();
     });
+
+    test("getRetryAfter returns seconds until window reset", () => {
+        const limiter = new RateLimiter(1, 60_000); // 60s window
+        const key = "retry-test-key";
+
+        limiter.check(key); // first request — window starts
+        limiter.check(key); // second request — now rate limited
+
+        const retryAfter = limiter.getRetryAfter(key);
+        // Should be > 0 and <= 60 (window is 60s, and we just started it)
+        expect(retryAfter).toBeGreaterThan(0);
+        expect(retryAfter).toBeLessThanOrEqual(60);
+        limiter.destroy();
+    });
+
+    test("getRetryAfter returns full window when no active record", () => {
+        const limiter = new RateLimiter(1, 60_000);
+        const key = "no-record-key";
+
+        // No check() call — no record exists
+        const retryAfter = limiter.getRetryAfter(key);
+        expect(retryAfter).toBe(60); // Math.ceil(60_000 / 1000)
+        limiter.destroy();
+    });
+
+    test("getRetryAfter never returns 0 (boundary: now === resetTime)", () => {
+        // Simulate the exact boundary moment where now === resetTime.
+        // check() treats now === resetTime as still-in-window (uses `now > resetTime`
+        // to detect expiry), so it returns false (rate-limited). At that instant
+        // resetTime - now = 0, and a naive Math.ceil(0/1000) = 0 would produce
+        // Retry-After: 0 — causing client retry thrash.
+        // The fix clamps to Math.max(1, ...).
+        const limiter = new RateLimiter(1, 1000);
+        const key = "boundary-key";
+
+        // Exhaust the limit
+        limiter.check(key); // allowed — starts window
+        limiter.check(key); // blocked — limit hit
+
+        // Manipulate the record so resetTime === now
+        const hits = (limiter as unknown as { hits: Map<string, { count: number; resetTime: number }> }).hits;
+        const record = hits.get(key)!;
+        record.resetTime = Date.now(); // boundary: now === resetTime
+
+        // check() with now === resetTime: `now > resetTime` is false → still rate-limited
+        const blocked = limiter.check(key);
+        expect(blocked).toBe(false);
+
+        // getRetryAfter() must return >= 1 even at this exact boundary
+        const retryAfter = limiter.getRetryAfter(key);
+        expect(retryAfter).toBeGreaterThanOrEqual(1);
+
+        limiter.destroy();
+    });
+
+    test("getRetryAfter always >= 1 while check() returns false", () => {
+        // Property: whenever check() returns false, getRetryAfter() must return >= 1.
+        // This guards against any Retry-After: 0 response that would cause thrash.
+        const limiter = new RateLimiter(2, 5000);
+        const key = "always-positive-key";
+
+        limiter.check(key);
+        limiter.check(key);
+        // Third call is blocked
+        const blocked = limiter.check(key);
+        expect(blocked).toBe(false);
+
+        const retryAfter = limiter.getRetryAfter(key);
+        expect(retryAfter).toBeGreaterThanOrEqual(1);
+        limiter.destroy();
+    });
 });
 
 describe("isValidEmail", () => {
     test("accepts standard emails", () => {
         expect(isValidEmail("test@example.com")).toBe(true);
         expect(isValidEmail("user.name+tag@sub.domain.co.uk")).toBe(true);
-        expect(isValidEmail("a@b.c")).toBe(true);
+    });
+
+    test("accepts emails with local part exactly 64 chars", () => {
+        const localPart = "a".repeat(64);
+        expect(isValidEmail(`${localPart}@example.com`)).toBe(true);
+    });
+
+    test("accepts valid emails near the 254 char limit", () => {
+        // Build a domain using multiple labels each ≤ 63 chars (DNS max per label).
+        // Three labels: 63 + 63 + 58 chars, plus dots and a 2-char TLD = 189 chars.
+        // localPart (64) + "@" (1) + domain (189) = 254 bytes — exactly at the RFC limit.
+        const label63 = "d".repeat(63);
+        const label58 = "d".repeat(58);
+        const fullDomain = `${label63}.${label63}.${label58}.co`;
+        const localPart = "a".repeat(64);
+        expect(isValidEmail(`${localPart}@${fullDomain}`)).toBe(true);
+    });
+
+    test("rejects emails with > 64 chars in local part", () => {
+        const localPart = "a".repeat(65);
+        expect(isValidEmail(`${localPart}@example.com`)).toBe(false);
+    });
+
+    test("rejects emails > 254 chars total length", () => {
+        const localPart = "a".repeat(60);
+        // Make domain large enough to exceed 254 chars
+        const domain = "d".repeat(200) + ".com";
+        expect(isValidEmail(`${localPart}@${domain}`)).toBe(false);
+    });
+
+    test("rejects emails with single char TLD", () => {
+        expect(isValidEmail("a@b.c")).toBe(false);
     });
 
     test("rejects emails without @", () => {
@@ -97,6 +199,112 @@ describe("isValidEmail", () => {
 
     test("rejects emails without TLD dot", () => {
         expect(isValidEmail("user@domain")).toBe(false);
+    });
+
+    // --- Multibyte / Unicode byte-length tests (P1) ---
+
+    test("accepts multibyte local part at exactly 64 UTF-8 bytes (32 × 'é')", () => {
+        // 'é' (U+00E9) encodes to 2 bytes in UTF-8; 32 × 2 = 64 bytes — at the RFC limit.
+        // A character-count check would see only 32 chars, well under 64.
+        const localPart = "é".repeat(32);
+        expect(isValidEmail(`${localPart}@example.com`)).toBe(true);
+    });
+
+    test("rejects multibyte local part that exceeds 64 UTF-8 bytes but not 64 characters", () => {
+        // 33 × 'é' = 66 UTF-8 bytes > 64-byte RFC limit, but only 33 JS characters.
+        // Old character-count regex {1,64} would incorrectly accept this.
+        const localPart = "é".repeat(33);
+        expect(isValidEmail(`${localPart}@example.com`)).toBe(false);
+    });
+
+    test("rejects email whose total byte length exceeds 254 but character count does not", () => {
+        // ASCII local part: 64 bytes.  '@': 1 byte.  Domain uses 'é' (2 bytes each).
+        // domain = 94 × 'é' + ".com" = 188 + 4 = 192 bytes  →  total = 257 bytes > 254.
+        // Character count: 64 + 1 + 94 + 4 = 163 — well under 254, so old code passes it.
+        const localPart = "a".repeat(64);
+        const domainLabel = "é".repeat(94);
+        expect(isValidEmail(`${localPart}@${domainLabel}.com`)).toBe(false);
+    });
+
+    test("rejects email with non-ASCII chars in domain (strict DNS label validation)", () => {
+        // DNS labels are restricted to [a-zA-Z0-9-] (RFC 1035). Non-ASCII characters
+        // such as 'é' are not valid in a literal domain label and must be rejected,
+        // regardless of whether the total byte length is within the 254-byte limit.
+        const localPart = "a".repeat(32);
+        const domainLabel = "é".repeat(32); // Total bytes well under 254, but invalid DNS chars.
+        expect(isValidEmail(`${localPart}@${domainLabel}.com`)).toBe(false);
+    });
+
+    // --- Malformed domain tests (P2) ---
+
+    test("rejects domain with consecutive dots", () => {
+        expect(isValidEmail("a@..example.com")).toBe(false);
+        expect(isValidEmail("a@example..com")).toBe(false);
+        expect(isValidEmail("a@sub..example.com")).toBe(false);
+    });
+
+    test("rejects domain with a leading dot", () => {
+        expect(isValidEmail("a@.example.com")).toBe(false);
+    });
+
+    test("rejects domain with a trailing dot", () => {
+        expect(isValidEmail("a@example.com.")).toBe(false);
+    });
+
+    test("rejects domain that is only dots", () => {
+        expect(isValidEmail("a@...")).toBe(false);
+        expect(isValidEmail("a@.")).toBe(false);
+    });
+
+    // --- DNS label constraint tests (RFC 1035) ---
+
+    test("accepts domain labels up to 63 chars", () => {
+        const label = "a".repeat(63);
+        expect(isValidEmail(`user@${label}.com`)).toBe(true);
+    });
+
+    test("rejects domain label exceeding 63 chars", () => {
+        const label = "a".repeat(64);
+        expect(isValidEmail(`user@${label}.com`)).toBe(false);
+    });
+
+    test("rejects domain label starting with a hyphen", () => {
+        expect(isValidEmail("user@-label.com")).toBe(false);
+        expect(isValidEmail("user@sub.-label.com")).toBe(false);
+    });
+
+    test("rejects domain label ending with a hyphen", () => {
+        expect(isValidEmail("user@label-.com")).toBe(false);
+        expect(isValidEmail("user@sub.label-.com")).toBe(false);
+    });
+
+    test("accepts domain labels with interior hyphens", () => {
+        expect(isValidEmail("user@my-domain.com")).toBe(true);
+        expect(isValidEmail("user@my-long-domain-name.co.uk")).toBe(true);
+    });
+
+    test("rejects domain label with invalid characters (underscores, dots within label)", () => {
+        expect(isValidEmail("user@_dmarc.example.com")).toBe(false);
+        expect(isValidEmail("user@exam_ple.com")).toBe(false);
+    });
+
+    test("rejects domain total length > 253 chars", () => {
+        // 4 labels of 63 chars + dots = 63*4 + 3 = 255 > 253
+        const label = "d".repeat(63);
+        const domain = `${label}.${label}.${label}.${label}`;
+        expect(isValidEmail(`user@${domain}`)).toBe(false);
+    });
+
+    test("accepts domain near max length (252 chars) with 1-char local part", () => {
+        // A 253-char domain cannot appear in a valid email: even with the minimum
+        // 1-char local part, total = 1 + "@"(1) + 253 = 255 bytes > 254-byte RFC limit.
+        // 252-char domain with 1-char local = 254 bytes — exactly at the RFC limit.
+        // Build: 3 × 63-char labels + 1 × 60-char label + 3 dots = 63*3+60+3 = 252 chars.
+        const label63 = "d".repeat(63);
+        const label60 = "d".repeat(60);
+        const domain = `${label63}.${label63}.${label63}.${label60}`;
+        expect(domain.length).toBe(252);
+        expect(isValidEmail(`a@${domain}`)).toBe(true);
     });
 });
 

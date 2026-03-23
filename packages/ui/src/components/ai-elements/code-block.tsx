@@ -120,6 +120,15 @@ const CodeBlockContext = createContext<CodeBlockContextType>({
   code: "",
 });
 
+// Cache size limits and FIFO eviction logic — imported from shared utility so
+// they can be unit-tested independently of React / Shiki.
+import {
+  evictOldestIfNeeded,
+  getTokensCacheKey,
+  MAX_HIGHLIGHTER_CACHE_SIZE,
+  MAX_TOKENS_CACHE_SIZE,
+} from "./code-block-cache";
+
 // Highlighter cache (singleton per language)
 const highlighterCache = new Map<
   string,
@@ -131,12 +140,6 @@ const tokensCache = new Map<string, TokenizedCode>();
 
 // Subscribers for async token updates
 const subscribers = new Map<string, Set<(result: TokenizedCode) => void>>();
-
-const getTokensCacheKey = (code: string, language: BundledLanguage) => {
-  const start = code.slice(0, 100);
-  const end = code.length > 100 ? code.slice(-100) : "";
-  return `${language}:${code.length}:${start}:${end}`;
-};
 
 const getHighlighter = (
   language: BundledLanguage
@@ -151,6 +154,7 @@ const getHighlighter = (
     themes: ["github-light", "github-dark"],
   });
 
+  evictOldestIfNeeded(highlighterCache, MAX_HIGHLIGHTER_CACHE_SIZE);
   highlighterCache.set(language, highlighterPromise);
   return highlighterPromise;
 };
@@ -215,7 +219,8 @@ export const highlightCode = (
         tokens: result.tokens,
       };
 
-      // Cache the result
+      // Cache the result (evict oldest entry if at capacity)
+      evictOldestIfNeeded(tokensCache, MAX_TOKENS_CACHE_SIZE);
       tokensCache.set(tokensCacheKey, tokenized);
 
       // Notify all subscribers
