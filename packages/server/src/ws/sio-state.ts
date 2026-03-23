@@ -742,6 +742,13 @@ export async function isChildOfParent(parentSessionId: string, childSessionId: s
     // delink.  Verify via the child's durable session hash (parentSessionId field).
     const childSession = await getSession(childSessionId);
     if (childSession?.parentSessionId === parentSessionId) {
+        // Gate re-hydration on the parent session key still existing in Redis.
+        // Without this check, Fallback 1 would keep re-hydrating the membership
+        // set indefinitely after a parent crash — the same parent-liveness guard
+        // applied in Fallback 2 below.
+        const parentKeyExists = (await r.exists(sessionKey(parentSessionId))) > 0;
+        if (!parentKeyExists) return false;
+
         // Re-hydrate the children set and reset its TTL so future checks are
         // fast and the delink guard (clearAllChildren / clearParentSessionId)
         // still works correctly.
