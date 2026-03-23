@@ -17,7 +17,8 @@ function resetKeysChanged(
 ): boolean {
   if (!nextKeys) return false; // no resetKeys prop → never auto-reset
   const prev = prevKeys ?? [];
-  return nextKeys.some((key, i) => !Object.is(key, prev[i]));
+  return prev.length !== nextKeys.length ||
+    nextKeys.some((key, i) => !Object.is(key, prev[i]));
 }
 
 describe("ErrorBoundary resetKeys comparison logic", () => {
@@ -72,6 +73,22 @@ describe("ErrorBoundary resetKeys comparison logic", () => {
   test("returns true when key changes to null", () => {
     // Session closed — activeSessionId becomes null
     expect(resetKeysChanged(["session-1"], [null])).toBe(true);
+  });
+
+  test("returns true when keys are removed (length shrinks)", () => {
+    expect(resetKeysChanged(["a", "b"], ["a"])).toBe(true);
+  });
+
+  test("returns true when keys are added (length grows)", () => {
+    expect(resetKeysChanged(["a"], ["a", "b"])).toBe(true);
+  });
+
+  test("returns true when going from empty to non-empty", () => {
+    expect(resetKeysChanged([], ["a"])).toBe(true);
+  });
+
+  test("returns true when going from non-empty to empty", () => {
+    expect(resetKeysChanged(["a"], [])).toBe(true);
   });
 });
 

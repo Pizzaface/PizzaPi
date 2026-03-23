@@ -51,7 +51,8 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
     if (this.state.hasError && this.props.resetKeys) {
       const prevKeys = prevProps.resetKeys ?? [];
       const nextKeys = this.props.resetKeys;
-      const changed = nextKeys.some((key, i) => !Object.is(key, prevKeys[i]));
+      const changed = prevKeys.length !== nextKeys.length ||
+        nextKeys.some((key, i) => !Object.is(key, prevKeys[i]));
       if (changed) {
         this.setState({ hasError: false, error: null });
       }
