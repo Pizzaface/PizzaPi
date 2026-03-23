@@ -53,22 +53,6 @@ describe("isUsageLimitError", () => {
             expect(isUsageLimitError("Your quota has been exhausted")).toBe(true);
         });
 
-        test("'capacity' standalone", () => {
-            expect(isUsageLimitError("Service capacity exceeded for this region")).toBe(true);
-        });
-
-        test("'overloaded'", () => {
-            expect(isUsageLimitError("The model is currently overloaded, please try again")).toBe(true);
-        });
-
-        test("'throttled'", () => {
-            expect(isUsageLimitError("Request throttled due to high traffic")).toBe(true);
-        });
-
-        test("'throttling'", () => {
-            expect(isUsageLimitError("Server is throttling your requests")).toBe(true);
-        });
-
         test("OpenAI rate limit message", () => {
             expect(isUsageLimitError("Rate limit reached for gpt-4 in organization org-xxx on tokens per minute")).toBe(true);
         });
@@ -123,6 +107,22 @@ describe("isUsageLimitError", () => {
         test("'accumulated' — contains 'quota' infix? No, 'quota' uses word boundary", () => {
             // \bquota\b would not match inside a longer word
             expect(isUsageLimitError("errors accumulated during processing")).toBe(false);
+        });
+
+        test("'overloaded' — transient provider saturation, not a quota error", () => {
+            expect(isUsageLimitError("The model is currently overloaded, please try again")).toBe(false);
+        });
+
+        test("'throttled' — transient backpressure, not a quota error", () => {
+            expect(isUsageLimitError("Request throttled due to high traffic")).toBe(false);
+        });
+
+        test("'throttling' — transient backpressure, not a quota error", () => {
+            expect(isUsageLimitError("Server is throttling your requests")).toBe(false);
+        });
+
+        test("'capacity' standalone — transient saturation, not a quota error", () => {
+            expect(isUsageLimitError("Service capacity exceeded for this region")).toBe(false);
         });
 
         test("model not found error", () => {

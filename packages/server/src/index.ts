@@ -150,7 +150,7 @@ const httpServer = createServer(async (req, res) => {
                 "referrer-policy": "strict-origin-when-cross-origin",
                 "permissions-policy": "camera=(), microphone=(), geolocation=()",
                 "content-security-policy":
-                    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws: wss: blob:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'",
+                    "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws: wss: blob:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'",
             });
         }
         res.end(JSON.stringify({ error: "Internal server error" }));

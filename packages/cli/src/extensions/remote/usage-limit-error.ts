@@ -28,9 +28,6 @@ const USAGE_LIMIT_PHRASES: ReadonlyArray<RegExp> = [
     /context\s+window/i,
     // Single-word patterns with word boundaries
     /\bquota\b/i,
-    /\bcapacity\b/i,
-    /\boverloaded\b/i,
-    /\bthrottl/i, // throttle / throttled / throttling
 ];
 
 /**
