@@ -1,12 +1,6 @@
 import * as React from "react";
 import { X } from "lucide-react";
-
-interface HealthResponse {
-    status: "ok" | "degraded";
-    redis: boolean;
-    socketio: boolean;
-    uptime: number;
-}
+import { createHealthPoller } from "./DegradedBanner.logic";
 
 /**
  * Dismissable amber banner shown when the server's /health endpoint reports
@@ -17,43 +11,33 @@ export function DegradedBanner() {
     const [degraded, setDegraded] = React.useState(false);
     const [dismissed, setDismissed] = React.useState(false);
 
-    const checkHealth = React.useCallback(async (signal?: AbortSignal) => {
-        try {
-            const res = await fetch("/health", { signal });
-            const data: HealthResponse = await res.json();
-            setDegraded(data.status === "degraded");
-        } catch (err) {
-            // Ignore intentional cancellations (component unmounted mid-fetch)
-            if (err instanceof Error && err.name === "AbortError") return;
-            // Network failure — treat as degraded
-            setDegraded(true);
-        }
-    }, []);
-
     // Check on mount; cancel the in-flight fetch if the component unmounts.
     React.useEffect(() => {
         const controller = new AbortController();
-        void checkHealth(controller.signal);
+        const poll = createHealthPoller(setDegraded, controller.signal);
+        void poll();
         return () => controller.abort();
-    }, [checkHealth]);
+    }, []);
 
     // When the server recovers, lift the dismiss so the banner disappears.
     React.useEffect(() => {
         if (!degraded) setDismissed(false);
     }, [degraded]);
 
-    // Auto-retry every 30s, reusing checkHealth to avoid logic duplication.
-    // Cancel any in-flight fetch when the interval is torn down on unmount.
+    // Auto-retry every 30s using a poller with an in-flight guard.
+    // If a /health request stalls past 30s the next tick is skipped rather
+    // than stacking an additional concurrent fetch.
     React.useEffect(() => {
         const controller = new AbortController();
+        const poll = createHealthPoller(setDegraded, controller.signal);
         const id = setInterval(() => {
-            void checkHealth(controller.signal);
+            void poll();
         }, 30_000);
         return () => {
             clearInterval(id);
             controller.abort();
         };
-    }, [checkHealth]);
+    }, []);
 
     if (!degraded || dismissed) return null;
 

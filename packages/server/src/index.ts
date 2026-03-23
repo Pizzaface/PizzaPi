@@ -159,17 +159,49 @@ const httpServer = createServer(async (req, res) => {
 
 let io: SocketIOServer | undefined;
 
+// Tracks whether Socket.IO was successfully initialized so the Redis
+// "ready" event handler can restore serverHealth.socketio on reconnect.
+let sioInitialized = false;
+
 try {
     const pubClient = createClient({ url: REDIS_URL });
     const subClient = pubClient.duplicate();
-    await Promise.all([pubClient.connect(), subClient.connect()]);
 
-    // TODO: serverHealth.redis is set once at startup and never updated at
-    // runtime.  If Redis disconnects after initialization this flag stays true
-    // and /health will incorrectly report status "ok".  Tracking runtime state
-    // would require attaching listeners to the Redis client ("error",
-    // "reconnecting", "ready") which needs a design review before
-    // implementation to avoid masking transient blips as permanent failures.
+    // ── Runtime health event listeners ────────────────────────────────────
+    // Wire these BEFORE connecting so every state transition is captured,
+    // including errors that happen during the initial connection attempt.
+    //
+    // Redis "ready"       → connection is established and accepting commands.
+    // Redis "error"       → connection error (client will auto-reconnect).
+    // Redis "reconnecting"→ client is actively attempting to reconnect.
+    //
+    // Socket.IO uses the same Redis clients for its adapter, so its health
+    // is directly tied to the Redis connection state.
+
+    pubClient.on("ready", () => {
+        serverHealth.redis = true;
+        if (sioInitialized) serverHealth.socketio = true;
+        console.log("[health] Redis connected — health flags restored");
+    });
+
+    pubClient.on("error", (err: Error) => {
+        const wasHealthy = serverHealth.redis;
+        serverHealth.redis = false;
+        if (sioInitialized) serverHealth.socketio = false;
+        if (wasHealthy) {
+            console.warn("[health] Redis connection error — health flags set to degraded:", err.message);
+        }
+    });
+
+    pubClient.on("reconnecting", () => {
+        serverHealth.redis = false;
+        if (sioInitialized) serverHealth.socketio = false;
+        console.warn("[health] Redis reconnecting — health flags set to degraded");
+    });
+
+    await Promise.all([pubClient.connect(), subClient.connect()]);
+    // Explicitly set flags to true after successful initial connection
+    // (the "ready" event will have already fired, but this is a safety net).
     serverHealth.redis = true;
 
     try {
@@ -204,7 +236,9 @@ try {
 
         registerNamespaces(io);
 
-        // TODO: same caveat as serverHealth.redis above — write-once at startup.
+        // Mark Socket.IO as initialized so the Redis event listeners above
+        // can also flip serverHealth.socketio on future reconnects/disconnects.
+        sioInitialized = true;
         serverHealth.socketio = true;
     } catch (sioErr) {
         console.error("[Socket.IO] Failed to initialize Socket.IO layer:", sioErr);
