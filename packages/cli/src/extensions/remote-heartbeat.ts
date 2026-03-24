@@ -5,8 +5,8 @@
 import type { RelayContext } from "./remote-types.js";
 import { emitSessionMetadataUpdate } from "./remote/chunked-delivery.js";
 
-export function buildTokenUsage(rctx: RelayContext): { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number } {
-    if (!rctx.latestCtx) return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+export function buildTokenUsage(rctx: RelayContext): { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; contextTokens: number | null } {
+    if (!rctx.latestCtx) return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: null };
     let input = 0, output = 0, cacheRead = 0, cacheWrite = 0, cost = 0;
     for (const entry of rctx.latestCtx.sessionManager.getEntries()) {
         if (entry.type === "message" && entry.message.role === "assistant") {
@@ -17,7 +17,8 @@ export function buildTokenUsage(rctx: RelayContext): { input: number; output: nu
             cost += entry.message.usage.cost.total;
         }
     }
-    return { input, output, cacheRead, cacheWrite, cost };
+    const contextUsage = rctx.latestCtx.getContextUsage?.();
+    return { input, output, cacheRead, cacheWrite, cost, contextTokens: contextUsage?.tokens ?? null };
 }
 
 export function buildHeartbeat(rctx: RelayContext) {

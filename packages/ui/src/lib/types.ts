@@ -21,6 +21,8 @@ export interface TokenUsage {
   cacheRead: number;
   cacheWrite: number;
   cost: number;
+  /** Current context window consumption (tokens), or null/undefined if unknown. */
+  contextTokens?: number | null;
 }
 
 export interface ConfiguredModelInfo {

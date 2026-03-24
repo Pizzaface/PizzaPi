@@ -17,6 +17,8 @@ export interface MetaTokenUsage {
   cacheRead: number;
   cacheWrite: number;
   cost: number;
+  /** Current context window consumption (tokens), or null if unknown. */
+  contextTokens?: number | null;
 }
 
 export type MetaProviderUsage = Record<string, Record<string, unknown>>;

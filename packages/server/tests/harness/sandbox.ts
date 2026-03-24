@@ -426,7 +426,7 @@ async function main() {
     s1.relay.emitEvent(s1.sessionId, s1.token, { type: "model_changed", model: MODELS[0] });
     s1.relay.emitEvent(s1.sessionId, s1.token, {
         type: "token_usage_updated",
-        tokenUsage: { input: 42_800, output: 3_200, cacheRead: 12_000, cacheWrite: 4_000, cost: 0.148 },
+        tokenUsage: { input: 42_800, output: 3_200, cacheRead: 12_000, cacheWrite: 4_000, cost: 0.148, contextTokens: 42_800 },
         providerUsage: {},
     });
 
@@ -452,7 +452,7 @@ async function main() {
     s2.relay.emitEvent(s2.sessionId, s2.token, { type: "model_changed", model: MODELS[3] });
     s2.relay.emitEvent(s2.sessionId, s2.token, {
         type: "token_usage_updated",
-        tokenUsage: { input: 95_400, output: 8_100, cacheRead: 0, cacheWrite: 0, cost: 0.312 },
+        tokenUsage: { input: 95_400, output: 8_100, cacheRead: 0, cacheWrite: 0, cost: 0.312, contextTokens: 95_400 },
         providerUsage: {},
     });
     console.log("  🟢 Session 2: fix-dark-mode-css (GPT-5.4)");
@@ -508,13 +508,13 @@ async function main() {
         s1Tokens += Math.floor(Math.random() * 800 + 200);
         s1.relay.emitEvent(s1.sessionId, s1.token, {
             type: "token_usage_updated",
-            tokenUsage: { input: s1Tokens, output: 3_200 + Math.floor(s1Tokens * 0.07), cacheRead: 12_000, cacheWrite: 4_000, cost: +(s1Tokens * 0.000003).toFixed(4) },
+            tokenUsage: { input: s1Tokens, output: 3_200 + Math.floor(s1Tokens * 0.07), cacheRead: 12_000, cacheWrite: 4_000, cost: +(s1Tokens * 0.000003).toFixed(4), contextTokens: s1Tokens },
             providerUsage: {},
         });
         s2Tokens += Math.floor(Math.random() * 1_200 + 400);
         s2.relay.emitEvent(s2.sessionId, s2.token, {
             type: "token_usage_updated",
-            tokenUsage: { input: s2Tokens, output: 8_100 + Math.floor(s2Tokens * 0.08), cacheRead: 0, cacheWrite: 0, cost: +(s2Tokens * 0.0000025).toFixed(4) },
+            tokenUsage: { input: s2Tokens, output: 8_100 + Math.floor(s2Tokens * 0.08), cacheRead: 0, cacheWrite: 0, cost: +(s2Tokens * 0.0000025).toFixed(4), contextTokens: s2Tokens },
             providerUsage: {},
         });
     }, 3_000);

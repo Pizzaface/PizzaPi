@@ -13,9 +13,10 @@ import {
 /** Compute the percentage of context window used (0–100, clamped). */
 export function contextPercent(tokenUsage: TokenUsage, contextWindow: number): number {
   if (contextWindow <= 0) return 0;
-  // "Used" = input tokens (what the model sees on the next turn).
-  // Cache-read tokens are already counted inside `input`.
-  const pct = (tokenUsage.input / contextWindow) * 100;
+  // Prefer contextTokens (real-time estimate from the agent) over cumulative input.
+  const tokens = tokenUsage.contextTokens ?? tokenUsage.input;
+  if (tokens <= 0) return 0;
+  const pct = (tokens / contextWindow) * 100;
   return Math.min(100, Math.max(0, pct));
 }
 
@@ -108,12 +109,15 @@ export function ContextDonut({
 }: ContextDonutProps) {
   // Don't render if we don't have both data points
   if (!tokenUsage || !contextWindow || contextWindow <= 0) return null;
-  if (tokenUsage.input <= 0 && tokenUsage.output <= 0) return null;
+  // Need either contextTokens or cumulative usage to show anything
+  const hasContextTokens = tokenUsage.contextTokens != null && tokenUsage.contextTokens > 0;
+  if (!hasContextTokens && tokenUsage.input <= 0 && tokenUsage.output <= 0) return null;
 
   const pct = contextPercent(tokenUsage, contextWindow);
 
+  const ctxTokens = tokenUsage.contextTokens ?? tokenUsage.input;
   const tooltipLines = [
-    `Context: ${formatTokenCount(tokenUsage.input)} / ${formatTokenCount(contextWindow)} tokens (${Math.round(pct)}%)`,
+    `Context: ${formatTokenCount(ctxTokens)} / ${formatTokenCount(contextWindow)} tokens (${Math.round(pct)}%)`,
     `Output: ${formatTokenCount(tokenUsage.output)}`,
     tokenUsage.cacheRead ? `Cache read: ${formatTokenCount(tokenUsage.cacheRead)}` : null,
     tokenUsage.cacheWrite ? `Cache write: ${formatTokenCount(tokenUsage.cacheWrite)}` : null,
