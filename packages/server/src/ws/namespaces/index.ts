@@ -1,5 +1,5 @@
 import type { Server as SocketIOServer } from "socket.io";
-import { registerRelayNamespace } from "./relay.js";
+import { registerRelayNamespace } from "./relay/index.js";
 import { registerViewerNamespace } from "./viewer.js";
 import { registerRunnerNamespace } from "./runner.js";
 import { registerTerminalNamespace } from "./terminal.js";
