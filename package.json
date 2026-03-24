@@ -31,8 +31,8 @@
         "test": "bun test packages/protocol packages/server packages/tools && cd packages/cli && bun test && cd ../ui && bun test",
         "typecheck": "tsc --build && bun run --cwd packages/protocol typecheck:tests",
         "migrate": "cd packages/server && bun run migrate",
-        "clean": "bun -e \"['protocol','tools','server','ui','cli','docs'].forEach(p=>require('fs').rmSync('packages/'+p+'/dist',{recursive:true,force:true}))\"",
-        "postinstall": "true"
+        "clean": "bun -e \"['protocol','tools','server','ui','cli','docs'].forEach(p=>{require('fs').rmSync('packages/'+p+'/dist',{recursive:true,force:true});require('fs').rmSync('packages/'+p+'/tsconfig.tsbuildinfo',{force:true})})\"",
+        "postinstall": "bun scripts/link-workspaces.ts"
     },
     "dependencies": {
         "@mariozechner/pi-agent-core": "^0.58.3",
