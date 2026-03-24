@@ -1,0 +1,7 @@
+[test]
+# Exclude the compiled dist/ directory from test discovery.
+# It contains compiled .test.js copies of all .test.ts source files.
+# Running them alongside the sources causes module-mock leakage (e.g.
+# mock.module("redis",...) from dist/sessions/redis_perf.test.js bleeds
+# into other test workers and breaks tests that need the real Redis client).
+exclude = ["dist/**"]

@@ -1,0 +1,7 @@
+[test]
+# Exclude compiled dist/ directories from test discovery.
+# TypeScript source files in src/ and tests/ are the canonical test sources.
+# Running compiled .test.js copies from dist/ alongside source .test.ts files
+# causes module-mock leakage across test workers (e.g. mock.module("redis",...)
+# from a dist test bleeds into workers running source tests).
+exclude = ["**/dist/**"]

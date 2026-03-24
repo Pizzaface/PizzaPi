@@ -37,6 +37,38 @@ function uniqueTestClientIp(): string {
     return `10.255.${Math.floor(n / 256) % 256}.${n % 256}`;
 }
 
+// ── PIZZAPI_TRUST_PROXY env management ───────────────────────────────────────
+// All test servers need PIZZAPI_TRUST_PROXY=true. To avoid env-restoration races
+// when multiple servers are cleaned up concurrently (Promise.allSettled), we
+// track the original value once at module load time and restore it only after
+// the last active server is torn down.
+//
+// JS is single-threaded, so the _activeServers decrement + conditional restore
+// in cleanup() is always atomic with respect to other cleanup() invocations.
+
+const _trustProxyOriginal: string | undefined = process.env.PIZZAPI_TRUST_PROXY;
+let _activeServers = 0;
+
+function acquireTrustProxy(): void {
+    if (_activeServers === 0) {
+        // First server — set the env var
+        process.env.PIZZAPI_TRUST_PROXY = "true";
+    }
+    _activeServers++;
+}
+
+function releaseTrustProxy(): void {
+    _activeServers = Math.max(0, _activeServers - 1);
+    if (_activeServers === 0) {
+        // Last server cleaned up — restore original value
+        if (_trustProxyOriginal === undefined) {
+            delete process.env.PIZZAPI_TRUST_PROXY;
+        } else {
+            process.env.PIZZAPI_TRUST_PROXY = _trustProxyOriginal;
+        }
+    }
+}
+
 // ── Node req/res ↔ fetch API helpers (mirrors src/index.ts) ─────────────────
 
 async function nodeReqToFetchRequest(req: IncomingMessage, port: number): Promise<Request> {
@@ -129,201 +161,237 @@ async function sendFetchResponse(res: ServerResponse, response: Response): Promi
  * concurrently — create servers sequentially to avoid race conditions.
  */
 export async function createTestServer(opts?: TestServerOptions): Promise<TestServer> {
-    // 1. Temp directory for the SQLite DB
-    const tmpDir = mkdtempSync(join(tmpdir(), "pizzapi-test-"));
-    const dbPath = join(tmpDir, "test.db");
+    // Acquire PIZZAPI_TRUST_PROXY — shared across all active test servers.
+    // Must be matched by a releaseTrustProxy() call in cleanup() or error path.
+    acquireTrustProxy();
 
-    // 2. Trust proxy for rate-limit tests (mirrors production behavior)
-    const savedTrustProxy = process.env.PIZZAPI_TRUST_PROXY;
-    process.env.PIZZAPI_TRUST_PROXY = "true";
+    // Track all allocated resources so we can clean up on partial failure.
+    let tmpDir: string | undefined;
+    let pubClient: RedisClientType | undefined;
+    let subClient: RedisClientType | undefined;
+    let httpServer: ReturnType<typeof createServer> | undefined;
+    let io: SocketIOServer | undefined;
 
-    // We need a placeholder baseURL for initAuth. We'll use a temp placeholder
-    // that better-auth uses only for cookie domain (not for actual listening).
-    // Using http://127.0.0.1 avoids port-0 issues and works for cookie matching.
-    const placeholderBase = opts?.baseUrl ?? "http://127.0.0.1";
+    try {
+        // 1. Temp directory for the SQLite DB
+        tmpDir = mkdtempSync(join(tmpdir(), "pizzapi-test-"));
+        const dbPath = join(tmpDir, "test.db");
 
-    // 3. Init auth with temp DB
-    initAuth({
-        dbPath,
-        baseURL: placeholderBase,
-        secret: "test-secret-for-harness-at-least-32-chars-long!!",
-        disableSignupAfterFirstUser: opts?.disableSignupAfterFirstUser ?? true,
-        extraOrigins: opts?.trustedOrigins,
-    });
+        // We need a placeholder baseURL for initAuth. We'll use a temp placeholder
+        // that better-auth uses only for cookie domain (not for actual listening).
+        // Using http://127.0.0.1 avoids port-0 issues and works for cookie matching.
+        const placeholderBase = opts?.baseUrl ?? "http://127.0.0.1";
 
-    // 4. Run DB migrations
-    await runAllMigrations();
+        // 2. Init auth with temp DB
+        initAuth({
+            dbPath,
+            baseURL: placeholderBase,
+            secret: "test-secret-for-harness-at-least-32-chars-long!!",
+            disableSignupAfterFirstUser: opts?.disableSignupAfterFirstUser ?? true,
+            extraOrigins: opts?.trustedOrigins,
+        });
 
-    // 5. Create Redis pub/sub clients and connect them
-    const pubClient = createClient({ url: REDIS_URL }) as RedisClientType;
-    const subClient = pubClient.duplicate() as RedisClientType;
-    await Promise.all([pubClient.connect(), subClient.connect()]);
+        // 3. Run DB migrations
+        await runAllMigrations();
 
-    // 6. We'll track the resolved port for the request converter
-    let resolvedPort = 0;
+        // 4. Create Redis pub/sub clients.
+        //    IMPORTANT: Do NOT use pubClient.duplicate() here. Other test files in
+        //    the suite may mock the "redis" module (e.g. redis_perf.test.ts uses
+        //    mock.module("redis", ...)), and mock objects typically omit .duplicate().
+        //    Creating each client independently via createClient() avoids this
+        //    dependency entirely.
+        pubClient = createClient({ url: REDIS_URL }) as RedisClientType;
+        subClient = createClient({ url: REDIS_URL }) as RedisClientType;
+        await Promise.all([pubClient.connect(), subClient.connect()]);
 
-    // Create the HTTP server with the handleFetch handler
-    const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
-        try {
-            const fetchReq = await nodeReqToFetchRequest(req, resolvedPort);
-            const fetchRes = await handleFetch(fetchReq);
-            await sendFetchResponse(res, fetchRes);
-        } catch (e) {
-            console.error("[test-harness] Unhandled error:", e);
-            if (!res.headersSent) {
-                res.writeHead(500, { "content-type": "application/json" });
+        // 5. We'll track the resolved port for the request converter
+        let resolvedPort = 0;
+
+        // Create the HTTP server with the handleFetch handler
+        httpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
+            try {
+                const fetchReq = await nodeReqToFetchRequest(req, resolvedPort);
+                const fetchRes = await handleFetch(fetchReq);
+                await sendFetchResponse(res, fetchRes);
+            } catch (e) {
+                console.error("[test-harness] Unhandled error:", e);
+                if (!res.headersSent) {
+                    res.writeHead(500, { "content-type": "application/json" });
+                }
+                res.end(JSON.stringify({ error: "Internal server error" }));
             }
-            res.end(JSON.stringify({ error: "Internal server error" }));
+        });
+
+        // 6. Create Socket.IO server with Redis adapter
+        io = new SocketIOServer(httpServer, {
+            cors: {
+                origin: getTrustedOrigins(),
+                credentials: true,
+            },
+            maxHttpBufferSize: 100 * 1024 * 1024,
+            pingInterval: 30_000,
+            pingTimeout: 60_000,
+            adapter: createAdapter(pubClient, subClient, { key: "pizzapi-sio-test" }),
+            transports: ["websocket", "polling"],
+        });
+
+        // 7. Init state Redis
+        await initStateRedis();
+
+        // 8. Init the Socket.IO registry
+        initSioRegistry(io);
+
+        // 9. Register all namespaces
+        registerNamespaces(io);
+
+        // 10. Listen on port 0 (OS assigns an ephemeral port) on IPv4 loopback
+        await new Promise<void>((resolve) => httpServer!.listen(0, "127.0.0.1", resolve));
+
+        const addr = httpServer.address();
+        if (!addr || typeof addr === "string") {
+            throw new Error("[test-harness] Could not determine server port");
         }
-    });
+        resolvedPort = addr.port;
 
-    // 7. Create Socket.IO server with Redis adapter
-    const io = new SocketIOServer(httpServer, {
-        cors: {
-            origin: getTrustedOrigins(),
-            credentials: true,
-        },
-        maxHttpBufferSize: 100 * 1024 * 1024,
-        pingInterval: 30_000,
-        pingTimeout: 60_000,
-        adapter: createAdapter(pubClient, subClient, { key: "pizzapi-sio-test" }),
-        transports: ["websocket", "polling"],
-    });
+        // Use 127.0.0.1 explicitly (not localhost) to avoid IPv6 resolution on macOS
+        const baseUrl = opts?.baseUrl ?? `http://127.0.0.1:${resolvedPort}`;
 
-    // 8. Init state Redis
-    await initStateRedis();
+        // 11. Create a test user via the /api/register endpoint.
+        //     Use a unique client IP per server instance so each registration gets its
+        //     own rate-limit bucket in the module-level registerRateLimiter singleton.
+        const testUserName = "Test User";
+        const testUserEmail = "testuser@pizzapi-harness.test";
+        const testUserPassword = "HarnessPass123";
+        const testClientIp = uniqueTestClientIp();
 
-    // 9. Init the Socket.IO registry
-    initSioRegistry(io);
+        const registerRes = await fetch(`${baseUrl}/api/register`, {
+            method: "POST",
+            headers: {
+                "content-type": "application/json",
+                // Unique x-forwarded-for per server so the rate limiter assigns a
+                // separate bucket for each test server creation.
+                "x-forwarded-for": testClientIp,
+            },
+            body: JSON.stringify({
+                name: testUserName,
+                email: testUserEmail,
+                password: testUserPassword,
+            }),
+        });
 
-    // 10. Register all namespaces
-    registerNamespaces(io);
-
-    // 11. Listen on port 0 (OS assigns an ephemeral port) on IPv4 loopback
-    await new Promise<void>((resolve) => httpServer.listen(0, "127.0.0.1", resolve));
-
-    const addr = httpServer.address();
-    if (!addr || typeof addr === "string") {
-        throw new Error("[test-harness] Could not determine server port");
-    }
-    resolvedPort = addr.port;
-
-    // Use 127.0.0.1 explicitly (not localhost) to avoid IPv6 resolution on macOS
-    const baseUrl = opts?.baseUrl ?? `http://127.0.0.1:${resolvedPort}`;
-
-    // 12. Create a test user via the /api/register endpoint.
-    //     Use a unique client IP per server instance so each registration gets its
-    //     own rate-limit bucket in the module-level registerRateLimiter singleton.
-    const testUserName = "Test User";
-    const testUserEmail = "testuser@pizzapi-harness.test";
-    const testUserPassword = "HarnessPass123";
-    const testClientIp = uniqueTestClientIp();
-
-    const registerRes = await fetch(`${baseUrl}/api/register`, {
-        method: "POST",
-        headers: {
-            "content-type": "application/json",
-            // Unique x-forwarded-for per server so the rate limiter assigns a
-            // separate bucket for each test server creation.
-            "x-forwarded-for": testClientIp,
-        },
-        body: JSON.stringify({
-            name: testUserName,
-            email: testUserEmail,
-            password: testUserPassword,
-        }),
-    });
-
-    if (!registerRes.ok) {
-        throw new Error(
-            `[test-harness] Failed to create test user: ${registerRes.status} ${await registerRes.text()}`,
-        );
-    }
-
-    const registerData = await registerRes.json() as { ok: boolean; key: string };
-    const apiKey = registerData.key;
-
-    // 13. Get a session cookie via better-auth sign-in.
-    //     The sign-in response includes the user object (with id) and Set-Cookie header.
-    const signInRes = await fetch(`${baseUrl}/api/auth/sign-in/email`, {
-        method: "POST",
-        headers: {
-            "content-type": "application/json",
-            "x-forwarded-for": testClientIp,
-        },
-        body: JSON.stringify({
-            email: testUserEmail,
-            password: testUserPassword,
-        }),
-    });
-
-    if (!signInRes.ok) {
-        throw new Error(
-            `[test-harness] Failed to sign in test user: ${signInRes.status} ${await signInRes.text()}`,
-        );
-    }
-
-    const signInData = await signInRes.json() as { user?: { id: string } };
-    const userId = signInData.user?.id ?? "";
-    if (!userId) {
-        throw new Error("[test-harness] Could not get userId from sign-in response");
-    }
-
-    const cookies = signInRes.headers.getSetCookie();
-    const sessionCookie = cookies.join("; ");
-
-    // ── Helpers ──────────────────────────────────────────────────────────────
-
-    async function testFetch(path: string, init?: RequestInit): Promise<Response> {
-        const url = `${baseUrl}${path}`;
-        const headers = new Headers(init?.headers);
-
-        // Inject auth headers if not already present
-        if (!headers.has("x-pizzapi-api-key") && !headers.has("x-api-key")) {
-            headers.set("x-pizzapi-api-key", apiKey);
-        }
-        if (!headers.has("cookie") && sessionCookie) {
-            headers.set("cookie", sessionCookie);
+        if (!registerRes.ok) {
+            throw new Error(
+                `[test-harness] Failed to create test user: ${registerRes.status} ${await registerRes.text()}`,
+            );
         }
 
-        return fetch(url, { ...init, headers });
-    }
+        const registerData = await registerRes.json() as { ok: boolean; key: string };
+        const apiKey = registerData.key;
 
-    // ── Cleanup ──────────────────────────────────────────────────────────────
+        // 12. Get a session cookie via better-auth sign-in.
+        //     The sign-in response includes the user object (with id) and Set-Cookie header.
+        const signInRes = await fetch(`${baseUrl}/api/auth/sign-in/email`, {
+            method: "POST",
+            headers: {
+                "content-type": "application/json",
+                "x-forwarded-for": testClientIp,
+            },
+            body: JSON.stringify({
+                email: testUserEmail,
+                password: testUserPassword,
+            }),
+        });
 
-    async function cleanup(): Promise<void> {
-        // Restore PIZZAPI_TRUST_PROXY
-        if (savedTrustProxy === undefined) {
-            delete process.env.PIZZAPI_TRUST_PROXY;
-        } else {
-            process.env.PIZZAPI_TRUST_PROXY = savedTrustProxy;
+        if (!signInRes.ok) {
+            throw new Error(
+                `[test-harness] Failed to sign in test user: ${signInRes.status} ${await signInRes.text()}`,
+            );
         }
 
-        // Close Socket.IO — this also closes the underlying httpServer internally,
-        // so we do NOT call httpServer.close() separately (it would throw ERR_SERVER_NOT_RUNNING).
-        await new Promise<void>((resolve) => io.close(() => resolve()));
-
-        // Disconnect Redis clients
-        await Promise.allSettled([pubClient.quit(), subClient.quit()]);
-
-        // Clean up temp directory
-        try {
-            rmSync(tmpDir, { recursive: true, force: true });
-        } catch {
-            // Ignore cleanup errors
+        const signInData = await signInRes.json() as { user?: { id: string } };
+        const userId = signInData.user?.id ?? "";
+        if (!userId) {
+            throw new Error("[test-harness] Could not get userId from sign-in response");
         }
-    }
 
-    return {
-        port: resolvedPort,
-        baseUrl,
-        io,
-        apiKey,
-        userId,
-        userName: testUserName,
-        userEmail: testUserEmail,
-        sessionCookie,
-        fetch: testFetch,
-        cleanup,
-    };
+        const cookies = signInRes.headers.getSetCookie();
+        const sessionCookie = cookies.join("; ");
+
+        // ── Helpers ──────────────────────────────────────────────────────────────
+
+        async function testFetch(path: string, init?: RequestInit): Promise<Response> {
+            const url = `${baseUrl}${path}`;
+            const headers = new Headers(init?.headers);
+
+            // Inject auth headers if not already present
+            if (!headers.has("x-pizzapi-api-key") && !headers.has("x-api-key")) {
+                headers.set("x-pizzapi-api-key", apiKey);
+            }
+            if (!headers.has("cookie") && sessionCookie) {
+                headers.set("cookie", sessionCookie);
+            }
+
+            return fetch(url, { ...init, headers });
+        }
+
+        // ── Cleanup ──────────────────────────────────────────────────────────────
+
+        async function cleanup(): Promise<void> {
+            // Release our hold on PIZZAPI_TRUST_PROXY. This is atomic (JS is
+            // single-threaded) — the last cleanup() call to run restores the
+            // original value; concurrent cleanups via Promise.allSettled are safe.
+            releaseTrustProxy();
+
+            // Close Socket.IO — this also closes the underlying httpServer internally,
+            // so we do NOT call httpServer.close() separately (it would throw ERR_SERVER_NOT_RUNNING).
+            await new Promise<void>((resolve) => io!.close(() => resolve()));
+
+            // Disconnect Redis clients
+            await Promise.allSettled([pubClient!.quit(), subClient!.quit()]);
+
+            // Clean up temp directory
+            try {
+                rmSync(tmpDir!, { recursive: true, force: true });
+            } catch {
+                // Ignore cleanup errors
+            }
+        }
+
+        return {
+            port: resolvedPort,
+            baseUrl,
+            io,
+            apiKey,
+            userId,
+            userName: testUserName,
+            userEmail: testUserEmail,
+            sessionCookie,
+            fetch: testFetch,
+            cleanup,
+        };
+
+    } catch (err) {
+        // ── Failure-safe teardown ────────────────────────────────────────────────
+        // If setup fails at any point, clean up every resource that was allocated
+        // before the failure, then re-throw so the caller sees the real error.
+
+        releaseTrustProxy();
+
+        // io.close() also closes the httpServer, so prefer it when available.
+        if (io) {
+            try { await new Promise<void>((resolve) => io!.close(() => resolve())); } catch { /* ignore */ }
+        } else if (httpServer) {
+            // io not yet created; close the bare HTTP server
+            try { await new Promise<void>((resolve) => httpServer!.close(() => resolve())); } catch { /* ignore */ }
+        }
+
+        if (pubClient) { try { await pubClient.quit(); } catch { /* ignore */ } }
+        if (subClient) { try { await subClient.quit(); } catch { /* ignore */ } }
+
+        if (tmpDir) {
+            try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+        }
+
+        throw err;
+    }
 }

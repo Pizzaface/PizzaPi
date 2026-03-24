@@ -77,13 +77,21 @@ async function emitRelayEvent(
 
 // ── Shared server ────────────────────────────────────────────────────────────
 
-let server: TestServer;
+// Definite-assignment assertion: server is always set if beforeAll succeeds.
+// afterAll does a runtime guard to handle the case where beforeAll itself threw.
+let server!: TestServer;
 
 beforeAll(async () => {
     server = await createTestServer();
 }, TEST_TIMEOUT_MS);
 
 afterAll(async () => {
+    // Guard: if beforeAll threw, server is still undefined at runtime — skip cleanup.
+    // The definite-assignment assertion above keeps the type clean for test bodies,
+    // which only run after a successful beforeAll.
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+    if (!server) return;
+
     // Force-close all lingering HTTP keep-alive connections before cleanup.
     // Without this, io.close() → httpServer.close() can wait indefinitely for
     // connections from the relay Redis cache client or Fetch API keep-alive pool.
