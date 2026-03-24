@@ -45,6 +45,7 @@ import {
     removePendingParentDelinkChild,
     isPendingParentDelinkChild,
     getSession,
+    updateSessionFields,
     markChildAsDelinked,
     isChildDelinked,
     isChildOfParent,
@@ -57,7 +58,7 @@ import {
     notifyAgentNeedsInput,
     notifyAgentError,
 } from "../../push.js";
-import { isMetaRelayEvent, metaEventToPatch, type MetaRelayEvent } from "@pizzapi/protocol";
+import { isMetaRelayEvent, metaEventToPatch, type MetaRelayEvent, type SessionMetaState } from "@pizzapi/protocol";
 import { updateSessionMetaState, broadcastToSessionMeta } from "../sio-registry/meta.js";
 
 // ── Thinking-block duration tracking ─────────────────────────────────────────
@@ -475,6 +476,35 @@ export function registerRelayNamespace(io: SocketIOServer): void {
                 }
             } else if (event.type === "heartbeat") {
                 await updateSessionHeartbeat(sessionId, event);
+            } else if (event.type === "session_metadata_update") {
+                // Lightweight metadata-only heartbeat: touch activity but do NOT
+                // update lastState or append to the Redis event cache.  The full
+                // message history hasn't changed — viewers get the metadata delta
+                // via the broadcast below, and the existing lastState in Redis
+                // remains the authoritative snapshot for reconnecting viewers.
+                //
+                // We DO persist the metadata fields so reconnecting viewers get
+                // current values (model, sessionName, thinkingLevel, todoList)
+                // from the session hash rather than stale data from the last
+                // full session_active.
+                await touchSessionActivity(sessionId);
+                const meta = (event as any).metadata;
+                if (meta && typeof meta === "object") {
+                    const patch: Partial<SessionMetaState> = {};
+                    if (meta.model && typeof meta.model === "object") patch.model = meta.model;
+                    if (Object.prototype.hasOwnProperty.call(meta, "thinkingLevel")) {
+                        patch.thinkingLevel = typeof meta.thinkingLevel === "string" ? meta.thinkingLevel : null;
+                    }
+                    if (Array.isArray(meta.todoList)) patch.todoList = meta.todoList;
+                    if (Object.keys(patch).length > 0) {
+                        await updateSessionMetaState(sessionId, patch);
+                    }
+                    // sessionName lives in the session hash (not metaState).
+                    if (Object.prototype.hasOwnProperty.call(meta, "sessionName") &&
+                        typeof meta.sessionName === "string" && meta.sessionName.trim()) {
+                        await updateSessionFields(sessionId, { sessionName: meta.sessionName.trim() });
+                    }
+                }
             } else if (isMetaRelayEvent(event as { type?: unknown }) &&
                        // Old CLI emits mcp_startup_report in a flat format without
                        // a nested `report` field. Only intercept the new nested format;
@@ -529,7 +559,11 @@ export function registerRelayNamespace(io: SocketIOServer): void {
                 const isChunkedSessionActive =
                     event.type === "session_active" &&
                     !!(event.state as Record<string, unknown> | undefined)?.chunked;
-                if (event.type === "session_messages_chunk" || isChunkedSessionActive) {
+                // session_metadata_update is a lightweight heartbeat-only event:
+                // broadcast to currently-connected viewers but do NOT cache in Redis.
+                // Reconnecting viewers will get the full lastState snapshot instead.
+                const isMetadataOnlyUpdate = event.type === "session_metadata_update";
+                if (event.type === "session_messages_chunk" || isChunkedSessionActive || isMetadataOnlyUpdate) {
                     await broadcastSessionEventToViewers(sessionId, eventToPublish);
                 } else {
                     // Publish to viewers via Redis cache + Socket.IO rooms
