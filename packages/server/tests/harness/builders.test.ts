@@ -376,9 +376,14 @@ describe.serial("MockRelay integration", () => {
                 { role: "assistant", text: "Hi there!" },
             ]);
 
-            // Emit each event in the conversation
-            for (let i = 0; i < conversation.length; i++) {
-                relay.emitEvent(session.sessionId, session.token, conversation[i], i + 1);
+            // Filter out harness:* marker events (e.g. harness:user_turn) before
+            // emitting to the relay — they are not real protocol events and the
+            // relay namespace will reject or ignore unknown types.
+            const protocolEvents = conversation.filter(
+                (e) => !(e as { type?: string }).type?.startsWith("harness:"),
+            );
+            for (let i = 0; i < protocolEvents.length; i++) {
+                relay.emitEvent(session.sessionId, session.token, protocolEvents[i], i + 1);
             }
 
             // Give server time to process

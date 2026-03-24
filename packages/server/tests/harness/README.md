@@ -952,8 +952,13 @@ cookies — the server's relay middleware silently drops the connection.
 
 **Fix:** Always create relay sockets with `forceNew: true`. `TestScenario.addSession()`
 does this automatically. If you're using `createMockRelay()` directly alongside
-a hub, pass `forceNew: true` in the socket options, or use `TestScenario`
-instead.
+a hub, pass `forceNew: true` in the options:
+
+```ts
+const relay = await createMockRelay(server, { forceNew: true });
+```
+
+Or use `TestScenario` instead, which sets this automatically.
 
 ---
 
@@ -981,8 +986,15 @@ await waiter; // may time out
 
 1. **Singleton server constraint.** Only one `TestServer` may be active at a
    time (module-level auth and Socket.IO state singletons). Tests in the same
-   file must share a single server via `setServer()`. Tests in different files
-   will be serialized by Bun's test runner at the module level.
+   file must share a single server via `setServer()`. Tests across different
+   files **must not** share a `TestServer` — Bun runs test files in parallel by
+   default, so each file that calls `createTestServer()` will race for the
+   module-level singleton and corrupt each other's state. Either run harness
+   test files with `--serial` / `bun test --timeout ... packages/server/tests/harness`
+   in a dedicated invocation, or ensure each file creates and cleans up its own
+   isolated server instance and that the test runner does not run those files
+   concurrently. Use `describe.serial` within a file to prevent intra-file
+   parallelism.
 
 2. **`sleep`-based waits in some tests.** Certain assertions use
    `setTimeout(r, N)` to wait for server-side async operations (Redis cache

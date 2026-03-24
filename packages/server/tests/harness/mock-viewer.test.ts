@@ -84,6 +84,9 @@ beforeAll(async () => {
 }, TEST_TIMEOUT_MS);
 
 afterAll(async () => {
+    // Guard: if beforeAll threw, server is still unassigned — skip cleanup.
+    if (!server) return;
+
     // Force-close all lingering HTTP keep-alive connections before cleanup.
     // Without this, io.close() → httpServer.close() can wait indefinitely for
     // connections from the relay Redis cache client or Fetch API keep-alive pool.

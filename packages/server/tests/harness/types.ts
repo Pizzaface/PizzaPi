@@ -38,9 +38,24 @@ export interface TestServer {
 
 import type { Socket as ClientSocket } from "socket.io-client";
 
-/** Options for `createMockRelay()`. Reserved for future use. */
+/** Options for `createMockRelay()`. */
 export interface MockRelayOptions {
-    // Future options
+    /**
+     * Force creation of a new socket.io-client Manager, bypassing the shared
+     * Manager cache keyed on base URL.
+     *
+     * When `true`, the relay socket will use its own isolated TCP connection
+     * rather than multiplexing over an existing one. This is required when
+     * using `createMockRelay()` alongside `createMockHubClient()`: hub sockets
+     * authenticate via HTTP cookies (`extraHeaders`) while relay sockets use
+     * `auth: { apiKey }`. If both share a Manager, the relay namespace
+     * handshake travels over a cookie-authenticated connection and the server's
+     * relay middleware silently drops the connection.
+     *
+     * Defaults to `false`. Pass `true` whenever a hub socket is active at the
+     * same time, or use `TestScenario` which sets this automatically.
+     */
+    forceNew?: boolean;
 }
 
 /** Session registration result returned by `MockRelay.registerSession()`. */

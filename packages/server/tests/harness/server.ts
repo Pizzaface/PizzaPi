@@ -239,9 +239,13 @@ export async function createTestServer(opts?: TestServerOptions): Promise<TestSe
         // 4. Run DB migrations
         await runAllMigrations();
 
-        // 5. Create Redis pub/sub clients and connect them
+        // 5. Create Redis pub/sub clients and connect them.
+        // NOTE: Do NOT use pubClient.duplicate() here. Other test files may mock
+        // the `redis` module's createClient, causing the mock object to lack the
+        // `.duplicate()` method. Creating two independent clients from the same
+        // URL is equivalent and avoids the mock collision.
         pubClient = createClient({ url: REDIS_URL }) as RedisClientType;
-        subClient = pubClient.duplicate() as RedisClientType;
+        subClient = createClient({ url: REDIS_URL }) as RedisClientType;
         await Promise.all([pubClient.connect(), subClient.connect()]);
         pubSubConnected = true;
 

@@ -33,7 +33,7 @@ import type { MockRelay, MockRelayOptions, MockRelaySession } from "./types.js";
  */
 export async function createMockRelay(
     server: TestServer,
-    _opts?: MockRelayOptions,
+    opts?: MockRelayOptions,
 ): Promise<MockRelay> {
     const socket = connectSocket(`${server.baseUrl}/relay`, {
         auth: { apiKey: server.apiKey },
@@ -43,6 +43,12 @@ export async function createMockRelay(
         // If reconnection is on, the client immediately reconnects after
         // force-disconnect, preventing httpServer.close() from resolving.
         reconnection: false,
+        // forceNew: bypass the shared Manager cache so this relay socket gets
+        // its own TCP connection. Required when a hub socket is also active —
+        // hub sockets use cookie auth while relay sockets use apiKey auth, and
+        // sharing a Manager causes the relay namespace handshake to travel over
+        // the hub's cookie-authenticated connection, which the server drops.
+        ...(opts?.forceNew !== undefined ? { forceNew: opts.forceNew } : {}),
     });
 
     // Wait for the socket to connect
