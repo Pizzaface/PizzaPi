@@ -7,6 +7,17 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import {
+  AlertDialog,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
+import { AlertDialog as AlertDialogPrimitive } from "radix-ui";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -107,6 +118,8 @@ export function ContextDonut({
   onCompact,
   className,
 }: ContextDonutProps) {
+  const [showConfirm, setShowConfirm] = React.useState(false);
+
   // Don't render if we don't have both data points
   if (!tokenUsage || !contextWindow || contextWindow <= 0) return null;
   // Need either contextTokens or cumulative usage to show anything
@@ -125,34 +138,70 @@ export function ContextDonut({
   ].filter(Boolean);
 
   return (
-    <TooltipProvider delayDuration={300}>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <button
-            type="button"
-            onClick={onCompact}
-            disabled={isCompacting || !onCompact}
-            className={cn(
-              "inline-flex items-center gap-1.5 rounded-md px-1.5 py-1 text-xs transition-colors",
-              "hover:bg-muted/60 disabled:opacity-50 disabled:cursor-not-allowed",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1",
-              donutColor(pct),
-              className,
-            )}
-            aria-label={`Context usage: ${Math.round(pct)}%. Click to compact.`}
-          >
-            <DonutRing pct={pct} isCompacting={isCompacting} />
-            <span className="tabular-nums text-[0.65rem] font-medium hidden sm:inline">
-              {Math.round(pct)}%
-            </span>
-          </button>
-        </TooltipTrigger>
-        <TooltipContent side="top" className="text-xs max-w-64">
-          {tooltipLines.map((line, i) => (
-            <div key={i}>{line}</div>
-          ))}
-        </TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
+    <>
+      <TooltipProvider delayDuration={300}>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              onClick={() => {
+                if (onCompact && !isCompacting) setShowConfirm(true);
+              }}
+              disabled={isCompacting || !onCompact}
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded-md px-1.5 py-1 text-xs transition-colors",
+                "hover:bg-muted/60 disabled:opacity-50 disabled:cursor-not-allowed",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1",
+                donutColor(pct),
+                className,
+              )}
+              aria-label={`Context usage: ${Math.round(pct)}%. Click to compact.`}
+            >
+              <DonutRing pct={pct} isCompacting={isCompacting} />
+              <span className="tabular-nums text-[0.65rem] font-medium hidden sm:inline">
+                {Math.round(pct)}%
+              </span>
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="top" className="text-xs max-w-64">
+            {tooltipLines.map((line, i) => (
+              <div key={i}>{line}</div>
+            ))}
+          </TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
+
+      <AlertDialog open={showConfirm} onOpenChange={setShowConfirm}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Compact context?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will summarize the conversation so far and replace it with a
+              compact summary to free up context window space. The full history
+              is preserved but the agent will only see the summary going forward.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="rounded-md bg-muted/50 px-3 py-2 text-xs text-muted-foreground space-y-1">
+            <div>Context: {formatTokenCount(ctxTokens)} / {formatTokenCount(contextWindow)} tokens ({Math.round(pct)}%)</div>
+            <div>Output: {formatTokenCount(tokenUsage.output)}</div>
+            {tokenUsage.cacheRead ? <div>Cache read: {formatTokenCount(tokenUsage.cacheRead)}</div> : null}
+            {tokenUsage.cacheWrite ? <div>Cache write: {formatTokenCount(tokenUsage.cacheWrite)}</div> : null}
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogPrimitive.Action asChild>
+              <Button
+                onClick={() => {
+                  setShowConfirm(false);
+                  onCompact?.();
+                }}
+              >
+                Compact
+              </Button>
+            </AlertDialogPrimitive.Action>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
   );
 }
