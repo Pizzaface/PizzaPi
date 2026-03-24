@@ -611,7 +611,8 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             if (ok) {
                 emitModelChanged(rctx, rctx.latestCtx?.model
                     ? { provider: rctx.latestCtx.model.provider, id: rctx.latestCtx.model.id,
-                        name: rctx.latestCtx.model.name, reasoning: rctx.latestCtx.model.reasoning }
+                        name: rctx.latestCtx.model.name, reasoning: rctx.latestCtx.model.reasoning,
+                        contextWindow: rctx.latestCtx.model.contextWindow }
                     : null);
                 emitAuthSourceChanged(rctx, getAuthSource(rctx.latestCtx));
                 emitSessionActive(rctx);

@@ -26,6 +26,7 @@ export interface MetaModelInfo {
   id: string;
   name?: string;
   reasoning?: boolean;
+  contextWindow?: number;
 }
 
 export interface MetaPendingQuestion {
