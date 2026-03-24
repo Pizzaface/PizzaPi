@@ -195,11 +195,13 @@ export async function createTestServer(opts?: TestServerOptions): Promise<TestSe
             if (sr) await sr.quit().catch(() => {});
         }
 
-        // Close pub/sub Redis
+        // Close pub/sub Redis.
+        // Use ?. on the method itself (not just the object) because mocked Redis clients
+        // from mock.module("redis", ...) may not implement .quit().
         if (pubSubConnected) {
             await Promise.allSettled([
-                pubClient?.quit() ?? Promise.resolve(),
-                subClient?.quit() ?? Promise.resolve(),
+                pubClient?.quit?.() ?? Promise.resolve(),
+                subClient?.quit?.() ?? Promise.resolve(),
             ]);
         }
 
@@ -239,11 +241,34 @@ export async function createTestServer(opts?: TestServerOptions): Promise<TestSe
         // 4. Run DB migrations
         await runAllMigrations();
 
-        // 5. Create Redis pub/sub clients and connect them
+        // 5. Create Redis pub/sub clients and connect them.
+        //    Use two independent createClient() calls instead of .duplicate() because
+        //    mock.module("redis", ...) in other test files replaces createClient() with
+        //    a factory that returns objects without .duplicate(), causing a TypeError
+        //    when those tests run in the same Bun worker as the harness tests.
         pubClient = createClient({ url: REDIS_URL }) as RedisClientType;
-        subClient = pubClient.duplicate() as RedisClientType;
+        subClient = createClient({ url: REDIS_URL }) as RedisClientType;
         await Promise.all([pubClient.connect(), subClient.connect()]);
         pubSubConnected = true;
+
+        // Verify this is a real Redis connection, not a test mock.
+        // Mock clients (from mock.module("redis", ...)) don't implement .ping().
+        // If this fails, throw a clear error so callers can skip rather than fail cryptically.
+        try {
+            const pong = await pubClient.ping();
+            if (pong !== "PONG") {
+                throw new Error(`unexpected PING response: ${JSON.stringify(pong)}`);
+            }
+        } catch (pingErr) {
+            const reason = pingErr instanceof Error ? pingErr.message : String(pingErr);
+            throw new Error(
+                `[test-harness] Redis not available at ${REDIS_URL} — ` +
+                `harness test should be skipped. ` +
+                `(${reason}) ` +
+                `If this is a mock-contamination issue, ensure harness tests ` +
+                `do not run in the same Bun worker as test files that call mock.module("redis", ...).`,
+            );
+        }
 
         // 6. We'll track the resolved port for the request converter
         let resolvedPort = 0;
@@ -356,8 +381,14 @@ export async function createTestServer(opts?: TestServerOptions): Promise<TestSe
             throw new Error("[test-harness] Could not get userId from sign-in response");
         }
 
-        const cookies = signInRes.headers.getSetCookie();
-        const sessionCookie = cookies.join("; ");
+        // Extract only the name=value portion of each Set-Cookie header (the part before
+        // the first ';'). Joining the full header values would include cookie attributes
+        // like Path=/, HttpOnly, SameSite=Lax, etc., producing a malformed Cookie header.
+        const sessionCookie = signInRes.headers
+            .getSetCookie()
+            .map((c) => c.split(";")[0]!.trim())
+            .filter((c) => c.length > 0)
+            .join("; ");
 
         // ── Helpers ──────────────────────────────────────────────────────────────
 
