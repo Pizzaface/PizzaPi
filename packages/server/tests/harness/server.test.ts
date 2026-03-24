@@ -4,12 +4,8 @@
  * These tests verify that createTestServer():
  *   1. Spins up a real HTTP server that responds to requests
  *   2. Pre-creates a user with a working API key
- *   3. Multiple servers can run simultaneously (created sequentially, then accessed concurrently)
- *   4. Cleans up all resources on shutdown
- *
- * NOTE: Servers must be created sequentially (not with Promise.all) because
- * auth.ts and sio-state.ts use module-level singletons. Once created, multiple
- * servers can coexist and respond simultaneously.
+ *   3. Enforces the singleton constraint (second call while one is active throws)
+ *   4. Cleans up all resources on shutdown (no process hang)
  */
 
 import { describe, test, expect } from "bun:test";
@@ -23,8 +19,6 @@ describe("createTestServer", () => {
         const server = await createTestServer();
         try {
             const res = await fetch(`${server.baseUrl}/health`);
-            // Health may be degraded if Redis singletons were overwritten, but
-            // the server must respond with the expected shape.
             expect([200, 503]).toContain(res.status);
             const data = await res.json();
             expect(["ok", "degraded"]).toContain(data.status);
@@ -60,35 +54,35 @@ describe("createTestServer", () => {
         }
     }, TEST_TIMEOUT_MS);
 
-    test("multiple test servers can run concurrently", async () => {
-        // Create servers sequentially (module singletons require serial creation)
-        // then verify they can all respond simultaneously.
-        const s1 = await createTestServer();
-        const s2 = await createTestServer();
-        const s3 = await createTestServer();
-
+    test("singleton guard: creating a second server while one is active throws", async () => {
+        // This test verifies the documented singleton constraint:
+        // auth.ts and sio-state.ts use module-level singletons that cannot
+        // be safely reinitialised while a prior server is still active.
+        const server = await createTestServer();
         try {
-            // All servers should have different ports
-            const ports = new Set([s1.port, s2.port, s3.port]);
-            expect(ports.size).toBe(3);
-
-            // All servers should respond simultaneously (concurrent reads are fine)
-            const responses = await Promise.all([
-                fetch(`${s1.baseUrl}/health`),
-                fetch(`${s2.baseUrl}/health`),
-                fetch(`${s3.baseUrl}/health`),
-            ]);
-
-            for (const res of responses) {
-                expect([200, 503]).toContain(res.status);
-                const data = await res.json();
-                expect(["ok", "degraded"]).toContain(data.status);
+            let threw = false;
+            let errorMessage = "";
+            try {
+                await createTestServer();
+            } catch (err) {
+                threw = true;
+                errorMessage = err instanceof Error ? err.message : String(err);
             }
+            expect(threw).toBe(true);
+            expect(errorMessage).toContain("already active");
         } finally {
-            // Clean up all servers, ignoring individual errors
-            await Promise.allSettled([s1.cleanup(), s2.cleanup(), s3.cleanup()]);
+            await server.cleanup();
         }
-    }, TEST_TIMEOUT_MS * 3);
+
+        // After cleanup the guard is released — a new server should succeed
+        const server2 = await createTestServer();
+        try {
+            const res = await fetch(`${server2.baseUrl}/health`);
+            expect([200, 503]).toContain(res.status);
+        } finally {
+            await server2.cleanup();
+        }
+    }, TEST_TIMEOUT_MS * 2);
 
     test("cleanup shuts down cleanly", async () => {
         const server = await createTestServer();
