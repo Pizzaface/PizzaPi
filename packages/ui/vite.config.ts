@@ -21,9 +21,11 @@ const extraAllowedHosts: string[] = process.env.PIZZAPI_EXTRA_ORIGINS
 const CERT_FILE = path.resolve(__dirname, "../../certs/ts.crt");
 const KEY_FILE = path.resolve(__dirname, "../../certs/ts.key");
 const tlsConfig =
-    fs.existsSync(CERT_FILE) && fs.existsSync(KEY_FILE)
-        ? { cert: fs.readFileSync(CERT_FILE), key: fs.readFileSync(KEY_FILE) }
-        : undefined;
+    process.env.PIZZAPI_SANDBOX_NO_TLS
+        ? undefined
+        : fs.existsSync(CERT_FILE) && fs.existsSync(KEY_FILE)
+            ? { cert: fs.readFileSync(CERT_FILE), key: fs.readFileSync(KEY_FILE) }
+            : undefined;
 
 export default defineConfig({
     plugins: [
