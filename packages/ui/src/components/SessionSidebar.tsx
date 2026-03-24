@@ -1289,6 +1289,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                             "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
                                                             !hasOffset && "transition-transform duration-200 ease-out",
                                                             visualState === "selected" && "bg-sidebar-accent text-sidebar-accent-foreground",
+                                                            visualState === "selectedActive" && "bg-sidebar-accent text-sidebar-accent-foreground animate-selected-active-chase",
                                                             visualState === "awaiting" && "text-sidebar-foreground animate-awaiting-pulse",
                                                             visualState === "active" && "text-sidebar-foreground animate-working-chase",
                                                             visualState === "completedUnread" && "text-sidebar-foreground animate-completed-pulse",
@@ -1297,8 +1298,8 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                         style={{
                                                             transform: !selectMode && hasOffset ? `translateX(${swipeOffset}px)` : undefined,
                                                             touchAction: selectMode ? undefined : "pan-y",
-                                                            ...(visualState === "active" || visualState === "awaiting" || visualState === "completedUnread"
-                                                                ? syncedPulse(visualState === "active" ? 2000 : 2500)
+                                                            ...(visualState === "active" || visualState === "selectedActive" || visualState === "awaiting" || visualState === "completedUnread"
+                                                                ? syncedPulse(visualState === "active" || visualState === "selectedActive" ? 2000 : 2500)
                                                                 : undefined),
                                                         }}
                                                     >
@@ -1373,11 +1374,12 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                             className={cn(
                                                                 "relative flex-shrink-0 flex items-center justify-center w-7 h-7 rounded-md transition-all duration-300",
                                                                 visualState === "active" && "bg-blue-500/20 shadow-[0_0_8px_#3b82f680] animate-pulse",
+                                                                visualState === "selectedActive" && "bg-blue-500/10 shadow-[0_0_6px_#3b82f640] animate-pulse",
                                                                 visualState === "awaiting" && "bg-amber-500/20 shadow-[0_0_8px_#f59e0b60]",
                                                                 visualState === "completedUnread" && "bg-green-500/20 shadow-[0_0_8px_#22c55e60]",
                                                                 (visualState === "idle" || visualState === "selected") && "bg-sidebar-accent/50",
                                                             )}
-                                                            style={visualState === "active" ? syncedPulse() : undefined}
+                                                            style={visualState === "active" || visualState === "selectedActive" ? syncedPulse() : undefined}
                                                         >
                                                             <ProviderIcon
                                                                 provider={provider}
