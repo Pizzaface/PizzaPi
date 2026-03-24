@@ -8,7 +8,9 @@
         "build": "tsc",
         "dev": "bun --watch src/index.ts",
         "start": "bun dist/index.js",
-        "migrate": "bun src/migrate.ts"
+        "migrate": "bun src/migrate.ts",
+        "typecheck:tests": "tsc -p tsconfig.test.json --noEmit",
+        "sandbox": "bun tests/harness/sandbox.ts"
     },
     "dependencies": {
         "@aws-sdk/client-s3": "^3.995.0",

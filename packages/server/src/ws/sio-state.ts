@@ -45,6 +45,17 @@ export function getStateRedis(): RedisClientType | null {
     return redis;
 }
 
+/**
+ * Close the dedicated state Redis client and reset the module-level reference.
+ * Safe to call even if no client was initialized (no-op in that case).
+ */
+export async function closeStateRedis(): Promise<void> {
+    if (redis) {
+        await redis.quit();
+        redis = null;
+    }
+}
+
 // ── Key helpers ─────────────────────────────────────────────────────────────
 
 const KEY_PREFIX = "pizzapi:sio";
