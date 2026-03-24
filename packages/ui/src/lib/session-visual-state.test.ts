@@ -47,12 +47,12 @@ describe("getSessionVisualState", () => {
     })).toBe("idle");
   });
 
-  test("returns 'selected' when isSelected is true (overrides all)", () => {
+  test("returns 'selectedActive' when isSelected and isActive are both true", () => {
     expect(getSessionVisualState({
       isActive: true,
       isAwaiting: true,
       isCompletedUnread: true,
       isSelected: true,
-    })).toBe("selected");
+    })).toBe("selectedActive");
   });
 });
