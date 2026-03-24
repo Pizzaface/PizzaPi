@@ -39,7 +39,8 @@ export function initAnimationSync(): void {
         for (const anim of document.getAnimations()) {
           if (
             anim instanceof CSSAnimation &&
-            SYNCED_NAMES.has(anim.animationName)
+            SYNCED_NAMES.has(anim.animationName) &&
+            anim.startTime !== 0
           ) {
             anim.startTime = 0;
           }
