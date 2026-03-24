@@ -285,6 +285,52 @@ describe("enforceBodySizeLimit — streaming path body reconstruction", () => {
     });
 });
 
+describe("enforceBodySizeLimit — Content-Length path body buffering", () => {
+    test("body with Content-Length survives new Request() re-wrapping", async () => {
+        // Regression test: in Bun, wrapping a Request via `new Request(req, { headers })`
+        // causes the body stream to hang when the original body is still a stream.
+        // enforceBodySizeLimit must buffer the body into an ArrayBuffer even when
+        // Content-Length is present, so downstream re-wrapping (e.g. auth handler
+        // injecting x-pizzapi-client-ip) doesn't lose the body.
+        const payload = '{"email":"test@example.com","password":"Secret123"}';
+        const encoded = new TextEncoder().encode(payload);
+        const req = new Request("http://localhost/api/auth/sign-in/email", {
+            method: "POST",
+            headers: {
+                "content-type": "application/json",
+                "content-length": String(encoded.byteLength),
+            },
+            body: encoded,
+        });
+
+        // Confirm Content-Length IS present (this is the path we're testing).
+        expect(req.headers.get("content-length")).not.toBeNull();
+
+        const url = new URL(req.url);
+        const result = await enforceBodySizeLimit(req, url);
+        expect(result).not.toBeInstanceOf(Response);
+
+        // Simulate what the auth handler does: re-wrap with new headers.
+        const rewrapped = new Request(result as Request, {
+            headers: new Headers((result as Request).headers),
+        });
+
+        // The body must survive the re-wrapping and be readable.
+        const text = await rewrapped.text();
+        expect(text).toBe(payload);
+    });
+
+    test("POST with Content-Length and no body returns request as-is", async () => {
+        // Edge case: POST with Content-Length: 0 and no body stream.
+        const req = new Request("http://localhost/api/test", {
+            method: "POST",
+        });
+        const url = new URL(req.url);
+        const result = await enforceBodySizeLimit(req, url);
+        expect(result).not.toBeInstanceOf(Response);
+    });
+});
+
 describe("withSecurityHeaders", () => {
     test("injects X-Content-Type-Options: nosniff", () => {
         const res = withSecurityHeaders(new Response("ok", { status: 200 }));
