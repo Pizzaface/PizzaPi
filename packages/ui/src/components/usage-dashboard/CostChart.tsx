@@ -10,27 +10,42 @@ import {
   ResponsiveContainer,
 } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  COST_COLORS,
+  tooltipContentStyle,
+  tooltipLabelStyle,
+  tooltipItemStyle,
+  formatCurrency,
+  formatDate,
+  chartCursorStyle,
+} from "./chart-theme";
 import type { UsageData } from "./types";
 
 interface CostChartProps {
   daily: UsageData["daily"];
 }
 
-const colors = {
-  input: "#3b82f6",
-  output: "#ef4444",
-  cacheRead: "#8b5cf6",
-  cacheWrite: "#f59e0b",
-};
-
-function formatCurrency(value: number): string {
-  if (value === 0) return "$0";
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(value);
+function CustomTooltip({ active, payload, label }: any) {
+  if (!active || !payload?.length) return null;
+  const total = payload.reduce((sum: number, p: any) => sum + (p.value ?? 0), 0);
+  return (
+    <div style={tooltipContentStyle}>
+      <p style={tooltipLabelStyle}>{formatDate(label)}</p>
+      {payload.map((p: any) => (
+        <div key={p.dataKey} style={{ display: "flex", justifyContent: "space-between", gap: "16px", ...tooltipItemStyle }}>
+          <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+            <span style={{ width: 8, height: 8, borderRadius: "50%", backgroundColor: p.color, display: "inline-block" }} />
+            {p.name}
+          </span>
+          <span style={{ fontVariantNumeric: "tabular-nums" }}>{formatCurrency(p.value)}</span>
+        </div>
+      ))}
+      <div style={{ borderTop: "1px solid var(--border)", marginTop: "4px", paddingTop: "4px", display: "flex", justifyContent: "space-between", fontWeight: 600, ...tooltipItemStyle }}>
+        <span>Total</span>
+        <span style={{ fontVariantNumeric: "tabular-nums" }}>{formatCurrency(total)}</span>
+      </div>
+    </div>
+  );
 }
 
 export function CostChart({ daily }: CostChartProps) {
@@ -61,49 +76,51 @@ export function CostChart({ daily }: CostChartProps) {
             <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
             <XAxis
               dataKey="date"
-              className="text-xs text-muted-foreground"
-              tick={{ fontSize: 12 }}
+              className="text-xs"
+              tick={{ fontSize: 12, fill: "var(--muted-foreground)" }}
+              tickFormatter={formatDate}
             />
             <YAxis
-              className="text-xs text-muted-foreground"
-              tick={{ fontSize: 12 }}
+              className="text-xs"
+              tick={{ fontSize: 12, fill: "var(--muted-foreground)" }}
               tickFormatter={formatCurrency}
             />
             <Tooltip
-              formatter={(value) => formatCurrency(value as number)}
-              contentStyle={{
-                backgroundColor: "hsl(var(--background))",
-                border: "1px solid hsl(var(--border))",
-              }}
+              content={<CustomTooltip />}
+              cursor={chartCursorStyle}
             />
             <Legend />
             <Bar
               dataKey="costInput"
               stackId="cost"
-              fill={colors.input}
+              fill={COST_COLORS.input}
               name="Input Cost"
-              radius={[4, 4, 0, 0]}
+              radius={[0, 0, 0, 0]}
+              activeBar={{ fillOpacity: 0.8, stroke: COST_COLORS.input, strokeWidth: 1 }}
             />
             <Bar
               dataKey="costOutput"
               stackId="cost"
-              fill={colors.output}
+              fill={COST_COLORS.output}
               name="Output Cost"
-              radius={[4, 4, 0, 0]}
+              radius={[0, 0, 0, 0]}
+              activeBar={{ fillOpacity: 0.8, stroke: COST_COLORS.output, strokeWidth: 1 }}
             />
             <Bar
               dataKey="costCacheRead"
               stackId="cost"
-              fill={colors.cacheRead}
+              fill={COST_COLORS.cacheRead}
               name="Cache Read Cost"
-              radius={[4, 4, 0, 0]}
+              radius={[0, 0, 0, 0]}
+              activeBar={{ fillOpacity: 0.8, stroke: COST_COLORS.cacheRead, strokeWidth: 1 }}
             />
             <Bar
               dataKey="costCacheWrite"
               stackId="cost"
-              fill={colors.cacheWrite}
+              fill={COST_COLORS.cacheWrite}
               name="Cache Write Cost"
               radius={[4, 4, 0, 0]}
+              activeBar={{ fillOpacity: 0.8, stroke: COST_COLORS.cacheWrite, strokeWidth: 1 }}
             />
           </BarChart>
         </ResponsiveContainer>

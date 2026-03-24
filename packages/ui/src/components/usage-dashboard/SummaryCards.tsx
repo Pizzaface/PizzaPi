@@ -1,5 +1,8 @@
 import React from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { Info } from "lucide-react";
+import { formatCurrency, formatTokens } from "./chart-theme";
 import type { UsageData } from "./types";
 
 interface SummaryCardsProps {
@@ -7,83 +10,67 @@ interface SummaryCardsProps {
   daily: UsageData["daily"];
 }
 
-function formatCurrency(value: number): string {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(value);
-}
-
-function formatTokens(value: number): string {
-  if (value >= 1_000_000) {
-    return `${(value / 1_000_000).toFixed(1)}M`;
-  }
-  if (value >= 1_000) {
-    return `${(value / 1_000).toFixed(1)}K`;
-  }
-  return value.toString();
+function StatCard({ title, value, subtitle, tooltip }: {
+  title: string;
+  value: string;
+  subtitle: string;
+  tooltip?: string;
+}) {
+  return (
+    <Card className="transition-shadow hover:shadow-md">
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-1.5">
+          {title}
+          {tooltip && (
+            <TooltipProvider delayDuration={200}>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Info className="h-3.5 w-3.5 text-muted-foreground/60 cursor-help" />
+                </TooltipTrigger>
+                <TooltipContent side="top" className="max-w-xs text-xs">
+                  {tooltip}
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          )}
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="text-2xl font-bold">{value}</div>
+        <p className="text-xs text-muted-foreground mt-1">{subtitle}</p>
+      </CardContent>
+    </Card>
+  );
 }
 
 export function SummaryCards({ summary, daily }: SummaryCardsProps) {
-  // Calculate average daily cost from daily data.
-  // TODO: This divides by the number of *active* days (days with at least one
-  // usage event), not the total calendar days in the selected range.
-  // "Avg Daily Cost" over a 30-day range with only 10 active days will be 3×
-  // higher than a pure calendar average.  Consider whether to display both, or
-  // rename the label to "Avg Cost (active days)" to avoid confusion.
   const avgDailyCost = daily.length > 0 ? daily.reduce((sum, d) => sum + d.cost, 0) / daily.length : 0;
 
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-      <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="text-sm font-medium text-muted-foreground">Total Cost</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="text-2xl font-bold">{summary.sessionsWithCost === 0 ? "—" : formatCurrency(summary.totalCost)}</div>
-          <p className="text-xs text-muted-foreground mt-1">
-            {summary.sessionsWithCost} of {summary.totalSessions} sessions with cost data
-          </p>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="text-sm font-medium text-muted-foreground">Sessions</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="text-2xl font-bold">{summary.totalSessions}</div>
-          <p className="text-xs text-muted-foreground mt-1">
-            {summary.avgSessionCost > 0 ? `Avg ${formatCurrency(summary.avgSessionCost)}/session` : "No cost data"}
-          </p>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="text-sm font-medium text-muted-foreground">Total Tokens</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="text-2xl font-bold">{formatTokens(summary.totalInputTokens + summary.totalOutputTokens)}</div>
-          <p className="text-xs text-muted-foreground mt-1">
-            Input + Output
-          </p>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="text-sm font-medium text-muted-foreground">Avg Cost / Active Day</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="text-2xl font-bold">{summary.sessionsWithCost === 0 ? "—" : formatCurrency(avgDailyCost)}</div>
-          <p className="text-xs text-muted-foreground mt-1">
-            across {daily.length} active day{daily.length === 1 ? "" : "s"}
-          </p>
-        </CardContent>
-      </Card>
+      <StatCard
+        title="Total Cost"
+        value={summary.sessionsWithCost === 0 ? "—" : formatCurrency(summary.totalCost)}
+        subtitle={`${summary.sessionsWithCost} of ${summary.totalSessions} sessions with cost data`}
+        tooltip="Sum of all token costs (input, output, cache read, cache write) across sessions with cost data."
+      />
+      <StatCard
+        title="Sessions"
+        value={String(summary.totalSessions)}
+        subtitle={summary.avgSessionCost > 0 ? `Avg ${formatCurrency(summary.avgSessionCost)}/session` : "No cost data"}
+      />
+      <StatCard
+        title="Total Tokens"
+        value={formatTokens(summary.totalInputTokens + summary.totalOutputTokens)}
+        subtitle="Input + Output"
+        tooltip="Total input and output tokens. Does not include cache read/write tokens."
+      />
+      <StatCard
+        title="Avg Cost / Active Day"
+        value={summary.sessionsWithCost === 0 ? "—" : formatCurrency(avgDailyCost)}
+        subtitle={`across ${daily.length} active day${daily.length === 1 ? "" : "s"}`}
+        tooltip="Average cost per day that had at least one session. Days with no activity are excluded, so this will be higher than a calendar-day average."
+      />
     </div>
   );
 }

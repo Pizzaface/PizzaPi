@@ -14,7 +14,7 @@
 
 import { execFileSync, spawn } from "child_process";
 import { createECDH, createHash, randomBytes } from "crypto";
-import { existsSync, mkdirSync, writeFileSync, readFileSync } from "fs";
+import { existsSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 
@@ -577,16 +577,23 @@ services:
 
 // ─── Host-side UI pre-build ──────────────────────────────────────────────────
 
+export interface PrebuildResult {
+    /** Whether a pre-built dist/ is ready for Docker to copy */
+    prebuilt: boolean;
+    /** Whether a build was actually performed (vs. cache hit) */
+    rebuilt: boolean;
+}
+
 /**
  * Attempt to build the UI on the host using bun (native speed, ~15s) instead
- * of inside Docker (minutes on Docker Desktop VMs).  Returns true if the
- * pre-built dist is ready in `repoPath/packages/ui/dist`.
+ * of inside Docker (minutes on Docker Desktop VMs).  Returns a result object
+ * indicating whether the dist is ready and whether a rebuild occurred.
  *
- * Gracefully falls back to false (Docker will build it) when:
+ * Gracefully falls back to { prebuilt: false } when:
  *   - `bun` is not on PATH (e.g. npm-installed binary without bun)
  *   - `bun install` or `bun run build` fails for any reason
  */
-function prebuildUI(repoPath: string): boolean {
+function prebuildUI(repoPath: string): PrebuildResult {
     const uiDist = join(repoPath, "packages", "ui", "dist");
     const uiDistIndex = join(uiDist, "index.html");
     const nodeModulesPath = join(repoPath, "node_modules");
@@ -596,7 +603,7 @@ function prebuildUI(repoPath: string): boolean {
         execFileSync("bun", ["--version"], { stdio: "ignore" });
     } catch {
         console.log("bun not found on host — UI will be built inside Docker (slower).");
-        return false;
+        return { prebuilt: false, rebuilt: false };
     }
 
     console.log("Pre-building UI on host for faster Docker build...");
@@ -630,7 +637,16 @@ function prebuildUI(repoPath: string): boolean {
         if (!needsUiBuild && distReady) {
             console.log("  Host UI build is up to date (reusing dist/).");
             if (stateDirty) saveHostBuildState(state);
-            return true;
+            return { prebuilt: true, rebuilt: false };
+        }
+
+        // Explicitly clean dist/ before building to prevent stale artifacts.
+        // Vite's emptyOutDir should handle this, but on macOS Docker Desktop
+        // the filesystem bridge (virtiofs/gRPC-FUSE) can miss subtle changes.
+        // Belt-and-suspenders: nuke it ourselves.
+        if (existsSync(uiDist)) {
+            console.log("  Cleaning old dist/...");
+            rmSync(uiDist, { recursive: true, force: true });
         }
 
         console.log("  Building protocol...");
@@ -640,23 +656,44 @@ function prebuildUI(repoPath: string): boolean {
         execFileSync("bun", ["run", "build:ui"], { cwd: repoPath, stdio: "inherit" });
 
         if (existsSync(uiDistIndex)) {
+            // Write a cache-busting stamp so Docker's COPY layer always
+            // detects the rebuild, even if Vite produced byte-identical output.
+            writeBuildStamp(uiDist);
+
             console.log("  ✓ UI pre-built successfully.");
             if (uiSignature) {
                 state.lastUiSignature = uiSignature;
                 stateDirty = true;
             }
             if (stateDirty) saveHostBuildState(state);
-            return true;
+            return { prebuilt: true, rebuilt: true };
         }
     } catch (err) {
         console.warn("Warning: Host UI build failed, falling back to Docker build.");
         if (err instanceof Error) console.warn(`  ${err.message}`);
         if (stateDirty) saveHostBuildState(state);
-        return false;
+        return { prebuilt: false, rebuilt: false };
     }
 
     if (stateDirty) saveHostBuildState(state);
-    return false;
+    return { prebuilt: false, rebuilt: false };
+}
+
+/**
+ * Write a `.build-stamp` file into dist/ with a unique timestamp.
+ * This ensures Docker BuildKit's content-based COPY cache always detects
+ * a change when the host prebuild actually ran, even if the Vite output
+ * is byte-identical (e.g. only whitespace/comment changes).
+ */
+function writeBuildStamp(distDir: string): void {
+    try {
+        writeFileSync(
+            join(distDir, ".build-stamp"),
+            JSON.stringify({ builtAt: new Date().toISOString(), pid: process.pid }) + "\n"
+        );
+    } catch {
+        // Non-fatal — Docker will still detect most changes without it
+    }
 }
 
 function generateComposeFile(repoPath: string, config: WebConfig, prebuiltUi: boolean): string {
@@ -1006,16 +1043,25 @@ export async function runWeb(args: string[]): Promise<void> {
     }
 
     // Pre-build UI on the host for much faster Docker builds when enabled.
-    const prebuiltUi = useHostPrebuild ? prebuildUI(repoPath) : false;
-    const composePath = generateComposeFile(repoPath, config, prebuiltUi);
+    const prebuildResult: PrebuildResult = useHostPrebuild
+        ? prebuildUI(repoPath)
+        : { prebuilt: false, rebuilt: false };
+    const composePath = generateComposeFile(repoPath, config, prebuildResult.prebuilt);
 
     console.log(`Starting PizzaPi web on port ${config.port}...`);
     console.log(`  Repo:    ${repoPath}`);
     console.log(`  Config:  ${CONFIG_PATH}`);
     console.log();
 
+    // When the host prebuild actually rebuilt, force-recreate containers so
+    // Docker picks up the new image even if BuildKit's layer cache didn't
+    // detect the change (common on macOS Docker Desktop with virtiofs).
+    const forceRecreate = prebuildResult.rebuilt;
+
     if (parsed.detach) {
-        await composeExecAsync(composePath, ["up", "-d", "--build"]);
+        const upArgs = ["up", "-d", "--build"];
+        if (forceRecreate) upArgs.push("--force-recreate");
+        await composeExecAsync(composePath, upArgs);
         console.log();
         console.log(`✅ PizzaPi web is running at http://localhost:${config.port}`);
         console.log();
@@ -1024,6 +1070,8 @@ export async function runWeb(args: string[]): Promise<void> {
         console.log("  pizza web stop      Stop the hub");
         console.log("  pizza web config    View configuration");
     } else {
-        await composeExecAsync(composePath, ["up", "--build"]);
+        const upArgs = ["up", "--build"];
+        if (forceRecreate) upArgs.push("--force-recreate");
+        await composeExecAsync(composePath, upArgs);
     }
 }
