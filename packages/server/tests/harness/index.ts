@@ -10,3 +10,4 @@ export * from "./mock-relay.js";
 export * from "./builders.js";
 export * from "./mock-viewer.js";
 export * from "./mock-hub.js";
+export * from "./scenario.js";
