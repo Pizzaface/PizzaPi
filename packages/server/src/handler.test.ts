@@ -331,6 +331,7 @@ describe("enforceBodySizeLimit — Content-Length path body buffering", () => {
     });
 });
 
+
 describe("withSecurityHeaders", () => {
     test("injects X-Content-Type-Options: nosniff", () => {
         const res = withSecurityHeaders(new Response("ok", { status: 200 }));
@@ -405,6 +406,7 @@ describe("withSecurityHeaders", () => {
         expect(res.headers.get("X-Frame-Options")).toBe("DENY");
         expect(res.headers.get("Content-Security-Policy")).not.toBeNull();
     });
+
 
     test("no duplicate security headers when response is collected via sendFetchResponse-style merging", () => {
         // Regression test for the P0 bug where sendFetchResponse had its own hardcoded

@@ -192,6 +192,142 @@ export function withSecurityHeaders(res: Response): Response {
     return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
 }
 
+/** Default body size limit for API routes (1 MB). */
+export const MAX_BODY_SIZE = 1 * 1024 * 1024;
+
+/** Body size limit for attachment upload routes (50 MB). */
+export const MAX_ATTACHMENT_BODY_SIZE = 50 * 1024 * 1024;
+
+/**
+ * Returns true if the URL path is an attachment upload route.
+ * Pattern: POST /api/sessions/:id/attachments
+ */
+function isAttachmentUploadPath(pathname: string, method: string): boolean {
+    return (
+        method === "POST" &&
+        /^\/api\/sessions\/[^/]+\/attachments$/.test(pathname)
+    );
+}
+
+/**
+ * Enforces body size limits for POST/PUT/PATCH requests.
+ *
+ * - If Content-Length is present, it is validated with strict digits-only parsing.
+ *   Malformed values (e.g. "1abc") are rejected with 400.
+ *   Values exceeding the limit are rejected with 413.
+ * - If Content-Length is absent (e.g. chunked transfer encoding), the request
+ *   body is consumed via a streaming reader and rejected with 413 if the total
+ *   bytes read exceed the limit.  The buffered bytes are then reassembled into
+ *   a new Request so downstream handlers can still call req.json() / req.formData().
+ *
+ * Returns either a Response (error) or the Request to continue with.
+ */
+export async function enforceBodySizeLimit(req: Request, url: URL): Promise<Response | Request> {
+    const method = req.method;
+    if (method !== "POST" && method !== "PUT" && method !== "PATCH") {
+        return req;
+    }
+
+    const limit = isAttachmentUploadPath(url.pathname, method)
+        ? MAX_ATTACHMENT_BODY_SIZE
+        : MAX_BODY_SIZE;
+
+    const contentLengthHeader = req.headers.get("content-length");
+
+    if (contentLengthHeader !== null) {
+        // Strict digits-only validation — rejects malformed values like "1abc"
+        if (!/^\d+$/.test(contentLengthHeader)) {
+            return Response.json(
+                { error: "Bad Request: malformed Content-Length header" },
+                { status: 400 },
+            );
+        }
+        const contentLength = parseInt(contentLengthHeader, 10);
+        if (!Number.isFinite(contentLength) || contentLength < 0) {
+            return Response.json(
+                { error: "Bad Request: invalid Content-Length header" },
+                { status: 400 },
+            );
+        }
+        if (contentLength > limit) {
+            return Response.json(
+                { error: `Payload Too Large: body exceeds ${limit} bytes` },
+                { status: 413 },
+            );
+        }
+        return req;
+    }
+
+    // No Content-Length header — enforce limit via streaming byte-counter.
+    // This covers chunked transfer encoding and any other scenario where a body
+    // is present but the header is absent, which would otherwise bypass the
+    // fast-path check above.
+    if (!req.body) {
+        return req;
+    }
+
+    const reader = req.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let totalBytes = 0;
+
+    try {
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            totalBytes += value.byteLength;
+            if (totalBytes > limit) {
+                reader.cancel().catch(() => undefined);
+                return Response.json(
+                    { error: `Payload Too Large: body exceeds ${limit} bytes` },
+                    { status: 413 },
+                );
+            }
+            chunks.push(value);
+        }
+    } catch {
+        reader.cancel().catch(() => undefined);
+        return Response.json(
+            { error: "Bad Request: failed to read request body" },
+            { status: 400 },
+        );
+    }
+
+    // Reassemble the buffered bytes and reconstruct the request so downstream
+    // handlers can still call req.json() / req.formData() etc.
+    // NOTE: Using a contiguous ArrayBuffer rather than a ReadableStream here is
+    // intentional — in Bun, when a reconstructed Request with a ReadableStream
+    // body is subsequently wrapped via `new Request(req, { headers })` (as the
+    // auth handler does), the body stream fails to propagate and hangs.
+    // ArrayBuffer bodies do not have this problem.
+    const buffered = new Uint8Array(totalBytes);
+    let offset = 0;
+    for (const chunk of chunks) {
+        buffered.set(chunk, offset);
+        offset += chunk.byteLength;
+    }
+
+    return new Request(req, { body: buffered.buffer as ArrayBuffer });
+}
+
+/**
+ * Clone a Response and inject the standard security headers.
+ * Called on every response returned by handleFetch.
+ * Exported for testing.
+ */
+export function withSecurityHeaders(res: Response): Response {
+    const headers = new Headers(res.headers);
+    headers.set("X-Content-Type-Options", "nosniff");
+    headers.set("X-Frame-Options", "DENY");
+    headers.set("X-XSS-Protection", "0");
+    headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
+    headers.set("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+    headers.set(
+        "Content-Security-Policy",
+        "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws: wss: blob:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'",
+    );
+    return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+}
+
 /**
  * Fetch-style request handler (REST + auth + static).
  * Extracted so it can be used both by the production server and integration tests.
