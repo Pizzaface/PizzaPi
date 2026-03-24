@@ -186,7 +186,7 @@ export function App() {
   const [pendingQuestion, setPendingQuestion] = React.useState<{ toolCallId: string; questions: Array<{ question: string; options: string[]; type?: import("@/lib/ask-user-questions").QuestionType }>; display: QuestionDisplayMode } | null>(null);
 
   /** Set of session IDs that currently have a pending AskUserQuestion. */
-  const [sessionsWithPendingQuestion, setSessionsWithPendingQuestion] = React.useState<Set<string>>(new Set());
+  const [sessionsAwaitingInput, setSessionsAwaitingInput] = React.useState<Set<string>>(new Set());
 
   /** Pending plan mode prompt from the worker — shown as a plan review panel in the viewer. */
   const [pendingPlan, setPendingPlan] = React.useState<{
@@ -423,19 +423,21 @@ export function App() {
 
     sessionUiCacheRef.current.set(sessionId, next);
 
-    // Keep the sidebar indicator in sync: track which sessions are awaiting input.
-    if (Object.prototype.hasOwnProperty.call(patch, "pendingQuestion")) {
-      setSessionsWithPendingQuestion((prev) => {
+    // Keep the sidebar indicator in sync: track which sessions are awaiting input
+    // (either a pending question or a pending plan review).
+    if (Object.prototype.hasOwnProperty.call(patch, "pendingQuestion") ||
+        Object.prototype.hasOwnProperty.call(patch, "pendingPlan")) {
+      setSessionsAwaitingInput((prev) => {
         const next = new Set(prev);
-        if (patch.pendingQuestion) {
+        if (patch.pendingQuestion || patch.pendingPlan) {
           next.add(sessionId);
-        } else {
+        } else if (!patch.pendingQuestion && !patch.pendingPlan) {
           next.delete(sessionId);
         }
         return next;
       });
     }
-  }, [setSessionsWithPendingQuestion]);
+  }, [setSessionsAwaitingInput]);
 
   // Debounce streaming delta updates (toolcall_delta, text_delta, thinking_delta) so we
   // flush at most once per animation frame instead of once per character.
@@ -1993,14 +1995,15 @@ export function App() {
     const handleStateSnapshot = ({ sessionId, state }: { sessionId: string; state: SessionMetaState }) => {
       const currentSessionId = activeSessionRef.current;
 
-      // For background sessions: extract pendingQuestion from the initial
-      // state_snapshot so badges are correct on load/reconnect even when the
-      // session is already blocked waiting for user input.
+      // For background sessions: extract pendingQuestion/pendingPlan from the
+      // initial state_snapshot so badges are correct on load/reconnect even
+      // when the session is already blocked waiting for user input.
       if (sessionId !== currentSessionId) {
-        if (Object.prototype.hasOwnProperty.call(state, "pendingQuestion")) {
-          setSessionsWithPendingQuestion((prev) => {
+        if (Object.prototype.hasOwnProperty.call(state, "pendingQuestion") ||
+            Object.prototype.hasOwnProperty.call(state, "pendingPlan")) {
+          setSessionsAwaitingInput((prev) => {
             const next = new Set(prev);
-            if (state.pendingQuestion) {
+            if (state.pendingQuestion || state.pendingPlan) {
               next.add(sessionId);
             } else {
               next.delete(sessionId);
@@ -2020,11 +2023,13 @@ export function App() {
     const handleMetaEvent = (payload: { sessionId: string; version: number } & Record<string, unknown>) => {
       // Update the sidebar pending-question badge for ANY session's meta event,
       // not just the active one.  Background sessions emit pendingQuestion
-      // updates into their own meta rooms; the badge must reflect all of them.
-      if (Object.prototype.hasOwnProperty.call(payload, "pendingQuestion")) {
-        setSessionsWithPendingQuestion((prev) => {
+      // and pendingPlan updates into their own meta rooms; the badge must
+      // reflect all of them.
+      if (Object.prototype.hasOwnProperty.call(payload, "pendingQuestion") ||
+          Object.prototype.hasOwnProperty.call(payload, "pendingPlan")) {
+        setSessionsAwaitingInput((prev) => {
           const next = new Set(prev);
-          if (payload.pendingQuestion) {
+          if (payload.pendingQuestion || payload.pendingPlan) {
             next.add(payload.sessionId);
           } else {
             next.delete(payload.sessionId);
@@ -3589,7 +3594,7 @@ export function App() {
               selectedRunnerId={selectedRunnerId}
               onSelectRunner={setSelectedRunnerId}
               onShowSessions={() => setShowRunners(false)}
-              sessionsWithPendingQuestion={sessionsWithPendingQuestion}
+              sessionsAwaitingInput={sessionsAwaitingInput}
             />
           </ErrorBoundary>
         </div>

@@ -103,8 +103,8 @@ export interface SessionSidebarProps {
     selectedRunnerId?: string | null;
     /** Called when a runner is selected */
     onSelectRunner?: (runnerId: string) => void;
-    /** Set of session IDs that currently have a pending AskUserQuestion (awaiting user input). */
-    sessionsWithPendingQuestion?: Set<string>;
+    /** Set of session IDs that currently have a pending AskUserQuestion or plan_mode review. */
+    sessionsAwaitingInput?: Set<string>;
 }
 
 function formatRelativeDate(isoString: string): string {
@@ -190,7 +190,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     selectedRunnerId,
     onSelectRunner,
     onShowSessions,
-    sessionsWithPendingQuestion,
+    sessionsAwaitingInput,
 }: SessionSidebarProps) {
     const [collapsed, setCollapsed] = React.useState(false);
 
@@ -1158,7 +1158,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                             const isChecked = selectedSessionIds.has(s.sessionId);
                                             const visualState = getSessionVisualState({
                                                 isSelected: isActiveSession || (selectMode && isChecked),
-                                                isAwaiting: !!sessionsWithPendingQuestion?.has(s.sessionId),
+                                                isAwaiting: !!sessionsAwaitingInput?.has(s.sessionId),
                                                 isActive: !!s.isActive,
                                                 isCompletedUnread: completedUnreadSessions.has(s.sessionId),
                                             });
