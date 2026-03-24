@@ -189,3 +189,24 @@ export async function deleteRelayEventCaches(sessionIds: string[]): Promise<void
         logUnavailableOnce("Failed to delete relay event caches from Redis", error);
     }
 }
+
+/**
+ * Close the relay Redis client and reset module state.
+ *
+ * Intended for test use only — allows tests to reinitialize the relay cache
+ * with a fresh client after another test (e.g. a harness integration test)
+ * has already connected the real client. Without this, the module-level
+ * `initPromise` guard prevents re-initialization.
+ */
+export async function closeRelayCache(): Promise<void> {
+    if (client) {
+        try {
+            await client.quit();
+        } catch {
+            // Ignore quit errors (client may already be closed)
+        }
+        client = null;
+    }
+    initPromise = null;
+    unavailableLogged = false;
+}

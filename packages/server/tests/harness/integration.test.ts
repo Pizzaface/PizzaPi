@@ -314,12 +314,49 @@ describe("Conversation replay", () => {
             // Request resync — server should replay stored events back to viewer
             viewer.sendResync();
 
-            // Wait for replay events to arrive
-            await new Promise<void>((r) => setTimeout(r, 800));
+            // Wait for the last stored heartbeat to arrive (event-driven, not a fixed sleep).
+            // sendSnapshotToViewer sends the most-recently stored heartbeat ("replay-session-2"),
+            // so waiting for it confirms the resync response has landed.
+            await viewer.waitForEvent(
+                (e) =>
+                    typeof e === "object" &&
+                    e !== null &&
+                    (e as Record<string, unknown>)["type"] === "heartbeat" &&
+                    (e as Record<string, unknown>)["sessionName"] === "replay-session-2",
+                5_000,
+            );
 
             const events = viewer.getReceivedEvents();
-            // Should have at least one event after resync
-            expect(events.length).toBeGreaterThan(0);
+
+            // sendSnapshotToViewer (called by resync) delivers the most-recently stored
+            // heartbeat and optionally the lastState snapshot. Verify the heartbeat event:
+            //   1. At least one heartbeat was received
+            //   2. The LAST heartbeat matches the most recent one we sent ("replay-session-2")
+            //   3. Real-time events from sendSnapshotToViewer do NOT carry replay: true
+            //      (only replayPersistedSnapshot / sendLatestSnapshotFromCache set that flag)
+
+            const heartbeatEvents = events.filter(
+                (e) =>
+                    typeof e.event === "object" &&
+                    e.event !== null &&
+                    (e.event as Record<string, unknown>)["type"] === "heartbeat",
+            );
+
+            // At least one heartbeat should have arrived via resync
+            expect(heartbeatEvents.length).toBeGreaterThanOrEqual(1);
+
+            // The LAST stored heartbeat (seq 1, "replay-session-2") should be present
+            const lastHeartbeatEntry = heartbeatEvents[heartbeatEvents.length - 1];
+            const lastHeartbeat = lastHeartbeatEntry.event as Record<string, unknown>;
+            expect(lastHeartbeat["type"]).toBe("heartbeat");
+            expect(lastHeartbeat["sessionName"]).toBe("replay-session-2");
+            expect(lastHeartbeat["active"]).toBe(false);
+
+            // sendSnapshotToViewer does NOT tag events as replay (only the persisted-
+            // snapshot replay path does). Confirm the live-session resync path.
+            for (const e of heartbeatEvents) {
+                expect(e.replay).not.toBe(true);
+            }
         } finally {
             await scenario.reset();
         }
@@ -562,7 +599,14 @@ describe("Concurrent registerSession", () => {
             ]);
             await w1;
 
-            await new Promise<void>((r) => setTimeout(r, 400));
+            // Wait for s2 and s3 to appear in the hub event-driven, not with a fixed sleep.
+            // After the first session arrives (w1), the other two may already be present
+            // or still propagating — check each individually.
+            for (const id of [s2.sessionId, s3.sessionId]) {
+                if (!hub.sessions.some((s) => s.sessionId === id)) {
+                    await hub.waitForSessionAdded((s) => s.sessionId === id, 8_000);
+                }
+            }
 
             const hubIds = hub.sessions.map((s) => s.sessionId);
             for (const id of [s1.sessionId, s2.sessionId, s3.sessionId]) {

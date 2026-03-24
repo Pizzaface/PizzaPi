@@ -1,0 +1,13 @@
+[test]
+# Preload script that saves the real redis createClient to globalThis
+# BEFORE any test file can mock it via mock.module("redis").
+#
+# Bun 1.3.x has a bug where mock.module() is not reset between test files
+# in the same worker. Several test files in packages/server/src/ws/ mock
+# redis with a stub that lacks .pSubscribe(), .subscribe(), .quit(), etc.
+# This mock persists and contaminates the test-server harness tests.
+#
+# The preload runs once per worker, captures the real createClient, and
+# stores it in globalThis.__realRedisCreateClient. The harness server.ts
+# retrieves this to get an unmocked createClient.
+preload = ["./packages/server/tests/harness/preload-redis.ts"]

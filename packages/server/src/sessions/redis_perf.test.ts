@@ -1,6 +1,6 @@
 import { describe, test, expect, spyOn, beforeAll, afterAll, mock } from "bun:test";
 import { createClient } from "redis";
-import { deleteRelayEventCaches, initializeRelayRedisCache } from "./redis";
+import { deleteRelayEventCaches, initializeRelayRedisCache, closeRelayCache } from "./redis";
 
 // Mock the redis module
 const mockDel = mock((keys: string | string[]) => Promise.resolve(1));
@@ -30,8 +30,11 @@ mock.module("redis", () => ({
 
 describe("deleteRelayEventCaches Performance", () => {
     beforeAll(async () => {
-        // Initialize the client so activeClient() returns something
-        // We ensure initialization happens only once
+        // Close any existing client from prior test files (e.g. harness integration
+        // tests that connected the real redis), then re-initialize with the mock.
+        // Without closeRelayCache(), the module-level initPromise guard would skip
+        // re-initialization, leaving the real redis client in place.
+        await closeRelayCache();
         await initializeRelayRedisCache();
     });
 
@@ -69,4 +72,16 @@ describe("deleteRelayEventCaches Performance", () => {
 
         consoleSpy.mockRestore();
     });
+});
+
+// ── Restore real redis module after this file ──────────────────────────────
+// Bun 1.3.x does not reset mock.module() between test files in the same
+// worker. Without this cleanup, the redis mock set above would persist and
+// contaminate harness tests (createTestServer) that need the real redis
+// client (with .pSubscribe(), .subscribe(), .quit(), etc.).
+afterAll(() => {
+    const real = (globalThis as Record<string, unknown>).__realRedisCreateClient;
+    if (real) {
+        mock.module("redis", () => ({ createClient: real }));
+    }
 });

@@ -7,7 +7,7 @@
 // We mock the Redis client at module level so no live Redis is needed.
 // ============================================================================
 
-import { describe, it, expect, beforeEach, mock } from "bun:test";
+import { describe, it, expect, beforeEach, afterAll, mock } from "bun:test";
 
 // ── Minimal Redis mock ──────────────────────────────────────────────────────
 
@@ -506,4 +506,16 @@ describe("child session helpers (sio-state)", () => {
         const remaining = await getChildSessions("parent-1");
         expect(remaining).toEqual(["child-1"]);
     });
+});
+
+// ── Restore real redis module after this file ──────────────────────────────
+// Bun 1.3.x does not reset mock.module() between test files in the same
+// worker. Without this cleanup, the redis mock set above would persist and
+// contaminate harness tests (createTestServer) that need the real redis
+// client (with .pSubscribe(), .subscribe(), .quit(), etc.).
+afterAll(() => {
+    const real = (globalThis as Record<string, unknown>).__realRedisCreateClient;
+    if (real) {
+        mock.module("redis", () => ({ createClient: real }));
+    }
 });

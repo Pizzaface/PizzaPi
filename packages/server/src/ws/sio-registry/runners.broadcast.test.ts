@@ -1,4 +1,4 @@
-import { describe, it, expect, mock, beforeEach } from "bun:test";
+import { describe, it, expect, mock, beforeEach, afterAll } from "bun:test";
 
 const store = new Map<string, string>();
 const setStore = new Map<string, Set<string>>();
@@ -314,4 +314,15 @@ describe("runners broadcast", () => {
         const removed = emitCalls.find((c) => c.event === "runner_removed");
         expect(removed).toBeUndefined();
     });
+});
+
+// ── Restore real redis module after this file ──────────────────────────────
+// Bun 1.3.x does not reset mock.module() between test files in the same
+// worker. Without this cleanup, the redis mock set above would persist and
+// contaminate tests that need the real redis client.
+afterAll(() => {
+    const real = (globalThis as Record<string, unknown>).__realRedisCreateClient;
+    if (real) {
+        mock.module("redis", () => ({ createClient: real }));
+    }
 });

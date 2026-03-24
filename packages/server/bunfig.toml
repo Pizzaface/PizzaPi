@@ -1,0 +1,2 @@
+[test]
+preload = ["./tests/harness/preload-redis.ts"]

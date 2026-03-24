@@ -23,7 +23,19 @@ import { tmpdir } from "node:os";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { Server as SocketIOServer } from "socket.io";
 import { createAdapter } from "@socket.io/redis-adapter";
-import { createClient, type RedisClientType } from "redis";
+// NOTE: We do NOT use a static top-level import of createClient from "redis" here.
+// Several test files in packages/server/src/ws/ call mock.module("redis"), which
+// permanently replaces the "redis" module in Bun's module registry for the entire
+// worker process (Bun 1.3.x does NOT reset mock.module() between test files).
+// If this file were statically bound to the mocked createClient, all harness tests
+// in that worker would fail with "psubscribe/subscribe is not a function" from the
+// Socket.IO Redis adapter constructor.
+//
+// The fix: preload-redis.ts (registered in packages/server/bunfig.toml) runs before
+// any test file is loaded and saves the REAL createClient to globalThis. We retrieve
+// it here at call time, bypassing the later mock. The dynamic import fallback is for
+// cases where the preload is not present (e.g. running a single test file directly).
+import type { RedisClientType, createClient as CreateClientType } from "redis";
 
 import { initAuth, getTrustedOrigins } from "../../src/auth.js";
 import { runAllMigrations } from "../../src/migrations.js";
@@ -189,17 +201,19 @@ export async function createTestServer(opts?: TestServerOptions): Promise<TestSe
             await new Promise<void>((resolve) => io!.close(() => resolve())).catch(() => {});
         }
 
-        // Close state Redis
+        // Close state Redis (guard against mock clients that lack .quit())
         if (stateRedisInited) {
             const sr = getStateRedis();
-            if (sr) await sr.quit().catch(() => {});
+            if (sr && typeof (sr as unknown as Record<string, unknown>).quit === "function") {
+                await sr.quit().catch(() => {});
+            }
         }
 
-        // Close pub/sub Redis
+        // Close pub/sub Redis (guard against mock clients that lack .quit())
         if (pubSubConnected) {
             await Promise.allSettled([
-                pubClient?.quit() ?? Promise.resolve(),
-                subClient?.quit() ?? Promise.resolve(),
+                (typeof pubClient?.quit === "function" ? pubClient.quit() : Promise.resolve()),
+                (typeof subClient?.quit === "function" ? subClient.quit() : Promise.resolve()),
             ]);
         }
 
@@ -239,9 +253,20 @@ export async function createTestServer(opts?: TestServerOptions): Promise<TestSe
         // 4. Run DB migrations
         await runAllMigrations();
 
-        // 5. Create Redis pub/sub clients and connect them
-        pubClient = createClient({ url: REDIS_URL }) as RedisClientType;
-        subClient = pubClient.duplicate() as RedisClientType;
+        // 5. Create Redis pub/sub clients and connect them.
+        //
+        // Retrieve the real createClient from the preload-saved global, or fall back
+        // to a direct import. The preload (bunfig.toml) runs before any test file and
+        // saves the real function before mock.module("redis") can replace it.
+        //
+        // Use two independent createClient() calls instead of .duplicate(). Some
+        // mock stubs (and some redis client wrappers) lack .duplicate(); two
+        // independent clients are functionally equivalent for the Socket.IO adapter.
+        const _createClient: typeof CreateClientType =
+            (globalThis as Record<string, unknown>).__realRedisCreateClient as typeof CreateClientType
+            ?? (await import("redis") as typeof import("redis")).createClient;
+        pubClient = _createClient({ url: REDIS_URL }) as RedisClientType;
+        subClient = _createClient({ url: REDIS_URL }) as RedisClientType;
         await Promise.all([pubClient.connect(), subClient.connect()]);
         pubSubConnected = true;
 
@@ -390,14 +415,17 @@ export async function createTestServer(opts?: TestServerOptions): Promise<TestSe
             // so we do NOT call httpServer.close() separately (it would throw ERR_SERVER_NOT_RUNNING).
             await new Promise<void>((resolve) => io!.close(() => resolve()));
 
-            // Close state Redis (prevents process hang)
+            // Close state Redis (prevents process hang; guard against mock clients)
             const stateRedis = getStateRedis();
-            if (stateRedis) {
+            if (stateRedis && typeof (stateRedis as unknown as Record<string, unknown>).quit === "function") {
                 await stateRedis.quit().catch(() => {});
             }
 
-            // Disconnect pub/sub Redis clients
-            await Promise.allSettled([pubClient!.quit(), subClient!.quit()]);
+            // Disconnect pub/sub Redis clients (guard against mock clients)
+            await Promise.allSettled([
+                (typeof pubClient?.quit === "function" ? pubClient.quit() : Promise.resolve()),
+                (typeof subClient?.quit === "function" ? subClient.quit() : Promise.resolve()),
+            ]);
 
             // Clean up temp directory
             try {
