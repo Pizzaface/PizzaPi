@@ -67,6 +67,19 @@ export async function enforceBodySizeLimit(req: Request, url: URL): Promise<Resp
                 { status: 413 },
             );
         }
+        // Even when Content-Length is present, we must buffer the body into an
+        // ArrayBuffer. In Bun, when a Request with a streaming body is wrapped
+        // via `new Request(req, { headers })` (as the auth handler does to
+        // inject x-pizzapi-client-ip), the body stream silently fails to
+        // propagate — causing the downstream handler to hang forever waiting
+        // for body data. ArrayBuffer bodies do not have this problem.
+        // This was observed when requests arrived through a reverse proxy
+        // (e.g. Tailscale serve) where the body remains a true stream even
+        // when Content-Length is set.
+        if (req.body) {
+            const body = await req.arrayBuffer();
+            return new Request(req, { body });
+        }
         return req;
     }
 
