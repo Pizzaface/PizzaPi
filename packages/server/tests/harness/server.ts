@@ -22,12 +22,16 @@ import { initAuth, getTrustedOrigins } from "../../src/auth.js";
 import { runAllMigrations } from "../../src/migrations.js";
 import { handleFetch } from "../../src/handler.js";
 import { initStateRedis, closeStateRedis } from "../../src/ws/sio-state.js";
+import { serverHealth } from "../../src/health.js";
 import { initSioRegistry } from "../../src/ws/sio-registry.js";
 import { registerNamespaces } from "../../src/ws/namespaces/index.js";
 
 import type { TestServerOptions, TestServer } from "./types.js";
 
-const REDIS_URL = process.env.PIZZAPI_REDIS_URL ?? "redis://localhost:6379";
+// Read lazily so callers can set PIZZAPI_REDIS_URL before createTestServer() is called.
+function getRedisUrl(): string {
+    return process.env.PIZZAPI_REDIS_URL ?? "redis://localhost:6379";
+}
 
 // ── Active-server guard ──────────────────────────────────────────────────────
 // Module-level singletons (auth, sio-state) mean only one test server can be
@@ -200,9 +204,10 @@ export async function createTestServer(opts?: TestServerOptions): Promise<TestSe
     await runAllMigrations();
 
     // 5. Create Redis pub/sub clients and connect them
-    pubClient = createClient({ url: REDIS_URL }) as RedisClientType;
-    subClient = createClient({ url: REDIS_URL }) as RedisClientType;
+    pubClient = createClient({ url: getRedisUrl() }) as RedisClientType;
+    subClient = createClient({ url: getRedisUrl() }) as RedisClientType;
     await Promise.all([pubClient.connect(), subClient.connect()]);
+    serverHealth.redis = true;
 
     // 6. We'll track the resolved port for the request converter
     let resolvedPort = 0;
@@ -243,6 +248,7 @@ export async function createTestServer(opts?: TestServerOptions): Promise<TestSe
 
     // 10. Register all namespaces
     registerNamespaces(io);
+    serverHealth.socketio = true;
 
     // 11. Listen on port 0 (OS assigns an ephemeral port) on IPv4 loopback
     const listenPort = opts?.port ?? 0;

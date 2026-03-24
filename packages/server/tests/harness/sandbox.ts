@@ -290,12 +290,12 @@ const SCENARIOS: Record<string, { name: string; builder: () => unknown[] }> = {
 // ── Models pool ──────────────────────────────────────────────────────────────
 
 const MODELS = [
-    { provider: "anthropic", id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
-    { provider: "anthropic", id: "claude-opus-4-6", name: "Claude Opus 4.6" },
-    { provider: "anthropic", id: "claude-haiku-4-5", name: "Claude Haiku 4.5" },
-    { provider: "openai-codex", id: "gpt-5.4", name: "GPT-5.4" },
-    { provider: "openai-codex", id: "gpt-5.3-codex", name: "GPT-5.3 Codex" },
-    { provider: "google", id: "gemini-2.5-pro", name: "Gemini 2.5 Pro" },
+    { provider: "anthropic", id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6", contextWindow: 200_000 },
+    { provider: "anthropic", id: "claude-opus-4-6", name: "Claude Opus 4.6", contextWindow: 200_000 },
+    { provider: "anthropic", id: "claude-haiku-4-5", name: "Claude Haiku 4.5", contextWindow: 200_000 },
+    { provider: "openai-codex", id: "gpt-5.4", name: "GPT-5.4", contextWindow: 128_000 },
+    { provider: "openai-codex", id: "gpt-5.3-codex", name: "GPT-5.3 Codex", contextWindow: 128_000 },
+    { provider: "google", id: "gemini-2.5-pro", name: "Gemini 2.5 Pro", contextWindow: 1_000_000 },
 ];
 
 const SESSION_NAMES = [
@@ -327,6 +327,87 @@ function pickRandom<T>(arr: T[]): T {
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 
+async function startRedis(): Promise<(() => void)> {
+    // 1. Honor an existing PIZZAPI_REDIS_URL — the caller already has Redis.
+    const existingUrl = process.env.PIZZAPI_REDIS_URL;
+    if (existingUrl) {
+        const { createClient } = await import("redis");
+        try {
+            const probe = createClient({ url: existingUrl });
+            await probe.connect();
+            await probe.ping();
+            await probe.quit();
+            console.log(`  🟥 Using existing Redis at ${existingUrl}\n`);
+            return () => {}; // nothing to clean up
+        } catch {
+            console.warn(`  ⚠️  PIZZAPI_REDIS_URL is set (${existingUrl}) but Redis is not reachable — falling through to Docker`);
+        }
+    }
+
+    // 2. Probe for Docker before trying to spawn.
+    const dockerCheck = Bun.spawnSync(["docker", "info"], { stdout: "ignore", stderr: "ignore" });
+    if (dockerCheck.exitCode !== 0) {
+        throw new Error(
+            "Redis is required but Docker is not available.\n" +
+            "Either:\n" +
+            "  • Install and start Docker, or\n" +
+            "  • Set PIZZAPI_REDIS_URL to point at an existing Redis instance\n",
+        );
+    }
+
+    // 3. Spawn a Redis container on a random free port.
+    const port = await getFreePort();
+    const redisUrl = `redis://127.0.0.1:${port}`;
+    const containerName = `pizzapi-sandbox-redis-${port}`;
+
+    const proc = Bun.spawn(
+        ["docker", "run", "--rm", "-p", `${port}:6379`, "--name", containerName, "redis:alpine"],
+        { stdout: "ignore", stderr: "ignore" },
+    );
+
+    const cleanup = () => {
+        proc.kill();
+        Bun.spawnSync(["docker", "rm", "-f", containerName], { stdout: "ignore", stderr: "ignore" });
+        delete process.env.PIZZAPI_REDIS_URL;
+    };
+
+    // Wait for Redis to be ready (up to 10 s)
+    const { createClient } = await import("redis");
+    let ready = false;
+    for (let i = 0; i < 40; i++) {
+        await Bun.sleep(250);
+        try {
+            const probe = createClient({ url: redisUrl });
+            await probe.connect();
+            await probe.ping();
+            await probe.quit();
+            ready = true;
+            break;
+        } catch { /* not ready yet */ }
+    }
+
+    if (!ready) {
+        cleanup();
+        throw new Error(
+            `Redis container started but never became ready on port ${port}.\n` +
+            "Check Docker logs: docker logs " + containerName,
+        );
+    }
+
+    // Point the harness server at our private Redis before it connects
+    process.env.PIZZAPI_REDIS_URL = redisUrl;
+    console.log(`  🟥 Redis ready on port ${port}\n`);
+
+    return cleanup;
+}
+
+async function getFreePort(): Promise<number> {
+    const server = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {}, open() {}, close() {} } });
+    const port = server.port;
+    server.stop(true);
+    return port;
+}
+
 async function main() {
     // Parse CLI args: bun run sandbox [port]
     const portArg = process.argv.find((a) => /^\d+$/.test(a));
@@ -334,6 +415,8 @@ async function main() {
 
     console.log("\n🍕 PizzaPi Sandbox\n");
     console.log("Starting server...\n");
+
+    const stopRedis = await startRedis(); // always returns a cleanup fn now
 
     const scenario = new TestScenario();
 
@@ -373,6 +456,12 @@ async function main() {
         model: MODELS[0], // Sonnet 4.6
         cwd: "/Users/jordan/Documents/Projects/PizzaPi",
     }), 0);
+    s1.relay.emitEvent(s1.sessionId, s1.token, { type: "model_changed", model: MODELS[0] });
+    s1.relay.emitEvent(s1.sessionId, s1.token, {
+        type: "token_usage_updated",
+        tokenUsage: { input: 42_800, output: 3_200, cacheRead: 12_000, cacheWrite: 4_000, cost: 0.148, contextTokens: 42_800 },
+        providerUsage: {},
+    });
 
     // Stream a conversation with delays
     const convo = codeReviewConversation();
@@ -393,6 +482,12 @@ async function main() {
         model: MODELS[3], // GPT-5.4
         cwd: "/Users/jordan/Projects/cool-app",
     }), 0);
+    s2.relay.emitEvent(s2.sessionId, s2.token, { type: "model_changed", model: MODELS[3] });
+    s2.relay.emitEvent(s2.sessionId, s2.token, {
+        type: "token_usage_updated",
+        tokenUsage: { input: 95_400, output: 8_100, cacheRead: 0, cacheWrite: 0, cost: 0.312, contextTokens: 95_400 },
+        providerUsage: {},
+    });
     console.log("  🟢 Session 2: fix-dark-mode-css (GPT-5.4)");
 
     // Session 3: child of session 1
@@ -409,7 +504,53 @@ async function main() {
     }), 0);
     console.log(`  🔗 Session 3: code-review-subagent (Haiku 4.5) → child of S1`);
 
-    console.log(`\n✅ Sandbox ready! Open ${server.baseUrl} in your browser.\n`);
+    // ── Start Vite dev server for HMR ──────────────────────────────────
+    const vitePort = await getFreePort();
+    const serverPort = new URL(server.baseUrl).port;
+    const uiDir = new URL("../../../ui", import.meta.url).pathname;
+    const viteProc = Bun.spawn(
+        ["bunx", "vite", "--port", String(vitePort), "--strictPort", "--host", "127.0.0.1"],
+        {
+            cwd: uiDir,
+            // PORT tells the Vite proxy where to send API/WS requests.
+            // PIZZAPI_SANDBOX_NO_TLS makes vite.config.ts skip TLS even if certs exist,
+            // so headless browsers and curl work without cert gymnastics.
+            env: { ...process.env, PORT: serverPort, PIZZAPI_SANDBOX_NO_TLS: "1" },
+            stdout: "ignore",
+            stderr: "ignore",
+        },
+    );
+    // Wait for Vite to be ready (HTTP — TLS is disabled for sandbox)
+    for (let i = 0; i < 40; i++) {
+        await Bun.sleep(250);
+        try {
+            const resp = await fetch(`http://127.0.0.1:${vitePort}/`);
+            if (resp.ok) break;
+        } catch { /* not ready */ }
+    }
+
+    console.log(`\n✅ Sandbox ready!`);
+    console.log(`   📺 UI (HMR):  http://127.0.0.1:${vitePort}`);
+    console.log(`   🔌 Server:    ${server.baseUrl}\n`);
+
+    // ── Live token ticker — grows s1 & s2 usage over time ───────────────
+    // Simulates an active session consuming context so the donut animates.
+    let s1Tokens = 42_800;
+    let s2Tokens = 95_400;
+    setInterval(() => {
+        s1Tokens += Math.floor(Math.random() * 800 + 200);
+        s1.relay.emitEvent(s1.sessionId, s1.token, {
+            type: "token_usage_updated",
+            tokenUsage: { input: s1Tokens, output: 3_200 + Math.floor(s1Tokens * 0.07), cacheRead: 12_000, cacheWrite: 4_000, cost: +(s1Tokens * 0.000003).toFixed(4), contextTokens: s1Tokens },
+            providerUsage: {},
+        });
+        s2Tokens += Math.floor(Math.random() * 1_200 + 400);
+        s2.relay.emitEvent(s2.sessionId, s2.token, {
+            type: "token_usage_updated",
+            tokenUsage: { input: s2Tokens, output: 8_100 + Math.floor(s2Tokens * 0.08), cacheRead: 0, cacheWrite: 0, cost: +(s2Tokens * 0.0000025).toFixed(4), contextTokens: s2Tokens },
+            providerUsage: {},
+        });
+    }, 3_000);
 
     // ── Interactive REPL ─────────────────────────────────────────────────
 
@@ -693,6 +834,8 @@ async function main() {
             process.env.PIZZAPI_BASE_URL = savedBaseUrl;
         }
         await scenario.teardown();
+        viteProc.kill();
+        stopRedis();
         console.log("👋 Goodbye!\n");
         process.exit(0);
     }

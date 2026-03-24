@@ -127,7 +127,7 @@ async function sendFetchResponse(res: ServerResponse, response: Response): Promi
 
 // ── Single HTTP server (REST + Socket.IO on one port) ─────────────────────
 
-const REDIS_URL = process.env.PIZZAPI_REDIS_URL ?? "redis://localhost:6379";
+function getRedisUrl(): string { return process.env.PIZZAPI_REDIS_URL ?? "redis://localhost:6379"; }
 
 // Use trustedOrigins from auth.ts as the single source of truth for CORS
 
@@ -164,7 +164,7 @@ let io: SocketIOServer | undefined;
 let sioInitialized = false;
 
 try {
-    const pubClient = createClient({ url: REDIS_URL });
+    const pubClient = createClient({ url: getRedisUrl() });
     const subClient = pubClient.duplicate();
 
     // ── Runtime health event listeners ────────────────────────────────────

@@ -19,14 +19,15 @@ import { createClient, type RedisClientType } from "redis";
 
 // ── Redis connection ────────────────────────────────────────────────────────
 
-const REDIS_URL = process.env.PIZZAPI_REDIS_URL ?? "redis://localhost:6379";
+// Read lazily so the value is resolved at connect-time, not module-load time.
+function getRedisUrl(): string { return process.env.PIZZAPI_REDIS_URL ?? "redis://localhost:6379"; }
 
 let redis: RedisClientType | null = null;
 
 /** Initialize a dedicated Redis client for Socket.IO state. */
 export async function initStateRedis(): Promise<void> {
     redis = createClient({
-        url: REDIS_URL,
+        url: getRedisUrl(),
         socket: {
             reconnectStrategy: (attempt) => Math.min(1000 * 2 ** attempt, 30_000),
         },
@@ -37,7 +38,7 @@ export async function initStateRedis(): Promise<void> {
     });
 
     await redis.connect();
-    console.log(`[sio-state] Redis connected at ${REDIS_URL}`);
+    console.log(`[sio-state] Redis connected at ${getRedisUrl()}`);
 }
 
 /** Return the state Redis client (or null if not initialized). */

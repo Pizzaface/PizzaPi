@@ -13,7 +13,7 @@ import {
 } from "../../sio-registry.js";
 import { appendRelayEventToCache } from "../../../sessions/redis.js";
 import { storeAndReplaceImagesInEvent } from "../../strip-images.js";
-import { updateSessionMetaState, broadcastToSessionMeta } from "../../sio-registry/meta.js";
+import { updateSessionMetaState, broadcastToSessionMeta, getSessionMetaState } from "../../sio-registry/meta.js";
 import { isMetaRelayEvent, metaEventToPatch, type MetaRelayEvent, type SessionMetaState } from "@pizzapi/protocol";
 import { updateSessionFields } from "../../sio-state.js";
 import {
@@ -197,7 +197,15 @@ export function registerEventHandler(socket: RelaySocket): void {
             const meta = (event as any).metadata;
             if (meta && typeof meta === "object") {
                 const patch: Partial<SessionMetaState> = {};
-                if (meta.model && typeof meta.model === "object") patch.model = meta.model;
+                if (meta.model && typeof meta.model === "object") {
+                    // Merge with existing model to preserve fields (like contextWindow)
+                    // that the lightweight metadata update may not include.
+                    const existing = await getSessionMetaState(sessionId);
+                    const merged = existing?.model
+                        ? { ...existing.model, ...meta.model }
+                        : meta.model;
+                    patch.model = merged;
+                }
                 if (Object.prototype.hasOwnProperty.call(meta, "thinkingLevel")) {
                     patch.thinkingLevel = typeof meta.thinkingLevel === "string" ? meta.thinkingLevel : null;
                 }

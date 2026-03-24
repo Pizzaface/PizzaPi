@@ -53,7 +53,7 @@ import {
     emitTodoUpdated, emitPlanModeToggled,
     emitRetryStateChanged, emitPluginTrustRequired, emitPluginTrustResolved,
     emitTokenUsageUpdated, emitModelChanged, emitAuthSourceChanged,
-    emitMcpStartupReport,
+    emitMcpStartupReport, emitCompactStarted, emitCompactEnded,
 } from "../remote-meta-events.js";
 import { getAuthSource } from "../remote-auth-source.js";
 import { buildProviderUsage } from "../remote-provider-usage.js";
@@ -611,7 +611,8 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             if (ok) {
                 emitModelChanged(rctx, rctx.latestCtx?.model
                     ? { provider: rctx.latestCtx.model.provider, id: rctx.latestCtx.model.id,
-                        name: rctx.latestCtx.model.name, reasoning: rctx.latestCtx.model.reasoning }
+                        name: rctx.latestCtx.model.name, reasoning: rctx.latestCtx.model.reasoning,
+                        contextWindow: rctx.latestCtx.model.contextWindow }
                     : null);
                 emitAuthSourceChanged(rctx, getAuthSource(rctx.latestCtx));
                 emitSessionActive(rctx);
@@ -868,6 +869,12 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         );
         emitSessionActive(rctx);
         rctx.forwardEvent(rctx.buildHeartbeat());
+        // Emit model_changed so the UI gets contextWindow immediately
+        // (heartbeat also carries it, but meta events are the canonical path).
+        if (rctx.latestCtx?.model) {
+            const m = rctx.latestCtx.model;
+            emitModelChanged(rctx, { provider: m.provider, id: m.id, name: m.name, reasoning: m.reasoning, contextWindow: m.contextWindow });
+        }
     });
 
     pi.on("turn_start", (event) => {
@@ -994,6 +1001,33 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         rctx.forwardEvent(event);
         emitAuthSourceChanged(rctx, getAuthSource(rctx.latestCtx));
         emitSessionActive(rctx);
+    });
+
+    // ── Compaction lifecycle (covers CLI /compact, auto-compact, and web-triggered) ──
+
+    pi.on("session_before_compact", () => {
+        // Only emit if not already tracked (web-triggered compacts set this
+        // flag in the exec handler before calling ctx.compact()).
+        if (!rctx.isCompacting) {
+            rctx.isCompacting = true;
+            emitCompactStarted(rctx);
+            rctx.forwardEvent(rctx.buildHeartbeat());
+        }
+    });
+
+    pi.on("session_compact", () => {
+        if (rctx.isCompacting) {
+            rctx.isCompacting = false;
+            emitCompactEnded(rctx);
+        }
+        // Always refresh session state and token usage after compaction so the
+        // UI sees the post-compact context size immediately (not just on web-
+        // triggered compacts which already do this in the exec handler).
+        rctx.emitSessionActive();
+        const tokenUsage = buildTokenUsage(rctx);
+        const providerUsage = buildProviderUsage();
+        emitTokenUsageUpdated(rctx, tokenUsage as any, providerUsage as any);
+        rctx.forwardEvent(rctx.buildHeartbeat());
     });
 
     // ── /remote command ───────────────────────────────────────────────────

@@ -269,15 +269,21 @@ export async function handleExecFromWeb(
                 });
                 rctx.isAgentActive = false;
                 rctx.lastRetryableError = null;
-                rctx.isCompacting = false;
-                emitCompactEnded(rctx);
+                // compact_ended may already have been emitted by the
+                // session_compact extension hook — only emit if still flagged.
+                if (rctx.isCompacting) {
+                    rctx.isCompacting = false;
+                    emitCompactEnded(rctx);
+                }
                 emitRetryStateChanged(rctx, null);
                 replyOk(result ?? null);
                 rctx.emitSessionActive();
                 rctx.forwardEvent(rctx.buildHeartbeat());
             } catch (err) {
-                rctx.isCompacting = false;
-                emitCompactEnded(rctx);
+                if (rctx.isCompacting) {
+                    rctx.isCompacting = false;
+                    emitCompactEnded(rctx);
+                }
                 rctx.forwardEvent(rctx.buildHeartbeat());
                 throw err;
             }
