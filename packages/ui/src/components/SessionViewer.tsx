@@ -66,6 +66,7 @@ import {
 } from "@/components/ui/command";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
+import { syncedPulse } from "@/lib/synced-animation";
 import { formatPathTail } from "@/lib/path";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { MultipleChoiceQuestions } from "@/components/ai-elements/multiple-choice";
@@ -1486,6 +1487,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                     ? "bg-slate-400"
                     : "bg-slate-600",
             )}
+            style={(isCompacting || agentActive) ? syncedPulse() : undefined}
             title={
               isCompacting ? "Compacting context…"
               : agentActive ? "Agent active"
@@ -1667,7 +1669,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
             <ConversationEmptyState
               icon={
                 <span className="inline-flex items-center justify-center h-10 w-10 rounded-full bg-muted/60 border border-border/60">
-                  <span className="inline-block h-2.5 w-2.5 rounded-full bg-slate-400 animate-pulse" />
+                  <span className="inline-block h-2.5 w-2.5 rounded-full bg-slate-400 animate-pulse" style={syncedPulse()} />
                 </span>
               }
               title="Waiting for session events"

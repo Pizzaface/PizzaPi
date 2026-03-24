@@ -92,6 +92,43 @@
     oklch(0.5  0.22 220 / 0)     360deg
   );
   animation: chase-spin 2s linear infinite;
+  animation-delay: var(--sync-delay, 0ms);
+  z-index: -1;
+  pointer-events: none;
+}
+
+/* Selected+Active — subtle blue dot chase (lighter than .animate-working-chase) */
+.animate-selected-active-chase {
+  isolation: isolate;
+}
+
+.animate-selected-active-chase::after {
+  content: '';
+  position: absolute;
+  inset: 1.5px;
+  border-radius: 5px;
+  background: var(--sidebar-accent);
+  z-index: -1;
+  pointer-events: none;
+}
+
+.animate-selected-active-chase::before {
+  content: '';
+  position: absolute;
+  inset: -1.5px;
+  border-radius: 8px;
+  background: conic-gradient(from var(--chase-angle),
+    transparent                  0deg,
+    transparent                  290deg,
+    oklch(0.5  0.22 220 / 0)     290deg,
+    oklch(0.6  0.25 220 / 0.2)   310deg,
+    oklch(0.75 0.28 215 / 0.4)   330deg,
+    oklch(0.92 0.2  205 / 0.5)   345deg,
+    oklch(0.75 0.28 215 / 0.25)  355deg,
+    oklch(0.5  0.22 220 / 0)     360deg
+  );
+  animation: chase-spin 2s linear infinite;
+  animation-delay: var(--sync-delay, 0ms);
   z-index: -1;
   pointer-events: none;
 }
@@ -108,6 +145,7 @@
 
 .animate-awaiting-pulse {
   animation: awaiting-pulse 2.5s ease-in-out infinite;
+  animation-delay: var(--sync-delay, 0ms);
   border-radius: 6px;
 }
 
@@ -123,6 +161,7 @@
 
 .animate-completed-pulse {
   animation: completed-pulse 2.5s ease-in-out infinite;
+  animation-delay: var(--sync-delay, 0ms);
   border-radius: 6px;
 }
 
