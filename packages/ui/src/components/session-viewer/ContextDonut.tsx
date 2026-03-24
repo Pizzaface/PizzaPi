@@ -21,12 +21,13 @@ import { AlertDialog as AlertDialogPrimitive } from "radix-ui";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-/** Compute the percentage of context window used (0–100, clamped). */
-export function contextPercent(tokenUsage: TokenUsage, contextWindow: number): number {
-  if (contextWindow <= 0) return 0;
-  // Prefer contextTokens (real-time estimate from the agent) over cumulative input.
-  const tokens = tokenUsage.contextTokens ?? tokenUsage.input;
-  if (tokens <= 0) return 0;
+/** Compute the percentage of context window used (0–100, clamped).
+ *  Returns null if contextTokens is not available (cumulative input is not
+ *  a valid proxy — it can be wildly inflated after compaction). */
+export function contextPercent(tokenUsage: TokenUsage, contextWindow: number): number | null {
+  if (contextWindow <= 0) return null;
+  const tokens = tokenUsage.contextTokens;
+  if (tokens == null || tokens <= 0) return null;
   const pct = (tokens / contextWindow) * 100;
   return Math.min(100, Math.max(0, pct));
 }
@@ -122,13 +123,13 @@ export function ContextDonut({
 
   // Don't render if we don't have both data points
   if (!tokenUsage || !contextWindow || contextWindow <= 0) return null;
-  // Need either contextTokens or cumulative usage to show anything
-  const hasContextTokens = tokenUsage.contextTokens != null && tokenUsage.contextTokens > 0;
-  if (!hasContextTokens && tokenUsage.input <= 0 && tokenUsage.output <= 0) return null;
 
   const pct = contextPercent(tokenUsage, contextWindow);
+  // Only show the donut when we have real context token data — cumulative
+  // input is not a valid proxy and would show wildly inflated percentages.
+  if (pct == null) return null;
 
-  const ctxTokens = tokenUsage.contextTokens ?? tokenUsage.input;
+  const ctxTokens = tokenUsage.contextTokens!;
   const tooltipLines = [
     `Context: ${formatTokenCount(ctxTokens)} / ${formatTokenCount(contextWindow)} tokens (${Math.round(pct)}%)`,
     `Output: ${formatTokenCount(tokenUsage.output)}`,

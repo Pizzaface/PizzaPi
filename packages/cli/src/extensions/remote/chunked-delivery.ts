@@ -267,8 +267,14 @@ export function emitSessionActive(rctx: RelayContext): void {
         rctx.latestCtx.sessionManager.getLeafId(),
     );
 
+    // buildSessionContext returns { provider, modelId } without contextWindow.
+    // Enrich with contextWindow from the live model so the UI donut keeps working.
+    const enrichedModel = model
+        ? { ...model, contextWindow: rctx.latestCtx.model?.contextWindow }
+        : model;
+
     const metadata = {
-        model,
+        model: enrichedModel,
         thinkingLevel: rctx.getCurrentThinkingLevel(),
         sessionName: rctx.getCurrentSessionName(),
         cwd: rctx.latestCtx.cwd,

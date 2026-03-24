@@ -2,26 +2,41 @@ import { describe, test, expect } from "bun:test";
 import { contextPercent, donutColor, donutStroke } from "./ContextDonut";
 
 describe("contextPercent", () => {
-  test("returns 0 when contextWindow is 0", () => {
-    expect(contextPercent({ input: 1000, output: 500, cacheRead: 0, cacheWrite: 0, cost: 0 }, 0)).toBe(0);
+  test("returns null when contextWindow is 0", () => {
+    expect(contextPercent({ input: 1000, output: 500, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 500 }, 0)).toBeNull();
   });
 
-  test("returns 0 when contextWindow is negative", () => {
-    expect(contextPercent({ input: 1000, output: 500, cacheRead: 0, cacheWrite: 0, cost: 0 }, -100)).toBe(0);
+  test("returns null when contextWindow is negative", () => {
+    expect(contextPercent({ input: 1000, output: 500, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 500 }, -100)).toBeNull();
   });
 
-  test("calculates percentage correctly", () => {
-    const usage = { input: 50000, output: 10000, cacheRead: 20000, cacheWrite: 5000, cost: 0.5 };
+  test("returns null when contextTokens is missing", () => {
+    const usage = { input: 50000, output: 10000, cacheRead: 0, cacheWrite: 0, cost: 0 };
+    expect(contextPercent(usage, 200000)).toBeNull();
+  });
+
+  test("returns null when contextTokens is null", () => {
+    const usage = { input: 50000, output: 10000, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: null };
+    expect(contextPercent(usage, 200000)).toBeNull();
+  });
+
+  test("returns null when contextTokens is 0", () => {
+    const usage = { input: 50000, output: 10000, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 0 };
+    expect(contextPercent(usage, 200000)).toBeNull();
+  });
+
+  test("calculates percentage correctly with contextTokens", () => {
+    const usage = { input: 50000, output: 10000, cacheRead: 20000, cacheWrite: 5000, cost: 0.5, contextTokens: 50000 };
     expect(contextPercent(usage, 200000)).toBe(25);
   });
 
   test("clamps at 100%", () => {
-    const usage = { input: 300000, output: 10000, cacheRead: 0, cacheWrite: 0, cost: 0 };
+    const usage = { input: 300000, output: 10000, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 300000 };
     expect(contextPercent(usage, 200000)).toBe(100);
   });
 
   test("handles small usage", () => {
-    const usage = { input: 100, output: 50, cacheRead: 0, cacheWrite: 0, cost: 0 };
+    const usage = { input: 100, output: 50, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 100 };
     expect(contextPercent(usage, 200000)).toBeCloseTo(0.05, 2);
   });
 });
