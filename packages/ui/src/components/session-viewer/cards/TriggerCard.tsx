@@ -75,12 +75,12 @@ function AskUserQuestionCard({
   );
 
   return (
-    <ToolCardShell>
-      <ToolCardHeader className="py-2.5">
+    <ToolCardShell className="border-blue-500/40 bg-blue-950/20 shadow-[0_0_12px_-3px_rgba(59,130,246,0.25)]">
+      <ToolCardHeader className="py-2.5 border-blue-500/20 bg-blue-950/30">
         <ToolCardTitle
-          icon={<Zap className="size-3.5 shrink-0 text-blue-400" />}
+          icon={<Zap className="size-3.5 shrink-0 text-blue-400 animate-pulse" />}
         >
-          <span className="text-sm font-medium text-zinc-300">
+          <span className="text-sm font-medium text-blue-200">
             Question from Child {childName ? `"${childName}"` : ""}
           </span>
         </ToolCardTitle>
@@ -195,12 +195,12 @@ function PlanReviewCard({
   isResponding?: boolean;
 }) {
   return (
-    <ToolCardShell>
-      <ToolCardHeader className="py-2.5">
+    <ToolCardShell className="border-amber-500/40 bg-amber-950/20 shadow-[0_0_12px_-3px_rgba(245,158,11,0.25)]">
+      <ToolCardHeader className="py-2.5 border-amber-500/20 bg-amber-950/30">
         <ToolCardTitle
-          icon={<Clock className="size-3.5 shrink-0 text-amber-400" />}
+          icon={<Clock className="size-3.5 shrink-0 text-amber-400 animate-pulse" />}
         >
-          <span className="text-sm font-medium text-zinc-300">
+          <span className="text-sm font-medium text-amber-200">
             Plan Review from {childName ? `"${childName}"` : "Child"}
           </span>
         </ToolCardTitle>
@@ -226,7 +226,7 @@ function PlanReviewCard({
         </ToolCardSection>
       )}
 
-      <div className="flex flex-wrap gap-2 px-4 py-3 border-t border-zinc-800 bg-zinc-900/50">
+      <div className="flex flex-wrap gap-2 px-4 py-3 border-t border-amber-500/20 bg-amber-950/20">
         <Button
           size="sm"
           variant="default"

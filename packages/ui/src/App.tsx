@@ -1,4 +1,5 @@
 import * as React from "react";
+import { initAnimationSync } from "@/lib/synced-animation";
 import { SessionSidebar, type DotState, type HubSession } from "@/components/SessionSidebar";
 import { SessionViewer, type RelayMessage } from "@/components/SessionViewer";
 import type { CommandResultData } from "@/components/session-viewer/rendering";
@@ -22,7 +23,6 @@ import type {
 } from "@pizzapi/protocol";
 import { isMetaRelayEvent } from "@pizzapi/protocol";
 import { cn } from "@/lib/utils";
-import { syncedPulse } from "@/lib/synced-animation";
 import { pulseStreamingHaptic, cancelHaptic, startToolHaptic, stopToolHaptic } from "@/lib/haptics";
 import { Button } from "@/components/ui/button";
 import { TooltipProvider, Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
@@ -100,6 +100,9 @@ import {
 } from "@/lib/message-helpers";
 import { evictLruIfNeeded, touchSessionCache, MAX_SESSION_UI_CACHE_SIZE } from "@/lib/session-ui-cache";
 import { analyzeIncomingSeq, mergeConnectedSeq, shouldDeferEventForHydration } from "@/lib/session-seq";
+
+// Sync all CSS animations (pulse, chase-spin, etc.) to the same phase globally.
+initAnimationSync();
 
 export function App() {
   const { data: session, isPending } = useSession();
@@ -183,7 +186,7 @@ export function App() {
   const [pendingQuestion, setPendingQuestion] = React.useState<{ toolCallId: string; questions: Array<{ question: string; options: string[]; type?: import("@/lib/ask-user-questions").QuestionType }>; display: QuestionDisplayMode } | null>(null);
 
   /** Set of session IDs that currently have a pending AskUserQuestion. */
-  const [sessionsWithPendingQuestion, setSessionsWithPendingQuestion] = React.useState<Set<string>>(new Set());
+  const [sessionsAwaitingInput, setSessionsAwaitingInput] = React.useState<Set<string>>(new Set());
 
   /** Pending plan mode prompt from the worker — shown as a plan review panel in the viewer. */
   const [pendingPlan, setPendingPlan] = React.useState<{
@@ -420,19 +423,21 @@ export function App() {
 
     sessionUiCacheRef.current.set(sessionId, next);
 
-    // Keep the sidebar indicator in sync: track which sessions are awaiting input.
-    if (Object.prototype.hasOwnProperty.call(patch, "pendingQuestion")) {
-      setSessionsWithPendingQuestion((prev) => {
+    // Keep the sidebar indicator in sync: track which sessions are awaiting input
+    // (either a pending question or a pending plan review).
+    if (Object.prototype.hasOwnProperty.call(patch, "pendingQuestion") ||
+        Object.prototype.hasOwnProperty.call(patch, "pendingPlan")) {
+      setSessionsAwaitingInput((prev) => {
         const next = new Set(prev);
-        if (patch.pendingQuestion) {
+        if (patch.pendingQuestion || patch.pendingPlan) {
           next.add(sessionId);
-        } else {
+        } else if (!patch.pendingQuestion && !patch.pendingPlan) {
           next.delete(sessionId);
         }
         return next;
       });
     }
-  }, [setSessionsWithPendingQuestion]);
+  }, [setSessionsAwaitingInput]);
 
   // Debounce streaming delta updates (toolcall_delta, text_delta, thinking_delta) so we
   // flush at most once per animation frame instead of once per character.
@@ -1990,14 +1995,15 @@ export function App() {
     const handleStateSnapshot = ({ sessionId, state }: { sessionId: string; state: SessionMetaState }) => {
       const currentSessionId = activeSessionRef.current;
 
-      // For background sessions: extract pendingQuestion from the initial
-      // state_snapshot so badges are correct on load/reconnect even when the
-      // session is already blocked waiting for user input.
+      // For background sessions: extract pendingQuestion/pendingPlan from the
+      // initial state_snapshot so badges are correct on load/reconnect even
+      // when the session is already blocked waiting for user input.
       if (sessionId !== currentSessionId) {
-        if (Object.prototype.hasOwnProperty.call(state, "pendingQuestion")) {
-          setSessionsWithPendingQuestion((prev) => {
+        if (Object.prototype.hasOwnProperty.call(state, "pendingQuestion") ||
+            Object.prototype.hasOwnProperty.call(state, "pendingPlan")) {
+          setSessionsAwaitingInput((prev) => {
             const next = new Set(prev);
-            if (state.pendingQuestion) {
+            if (state.pendingQuestion || state.pendingPlan) {
               next.add(sessionId);
             } else {
               next.delete(sessionId);
@@ -2017,11 +2023,13 @@ export function App() {
     const handleMetaEvent = (payload: { sessionId: string; version: number } & Record<string, unknown>) => {
       // Update the sidebar pending-question badge for ANY session's meta event,
       // not just the active one.  Background sessions emit pendingQuestion
-      // updates into their own meta rooms; the badge must reflect all of them.
-      if (Object.prototype.hasOwnProperty.call(payload, "pendingQuestion")) {
-        setSessionsWithPendingQuestion((prev) => {
+      // and pendingPlan updates into their own meta rooms; the badge must
+      // reflect all of them.
+      if (Object.prototype.hasOwnProperty.call(payload, "pendingQuestion") ||
+          Object.prototype.hasOwnProperty.call(payload, "pendingPlan")) {
+        setSessionsAwaitingInput((prev) => {
           const next = new Set(prev);
-          if (payload.pendingQuestion) {
+          if (payload.pendingQuestion || payload.pendingPlan) {
             next.add(payload.sessionId);
           } else {
             next.delete(payload.sessionId);
@@ -2597,6 +2605,20 @@ export function App() {
       setViewerStatus("Ending session…");
     } else if (command === "compact") {
       setViewerStatus("Compacting…");
+    } else if (command === "abort") {
+      // Optimistically mark as inactive so the UI updates immediately
+      // instead of waiting for the next heartbeat cycle.
+      setAgentActive(false);
+      patchSessionCache({ agentActive: false });
+      // Also update the sidebar's live session list so the session row
+      // transitions from "active" to "completed unread" without waiting
+      // for the hub's next session_status heartbeat.
+      const sid = activeSessionRef.current;
+      if (sid) {
+        setLiveSessions((prev) =>
+          prev.map((s) => (s.sessionId === sid ? { ...s, isActive: false } : s)),
+        );
+      }
     }
     try {
       const { type: _type, ...rest } = payload;
@@ -3334,7 +3356,6 @@ export function App() {
                 >
                   <span
                     className={`inline-block h-1.5 w-1.5 rounded-full flex-shrink-0 transition-colors ${agentActive ? "bg-green-400 shadow-[0_0_5px_#4ade8080] animate-pulse" : "bg-slate-400"}`}
-                    style={agentActive ? syncedPulse() : undefined}
                   />
                   {activeModel?.provider && (
                     <ProviderIcon provider={activeModel.provider} className="size-3.5 flex-shrink-0" />
@@ -3387,7 +3408,6 @@ export function App() {
                           <span
                             className={`absolute -top-0.5 -right-0.5 inline-block h-2 w-2 rounded-full border-2 border-popover ${s.isActive ? "bg-blue-400 animate-pulse" : "bg-green-600"}`}
                             title={s.isActive ? "Generating" : "Idle"}
-                            style={s.isActive ? syncedPulse() : undefined}
                           />
                         </div>
                         {/* Name + path */}
@@ -3588,7 +3608,7 @@ export function App() {
               selectedRunnerId={selectedRunnerId}
               onSelectRunner={setSelectedRunnerId}
               onShowSessions={() => setShowRunners(false)}
-              sessionsWithPendingQuestion={sessionsWithPendingQuestion}
+              sessionsAwaitingInput={sessionsAwaitingInput}
             />
           </ErrorBoundary>
         </div>
