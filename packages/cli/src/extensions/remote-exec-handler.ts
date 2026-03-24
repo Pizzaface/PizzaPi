@@ -14,6 +14,7 @@ import { refreshAllUsage, buildProviderUsage } from "./remote-provider-usage.js"
 import type { RemoteExecRequest, RemoteExecResponse } from "./remote-commands.js";
 import type { RelayContext, RelayModelInfo } from "./remote-types.js";
 import { emitThinkingLevelChanged, emitCompactStarted, emitCompactEnded, emitRetryStateChanged, emitPluginTrustResolved } from "./remote-meta-events.js";
+import { listSessionsCached } from "../runner/session-list-cache.js";
 
 export interface ExecHandlerCallbacks {
     setModelFromWeb(provider: string, modelId: string): Promise<void>;
@@ -21,11 +22,8 @@ export interface ExecHandlerCallbacks {
 }
 
 function listSessionsForResume(ctx: ExtensionContext): Promise<SessionInfo[]> {
-    const cwd = ctx.sessionManager.getCwd();
     const sessionDir = ctx.sessionManager.getSessionDir();
-    return SessionManager.list(cwd, sessionDir).then(sessions =>
-        sessions.sort((a, b) => b.modified.getTime() - a.modified.getTime())
-    );
+    return listSessionsCached(sessionDir);
 }
 
 function pickResumeSession(sessions: SessionInfo[], currentPath: string | undefined, query?: string): SessionInfo | null {
