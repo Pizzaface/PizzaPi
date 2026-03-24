@@ -47,7 +47,7 @@ function CustomTooltip({ active, payload, label }: any) {
           <span style={{ fontVariantNumeric: "tabular-nums" }}>{formatTokens(p.value)}</span>
         </div>
       ))}
-      <div style={{ borderTop: "1px solid hsl(var(--border))", marginTop: "4px", paddingTop: "4px", display: "flex", justifyContent: "space-between", fontWeight: 600, ...tooltipItemStyle }}>
+      <div style={{ borderTop: "1px solid var(--border)", marginTop: "4px", paddingTop: "4px", display: "flex", justifyContent: "space-between", fontWeight: 600, ...tooltipItemStyle }}>
         <span>Total</span>
         <span style={{ fontVariantNumeric: "tabular-nums" }}>{formatTokens(total)}</span>
       </div>
@@ -105,12 +105,12 @@ export function TokenChart({ daily }: TokenChartProps) {
             <XAxis
               dataKey="date"
               className="text-xs"
-              tick={{ fontSize: 12, fill: "hsl(var(--muted-foreground))" }}
+              tick={{ fontSize: 12, fill: "var(--muted-foreground)" }}
               tickFormatter={formatDate}
             />
             <YAxis
               className="text-xs"
-              tick={{ fontSize: 12, fill: "hsl(var(--muted-foreground))" }}
+              tick={{ fontSize: 12, fill: "var(--muted-foreground)" }}
               tickFormatter={formatTokens}
             />
             <Tooltip
@@ -123,8 +123,8 @@ export function TokenChart({ daily }: TokenChartProps) {
               formatter={(value: string, entry: any) => (
                 <span style={{
                   color: hidden.has(entry.dataKey)
-                    ? "hsl(var(--muted-foreground))"
-                    : "hsl(var(--foreground))",
+                    ? "var(--muted-foreground)"
+                    : "var(--foreground)",
                   textDecoration: hidden.has(entry.dataKey) ? "line-through" : "none",
                   opacity: hidden.has(entry.dataKey) ? 0.5 : 1,
                 }}>
@@ -148,7 +148,7 @@ export function TokenChart({ daily }: TokenChartProps) {
                   r: 5,
                   strokeWidth: 2,
                   stroke: s.color,
-                  fill: "hsl(var(--background))",
+                  fill: "var(--background)",
                 }}
               />
             ))}

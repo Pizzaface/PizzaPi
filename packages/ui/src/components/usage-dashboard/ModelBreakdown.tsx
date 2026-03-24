@@ -55,7 +55,7 @@ export function ModelBreakdown({ byModel }: ModelBreakdownProps) {
       <div style={tooltipContentStyle}>
         <p style={tooltipLabelStyle}>{d.label}</p>
         <div style={tooltipItemStyle}>
-          <span style={{ color: "hsl(var(--muted-foreground))" }}>{d.provider}</span>
+          <span style={{ color: "var(--muted-foreground)" }}>{d.provider}</span>
         </div>
         <div style={{ display: "flex", justifyContent: "space-between", gap: "16px", ...tooltipItemStyle }}>
           <span>Cost</span>
@@ -106,7 +106,7 @@ export function ModelBreakdown({ byModel }: ModelBreakdownProps) {
                     <Cell
                       key={`cell-${index}`}
                       fill={PIE_COLORS[index % PIE_COLORS.length]}
-                      stroke="hsl(var(--background))"
+                      stroke="var(--background)"
                       strokeWidth={2}
                     />
                   ))}

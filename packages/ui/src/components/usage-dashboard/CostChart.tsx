@@ -40,7 +40,7 @@ function CustomTooltip({ active, payload, label }: any) {
           <span style={{ fontVariantNumeric: "tabular-nums" }}>{formatCurrency(p.value)}</span>
         </div>
       ))}
-      <div style={{ borderTop: "1px solid hsl(var(--border))", marginTop: "4px", paddingTop: "4px", display: "flex", justifyContent: "space-between", fontWeight: 600, ...tooltipItemStyle }}>
+      <div style={{ borderTop: "1px solid var(--border)", marginTop: "4px", paddingTop: "4px", display: "flex", justifyContent: "space-between", fontWeight: 600, ...tooltipItemStyle }}>
         <span>Total</span>
         <span style={{ fontVariantNumeric: "tabular-nums" }}>{formatCurrency(total)}</span>
       </div>
@@ -77,12 +77,12 @@ export function CostChart({ daily }: CostChartProps) {
             <XAxis
               dataKey="date"
               className="text-xs"
-              tick={{ fontSize: 12, fill: "hsl(var(--muted-foreground))" }}
+              tick={{ fontSize: 12, fill: "var(--muted-foreground)" }}
               tickFormatter={formatDate}
             />
             <YAxis
               className="text-xs"
-              tick={{ fontSize: 12, fill: "hsl(var(--muted-foreground))" }}
+              tick={{ fontSize: 12, fill: "var(--muted-foreground)" }}
               tickFormatter={formatCurrency}
             />
             <Tooltip

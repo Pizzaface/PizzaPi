@@ -48,27 +48,31 @@ export const PIE_COLORS = [
 
 // ── Tooltip styles ──────────────────────────────────────────────────────────
 
-/** Inline style object for Recharts <Tooltip contentStyle={…} /> */
+/** Inline style object for the custom tooltip wrapper div. */
 export const tooltipContentStyle: React.CSSProperties = {
-  backgroundColor: "hsl(var(--popover))",
-  color: "hsl(var(--popover-foreground))",
-  border: "1px solid hsl(var(--border))",
+  backgroundColor: "var(--popover)",
+  color: "var(--popover-foreground)",
+  border: "1px solid var(--border)",
   borderRadius: "var(--radius)",
-  fontSize: "0.8125rem",
-  lineHeight: "1.25rem",
-  padding: "8px 12px",
+  fontSize: "0.75rem",
+  lineHeight: "1.125rem",
+  padding: "6px 10px",
   boxShadow: "0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1)",
+  minWidth: "140px",
+  maxWidth: "220px",
 };
 
 export const tooltipLabelStyle: React.CSSProperties = {
-  color: "hsl(var(--popover-foreground))",
+  color: "var(--popover-foreground)",
   fontWeight: 600,
-  marginBottom: "4px",
+  marginBottom: "2px",
+  fontSize: "0.75rem",
 };
 
 export const tooltipItemStyle: React.CSSProperties = {
-  color: "hsl(var(--popover-foreground))",
+  color: "var(--popover-foreground)",
   padding: "1px 0",
+  fontSize: "0.6875rem",
 };
 
 // ── Formatters ──────────────────────────────────────────────────────────────
@@ -98,6 +102,6 @@ export function formatDate(dateStr: string): string {
 
 /** Semi-transparent cursor overlay for bar/area charts. */
 export const chartCursorStyle = {
-  fill: "hsl(var(--muted))",
+  fill: "var(--muted)",
   fillOpacity: 0.4,
 };
