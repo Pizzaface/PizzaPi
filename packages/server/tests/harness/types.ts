@@ -14,7 +14,7 @@ export interface TestServerOptions {
 export interface TestServer {
     /** Ephemeral port the server is listening on */
     port: number;
-    /** Base URL: http://localhost:{port} */
+    /** Base URL: http://127.0.0.1:{port} */
     baseUrl: string;
     /** The Socket.IO server instance */
     io: import("socket.io").Server;

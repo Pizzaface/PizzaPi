@@ -20,7 +20,7 @@ import type { MockRelay, MockRelayOptions, MockRelaySession } from "./types.js";
  * (io.close) can complete without the client reconnecting.
  *
  * @param server - The test server to connect to.
- * @param _opts  - Reserved for future options; currently unused.
+ * @param opts   - Connection options. Set `forceNew: true` to force a fresh socket.
  * @returns A connected MockRelay ready to register sessions and emit events.
  *
  * @example
