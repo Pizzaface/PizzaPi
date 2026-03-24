@@ -6,7 +6,7 @@ import { CostChart } from "./CostChart";
 import { TokenChart } from "./TokenChart";
 import { ModelBreakdown } from "./ModelBreakdown";
 import { ProjectBreakdown } from "./ProjectBreakdown";
-import { Card, CardContent } from "@/components/ui/card";
+import { SessionTable } from "./SessionTable";
 import { AlertCircle, Loader2 } from "lucide-react";
 import type { UsageData, UsageRange } from "./types";
 
@@ -112,69 +112,7 @@ export function UsageDashboard({ runnerId }: UsageDashboardProps) {
       </div>
 
       {/* Recent Sessions */}
-      {data.recentSessions.length > 0 && (
-        <Card>
-          <div className="px-6 py-4 border-b">
-            <h3 className="font-semibold">Recent Sessions</h3>
-          </div>
-          <CardContent className="pt-4">
-            <div className="space-y-2 overflow-x-auto">
-              <table className="w-full text-sm">
-                <thead className="border-b">
-                  <tr className="text-muted-foreground">
-                    <th className="text-left py-2 px-2 font-medium">
-                      Session
-                    </th>
-                    <th className="text-left py-2 px-2 font-medium">
-                      Project
-                    </th>
-                    <th className="text-left py-2 px-2 font-medium">Model</th>
-                    <th className="text-right py-2 px-2 font-medium">Cost</th>
-                    <th className="text-right py-2 px-2 font-medium">
-                      Messages
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.recentSessions.map((session) => (
-                    <tr
-                      key={session.id}
-                      className="border-b last:border-0 hover:bg-muted/50 transition-colors"
-                    >
-                      <td
-                        className="py-2 px-2 truncate max-w-xs"
-                        title={session.sessionName || `Session ${session.id.slice(0, 8)}`}
-                      >
-                        {session.sessionName || `Session ${session.id.slice(0, 8)}`}
-                      </td>
-                      <td
-                        className="py-2 px-2 truncate max-w-xs"
-                        title={session.project}
-                      >
-                        {session.projectShort}
-                      </td>
-                      <td
-                        className="py-2 px-2 truncate"
-                        title={session.primaryModel}
-                      >
-                        {session.primaryModel}
-                      </td>
-                      <td className="py-2 px-2 text-right tabular-nums">
-                        {session.totalCost
-                          ? `$${session.totalCost.toFixed(2)}`
-                          : "—"}
-                      </td>
-                      <td className="py-2 px-2 text-right tabular-nums">
-                        {session.messageCount}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </CardContent>
-        </Card>
-      )}
+      <SessionTable sessions={data.recentSessions} />
     </div>
   );
 }
