@@ -10,6 +10,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
+import { syncedPulse } from "@/lib/synced-animation";
 import { io } from "socket.io-client";
 import type { HubServerToClientEvents, HubClientToServerEvents } from "@pizzapi/protocol";
 import { extractWorktreeName, formatPathTail, worktreeRoots } from "@/lib/path";
@@ -1296,6 +1297,9 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                         style={{
                                                             transform: !selectMode && hasOffset ? `translateX(${swipeOffset}px)` : undefined,
                                                             touchAction: selectMode ? undefined : "pan-y",
+                                                            ...(visualState === "active" || visualState === "awaiting" || visualState === "completedUnread"
+                                                                ? syncedPulse(visualState === "active" ? 2000 : 2500)
+                                                                : undefined),
                                                         }}
                                                     >
                                                         {/* Expand/collapse toggle for parent sessions */}
@@ -1365,13 +1369,16 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                         )}
 
                                                         {/* Provider icon — status indicated via background/glow */}
-                                                        <div className={cn(
-                                                            "relative flex-shrink-0 flex items-center justify-center w-7 h-7 rounded-md transition-all duration-300",
-                                                            visualState === "active" && "bg-blue-500/20 shadow-[0_0_8px_#3b82f680] animate-pulse",
-                                                            visualState === "awaiting" && "bg-amber-500/20 shadow-[0_0_8px_#f59e0b60]",
-                                                            visualState === "completedUnread" && "bg-green-500/20 shadow-[0_0_8px_#22c55e60]",
-                                                            (visualState === "idle" || visualState === "selected") && "bg-sidebar-accent/50",
-                                                        )}>
+                                                        <div
+                                                            className={cn(
+                                                                "relative flex-shrink-0 flex items-center justify-center w-7 h-7 rounded-md transition-all duration-300",
+                                                                visualState === "active" && "bg-blue-500/20 shadow-[0_0_8px_#3b82f680] animate-pulse",
+                                                                visualState === "awaiting" && "bg-amber-500/20 shadow-[0_0_8px_#f59e0b60]",
+                                                                visualState === "completedUnread" && "bg-green-500/20 shadow-[0_0_8px_#22c55e60]",
+                                                                (visualState === "idle" || visualState === "selected") && "bg-sidebar-accent/50",
+                                                            )}
+                                                            style={visualState === "active" ? syncedPulse() : undefined}
+                                                        >
                                                             <ProviderIcon
                                                                 provider={provider}
                                                                 className="size-4 text-sidebar-foreground/70"

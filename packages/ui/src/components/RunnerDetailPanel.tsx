@@ -8,6 +8,7 @@ import {
     TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { syncedPulse } from "@/lib/synced-animation";
 import { formatPathTail } from "@/lib/path";
 import { SkillsManager, type SkillInfo } from "@/components/SkillsManager";
 import { AgentsManager, type AgentInfo } from "@/components/AgentsManager";
@@ -151,6 +152,7 @@ function SessionsList({
                                     ? "bg-blue-400 shadow-[0_0_5px_#60a5fa80] animate-pulse"
                                     : "bg-green-500/70",
                             )}
+                            style={active ? syncedPulse() : undefined}
                         />
 
                         {/* Name + cwd */}
