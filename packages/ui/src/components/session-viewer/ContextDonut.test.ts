@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { contextPercent, donutColor, donutStroke } from "./ContextDonut";
+import { contextPercent, donutColor, donutStroke } from "./context-donut-utils";
 
 describe("contextPercent", () => {
   test("returns null when contextWindow is 0", () => {
