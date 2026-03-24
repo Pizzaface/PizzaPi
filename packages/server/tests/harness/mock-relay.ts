@@ -40,6 +40,11 @@ export async function createMockRelay(
         socket.once("connect_error", onError);
     });
 
+    // Serial queue — ensures only one registerSession call is in-flight at a time.
+    // Concurrent calls on the same socket would both receive the first "registered"
+    // event, causing one call to get wrong data and the other to be dropped.
+    let _registerLock: Promise<unknown> = Promise.resolve();
+
     function waitForEvent(eventName: string, timeout = 5000): Promise<unknown> {
         return new Promise<unknown>((resolve, reject) => {
             const handler = (data: unknown) => {
@@ -64,28 +69,38 @@ export async function createMockRelay(
         sessionName?: string | null;
         parentSessionId?: string | null;
     }): Promise<MockRelaySession> {
-        const registeredPromise = waitForEvent("registered");
+        // Serialize via _registerLock: only one registration may be in-flight at a time.
+        // Without this, concurrent calls would both listen for the first "registered" event,
+        // causing one call to receive the other's session data.
+        const doRegister = async (): Promise<MockRelaySession> => {
+            const registeredPromise = waitForEvent("registered");
 
-        socket.emit("register", {
-            sessionId: opts?.sessionId,
-            cwd: opts?.cwd ?? "/tmp/mock-session",
-            ephemeral: opts?.ephemeral ?? true,
-            collabMode: opts?.collabMode ?? false,
-            sessionName: opts?.sessionName ?? null,
-            parentSessionId: opts?.parentSessionId ?? null,
-        });
+            socket.emit("register", {
+                sessionId: opts?.sessionId,
+                cwd: opts?.cwd ?? "/tmp/mock-session",
+                ephemeral: opts?.ephemeral ?? true,
+                collabMode: opts?.collabMode ?? false,
+                sessionName: opts?.sessionName ?? null,
+                parentSessionId: opts?.parentSessionId ?? null,
+            });
 
-        const data = await registeredPromise as {
-            sessionId: string;
-            token: string;
-            shareUrl: string;
+            const data = await registeredPromise as {
+                sessionId: string;
+                token: string;
+                shareUrl: string;
+            };
+
+            return {
+                sessionId: data.sessionId,
+                token: data.token,
+                shareUrl: data.shareUrl,
+            };
         };
 
-        return {
-            sessionId: data.sessionId,
-            token: data.token,
-            shareUrl: data.shareUrl,
-        };
+        // Chain this call onto the lock; swallow errors so failures don't jam the queue.
+        const result = _registerLock.then(doRegister, doRegister);
+        _registerLock = result.then(() => {}, () => {});
+        return result;
     }
 
     function emitEvent(sessionId: string, token: string, event: unknown, seq?: number): void {
