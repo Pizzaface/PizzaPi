@@ -574,7 +574,7 @@ export async function updateSessionHeartbeat(
     const isActive = heartbeat.active === true;
     const lastHeartbeatAt = new Date().toISOString();
     const nextSessionName = hasSessionName
-        ? normalizeSessionName((heartbeat as any).sessionName)
+        ? normalizeSessionName(heartbeat.sessionName)
         : session.sessionName;
 
     const fields: Partial<RedisSessionData> = {

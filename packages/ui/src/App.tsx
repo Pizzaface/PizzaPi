@@ -20,6 +20,7 @@ import type {
   HubClientToServerEvents,
   SessionMetaState,
 } from "@pizzapi/protocol";
+import { isMetaRelayEvent } from "@pizzapi/protocol";
 import { cn } from "@/lib/utils";
 import { pulseStreamingHaptic, cancelHaptic, startToolHaptic, stopToolHaptic } from "@/lib/haptics";
 import { Button } from "@/components/ui/button";
@@ -936,11 +937,11 @@ export function App() {
 
     if (patch.setPendingPlan) {
       if (patch.pendingPlan) {
-        const pp = patch.pendingPlan as any;
-        if (typeof pp.toolCallId === "string" && typeof pp.title === "string") {
+        const pp = patch.pendingPlan;
+        if (pp && typeof pp.toolCallId === "string" && typeof pp.title === "string") {
           const steps = Array.isArray(pp.steps)
-            ? pp.steps.filter((s: any): s is { title: string; description?: string } =>
-                s !== null && typeof s === "object" && typeof s.title === "string" && s.title.trim().length > 0,
+            ? pp.steps.filter((s): s is { title: string; description?: string } =>
+                s !== null && typeof s === "object" && typeof (s as { title?: unknown }).title === "string" && (s as { title: string }).title.trim().length > 0,
               )
             : [];
           const resolved = {
@@ -1076,6 +1077,8 @@ export function App() {
         model?: { provider: string; id: string; name?: string } | null;
         sessionName?: string | null;
         ts?: number;
+        /** Old (fat) CLI heartbeats may carry mcpStartupReport inline. */
+        mcpStartupReport?: Record<string, unknown> | null;
       };
 
       const nextAgentActive = hb.active === true;
@@ -1113,8 +1116,8 @@ export function App() {
         }
       }
 
-      if ((hb as any).mcpStartupReport && typeof (hb as any).mcpStartupReport === "object") {
-        applyMcpReport((hb as any).mcpStartupReport);
+      if (hb.mcpStartupReport && typeof hb.mcpStartupReport === "object") {
+        applyMcpReport(hb.mcpStartupReport);
       }
 
       patchSessionCache(cachePatch);
@@ -1129,12 +1132,12 @@ export function App() {
     }
 
     if (type === "capabilities") {
-      const modelsRaw = Array.isArray((evt as any).models) ? ((evt as any).models as unknown[]) : [];
-      const commandsRaw = Array.isArray((evt as any).commands) ? ((evt as any).commands as any[]) : [];
+      const modelsRaw = Array.isArray(evt.models) ? (evt.models as unknown[]) : [];
+      const commandsRaw = Array.isArray(evt.commands) ? (evt.commands as unknown[]) : [];
 
       const normalizedModels = normalizeModelList(modelsRaw);
       const normalizedCommands = commandsRaw
-        .filter((c) => c && typeof c === "object" && typeof c.name === "string")
+        .filter((c): c is Record<string, unknown> => c !== null && typeof c === "object" && typeof (c as Record<string, unknown>).name === "string")
         .map((c) => ({ name: String(c.name), description: typeof c.description === "string" ? c.description : undefined, source: typeof c.source === "string" ? c.source : undefined }))
         .sort((a, b) => a.name.localeCompare(b.name));
 
@@ -1148,7 +1151,7 @@ export function App() {
     if (type === "session_active") {
       const state = evt.state as Record<string, unknown> | undefined;
       const rawMessages = Array.isArray(state?.messages) ? (state?.messages as unknown[]) : [];
-      const isChunked = !!(state as any)?.chunked;
+      const isChunked = !!state?.chunked;
       const stateModel = normalizeModel(state?.model);
       const stateModels = Array.isArray(state?.availableModels)
         ? normalizeModelList(state.availableModels as unknown[])
@@ -1170,8 +1173,8 @@ export function App() {
       // Track chunked delivery state — messages arrive as subsequent
       // session_messages_chunk events when the session is large.
       if (isChunked) {
-        const totalMessages = typeof (state as any)?.totalMessages === "number" ? (state as any).totalMessages : 0;
-        const snapshotId = typeof (state as any)?.snapshotId === "string" ? (state as any).snapshotId : "";
+        const totalMessages = typeof state?.totalMessages === "number" ? state.totalMessages : 0;
+        const snapshotId = typeof state?.snapshotId === "string" ? state.snapshotId : "";
         chunkedDeliveryRef.current = {
           snapshotId,
           totalMessages,
@@ -1259,11 +1262,11 @@ export function App() {
         return;
       }
 
-      const chunkSnapshotId = typeof (evt as any).snapshotId === "string" ? (evt as any).snapshotId : "";
+      const chunkSnapshotId = typeof evt.snapshotId === "string" ? evt.snapshotId : "";
       const chunkMessages = Array.isArray(evt.messages) ? evt.messages as unknown[] : [];
-      const isFinal = !!(evt as any).final;
-      const totalChunks = typeof (evt as any).totalChunks === "number" ? (evt as any).totalChunks : 0;
-      const totalMessages = typeof (evt as any).totalMessages === "number" ? (evt as any).totalMessages : 0;
+      const isFinal = !!evt.final;
+      const totalChunks = typeof evt.totalChunks === "number" ? evt.totalChunks : 0;
+      const totalMessages = typeof evt.totalMessages === "number" ? evt.totalMessages : 0;
 
       // Discard chunks from a stale snapshot stream.  Two cases:
       // 1) A newer snapshot is actively loading (ref is non-null, IDs differ).
@@ -1352,11 +1355,12 @@ export function App() {
     }
 
     if (type === "exec_result") {
-      const ok = (evt as any).ok === true;
-      const command = typeof (evt as any).command === "string" ? String((evt as any).command) : "";
-      const result = (evt as any).result;
+      const ok = evt.ok === true;
+      const command = typeof evt.command === "string" ? String(evt.command) : "";
+      // result is the dynamic exec response payload — typed as Record for property access
+      const result = evt.result as Record<string, unknown> | null | undefined;
       if (!ok) {
-        const error = typeof (evt as any).error === "string" ? (evt as any).error : "Command failed";
+        const error = typeof evt.error === "string" ? evt.error : "Command failed";
         if (command === "list_resume_sessions") {
           setResumeSessionsLoading(false);
         }
@@ -1431,8 +1435,9 @@ export function App() {
           ? result.toolNames.filter((n: unknown): n is string => typeof n === "string")
           : [];
         const errors = Array.isArray(result?.errors) ? result.errors as Array<{ server: string; error: string }> : [];
-        const servers = Array.isArray(result?.config?.effectiveServers)
-          ? (result.config.effectiveServers as Array<{ name: string; transport: string; scope: string; sourcePath?: string }>)
+        const mcpConfig = result?.config && typeof result.config === "object" ? result.config as Record<string, unknown> : null;
+        const servers = Array.isArray(mcpConfig?.effectiveServers)
+          ? (mcpConfig.effectiveServers as Array<{ name: string; transport: string; scope: string; sourcePath?: string }>)
           : [];
         const action = typeof result?.action === "string" && result.action === "reload" ? "reload" as const : "status" as const;
         // serverTools: Record<string, string[]> — tools grouped by MCP server name
@@ -1440,8 +1445,8 @@ export function App() {
           ? result.serverTools as Record<string, string[]>
           : {};
 
-        const disabledServersForMcp = Array.isArray(result?.config?.disabledServers)
-          ? result.config.disabledServers.filter((s: unknown): s is string => typeof s === "string")
+        const disabledServersForMcp = Array.isArray(mcpConfig?.disabledServers)
+          ? (mcpConfig.disabledServers as unknown[]).filter((s: unknown): s is string => typeof s === "string")
           : [];
 
         appendLocalSystemMessage({
@@ -1471,14 +1476,15 @@ export function App() {
           ? result.toolNames.filter((n: unknown): n is string => typeof n === "string")
           : [];
         const errors = Array.isArray(result?.errors) ? result.errors as Array<{ server: string; error: string }> : [];
-        const servers = Array.isArray(result?.config?.effectiveServers)
-          ? (result.config.effectiveServers as Array<{ name: string; transport: string; scope: string; sourcePath?: string }>)
+        const toggleConfig = result?.config && typeof result.config === "object" ? result.config as Record<string, unknown> : null;
+        const servers = Array.isArray(toggleConfig?.effectiveServers)
+          ? (toggleConfig.effectiveServers as Array<{ name: string; transport: string; scope: string; sourcePath?: string }>)
           : [];
         const serverTools = result?.serverTools && typeof result.serverTools === "object" && !Array.isArray(result.serverTools)
           ? result.serverTools as Record<string, string[]>
           : {};
-        const disabledServers = Array.isArray(result?.config?.disabledServers)
-          ? result.config.disabledServers.filter((s: unknown): s is string => typeof s === "string")
+        const disabledServers = Array.isArray(toggleConfig?.disabledServers)
+          ? (toggleConfig.disabledServers as unknown[]).filter((s: unknown): s is string => typeof s === "string")
           : [];
         const toggledServer = typeof result?.toggledServer === "string" ? result.toggledServer : "";
         const disabled = result?.disabled === true;
@@ -1510,7 +1516,7 @@ export function App() {
       }
 
       if (command === "set_plan_mode") {
-        const enabled = !!(result as any)?.planModeEnabled;
+        const enabled = !!result?.planModeEnabled;
         setPlanModeEnabled(enabled);
         patchSessionCache({ planModeEnabled: enabled });
         setViewerStatus(enabled ? "⏸ Plan mode ON" : "▶ Plan mode OFF");
@@ -1985,15 +1991,17 @@ export function App() {
       const seen = metaVersionsRef.current.get(sessionId) ?? 0;
       if (version <= seen) return;
       metaVersionsRef.current.set(sessionId, version);
-      applyMetaPatch(metaEventToStatePatch(event as any));
-      if ((event as any).type === "mcp_startup_report" && (event as any).report) {
-        // Buffer if session not yet hydrated — the new slim CLI no longer retries
-        // in heartbeats, so without this the report would be lost for live events
-        // that race session_active delivery.
-        if (sessionHydratedRef.current) {
-          applyMcpReport((event as any).report);
-        } else {
-          pendingMcpReportRef.current = (event as any).report as Record<string, unknown>;
+      if (isMetaRelayEvent(event)) {
+        applyMetaPatch(metaEventToStatePatch(event));
+        if (event.type === "mcp_startup_report" && event.report) {
+          // Buffer if session not yet hydrated — the new slim CLI no longer retries
+          // in heartbeats, so without this the report would be lost for live events
+          // that race session_active delivery.
+          if (sessionHydratedRef.current) {
+            applyMcpReport(event.report);
+          } else {
+            pendingMcpReportRef.current = event.report as Record<string, unknown>;
+          }
         }
       }
     };
@@ -2210,8 +2218,8 @@ export function App() {
 
       const rawEvent = data.event;
       const eventType =
-        rawEvent && typeof rawEvent === "object" && typeof (rawEvent as any).type === "string"
-          ? (rawEvent as any).type as string
+        rawEvent && typeof rawEvent === "object" && typeof (rawEvent as Record<string, unknown>).type === "string"
+          ? (rawEvent as Record<string, unknown>).type as string
           : "";
 
       // Ignore pre-snapshot/chunk-hydration events BEFORE sequence analysis,
@@ -2547,7 +2555,7 @@ export function App() {
     }
     try {
       const { type: _type, ...rest } = payload;
-      socket.emit("exec", rest as any);
+      socket.emit("exec", rest);
       return true;
     } catch {
       setViewerStatus("Failed to send command");
@@ -2606,7 +2614,7 @@ export function App() {
 
       // Listen for exec_result confirmation before disconnecting
       const resultTimeout = setTimeout(cleanup, 5_000); // fallback if no reply
-      tempSocket.on("exec_result" as any, (data: any) => {
+      tempSocket.on("exec_result", (data) => {
         if (data && data.id === execId) {
           clearTimeout(resultTimeout);
           cleanup();
@@ -2616,7 +2624,7 @@ export function App() {
       tempSocket.emit("exec", {
         id: execId,
         command: "end_session",
-      } as any);
+      });
     });
 
     tempSocket.on("connect_error", () => {
@@ -2974,8 +2982,8 @@ export function App() {
           settle(false, "Trigger delivery failed — try again");
         }
       };
-      socket.on("trigger_error" as any, onTriggerError);
-      const errorCleanup = () => { socket.off("trigger_error" as any, onTriggerError); };
+      socket.on("trigger_error", onTriggerError);
+      const errorCleanup = () => { socket.off("trigger_error", onTriggerError); };
 
       // Send with Socket.IO ack — server only acks on successful delivery.
       socket.emit("trigger_response", {

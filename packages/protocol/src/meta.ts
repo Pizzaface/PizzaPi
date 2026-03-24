@@ -145,7 +145,9 @@ export function metaEventToPatch(event: MetaRelayEvent): Partial<SessionMetaStat
       // Old CLI emits a flat format with no nested `report` field.
       // Return an empty patch rather than { mcpStartupReport: undefined },
       // which JSON.stringify would silently drop, wiping the stored value.
-      return (event as any).report != null ? { mcpStartupReport: (event as any).report } : {};
+      // Old CLI emits a flat format with no nested `report` field; at runtime
+      // the field may be absent even though the type says MetaMcpReport.
+      return (event.report as MetaMcpReport | undefined) != null ? { mcpStartupReport: event.report } : {};
     case "token_usage_updated":    return { tokenUsage: event.tokenUsage, providerUsage: event.providerUsage };
     case "thinking_level_changed": return { thinkingLevel: event.level };
     case "auth_source_changed":    return { authSource: event.source };
