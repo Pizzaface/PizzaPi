@@ -8,6 +8,29 @@ import { io as connectSocket } from "socket.io-client";
 import type { TestServer } from "./types.js";
 import type { MockRelay, MockRelayOptions, MockRelaySession } from "./types.js";
 
+/**
+ * Create a MockRelay connected to the given test server's /relay namespace.
+ *
+ * The relay namespace is used by running agent sessions to register themselves
+ * and stream events to viewers. This mock lets tests simulate a relay client —
+ * registering sessions, emitting agent events, sending triggers, and sending
+ * inter-session messages.
+ *
+ * The returned object's socket uses `reconnection: false` so cleanup
+ * (io.close) can complete without the client reconnecting.
+ *
+ * @param server - The test server to connect to.
+ * @param _opts  - Reserved for future options; currently unused.
+ * @returns A connected MockRelay ready to register sessions and emit events.
+ *
+ * @example
+ * ```ts
+ * const relay = await createMockRelay(server);
+ * const { sessionId, token } = await relay.registerSession({ cwd: "/project" });
+ * relay.emitEvent(sessionId, token, buildHeartbeat({ active: true }), 0);
+ * await relay.disconnect();
+ * ```
+ */
 export async function createMockRelay(
     server: TestServer,
     _opts?: MockRelayOptions,

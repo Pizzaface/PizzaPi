@@ -38,13 +38,18 @@ export interface TestServer {
 
 import type { Socket as ClientSocket } from "socket.io-client";
 
+/** Options for `createMockRelay()`. Reserved for future use. */
 export interface MockRelayOptions {
     // Future options
 }
 
+/** Session registration result returned by `MockRelay.registerSession()`. */
 export interface MockRelaySession {
+    /** Server-assigned session ID. */
     sessionId: string;
+    /** Relay token required to emit events for this session. */
     token: string;
+    /** Public share URL for the session. */
     shareUrl: string;
 }
 

@@ -29,6 +29,22 @@ export interface HeartbeatEvent {
     cwd: string | null;
 }
 
+/**
+ * Build a heartbeat event with sensible defaults.
+ *
+ * Heartbeats are emitted periodically by running sessions to report liveness,
+ * current model, session name, and working directory. Pass `overrides` to set
+ * specific fields for targeted test assertions.
+ *
+ * @param overrides - Partial fields to merge over the defaults.
+ * @returns A complete `HeartbeatEvent` ready to pass to `relay.emitEvent()`.
+ *
+ * @example
+ * ```ts
+ * const hb = buildHeartbeat({ active: true, sessionName: "my-session" });
+ * relay.emitEvent(sessionId, token, hb, 0);
+ * ```
+ */
 export function buildHeartbeat(overrides?: Partial<HeartbeatEvent>): HeartbeatEvent {
     return {
         type: "heartbeat",
@@ -70,6 +86,18 @@ function nextId(prefix: string): string {
     return `${prefix}_${++_blockIdCounter}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
+/**
+ * Build an assistant `message_update` event containing a single text block.
+ *
+ * @param text      - The assistant message text.
+ * @param overrides - Optional field overrides (e.g. a deterministic `messageId`).
+ * @returns A `message_update` event shaped for relay emission.
+ *
+ * @example
+ * ```ts
+ * relay.emitEvent(sessionId, token, buildAssistantMessage("Hello!"), 0);
+ * ```
+ */
 export function buildAssistantMessage(
     text: string,
     overrides?: Partial<AssistantMessageEvent>,
@@ -83,6 +111,19 @@ export function buildAssistantMessage(
     };
 }
 
+/**
+ * Build a `tool_use` content block representing an LLM-initiated tool call.
+ *
+ * @param toolName   - The name of the tool being called (e.g. `"bash"`).
+ * @param input      - The tool input object.
+ * @param toolCallId - Optional deterministic ID; auto-generated if omitted.
+ * @returns A `ToolUseBlock` suitable for embedding in a `message_update` event.
+ *
+ * @example
+ * ```ts
+ * const block = buildToolUseEvent("bash", { command: "ls" });
+ * ```
+ */
 export function buildToolUseEvent(
     toolName: string,
     input: unknown,
@@ -96,6 +137,18 @@ export function buildToolUseEvent(
     };
 }
 
+/**
+ * Build a `tool_result` content block representing the output of a tool call.
+ *
+ * @param toolCallId - The `id` from the corresponding `ToolUseBlock`.
+ * @param output     - The tool's text output.
+ * @returns A `ToolResultBlock` suitable for embedding in a `tool_result_message` event.
+ *
+ * @example
+ * ```ts
+ * const result = buildToolResultEvent(block.id, "file1.ts\nfile2.ts");
+ * ```
+ */
 export function buildToolResultEvent(
     toolCallId: string,
     output: string,
@@ -115,6 +168,30 @@ export type ConversationTurn =
     | { role: "assistant"; toolCall: { name: string; input: unknown } }
     | { role: "tool"; toolCallId: string; result: string };
 
+/**
+ * Build a sequence of relay-compatible events from a high-level conversation spec.
+ *
+ * Each turn maps to one or more protocol events:
+ * - `{ role: "user" }` → `harness:user_turn` marker (NOT a real protocol event — skip when emitting)
+ * - `{ role: "assistant", text }` → `message_update` event
+ * - `{ role: "assistant", toolCall }` → `message_update` with a `tool_use` block
+ * - `{ role: "tool" }` → `tool_result_message` event
+ *
+ * **Important:** `harness:user_turn` entries in the output must be filtered out
+ * before passing events to `relay.emitEvent()`. `TestScenario.sendConversation()`
+ * does this automatically.
+ *
+ * @param turns - Ordered conversation turns describing the exchange.
+ * @returns An array of event objects ready for relay emission (after filtering user turns).
+ *
+ * @example
+ * ```ts
+ * const events = buildConversation([
+ *   { role: "assistant", text: "Running ls..." },
+ *   { role: "assistant", toolCall: { name: "bash", input: { command: "ls" } } },
+ * ]);
+ * ```
+ */
 export function buildConversation(turns: ConversationTurn[]): unknown[] {
     const events: unknown[] = [];
 
@@ -154,6 +231,20 @@ export function buildConversation(turns: ConversationTurn[]): unknown[] {
 
 // ── Protocol type builders ───────────────────────────────────────────────────
 
+/**
+ * Build a `SessionInfo` object with sensible test defaults.
+ *
+ * Useful for constructing expected values in hub/session assertion tests
+ * or populating test fixtures without a live server.
+ *
+ * @param overrides - Partial fields to merge over the defaults.
+ * @returns A complete `SessionInfo` object.
+ *
+ * @example
+ * ```ts
+ * const info = buildSessionInfo({ sessionId: "abc123", isActive: false });
+ * ```
+ */
 export function buildSessionInfo(overrides?: Partial<SessionInfo>): SessionInfo {
     return {
         sessionId: `session_${nextId("s")}`,
@@ -174,6 +265,19 @@ export function buildSessionInfo(overrides?: Partial<SessionInfo>): SessionInfo 
     };
 }
 
+/**
+ * Build a `RunnerInfo` object with sensible test defaults.
+ *
+ * Useful for constructing expected values in runner-related assertion tests.
+ *
+ * @param overrides - Partial fields to merge over the defaults.
+ * @returns A complete `RunnerInfo` object.
+ *
+ * @example
+ * ```ts
+ * const runner = buildRunnerInfo({ name: "my-runner", platform: "darwin" });
+ * ```
+ */
 export function buildRunnerInfo(overrides?: Partial<RunnerInfo>): RunnerInfo {
     return {
         runnerId: `runner_${nextId("r")}`,
@@ -190,6 +294,22 @@ export function buildRunnerInfo(overrides?: Partial<RunnerInfo>): RunnerInfo {
     };
 }
 
+/**
+ * Build a `SessionMetaState` object with protocol defaults, optionally
+ * merged with the provided overrides.
+ *
+ * The base is `defaultMetaState()` from `@pizzapi/protocol`, so the result
+ * is always a fully valid meta state. Use this to construct expected values
+ * when testing session meta update flows.
+ *
+ * @param overrides - Partial fields to merge over `defaultMetaState()`.
+ * @returns A complete `SessionMetaState` object.
+ *
+ * @example
+ * ```ts
+ * const meta = buildMetaState({ todoList: buildTodoList([{ text: "Step 1" }]) });
+ * ```
+ */
 export function buildMetaState(overrides?: Partial<SessionMetaState>): SessionMetaState {
     return {
         ...defaultMetaState(),
@@ -197,6 +317,23 @@ export function buildMetaState(overrides?: Partial<SessionMetaState>): SessionMe
     };
 }
 
+/**
+ * Build an array of `MetaTodoItem` objects from a concise item spec.
+ *
+ * Items are assigned sequential IDs starting from 1. Status defaults to
+ * `"pending"` if not specified.
+ *
+ * @param items - Array of `{ text, status? }` descriptors.
+ * @returns A `MetaTodoItem[]` suitable for use in `buildMetaState({ todoList })`.
+ *
+ * @example
+ * ```ts
+ * const todos = buildTodoList([
+ *   { text: "Step 1", status: "done" },
+ *   { text: "Step 2" },          // defaults to "pending"
+ * ]);
+ * ```
+ */
 export function buildTodoList(
     items: Array<{ text: string; status?: MetaTodoItem["status"] }>,
 ): MetaTodoItem[] {
