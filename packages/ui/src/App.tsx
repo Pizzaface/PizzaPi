@@ -1,4 +1,5 @@
 import * as React from "react";
+import { initAnimationSync } from "@/lib/synced-animation";
 import { SessionSidebar, type DotState, type HubSession } from "@/components/SessionSidebar";
 import { SessionViewer, type RelayMessage } from "@/components/SessionViewer";
 import type { CommandResultData } from "@/components/session-viewer/rendering";
@@ -22,7 +23,6 @@ import type {
 } from "@pizzapi/protocol";
 import { isMetaRelayEvent } from "@pizzapi/protocol";
 import { cn } from "@/lib/utils";
-import { syncedPulse } from "@/lib/synced-animation";
 import { pulseStreamingHaptic, cancelHaptic, startToolHaptic, stopToolHaptic } from "@/lib/haptics";
 import { Button } from "@/components/ui/button";
 import { TooltipProvider, Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
@@ -100,6 +100,9 @@ import {
 } from "@/lib/message-helpers";
 import { evictLruIfNeeded, touchSessionCache, MAX_SESSION_UI_CACHE_SIZE } from "@/lib/session-ui-cache";
 import { analyzeIncomingSeq, mergeConnectedSeq, shouldDeferEventForHydration } from "@/lib/session-seq";
+
+// Sync all CSS animations (pulse, chase-spin, etc.) to the same phase globally.
+initAnimationSync();
 
 export function App() {
   const { data: session, isPending } = useSession();
@@ -3334,7 +3337,6 @@ export function App() {
                 >
                   <span
                     className={`inline-block h-1.5 w-1.5 rounded-full flex-shrink-0 transition-colors ${agentActive ? "bg-green-400 shadow-[0_0_5px_#4ade8080] animate-pulse" : "bg-slate-400"}`}
-                    style={agentActive ? syncedPulse() : undefined}
                   />
                   {activeModel?.provider && (
                     <ProviderIcon provider={activeModel.provider} className="size-3.5 flex-shrink-0" />
@@ -3387,7 +3389,6 @@ export function App() {
                           <span
                             className={`absolute -top-0.5 -right-0.5 inline-block h-2 w-2 rounded-full border-2 border-popover ${s.isActive ? "bg-blue-400 animate-pulse" : "bg-green-600"}`}
                             title={s.isActive ? "Generating" : "Idle"}
-                            style={s.isActive ? syncedPulse() : undefined}
                           />
                         </div>
                         {/* Name + path */}
