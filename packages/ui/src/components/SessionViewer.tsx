@@ -24,6 +24,7 @@ import {
   roleLabel,
   toMessageRole,
   CompactionSummaryCard,
+  ContextDonut,
   CommandResultCard,
   isCommandResult,
   type CommandResultData,
@@ -87,8 +88,8 @@ export interface SessionViewerProps {
   sessionId: string | null;
   sessionName?: string | null;
   messages: RelayMessage[];
-  /** Active model info for the current session (used to show provider indicator) */
-  activeModel?: { provider: string; id: string; name?: string; reasoning?: boolean } | null;
+  /** Active model info for the current session (used to show provider indicator + context window) */
+  activeModel?: { provider: string; id: string; name?: string; reasoning?: boolean; contextWindow?: number } | null;
   activeToolCalls?: Map<string, string>;
   pendingQuestion?: { toolCallId: string; questions: Array<{ question: string; options: string[]; type?: import("@/lib/ask-user-questions").QuestionType }>; display: QuestionDisplayMode } | null;
   /** Pending plan mode prompt — shown as a plan review panel */
@@ -2681,6 +2682,14 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
 
             </PromptInputTools>
             <div className="flex items-center gap-0.5">
+              <ContextDonut
+                tokenUsage={tokenUsage}
+                contextWindow={activeModel?.contextWindow}
+                isCompacting={isCompacting}
+                onCompact={onExec ? () => {
+                  onExec({ type: "exec", id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, command: "compact" });
+                } : undefined}
+              />
               <ComposerAttachmentButton />
               <ComposerSubmitButton
                 sessionId={sessionId}

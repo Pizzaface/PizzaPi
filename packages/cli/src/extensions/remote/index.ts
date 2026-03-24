@@ -53,7 +53,7 @@ import {
     emitTodoUpdated, emitPlanModeToggled,
     emitRetryStateChanged, emitPluginTrustRequired, emitPluginTrustResolved,
     emitTokenUsageUpdated, emitModelChanged, emitAuthSourceChanged,
-    emitMcpStartupReport,
+    emitMcpStartupReport, emitCompactStarted, emitCompactEnded,
 } from "../remote-meta-events.js";
 import { getAuthSource } from "../remote-auth-source.js";
 import { buildProviderUsage } from "../remote-provider-usage.js";
@@ -994,6 +994,26 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         rctx.forwardEvent(event);
         emitAuthSourceChanged(rctx, getAuthSource(rctx.latestCtx));
         emitSessionActive(rctx);
+    });
+
+    // ── Compaction lifecycle (covers CLI /compact, auto-compact, and web-triggered) ──
+
+    pi.on("session_before_compact", () => {
+        // Only emit if not already tracked (web-triggered compacts set this
+        // flag in the exec handler before calling ctx.compact()).
+        if (!rctx.isCompacting) {
+            rctx.isCompacting = true;
+            emitCompactStarted(rctx);
+            rctx.forwardEvent(rctx.buildHeartbeat());
+        }
+    });
+
+    pi.on("session_compact", () => {
+        if (rctx.isCompacting) {
+            rctx.isCompacting = false;
+            emitCompactEnded(rctx);
+            rctx.forwardEvent(rctx.buildHeartbeat());
+        }
     });
 
     // ── /remote command ───────────────────────────────────────────────────

@@ -60,6 +60,7 @@ import { SubAgentConversationCard } from "@/components/session-viewer/cards/SubA
 import { CompactionSummaryCard } from "@/components/session-viewer/cards/CompactionSummaryCard";
 
 export { CompactionSummaryCard } from "@/components/session-viewer/cards/CompactionSummaryCard";
+export { ContextDonut } from "@/components/session-viewer/ContextDonut";
 export { CommandResultCard, type CommandResultData } from "@/components/session-viewer/cards/CommandResultCard";
 export { WebSearchQueryCard, WebSearchResultsCard, type WebSearchResult } from "@/components/session-viewer/cards/WebSearchCard";
 export { tryRenderServerToolBlock } from "@/components/session-viewer/server-tools";
