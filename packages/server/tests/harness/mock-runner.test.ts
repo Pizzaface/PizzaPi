@@ -177,11 +177,16 @@ describe("createMockRunner — emitSessionReady", () => {
             const sessionId = "test-session-ready-" + Date.now();
             const receivedSessionIds: string[] = [];
 
+            // Resolve this promise the moment the server receives session_ready.
+            let resolveReady!: () => void;
+            const readyReceived = new Promise<void>((resolve) => { resolveReady = resolve; });
+
             // Set up server-side capture BEFORE the runner connects so the
             // connection handler fires and attaches to the real socket (not a RemoteSocket proxy).
             server.io.of("/runner").on("connection", (socket) => {
                 socket.on("session_ready", (data: { sessionId: string }) => {
                     receivedSessionIds.push(data.sessionId);
+                    resolveReady();
                 });
             });
 
@@ -189,10 +194,9 @@ describe("createMockRunner — emitSessionReady", () => {
             try {
                 runner.emitSessionReady(sessionId);
 
-                // Wait for the event to propagate to the server
-                await new Promise<void>((r) => setTimeout(r, 200));
+                // Wait for the server to actually receive the event (event-driven, not time-based).
+                await readyReceived;
 
-                // P2 fix: actually assert the event was received server-side
                 expect(receivedSessionIds).toContain(sessionId);
             } finally {
                 await runner.disconnect();
@@ -278,12 +282,20 @@ describe("createMockRunner — clean disconnect", () => {
             // Disconnect
             await runner.disconnect();
 
-            // Give the server a moment to process the disconnect event
-            await new Promise<void>((r) => setTimeout(r, 300));
+            // Poll until the server removes the runner from its registry, rather than
+            // waiting a fixed duration (which is flaky under CI load).
+            const deadline = Date.now() + 5_000;
+            let afterData: { runners: Array<{ runnerId: string }> } = { runners: [{ runnerId }] };
+            while (
+                Date.now() < deadline &&
+                afterData.runners.some((r) => r.runnerId === runnerId)
+            ) {
+                await new Promise<void>((r) => setTimeout(r, 50));
+                const after = await server.fetch("/api/runners");
+                afterData = (await after.json()) as { runners: Array<{ runnerId: string }> };
+            }
 
             // Verify it's gone
-            const after = await server.fetch("/api/runners");
-            const afterData = (await after.json()) as { runners: Array<{ runnerId: string }> };
             expect(afterData.runners.map((r) => r.runnerId)).not.toContain(runnerId);
         } finally {
             await cleanupServer(server);
@@ -362,17 +374,21 @@ describe("createMockRunner — emission helpers", () => {
         try {
             const received: Array<{ sessionId: string; message: string }> = [];
 
+            let resolveError!: () => void;
+            const errorReceived = new Promise<void>((resolve) => { resolveError = resolve; });
+
             // Attach server-side listener BEFORE runner connects
             server.io.of("/runner").on("connection", (socket) => {
                 socket.on("session_error", (data: { sessionId: string; message: string }) => {
                     received.push(data);
+                    resolveError();
                 });
             });
 
             const runner = await createMockRunner(server);
             try {
                 runner.emitSessionError("sess-err-1", "spawn failed");
-                await new Promise<void>((r) => setTimeout(r, 200));
+                await errorReceived;
 
                 expect(received.length).toBeGreaterThan(0);
                 expect(received[0].sessionId).toBe("sess-err-1");
@@ -390,11 +406,15 @@ describe("createMockRunner — emission helpers", () => {
         try {
             const received: Array<{ sessionId: string; event: unknown }> = [];
 
+            let resolveEvent!: () => void;
+            const eventReceived = new Promise<void>((resolve) => { resolveEvent = resolve; });
+
             server.io.of("/runner").on("connection", (socket) => {
                 socket.on(
                     "runner_session_event",
                     (data: { sessionId: string; event: unknown }) => {
                         received.push(data);
+                        resolveEvent();
                     },
                 );
             });
@@ -402,7 +422,7 @@ describe("createMockRunner — emission helpers", () => {
             const runner = await createMockRunner(server);
             try {
                 runner.emitSessionEvent("sess-evt-1", { type: "output", text: "hello" });
-                await new Promise<void>((r) => setTimeout(r, 200));
+                await eventReceived;
 
                 expect(received.length).toBeGreaterThan(0);
                 expect(received[0].sessionId).toBe("sess-evt-1");
@@ -420,16 +440,20 @@ describe("createMockRunner — emission helpers", () => {
         try {
             const received: Array<{ sessionId: string }> = [];
 
+            let resolveKilled!: () => void;
+            const killedReceived = new Promise<void>((resolve) => { resolveKilled = resolve; });
+
             server.io.of("/runner").on("connection", (socket) => {
                 socket.on("session_killed", (data: { sessionId: string }) => {
                     received.push(data);
+                    resolveKilled();
                 });
             });
 
             const runner = await createMockRunner(server);
             try {
                 runner.emitSessionEnded("sess-ended-1");
-                await new Promise<void>((r) => setTimeout(r, 200));
+                await killedReceived;
 
                 expect(received.length).toBeGreaterThan(0);
                 expect(received[0].sessionId).toBe("sess-ended-1");

@@ -68,7 +68,6 @@ export async function createMockRunner(
     opts?: MockRunnerOptions,
 ): Promise<MockRunner> {
     const runnerId = opts?.runnerId ?? randomUUID();
-    const runnerUrl = server.baseUrl.replace(/^http/, "ws"); // socket.io handles both http/ws
 
     const socket: ClientSocket = ioClient(`${server.baseUrl}/runner`, {
         auth: { apiKey: opts?.apiKey ?? server.apiKey },
