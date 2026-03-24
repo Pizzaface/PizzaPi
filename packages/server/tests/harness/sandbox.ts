@@ -328,7 +328,34 @@ function pickRandom<T>(arr: T[]): T {
 // ── Main ─────────────────────────────────────────────────────────────────────
 
 async function startRedis(): Promise<(() => void)> {
-    // Pick a random free port so we never clash with any existing Redis.
+    // 1. Honor an existing PIZZAPI_REDIS_URL — the caller already has Redis.
+    const existingUrl = process.env.PIZZAPI_REDIS_URL;
+    if (existingUrl) {
+        const { createClient } = await import("redis");
+        try {
+            const probe = createClient({ url: existingUrl });
+            await probe.connect();
+            await probe.ping();
+            await probe.quit();
+            console.log(`  🟥 Using existing Redis at ${existingUrl}\n`);
+            return () => {}; // nothing to clean up
+        } catch {
+            console.warn(`  ⚠️  PIZZAPI_REDIS_URL is set (${existingUrl}) but Redis is not reachable — falling through to Docker`);
+        }
+    }
+
+    // 2. Probe for Docker before trying to spawn.
+    const dockerCheck = Bun.spawnSync(["docker", "info"], { stdout: "ignore", stderr: "ignore" });
+    if (dockerCheck.exitCode !== 0) {
+        throw new Error(
+            "Redis is required but Docker is not available.\n" +
+            "Either:\n" +
+            "  • Install and start Docker, or\n" +
+            "  • Set PIZZAPI_REDIS_URL to point at an existing Redis instance\n",
+        );
+    }
+
+    // 3. Spawn a Redis container on a random free port.
     const port = await getFreePort();
     const redisUrl = `redis://127.0.0.1:${port}`;
     const containerName = `pizzapi-sandbox-redis-${port}`;
@@ -337,6 +364,12 @@ async function startRedis(): Promise<(() => void)> {
         ["docker", "run", "--rm", "-p", `${port}:6379`, "--name", containerName, "redis:alpine"],
         { stdout: "ignore", stderr: "ignore" },
     );
+
+    const cleanup = () => {
+        proc.kill();
+        Bun.spawnSync(["docker", "rm", "-f", containerName], { stdout: "ignore", stderr: "ignore" });
+        delete process.env.PIZZAPI_REDIS_URL;
+    };
 
     // Wait for Redis to be ready (up to 10 s)
     const { createClient } = await import("redis");
@@ -354,18 +387,18 @@ async function startRedis(): Promise<(() => void)> {
     }
 
     if (!ready) {
-        console.warn("  ⚠️  Could not start Redis via Docker — sandbox may run in degraded mode");
-    } else {
-        // Point the harness server at our private Redis before it connects
-        process.env.PIZZAPI_REDIS_URL = redisUrl;
-        console.log(`  🟥 Redis ready on port ${port}\n`);
+        cleanup();
+        throw new Error(
+            `Redis container started but never became ready on port ${port}.\n` +
+            "Check Docker logs: docker logs " + containerName,
+        );
     }
 
-    return () => {
-        proc.kill();
-        Bun.spawnSync(["docker", "rm", "-f", containerName], { stdout: "ignore", stderr: "ignore" });
-        delete process.env.PIZZAPI_REDIS_URL;
-    };
+    // Point the harness server at our private Redis before it connects
+    process.env.PIZZAPI_REDIS_URL = redisUrl;
+    console.log(`  🟥 Redis ready on port ${port}\n`);
+
+    return cleanup;
 }
 
 async function getFreePort(): Promise<number> {
