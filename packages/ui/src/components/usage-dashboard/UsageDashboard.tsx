@@ -139,23 +139,32 @@ export function UsageDashboard({ runnerId }: UsageDashboardProps) {
                   {data.recentSessions.map((session) => (
                     <tr
                       key={session.id}
-                      className="border-b last:border-0 hover:bg-muted/50"
+                      className="border-b last:border-0 hover:bg-muted/50 transition-colors"
                     >
-                      <td className="py-2 px-2 truncate max-w-xs">
+                      <td
+                        className="py-2 px-2 truncate max-w-xs"
+                        title={session.sessionName || `Session ${session.id.slice(0, 8)}`}
+                      >
                         {session.sessionName || `Session ${session.id.slice(0, 8)}`}
                       </td>
-                      <td className="py-2 px-2 truncate max-w-xs">
+                      <td
+                        className="py-2 px-2 truncate max-w-xs"
+                        title={session.project}
+                      >
                         {session.projectShort}
                       </td>
-                      <td className="py-2 px-2 truncate">
+                      <td
+                        className="py-2 px-2 truncate"
+                        title={session.primaryModel}
+                      >
                         {session.primaryModel}
                       </td>
-                      <td className="py-2 px-2 text-right">
+                      <td className="py-2 px-2 text-right tabular-nums">
                         {session.totalCost
-                          ? `$${session.totalCost.toFixed(3)}`
+                          ? `$${session.totalCost.toFixed(2)}`
                           : "—"}
                       </td>
-                      <td className="py-2 px-2 text-right">
+                      <td className="py-2 px-2 text-right tabular-nums">
                         {session.messageCount}
                       </td>
                     </tr>

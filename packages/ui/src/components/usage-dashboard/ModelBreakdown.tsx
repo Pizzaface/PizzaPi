@@ -3,37 +3,22 @@ import {
   PieChart,
   Pie,
   Cell,
-  Legend,
   Tooltip,
   ResponsiveContainer,
+  Sector,
 } from "recharts";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  PIE_COLORS,
+  tooltipContentStyle,
+  tooltipLabelStyle,
+  tooltipItemStyle,
+  formatCurrency,
+} from "./chart-theme";
 import type { UsageData } from "./types";
 
 interface ModelBreakdownProps {
   byModel: UsageData["byModel"];
-}
-
-const colors = [
-  "#3b82f6",
-  "#ef4444",
-  "#10b981",
-  "#f59e0b",
-  "#8b5cf6",
-  "#ec4899",
-  "#06b6d4",
-  "#14b8a6",
-  "#f97316",
-  "#6366f1",
-];
-
-function formatCurrency(value: number): string {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  }).format(value);
 }
 
 export function ModelBreakdown({ byModel }: ModelBreakdownProps) {
@@ -62,6 +47,32 @@ export function ModelBreakdown({ byModel }: ModelBreakdownProps) {
     return `${percentage}%`;
   };
 
+  function CustomTooltip({ active, payload }: any) {
+    if (!active || !payload?.length) return null;
+    const d = payload[0].payload;
+    const pct = totalCost > 0 ? ((d.value / totalCost) * 100).toFixed(1) : "0";
+    return (
+      <div style={tooltipContentStyle}>
+        <p style={tooltipLabelStyle}>{d.label}</p>
+        <div style={tooltipItemStyle}>
+          <span style={{ color: "hsl(var(--muted-foreground))" }}>{d.provider}</span>
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: "16px", ...tooltipItemStyle }}>
+          <span>Cost</span>
+          <span style={{ fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>{formatCurrency(d.value)}</span>
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: "16px", ...tooltipItemStyle }}>
+          <span>Share</span>
+          <span style={{ fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>{pct}%</span>
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: "16px", ...tooltipItemStyle }}>
+          <span>Sessions</span>
+          <span style={{ fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>{d.sessions}</span>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <Card>
       <CardHeader>
@@ -69,7 +80,7 @@ export function ModelBreakdown({ byModel }: ModelBreakdownProps) {
       </CardHeader>
       <CardContent>
         <div className="flex flex-col lg:flex-row gap-8">
-          <div className="flex-1">
+          <div className="flex-1 min-w-0">
             <ResponsiveContainer width="100%" height={300}>
               <PieChart>
                 <Pie
@@ -78,47 +89,49 @@ export function ModelBreakdown({ byModel }: ModelBreakdownProps) {
                   cy="50%"
                   labelLine={false}
                   label={renderLabel}
-                  outerRadius={100}
+                  outerRadius="80%"
+                  innerRadius="40%"
                   fill="#8884d8"
                   dataKey="value"
+                  activeShape={(props: any) => (
+                    <Sector
+                      {...props}
+                      outerRadius={props.outerRadius + 6}
+                      stroke={props.fill}
+                      strokeWidth={2}
+                    />
+                  )}
                 >
-                  {data.map((entry, index) => (
+                  {data.map((_entry, index) => (
                     <Cell
                       key={`cell-${index}`}
-                      fill={colors[index % colors.length]}
+                      fill={PIE_COLORS[index % PIE_COLORS.length]}
+                      stroke="hsl(var(--background))"
+                      strokeWidth={2}
                     />
                   ))}
                 </Pie>
-                <Tooltip
-                  formatter={(value) => formatCurrency(value as number)}
-                  contentStyle={{
-                    backgroundColor: "hsl(var(--background))",
-                    border: "1px solid hsl(var(--border))",
-                  }}
-                />
+                <Tooltip content={<CustomTooltip />} />
               </PieChart>
             </ResponsiveContainer>
           </div>
           <div className="flex-1 flex flex-col gap-2">
             {data.map((m, idx) => (
-              <div key={m.model} className="text-sm flex items-center gap-3">
+              <div
+                key={m.model}
+                className="text-sm flex items-center gap-3 rounded-md px-2 py-1.5 transition-colors hover:bg-muted/50"
+              >
                 <div
-                  className="w-3 h-3 rounded-full"
-                  style={{
-                    backgroundColor: colors[idx % colors.length],
-                  }}
+                  className="w-3 h-3 rounded-full flex-shrink-0"
+                  style={{ backgroundColor: PIE_COLORS[idx % PIE_COLORS.length] }}
                 />
-                <div className="flex-1">
-                  <div className="font-medium">{m.model}</div>
-                  <div className="text-xs text-muted-foreground">
-                    {m.provider}
-                  </div>
+                <div className="flex-1 min-w-0">
+                  <div className="font-medium truncate">{m.model}</div>
+                  <div className="text-xs text-muted-foreground">{m.provider}</div>
                 </div>
-                <div className="text-right">
+                <div className="text-right flex-shrink-0">
                   <div className="font-medium">{formatCurrency(m.cost)}</div>
-                  <div className="text-xs text-muted-foreground">
-                    {m.sessions} sessions
-                  </div>
+                  <div className="text-xs text-muted-foreground">{m.sessions} sessions</div>
                 </div>
               </div>
             ))}
