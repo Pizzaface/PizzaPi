@@ -6,7 +6,7 @@ every `bun install` — no postinstall script is needed.
 
 ## @mariozechner/pi-coding-agent@0.58.3
 
-**Purpose:** Four changes:
+**Purpose:** Five changes:
 
 1. **Session control on extension API:** Expose `newSession()` and
    `switchSession()` on the extension runtime so the PizzaPi remote extension
@@ -20,7 +20,13 @@ every `bun install` — no postinstall script is needed.
    instead of the hardcoded default, so the login message is accurate when
    PizzaPi overrides the auth file location.
 
-4. **Retryable JSON parse errors:** Add `json.?parse.?error` and
+4. **Override configDir to `.pizzapi`:** Hardcode `CONFIG_DIR_NAME` to
+   `".pizzapi"` so that all session storage, auth, settings, and agent data
+   lives under `~/.pizzapi/` instead of the upstream default `~/.pi/`. The
+   upstream code reads `configDir` from its own `package.json` (which has
+   `".pi"`), not the consuming CLI's `package.json`.
+
+5. **Retryable JSON parse errors:** Add `json.?parse.?error` and
    `unexpected.?end.?of.?json` to the retryable error regex so transient
    Anthropic SSE stream truncations are automatically retried instead of
    showing an opaque ERROR badge to the user.
@@ -36,6 +42,7 @@ work from anywhere in the extension.
 
 | File | Change |
 |------|--------|
+| `dist/config.js` — `CONFIG_DIR_NAME` | Hardcodes `".pizzapi"` instead of reading `pkg.piConfig?.configDir` (which resolves to `".pi"` from the upstream package.json) |
 | `dist/core/extensions/loader.js` — `createExtensionRuntime()` | Adds `newSession` and `switchSession` stubs (reject before init) |
 | `dist/core/extensions/loader.js` — `createExtensionAPI()` | Adds `newSession(options)` and `switchSession(sessionPath)` wrappers delegating to the runtime |
 | `dist/core/extensions/runner.js` — `bindCommandContext()` | Copies real `newSessionHandler` / `switchSessionHandler` onto the runtime object |

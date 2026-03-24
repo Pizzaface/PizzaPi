@@ -107,6 +107,17 @@ describe("pi-coding-agent patch application", () => {
         expect(source).not.toContain("async checkForNewVersion()");
         expect(source).not.toContain("showNewVersionNotification");
     });
+
+    test("config.js: CONFIG_DIR_NAME is overridden to .pizzapi", async () => {
+        const source = await Bun.file(
+            piCodingAgentPath("dist/config.js"),
+        ).text();
+
+        // Must hardcode .pizzapi, not read from upstream package.json
+        expect(source).toContain('CONFIG_DIR_NAME = ".pizzapi"');
+        expect(source).not.toContain('CONFIG_DIR_NAME = pkg.piConfig');
+        expect(source).toContain("PATCH(pizzapi)");
+    });
 });
 
 // ---------------------------------------------------------------------------
@@ -172,6 +183,22 @@ describe("pi-coding-agent patched runtime behavior", () => {
         expect(regex.test("rate limit exceeded")).toBe(true);
         expect(regex.test("Error 529: overloaded")).toBe(true);
         expect(regex.test("fetch failed")).toBe(true);
+    });
+
+    test("CONFIG_DIR_NAME exports as .pizzapi at runtime", async () => {
+        const { CONFIG_DIR_NAME } = await import(
+            piCodingAgentPath("dist/config.js")
+        );
+        expect(CONFIG_DIR_NAME).toBe(".pizzapi");
+    });
+
+    test("getSessionsDir uses .pizzapi path", async () => {
+        const { getSessionsDir } = await import(
+            piCodingAgentPath("dist/config.js")
+        );
+        const dir = getSessionsDir();
+        expect(dir).toContain(".pizzapi");
+        expect(dir).not.toMatch(/\/\.pi\//);
     });
 
     test("runtime.newSession/switchSession are assignable (runner can bind them)", async () => {
