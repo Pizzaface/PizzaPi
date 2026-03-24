@@ -869,6 +869,12 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         );
         emitSessionActive(rctx);
         rctx.forwardEvent(rctx.buildHeartbeat());
+        // Emit model_changed so the UI gets contextWindow immediately
+        // (heartbeat also carries it, but meta events are the canonical path).
+        if (rctx.latestCtx?.model) {
+            const m = rctx.latestCtx.model;
+            emitModelChanged(rctx, { provider: m.provider, id: m.id, name: m.name, reasoning: m.reasoning, contextWindow: m.contextWindow });
+        }
     });
 
     pi.on("turn_start", (event) => {
