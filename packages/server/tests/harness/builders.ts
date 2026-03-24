@@ -1,8 +1,11 @@
 /**
- * builders.ts — Pure factory functions that produce correctly-shaped agent events.
+ * builders.ts — Factory functions that produce correctly-shaped agent events.
  *
  * No server dependency — these are data builders only.
  * Import protocol types directly from @pizzapi/protocol.
+ *
+ * Note: Builders are not pure — they use module-level counters and Date.now()/Math.random()
+ * for ID generation. Pass overrides to control specific fields in deterministic tests.
  */
 
 import {
@@ -69,7 +72,7 @@ function nextId(prefix: string): string {
 
 export function buildAssistantMessage(
     text: string,
-    overrides?: Record<string, unknown>,
+    overrides?: Partial<AssistantMessageEvent>,
 ): AssistantMessageEvent {
     return {
         type: "message_update",
@@ -77,7 +80,7 @@ export function buildAssistantMessage(
         content: [{ type: "text", text }],
         messageId: nextId("msg"),
         ...overrides,
-    } as AssistantMessageEvent;
+    };
 }
 
 export function buildToolUseEvent(
@@ -117,8 +120,11 @@ export function buildConversation(turns: ConversationTurn[]): unknown[] {
 
     for (const turn of turns) {
         if (turn.role === "user") {
+            // User input does not flow through the relay event pipeline — it arrives via the
+            // /viewer namespace as "input" events. This harness marker is test scaffolding only
+            // and is NOT a real protocol event type. Consumers should not emit it to the relay.
             events.push({
-                type: "user_message",
+                type: "harness:user_turn",
                 text: turn.text,
             });
         } else if (turn.role === "assistant") {

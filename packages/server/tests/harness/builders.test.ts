@@ -116,10 +116,10 @@ describe("buildConversation", () => {
         expect(buildConversation([])).toEqual([]);
     });
 
-    test("user turn produces user_message event", () => {
+    test("user turn produces harness:user_turn marker (not a real protocol event)", () => {
         const events = buildConversation([{ role: "user", text: "hello" }]) as Array<Record<string, unknown>>;
         expect(events).toHaveLength(1);
-        expect(events[0].type).toBe("user_message");
+        expect(events[0].type).toBe("harness:user_turn");
         expect(events[0].text).toBe("hello");
     });
 
@@ -160,9 +160,9 @@ describe("buildConversation", () => {
             { role: "user", text: "Thanks" },
         ]) as Array<Record<string, unknown>>;
         expect(events).toHaveLength(3);
-        expect(events[0].type).toBe("user_message");
+        expect(events[0].type).toBe("harness:user_turn");
         expect(events[1].type).toBe("message_update");
-        expect(events[2].type).toBe("user_message");
+        expect(events[2].type).toBe("harness:user_turn");
     });
 });
 
