@@ -2605,6 +2605,20 @@ export function App() {
       setViewerStatus("Ending session…");
     } else if (command === "compact") {
       setViewerStatus("Compacting…");
+    } else if (command === "abort") {
+      // Optimistically mark as inactive so the UI updates immediately
+      // instead of waiting for the next heartbeat cycle.
+      setAgentActive(false);
+      patchSessionCache({ agentActive: false });
+      // Also update the sidebar's live session list so the session row
+      // transitions from "active" to "completed unread" without waiting
+      // for the hub's next session_status heartbeat.
+      const sid = activeSessionRef.current;
+      if (sid) {
+        setLiveSessions((prev) =>
+          prev.map((s) => (s.sessionId === sid ? { ...s, isActive: false } : s)),
+        );
+      }
     }
     try {
       const { type: _type, ...rest } = payload;
