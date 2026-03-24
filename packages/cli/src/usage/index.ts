@@ -11,7 +11,9 @@ let scanning = false;
 export function initUsage(): void {
   db = openUsageDb();
   // Initial scan in background
-  triggerScan();
+  triggerScan().catch((err) => {
+    console.error("[usage] initial scan failed:", err);
+  });
 }
 
 export async function triggerScan(): Promise<void> {
@@ -29,7 +31,9 @@ export function getData(range: UsageRange = "90d"): UsageData | null {
   if (!db) return null;
   // Trigger scan if stale (> 1 min)
   if (Date.now() - lastScanAt > 60_000) {
-    triggerScan(); // fire and forget — return current data
+    triggerScan().catch((err) => {
+      console.error("[usage] background scan failed:", err);
+    }); // fire and forget — return current data
   }
   return getUsageData(db, range);
 }

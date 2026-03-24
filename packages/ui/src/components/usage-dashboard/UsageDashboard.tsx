@@ -31,6 +31,7 @@ export function UsageDashboard({ runnerId }: UsageDashboardProps) {
             headers: {
               Accept: "application/json",
             },
+            credentials: "include",
           },
         );
 
