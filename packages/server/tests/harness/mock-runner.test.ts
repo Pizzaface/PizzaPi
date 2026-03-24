@@ -174,37 +174,26 @@ describe("createMockRunner — emitSessionReady", () => {
     test("emitSessionReady sends session_ready to the server", async () => {
         const server = await createTestServer();
         try {
+            const sessionId = "test-session-ready-" + Date.now();
+            const receivedSessionIds: string[] = [];
+
+            // Set up server-side capture BEFORE the runner connects so the
+            // connection handler fires and attaches to the real socket (not a RemoteSocket proxy).
+            server.io.of("/runner").on("connection", (socket) => {
+                socket.on("session_ready", (data: { sessionId: string }) => {
+                    receivedSessionIds.push(data.sessionId);
+                });
+            });
+
             const runner = await createMockRunner(server);
             try {
-                const sessionId = "test-session-ready-" + Date.now();
-
-                // Capture session_ready events on the server side via the io instance.
-                const receivedSessionIds: string[] = [];
-                const runnerNs = server.io.of("/runner");
-                const captureHandler = (data: { sessionId: string }) => {
-                    if (data.sessionId === sessionId) {
-                        receivedSessionIds.push(data.sessionId);
-                    }
-                };
-                // Listen on all future connections for this event
-                runnerNs.on("connection", (socket) => {
-                    socket.on("session_ready", captureHandler);
-                });
-
-                // Also subscribe on existing sockets (the runner socket is already connected)
-                const sockets = await runnerNs.fetchSockets();
-                for (const s of sockets) {
-                    s.on("session_ready", captureHandler as (data: unknown) => void);
-                }
-
                 runner.emitSessionReady(sessionId);
 
-                // Wait a moment for the event to propagate
+                // Wait for the event to propagate to the server
                 await new Promise<void>((r) => setTimeout(r, 200));
 
-                // The session_ready event handler calls resolveSpawnReady() (no-op for unknown sessionId).
-                // We verify the socket is still alive and hasn't crashed.
-                expect(runner.socket.connected).toBe(true);
+                // P2 fix: actually assert the event was received server-side
+                expect(receivedSessionIds).toContain(sessionId);
             } finally {
                 await runner.disconnect();
             }
@@ -357,6 +346,113 @@ describe("createMockRunner — waitForEvent", () => {
             } finally {
                 await runner.disconnect();
             }
+        } finally {
+            await cleanupServer(server);
+        }
+    }, TEST_TIMEOUT);
+});
+
+// ---------------------------------------------------------------------------
+// 7. Emission helpers — emitSessionError, emitSessionEvent, emitSessionEnded
+// ---------------------------------------------------------------------------
+
+describe("createMockRunner — emission helpers", () => {
+    test("emitSessionError sends session_error to the server", async () => {
+        const server = await createTestServer();
+        try {
+            const received: Array<{ sessionId: string; message: string }> = [];
+
+            // Attach server-side listener BEFORE runner connects
+            server.io.of("/runner").on("connection", (socket) => {
+                socket.on("session_error", (data: { sessionId: string; message: string }) => {
+                    received.push(data);
+                });
+            });
+
+            const runner = await createMockRunner(server);
+            try {
+                runner.emitSessionError("sess-err-1", "spawn failed");
+                await new Promise<void>((r) => setTimeout(r, 200));
+
+                expect(received.length).toBeGreaterThan(0);
+                expect(received[0].sessionId).toBe("sess-err-1");
+                expect(received[0].message).toBe("spawn failed");
+            } finally {
+                await runner.disconnect();
+            }
+        } finally {
+            await cleanupServer(server);
+        }
+    }, TEST_TIMEOUT);
+
+    test("emitSessionEvent sends runner_session_event to the server", async () => {
+        const server = await createTestServer();
+        try {
+            const received: Array<{ sessionId: string; event: unknown }> = [];
+
+            server.io.of("/runner").on("connection", (socket) => {
+                socket.on(
+                    "runner_session_event",
+                    (data: { sessionId: string; event: unknown }) => {
+                        received.push(data);
+                    },
+                );
+            });
+
+            const runner = await createMockRunner(server);
+            try {
+                runner.emitSessionEvent("sess-evt-1", { type: "output", text: "hello" });
+                await new Promise<void>((r) => setTimeout(r, 200));
+
+                expect(received.length).toBeGreaterThan(0);
+                expect(received[0].sessionId).toBe("sess-evt-1");
+                expect(received[0].event).toEqual({ type: "output", text: "hello" });
+            } finally {
+                await runner.disconnect();
+            }
+        } finally {
+            await cleanupServer(server);
+        }
+    }, TEST_TIMEOUT);
+
+    test("emitSessionEnded sends session_killed to the server", async () => {
+        const server = await createTestServer();
+        try {
+            const received: Array<{ sessionId: string }> = [];
+
+            server.io.of("/runner").on("connection", (socket) => {
+                socket.on("session_killed", (data: { sessionId: string }) => {
+                    received.push(data);
+                });
+            });
+
+            const runner = await createMockRunner(server);
+            try {
+                runner.emitSessionEnded("sess-ended-1");
+                await new Promise<void>((r) => setTimeout(r, 200));
+
+                expect(received.length).toBeGreaterThan(0);
+                expect(received[0].sessionId).toBe("sess-ended-1");
+            } finally {
+                await runner.disconnect();
+            }
+        } finally {
+            await cleanupServer(server);
+        }
+    }, TEST_TIMEOUT);
+});
+
+// ---------------------------------------------------------------------------
+// 8. Auth failure — bad API key is rejected
+// ---------------------------------------------------------------------------
+
+describe("createMockRunner — auth failure", () => {
+    test("rejects with a bad API key", async () => {
+        const server = await createTestServer();
+        try {
+            await expect(
+                createMockRunner(server, { apiKey: "invalid-bad-key-xyz" }),
+            ).rejects.toThrow();
         } finally {
             await cleanupServer(server);
         }
