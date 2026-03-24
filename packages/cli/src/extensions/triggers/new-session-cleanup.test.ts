@@ -8,7 +8,7 @@
 //   4. Calls onConfirmed when the server acks the cancel (at-least-once delivery)
 // ============================================================================
 
-import { describe, it, expect, beforeEach, mock } from "bun:test";
+import { afterAll, describe, it, expect, beforeEach, mock } from "bun:test";
 import { trackReceivedTrigger, receivedTriggers, clearAndCancelPendingTriggers } from "./extension.js";
 
 // ── Mock the relay socket used by clearAndCancelPendingTriggers ──────────────
@@ -32,6 +32,10 @@ mock.module("../remote.js", () => ({
             : null,
     getRelaySessionId: () => "parent-session-1",
 }));
+
+// Restore all module mocks after this file so they don't bleed into other
+// test files running in the same worker process.
+afterAll(() => mock.restore());
 
 describe("clearAndCancelPendingTriggers", () => {
     beforeEach(() => {

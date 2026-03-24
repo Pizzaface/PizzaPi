@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock } from "bun:test";
+import { afterAll, describe, it, expect, beforeEach, mock } from "bun:test";
 
 // ── Minimal Redis mock (mirrors sio-state-children.test.ts) ─────────────────
 
@@ -117,6 +117,10 @@ mock.module("../../sessions/store.js", () => ({
 mock.module("./hub.js", () => ({
     broadcastToHub: async () => {},
 }));
+
+// Restore all module mocks after this file so they don't bleed into other
+// test files running in the same worker process.
+afterAll(() => mock.restore());
 
 const { initStateRedis, markChildAsDelinked } = await import("../sio-state.js");
 const { registerTuiSession } = await import("./sessions.js");

@@ -198,7 +198,10 @@ function _createAuth(opts: {
         baseURL: opts.baseURL,
         secret: opts.secret,
         database: { dialect: opts.dialect, type: "sqlite" as const, transaction: true },
-        trustedOrigins: opts.trustedOrigins,
+        // Pass as a function so better-auth reads the live array contents
+        // at request time. This allows origins to be added after init (e.g.
+        // test harness adding the ephemeral port after server startup).
+        trustedOrigins: () => opts.trustedOrigins,
         emailAndPassword: { enabled: true },
         advanced: {
             ipAddress: {

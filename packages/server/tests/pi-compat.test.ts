@@ -58,6 +58,7 @@ describe("pi-ai API compatibility", () => {
         const models = getModels(providers[0]);
         if (models.length === 0) return;
 
+        // @ts-expect-error — upstream generic requires literal provider/model types; runtime string is fine
         const model = getModel(providers[0], models[0].id);
         expect(model).toBeDefined();
         expect(typeof model.provider).toBe("string");
@@ -87,6 +88,7 @@ describe("pi-agent-core API compatibility", () => {
         const models = getModels(providers[0]);
         if (models.length === 0) return;
 
+        // @ts-expect-error — upstream generic requires literal provider/model types; runtime string is fine
         const model = getModel(providers[0], models[0].id);
 
         // Constructing should not throw
@@ -115,6 +117,7 @@ describe("pi-agent-core API compatibility", () => {
         const models = getModels(providers[0]);
         if (models.length === 0) return;
 
+        // @ts-expect-error — upstream generic requires literal provider/model types; runtime string is fine
         const model = getModel(providers[0], models[0].id);
 
         const agent = new Agent({
