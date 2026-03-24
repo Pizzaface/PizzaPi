@@ -1019,8 +1019,15 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         if (rctx.isCompacting) {
             rctx.isCompacting = false;
             emitCompactEnded(rctx);
-            rctx.forwardEvent(rctx.buildHeartbeat());
         }
+        // Always refresh session state and token usage after compaction so the
+        // UI sees the post-compact context size immediately (not just on web-
+        // triggered compacts which already do this in the exec handler).
+        rctx.emitSessionActive();
+        const tokenUsage = buildTokenUsage(rctx);
+        const providerUsage = buildProviderUsage();
+        emitTokenUsageUpdated(rctx, tokenUsage as any, providerUsage as any);
+        rctx.forwardEvent(rctx.buildHeartbeat());
     });
 
     // ── /remote command ───────────────────────────────────────────────────

@@ -339,10 +339,17 @@ export function emitSessionMetadataUpdate(rctx: RelayContext): void {
     // Note: cwd is intentionally omitted — the UI does not read it from
     // session_metadata_update events, and omitting it saves bytes on every
     // heartbeat tick.
+
+    // buildSessionContext returns { provider, modelId } without contextWindow.
+    // Enrich with contextWindow from the live model so the UI donut keeps working.
+    const enrichedModel = model
+        ? { ...model, contextWindow: rctx.latestCtx.model?.contextWindow }
+        : model;
+
     rctx.forwardEvent({
         type: "session_metadata_update",
         metadata: {
-            model,
+            model: enrichedModel,
             thinkingLevel: rctx.getCurrentThinkingLevel(),
             sessionName: rctx.getCurrentSessionName(),
             availableModels: rctx.getConfiguredModels(),
