@@ -50,13 +50,21 @@ export interface MockHubClientOptions {
 }
 
 // ---------------------------------------------------------------------------
-// Internal: single connection attempt
+// Internal: single connection attempt — builds a fully-wired MockHubClient
 // ---------------------------------------------------------------------------
 
-async function attemptHubConnection(
+/**
+ * Creates a socket, attaches ALL data listeners (including session update
+ * handlers) BEFORE waiting for the initial `sessions` snapshot.
+ *
+ * Listener-before-await ordering prevents the race where `session_added`,
+ * `session_removed`, or `session_status` events emitted between the
+ * snapshot receipt and subsequent listener attachment are silently dropped.
+ */
+async function attemptBuildHubClient(
     server: TestServer,
     connectTimeout: number,
-): Promise<{ socket: ClientSocket<HubServerToClientEvents, HubClientToServerEvents>; initialSessions: SessionInfo[] }> {
+): Promise<MockHubClient> {
     const socket: ClientSocket<HubServerToClientEvents, HubClientToServerEvents> =
         clientIo(`${server.baseUrl}/hub`, {
             extraHeaders: { cookie: server.sessionCookie },
@@ -67,82 +75,8 @@ async function attemptHubConnection(
             reconnection: false,
         });
 
-    let initialSessions: SessionInfo[] = [];
-
-    const snapshotPromise = new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(() => {
-            socket.disconnect();
-            reject(
-                new Error(
-                    `MockHubClient: timeout waiting for initial sessions snapshot (${connectTimeout}ms)`,
-                ),
-            );
-        }, connectTimeout);
-
-        socket.once("sessions", (data) => {
-            clearTimeout(timer);
-            initialSessions = data.sessions;
-            resolve();
-        });
-
-        socket.once("connect_error", (err) => {
-            clearTimeout(timer);
-            socket.disconnect();
-            reject(new Error(`MockHubClient: connection error: ${err.message}`));
-        });
-    });
-
-    socket.connect();
-    await snapshotPromise;
-    return { socket, initialSessions };
-}
-
-// ---------------------------------------------------------------------------
-// Factory
-// ---------------------------------------------------------------------------
-
-/**
- * Create a MockHubClient connected to the given test server.
- *
- * The promise resolves once the server sends the initial `sessions` snapshot.
- *
- * The first connection attempt may fail with `connect_error: unauthorized`
- * due to better-auth cold-start (lazy prepared-statement caching). Up to
- * `maxAttempts` retries are made with a 150 ms delay between attempts.
- */
-export async function createMockHubClient(
-    server: TestServer,
-    opts?: MockHubClientOptions,
-): Promise<MockHubClient> {
-    const connectTimeout = opts?.connectTimeout ?? 5000;
-    const maxAttempts = opts?.maxAttempts ?? 2;
-
-    let lastError: unknown;
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-        if (attempt > 0) {
-            await new Promise<void>((r) => setTimeout(r, 150));
-        }
-        try {
-            const { socket, initialSessions } = await attemptHubConnection(server, connectTimeout);
-            return buildMockHubClient(socket, initialSessions);
-        } catch (err) {
-            lastError = err;
-        }
-    }
-    throw lastError;
-}
-
-// ---------------------------------------------------------------------------
-// Build MockHubClient from an already-connected socket
-// ---------------------------------------------------------------------------
-
-function buildMockHubClient(
-    socket: ClientSocket<HubServerToClientEvents, HubClientToServerEvents>,
-    initialSessions: SessionInfo[],
-): MockHubClient {
-
-    // Mutable live sessions list — seeded with the initial snapshot
-    const sessions: SessionInfo[] = [...initialSessions];
+    // Mutable live sessions list — seeded once the initial snapshot arrives
+    const sessions: SessionInfo[] = [];
 
     // Pending waitForSessionAdded resolvers
     const addedWaiters: Array<{
@@ -173,7 +107,38 @@ function buildMockHubClient(
         }>
     > = new Map();
 
-    // ── Server event handlers ──────────────────────────────────────────────
+    // Tracks whether disconnect() has been called — guards new waitFor calls
+    let isDisconnected = false;
+
+    // Rejects and clears all outstanding waiters (called on disconnect)
+    function rejectAllWaiters(reason: string): void {
+        const err = new Error(reason);
+
+        for (const w of addedWaiters.splice(0)) {
+            clearTimeout(w.timer);
+            w.reject(err);
+        }
+
+        for (const [, list] of removedWaiters) {
+            for (const w of list) {
+                clearTimeout(w.timer);
+                w.reject(err);
+            }
+        }
+        removedWaiters.clear();
+
+        for (const [, list] of statusWaiters) {
+            for (const w of list) {
+                clearTimeout(w.timer);
+                w.reject(err);
+            }
+        }
+        statusWaiters.clear();
+    }
+
+    // ── Attach ALL data listeners BEFORE waiting for the handshake ─────────
+    // This prevents the race where session update events emitted between the
+    // initial `sessions` snapshot and subsequent listener attachment are lost.
 
     // Re-snapshot (e.g. after resync) — replaces the local sessions list
     socket.on("sessions", (data) => {
@@ -246,7 +211,36 @@ function buildMockHubClient(
         }
     });
 
-    // ── MockHubClient implementation ───────────────────────────────────────
+    // ── Handshake: wait for the initial sessions snapshot ─────────────────
+
+    const snapshotPromise = new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => {
+            socket.disconnect();
+            reject(
+                new Error(
+                    `MockHubClient: timeout waiting for initial sessions snapshot (${connectTimeout}ms)`,
+                ),
+            );
+        }, connectTimeout);
+
+        // The `sessions` handler above populates the list; we just need to
+        // know when the first snapshot has arrived so we can resolve here.
+        socket.once("sessions", () => {
+            clearTimeout(timer);
+            resolve();
+        });
+
+        socket.once("connect_error", (err) => {
+            clearTimeout(timer);
+            socket.disconnect();
+            reject(new Error(`MockHubClient: connection error: ${err.message}`));
+        });
+    });
+
+    socket.connect();
+    await snapshotPromise;
+
+    // ── Build and return the MockHubClient object ──────────────────────────
 
     const client: MockHubClient = {
         socket,
@@ -256,6 +250,10 @@ function buildMockHubClient(
             predicate?: (s: SessionInfo) => boolean,
             timeout = 5000,
         ): Promise<SessionInfo> {
+            if (isDisconnected) {
+                return Promise.reject(new Error("MockHubClient.waitForSessionAdded: already disconnected"));
+            }
+
             // Check already-buffered sessions
             const existing = sessions.find((s) => !predicate || predicate(s));
             if (existing) return Promise.resolve(existing);
@@ -272,6 +270,10 @@ function buildMockHubClient(
         },
 
         waitForSessionRemoved(sessionId: string, timeout = 5000): Promise<void> {
+            if (isDisconnected) {
+                return Promise.reject(new Error("MockHubClient.waitForSessionRemoved: already disconnected"));
+            }
+
             // Already removed?
             if (!sessions.find((s) => s.sessionId === sessionId)) {
                 return Promise.resolve();
@@ -302,6 +304,10 @@ function buildMockHubClient(
             predicate?: (data: unknown) => boolean,
             timeout = 5000,
         ): Promise<unknown> {
+            if (isDisconnected) {
+                return Promise.reject(new Error("MockHubClient.waitForSessionStatus: already disconnected"));
+            }
+
             return new Promise<unknown>((resolve, reject) => {
                 const timer = setTimeout(() => {
                     const list = statusWaiters.get(sessionId);
@@ -331,6 +337,9 @@ function buildMockHubClient(
         },
 
         disconnect(): Promise<void> {
+            isDisconnected = true;
+            rejectAllWaiters("MockHubClient: disconnected");
+
             return new Promise<void>((resolve) => {
                 if (!socket.connected) {
                     resolve();
@@ -343,4 +352,38 @@ function buildMockHubClient(
     };
 
     return client;
+}
+
+// ---------------------------------------------------------------------------
+// Factory
+// ---------------------------------------------------------------------------
+
+/**
+ * Create a MockHubClient connected to the given test server.
+ *
+ * The promise resolves once the server sends the initial `sessions` snapshot.
+ *
+ * The first connection attempt may fail with `connect_error: unauthorized`
+ * due to better-auth cold-start (lazy prepared-statement caching). Up to
+ * `maxAttempts` retries are made with a 150 ms delay between attempts.
+ */
+export async function createMockHubClient(
+    server: TestServer,
+    opts?: MockHubClientOptions,
+): Promise<MockHubClient> {
+    const connectTimeout = opts?.connectTimeout ?? 5000;
+    const maxAttempts = opts?.maxAttempts ?? 2;
+
+    let lastError: unknown;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        if (attempt > 0) {
+            await new Promise<void>((r) => setTimeout(r, 150));
+        }
+        try {
+            return await attemptBuildHubClient(server, connectTimeout);
+        } catch (err) {
+            lastError = err;
+        }
+    }
+    throw lastError;
 }
