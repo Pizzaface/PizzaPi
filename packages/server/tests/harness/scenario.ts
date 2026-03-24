@@ -331,11 +331,17 @@ export class TestScenario {
         // Use the isolated relay factory (forceNew: true) to avoid Manager
         // sharing with hub sockets which can cause an indefinite connection hang.
         const relay = await createIsolatedRelay(this.server);
-        const { sessionId, token, shareUrl } = await relay.registerSession(opts);
-
-        const record: ScenarioSession = { sessionId, token, shareUrl, relay };
-        this._sessions.push(record);
-        return record;
+        try {
+            const { sessionId, token, shareUrl } = await relay.registerSession(opts);
+            const record: ScenarioSession = { sessionId, token, shareUrl, relay };
+            this._sessions.push(record);
+            return record;
+        } catch (err) {
+            // registerSession() failed — disconnect the relay so it doesn't leak.
+            // The socket is not in _sessions yet, so reset()/teardown() won't reach it.
+            await relay.disconnect();
+            throw err;
+        }
     }
 
     /**

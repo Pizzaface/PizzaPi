@@ -403,6 +403,14 @@ describe("Inter-session messaging", () => {
             expect(parentSession.sessionId).not.toBe(childSession.sessionId);
 
             const triggerId = `trigger-${Date.now()}`;
+
+            // Listen for delivery on the parent relay socket BEFORE emitting.
+            // The server forwards session_trigger to the target session's relay socket
+            // (messaging.ts line ~199: targetSocket.emit("session_trigger", { trigger })).
+            // This verifies the trigger was actually received on the parent end, not
+            // just that the emit-side local variable was set.
+            const deliveryPromise = parentSession.relay.waitForEvent("session_trigger", 5_000);
+
             childSession.relay.emitTrigger({
                 token: childSession.token,
                 trigger: {
@@ -417,8 +425,13 @@ describe("Inter-session messaging", () => {
                 },
             });
 
-            await new Promise<void>((r) => setTimeout(r, 300));
-            expect(triggerId).toBeTruthy();
+            // Verify delivery: the trigger must arrive at the parent relay socket
+            // with the correct triggerId — confirming end-to-end routing worked.
+            const delivered = await deliveryPromise;
+            const deliveredTrigger = (delivered as Record<string, unknown>).trigger as Record<string, unknown>;
+            expect(deliveredTrigger?.triggerId).toBe(triggerId);
+            expect(deliveredTrigger?.sourceSessionId).toBe(childSession.sessionId);
+            expect(deliveredTrigger?.targetSessionId).toBe(parentSession.sessionId);
         } finally {
             await scenario.reset();
         }
