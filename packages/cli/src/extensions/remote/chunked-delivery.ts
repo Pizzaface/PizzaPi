@@ -229,8 +229,11 @@ interface LastEmittedMessageState {
 }
 let lastEmittedMessageState: LastEmittedMessageState | null = null;
 
-/** Record the current message state as "last emitted" after a full session_active. */
-function recordEmittedMessageState(rctx: RelayContext, messages: unknown[]): void {
+/**
+ * Record the current message state as "last emitted" after a full session_active.
+ * Exported for unit testing.
+ */
+export function recordEmittedMessageState(rctx: RelayContext, messages: unknown[]): void {
     lastEmittedMessageState = {
         length: messages.length,
         leafId: rctx.latestCtx?.sessionManager.getLeafId() ?? null,
@@ -240,8 +243,10 @@ function recordEmittedMessageState(rctx: RelayContext, messages: unknown[]): voi
 /**
  * Returns true when the messages array has changed since the last full
  * session_active emission (or when no emission has been recorded yet).
+ *
+ * Exported for unit testing.
  */
-function messagesChangedSinceLastEmit(rctx: RelayContext, messages: unknown[]): boolean {
+export function messagesChangedSinceLastEmit(rctx: RelayContext, messages: unknown[]): boolean {
     if (!lastEmittedMessageState) return true; // no baseline yet
     const currentLeafId = rctx.latestCtx?.sessionManager.getLeafId() ?? null;
     return (
@@ -331,13 +336,15 @@ export function emitSessionMetadataUpdate(rctx: RelayContext): void {
     }
 
     // Messages unchanged — send lightweight metadata-only update.
+    // Note: cwd is intentionally omitted — the UI does not read it from
+    // session_metadata_update events, and omitting it saves bytes on every
+    // heartbeat tick.
     rctx.forwardEvent({
         type: "session_metadata_update",
         metadata: {
             model,
             thinkingLevel: rctx.getCurrentThinkingLevel(),
             sessionName: rctx.getCurrentSessionName(),
-            cwd: rctx.latestCtx.cwd,
             availableModels: rctx.getConfiguredModels(),
             todoList: getCurrentTodoList(),
         },
