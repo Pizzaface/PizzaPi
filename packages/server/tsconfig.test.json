@@ -5,5 +5,5 @@
         "rootDir": "."
     },
     "references": [{ "path": "../tools" }, { "path": "../protocol" }],
-    "include": ["src", "tests/harness"]
+    "include": ["src", "tests"]
 }
