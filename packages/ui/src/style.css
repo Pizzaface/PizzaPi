@@ -92,6 +92,7 @@
     oklch(0.5  0.22 220 / 0)     360deg
   );
   animation: chase-spin 2s linear infinite;
+  animation-delay: var(--sync-delay, 0ms);
   z-index: -1;
   pointer-events: none;
 }
@@ -127,6 +128,7 @@
     oklch(0.5  0.22 220 / 0)     360deg
   );
   animation: chase-spin 2s linear infinite;
+  animation-delay: var(--sync-delay, 0ms);
   z-index: -1;
   pointer-events: none;
 }
@@ -143,6 +145,7 @@
 
 .animate-awaiting-pulse {
   animation: awaiting-pulse 2.5s ease-in-out infinite;
+  animation-delay: var(--sync-delay, 0ms);
   border-radius: 6px;
 }
 
@@ -158,6 +161,7 @@
 
 .animate-completed-pulse {
   animation: completed-pulse 2.5s ease-in-out infinite;
+  animation-delay: var(--sync-delay, 0ms);
   border-radius: 6px;
 }
 
