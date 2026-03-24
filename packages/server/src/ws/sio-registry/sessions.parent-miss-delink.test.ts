@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock } from "bun:test";
+import { describe, it, expect, beforeEach, afterAll, mock } from "bun:test";
 
 // ── Minimal Redis mock (mirrors sio-state-children.test.ts) ─────────────────
 
@@ -102,6 +102,10 @@ const mockRedis = {
 mock.module("redis", () => ({
     createClient: () => mockRedis,
 }));
+
+// Restore all module mocks after this file so they don't bleed into other
+// test files running in the same worker process.
+afterAll(() => mock.restore());
 
 // Prevent this unit test from touching the real SQLite-backed session store or
 // the global Socket.IO hub registry. Those are covered by separate integration

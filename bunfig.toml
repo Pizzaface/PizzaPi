@@ -1,0 +1,6 @@
+[test]
+# Preload captures the real Redis createClient before any mock.module("redis")
+# calls from other test files can replace it in the worker's module registry.
+# This fixes cross-file mock contamination that causes the integration harness
+# tests to fail when run alongside unit tests that mock the redis package.
+preload = ["./packages/server/tests/harness/preload.ts"]

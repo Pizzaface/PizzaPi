@@ -189,3 +189,15 @@ export async function deleteRelayEventCaches(sessionIds: string[]): Promise<void
         logUnavailableOnce("Failed to delete relay event caches from Redis", error);
     }
 }
+
+/**
+ * Reset all module-level state so that the next call to
+ * `initializeRelayRedisCache()` starts fresh with the current module
+ * mock environment.  Intended for use in test `beforeAll` / `beforeEach`
+ * hooks only — do NOT call in production code.
+ */
+export function _resetRelayRedisCacheForTesting(): void {
+    client = null;
+    initPromise = null;
+    unavailableLogged = false;
+}

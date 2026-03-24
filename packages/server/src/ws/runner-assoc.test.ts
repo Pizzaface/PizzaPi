@@ -9,7 +9,7 @@
 // We mock the Redis client at module level so no live Redis is needed.
 // ============================================================================
 
-import { describe, it, expect, beforeEach, mock } from "bun:test";
+import { describe, it, expect, beforeEach, afterAll, mock } from "bun:test";
 
 // ── Minimal Redis mock ──────────────────────────────────────────────────────
 
@@ -39,6 +39,10 @@ const mockRedis = {
 mock.module("redis", () => ({
     createClient: () => mockRedis,
 }));
+
+// Restore all module mocks after this file so they don't bleed into other
+// test files running in the same worker process.
+afterAll(() => mock.restore());
 
 // Now import the functions under test (they'll use the mocked Redis)
 // We need to init the state redis first

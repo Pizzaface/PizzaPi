@@ -1,4 +1,4 @@
-import { describe, it, expect, mock, beforeEach } from "bun:test";
+import { describe, it, expect, mock, beforeEach, afterAll } from "bun:test";
 
 const store = new Map<string, string>();
 const setStore = new Map<string, Set<string>>();
@@ -90,6 +90,10 @@ mock.module("../../sessions/store.js", () => ({
     getEphemeralTtlMs: () => 60_000,
     updateRelaySessionRunner: mock(async () => {}),
 }));
+
+// Restore all module mocks after this file so they don't bleed into other
+// test files running in the same worker process.
+afterAll(() => mock.restore());
 
 // Instead of mocking ./runners-broadcast.js (which is brittle if another test
 // imports it first), we provide a fake Socket.IO server via initSioRegistry()

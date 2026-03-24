@@ -1,6 +1,6 @@
 import { describe, test, expect, spyOn, beforeAll, afterAll, mock } from "bun:test";
 import { createClient } from "redis";
-import { deleteRelayEventCaches, initializeRelayRedisCache } from "./redis";
+import { deleteRelayEventCaches, initializeRelayRedisCache, _resetRelayRedisCacheForTesting } from "./redis";
 
 // Mock the redis module
 const mockDel = mock((keys: string | string[]) => Promise.resolve(1));
@@ -28,10 +28,16 @@ mock.module("redis", () => ({
     })
 }));
 
+// Restore all module mocks after this file so they don't bleed into other
+// test files running in the same worker process.
+afterAll(() => mock.restore());
+
 describe("deleteRelayEventCaches Performance", () => {
     beforeAll(async () => {
-        // Initialize the client so activeClient() returns something
-        // We ensure initialization happens only once
+        // Reset any pre-existing relay Redis cache state (e.g. from integration
+        // tests that ran before this file in the same worker process), then
+        // re-initialize with the mocked client so the tests get clean mock state.
+        _resetRelayRedisCacheForTesting();
         await initializeRelayRedisCache();
     });
 

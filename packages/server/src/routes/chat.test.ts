@@ -1,4 +1,4 @@
-import { describe, expect, test, mock, spyOn, beforeAll, afterEach } from "bun:test";
+import { describe, expect, test, mock, spyOn, beforeAll, afterAll, afterEach } from "bun:test";
 import type { Mock } from "bun:test";
 
 // mock.module for middleware must be registered before the dynamic import below.
@@ -11,6 +11,10 @@ mock.module("../middleware.js", () => {
         validateApiKey: mock(() => Promise.resolve({ userId: "test-user", userName: "Test User" })),
     };
 });
+
+// Restore all module mocks after this file so they don't bleed into other
+// test files running in the same worker process.
+afterAll(() => mock.restore());
 
 let handleChatRoute: (req: Request, url: URL) => Promise<Response | undefined>;
 let checkSpy: Mock<(key: string) => boolean>;

@@ -11,10 +11,12 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { Server as SocketIOServer } from "socket.io";
 import { createAdapter } from "@socket.io/redis-adapter";
-import { createClient, type RedisClientType } from "redis";
+// Type-only import — erased at compile time, no runtime module registry lookup.
+import type { RedisClientType } from "redis";
 
 import { initAuth, getTrustedOrigins } from "../../src/auth.js";
 import { runAllMigrations } from "../../src/migrations.js";
@@ -137,10 +139,34 @@ export async function createTestServer(opts?: TestServerOptions): Promise<TestSe
     const savedTrustProxy = process.env.PIZZAPI_TRUST_PROXY;
     process.env.PIZZAPI_TRUST_PROXY = "true";
 
+    // Shared helper — restores PIZZAPI_TRUST_PROXY to its original value.
+    // Called both from cleanup() on success and from the catch block on failure
+    // so that a throw during setup never leaves a mutated env var behind.
+    function restoreEnv(): void {
+        if (savedTrustProxy === undefined) {
+            delete process.env.PIZZAPI_TRUST_PROXY;
+        } else {
+            process.env.PIZZAPI_TRUST_PROXY = savedTrustProxy;
+        }
+    }
+
     // We need a placeholder baseURL for initAuth. We'll use a temp placeholder
     // that better-auth uses only for cookie domain (not for actual listening).
     // Using http://127.0.0.1 avoids port-0 issues and works for cookie matching.
     const placeholderBase = opts?.baseUrl ?? "http://127.0.0.1";
+
+    try {
+
+    // Retrieve the real Redis createClient captured by the test preload
+    // (packages/server/tests/harness/preload.ts).  Using the global avoids
+    // the module-registry lookup entirely, which is immune to contamination
+    // from mock.module("redis", …) calls in other test files sharing the
+    // same Bun worker process.
+    type CreateClientFn = typeof import("redis").createClient;
+    const createClient = (
+        (globalThis as unknown as Record<string, unknown>).__harnessRealCreateClient as CreateClientFn | undefined
+        ?? (await import("redis")).createClient
+    );
 
     // 3. Init auth with temp DB
     initAuth({
@@ -186,7 +212,7 @@ export async function createTestServer(opts?: TestServerOptions): Promise<TestSe
         maxHttpBufferSize: 100 * 1024 * 1024,
         pingInterval: 30_000,
         pingTimeout: 60_000,
-        adapter: createAdapter(pubClient, subClient, { key: "pizzapi-sio-test" }),
+        adapter: createAdapter(pubClient, subClient, { key: `pizzapi-sio-test-${randomBytes(8).toString("hex")}` }),
         transports: ["websocket", "polling"],
     });
 
@@ -293,11 +319,7 @@ export async function createTestServer(opts?: TestServerOptions): Promise<TestSe
 
     async function cleanup(): Promise<void> {
         // Restore PIZZAPI_TRUST_PROXY
-        if (savedTrustProxy === undefined) {
-            delete process.env.PIZZAPI_TRUST_PROXY;
-        } else {
-            process.env.PIZZAPI_TRUST_PROXY = savedTrustProxy;
-        }
+        restoreEnv();
 
         // Close Socket.IO — this also closes the underlying httpServer internally,
         // so we do NOT call httpServer.close() separately (it would throw ERR_SERVER_NOT_RUNNING).
@@ -326,4 +348,16 @@ export async function createTestServer(opts?: TestServerOptions): Promise<TestSe
         fetch: testFetch,
         cleanup,
     };
+
+    } catch (err) {
+        // Setup failed — restore env var and clean up temp dir so that the
+        // mutated PIZZAPI_TRUST_PROXY doesn't contaminate subsequent tests.
+        restoreEnv();
+        try {
+            rmSync(tmpDir, { recursive: true, force: true });
+        } catch {
+            // Ignore cleanup errors
+        }
+        throw err;
+    }
 }
