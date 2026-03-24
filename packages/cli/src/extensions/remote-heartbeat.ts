@@ -27,7 +27,7 @@ export function buildHeartbeat(rctx: RelayContext) {
         isCompacting: rctx.isCompacting,
         ts: Date.now(),
         model: rctx.latestCtx?.model
-            ? { provider: rctx.latestCtx.model.provider, id: rctx.latestCtx.model.id, name: rctx.latestCtx.model.name, reasoning: rctx.latestCtx.model.reasoning }
+            ? { provider: rctx.latestCtx.model.provider, id: rctx.latestCtx.model.id, name: rctx.latestCtx.model.name, reasoning: rctx.latestCtx.model.reasoning, contextWindow: rctx.latestCtx.model.contextWindow }
             : null,
         sessionName: rctx.getCurrentSessionName(),
         uptime: rctx.sessionStartedAt !== null ? Date.now() - rctx.sessionStartedAt : null,
