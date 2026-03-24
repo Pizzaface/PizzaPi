@@ -14,7 +14,17 @@ import { tmpdir } from "node:os";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { Server as SocketIOServer } from "socket.io";
 import { createAdapter } from "@socket.io/redis-adapter";
-import { createClient, type RedisClientType } from "redis";
+import type { RedisClientType, createClient as CreateClientType } from "redis";
+
+// Bun test preload (bunfig.toml) saves the real createClient to globalThis BEFORE
+// any mock.module("redis", ...) calls from other test files can replace it.
+// We use that saved reference here so the harness always gets a genuine redis client.
+// Falls back to the module-level import only if the preload didn't run (e.g., direct
+// `import` outside of `bun test`), in which case mock contamination is not a concern.
+declare global {
+    // eslint-disable-next-line no-var
+    var __realRedisCreateClient: typeof CreateClientType | undefined;
+}
 
 import { initAuth, getTrustedOrigins } from "../../src/auth.js";
 import { runAllMigrations } from "../../src/migrations.js";
@@ -163,16 +173,18 @@ export async function createTestServer(opts?: TestServerOptions): Promise<TestSe
 
         // 5. Create Redis pub/sub clients and connect them.
         //
-        // Guard against mock.module("redis", ...) from other test files running in the
-        // same Bun worker: the real redis client from redis@4.x always has .duplicate(),
-        // whereas mock clients typically omit it. If .duplicate is absent, create an
-        // independent client for the sub role instead of crashing.
-        pubClient = createClient({ url: REDIS_URL }) as RedisClientType;
-        subClient = (
-            typeof pubClient.duplicate === "function"
-                ? pubClient.duplicate()
-                : createClient({ url: REDIS_URL })
-        ) as RedisClientType;
+        // ALWAYS use the real createClient saved by the preload script. The preload runs
+        // before any mock.module("redis", ...) can activate, so globalThis.__realRedisCreateClient
+        // is the genuine redis factory regardless of what other test files mock.
+        //
+        // If the preload didn't run (e.g., this module was imported outside bun test), fall
+        // back to a dynamic import of redis. In that case, mock contamination is not an issue.
+        const realCreate =
+            globalThis.__realRedisCreateClient ??
+            ((await import("redis")) as unknown as { createClient: typeof CreateClientType }).createClient;
+
+        pubClient = realCreate({ url: REDIS_URL }) as RedisClientType;
+        subClient = pubClient.duplicate() as RedisClientType;
         await Promise.all([pubClient.connect(), subClient.connect()]);
 
         // 6. We'll track the resolved port for the request converter

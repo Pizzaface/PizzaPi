@@ -1,0 +1,6 @@
+[test]
+# Preload: captures the real redis.createClient BEFORE any mock.module("redis", ...)
+# calls from other test files replace it. The test harness (packages/server/tests/harness/)
+# reads from globalThis.__realRedisCreateClient so it always gets a genuine redis client
+# regardless of which other test files mock the redis module in the same Bun worker.
+preload = ["./packages/server/tests/harness/preload.ts"]

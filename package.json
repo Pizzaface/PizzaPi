@@ -29,7 +29,7 @@
         "dev:cli": "bun packages/cli/src/index.ts",
         "dev:runner": "bun packages/cli/src/index.ts runner",
         "test": "bun test packages/protocol packages/server/src packages/tools && bun test packages/server/tests && cd packages/cli && bun test && cd ../ui && bun test",
-        "typecheck": "tsc --build && bun run --cwd packages/protocol typecheck:tests",
+        "typecheck": "tsc --build && bun run --cwd packages/protocol typecheck:tests && bun run --cwd packages/server typecheck:tests",
         "migrate": "cd packages/server && bun run migrate",
         "clean": "bun -e \"['protocol','tools','server','ui','cli','docs'].forEach(p=>require('fs').rmSync('packages/'+p+'/dist',{recursive:true,force:true}))\"",
         "postinstall": "true"
