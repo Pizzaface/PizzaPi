@@ -10,6 +10,7 @@ import { existsSync } from "fs";
 import { readFile, readdir } from "fs/promises";
 import { join } from "path";
 import { BUILTIN_SYSTEM_PROMPT, defaultAgentDir, expandHome, loadConfig, resolveSandboxConfig, validateSandboxOverride, applyProviderSettingsEnv } from "./config.js";
+import { c, usageBar, colorPct, colorRemaining } from "./cli-colors.js";
 import { buildInteractiveSkillPaths } from "./skills.js";
 import { buildPizzaPiExtensionFactories } from "./extensions/factories.js";
 import { runSetup } from "./setup.js";
@@ -149,13 +150,14 @@ async function main() {
                 } else {
                     const formatWindow = (label: string, w: UsageWindow) => {
                         if (!w) return;
-                        const pct = `${w.utilization.toFixed(1)}%`;
+                        const bar = usageBar(w.utilization);
                         const reset = new Date(w.resets_at).toLocaleString();
-                        console.log(`  ${label.padEnd(22)} ${pct.padStart(6)}  (resets ${reset})`);
+                        console.log(`  ${label.padEnd(22)} ${bar}  ${c.dim(`resets ${reset}`)}`);
                     };
 
-                    console.log("\nClaude usage (OAuth subscription)");
-                    console.log("─".repeat(58));
+                    console.log();
+                    console.log(c.label("Claude usage") + c.dim(" (OAuth subscription)"));
+                    console.log(c.dim("─".repeat(58)));
                     formatWindow("5-hour window", usage.five_hour);
                     formatWindow("7-day window", usage.seven_day);
                     formatWindow("7-day (OAuth apps)", usage.seven_day_oauth_apps);
@@ -165,10 +167,11 @@ async function main() {
 
                     const ex = usage.extra_usage;
                     if (ex?.is_enabled) {
-                        console.log(`\n  Extra usage enabled`);
-                        if (ex.monthly_limit != null) console.log(`    Monthly limit:   $${ex.monthly_limit}`);
-                        if (ex.used_credits != null) console.log(`    Credits used:    $${ex.used_credits}`);
-                        if (ex.utilization != null) console.log(`    Utilization:     ${ex.utilization.toFixed(1)}%`);
+                        console.log();
+                        console.log(`  ${c.accent("Extra usage enabled")}`);
+                        if (ex.monthly_limit != null) console.log(`    Monthly limit:   ${c.bold(`$${ex.monthly_limit}`)}`);
+                        if (ex.used_credits != null) console.log(`    Credits used:    ${c.bold(`$${ex.used_credits}`)}`);
+                        if (ex.utilization != null) console.log(`    Utilization:     ${colorPct(ex.utilization)}`);
                     }
                     printedAny = true;
                 }
@@ -250,9 +253,10 @@ async function main() {
                     console.log(JSON.stringify({ provider: "gemini", project: projectId, usage: quotaData }, null, 2));
                     printedAny = true;
                 } else {
-                    console.log("\nGemini usage (Google Cloud Code Assist, OAuth)");
-                    console.log(`  Project: ${projectId}`);
-                    console.log("─".repeat(58));
+                    console.log();
+                    console.log(c.label("Gemini usage") + c.dim(" (Google Cloud Code Assist, OAuth)"));
+                    console.log(`  ${c.dim("Project:")} ${projectId}`);
+                    console.log(c.dim("─".repeat(58)));
 
                     const buckets = quotaData.buckets ?? [];
                     if (buckets.length === 0) {
@@ -260,12 +264,17 @@ async function main() {
                     } else {
                         for (const bucket of buckets) {
                             const label = [bucket.tokenType, bucket.modelId].filter(Boolean).join(" / ") || "bucket";
-                            const pct = bucket.remainingFraction != null
-                                ? `${(bucket.remainingFraction * 100).toFixed(1)}% remaining`
+                            // remainingFraction is 0–1 (remaining), so used = 1 - remaining
+                            const usedPct = bucket.remainingFraction != null
+                                ? (1 - bucket.remainingFraction) * 100
+                                : null;
+                            const bar = usedPct !== null ? usageBar(usedPct) : "";
+                            const remainingStr = bucket.remainingFraction != null
+                                ? ` ${colorRemaining(bucket.remainingFraction * 100)} remaining`
                                 : "";
-                            const amt = bucket.remainingAmount != null ? ` (${bucket.remainingAmount} left)` : "";
-                            const reset = bucket.resetTime ? `  resets ${new Date(bucket.resetTime).toLocaleString()}` : "";
-                            console.log(`  ${label.padEnd(28)} ${pct}${amt}${reset}`);
+                            const amt = bucket.remainingAmount != null ? c.dim(` (${bucket.remainingAmount} left)`) : "";
+                            const reset = bucket.resetTime ? c.dim(`  resets ${new Date(bucket.resetTime).toLocaleString()}`) : "";
+                            console.log(`  ${label.padEnd(28)} ${bar}${remainingStr}${amt}${reset}`);
                         }
                     }
                     printedAny = true;
@@ -317,18 +326,28 @@ async function main() {
             return;
         }
 
-        const providerWidth = Math.max(...configuredModels.map((m) => m.provider.length), "provider".length);
+        // Group by provider for colored output
+        const byProvider = new Map<string, typeof configuredModels>();
+        for (const model of configuredModels) {
+            const group = byProvider.get(model.provider) ?? [];
+            group.push(model);
+            byProvider.set(model.provider, group);
+        }
+
         const modelWidth = Math.max(...configuredModels.map((m) => m.id.length), "model".length);
 
-        console.log(`${"provider".padEnd(providerWidth)}  ${"model".padEnd(modelWidth)}  notes`);
-        console.log(`${"-".repeat(providerWidth)}  ${"-".repeat(modelWidth)}  -----`);
-        for (const model of configuredModels) {
-            const notes = [
-                model.reasoning ? "reasoning" : undefined,
-                model.contextWindow ? `${model.contextWindow.toLocaleString()} ctx` : undefined,
-                model.name && model.name !== model.id ? model.name : undefined,
-            ].filter(Boolean).join(" • ");
-            console.log(`${model.provider.padEnd(providerWidth)}  ${model.id.padEnd(modelWidth)}  ${notes}`);
+        console.log();
+        for (const [provider, models] of byProvider) {
+            console.log(c.label(provider));
+            for (const model of models) {
+                const noteParts: string[] = [];
+                if (model.reasoning) noteParts.push(c.accent("reasoning"));
+                if (model.contextWindow) noteParts.push(c.dim(`${model.contextWindow.toLocaleString()} ctx`));
+                if (model.name && model.name !== model.id) noteParts.push(c.dim(model.name));
+                const notes = noteParts.join(c.dim(" • "));
+                console.log(`  ${c.cmd(model.id.padEnd(modelWidth))}  ${notes}`);
+            }
+            console.log();
         }
         return;
     }
@@ -341,32 +360,33 @@ async function main() {
 
     if (args[0] === "--help" || args[0] === "-h" || args[0] === "help") {
         const { default: pkg } = await import("../package.json");
-        console.log(`
-pizzapi v${pkg.version} — PizzaPi coding agent
-
-Usage:
-  pizza                       Start an interactive agent session
-  pizza web [flags]           Manage the PizzaPi web hub (Docker)
-  pizza runner [args]         Manage the background runner daemon
-  pizza runner stop           Stop the runner daemon
-  pizza setup                 Run first-time setup
-  pizza usage [provider]      Show API usage stats
-  pizza models                List available models
-  pizza plugins [cmd]         Manage Claude Code plugins (list/trust/untrust)
-
-Flags:
-  --cwd <path>    Set working directory
-  --sandbox <mode>  Set sandbox mode: enforce, audit, or off
-  --safe-mode     Skip MCP, plugins, hooks, and relay (fast startup)
-  --no-mcp        Skip MCP server connections
-  --no-plugins    Skip Claude Code plugin loading
-  --no-hooks      Skip hook execution
-  --no-relay      Skip relay server connection
-  -v, --version   Show version
-  -h, --help      Show this help
-
-Run \`pizza <command> --help\` for command-specific help.
-`.trim());
+        const ver = c.dim(`v${pkg.version}`);
+        console.log();
+        console.log(`${c.brand("🍕 PizzaPi")} ${ver}`);
+        console.log();
+        console.log(c.label("Commands"));
+        console.log(`  ${c.cmd("pizza")}                       Start an interactive agent session`);
+        console.log(`  ${c.cmd("pizza web")} ${c.dim("[flags]")}           Manage the PizzaPi web hub (Docker)`);
+        console.log(`  ${c.cmd("pizza runner")} ${c.dim("[args]")}         Manage the background runner daemon`);
+        console.log(`  ${c.cmd("pizza runner stop")}           Stop the runner daemon`);
+        console.log(`  ${c.cmd("pizza setup")}                 Run first-time setup`);
+        console.log(`  ${c.cmd("pizza usage")} ${c.dim("[provider]")}      Show API usage stats`);
+        console.log(`  ${c.cmd("pizza models")}                List available models`);
+        console.log(`  ${c.cmd("pizza plugins")} ${c.dim("[cmd]")}         Manage Claude Code plugins`);
+        console.log();
+        console.log(c.label("Flags"));
+        console.log(`  ${c.flag("--cwd")} ${c.dim("<path>")}         Set working directory`);
+        console.log(`  ${c.flag("--sandbox")} ${c.dim("<mode>")}      Set sandbox mode: ${c.dim("enforce, audit, or off")}`);
+        console.log(`  ${c.flag("--safe-mode")}            Skip MCP, plugins, hooks, and relay`);
+        console.log(`  ${c.flag("--no-mcp")}               Skip MCP server connections`);
+        console.log(`  ${c.flag("--no-plugins")}           Skip Claude Code plugin loading`);
+        console.log(`  ${c.flag("--no-hooks")}             Skip hook execution`);
+        console.log(`  ${c.flag("--no-relay")}             Skip relay server connection`);
+        console.log(`  ${c.flag("-v, --version")}          Show version`);
+        console.log(`  ${c.flag("-h, --help")}             Show this help`);
+        console.log();
+        console.log(c.dim(`Run pizza <command> --help for command-specific help.`));
+        console.log();
         return;
     }
 
@@ -420,7 +440,17 @@ Run \`pizza <command> --help\` for command-specific help.
     }
 
     if (safeMode) {
-        console.log("\n⚡ Safe mode — MCP servers, plugins, hooks, and relay are disabled.\n");
+        if (process.stdout.isTTY) {
+            console.log(
+                "\n\x1b[33m⚡ Safe mode\x1b[0m\x1b[2m — \x1b[0m" +
+                "\x1b[31mMCP servers\x1b[0m\x1b[2m, \x1b[0m" +
+                "\x1b[31mplugins\x1b[0m\x1b[2m, \x1b[0m" +
+                "\x1b[31mhooks\x1b[0m\x1b[2m, and \x1b[0m" +
+                "\x1b[31mrelay\x1b[0m\x1b[2m are disabled.\x1b[0m\n",
+            );
+        } else {
+            console.log("\n⚡ Safe mode — MCP servers, plugins, hooks, and relay are disabled.\n");
+        }
     }
 
     // ── Sandbox initialization ─────────────────────────────────────────────
