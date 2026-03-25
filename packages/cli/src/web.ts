@@ -494,18 +494,24 @@ function ensureDocker(): void {
 
 // ─── Repo discovery ───────────────────────────────────────────────────────────
 
-function findRepoRoot(): string | null {
-    let dir = import.meta.dirname ?? __dirname;
-    for (let i = 0; i < 10; i++) {
-        if (
-            existsSync(join(dir, "Dockerfile")) &&
-            existsSync(join(dir, "docker", "compose.yml"))
-        ) {
-            return dir;
+export function findRepoRoot(): string | null {
+    // Search up from both the binary's own directory (works in dev / bun src/index.ts)
+    // AND from the current working directory (works when `pizza web` is run from inside
+    // a cloned repo while the binary itself is a global install).
+    const startDirs = [import.meta.dirname ?? __dirname, process.cwd()];
+    for (const startDir of startDirs) {
+        let dir = startDir;
+        for (let i = 0; i < 10; i++) {
+            if (
+                existsSync(join(dir, "Dockerfile")) &&
+                existsSync(join(dir, "docker", "compose.yml"))
+            ) {
+                return dir;
+            }
+            const parent = join(dir, "..");
+            if (parent === dir) break;
+            dir = parent;
         }
-        const parent = join(dir, "..");
-        if (parent === dir) break;
-        dir = parent;
     }
     return null;
 }
