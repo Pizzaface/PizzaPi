@@ -3175,23 +3175,36 @@ export function App() {
 
   // When a service panel is toggled, switch the combined panel's active tab to it
   // (or back to terminal/files when closed).
+  // Build service panel tabs for the CombinedPanel (memoized to avoid recreation every render)
+  const servicePanelTabs = React.useMemo(() => {
+    if (!activeServicePanel || !activeSessionId) return [];
+    const panelDef = SERVICE_PANELS.find(p => p.serviceId === activeServicePanel);
+    if (!panelDef) return [];
+    const PanelComponent = panelDef.component;
+    return [{
+      id: panelDef.serviceId,
+      label: panelDef.label,
+      icon: panelDef.icon,
+      onClose: () => {
+        closeServicePanel();
+        if (showTerminal) handleCombinedTabChange("terminal");
+        else if (showFileExplorer) handleCombinedTabChange("files");
+      },
+      content: <PanelComponent sessionId={activeSessionId} />,
+    }];
+  }, [activeServicePanel, activeSessionId, closeServicePanel, showTerminal, showFileExplorer, handleCombinedTabChange]);
+
   const handleToggleServicePanel = React.useCallback((serviceId: string) => {
-    // If this service is already active, close it and switch to another tab
     if (activeServicePanel === serviceId) {
       closeServicePanel();
-      // Switch back to terminal or files tab
+      // Switch back to an open panel tab
       if (showTerminal) handleCombinedTabChange("terminal");
       else if (showFileExplorer) handleCombinedTabChange("files");
     } else {
       toggleServicePanel(serviceId);
       handleCombinedTabChange(serviceId);
-      // Ensure the terminal panel is visible so the CombinedPanel renders
-      // (service panels live as tabs inside the terminal/combined panel)
-      if (!showTerminal) {
-        setShowTerminal(true);
-      }
     }
-  }, [activeServicePanel, closeServicePanel, toggleServicePanel, handleCombinedTabChange, showTerminal, showFileExplorer, setShowTerminal]);
+  }, [activeServicePanel, closeServicePanel, toggleServicePanel, handleCombinedTabChange, showTerminal, showFileExplorer]);
 
   if (isPending) {
     return (
@@ -4025,24 +4038,7 @@ export function App() {
                         ),
                       },
                       // Service panels (Tunnels, etc.) — dynamically added as tabs
-                      ...(() => {
-                        if (!activeServicePanel || !activeSessionId) return [];
-                        const panelDef = SERVICE_PANELS.find(p => p.serviceId === activeServicePanel);
-                        if (!panelDef) return [];
-                        const PanelComponent = panelDef.component;
-                        return [{
-                          id: panelDef.serviceId,
-                          label: panelDef.label,
-                          icon: panelDef.icon,
-                          onClose: () => {
-                            closeServicePanel();
-                            // Switch to terminal or files tab
-                            if (showTerminal) handleCombinedTabChange("terminal");
-                            else if (showFileExplorer) handleCombinedTabChange("files");
-                          },
-                          content: <PanelComponent sessionId={activeSessionId} />,
-                        }];
-                      })(),
+                      ...servicePanelTabs,
                     ]}
                   />
                 </div>
@@ -4113,21 +4109,7 @@ export function App() {
                             />
                           ),
                         },
-                        ...(() => {
-                          const panelDef = SERVICE_PANELS.find(p => p.serviceId === activeServicePanel);
-                          if (!panelDef) return [];
-                          const PanelComponent = panelDef.component;
-                          return [{
-                            id: panelDef.serviceId,
-                            label: panelDef.label,
-                            icon: panelDef.icon,
-                            onClose: () => {
-                              closeServicePanel();
-                              handleCombinedTabChange("terminal");
-                            },
-                            content: <PanelComponent sessionId={activeSessionId} />,
-                          }];
-                        })(),
+                        ...servicePanelTabs,
                       ]}
                     />
                   ) : (
@@ -4154,6 +4136,46 @@ export function App() {
                       onTabClose={handleTerminalTabClose}
                     />
                   )}
+                </div>
+              </>
+            )}
+
+            {/* Desktop: standalone service panel (no terminal or files open) */}
+            {activeServicePanel && activeSessionId && !showTerminal && !areCombined && (
+              <>
+                <div
+                  className={cn(
+                    "hidden md:flex shrink-0 items-center justify-center group",
+                    terminalPosition === "bottom"
+                      ? "h-[5px] cursor-row-resize"
+                      : "w-[5px] cursor-col-resize",
+                  )}
+                  style={{ order: terminalPosition === "left" ? 1 : 9998 }}
+                  onPointerDown={handleTerminalResizeStart}
+                >
+                  <div className={cn(
+                    "bg-zinc-800 group-hover:bg-blue-500/60 group-active:bg-blue-500 transition-colors",
+                    terminalPosition === "bottom" ? "w-full h-px" : "h-full w-px",
+                  )} />
+                </div>
+                <div
+                  className="hidden md:flex flex-col shrink-0"
+                  style={{
+                    order: terminalPosition === "left" ? 0 : 9999,
+                    ...(terminalPosition === "bottom"
+                      ? { height: terminalHeight }
+                      : { width: terminalWidth }),
+                  }}
+                >
+                  <CombinedPanel
+                    activeTabId={combinedActiveTab}
+                    onActiveTabChange={handleCombinedTabChange}
+                    position={terminalPosition}
+                    onPositionChange={handleTerminalPositionChange}
+                    onDragStart={handlePanelDragStart}
+                    className="h-full"
+                    tabs={servicePanelTabs}
+                  />
                 </div>
               </>
             )}
