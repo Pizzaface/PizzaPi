@@ -51,12 +51,20 @@ RUN node_modules/typescript/bin/tsc --build packages/server/tsconfig.json
 # When PREBUILT_UI=true (default), `pizza web` builds the UI on the host first
 # (native speed, ~15s) and the Dockerfile just copies the dist from context.
 # Set PREBUILT_UI=false to build inside Docker (slow on Docker Desktop VMs).
+#
+# UI_DIST_HASH is a cache-buster: `pizza web` sets it to a content hash of the
+# pre-built dist/ so BuildKit invalidates the COPY layer when the dist changes.
+# Without this, BuildKit can serve a stale build-ui stage from its layer cache
+# even though the host dist/ has new content.
 ARG PREBUILT_UI=false
+ARG UI_DIST_HASH=none
 FROM builder AS build-ui
 ARG PREBUILT_UI
+ARG UI_DIST_HASH
 COPY packages/tools/ packages/tools/
 COPY packages/ui/ packages/ui/
-RUN if [ "$PREBUILT_UI" = "true" ] && [ -d packages/ui/dist ]; then \
+RUN echo "ui-dist-hash: $UI_DIST_HASH" \
+    && if [ "$PREBUILT_UI" = "true" ] && [ -d packages/ui/dist ]; then \
         echo "Using pre-built UI dist from host"; \
     else \
         node_modules/typescript/bin/tsc --build packages/protocol/tsconfig.json \
