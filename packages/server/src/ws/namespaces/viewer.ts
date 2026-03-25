@@ -371,6 +371,19 @@ export function registerViewerNamespace(io: SocketIOServer): void {
             tuiSocket.emit("exec" as string, data);
         });
 
+        // ── mcp_oauth_paste — user pasted OAuth callback URL ──────────────
+        // Forward the extracted auth code to the runner's relay session so
+        // the OAuth provider can complete the token exchange.
+        socket.on("mcp_oauth_paste", async (data: any) => {
+            const currentSession = await getSharedSession(sessionId);
+            if (!currentSession?.collabMode) return;
+
+            const { nonce, code } = data ?? {};
+            if (typeof nonce !== "string" || typeof code !== "string") return;
+
+            emitToRelaySession(sessionId, "mcp_oauth_paste", { nonce, code });
+        });
+
         // ── trigger_response — human viewer responds to child trigger ────────
         // Route directly to the child session via its relay socket,
         // bypassing the parent CLI. This avoids depending on an in-memory

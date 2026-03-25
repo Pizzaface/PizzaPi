@@ -95,6 +95,14 @@ export interface ViewerClientToServerEvents {
     action?: string;
     targetSessionId: string;
   }, ack: () => void) => void;
+
+  /** Submit a pasted OAuth callback URL code for an MCP server.
+   *  Used when the MCP server requires a localhost redirect URI that is
+   *  unreachable from the remote web UI (e.g. Figma via Tailscale). */
+  mcp_oauth_paste: (data: {
+    nonce: string;
+    code: string;
+  }) => void;
 }
 
 // ---------------------------------------------------------------------------

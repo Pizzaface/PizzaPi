@@ -244,6 +244,11 @@ export function App() {
   const [todoList, setTodoList] = React.useState<TodoItem[]>([]);
   const [authSource, setAuthSource] = React.useState<string | null>(null);
 
+  /** Pending MCP OAuth paste prompts: server requires localhost redirect, user must paste callback URL. */
+  const [mcpOAuthPastes, setMcpOAuthPastes] = React.useState<
+    Array<{ serverName: string; authUrl: string; nonce: string; ts: number }>
+  >([]);
+
   // Keyboard shortcuts
   const isMac = React.useMemo(() => {
     const platform = navigator.userAgentData?.platform ?? navigator.platform ?? "";
@@ -1706,6 +1711,39 @@ export function App() {
       return;
     }
 
+    if (type === "mcp_auth_paste_required") {
+      const serverName = typeof evt.serverName === "string" ? evt.serverName : "MCP server";
+      const authUrl = typeof evt.authUrl === "string" ? evt.authUrl : null;
+      const nonce = typeof evt.nonce === "string" ? evt.nonce : null;
+      const ts = typeof evt.ts === "number" ? evt.ts : Date.now();
+
+      if (authUrl && nonce) {
+        // Inject a system message with the auth link
+        const message: RelayMessage = {
+          key: `mcp_auth:${serverName}:${ts}`,
+          role: "system",
+          timestamp: ts,
+          content: `🔐 **${serverName}** requires authentication.\n\n[Click here to authenticate](${authUrl})\n\nAfter authenticating, you'll be redirected to a page that won't load. **Copy the URL** from your browser's address bar and paste it below.`,
+          isError: false,
+        };
+        injectedMessagesRef.current = [
+          ...injectedMessagesRef.current.filter((m) => !m.key.startsWith(`mcp_auth:${serverName}:`)),
+          message,
+        ];
+        setMessages((prev) => {
+          const next = [...prev, message];
+          patchSessionCache({ messages: next });
+          return next;
+        });
+        // Add to pending paste prompts
+        setMcpOAuthPastes((prev) => [
+          ...prev.filter((p) => p.serverName !== serverName),
+          { serverName, authUrl, nonce, ts },
+        ]);
+      }
+      return;
+    }
+
     if (type === "mcp_auth_complete") {
       const serverName = typeof evt.serverName === "string" ? evt.serverName : "MCP server";
       // Remove the auth banner for this server — auth succeeded
@@ -1720,6 +1758,8 @@ export function App() {
         }
         return next.length !== prev.length ? next : prev;
       });
+      // Remove from pending paste prompts
+      setMcpOAuthPastes((prev) => prev.filter((p) => p.serverName !== serverName));
       return;
     }
 
@@ -3863,6 +3903,16 @@ export function App() {
                     onPlanDismiss={() => setPendingPlan(null)}
                     onDuplicateSession={activeSessionInfo?.runnerId ? () => handleDuplicateSession(activeSessionInfo.runnerId!, activeSessionInfo.cwd || "") : undefined}
                     runnerInfo={activeRunnerInfo}
+                    mcpOAuthPastes={mcpOAuthPastes}
+                    onMcpOAuthPaste={(nonce, code) => {
+                      const socket = viewerWsRef.current;
+                      if (socket?.connected) {
+                        socket.emit("mcp_oauth_paste", { nonce, code });
+                      }
+                    }}
+                    onMcpOAuthPasteDismiss={(serverName) => {
+                      setMcpOAuthPastes((prev) => prev.filter((p) => p.serverName !== serverName));
+                    }}
                   />
                 </ErrorBoundary>
               )}

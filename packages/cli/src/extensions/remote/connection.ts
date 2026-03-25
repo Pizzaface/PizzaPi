@@ -514,6 +514,20 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
         }
     });
 
+    // Paste mode: user pasted the OAuth callback URL in the web UI.
+    // Same payload shape as mcp_oauth_callback — nonce + code.
+    (sock as any).on("mcp_oauth_paste", (data: any) => {
+        if (data && typeof data === "object" && typeof data.nonce === "string" && typeof data.code === "string") {
+            const resolve = oauthPendingCallbacks.get(data.nonce);
+            if (resolve) {
+                oauthPendingCallbacks.delete(data.nonce);
+                resolve(data.code);
+            }
+            const bridge = getMcpBridge();
+            bridge?.deliverOAuthCallback?.(data.nonce, data.code);
+        }
+    });
+
     updateMcpRelayContext(rctx);
 }
 

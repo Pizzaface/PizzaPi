@@ -366,6 +366,92 @@ describe("PizzaPiOAuthProvider", () => {
         });
     });
 
+    describe("localhost registration + paste mode", () => {
+        test("enableLocalhostRegistration makes clientMetadata use localhost redirect_uri in relay mode", () => {
+            const provider = new PizzaPiOAuthProvider({
+                serverUrl: `https://localhost-reg-${Date.now()}.example.com/mcp`,
+                serverName: "figma",
+            });
+            provider.relayContext = createMockRelayContext();
+            provider.enableLocalhostRegistration();
+
+            const meta = provider.clientMetadata;
+            expect(meta.redirect_uris).toHaveLength(1);
+            expect(meta.redirect_uris[0]).toBe("http://localhost:1/callback");
+        });
+
+        test("redirectUrl returns localhost when localhostRegistration is enabled in relay mode", () => {
+            const provider = new PizzaPiOAuthProvider({
+                serverUrl: `https://localhost-redirect-${Date.now()}.example.com/mcp`,
+                serverName: "figma",
+            });
+            provider.relayContext = createMockRelayContext();
+            provider.enableLocalhostRegistration();
+
+            const url = provider.redirectUrl.toString();
+            expect(url).toBe("http://localhost:1/callback");
+        });
+
+        test("redirectToAuthorization emits mcp:auth_paste_required in paste mode", () => {
+            const emittedEvents: Array<{ name: string; data: unknown }> = [];
+            const provider = new PizzaPiOAuthProvider({
+                serverUrl: `https://paste-event-${Date.now()}.example.com/mcp`,
+                serverName: "figma",
+            });
+            provider.relayContext = createMockRelayContext({
+                emitEvent: (name, data) => emittedEvents.push({ name, data }),
+            });
+            provider.enableLocalhostRegistration();
+
+            provider.redirectToAuthorization(new URL("https://figma.com/oauth/authorize?foo=bar"));
+
+            expect(emittedEvents).toHaveLength(1);
+            expect(emittedEvents[0].name).toBe("mcp:auth_paste_required");
+            const payload = emittedEvents[0].data as Record<string, unknown>;
+            expect(payload.type).toBe("mcp_auth_paste_required");
+            expect(payload.serverName).toBe("figma");
+            expect(payload.authUrl).toBe("https://figma.com/oauth/authorize?foo=bar");
+        });
+
+        test("redirectToAuthorization emits mcp:auth_required in normal relay mode", () => {
+            const emittedEvents: Array<{ name: string; data: unknown }> = [];
+            const provider = new PizzaPiOAuthProvider({
+                serverUrl: `https://normal-relay-${Date.now()}.example.com/mcp`,
+                serverName: "test-server",
+            });
+            provider.relayContext = createMockRelayContext({
+                emitEvent: (name, data) => emittedEvents.push({ name, data }),
+            });
+
+            provider.redirectToAuthorization(new URL("https://example.com/oauth/authorize"));
+
+            expect(emittedEvents).toHaveLength(1);
+            expect(emittedEvents[0].name).toBe("mcp:auth_required");
+        });
+
+        test("startCallbackAndWait uses relay waitForCallback in paste mode", async () => {
+            let capturedNonce: string | null = null;
+            const provider = new PizzaPiOAuthProvider({
+                serverUrl: `https://paste-wait-${Date.now()}.example.com/mcp`,
+                serverName: "figma",
+            });
+            provider.relayContext = createMockRelayContext({
+                waitForCallback: (nonce) => {
+                    capturedNonce = nonce;
+                    return Promise.resolve("pasted-auth-code");
+                },
+            });
+            provider.enableLocalhostRegistration();
+
+            // Generate a nonce by calling state()
+            await provider.state();
+
+            const result = await provider.startCallbackAndWait();
+            expect(result.code).toBe("pasted-auth-code");
+            expect(capturedNonce).not.toBeNull();
+        });
+    });
+
     describe("hasTokens", () => {
         test("returns false when no tokens are saved", () => {
             // Use a unique URL so persisted state from other tests doesn't interfere
