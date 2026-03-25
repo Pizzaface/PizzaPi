@@ -10,6 +10,8 @@ import { TerminalService } from "./services/terminal-service.js";
 import { FileExplorerService } from "./services/file-explorer-service.js";
 import { GitService } from "./services/git-service.js";
 import { TunnelService } from "./services/tunnel-service.js";
+import { discoverServices } from "./service-loader.js";
+import { globalPluginDirs } from "../plugins/discover.js";
 import { io, type Socket } from "socket.io-client";
 import type { RunnerClientToServerEvents, RunnerServerToClientEvents } from "@pizzapi/protocol";
 import { loadGlobalConfig } from "../config.js";
@@ -221,6 +223,23 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         registry.register(new FileExplorerService());
         registry.register(new GitService());
         registry.register(new TunnelService());
+
+        // Discover and register plugin-provided services (fire-and-forget with logging)
+        discoverServices({ pluginDirs: globalPluginDirs() }).then(({ services, errors }) => {
+            for (const { handler, source } of services) {
+                try {
+                    registry.register(handler);
+                    logInfo(`[services] loaded plugin service "${handler.id}" from ${source.pluginName ?? source.path}`);
+                } catch (err) {
+                    logWarn(`[services] failed to register plugin service "${handler.id}": ${err}`);
+                }
+            }
+            for (const { path, error } of errors) {
+                logWarn(`[services] plugin service load error at ${path}: ${error}`);
+            }
+        }).catch(err => {
+            logWarn(`[services] plugin service discovery failed: ${err}`);
+        });
 
         const socket: Socket<RunnerServerToClientEvents, RunnerClientToServerEvents> = io(
             sioUrl + "/runner",
