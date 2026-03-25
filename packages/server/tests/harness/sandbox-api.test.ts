@@ -8,7 +8,10 @@ type FakeSession = {
     relay: {
         emitEvent: (sessionId: string, token: string, event: unknown) => void;
         emitSessionEnd: (sessionId: string, token: string) => void;
-        socket: { on: (event: string, cb: (data: unknown) => void) => void };
+        socket: {
+            on: (event: string, cb: (data: unknown) => void) => void;
+            off: (event: string, cb: (data: unknown) => void) => void;
+        };
     };
 };
 
@@ -30,7 +33,7 @@ describe("sandbox-api", () => {
                 relay: {
                     emitEvent: () => {},
                     emitSessionEnd: () => {},
-                    socket: { on: () => {} },
+                    socket: { on: () => {}, off: () => {} },
                 },
             },
         ];
@@ -78,7 +81,7 @@ describe("sandbox-api", () => {
                 relay: {
                     emitEvent: (_sid, _token, event) => emitted.push(event),
                     emitSessionEnd: () => {},
-                    socket: { on: () => {} },
+                    socket: { on: () => {}, off: () => {} },
                 },
             },
         ];
@@ -121,7 +124,10 @@ describe("sandbox-api", () => {
                 relay: {
                     emitEvent: (_sid, _token, event) => emitted.push(event),
                     emitSessionEnd: () => {},
-                    socket: { on: (event, cb) => listeners.set(event, cb) },
+                    socket: {
+                        on: (event: string, cb: (data: unknown) => void) => listeners.set(event, cb),
+                        off: (event: string, _cb: (data: unknown) => void) => listeners.delete(event),
+                    },
                 },
             },
         ];
