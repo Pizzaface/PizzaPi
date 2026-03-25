@@ -15,7 +15,8 @@ interface McpOAuthPasteProps {
   serverName: string;
   authUrl: string;
   nonce: string;
-  onSubmit: (nonce: string, code: string) => void;
+  /** Returns true if the code was sent, false if delivery failed (e.g. disconnected). */
+  onSubmit: (nonce: string, code: string) => boolean;
   onDismiss: (serverName: string) => void;
   /** Disable this MCP server (removes it from the active config). */
   onDisable?: (serverName: string) => void;
@@ -47,9 +48,13 @@ export function McpOAuthPaste({
       setError("Couldn't find an auth code in that URL. Copy the full URL from your browser's address bar — it should contain \"code=\".");
       return;
     }
-    setError(null);
-    setSubmitted(true);
-    onSubmit(nonce, code);
+    const sent = onSubmit(nonce, code);
+    if (sent) {
+      setError(null);
+      setSubmitted(true);
+    } else {
+      setError("Not connected to the server. Wait for reconnection and try again.");
+    }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -66,9 +71,13 @@ export function McpOAuthPaste({
     if (code) {
       e.preventDefault();
       setValue(pasted);
-      setError(null);
-      setSubmitted(true);
-      onSubmit(nonce, code);
+      const sent = onSubmit(nonce, code);
+      if (sent) {
+        setError(null);
+        setSubmitted(true);
+      } else {
+        setError("Not connected to the server. Wait for reconnection and try again.");
+      }
     }
   };
 

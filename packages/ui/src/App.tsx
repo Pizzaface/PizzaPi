@@ -515,6 +515,7 @@ export function App() {
     setPluginTrustPrompt(null);
     setRetryState(null);
     setActiveToolCalls(new Map());
+    setMcpOAuthPastes([]);
     setMessageQueue([]);
     setActiveModel(null);
     setSessionName(null);
@@ -1621,6 +1622,7 @@ export function App() {
         setMessages([]);
         setPendingQuestion(null);
         setPendingPlan(null);
+        setMcpOAuthPastes([]);
         setActiveToolCalls(new Map());
         setMessageQueue([]);
         setSessionName(null);
@@ -3915,7 +3917,9 @@ export function App() {
                       const socket = viewerWsRef.current;
                       if (socket?.connected) {
                         socket.emit("mcp_oauth_paste", { nonce, code });
+                        return true;
                       }
+                      return false;
                     }}
                     onMcpOAuthPasteDismiss={(serverName) => {
                       setMcpOAuthPastes((prev) => prev.filter((p) => p.serverName !== serverName));
