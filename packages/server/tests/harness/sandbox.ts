@@ -25,6 +25,7 @@ import {
     type ConversationTurn,
 } from "./builders.js";
 import { startSandboxApi, type SandboxApi } from "./sandbox-api.js";
+import { RedisMemoryServer } from "redis-memory-server";
 
 // ── Suppress noisy server logs so the REPL stays clean ───────────────────────
 // Keep errors but hide connection/disconnect/startup spam.
@@ -328,35 +329,89 @@ function pickRandom<T>(arr: T[]): T {
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 
-async function startRedis(): Promise<(() => void)> {
-    // 1. Honor an existing PIZZAPI_REDIS_URL — the caller already has Redis.
-    const existingUrl = process.env.PIZZAPI_REDIS_URL;
-    if (existingUrl) {
-        const { createClient } = await import("redis");
+type SandboxRedisMode = "memory" | "docker" | "env";
+
+type SandboxCliOptions = {
+    requestedPort: number;
+    headless: boolean;
+    redisMode: SandboxRedisMode;
+};
+
+export function parseCliOptions(argv: string[]): SandboxCliOptions {
+    const portArg = argv.find((a) => /^\d+$/.test(a));
+    const requestedPort = portArg ? parseInt(portArg, 10) : 0;
+    const headless = argv.includes("--headless");
+    const redisFlag = argv.find((a) => a.startsWith("--redis="));
+    const redisMode = (redisFlag?.slice("--redis=".length) ?? "memory") as SandboxRedisMode;
+    if (!["memory", "docker", "env"].includes(redisMode)) {
+        throw new Error(`Invalid --redis mode: ${redisMode}. Use memory, docker, or env.`);
+    }
+    return { requestedPort, headless, redisMode };
+}
+
+async function waitForRedis(redisUrl: string, timeoutMs = 10_000): Promise<void> {
+    const { createClient } = await import("redis");
+    const started = Date.now();
+    while (Date.now() - started < timeoutMs) {
         try {
-            const probe = createClient({ url: existingUrl });
+            const probe = createClient({ url: redisUrl });
             await probe.connect();
             await probe.ping();
             await probe.quit();
-            console.log(`  🟥 Using existing Redis at ${existingUrl}\n`);
-            return () => {}; // nothing to clean up
+            return;
         } catch {
-            console.warn(`  ⚠️  PIZZAPI_REDIS_URL is set (${existingUrl}) but Redis is not reachable — falling through to Docker`);
+            await Bun.sleep(250);
         }
     }
+    throw new Error(`Redis did not become ready at ${redisUrl} within ${timeoutMs}ms`);
+}
 
-    // 2. Probe for Docker before trying to spawn.
+async function startRedis(mode: SandboxRedisMode): Promise<(() => Promise<void> | void)> {
+    const previousRedisUrl = process.env.PIZZAPI_REDIS_URL;
+
+    if (mode === "env") {
+        const existingUrl = process.env.PIZZAPI_REDIS_URL;
+        if (!existingUrl) {
+            throw new Error("--redis=env requires PIZZAPI_REDIS_URL to be set");
+        }
+        await waitForRedis(existingUrl);
+        console.log(`  🟥 Using existing Redis at ${existingUrl}\n`);
+        return () => {};
+    }
+
+    if (mode === "memory") {
+        const memoryRedis = await RedisMemoryServer.create({
+            instance: {
+                ip: "127.0.0.1",
+                port: await getFreePort(),
+            },
+            autoStart: true,
+        } as any);
+        const host = await memoryRedis.getHost();
+        const port = await memoryRedis.getPort();
+        const redisUrl = `redis://${host}:${port}`;
+        process.env.PIZZAPI_REDIS_URL = redisUrl;
+        await waitForRedis(redisUrl, 20_000);
+        console.log(`  🟥 In-memory Redis ready at ${redisUrl}\n`);
+        return async () => {
+            await memoryRedis.stop();
+            if (previousRedisUrl === undefined) delete process.env.PIZZAPI_REDIS_URL;
+            else process.env.PIZZAPI_REDIS_URL = previousRedisUrl;
+        };
+    }
+
+    // docker mode
     const dockerCheck = Bun.spawnSync(["docker", "info"], { stdout: "ignore", stderr: "ignore" });
     if (dockerCheck.exitCode !== 0) {
         throw new Error(
             "Redis is required but Docker is not available.\n" +
             "Either:\n" +
+            "  • Use the default --redis=memory mode, or\n" +
             "  • Install and start Docker, or\n" +
-            "  • Set PIZZAPI_REDIS_URL to point at an existing Redis instance\n",
+            "  • Use --redis=env with an explicit sandbox Redis URL\n",
         );
     }
 
-    // 3. Spawn a Redis container on a random free port.
     const port = await getFreePort();
     const redisUrl = `redis://127.0.0.1:${port}`;
     const containerName = `pizzapi-sandbox-redis-${port}`;
@@ -366,40 +421,24 @@ async function startRedis(): Promise<(() => void)> {
         { stdout: "ignore", stderr: "ignore" },
     );
 
-    const cleanup = () => {
+    process.env.PIZZAPI_REDIS_URL = redisUrl;
+    try {
+        await waitForRedis(redisUrl);
+    } catch (err) {
         proc.kill();
         Bun.spawnSync(["docker", "rm", "-f", containerName], { stdout: "ignore", stderr: "ignore" });
-        delete process.env.PIZZAPI_REDIS_URL;
+        if (previousRedisUrl === undefined) delete process.env.PIZZAPI_REDIS_URL;
+        else process.env.PIZZAPI_REDIS_URL = previousRedisUrl;
+        throw err;
+    }
+
+    console.log(`  🟥 Docker Redis ready at ${redisUrl}\n`);
+    return () => {
+        proc.kill();
+        Bun.spawnSync(["docker", "rm", "-f", containerName], { stdout: "ignore", stderr: "ignore" });
+        if (previousRedisUrl === undefined) delete process.env.PIZZAPI_REDIS_URL;
+        else process.env.PIZZAPI_REDIS_URL = previousRedisUrl;
     };
-
-    // Wait for Redis to be ready (up to 10 s)
-    const { createClient } = await import("redis");
-    let ready = false;
-    for (let i = 0; i < 40; i++) {
-        await Bun.sleep(250);
-        try {
-            const probe = createClient({ url: redisUrl });
-            await probe.connect();
-            await probe.ping();
-            await probe.quit();
-            ready = true;
-            break;
-        } catch { /* not ready yet */ }
-    }
-
-    if (!ready) {
-        cleanup();
-        throw new Error(
-            `Redis container started but never became ready on port ${port}.\n` +
-            "Check Docker logs: docker logs " + containerName,
-        );
-    }
-
-    // Point the harness server at our private Redis before it connects
-    process.env.PIZZAPI_REDIS_URL = redisUrl;
-    console.log(`  🟥 Redis ready on port ${port}\n`);
-
-    return cleanup;
 }
 
 async function getFreePort(): Promise<number> {
@@ -410,14 +449,12 @@ async function getFreePort(): Promise<number> {
 }
 
 async function main() {
-    // Parse CLI args: bun run sandbox [port]
-    const portArg = process.argv.find((a) => /^\d+$/.test(a));
-    const requestedPort = portArg ? parseInt(portArg, 10) : 0;
+    const opts = parseCliOptions(process.argv.slice(2));
 
     console.log("\n🍕 PizzaPi Sandbox\n");
-    console.log("Starting server...\n");
+    console.log(`Starting server... (${opts.headless ? "headless" : "interactive"}, redis=${opts.redisMode})\n`);
 
-    const stopRedis = await startRedis(); // always returns a cleanup fn now
+    const stopRedis = await startRedis(opts.redisMode);
 
     const scenario = new TestScenario();
 
@@ -427,7 +464,7 @@ async function main() {
 
     await scenario.setup({
         disableSignupAfterFirstUser: false,
-        port: requestedPort,
+        port: opts.requestedPort,
     });
     const server = scenario.server;
 
@@ -875,9 +912,21 @@ async function main() {
         doShutdown();
     });
 
-    process.stdin.resume();
-    await replLoop();
-    await doShutdown();
+    // If stdin is a TTY (interactive terminal), run the REPL.
+    // Otherwise run headless — the HTTP API is the only control surface.
+    const isInteractive = process.stdin.isTTY && !opts.headless;
+    if (isInteractive) {
+        process.stdin.resume();
+        await replLoop();
+        await doShutdown();
+    } else {
+        console.log("🤖 Running in headless mode (no TTY). Use the HTTP API to control the sandbox.");
+        console.log(`   🎮 API: ${sandboxApi.baseUrl}\n`);
+        // Keep the process alive — Ctrl+C / SIGTERM triggers doShutdown().
+        process.on("SIGTERM", () => doShutdown());
+        // Block forever by sleeping in a loop. Bun.sleep keeps the event loop alive.
+        while (true) await Bun.sleep(60_000);
+    }
 
     async function doShutdown() {
         console.log("🧹 Shutting down...");
@@ -894,7 +943,7 @@ async function main() {
         sandboxApi.stop();
         await scenario.teardown();
         viteProc.kill();
-        stopRedis();
+        await stopRedis();
         console.log("👋 Goodbye!\n");
         process.exit(0);
     }
@@ -939,7 +988,9 @@ function printStatus(scenario: TestScenario) {
 
 // ── Entry point ──────────────────────────────────────────────────────────────
 
-main().catch((err) => {
-    console.error("💥 Sandbox failed to start:", err);
-    process.exit(1);
-});
+if (import.meta.main) {
+    main().catch((err) => {
+        console.error("💥 Sandbox failed to start:", err);
+        process.exit(1);
+    });
+}
