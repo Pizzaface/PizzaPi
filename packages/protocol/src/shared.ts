@@ -133,6 +133,12 @@ export interface TunnelInfo {
   name?: string;
   /** Relay tunnel URL fragment — actual URL is /api/tunnel/{sessionId}/{port}/ */
   url: string;
+  /**
+   * When true, this tunnel was auto-registered by the runner daemon (e.g. a
+   * service panel port) and is not user-managed. The UI should hide it from
+   * the TunnelPanel tunnel list.
+   */
+  pinned?: boolean;
 }
 
 /** Server → Runner: HTTP proxy request forwarded from an authenticated viewer. */
