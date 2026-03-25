@@ -20,6 +20,7 @@ import type {
 // worktree's updated dist.
 type ServiceEnvelope = { serviceId: string; type: string; requestId?: string; payload: unknown };
 import { sessionCookieAuthMiddleware } from "./auth.js";
+import { getRunnerServiceIds } from "./runner.js";
 import {
     getSharedSession,
     addViewer,
@@ -511,6 +512,15 @@ export function registerViewerNamespace(io: SocketIOServer): void {
             lastHeartbeatAt: freshSession.lastHeartbeatAt,
             sessionName: freshSession.sessionName,
         });
+
+        // Send cached service_announce so the viewer knows which runner
+        // services are available without waiting for a fresh announce.
+        if (freshSession.runnerId) {
+            const serviceIds = getRunnerServiceIds(freshSession.runnerId);
+            if (serviceIds.length > 0) {
+                socket.emit("service_announce", { serviceIds });
+            }
+        }
 
         // Emit an immediate heartbeat snapshot while the runner pushes a fresh
         // session_active in response to "connected".

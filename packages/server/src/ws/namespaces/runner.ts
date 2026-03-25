@@ -225,6 +225,16 @@ interface PendingTunnelRequest {
 
 const pendingTunnelRequests = new Map<string, PendingTunnelRequest>();
 
+// ── Runner service ID cache ──────────────────────────────────────────────────
+// Stores the last service_announce payload per runnerId so newly-joining
+// viewers can receive it immediately without waiting for a fresh announce.
+const runnerServiceIds = new Map<string, string[]>();
+
+/** Get cached service IDs for a runner (empty array if none). */
+export function getRunnerServiceIds(runnerId: string): string[] {
+    return runnerServiceIds.get(runnerId) ?? [];
+}
+
 /**
  * Send an HTTP proxy request to a runner and await its response.
  *
@@ -669,6 +679,8 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
         socket.on("service_announce", (data: { serviceIds: string[] }) => {
             const runnerId = socket.data.runnerId;
             if (!runnerId) return;
+            // Cache for late-joining viewers
+            runnerServiceIds.set(runnerId, data.serviceIds);
             const sessionIds = runnerSessionIds.get(runnerId);
             if (!sessionIds || sessionIds.size === 0) return;
             for (const sessionId of sessionIds) {
@@ -696,6 +708,7 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
                 }
                 // Clean up local session tracking
                 runnerSessionIds.delete(runnerId);
+                runnerServiceIds.delete(runnerId);
                 // Clean up any terminals owned by this runner
                 const terminalIds = await getTerminalIdsForRunner(runnerId);
                 for (const tid of terminalIds) {
