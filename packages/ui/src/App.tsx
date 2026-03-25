@@ -3938,6 +3938,16 @@ export function App() {
                     }}
                     onMcpOAuthPasteDismiss={(serverName) => {
                       setMcpOAuthPastes((prev) => prev.filter((p) => p.serverName !== serverName));
+                      // Also remove the injected auth banner so the user isn't left
+                      // with a "use the prompt below" message pointing at nothing.
+                      const stableKey = `mcp_auth:${serverName}`;
+                      injectedMessagesRef.current = injectedMessagesRef.current.filter(
+                        (m) => m.key !== stableKey && !m.key.startsWith(`${stableKey}:`),
+                      );
+                      setMessages((prev) => {
+                        const next = prev.filter((m) => m.key !== stableKey && !m.key.startsWith(`${stableKey}:`));
+                        return next.length !== prev.length ? next : prev;
+                      });
                     }}
                     onMcpServerDisable={(serverName) => {
                       // Remove the paste prompt immediately

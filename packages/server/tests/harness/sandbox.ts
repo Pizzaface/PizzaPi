@@ -833,8 +833,9 @@ async function main() {
                         // The relay socket is in the session's room, so
                         // emitToRelaySession(..., "mcp_oauth_paste", ...) will
                         // reach us here.
-                        sess.relay.socket.on("mcp_oauth_paste" as any, (data: any) => {
+                        const onPaste = (data: any) => {
                             if (data && typeof data === "object" && data.nonce === nonce) {
+                                sess.relay.socket.off("mcp_oauth_paste" as any, onPaste);
                                 console.log(`\n  ✅ OAuth paste received!`);
                                 console.log(`     Nonce: ${data.nonce}`);
                                 console.log(`     Code: ${data.code}`);
@@ -847,7 +848,8 @@ async function main() {
                                 console.log(`  🎉 Emitted mcp_auth_complete — paste UI should disappear`);
                                 process.stdout.write("\n🍕 sandbox> ");
                             }
-                        });
+                        };
+                        sess.relay.socket.on("mcp_oauth_paste" as any, onPaste);
                         break;
                     }
 
