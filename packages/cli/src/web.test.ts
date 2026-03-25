@@ -7,6 +7,7 @@ import {
     extractVapidFromCompose,
     extractSettingsFromCompose,
     findRepoRoot,
+    parseArgs,
     resolveBetterAuthSecret,
     resolveMissingProxySettings,
     shouldInstallDependencies,
@@ -504,5 +505,35 @@ describe("resolveMissingProxySettings", () => {
             proxyDepth: 2,
             source: "compose",
         });
+    });
+});
+
+describe("parseArgs", () => {
+    test("defaults: detach true, noCache false, help false", () => {
+        const r = parseArgs([]);
+        expect(r.detach).toBe(true);
+        expect(r.noCache).toBe(false);
+        expect(r.help).toBe(false);
+    });
+
+    test("--no-cache sets noCache", () => {
+        const r = parseArgs(["--no-cache"]);
+        expect(r.noCache).toBe(true);
+    });
+
+    test("--foreground disables detach", () => {
+        expect(parseArgs(["--foreground"]).detach).toBe(false);
+        expect(parseArgs(["-f"]).detach).toBe(false);
+    });
+
+    test("--port parses port number", () => {
+        expect(parseArgs(["--port", "8080"]).port).toBe(8080);
+    });
+
+    test("combines multiple flags", () => {
+        const r = parseArgs(["--no-cache", "-f", "--port", "9000"]);
+        expect(r.noCache).toBe(true);
+        expect(r.detach).toBe(false);
+        expect(r.port).toBe(9000);
     });
 });
