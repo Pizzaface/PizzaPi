@@ -3,6 +3,7 @@ import {
     parseHealthDegraded,
     fetchHealthDegraded,
     createHealthPoller,
+    shouldTriggerRecoveryPoll,
     type HealthResponse,
 } from "./DegradedBanner.logic";
 
@@ -139,6 +140,23 @@ describe("fetchHealthDegraded", () => {
 });
 
 // ── createHealthPoller — in-flight guard ─────────────────────────────────────
+
+describe("shouldTriggerRecoveryPoll", () => {
+    test("returns true when transitioning into connected", () => {
+        expect(shouldTriggerRecoveryPoll(null, "connected")).toBe(true);
+        expect(shouldTriggerRecoveryPoll("disconnected", "connected")).toBe(true);
+        expect(shouldTriggerRecoveryPoll("connecting", "connected")).toBe(true);
+    });
+
+    test("returns false when already connected", () => {
+        expect(shouldTriggerRecoveryPoll("connected", "connected")).toBe(false);
+    });
+
+    test("returns false for non-connected next states", () => {
+        expect(shouldTriggerRecoveryPoll("disconnected", "connecting")).toBe(false);
+        expect(shouldTriggerRecoveryPoll("connected", "disconnected")).toBe(false);
+    });
+});
 
 describe("createHealthPoller — in-flight guard", () => {
     test("invokes onResult with false when server is healthy", async () => {

@@ -10,6 +10,19 @@ export interface HealthResponse {
     uptime: number;
 }
 
+export type RelayStatus = "connecting" | "connected" | "disconnected";
+
+/**
+ * Trigger an immediate health repoll only when relay connectivity transitions
+ * from a non-connected state into connected.
+ */
+export function shouldTriggerRecoveryPoll(
+    previous: RelayStatus | null,
+    next: RelayStatus,
+): boolean {
+    return previous !== "connected" && next === "connected";
+}
+
 /**
  * Determine from a parsed /health response whether the server is degraded.
  * The `status` field is authoritative.

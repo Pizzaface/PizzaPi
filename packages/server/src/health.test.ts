@@ -3,6 +3,7 @@ import {
     isServerShuttingDown,
     setServerShuttingDown,
     resetServerShuttingDown,
+    shouldPreserveOnSocketDisconnect,
 } from "./health.js";
 
 describe("server health — shutdown flag", () => {
@@ -26,5 +27,14 @@ describe("server health — shutdown flag", () => {
         expect(isServerShuttingDown).toBe(true);
         resetServerShuttingDown();
         expect(isServerShuttingDown).toBe(false);
+    });
+
+    test("shouldPreserveOnSocketDisconnect follows shutdown flag", () => {
+        resetServerShuttingDown();
+        expect(shouldPreserveOnSocketDisconnect("transport close")).toBe(false);
+
+        setServerShuttingDown();
+        expect(shouldPreserveOnSocketDisconnect("transport close")).toBe(true);
+        expect(shouldPreserveOnSocketDisconnect("server shutting down")).toBe(true);
     });
 });

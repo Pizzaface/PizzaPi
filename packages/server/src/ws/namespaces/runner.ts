@@ -19,7 +19,7 @@ import type {
     RunnerSkill,
     RunnerAgent,
 } from "@pizzapi/protocol";
-import { isServerShuttingDown } from "../../health.js";
+import { shouldPreserveOnSocketDisconnect } from "../../health.js";
 
 // Inline definitions mirror packages/protocol/src/shared.ts.
 // Using local aliases avoids a cross-worktree symlink resolution issue where
@@ -705,7 +705,7 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
                 // We check BOTH the flag and the reason to avoid preserving
                 // state for runners that genuinely crashed during the brief
                 // shutdown window.
-                if (isServerShuttingDown && reason === "server shutting down") {
+                if (shouldPreserveOnSocketDisconnect(reason)) {
                     console.log(`[sio/runner] server shutting down — preserving Redis state for runner ${runnerId}`);
                     return;
                 }

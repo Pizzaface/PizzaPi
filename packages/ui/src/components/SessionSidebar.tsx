@@ -18,6 +18,7 @@ import { PanelLeftClose, PanelLeftOpen, Plus, X, HardDrive, FolderOpen, CheckSqu
 import { buildSessionTree, flattenSessionTree, getSessionIndent, getDescendantSessionIds, getGroupCwd } from "@/lib/session-tree";
 import { pruneSwipeOffsets } from "@/lib/swipe-reveal";
 import { getSessionVisualState } from "@/lib/session-visual-state";
+import { parseHubSessionsPayload } from "@/lib/hub-sessions";
 
 interface HubSession {
     sessionId: string;
@@ -600,9 +601,35 @@ export const SessionSidebar = React.memo(function SessionSidebar({
 
     React.useEffect(() => {
         const socket = io("/hub", { withCredentials: true });
+        let disposed = false;
+        let connectEpoch = 0;
+        let latestHubSnapshotEpoch = 0;
+
+        const applyLiveSessionsSnapshot = (sessions: HubSession[]) => {
+            setLiveSessions(sessions);
+            setHasLoaded(true);
+        };
+
+        const resyncLiveSessionsFromApi = async (epoch: number) => {
+            try {
+                const res = await fetch("/api/sessions", { credentials: "include" });
+                if (!res.ok) return;
+                const body = await res.json();
+                if (disposed) return;
+                // If the hub socket already delivered its canonical "sessions"
+                // snapshot for this connection epoch, trust that and skip the REST
+                // fallback to avoid clobbering newer socket deltas.
+                if (latestHubSnapshotEpoch >= epoch) return;
+                applyLiveSessionsSnapshot(parseHubSessionsPayload(body));
+            } catch {
+                // Ignore REST fallback failures — hub stream remains primary.
+            }
+        };
 
         socket.on("connect", () => {
             setDotState("connected");
+            const epoch = ++connectEpoch;
+            void resyncLiveSessionsFromApi(epoch);
         });
 
         socket.on("disconnect", () => {
@@ -614,8 +641,8 @@ export const SessionSidebar = React.memo(function SessionSidebar({
         });
 
         socket.on("sessions", (data) => {
-            setLiveSessions((data.sessions as HubSession[]) ?? []);
-            setHasLoaded(true);
+            latestHubSnapshotEpoch = connectEpoch;
+            applyLiveSessionsSnapshot(parseHubSessionsPayload(data));
         });
 
         socket.on("session_added", (data) => {
@@ -685,6 +712,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
         });
 
         return () => {
+            disposed = true;
             socket.disconnect();
         };
     }, []);
