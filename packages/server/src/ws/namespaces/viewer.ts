@@ -371,6 +371,42 @@ export function registerViewerNamespace(io: SocketIOServer): void {
             tuiSocket.emit("exec" as string, data);
         });
 
+        // ── mcp_oauth_paste — user pasted OAuth callback URL ──────────────
+        // Forward the extracted auth code to the runner's relay session so
+        // the OAuth provider can complete the token exchange.
+        // Uses verified delivery (like trigger_response): acks on success
+        // so the UI can distinguish delivered pastes from dropped ones.
+        socket.on("mcp_oauth_paste", async (data: any, ack?: (...args: any[]) => void) => {
+            const currentSession = await getSharedSession(sessionId);
+            if (!currentSession?.collabMode) {
+                if (typeof ack === "function") ack({ ok: false, error: "Session not in collab mode" });
+                return;
+            }
+
+            const { nonce, code, state } = data ?? {};
+            if (typeof nonce !== "string" || typeof code !== "string") {
+                if (typeof ack === "function") ack({ ok: false, error: "Missing nonce or code" });
+                return;
+            }
+
+            const payload = {
+                nonce,
+                code,
+                ...(typeof state === "string" ? { state } : {}),
+            };
+
+            // Try local TUI socket first, fall back to relay room.
+            const tuiSocket = getLocalTuiSocket(sessionId);
+            if (tuiSocket) {
+                tuiSocket.emit("mcp_oauth_paste" as string, payload);
+                if (typeof ack === "function") ack({ ok: true });
+            } else if (await emitToRelaySessionVerified(sessionId, "mcp_oauth_paste", payload)) {
+                if (typeof ack === "function") ack({ ok: true });
+            } else {
+                if (typeof ack === "function") ack({ ok: false, error: "Runner session unavailable" });
+            }
+        });
+
         // ── trigger_response — human viewer responds to child trigger ────────
         // Route directly to the child session via its relay socket,
         // bypassing the parent CLI. This avoids depending on an in-memory

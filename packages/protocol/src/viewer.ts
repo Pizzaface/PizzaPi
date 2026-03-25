@@ -95,6 +95,18 @@ export interface ViewerClientToServerEvents {
     action?: string;
     targetSessionId: string;
   }, ack: () => void) => void;
+
+  /** Submit a pasted OAuth callback URL code for an MCP server.
+   *  Used when the MCP server requires a localhost redirect URI that is
+   *  unreachable from the remote web UI (e.g. Figma via Tailscale). */
+  /** Submit a pasted OAuth callback URL code for an MCP server.
+   *  Supports Socket.IO ack — server calls the ack callback only on
+   *  successful delivery to the runner, so the client can detect failures. */
+  mcp_oauth_paste: (data: {
+    nonce: string;
+    code: string;
+    state?: string;
+  }, ack: (result: { ok: boolean; error?: string }) => void) => void;
 }
 
 // ---------------------------------------------------------------------------

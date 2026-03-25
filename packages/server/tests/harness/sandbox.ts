@@ -24,6 +24,8 @@ import {
     buildToolResultEvent,
     type ConversationTurn,
 } from "./builders.js";
+import { startSandboxApi, type SandboxApi } from "./sandbox-api.js";
+import { RedisMemoryServer } from "redis-memory-server";
 
 // ── Suppress noisy server logs so the REPL stays clean ───────────────────────
 // Keep errors but hide connection/disconnect/startup spam.
@@ -327,35 +329,89 @@ function pickRandom<T>(arr: T[]): T {
 
 // ── Main ─────────────────────────────────────────────────────────────────────
 
-async function startRedis(): Promise<(() => void)> {
-    // 1. Honor an existing PIZZAPI_REDIS_URL — the caller already has Redis.
-    const existingUrl = process.env.PIZZAPI_REDIS_URL;
-    if (existingUrl) {
-        const { createClient } = await import("redis");
+type SandboxRedisMode = "memory" | "docker" | "env";
+
+type SandboxCliOptions = {
+    requestedPort: number;
+    headless: boolean;
+    redisMode: SandboxRedisMode;
+};
+
+export function parseCliOptions(argv: string[]): SandboxCliOptions {
+    const portArg = argv.find((a) => /^\d+$/.test(a));
+    const requestedPort = portArg ? parseInt(portArg, 10) : 0;
+    const headless = argv.includes("--headless");
+    const redisFlag = argv.find((a) => a.startsWith("--redis="));
+    const redisMode = (redisFlag?.slice("--redis=".length) ?? "memory") as SandboxRedisMode;
+    if (!["memory", "docker", "env"].includes(redisMode)) {
+        throw new Error(`Invalid --redis mode: ${redisMode}. Use memory, docker, or env.`);
+    }
+    return { requestedPort, headless, redisMode };
+}
+
+async function waitForRedis(redisUrl: string, timeoutMs = 10_000): Promise<void> {
+    const { createClient } = await import("redis");
+    const started = Date.now();
+    while (Date.now() - started < timeoutMs) {
         try {
-            const probe = createClient({ url: existingUrl });
+            const probe = createClient({ url: redisUrl });
             await probe.connect();
             await probe.ping();
             await probe.quit();
-            console.log(`  🟥 Using existing Redis at ${existingUrl}\n`);
-            return () => {}; // nothing to clean up
+            return;
         } catch {
-            console.warn(`  ⚠️  PIZZAPI_REDIS_URL is set (${existingUrl}) but Redis is not reachable — falling through to Docker`);
+            await Bun.sleep(250);
         }
     }
+    throw new Error(`Redis did not become ready at ${redisUrl} within ${timeoutMs}ms`);
+}
 
-    // 2. Probe for Docker before trying to spawn.
+async function startRedis(mode: SandboxRedisMode): Promise<(() => Promise<void> | void)> {
+    const previousRedisUrl = process.env.PIZZAPI_REDIS_URL;
+
+    if (mode === "env") {
+        const existingUrl = process.env.PIZZAPI_REDIS_URL;
+        if (!existingUrl) {
+            throw new Error("--redis=env requires PIZZAPI_REDIS_URL to be set");
+        }
+        await waitForRedis(existingUrl);
+        console.log(`  🟥 Using existing Redis at ${existingUrl}\n`);
+        return () => {};
+    }
+
+    if (mode === "memory") {
+        const memoryRedis = await RedisMemoryServer.create({
+            instance: {
+                ip: "127.0.0.1",
+                port: await getFreePort(),
+            },
+            autoStart: true,
+        } as any);
+        const host = await memoryRedis.getHost();
+        const port = await memoryRedis.getPort();
+        const redisUrl = `redis://${host}:${port}`;
+        process.env.PIZZAPI_REDIS_URL = redisUrl;
+        await waitForRedis(redisUrl, 20_000);
+        console.log(`  🟥 In-memory Redis ready at ${redisUrl}\n`);
+        return async () => {
+            await memoryRedis.stop();
+            if (previousRedisUrl === undefined) delete process.env.PIZZAPI_REDIS_URL;
+            else process.env.PIZZAPI_REDIS_URL = previousRedisUrl;
+        };
+    }
+
+    // docker mode
     const dockerCheck = Bun.spawnSync(["docker", "info"], { stdout: "ignore", stderr: "ignore" });
     if (dockerCheck.exitCode !== 0) {
         throw new Error(
             "Redis is required but Docker is not available.\n" +
             "Either:\n" +
+            "  • Use the default --redis=memory mode, or\n" +
             "  • Install and start Docker, or\n" +
-            "  • Set PIZZAPI_REDIS_URL to point at an existing Redis instance\n",
+            "  • Use --redis=env with an explicit sandbox Redis URL\n",
         );
     }
 
-    // 3. Spawn a Redis container on a random free port.
     const port = await getFreePort();
     const redisUrl = `redis://127.0.0.1:${port}`;
     const containerName = `pizzapi-sandbox-redis-${port}`;
@@ -365,40 +421,24 @@ async function startRedis(): Promise<(() => void)> {
         { stdout: "ignore", stderr: "ignore" },
     );
 
-    const cleanup = () => {
+    process.env.PIZZAPI_REDIS_URL = redisUrl;
+    try {
+        await waitForRedis(redisUrl);
+    } catch (err) {
         proc.kill();
         Bun.spawnSync(["docker", "rm", "-f", containerName], { stdout: "ignore", stderr: "ignore" });
-        delete process.env.PIZZAPI_REDIS_URL;
+        if (previousRedisUrl === undefined) delete process.env.PIZZAPI_REDIS_URL;
+        else process.env.PIZZAPI_REDIS_URL = previousRedisUrl;
+        throw err;
+    }
+
+    console.log(`  🟥 Docker Redis ready at ${redisUrl}\n`);
+    return () => {
+        proc.kill();
+        Bun.spawnSync(["docker", "rm", "-f", containerName], { stdout: "ignore", stderr: "ignore" });
+        if (previousRedisUrl === undefined) delete process.env.PIZZAPI_REDIS_URL;
+        else process.env.PIZZAPI_REDIS_URL = previousRedisUrl;
     };
-
-    // Wait for Redis to be ready (up to 10 s)
-    const { createClient } = await import("redis");
-    let ready = false;
-    for (let i = 0; i < 40; i++) {
-        await Bun.sleep(250);
-        try {
-            const probe = createClient({ url: redisUrl });
-            await probe.connect();
-            await probe.ping();
-            await probe.quit();
-            ready = true;
-            break;
-        } catch { /* not ready yet */ }
-    }
-
-    if (!ready) {
-        cleanup();
-        throw new Error(
-            `Redis container started but never became ready on port ${port}.\n` +
-            "Check Docker logs: docker logs " + containerName,
-        );
-    }
-
-    // Point the harness server at our private Redis before it connects
-    process.env.PIZZAPI_REDIS_URL = redisUrl;
-    console.log(`  🟥 Redis ready on port ${port}\n`);
-
-    return cleanup;
 }
 
 async function getFreePort(): Promise<number> {
@@ -409,14 +449,12 @@ async function getFreePort(): Promise<number> {
 }
 
 async function main() {
-    // Parse CLI args: bun run sandbox [port]
-    const portArg = process.argv.find((a) => /^\d+$/.test(a));
-    const requestedPort = portArg ? parseInt(portArg, 10) : 0;
+    const opts = parseCliOptions(process.argv.slice(2));
 
     console.log("\n🍕 PizzaPi Sandbox\n");
-    console.log("Starting server...\n");
+    console.log(`Starting server... (${opts.headless ? "headless" : "interactive"}, redis=${opts.redisMode})\n`);
 
-    const stopRedis = await startRedis(); // always returns a cleanup fn now
+    const stopRedis = await startRedis(opts.redisMode);
 
     const scenario = new TestScenario();
 
@@ -426,7 +464,7 @@ async function main() {
 
     await scenario.setup({
         disableSignupAfterFirstUser: false,
-        port: requestedPort,
+        port: opts.requestedPort,
     });
     const server = scenario.server;
 
@@ -448,6 +486,7 @@ async function main() {
     // Session 1: active with a conversation
     const s1 = await scenario.addSession({
         cwd: "/Users/jordan/Documents/Projects/PizzaPi",
+        collabMode: true,
     });
     sessionCounter++;
     s1.relay.emitEvent(s1.sessionId, s1.token, buildHeartbeat({
@@ -474,6 +513,7 @@ async function main() {
     // Session 2: active, different model
     const s2 = await scenario.addSession({
         cwd: "/Users/jordan/Projects/cool-app",
+        collabMode: true,
     });
     sessionCounter++;
     s2.relay.emitEvent(s2.sessionId, s2.token, buildHeartbeat({
@@ -493,6 +533,7 @@ async function main() {
     // Session 3: child of session 1
     const s3 = await scenario.addSession({
         cwd: "/Users/jordan/Documents/Projects/PizzaPi",
+        collabMode: true,
         parentSessionId: s1.sessionId,
     });
     sessionCounter++;
@@ -529,9 +570,18 @@ async function main() {
         } catch { /* not ready */ }
     }
 
+    // ── Start HTTP control API ────────────────────────────────────────
+    const sandboxApi = await startSandboxApi({
+        scenario,
+        scenarios: SCENARIOS,
+        models: MODELS,
+        cwds: CWDS,
+    });
+
     console.log(`\n✅ Sandbox ready!`);
     console.log(`   📺 UI (HMR):  http://127.0.0.1:${vitePort}`);
-    console.log(`   🔌 Server:    ${server.baseUrl}\n`);
+    console.log(`   🔌 Server:    ${server.baseUrl}`);
+    console.log(`   🎮 API:       ${sandboxApi.baseUrl}\n`);
 
     // ── Live token ticker — grows s1 & s2 usage over time ───────────────
     // Simulates an active session consuming context so the donut animates.
@@ -648,7 +698,7 @@ async function main() {
                         const name = args[0] || pickRandom(SESSION_NAMES);
                         const model = pickRandom(MODELS);
                         const cwd = pickRandom(CWDS);
-                        const sess = await scenario.addSession({ cwd });
+                        const sess = await scenario.addSession({ cwd, collabMode: true });
                         sessionCounter++;
                         sess.relay.emitEvent(sess.sessionId, sess.token, buildHeartbeat({
                             active: true,
@@ -694,6 +744,7 @@ async function main() {
                         const model = pickRandom(MODELS);
                         const child = await scenario.addSession({
                             cwd: pickRandom(CWDS),
+                            collabMode: true,
                             parentSessionId: parent.sessionId,
                         });
                         sessionCounter++;
@@ -742,7 +793,7 @@ async function main() {
                             const name = pickRandom(SESSION_NAMES);
                             const model = pickRandom(MODELS);
                             const cwd = pickRandom(CWDS);
-                            const sess = await scenario.addSession({ cwd });
+                            const sess = await scenario.addSession({ cwd, collabMode: true });
                             sessionCounter++;
                             sess.relay.emitEvent(sess.sessionId, sess.token, buildHeartbeat({
                                 active: Math.random() > 0.3,
@@ -753,6 +804,52 @@ async function main() {
                             await sleep(50);
                         }
                         console.log(`  ✅ Created ${count} sessions (total: ${scenario.sessions.length})`);
+                        break;
+                    }
+
+                    case "oauth":
+                    case "paste": {
+                        const idx = parseInt(args[0] ?? "1", 10);
+                        const serverName = args[1] || "figma";
+                        const sess = scenario.sessions[idx - 1];
+                        if (!sess) {
+                            console.log(`  ❌ No session at index ${idx}. Use 'status' to see sessions.`);
+                            break;
+                        }
+                        const nonce = Math.random().toString(36).slice(2, 18);
+                        const authUrl = `https://www.figma.com/oauth?client_id=mock123&redirect_uri=http%3A%2F%2Flocalhost%3A1%2Fcallback&scope=mcp%3Aconnect&state=mock_state&response_type=code`;
+                        sess.relay.emitEvent(sess.sessionId, sess.token, {
+                            type: "mcp_auth_paste_required",
+                            serverName,
+                            authUrl,
+                            nonce,
+                            ts: Date.now(),
+                        });
+                        console.log(`  🔐 Emitted mcp_auth_paste_required for "${serverName}" into session ${idx}`);
+                        console.log(`     Nonce: ${nonce}`);
+                        console.log(`     Auth URL: ${authUrl.slice(0, 60)}...`);
+
+                        // Listen for the paste response routed through the server.
+                        // The relay socket is in the session's room, so
+                        // emitToRelaySession(..., "mcp_oauth_paste", ...) will
+                        // reach us here.
+                        const onPaste = (data: any) => {
+                            if (data && typeof data === "object" && data.nonce === nonce) {
+                                sess.relay.socket.off("mcp_oauth_paste" as any, onPaste);
+                                console.log(`\n  ✅ OAuth paste received!`);
+                                console.log(`     Nonce: ${data.nonce}`);
+                                console.log(`     Code: ${data.code}`);
+                                // Simulate auth completion
+                                sess.relay.emitEvent(sess.sessionId, sess.token, {
+                                    type: "mcp_auth_complete",
+                                    serverName,
+                                    ts: Date.now(),
+                                });
+                                console.log(`  🎉 Emitted mcp_auth_complete — paste UI should disappear`);
+                                process.stdout.write("\n🍕 sandbox> ");
+                            }
+                        };
+                        sess.relay.socket.on("mcp_oauth_paste" as any, onPaste);
                         break;
                     }
 
@@ -817,9 +914,21 @@ async function main() {
         doShutdown();
     });
 
-    process.stdin.resume();
-    await replLoop();
-    await doShutdown();
+    // If stdin is a TTY (interactive terminal), run the REPL.
+    // Otherwise run headless — the HTTP API is the only control surface.
+    const isInteractive = process.stdin.isTTY && !opts.headless;
+    if (isInteractive) {
+        process.stdin.resume();
+        await replLoop();
+        await doShutdown();
+    } else {
+        console.log("🤖 Running in headless mode (no TTY). Use the HTTP API to control the sandbox.");
+        console.log(`   🎮 API: ${sandboxApi.baseUrl}\n`);
+        // Keep the process alive — Ctrl+C / SIGTERM triggers doShutdown().
+        process.on("SIGTERM", () => doShutdown());
+        // Block forever by sleeping in a loop. Bun.sleep keeps the event loop alive.
+        while (true) await Bun.sleep(60_000);
+    }
 
     async function doShutdown() {
         console.log("🧹 Shutting down...");
@@ -833,9 +942,10 @@ async function main() {
         } else {
             process.env.PIZZAPI_BASE_URL = savedBaseUrl;
         }
+        sandboxApi.stop();
         await scenario.teardown();
         viteProc.kill();
-        stopRedis();
+        await stopRedis();
         console.log("👋 Goodbye!\n");
         process.exit(0);
     }
@@ -856,6 +966,7 @@ function printHelp() {
     console.log("  end <n>              — End session n");
     console.log("  heartbeat <n> [bool] — Send heartbeat (active=true/false)");
     console.log("  flood [count]        — Create N sessions at once (default: 10)");
+    console.log("  oauth <n> [server]   — Simulate MCP OAuth paste prompt (e.g. figma)");
     console.log("  runner [name]        — Add a faux runner (with skills/agents)");
     console.log("  runners              — List all runners");
     console.log("  status               — Show all sessions");
@@ -879,7 +990,9 @@ function printStatus(scenario: TestScenario) {
 
 // ── Entry point ──────────────────────────────────────────────────────────────
 
-main().catch((err) => {
-    console.error("💥 Sandbox failed to start:", err);
-    process.exit(1);
-});
+if (import.meta.main) {
+    main().catch((err) => {
+        console.error("💥 Sandbox failed to start:", err);
+        process.exit(1);
+    });
+}

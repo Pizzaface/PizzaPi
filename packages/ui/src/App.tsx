@@ -244,6 +244,11 @@ export function App() {
   const [todoList, setTodoList] = React.useState<TodoItem[]>([]);
   const [authSource, setAuthSource] = React.useState<string | null>(null);
 
+  /** Pending MCP OAuth paste prompts: server requires localhost redirect, user must paste callback URL. */
+  const [mcpOAuthPastes, setMcpOAuthPastes] = React.useState<
+    Array<{ serverName: string; authUrl: string; nonce: string; ts: number }>
+  >([]);
+
   // Keyboard shortcuts
   const isMac = React.useMemo(() => {
     const platform = navigator.userAgentData?.platform ?? navigator.platform ?? "";
@@ -281,6 +286,10 @@ export function App() {
   // session_active hydration completed. Flushed when hydration finishes.
   // Needed for the new slim-heartbeat CLI that no longer retries in every heartbeat.
   const pendingMcpReportRef = React.useRef<Record<string, unknown> | null>(null);
+
+  // Locally-injected messages (e.g. MCP auth banners) that must survive
+  // wholesale setMessages replacements from session_active / agent_end.
+  const injectedMessagesRef = React.useRef<RelayMessage[]>([]);
 
   // Tracks the highest meta state version seen per session, to prevent stale
   // state_snapshot from rolling back state already updated by meta_event.
@@ -497,6 +506,7 @@ export function App() {
     lastSeqRef.current = null;
     awaitingSnapshotRef.current = false;
     renderedMcpReportTsRef.current = null;
+    injectedMessagesRef.current = [];
     setActiveSessionId(null);
     setMessages([]);
     setViewerStatus("Idle");
@@ -505,6 +515,7 @@ export function App() {
     setPluginTrustPrompt(null);
     setRetryState(null);
     setActiveToolCalls(new Map());
+    setMcpOAuthPastes([]);
     setMessageQueue([]);
     setActiveModel(null);
     setSessionName(null);
@@ -1213,7 +1224,10 @@ export function App() {
       // Flush any queued streaming-delta RAF before replacing state so stale
       // partials can't be re-inserted on top of the fresh snapshot.
       cancelPendingDeltas();
-      setMessages(normalizedMessages);
+      // Re-append locally-injected messages (e.g. MCP auth banners) that
+      // aren't part of the server-side state snapshot.
+      const injected = injectedMessagesRef.current;
+      setMessages(injected.length > 0 ? [...normalizedMessages, ...injected] : normalizedMessages);
       setActiveModel(stateModel);
       if (hasSessionName) {
         setSessionName(nextSessionName);
@@ -1379,8 +1393,10 @@ export function App() {
     if (type === "agent_end" && Array.isArray(evt.messages)) {
       const normalized = normalizeMessages(evt.messages as unknown[]);
       cancelPendingDeltas();
-      setMessages(normalized);
-      patchSessionCache({ messages: normalized });
+      const injected = injectedMessagesRef.current;
+      const withInjected = injected.length > 0 ? [...normalized, ...injected] : normalized;
+      setMessages(withInjected);
+      patchSessionCache({ messages: withInjected });
       setPendingQuestion(null);
       setPendingPlan(null);
       setRetryState(null);
@@ -1602,9 +1618,11 @@ export function App() {
 
       if (command === "new_session") {
         cancelPendingDeltas();
+        injectedMessagesRef.current = [];
         setMessages([]);
         setPendingQuestion(null);
         setPendingPlan(null);
+        setMcpOAuthPastes([]);
         setActiveToolCalls(new Map());
         setMessageQueue([]);
         setSessionName(null);
@@ -1673,26 +1691,95 @@ export function App() {
       const authUrl = typeof evt.authUrl === "string" ? evt.authUrl : null;
       const ts = typeof evt.ts === "number" ? evt.ts : Date.now();
 
-      if (authUrl) {
+      // Only render clickable link for safe http/https URLs to prevent XSS
+      const isSafeUrl = (() => {
+        try { const p = new URL(authUrl ?? ""); return p.protocol === "http:" || p.protocol === "https:"; } catch { return false; }
+      })();
+      if (authUrl && isSafeUrl) {
+        const stableKey = `mcp_auth:${serverName}`;
         const message: RelayMessage = {
-          key: `mcp_auth:${ts}:${Math.random().toString(16).slice(2)}`,
+          key: stableKey,
           role: "system",
           timestamp: ts,
           content: `🔐 **${serverName}** requires authentication.\n\n[Click here to authenticate](${authUrl})`,
           isError: false,
         };
-        setMessages((prev) => {
-          const next = [...prev, message];
-          patchSessionCache({ messages: next });
-          return next;
-        });
+        // Store in ref so it survives wholesale setMessages replacements.
+        // Upsert: replace existing message for this server (URL/state may
+        // have changed on retry), or append if first time.
+        const idx = injectedMessagesRef.current.findIndex((m) => m.key === stableKey);
+        if (idx >= 0) {
+          injectedMessagesRef.current = injectedMessagesRef.current.map((m) => m.key === stableKey ? message : m);
+          setMessages((prev) => prev.map((m) => m.key === stableKey ? message : m));
+        } else {
+          injectedMessagesRef.current = [...injectedMessagesRef.current, message];
+          setMessages((prev) => {
+            const next = [...prev, message];
+            patchSessionCache({ messages: next });
+            return next;
+          });
+        }
+      }
+      return;
+    }
+
+    if (type === "mcp_auth_paste_required") {
+      const serverName = typeof evt.serverName === "string" ? evt.serverName : "MCP server";
+      const authUrl = typeof evt.authUrl === "string" ? evt.authUrl : null;
+      const nonce = typeof evt.nonce === "string" ? evt.nonce : null;
+      const ts = typeof evt.ts === "number" ? evt.ts : Date.now();
+
+      if (authUrl && nonce) {
+        // Inject a system message pointing to the paste component.
+        // Use a stable key (no timestamp) so re-emitted events replace
+        // the existing message instead of accumulating duplicates.
+        const stableKey = `mcp_auth:${serverName}`;
+        const message: RelayMessage = {
+          key: stableKey,
+          role: "system",
+          timestamp: ts,
+          content: `🔐 **${serverName}** requires authentication — use the prompt below to sign in.`,
+          isError: false,
+        };
+        // Upsert: replace existing message (nonce/URL may change on retry)
+        const idx = injectedMessagesRef.current.findIndex((m) => m.key === stableKey);
+        if (idx >= 0) {
+          injectedMessagesRef.current = injectedMessagesRef.current.map((m) => m.key === stableKey ? message : m);
+          setMessages((prev) => prev.map((m) => m.key === stableKey ? message : m));
+        } else {
+          injectedMessagesRef.current = [...injectedMessagesRef.current, message];
+          setMessages((prev) => {
+            const next = [...prev, message];
+            patchSessionCache({ messages: next });
+            return next;
+          });
+        }
+        // Add/update pending paste prompt (always update nonce/authUrl)
+        setMcpOAuthPastes((prev) => [
+          ...prev.filter((p) => p.serverName !== serverName),
+          { serverName, authUrl, nonce, ts },
+        ]);
       }
       return;
     }
 
     if (type === "mcp_auth_complete") {
-      // Silently ignore — auth success is noise on the happy path.
-      // The CLI still logs to stderr for debugging.
+      const serverName = typeof evt.serverName === "string" ? evt.serverName : "MCP server";
+      const stableKey = `mcp_auth:${serverName}`;
+      // Remove the auth banner for this server — auth succeeded
+      injectedMessagesRef.current = injectedMessagesRef.current.filter(
+        (m) => m.key !== stableKey && !m.key.startsWith(`${stableKey}:`),
+      );
+      // Also remove from rendered messages
+      setMessages((prev) => {
+        const next = prev.filter((m) => m.key !== stableKey && !m.key.startsWith(`${stableKey}:`));
+        if (next.length !== prev.length) {
+          patchSessionCache({ messages: next });
+        }
+        return next.length !== prev.length ? next : prev;
+      });
+      // Remove from pending paste prompts
+      setMcpOAuthPastes((prev) => prev.filter((p) => p.serverName !== serverName));
       return;
     }
 
@@ -2182,10 +2269,12 @@ export function App() {
     pendingMcpReportRef.current = null;
     chunkedDeliveryRef.current = null;
     lastCompletedSnapshotRef.current = null;
+    injectedMessagesRef.current = [];
     setActiveSessionId(relaySessionId);
     setViewerStatus("Connecting…");
     setRetryState(null);
     setActiveToolCalls(new Map());
+    setMcpOAuthPastes([]);
     setIsChangingModel(false);
     setUsageRefreshing(false);
     setResumeSessions([]);
@@ -3835,6 +3924,55 @@ export function App() {
                     onPlanDismiss={() => setPendingPlan(null)}
                     onDuplicateSession={activeSessionInfo?.runnerId ? () => handleDuplicateSession(activeSessionInfo.runnerId!, activeSessionInfo.cwd || "") : undefined}
                     runnerInfo={activeRunnerInfo}
+                    mcpOAuthPastes={mcpOAuthPastes}
+                    onMcpOAuthPaste={(nonce, code, state) => {
+                      const socket = viewerWsRef.current;
+                      if (!socket?.connected) return Promise.resolve({ ok: false, error: "Not connected" });
+                      return new Promise<{ ok: boolean; error?: string }>((resolve) => {
+                        const timeout = setTimeout(() => resolve({ ok: false, error: "Delivery timed out" }), 5000);
+                        socket.emit("mcp_oauth_paste", { nonce, code, state }, (result: any) => {
+                          clearTimeout(timeout);
+                          resolve(result && typeof result === "object" ? result : { ok: false, error: "Invalid response" });
+                        });
+                      });
+                    }}
+                    onMcpOAuthPasteDismiss={(serverName) => {
+                      setMcpOAuthPastes((prev) => prev.filter((p) => p.serverName !== serverName));
+                      // Also remove the injected auth banner so the user isn't left
+                      // with a "use the prompt below" message pointing at nothing.
+                      const stableKey = `mcp_auth:${serverName}`;
+                      injectedMessagesRef.current = injectedMessagesRef.current.filter(
+                        (m) => m.key !== stableKey && !m.key.startsWith(`${stableKey}:`),
+                      );
+                      setMessages((prev) => {
+                        const next = prev.filter((m) => m.key !== stableKey && !m.key.startsWith(`${stableKey}:`));
+                        return next.length !== prev.length ? next : prev;
+                      });
+                    }}
+                    onMcpServerDisable={(serverName) => {
+                      // Remove the paste prompt immediately
+                      setMcpOAuthPastes((prev) => prev.filter((p) => p.serverName !== serverName));
+                      // Remove the auth system message
+                      const stableKey = `mcp_auth:${serverName}`;
+                      injectedMessagesRef.current = injectedMessagesRef.current.filter(
+                        (m) => m.key !== stableKey && !m.key.startsWith(`${stableKey}:`),
+                      );
+                      setMessages((prev) => {
+                        const next = prev.filter((m) => m.key !== stableKey && !m.key.startsWith(`${stableKey}:`));
+                        if (next.length !== prev.length) patchSessionCache({ messages: next });
+                        return next.length !== prev.length ? next : prev;
+                      });
+                      // Send exec command to disable the server on the runner
+                      const socket = viewerWsRef.current;
+                      if (socket?.connected) {
+                        socket.emit("exec", {
+                          id: `disable-mcp-${serverName}-${Date.now()}`,
+                          command: "mcp_toggle_server",
+                          serverName,
+                          disabled: true,
+                        });
+                      }
+                    }}
                   />
                 </ErrorBoundary>
               )}

@@ -241,8 +241,8 @@ export type RelayContext = {
   sessionId: string;
   /** Emit a pi.events event (forwarded to web UI via the remote extension). */
   emitEvent: (eventName: string, data: unknown) => void;
-  /** Wait for a relay callback (code delivered from server → runner). */
-  waitForCallback: (nonce: string, timeoutMs?: number) => Promise<string>;
+  /** Wait for a relay callback (code + optional state delivered from server → runner). */
+  waitForCallback: (nonce: string, timeoutMs?: number, signal?: AbortSignal) => Promise<{ code: string; state?: string }>;
 };
 
 /**
@@ -290,8 +290,23 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
   /** Nonce for the current auth flow (relay mode). */
   private _currentNonce: string | null = null;
 
+  /** Active re-emit timer for paste mode (cleared on close/cancel). */
+  private _reEmitTimer: ReturnType<typeof setInterval> | null = null;
+
   /** Expected OAuth state from the most recent authorization request (for CSRF validation). */
   private _pendingState: string | null = null;
+
+  /** The auth URL from the most recent redirectToAuthorization call (for re-emit in paste mode). */
+  private _pendingAuthUrl: string | null = null;
+
+  /**
+   * When true, use a localhost placeholder in `clientMetadata.redirect_uris`
+   * for OAuth dynamic client registration, even in relay mode. Some servers
+   * (e.g. Figma) reject non-localhost redirect URIs during registration but
+   * don't validate redirect_uri at the authorization endpoint. This lets us
+   * register with localhost but redirect through the relay.
+   */
+  private _useLocalhostForRegistration = false;
 
   constructor(opts: McpOAuthOptions) {
     this._serverUrl = opts.serverUrl;
@@ -434,9 +449,18 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
   }
 
   get redirectUrl(): string | URL {
-    if (this._useRelay) {
+    if (this._useRelay && !this._useLocalhostForRegistration) {
       // Relay mode: callback goes to the PizzaPi server
       return `${this.relayContext!.serverBaseUrl}/api/mcp-oauth-callback`;
+    }
+    // Paste mode (relay + localhost registration): use localhost redirect URI
+    // so it matches registration. The callback will fail in the user's browser
+    // (localhost is unreachable remotely), but the web UI will prompt the user
+    // to paste the URL containing the auth code.
+    if (this._useRelay && this._useLocalhostForRegistration) {
+      // Use a fixed port so the redirect_uri matches registration exactly.
+      // Port 1 is a placeholder — the callback will never actually reach it.
+      return "http://localhost:1/callback";
     }
     // Local mode: ensure the callback server is started so we have a real port.
     // The MCP SDK calls redirectUrl (via clientMetadata) before startCallbackAndWait(),
@@ -458,9 +482,21 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
     const name = this._clientNameExplicit
       ? this._clientName
       : `${this._clientName} (${this._serverName})`;
+
+    // In localhost-registration mode (fallback for servers like Figma that reject
+    // non-localhost redirect URIs), use a placeholder localhost URI for registration.
+    // The actual redirect still goes through the relay URL via `redirectUrl`.
+    let registrationRedirectUri: string;
+    if (this._useLocalhostForRegistration && this._useRelay) {
+      registrationRedirectUri = "http://localhost:1/callback";
+    } else {
+      const url = this.redirectUrl;
+      registrationRedirectUri = typeof url === "string" ? url : url.toString();
+    }
+
     return {
       client_name: name,
-      redirect_uris: [typeof this.redirectUrl === "string" ? this.redirectUrl : this.redirectUrl.toString()],
+      redirect_uris: [registrationRedirectUri],
       grant_types: ["authorization_code", "refresh_token"],
       response_types: ["code"],
       token_endpoint_auth_method: "client_secret_post",
@@ -528,18 +564,36 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
 
   redirectToAuthorization(authorizationUrl: URL): void {
     const url = authorizationUrl.toString();
+    this._pendingAuthUrl = url;
     this._onAuthStart?.(url);
 
     if (this._useRelay) {
-      // Relay mode: emit event for web UI to show clickable link
-      this.relayContext!.emitEvent("mcp:auth_required", {
-        type: "mcp_auth_required",
-        serverName: this._serverName,
-        authUrl: url,
-        ts: Date.now(),
-      });
-      // Inform the user in case no web viewer is currently attached.
-      process.stderr.write(`🔐 ${this._serverName} requires authentication — check web UI\n`);
+      if (this._useLocalhostForRegistration) {
+        // Paste mode: the MCP server requires localhost redirects (e.g. Figma).
+        // The authorization URL has redirect_uri=localhost which won't reach the
+        // user's remote browser. Emit a paste-required event so the web UI can
+        // prompt the user to complete auth and paste the callback URL.
+        this.relayContext!.emitEvent("mcp:auth_paste_required", {
+          type: "mcp_auth_paste_required",
+          serverName: this._serverName,
+          authUrl: url,
+          nonce: this._currentNonce,
+          ts: Date.now(),
+        });
+        process.stderr.write(
+          `🔐 ${this._serverName} requires authentication (paste mode) — check web UI\n`,
+        );
+      } else {
+        // Relay mode: emit event for web UI to show clickable link
+        this.relayContext!.emitEvent("mcp:auth_required", {
+          type: "mcp_auth_required",
+          serverName: this._serverName,
+          authUrl: url,
+          ts: Date.now(),
+        });
+        // Inform the user in case no web viewer is currently attached.
+        process.stderr.write(`🔐 ${this._serverName} requires authentication — check web UI\n`);
+      }
     } else {
       // Local mode: open browser directly
       openBrowser(url);
@@ -570,19 +624,50 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
   /**
    * Start waiting for the OAuth callback.
    * In relay mode, waits for the code via WebSocket.
+   * In paste mode (relay + localhost registration), waits for the user to
+   * paste the callback URL via the web UI.
    * In local mode, starts a localhost callback server.
    */
-  startCallbackAndWait(): Promise<OAuthCallbackResult> {
+  startCallbackAndWait(signal?: AbortSignal): Promise<OAuthCallbackResult> {
     if (this._useRelay && this._currentNonce) {
-      // Relay mode: wait for code from server via WebSocket.
+      // Both relay-callback mode and paste mode wait for the code via the
+      // same relay waitForCallback mechanism. The difference is only in how
+      // the code arrives:
+      //   - Normal relay: server receives the OAuth redirect and relays the code
+      //   - Paste mode: user pastes the callback URL in the web UI, which
+      //     extracts the code and sends it via the relay
+      //
       // The relay state (which is the OAuth `state` param) was generated by
       // our `state()` method and stored in `_pendingState`. Return it here
       // so the caller can pass it to `validateCallbackState()`.
-      const relayState = this._pendingState ?? undefined;
-      return this.relayContext!.waitForCallback(this._currentNonce).then((code) => ({
-        code,
-        state: relayState,
-      }));
+      const nonce = this._currentNonce;
+
+      // In paste mode, periodically re-emit the auth event so late-joining
+      // viewers (who connect after the initial event was published) still
+      // see the paste prompt. The event is cached in Redis on each publish,
+      // so viewers that join mid-wait will receive it during replay.
+      if (this._useLocalhostForRegistration && this._pendingAuthUrl) {
+        const ctx = this.relayContext!;
+        const serverName = this._serverName;
+        const authUrl = this._pendingAuthUrl;
+        this._reEmitTimer = setInterval(() => {
+          ctx.emitEvent("mcp:auth_paste_required", {
+            type: "mcp_auth_paste_required",
+            serverName,
+            authUrl,
+            nonce,
+            ts: Date.now(),
+          });
+        }, 15_000); // Re-emit every 15s
+      }
+
+      return this.relayContext!.waitForCallback(nonce, undefined, signal).then((result) => {
+        this._clearReEmitTimer();
+        return { code: result.code, state: result.state };
+      }, (err) => {
+        this._clearReEmitTimer();
+        throw err;
+      });
     }
 
     // Local mode: localhost callback server
@@ -593,8 +678,17 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
     return this._callbackServer.promise;
   }
 
+  /** Stop the paste-mode re-emit timer. */
+  private _clearReEmitTimer(): void {
+    if (this._reEmitTimer) {
+      clearInterval(this._reEmitTimer);
+      this._reEmitTimer = null;
+    }
+  }
+
   /** Clean up the callback server. */
   closeCallback(): void {
+    this._clearReEmitTimer();
     if (this._callbackServer) {
       // Suppress unhandled rejection — same rationale as in the relayContext
       // setter: the promise may have been created eagerly with no consumer.
@@ -603,6 +697,16 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
       this._callbackServer = null;
     }
     this._currentNonce = null;
+    this._pendingAuthUrl = null;
+  }
+
+  /**
+   * Enable localhost-only registration mode. When set, `clientMetadata`
+   * returns a localhost redirect_uri for registration, while `redirectUrl`
+   * still returns the relay URL for the actual authorization flow.
+   */
+  enableLocalhostRegistration(): void {
+    this._useLocalhostForRegistration = true;
   }
 
   /** Whether we have existing tokens that might still be valid. */
