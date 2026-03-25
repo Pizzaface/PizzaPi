@@ -36,7 +36,7 @@ describe("PizzaPiOAuthProvider", () => {
             serverBaseUrl: "https://pizza.example.com",
             sessionId: "test-session-123",
             emitEvent: () => {},
-            waitForCallback: () => Promise.resolve("mock-code"),
+            waitForCallback: () => Promise.resolve({ code: "mock-code" }),
             ...overrides,
         };
     }
@@ -438,7 +438,7 @@ describe("PizzaPiOAuthProvider", () => {
             provider.relayContext = createMockRelayContext({
                 waitForCallback: (nonce) => {
                     capturedNonce = nonce;
-                    return Promise.resolve("pasted-auth-code");
+                    return Promise.resolve({ code: "pasted-auth-code", state: "test-state" });
                 },
             });
             provider.enableLocalhostRegistration();

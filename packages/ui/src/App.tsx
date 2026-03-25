@@ -3913,10 +3913,10 @@ export function App() {
                     onDuplicateSession={activeSessionInfo?.runnerId ? () => handleDuplicateSession(activeSessionInfo.runnerId!, activeSessionInfo.cwd || "") : undefined}
                     runnerInfo={activeRunnerInfo}
                     mcpOAuthPastes={mcpOAuthPastes}
-                    onMcpOAuthPaste={(nonce, code) => {
+                    onMcpOAuthPaste={(nonce, code, state) => {
                       const socket = viewerWsRef.current;
                       if (socket?.connected) {
-                        socket.emit("mcp_oauth_paste", { nonce, code });
+                        socket.emit("mcp_oauth_paste", { nonce, code, state });
                         return true;
                       }
                       return false;

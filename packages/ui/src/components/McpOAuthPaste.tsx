@@ -9,14 +9,14 @@ import React from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ExternalLink, X, CheckCircle2, AlertCircle, KeyRound, Ban } from "lucide-react";
-import { extractCodeFromUrl } from "./mcp-oauth-utils";
+import { extractOAuthParams } from "./mcp-oauth-utils";
 
 interface McpOAuthPasteProps {
   serverName: string;
   authUrl: string;
   nonce: string;
   /** Returns true if the code was sent, false if delivery failed (e.g. disconnected). */
-  onSubmit: (nonce: string, code: string) => boolean;
+  onSubmit: (nonce: string, code: string, state?: string) => boolean;
   onDismiss: (serverName: string) => void;
   /** Disable this MCP server (removes it from the active config). */
   onDisable?: (serverName: string) => void;
@@ -43,12 +43,12 @@ export function McpOAuthPaste({
   }, [step]);
 
   const handleSubmit = () => {
-    const code = extractCodeFromUrl(value);
+    const { code, state } = extractOAuthParams(value);
     if (!code) {
       setError("Couldn't find an auth code in that URL. Copy the full URL from your browser's address bar — it should contain \"code=\".");
       return;
     }
-    const sent = onSubmit(nonce, code);
+    const sent = onSubmit(nonce, code, state ?? undefined);
     if (sent) {
       setError(null);
       setSubmitted(true);
@@ -67,11 +67,11 @@ export function McpOAuthPaste({
   const handlePaste = (e: React.ClipboardEvent<HTMLInputElement>) => {
     // Auto-submit on paste if we can extract a code
     const pasted = e.clipboardData.getData("text");
-    const code = extractCodeFromUrl(pasted);
+    const { code, state } = extractOAuthParams(pasted);
     if (code) {
       e.preventDefault();
       setValue(pasted);
-      const sent = onSubmit(nonce, code);
+      const sent = onSubmit(nonce, code, state ?? undefined);
       if (sent) {
         setError(null);
         setSubmitted(true);

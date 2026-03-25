@@ -378,10 +378,14 @@ export function registerViewerNamespace(io: SocketIOServer): void {
             const currentSession = await getSharedSession(sessionId);
             if (!currentSession?.collabMode) return;
 
-            const { nonce, code } = data ?? {};
+            const { nonce, code, state } = data ?? {};
             if (typeof nonce !== "string" || typeof code !== "string") return;
 
-            emitToRelaySession(sessionId, "mcp_oauth_paste", { nonce, code });
+            emitToRelaySession(sessionId, "mcp_oauth_paste", {
+                nonce,
+                code,
+                ...(typeof state === "string" ? { state } : {}),
+            });
         });
 
         // ── trigger_response — human viewer responds to child trigger ────────

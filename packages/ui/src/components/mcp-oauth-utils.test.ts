@@ -3,7 +3,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
-import { extractCodeFromUrl } from "./mcp-oauth-utils";
+import { extractCodeFromUrl, extractOAuthParams } from "./mcp-oauth-utils";
 
 describe("extractCodeFromUrl", () => {
   test("extracts code from full localhost callback URL", () => {
@@ -60,5 +60,33 @@ describe("extractCodeFromUrl", () => {
   test("extracts code from https URL (relay mode)", () => {
     const url = "https://pizza.example.com/api/mcp-oauth-callback?code=relay_code&state=encoded_state";
     expect(extractCodeFromUrl(url)).toBe("relay_code");
+  });
+});
+
+describe("extractOAuthParams", () => {
+  test("extracts both code and state from full URL", () => {
+    const url = "http://localhost:1/callback?code=abc123&state=xyz789";
+    const result = extractOAuthParams(url);
+    expect(result.code).toBe("abc123");
+    expect(result.state).toBe("xyz789");
+  });
+
+  test("returns null state when not present", () => {
+    const url = "http://localhost:1/callback?code=abc123";
+    const result = extractOAuthParams(url);
+    expect(result.code).toBe("abc123");
+    expect(result.state).toBeNull();
+  });
+
+  test("extracts from query string", () => {
+    const result = extractOAuthParams("?code=abc&state=def");
+    expect(result.code).toBe("abc");
+    expect(result.state).toBe("def");
+  });
+
+  test("returns nulls for empty input", () => {
+    const result = extractOAuthParams("");
+    expect(result.code).toBeNull();
+    expect(result.state).toBeNull();
   });
 });

@@ -4,21 +4,33 @@
  * or just query strings (?code=ABC&state=XYZ).
  */
 export function extractCodeFromUrl(input: string): string | null {
+  return extractOAuthParams(input).code;
+}
+
+/**
+ * Extract both `code` and `state` from a pasted OAuth callback URL.
+ * Returns { code, state } — either may be null if not found.
+ */
+export function extractOAuthParams(input: string): { code: string | null; state: string | null } {
   const trimmed = input.trim();
-  if (!trimmed) return null;
+  if (!trimmed) return { code: null, state: null };
 
   try {
-    // Try parsing as a full URL first
     const url = new URL(trimmed);
-    return url.searchParams.get("code");
+    return {
+      code: url.searchParams.get("code"),
+      state: url.searchParams.get("state"),
+    };
   } catch {
-    // Not a valid URL — try as a query string
     if (trimmed.includes("code=")) {
       const params = new URLSearchParams(
         trimmed.startsWith("?") ? trimmed : `?${trimmed}`,
       );
-      return params.get("code");
+      return {
+        code: params.get("code"),
+        state: params.get("state"),
+      };
     }
-    return null;
+    return { code: null, state: null };
   }
 }

@@ -102,6 +102,7 @@ export interface ViewerClientToServerEvents {
   mcp_oauth_paste: (data: {
     nonce: string;
     code: string;
+    state?: string;
   }) => void;
 }
 

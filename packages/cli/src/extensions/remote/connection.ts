@@ -33,7 +33,7 @@ import { decideRegisteredParentState } from "../remote-registered-parent-state.j
 let connectFailureNotified = false;
 
 /** Pending OAuth callback resolvers, keyed by nonce. */
-const oauthPendingCallbacks = new Map<string, (code: string) => void>();
+const oauthPendingCallbacks = new Map<string, (result: { code: string; state?: string }) => void>();
 
 // ── Dependency injection for factory-closure callbacks ────────────────────────
 
@@ -120,15 +120,15 @@ function updateMcpRelayContext(rctx: RelayContext): void {
                 rctx.forwardEvent(data);
             },
             waitForCallback: (nonce: string, timeoutMs: number = 120_000) => {
-                return new Promise<string>((resolve, reject) => {
+                return new Promise<{ code: string; state?: string }>((resolve, reject) => {
                     const timer = setTimeout(() => {
                         oauthPendingCallbacks.delete(nonce);
                         reject(new Error("OAuth callback timed out"));
                     }, timeoutMs);
 
-                    oauthPendingCallbacks.set(nonce, (code: string) => {
+                    oauthPendingCallbacks.set(nonce, (result) => {
                         clearTimeout(timer);
-                        resolve(code);
+                        resolve(result);
                     });
                 });
             },
@@ -504,10 +504,11 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
 
     (sock as any).on("mcp_oauth_callback", (data: any) => {
         if (data && typeof data === "object" && typeof data.nonce === "string" && typeof data.code === "string") {
+            const state = typeof data.state === "string" ? data.state : undefined;
             const resolve = oauthPendingCallbacks.get(data.nonce);
             if (resolve) {
                 oauthPendingCallbacks.delete(data.nonce);
-                resolve(data.code);
+                resolve({ code: data.code, state });
             }
             const bridge = getMcpBridge();
             bridge?.deliverOAuthCallback?.(data.nonce, data.code);
@@ -515,13 +516,14 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
     });
 
     // Paste mode: user pasted the OAuth callback URL in the web UI.
-    // Same payload shape as mcp_oauth_callback — nonce + code.
+    // Payload includes nonce, code, and optionally state from the pasted URL.
     (sock as any).on("mcp_oauth_paste", (data: any) => {
         if (data && typeof data === "object" && typeof data.nonce === "string" && typeof data.code === "string") {
+            const state = typeof data.state === "string" ? data.state : undefined;
             const resolve = oauthPendingCallbacks.get(data.nonce);
             if (resolve) {
                 oauthPendingCallbacks.delete(data.nonce);
-                resolve(data.code);
+                resolve({ code: data.code, state });
             }
             const bridge = getMcpBridge();
             bridge?.deliverOAuthCallback?.(data.nonce, data.code);
