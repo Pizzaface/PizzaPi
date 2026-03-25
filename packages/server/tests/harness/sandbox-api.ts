@@ -272,10 +272,12 @@ curl -X POST ${apiBaseUrl}/chat -H 'Content-Type: application/json' -d '{"sessio
                 // Track the nonce so we can auto-complete on paste
                 pendingOAuthNonces.set(nonce, { session: sess, serverName });
 
-                // Listen for the paste response on the relay socket
-                sess.relay.socket.on("mcp_oauth_paste" as any, (data: any) => {
+                // Listen for the paste response on the relay socket.
+                // Use a named handler so we can remove it after the matching nonce fires,
+                // preventing listener accumulation across repeated /oauth calls.
+                const onPaste = (data: any) => {
                     if (data?.nonce === nonce) {
-                        // Complete the flow
+                        sess.relay.socket.off("mcp_oauth_paste" as any, onPaste);
                         sess.relay.emitEvent(sess.sessionId, sess.token, {
                             type: "mcp_auth_complete",
                             serverName,
@@ -283,7 +285,8 @@ curl -X POST ${apiBaseUrl}/chat -H 'Content-Type: application/json' -d '{"sessio
                         });
                         pendingOAuthNonces.delete(nonce);
                     }
-                });
+                };
+                sess.relay.socket.on("mcp_oauth_paste" as any, onPaste);
 
                 return jsonResponse({
                     session: idx,

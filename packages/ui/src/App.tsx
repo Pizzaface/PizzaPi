@@ -1701,9 +1701,13 @@ export function App() {
           isError: false,
         };
         // Store in ref so it survives wholesale setMessages replacements.
-        // Deduplicate: only inject once per server.
-        const alreadyInjected = injectedMessagesRef.current.some((m) => m.key === stableKey);
-        if (!alreadyInjected) {
+        // Upsert: replace existing message for this server (URL/state may
+        // have changed on retry), or append if first time.
+        const idx = injectedMessagesRef.current.findIndex((m) => m.key === stableKey);
+        if (idx >= 0) {
+          injectedMessagesRef.current = injectedMessagesRef.current.map((m) => m.key === stableKey ? message : m);
+          setMessages((prev) => prev.map((m) => m.key === stableKey ? message : m));
+        } else {
           injectedMessagesRef.current = [...injectedMessagesRef.current, message];
           setMessages((prev) => {
             const next = [...prev, message];
@@ -1733,9 +1737,12 @@ export function App() {
           content: `🔐 **${serverName}** requires authentication — use the prompt below to sign in.`,
           isError: false,
         };
-        // Deduplicate: keep at most one auth message per server
-        const alreadyInjected = injectedMessagesRef.current.some((m) => m.key === stableKey);
-        if (!alreadyInjected) {
+        // Upsert: replace existing message (nonce/URL may change on retry)
+        const idx = injectedMessagesRef.current.findIndex((m) => m.key === stableKey);
+        if (idx >= 0) {
+          injectedMessagesRef.current = injectedMessagesRef.current.map((m) => m.key === stableKey ? message : m);
+          setMessages((prev) => prev.map((m) => m.key === stableKey ? message : m));
+        } else {
           injectedMessagesRef.current = [...injectedMessagesRef.current, message];
           setMessages((prev) => {
             const next = [...prev, message];
