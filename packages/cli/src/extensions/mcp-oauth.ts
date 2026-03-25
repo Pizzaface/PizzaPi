@@ -293,6 +293,15 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
   /** Expected OAuth state from the most recent authorization request (for CSRF validation). */
   private _pendingState: string | null = null;
 
+  /**
+   * When true, use a localhost placeholder in `clientMetadata.redirect_uris`
+   * for OAuth dynamic client registration, even in relay mode. Some servers
+   * (e.g. Figma) reject non-localhost redirect URIs during registration but
+   * don't validate redirect_uri at the authorization endpoint. This lets us
+   * register with localhost but redirect through the relay.
+   */
+  private _useLocalhostForRegistration = false;
+
   constructor(opts: McpOAuthOptions) {
     this._serverUrl = opts.serverUrl;
     this._serverName = opts.serverName;
@@ -458,9 +467,21 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
     const name = this._clientNameExplicit
       ? this._clientName
       : `${this._clientName} (${this._serverName})`;
+
+    // In localhost-registration mode (fallback for servers like Figma that reject
+    // non-localhost redirect URIs), use a placeholder localhost URI for registration.
+    // The actual redirect still goes through the relay URL via `redirectUrl`.
+    let registrationRedirectUri: string;
+    if (this._useLocalhostForRegistration && this._useRelay) {
+      registrationRedirectUri = "http://localhost:1/callback";
+    } else {
+      const url = this.redirectUrl;
+      registrationRedirectUri = typeof url === "string" ? url : url.toString();
+    }
+
     return {
       client_name: name,
-      redirect_uris: [typeof this.redirectUrl === "string" ? this.redirectUrl : this.redirectUrl.toString()],
+      redirect_uris: [registrationRedirectUri],
       grant_types: ["authorization_code", "refresh_token"],
       response_types: ["code"],
       token_endpoint_auth_method: "client_secret_post",
@@ -603,6 +624,15 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
       this._callbackServer = null;
     }
     this._currentNonce = null;
+  }
+
+  /**
+   * Enable localhost-only registration mode. When set, `clientMetadata`
+   * returns a localhost redirect_uri for registration, while `redirectUrl`
+   * still returns the relay URL for the actual authorization flow.
+   */
+  enableLocalhostRegistration(): void {
+    this._useLocalhostForRegistration = true;
   }
 
   /** Whether we have existing tokens that might still be valid. */

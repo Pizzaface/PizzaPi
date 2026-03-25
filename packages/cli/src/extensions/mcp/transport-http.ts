@@ -362,11 +362,32 @@ export function createStreamableMcpClient(opts: {
         const wwwAuthParams = extractWWWAuthenticateParams(response);
 
         // Phase 1: Start the auth flow → opens browser for consent
-        const result1 = await auth(oauthProvider, {
-          serverUrl: opts.url,
-          scope: wwwAuthParams.scope,
-          resourceMetadataUrl: wwwAuthParams.resourceMetadataUrl,
-        });
+        let result1: Awaited<ReturnType<typeof auth>>;
+        try {
+          result1 = await auth(oauthProvider, {
+            serverUrl: opts.url,
+            scope: wwwAuthParams.scope,
+            resourceMetadataUrl: wwwAuthParams.resourceMetadataUrl,
+          });
+        } catch (regErr) {
+          // If registration failed in relay mode (no client info was saved),
+          // the server likely rejects non-localhost redirect URIs (e.g. Figma).
+          // Retry with localhost-only registration: register with a localhost
+          // placeholder, but keep using the relay URL for the actual redirect.
+          if (oauthProvider.relayContext && !oauthProvider.clientInformation()) {
+            process.stderr.write(
+              `⚠ ${opts.name}: registration failed with relay redirect — retrying with localhost registration\n`,
+            );
+            oauthProvider.enableLocalhostRegistration();
+            result1 = await auth(oauthProvider, {
+              serverUrl: opts.url,
+              scope: wwwAuthParams.scope,
+              resourceMetadataUrl: wwwAuthParams.resourceMetadataUrl,
+            });
+          } else {
+            throw regErr;
+          }
+        }
 
         if (result1 === "REDIRECT") {
           // Wait for the OAuth callback (browser → local server)
@@ -401,8 +422,11 @@ export function createStreamableMcpClient(opts: {
         // Re-throw abort errors directly so callers can detect cancellation
         // without parsing the wrapped message.
         if (err instanceof DOMException && err.name === "AbortError") throw err;
+        const errName = err instanceof Error ? err.constructor?.name : "";
+        const errMsg = err instanceof Error ? err.message : String(err);
+        const errDetail = errMsg || errName || "unknown error";
         throw new Error(
-          `OAuth authentication failed for "${opts.name}": ${err instanceof Error ? err.message : String(err)}`,
+          `OAuth authentication failed for "${opts.name}": ${errDetail}`,
         );
       } finally {
         // Always clean up the callback server — it may have been started
