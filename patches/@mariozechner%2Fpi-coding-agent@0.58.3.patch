@@ -1,6 +1,9 @@
 diff --git a/node_modules/@mariozechner/pi-coding-agent/.bun-tag-337ecc0e082ff23b b/.bun-tag-337ecc0e082ff23b
 new file mode 100644
 index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+diff --git a/node_modules/@mariozechner/pi-coding-agent/.bun-tag-6d703b66423bf786 b/.bun-tag-6d703b66423bf786
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
 diff --git a/node_modules/@mariozechner/pi-coding-agent/.bun-tag-8164784f1eb34c4d b/.bun-tag-8164784f1eb34c4d
 new file mode 100644
 index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
@@ -104,7 +107,7 @@ index d47894a1441798e3b93ab28c1c90faf4f12e0b38..6662fa276771364d5bf6446531852ad4
                  const extension = await loadExtensionFromFactory(factory, this.cwd, this.eventBus, runtime, extensionPath);
                  extensions.push(extension);
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index 038e6600ead762073fda085c806f8aa1eafef9a1..796bcdccec9a342b29aa1c6d9eaadac46fa9459d 100644
+index 038e6600ead762073fda085c806f8aa1eafef9a1..c1c351b89efcee9fba084e68265e405f553fd641 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
 @@ -354,12 +354,6 @@ export class InteractiveMode {
@@ -161,7 +164,44 @@ index 038e6600ead762073fda085c806f8aa1eafef9a1..796bcdccec9a342b29aa1c6d9eaadac4
          const skillsResult = this.session.resourceLoader.getSkills();
          const promptsResult = this.session.resourceLoader.getPrompts();
          const themesResult = this.session.resourceLoader.getThemes();
-@@ -763,13 +742,13 @@ export class InteractiveMode {
+@@ -735,14 +714,30 @@ export class InteractiveMode {
+                 this.chatContainer.addChild(new Text(`${sectionHeader("Prompts")}\n${templateList}`, 0, 0));
+                 this.chatContainer.addChild(new Spacer(1));
+             }
++            // PATCH(pizzapi): display extensions as a compact table
+             const extensionPaths = options?.extensionPaths ?? [];
+             if (extensionPaths.length > 0) {
+-                const groups = this.buildScopeGroups(extensionPaths, metadata);
+-                const extList = this.formatScopeGroups(groups, {
+-                    formatPath: (p) => this.formatDisplayPath(p),
+-                    formatPackagePath: (p, source) => this.getShortPath(p, source),
+-                });
+-                this.chatContainer.addChild(new Text(`${sectionHeader("Extensions", "mdHeading")}\n${extList}`, 0, 0));
++                const builtIn = extensionPaths.filter(p => !p.startsWith("/") && !p.startsWith("~") && !p.startsWith("."));
++                const fileBased = extensionPaths.filter(p => p.startsWith("/") || p.startsWith("~") || p.startsWith("."));
++                const lines = [];
++                if (builtIn.length > 0) {
++                    // Render as a multi-column table
++                    const cols = 4;
++                    const colW = 16;
++                    const pad = (s, w) => { const stripped = s.replace(/\x1b\[[0-9;]*m/g, ""); return s + " ".repeat(Math.max(0, w - stripped.length)); };
++                    for (let i = 0; i < builtIn.length; i += cols) {
++                        const row = builtIn.slice(i, i + cols).map(n => pad(theme.fg("dim", n), colW)).join("");
++                        lines.push("  " + row);
++                    }
++                }
++                if (fileBased.length > 0) {
++                    const groups = this.buildScopeGroups(fileBased, metadata);
++                    lines.push(this.formatScopeGroups(groups, {
++                        formatPath: (p) => this.formatDisplayPath(p),
++                        formatPackagePath: (p, source) => this.getShortPath(p, source),
++                    }));
++                }
++                this.chatContainer.addChild(new Text(`${sectionHeader("Extensions")}\n${lines.join("\n")}`, 0, 0));
+                 this.chatContainer.addChild(new Spacer(1));
+             }
+             // Show loaded themes (excluding built-in)
+@@ -763,13 +758,13 @@ export class InteractiveMode {
              const skillDiagnostics = skillsResult.diagnostics;
              if (skillDiagnostics.length > 0) {
                  const warningLines = this.formatDiagnostics(skillDiagnostics, metadata);
@@ -177,7 +217,7 @@ index 038e6600ead762073fda085c806f8aa1eafef9a1..796bcdccec9a342b29aa1c6d9eaadac4
                  this.chatContainer.addChild(new Spacer(1));
              }
              const extensionDiagnostics = [];
-@@ -785,13 +764,13 @@ export class InteractiveMode {
+@@ -785,13 +780,13 @@ export class InteractiveMode {
              extensionDiagnostics.push(...shortcutDiagnostics);
              if (extensionDiagnostics.length > 0) {
                  const warningLines = this.formatDiagnostics(extensionDiagnostics, metadata);
@@ -193,7 +233,7 @@ index 038e6600ead762073fda085c806f8aa1eafef9a1..796bcdccec9a342b29aa1c6d9eaadac4
                  this.chatContainer.addChild(new Spacer(1));
              }
          }
-@@ -2386,17 +2365,6 @@ export class InteractiveMode {
+@@ -2386,17 +2381,6 @@ export class InteractiveMode {
          this.chatContainer.addChild(new Text(theme.fg("warning", `Warning: ${warningMessage}`), 1, 0));
          this.ui.requestRender();
      }
@@ -211,7 +251,7 @@ index 038e6600ead762073fda085c806f8aa1eafef9a1..796bcdccec9a342b29aa1c6d9eaadac4
      /**
       * Get all queued messages (read-only).
       * Combines session queue and compaction queue.
-@@ -3163,7 +3131,8 @@ export class InteractiveMode {
+@@ -3163,7 +3147,8 @@ export class InteractiveMode {
              restoreEditor();
              this.session.modelRegistry.refresh();
              await this.updateAvailableProviderCount();
