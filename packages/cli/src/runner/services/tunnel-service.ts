@@ -57,7 +57,16 @@ const HOP_BY_HOP = new Set([
     "upgrade",
     "proxy-authorization",
     "proxy-authenticate",
+    // Rewritten to 127.0.0.1:{port} by the runner — strip the viewer's value.
+    "host",
 ]);
+
+/**
+ * Auth headers that must never leak from the viewer session to the tunneled
+ * localhost service.  Stripping these prevents credential forwarding (SSRF
+ * auth-leakage vector).
+ */
+const STRIP_AUTH_HEADERS = new Set(["cookie", "authorization"]);
 
 export class TunnelService implements ServiceHandler {
     readonly id = "tunnel";
@@ -177,24 +186,53 @@ export class TunnelService implements ServiceHandler {
         }
 
         try {
-            const url = `http://127.0.0.1:${port}${path}`;
-            const bodyBytes = body ? Buffer.from(body, "base64") : undefined;
+            const rawUrl = `http://127.0.0.1:${port}${path}`;
 
-            // Strip hop-by-hop headers before forwarding
-            const forwardHeaders: Record<string, string> = {};
-            for (const [k, v] of Object.entries(headers)) {
-                if (!HOP_BY_HOP.has(k.toLowerCase())) forwardHeaders[k] = v;
+            // ── Bug 2: SSRF via path injection ────────────────────────────────
+            // A path containing `@` can cause URL parsers to treat
+            // `127.0.0.1:${port}` as credentials (e.g. http://127.0.0.1:3000@evil/).
+            // Parse and assert the final hostname before fetching.
+            const parsedUrl = new URL(rawUrl);
+            if (parsedUrl.hostname !== "127.0.0.1") {
+                response.status = 400;
+                response.error = `SSRF guard: unexpected hostname '${parsedUrl.hostname}'`;
+                response.body = Buffer.from(response.error).toString("base64");
+                (this.socket as any).emit("tunnel_response", response);
+                return;
             }
 
-            const fetchResponse = await fetch(url, {
+            const bodyBytes = body ? Buffer.from(body, "base64") : undefined;
+
+            // Strip hop-by-hop and auth headers before forwarding.
+            // Auth headers (cookie, authorization) must not leak from the
+            // viewer's authenticated session to the tunneled localhost service.
+            const forwardHeaders: Record<string, string> = {};
+            for (const [k, v] of Object.entries(headers)) {
+                const lk = k.toLowerCase();
+                if (!HOP_BY_HOP.has(lk) && !STRIP_AUTH_HEADERS.has(lk)) forwardHeaders[k] = v;
+            }
+
+            // ── Bug 1: SSRF via redirect-following ────────────────────────────
+            // Default fetch follows 301/302 — a localhost service could redirect
+            // to an internal network address (169.254.169.254, 10.x.x.x, etc.).
+            // Use `redirect: "manual"` and pass 3xx responses back as-is.
+            const fetchResponse = await fetch(parsedUrl.toString(), {
                 method,
                 headers: forwardHeaders,
                 // body must be undefined for bodyless methods to avoid fetch errors
                 body: bodyBytes && bodyBytes.byteLength > 0 ? bodyBytes : undefined,
                 signal: AbortSignal.timeout(10_000),
+                redirect: "manual",
             });
 
+            // ── P2: Race guard — dispose() may have nulled the socket ─────────
+            // We awaited above; re-check before touching this.socket.
+            if (!this.socket) return;
+
             const responseBuffer = await fetchResponse.arrayBuffer();
+
+            // Re-check after second await.
+            if (!this.socket) return;
 
             if (responseBuffer.byteLength > MAX_RESPONSE_BYTES) {
                 response.status = 413;
@@ -216,6 +254,9 @@ export class TunnelService implements ServiceHandler {
             response.body = Buffer.from(msg).toString("base64");
         }
 
+        // Final null-guard: socket may have been cleared by dispose() during
+        // one of the awaits above.
+        if (!this.socket) return;
         (this.socket as any).emit("tunnel_response", response);
     }
 }
