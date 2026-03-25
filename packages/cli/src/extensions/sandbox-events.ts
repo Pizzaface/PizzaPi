@@ -70,26 +70,38 @@ export const sandboxEventsExtension: ExtensionFactory = (pi) => {
 
 // ── Formatters ────────────────────────────────────────────────────────────────
 
+// ANSI helpers — only active when stdout is a TTY (not in RPC/headless mode).
+const isTTY = process.stdout.isTTY === true;
+const ansi = (code: string, s: string, reset: string) => isTTY ? `\x1b[${code}m${s}\x1b[${reset}m` : s;
+const green  = (s: string) => ansi("32", s, "39");
+const yellow = (s: string) => ansi("33", s, "39");
+const red    = (s: string) => ansi("31", s, "39");
+const dim    = (s: string) => ansi("2",  s, "22");
+
 function formatStatus(): string {
     const mode = getSandboxMode();
     const active = isSandboxActive();
     const violations = getViolations();
     const last5 = violations.slice(-5);
 
+    const modeStr = mode === "full" ? green(mode) : mode === "basic" ? yellow(mode) : dim(mode);
+    const violationStr = violations.length > 0 ? yellow(String(violations.length)) : green(String(violations.length));
+
     const lines: string[] = [
         `## 🔒 Sandbox Status`,
         ``,
-        `- **Mode:** ${mode}`,
-        `- **Active:** ${active ? "✅ yes" : "❌ no"}`,
+        `- **Mode:** ${modeStr}`,
+        `- **Active:** ${active ? green("✅ yes") : red("❌ no")}`,
         `- **Platform:** ${process.platform}`,
-        `- **Violations:** ${violations.length}`,
+        `- **Violations:** ${violationStr}`,
     ];
 
     if (last5.length > 0) {
         lines.push("", "### Recent Violations", "");
         for (const v of last5) {
             const icon = v.operation === "read" ? "📖" : v.operation === "write" ? "✏️" : "⚡";
-            lines.push(`- ${icon} \`${v.operation}\` → \`${v.target}\` — ${v.reason}`);
+            const opStr = v.operation === "write" ? red(`\`${v.operation}\``) : yellow(`\`${v.operation}\``);
+            lines.push(`- ${icon} ${opStr} → \`${v.target}\` ${dim(`— ${v.reason}`)}`);
         }
     }
 
@@ -100,18 +112,19 @@ function formatViolations(): string {
     const violations = getViolations();
 
     if (violations.length === 0) {
-        return "No sandbox violations recorded.";
+        return green("✓ No sandbox violations recorded.");
     }
 
     const lines: string[] = [
-        `## Sandbox Violations (${violations.length})`,
+        `## ${yellow(`Sandbox Violations (${violations.length})`)}`,
         "",
     ];
 
     for (const v of violations) {
         const ts = v.timestamp.toISOString();
+        const opStr = v.operation === "write" ? red(`\`${v.operation}\``) : yellow(`\`${v.operation}\``);
         lines.push(
-            `- **${ts}** | \`${v.operation}\` | \`${v.target}\` | ${v.reason}`,
+            `- ${dim(ts)} | ${opStr} | \`${v.target}\` ${dim(`| ${v.reason}`)}`,
         );
     }
 
