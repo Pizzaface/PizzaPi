@@ -304,14 +304,6 @@ function buildStatusLines(snapshot: McpSnapshot): string[] {
     lines.push("No MCP server entries are currently configured.");
   }
 
-  if (snapshot.config.disabledServers.length > 0) {
-    lines.push("");
-    lines.push("Disabled servers:");
-    for (const name of snapshot.config.disabledServers) {
-      lines.push(`- ${name} (skipped — /mcp enable ${name} to re-enable)`);
-    }
-  }
-
   // Per-server timing breakdown
   if (snapshot.serverTimings.length > 0) {
     lines.push("");
