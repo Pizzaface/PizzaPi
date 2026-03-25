@@ -269,8 +269,8 @@ async function main() {
                                 ? (1 - bucket.remainingFraction) * 100
                                 : null;
                             const bar = usedPct !== null ? usageBar(usedPct) : "";
-                            const remainingStr = usedPct !== null
-                                ? ` ${colorPct(usedPct)} used`
+                            const remainingStr = bucket.remainingFraction != null
+                                ? ` ${colorRemaining(bucket.remainingFraction * 100)} remaining`
                                 : "";
                             const amt = bucket.remainingAmount != null ? c.dim(` (${bucket.remainingAmount} left)`) : "";
                             const reset = bucket.resetTime ? c.dim(`  resets ${new Date(bucket.resetTime).toLocaleString()}`) : "";
