@@ -2,7 +2,7 @@
 // /runner namespace — Runner daemon ↔ Server
 // ============================================================================
 
-import type { RunnerSkill, RunnerAgent, RunnerPlugin, RunnerHook, ServiceEnvelope } from "./shared.js";
+import type { RunnerSkill, RunnerAgent, RunnerPlugin, RunnerHook, ServiceEnvelope, TunnelRequestData, TunnelResponseData } from "./shared.js";
 
 // ---------------------------------------------------------------------------
 // Client → Server (Runner daemon sends to server)
@@ -117,6 +117,10 @@ export interface RunnerClientToServerEvents {
   /** Generic service message from runner → relay → viewer.
    *  The relay forwards this verbatim; it does not inspect serviceId. */
   service_message: (envelope: ServiceEnvelope) => void;
+
+  /** Runner responds to an HTTP proxy request from the server.
+   *  NOT forwarded to viewers — resolved directly by the pending request map. */
+  tunnel_response: (data: TunnelResponseData) => void;
 
   /** Announce which services this runner supports.
    *  Forwarded to all viewers watching sessions on this runner. */
@@ -358,6 +362,10 @@ export interface RunnerServerToClientEvents {
   /** Generic service message from viewer → relay → runner.
    *  The relay forwards this verbatim; it does not inspect serviceId. */
   service_message: (envelope: ServiceEnvelope) => void;
+
+  /** Server-initiated HTTP proxy request sent directly to the runner.
+   *  Bypasses the viewer broadcast path — used exclusively by the tunnel route. */
+  tunnel_request: (data: TunnelRequestData) => void;
 
   /** Generic error */
   error: (data: {

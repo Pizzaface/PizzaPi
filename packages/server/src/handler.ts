@@ -10,6 +10,9 @@ export const MAX_BODY_SIZE = 1 * 1024 * 1024;
 /** Body size limit for attachment upload routes (50 MB). */
 export const MAX_ATTACHMENT_BODY_SIZE = 50 * 1024 * 1024;
 
+/** Body size limit for tunnel proxy routes (10 MB — Option C). */
+export const MAX_TUNNEL_BODY_SIZE = 10 * 1024 * 1024;
+
 /**
  * Returns true if the URL path is an attachment upload route.
  * Pattern: POST /api/sessions/:id/attachments
@@ -19,6 +22,14 @@ function isAttachmentUploadPath(pathname: string, method: string): boolean {
         method === "POST" &&
         /^\/api\/sessions\/[^/]+\/attachments$/.test(pathname)
     );
+}
+
+/**
+ * Returns true if the URL path is a tunnel proxy route.
+ * Pattern: /api/tunnel/:sessionId/:port/*
+ */
+function isTunnelPath(pathname: string): boolean {
+    return /^\/api\/tunnel\/[^/]+\/\d+(\/.*)?$/.test(pathname);
 }
 
 /**
@@ -42,7 +53,9 @@ export async function enforceBodySizeLimit(req: Request, url: URL): Promise<Resp
 
     const limit = isAttachmentUploadPath(url.pathname, method)
         ? MAX_ATTACHMENT_BODY_SIZE
-        : MAX_BODY_SIZE;
+        : isTunnelPath(url.pathname)
+            ? MAX_TUNNEL_BODY_SIZE
+            : MAX_BODY_SIZE;
 
     const contentLengthHeader = req.headers.get("content-length");
 
