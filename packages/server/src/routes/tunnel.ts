@@ -59,9 +59,12 @@ function buildTunnelInterceptScript(basePath: string): string {
     return `<script data-pizzapi-tunnel-intercept>
 (function(){
   var B="${basePath}";
+  var O=location.origin;
   function rw(u){
     if(typeof u!=="string")return u;
     if(u.startsWith(B))return u;
+    if(u.startsWith(O+"/"))return B+u.slice(O.length);
+    if(u===O)return B+"/";
     if(u.startsWith("/"))return B+u;
     return u;
   }
