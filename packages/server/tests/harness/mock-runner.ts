@@ -97,6 +97,8 @@ export interface MockRunnerOptions {
     mockFiles?: Map<string, MockFileEntry[]>;
     /** Initial mock git status */
     mockGitStatus?: MockGitStatus;
+    /** Service IDs this runner announces (e.g. ["terminal", "system-monitor"]) */
+    serviceIds?: string[];
 }
 
 export interface MockRunner {
@@ -124,6 +126,9 @@ export interface MockRunner {
     // Request handler registration (backward compat)
     onSkillRequest(handler: (data: unknown) => unknown): void;
     onFileRequest(handler: (data: unknown) => unknown): void;
+
+    // Services
+    announceServices(serviceIds: string[]): void;
 
     // Utilities
     waitForEvent(eventName: string, timeout?: number): Promise<unknown>;
@@ -365,6 +370,10 @@ export async function createMockRunner(
                             });
                         }
                     }
+                }
+                // Announce services after registration (like real daemon)
+                if (opts?.serviceIds && opts.serviceIds.length > 0) {
+                    (socket as any).emit("service_announce", { serviceIds: opts.serviceIds });
                 }
                 resolve();
             });
@@ -986,6 +995,10 @@ export async function createMockRunner(
 
         wasShutdownRequested(): boolean {
             return shutdownRequested;
+        },
+
+        announceServices(serviceIds: string[]): void {
+            (socket as any).emit("service_announce", { serviceIds });
         },
 
         onSkillRequest(handler: (data: unknown) => unknown): void {

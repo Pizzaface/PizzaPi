@@ -445,6 +445,25 @@ async function main() {
 
     console.log("Populating mock sessions...\n");
 
+    // Create a default mock runner so sessions have a runner association
+    // and service_announce reaches viewers.
+    const defaultRunner = await createMockRunner(server, {
+        name: "sandbox-runner",
+        roots: ["/Users/jordan/Documents/Projects/PizzaPi"],
+        platform: "darwin",
+        serviceIds: ["terminal", "file-explorer", "git", "tunnel", "system-monitor"],
+        skills: [
+            { name: "code-review", description: "Code review", filePath: "/skills/code-review/SKILL.md" },
+            { name: "brainstorming", description: "Explore ideas", filePath: "/skills/brainstorming/SKILL.md" },
+        ],
+        agents: [
+            { name: "task", description: "General-purpose task agent", filePath: "/agents/task.md" },
+        ],
+    });
+    runners.push(defaultRunner);
+    runnerCounter++;
+    console.log(`  🖥️  Default runner: sandbox-runner (darwin) [${defaultRunner.runnerId.slice(0, 8)}...]`);
+
     // Session 1: active with a conversation
     const s1 = await scenario.addSession({
         cwd: "/Users/jordan/Documents/Projects/PizzaPi",
@@ -469,6 +488,8 @@ async function main() {
         s1.relay.emitEvent(s1.sessionId, s1.token, convo[i], i + 1);
         await sleep(80);
     }
+    // Link to runner so service_announce reaches viewers
+    defaultRunner.emitSessionReady(s1.sessionId);
     console.log(`  🟢 Session 1: refactor-auth-module (Sonnet 4.6) — ${convo.length} events`);
 
     // Session 2: active, different model
@@ -488,6 +509,7 @@ async function main() {
         tokenUsage: { input: 95_400, output: 8_100, cacheRead: 0, cacheWrite: 0, cost: 0.312, contextTokens: 95_400 },
         providerUsage: {},
     });
+    defaultRunner.emitSessionReady(s2.sessionId);
     console.log("  🟢 Session 2: fix-dark-mode-css (GPT-5.4)");
 
     // Session 3: child of session 1
@@ -502,6 +524,7 @@ async function main() {
         model: MODELS[2], // Haiku 4.5
         cwd: "/Users/jordan/Documents/Projects/PizzaPi",
     }), 0);
+    defaultRunner.emitSessionReady(s3.sessionId);
     console.log(`  🔗 Session 3: code-review-subagent (Haiku 4.5) → child of S1`);
 
     // ── Start Vite dev server for HMR ──────────────────────────────────
@@ -656,6 +679,7 @@ async function main() {
                             model,
                             cwd,
                         }), 0);
+                        defaultRunner.emitSessionReady(sess.sessionId);
                         const idx = scenario.sessions.length;
                         console.log(`  🟢 Session ${idx}: ${name} (${model.name}) [${sess.sessionId.slice(0, 8)}...]`);
                         break;
@@ -702,6 +726,7 @@ async function main() {
                             sessionName: `subagent-${sessionCounter}`,
                             model,
                         }), 0);
+                        defaultRunner.emitSessionReady(child.sessionId);
                         const childIdx = scenario.sessions.length;
                         console.log(`  🔗 Session ${childIdx}: subagent-${sessionCounter} (${model.name}) → child of S${parentIdx}`);
                         break;
@@ -750,6 +775,7 @@ async function main() {
                                 model,
                                 cwd,
                             }), 0);
+                            defaultRunner.emitSessionReady(sess.sessionId);
                             await sleep(50);
                         }
                         console.log(`  ✅ Created ${count} sessions (total: ${scenario.sessions.length})`);
@@ -773,6 +799,7 @@ async function main() {
                                 { name: "task", description: "General-purpose task agent", filePath: "/agents/task.md" },
                                 { name: "reviewer", description: "Code reviewer", filePath: "/agents/reviewer.md" },
                             ],
+                            serviceIds: ["terminal", "file-explorer", "git", "tunnel", "system-monitor"],
                         });
                         runnerCounter++;
                         runners.push(runner);
@@ -792,6 +819,15 @@ async function main() {
                                 console.log(`    ${i + 1}. ${connected} ${r.runnerId.slice(0, 8)}...`);
                             }
                         }
+                        break;
+                    }
+
+                    case "services": {
+                        const serviceIds = args.length > 0
+                            ? args
+                            : ["terminal", "file-explorer", "git", "tunnel", "system-monitor"];
+                        defaultRunner.announceServices(serviceIds);
+                        console.log(`  📡 Announced services: ${serviceIds.join(", ")}`);
                         break;
                     }
 
@@ -858,6 +894,7 @@ function printHelp() {
     console.log("  flood [count]        — Create N sessions at once (default: 10)");
     console.log("  runner [name]        — Add a faux runner (with skills/agents)");
     console.log("  runners              — List all runners");
+    console.log("  services [ids...]    — Re-announce services (default: all 5)");
     console.log("  status               — Show all sessions");
     console.log("  help                 — Show this help");
     console.log("  quit                 — Shut down and exit");
