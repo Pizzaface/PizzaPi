@@ -2163,6 +2163,21 @@ export function App() {
         });
       }
 
+      // Track compaction state for ANY session's meta event (same pattern as
+      // sessionsAwaitingInput above) so the sidebar shows the yellow chase
+      // indicator even for background sessions.
+      if (payload.type === "compact_started" || payload.type === "compact_ended") {
+        setSessionsCompacting((prev) => {
+          const next = new Set(prev);
+          if (payload.type === "compact_started") {
+            next.add(payload.sessionId);
+          } else {
+            next.delete(payload.sessionId);
+          }
+          return next;
+        });
+      }
+
       const currentSessionId = activeSessionRef.current;
       if (payload.sessionId !== currentSessionId) return;
       const { sessionId, version, ...event } = payload;
