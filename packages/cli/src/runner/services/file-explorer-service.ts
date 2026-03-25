@@ -12,16 +12,28 @@ export class FileExplorerService implements ServiceHandler {
     readonly id = "file-explorer";
 
     init(socket: Socket, { isShuttingDown }: ServiceInitOptions): void {
+        // Helper: emit file_result on both channels (direct + service envelope).
+        // ALL file_result emissions in this service go through this helper so
+        // error paths and success paths are both covered.
+        const emitFileResult = (payload: Record<string, unknown>) => {
+            socket.emit("file_result" as any, payload);
+            (socket as any).emit("service_message", {
+                serviceId: "file-explorer",
+                type: "file_result",
+                payload,
+            });
+        };
+
         socket.on("list_files", async (data: any) => {
             if (isShuttingDown()) return;
             const requestId = data.requestId;
             const dirPath = data.path ?? "";
             if (!dirPath) {
-                socket.emit("file_result", { requestId, ok: false, message: "Missing path" });
+                emitFileResult({ requestId, ok: false, message: "Missing path" });
                 return;
             }
             if (!isCwdAllowed(dirPath)) {
-                socket.emit("file_result", { requestId, ok: false, message: "Path outside allowed roots" });
+                emitFileResult({ requestId, ok: false, message: "Path outside allowed roots" });
                 return;
             }
             try {
@@ -54,9 +66,9 @@ export class FileExplorerService implements ServiceHandler {
                     if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
                     return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
                 });
-                socket.emit("file_result", { requestId, ok: true, files: items });
+                emitFileResult({ requestId, ok: true, files: items });
             } catch (err) {
-                socket.emit("file_result", {
+                emitFileResult({
                     requestId,
                     ok: false,
                     message: err instanceof Error ? err.message : String(err),
@@ -72,15 +84,15 @@ export class FileExplorerService implements ServiceHandler {
             const limit = typeof (data as any).limit === "number" ? (data as any).limit : 100;
 
             if (!cwd) {
-                socket.emit("file_result", { requestId, ok: false, message: "Missing cwd" });
+                emitFileResult({ requestId, ok: false, message: "Missing cwd" });
                 return;
             }
             if (!isCwdAllowed(cwd)) {
-                socket.emit("file_result", { requestId, ok: false, message: "Path outside allowed roots" });
+                emitFileResult({ requestId, ok: false, message: "Path outside allowed roots" });
                 return;
             }
             if (!query) {
-                socket.emit("file_result", { requestId, ok: true, files: [] });
+                emitFileResult({ requestId, ok: true, files: [] });
                 return;
             }
             try {
@@ -107,15 +119,15 @@ export class FileExplorerService implements ServiceHandler {
                         isDirectory: false,
                         isSymlink: false,
                     }));
-                socket.emit("file_result", { requestId, ok: true, files });
+                emitFileResult({ requestId, ok: true, files });
             } catch (err) {
                 // If git fails (not a git repo, etc.), return empty list
                 const isGitError = err instanceof Error && (err as any).code !== undefined;
                 if (isGitError) {
-                    socket.emit("file_result", { requestId, ok: true, files: [] });
+                    emitFileResult({ requestId, ok: true, files: [] });
                     return;
                 }
-                socket.emit("file_result", {
+                emitFileResult({
                     requestId,
                     ok: false,
                     message: err instanceof Error ? err.message : String(err),
@@ -135,11 +147,11 @@ export class FileExplorerService implements ServiceHandler {
                     : 256 * 1024; // 10MB for base64, 256KB for text
 
             if (!filePath) {
-                socket.emit("file_result", { requestId, ok: false, message: "Missing path" });
+                emitFileResult({ requestId, ok: false, message: "Missing path" });
                 return;
             }
             if (!isCwdAllowed(filePath)) {
-                socket.emit("file_result", { requestId, ok: false, message: "Path outside allowed roots" });
+                emitFileResult({ requestId, ok: false, message: "Path outside allowed roots" });
                 return;
             }
             try {
@@ -148,7 +160,7 @@ export class FileExplorerService implements ServiceHandler {
                 if (encoding === "base64") {
                     const buf = await Bun.file(filePath).slice(0, maxBytes).arrayBuffer();
                     const b64 = Buffer.from(buf).toString("base64");
-                    socket.emit("file_result", {
+                    emitFileResult({
                         requestId,
                         ok: true,
                         content: b64,
@@ -158,7 +170,7 @@ export class FileExplorerService implements ServiceHandler {
                     });
                 } else {
                     const fd = await Bun.file(filePath).slice(0, maxBytes).text();
-                    socket.emit("file_result", {
+                    emitFileResult({
                         requestId,
                         ok: true,
                         content: fd,
@@ -167,7 +179,7 @@ export class FileExplorerService implements ServiceHandler {
                     });
                 }
             } catch (err) {
-                socket.emit("file_result", {
+                emitFileResult({
                     requestId,
                     ok: false,
                     message: err instanceof Error ? err.message : String(err),

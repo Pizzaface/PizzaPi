@@ -24,6 +24,11 @@ export class TerminalService implements ServiceHandler {
             if (!terminalId) {
                 logWarn("[terminal] new_terminal: missing terminalId — rejecting");
                 socket.emit("terminal_error", { terminalId: "", message: "Missing terminalId" });
+                (socket as any).emit("service_message", {
+                    serviceId: "terminal",
+                    type: "terminal_error",
+                    payload: { terminalId: "", message: "Missing terminalId" },
+                });
                 return;
             }
             if (requestedCwd && !isCwdAllowed(requestedCwd)) {
@@ -34,15 +39,28 @@ export class TerminalService implements ServiceHandler {
                     terminalId,
                     message: `cwd outside allowed roots: ${requestedCwd}`,
                 });
+                (socket as any).emit("service_message", {
+                    serviceId: "terminal",
+                    type: "terminal_error",
+                    payload: { terminalId, message: `cwd outside allowed roots: ${requestedCwd}` },
+                });
                 return;
             }
             // The terminal module calls termSend with { type: "terminal_*", ... } payloads.
             // Extract the type field and emit it as a socket.io event.
+            // Also dual-emit via service_message envelope for Phase 3 UI hooks.
             const termSend = (payload: Record<string, unknown>) => {
                 try {
                     const { type, runnerId: _drop, ...rest } = payload;
                     if (typeof type === "string") {
+                        // Existing named event — keeps backward compatibility
                         (socket as any).emit(type, rest);
+                        // Also emit via service envelope for useServiceChannel hooks
+                        (socket as any).emit("service_message", {
+                            serviceId: "terminal",
+                            type,
+                            payload: rest,
+                        });
                     }
                 } catch (err) {
                     logError(
@@ -93,8 +111,20 @@ export class TerminalService implements ServiceHandler {
             logInfo(`[terminal] kill_terminal: result=${killed} terminalId=${terminalId}`);
             if (killed) {
                 socket.emit("terminal_exit", { terminalId, exitCode: -1 });
+                // Dual-emit via service envelope for useServiceChannel hooks
+                (socket as any).emit("service_message", {
+                    serviceId: "terminal",
+                    type: "terminal_exit",
+                    payload: { terminalId, exitCode: -1 },
+                });
             } else {
                 socket.emit("terminal_error", { terminalId, message: "Terminal not found" });
+                // Dual-emit via service envelope for useServiceChannel hooks
+                (socket as any).emit("service_message", {
+                    serviceId: "terminal",
+                    type: "terminal_error",
+                    payload: { terminalId, message: "Terminal not found" },
+                });
             }
         });
 
@@ -104,6 +134,12 @@ export class TerminalService implements ServiceHandler {
             logInfo(`[terminal] list_terminals: ${list.length} active (${list.join(", ") || "none"})`);
             // terminals_list is not in the typed protocol yet — emit untyped
             (socket as any).emit("terminals_list", { terminals: list });
+            // Dual-emit via service envelope for useServiceChannel hooks
+            (socket as any).emit("service_message", {
+                serviceId: "terminal",
+                type: "terminals_list",
+                payload: { terminals: list },
+            });
         });
     }
 
