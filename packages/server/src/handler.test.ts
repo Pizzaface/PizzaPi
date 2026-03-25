@@ -388,6 +388,24 @@ describe("withSecurityHeaders", () => {
         expect(res.statusText).toBe("Not Found");
     });
 
+    test("tunnel responses get SAMEORIGIN and no CSP", () => {
+        const tunnelRes = new Response("tunneled html", {
+            status: 200,
+            headers: { "x-pizzapi-tunnel": "1", "content-type": "text/html" },
+        });
+        const res = withSecurityHeaders(tunnelRes);
+        expect(res.headers.get("X-Frame-Options")).toBe("SAMEORIGIN");
+        expect(res.headers.get("Content-Security-Policy")).toBeNull();
+        // Internal marker must be stripped
+        expect(res.headers.has("x-pizzapi-tunnel")).toBe(false);
+    });
+
+    test("non-tunnel responses still get DENY and CSP", () => {
+        const res = withSecurityHeaders(new Response("ok", { status: 200 }));
+        expect(res.headers.get("X-Frame-Options")).toBe("DENY");
+        expect(res.headers.get("Content-Security-Policy")).not.toBeNull();
+    });
+
     test("no duplicate security headers when response is collected via sendFetchResponse-style merging", () => {
         // Regression test for the P0 bug where sendFetchResponse had its own hardcoded
         // security headers AND withSecurityHeaders also set them, producing header arrays.

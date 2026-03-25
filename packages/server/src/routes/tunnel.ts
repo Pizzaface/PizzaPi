@@ -24,6 +24,99 @@ const MAX_TUNNEL_BODY_SIZE = 10 * 1024 * 1024;
 /** Pattern: /api/tunnel/:sessionId/:port/<rest> */
 const TUNNEL_PATH_RE = /^\/api\/tunnel\/([^/]+)\/(\d+)(\/.*)?$/;
 
+function getTunnelBasePath(sessionId: string, port: number): string {
+    return `/api/tunnel/${encodeURIComponent(sessionId)}/${port}`;
+}
+
+function rewriteTunnelUrl(value: string, sessionId: string, port: number): string {
+    if (!value) return value;
+    if (value.startsWith("//")) return value;
+    if (/^[a-zA-Z][a-zA-Z\d+.-]*:/.test(value)) {
+        try {
+            const parsed = new URL(value);
+            if ((parsed.protocol === "http:" || parsed.protocol === "https:") && (parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost")) {
+                return `${getTunnelBasePath(sessionId, port)}${parsed.pathname}${parsed.search}${parsed.hash}`;
+            }
+        } catch {
+            return value;
+        }
+        return value;
+    }
+    if (!value.startsWith("/")) return value;
+    return `${getTunnelBasePath(sessionId, port)}${value}`;
+}
+
+/**
+ * Build an inline <script> that monkey-patches fetch and XMLHttpRequest
+ * so absolute root-path requests (e.g. `/api/auth`, `/socket.io/`) are
+ * rewritten through the tunnel proxy prefix. Without this, the tunneled
+ * app's runtime JS calls bypass the `<base>` tag (which only affects
+ * relative URLs in HTML attributes) and hit the host origin directly.
+ */
+function buildTunnelInterceptScript(basePath: string): string {
+    // The script is injected synchronously before any app code runs.
+    // It must be self-contained — no external imports.
+    return `<script data-pizzapi-tunnel-intercept>
+(function(){
+  var B="${basePath}";
+  function rw(u){
+    if(typeof u!=="string")return u;
+    if(u.startsWith(B))return u;
+    if(u.startsWith("/"))return B+u;
+    return u;
+  }
+  function rwInput(input,init){
+    if(typeof input==="string") return [rw(input),init];
+    if(input instanceof Request){
+      var nu=rw(input.url);
+      if(nu!==input.url) return [new Request(nu,input),init];
+    }
+    return [input,init];
+  }
+  // Patch fetch
+  var _f=window.fetch;
+  window.fetch=function(input,init){
+    var a=rwInput(input,init);
+    return _f.call(this,a[0],a[1]);
+  };
+  // Patch XMLHttpRequest.open
+  var _o=XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open=function(method,url){
+    arguments[1]=rw(url);
+    return _o.apply(this,arguments);
+  };
+  // Patch EventSource
+  if(window.EventSource){
+    var _E=window.EventSource;
+    window.EventSource=function(url,cfg){return new _E(rw(url),cfg)};
+    window.EventSource.prototype=_E.prototype;
+  }
+})();
+</script>`;
+}
+
+function rewriteTunnelHtml(html: string, sessionId: string, port: number): string {
+    const basePath = getTunnelBasePath(sessionId, port);
+    const rewritten = html
+        .replace(/(<(?:img|script|iframe|audio|video|source|track|embed|input)\b[^>]*\bsrc=["'])(\/[^"']*)(["'])/gi, (_m, start, path, end) => `${start}${rewriteTunnelUrl(path, sessionId, port)}${end}`)
+        .replace(/(<(?:a|link|area)\b[^>]*\bhref=["'])(\/[^"']*)(["'])/gi, (_m, start, path, end) => `${start}${rewriteTunnelUrl(path, sessionId, port)}${end}`)
+        .replace(/(<(?:form)\b[^>]*\baction=["'])(\/[^"']*)(["'])/gi, (_m, start, path, end) => `${start}${rewriteTunnelUrl(path, sessionId, port)}${end}`)
+        .replace(/(<meta\b[^>]*\bcontent=["'][^"']*?url=)(\/[^"']*)(["'])/gi, (_m, start, path, end) => `${start}${rewriteTunnelUrl(path, sessionId, port)}${end}`)
+        .replace(/(\burl\(["']?)(\/[^)"']*)(["']?\))/gi, (_m, start, path, end) => `${start}${rewriteTunnelUrl(path, sessionId, port)}${end}`);
+
+    const injection = `<base href="${basePath}/">${buildTunnelInterceptScript(basePath)}`;
+
+    if (/<head\b[^>]*>/i.test(rewritten)) {
+        return rewritten.replace(/<head\b[^>]*>/i, (match) => `${match}${injection}`);
+    }
+
+    return `${injection}${rewritten}`;
+}
+
+function shouldRewriteTunnelHtml(contentType: string | null): boolean {
+    return !!contentType && /text\/html|application\/xhtml\+xml/i.test(contentType);
+}
+
 /**
  * Tunnel route handler.
  *
@@ -140,7 +233,7 @@ export const handleTunnelRoute: RouteHandler = async (req, url) => {
     }
 
     // ── Write response back to viewer ─────────────────────────────────────────
-    const responseBody = Buffer.from(tunnelResponse.body, "base64");
+    let responseBody = Buffer.from(tunnelResponse.body, "base64");
 
     const responseHeaders = new Headers();
     for (const [k, v] of Object.entries(tunnelResponse.headers)) {
@@ -151,8 +244,25 @@ export const handleTunnelRoute: RouteHandler = async (req, url) => {
         }
     }
 
+    const location = responseHeaders.get("location");
+    if (location) {
+        responseHeaders.set("location", rewriteTunnelUrl(location, sessionId, port));
+    }
+
+    if (shouldRewriteTunnelHtml(responseHeaders.get("content-type"))) {
+        const html = responseBody.toString("utf8");
+        responseBody = Buffer.from(rewriteTunnelHtml(html, sessionId, port), "utf8");
+        responseHeaders.delete("content-length");
+        responseHeaders.delete("content-encoding");
+    }
+
+    // Mark as tunnel response so withSecurityHeaders applies relaxed policy.
+    responseHeaders.set("x-pizzapi-tunnel", "1");
+
     return new Response(responseBody, {
         status: tunnelResponse.status,
         headers: responseHeaders,
     });
 };
+
+export { getTunnelBasePath, rewriteTunnelUrl, rewriteTunnelHtml, shouldRewriteTunnelHtml };
