@@ -10,7 +10,7 @@ import { existsSync } from "fs";
 import { readFile, readdir } from "fs/promises";
 import { join } from "path";
 import { BUILTIN_SYSTEM_PROMPT, defaultAgentDir, expandHome, loadConfig, resolveSandboxConfig, validateSandboxOverride, applyProviderSettingsEnv } from "./config.js";
-import { c, usageBar, colorPct } from "./cli-colors.js";
+import { c, usageBar, colorPct, colorRemaining } from "./cli-colors.js";
 import { buildInteractiveSkillPaths } from "./skills.js";
 import { buildPizzaPiExtensionFactories } from "./extensions/factories.js";
 import { runSetup } from "./setup.js";
@@ -270,7 +270,7 @@ async function main() {
                                 : null;
                             const bar = usedPct !== null ? usageBar(usedPct) : "";
                             const remainingStr = bucket.remainingFraction != null
-                                ? ` ${colorPct((1 - bucket.remainingFraction) * 100)} remaining`
+                                ? ` ${colorRemaining(bucket.remainingFraction * 100)} remaining`
                                 : "";
                             const amt = bucket.remainingAmount != null ? c.dim(` (${bucket.remainingAmount} left)`) : "";
                             const reset = bucket.resetTime ? c.dim(`  resets ${new Date(bucket.resetTime).toLocaleString()}`) : "";
