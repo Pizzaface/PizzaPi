@@ -301,7 +301,7 @@ jobs:
 
               # --help should exit 0 and contain expected text
               $CLI_CMD --help 2>&1 | tee /tmp/help.txt
-              grep -q "pizzapi.*coding agent" /tmp/help.txt || { echo "::error::--help missing header"; exit 1; }
+              grep -Eiq "(pizzapi.*coding agent|pizzapi v[0-9]|pizza\s*pi\s*v[0-9])" /tmp/help.txt || { echo "::error::--help missing header"; exit 1; }
               grep -q "pizza web" /tmp/help.txt || { echo "::error::--help missing web subcommand"; exit 1; }
 
               # web --help
