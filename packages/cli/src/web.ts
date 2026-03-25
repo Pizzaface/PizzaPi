@@ -17,6 +17,7 @@ import { createECDH, createHash, randomBytes } from "crypto";
 import { existsSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
+import { c } from "./cli-colors.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -837,34 +838,34 @@ export function parseArgs(args: string[]): ParsedArgs {
 // ─── Help text ────────────────────────────────────────────────────────────────
 
 function printWebHelp(): void {
-    console.log(`
-pizza web — Manage the PizzaPi web hub (server + UI via Docker Compose)
-
-Usage:
-  pizza web [flags]               Start the web hub
-  pizza web stop                  Stop the web hub
-  pizza web logs                  Tail container logs
-  pizza web status                Show container status
-  pizza web config                Show current configuration
-  pizza web config set <k> <v>    Update a config value
-
-Flags:
-  --port <port>       Set the host port (persisted to config.json)
-  --origins <list>    Set extra allowed CORS origins (comma-separated, persisted)
-  -f, --foreground    Run in the foreground (don't detach)
-  -h, --help          Show this help
-
-Configuration (${CONFIG_PATH}):
-  port            Host port (default: 7492)
-  vapidSubject    VAPID subject for push notifications (default: mailto:admin@pizzapi.local)
-  extraOrigins    Extra CORS origins, comma-separated
-
-Examples:
-  pizza web                           Start on default port 7492
-  pizza web --port 8080               Start on port 8080 (remembered for next time)
-  pizza web config set port 9000      Change port without starting
-  pizza web config set extraOrigins "https://example.com"
-`.trim());
+    console.log();
+    console.log(`${c.brand("pizza web")} ${c.dim("— Manage the PizzaPi web hub (server + UI via Docker Compose)")}`);
+    console.log();
+    console.log(c.label("Commands"));
+    console.log(`  ${c.cmd("pizza web")} ${c.dim("[flags]")}               Start the web hub`);
+    console.log(`  ${c.cmd("pizza web stop")}                  Stop the web hub`);
+    console.log(`  ${c.cmd("pizza web logs")}                  Tail container logs`);
+    console.log(`  ${c.cmd("pizza web status")}                Show container status`);
+    console.log(`  ${c.cmd("pizza web config")}                Show current configuration`);
+    console.log(`  ${c.cmd("pizza web config set")} ${c.dim("<k> <v>")}    Update a config value`);
+    console.log();
+    console.log(c.label("Flags"));
+    console.log(`  ${c.flag("--port")} ${c.dim("<port>")}       Set the host port ${c.dim("(persisted to config.json)")}`);
+    console.log(`  ${c.flag("--origins")} ${c.dim("<list>")}    Set extra allowed CORS origins ${c.dim("(comma-separated, persisted)")}`);
+    console.log(`  ${c.flag("-f, --foreground")}    Run in the foreground ${c.dim("(don't detach)")}`);
+    console.log(`  ${c.flag("-h, --help")}          Show this help`);
+    console.log();
+    console.log(`${c.label("Configuration")} ${c.dim(`(${CONFIG_PATH})`)}`);
+    console.log(`  ${c.accent("port")}            Host port ${c.dim("(default: 7492)")}`);
+    console.log(`  ${c.accent("vapidSubject")}    VAPID subject for push notifications`);
+    console.log(`  ${c.accent("extraOrigins")}    Extra CORS origins, comma-separated`);
+    console.log();
+    console.log(c.label("Examples"));
+    console.log(`  ${c.dim("pizza web")}                           Start on default port 7492`);
+    console.log(`  ${c.dim("pizza web --port 8080")}               Start on port 8080 (remembered for next time)`);
+    console.log(`  ${c.dim("pizza web config set port 9000")}      Change port without starting`);
+    console.log(`  ${c.dim('pizza web config set extraOrigins "https://example.com"')}`);
+    console.log();
 }
 
 // ─── Config subcommand ────────────────────────────────────────────────────────

@@ -3,6 +3,7 @@ import { homedir } from "os";
 import { join } from "path";
 import { saveGlobalConfig } from "./config.js";
 import { validatePassword, PASSWORD_REQUIREMENTS } from "@pizzapi/protocol";
+import { c } from "./cli-colors.js";
 
 const RELAY_DEFAULT = "http://localhost:7492";
 
@@ -82,11 +83,15 @@ export async function runSetup(opts: { force?: boolean } = {}): Promise<boolean>
     try {
         const configPath = join(homedir(), ".pizzapi", "config.json");
 
-        console.log("\n┌─────────────────────────────────────────┐");
-        console.log("│        PizzaPi — first-run setup        │");
-        console.log("└─────────────────────────────────────────┘\n");
+        const frame = c.label("─".repeat(43));
+        console.log();
+        console.log(c.label("┌") + frame + c.label("┐"));
+        console.log(c.label("│") + `     ${c.brand("🍕 PizzaPi")} ${c.dim("— first-run setup")}     ` + c.label("│"));
+        console.log(c.label("└") + frame + c.label("┘"));
+        console.log();
         console.log("Connect this node to a PizzaPi relay server so your sessions");
-        console.log("can be monitored from the web UI.\n");
+        console.log("can be monitored from the web UI.");
+        console.log();
 
         if (!opts.force) {
             const skip = await ask(iface, "Skip setup and continue without relay? [y/N] ");
@@ -107,7 +112,7 @@ export async function runSetup(opts: { force?: boolean } = {}): Promise<boolean>
         const name = (await ask(iface, "Your name (leave blank if account already exists): ")).trim();
         const email = (await ask(iface, "Email: ")).trim();
         if (!email) {
-            console.log("\n✗ Email is required. Aborting setup.\n");
+            console.log(`\n${c.error("✗")} Email is required. Aborting setup.\n`);
             return false;
         }
 
@@ -116,7 +121,7 @@ export async function runSetup(opts: { force?: boolean } = {}): Promise<boolean>
 
         const password = await askPassword("Password: ");
         if (!password) {
-            console.log("\n✗ Password is required. Aborting setup.\n");
+            console.log(`\n${c.error("✗")} Password is required. Aborting setup.\n`);
             return false;
         }
 
@@ -124,26 +129,27 @@ export async function runSetup(opts: { force?: boolean } = {}): Promise<boolean>
         if (name) {
             const check = validatePassword(password);
             if (!check.valid) {
-                console.log("\n✗ Password does not meet the requirements:");
-                for (const c of check.checks) {
-                    console.log(`  ${c.met ? "✓" : "✗"} ${c.label}`);
+                console.log(`\n${c.error("✗")} Password does not meet the requirements:`);
+                for (const chk of check.checks) {
+                    const icon = chk.met ? c.success("✓") : c.error("✗");
+                    console.log(`  ${icon} ${chk.label}`);
                 }
                 console.log();
                 return false;
             }
         }
 
-        process.stdout.write("\nConnecting to relay server… ");
+        process.stdout.write(`\n${c.dim("Connecting to relay server…")} `);
         const result = await registerCli(relayUrl, name, email, password);
         if (!result.ok || !result.key) {
-            console.log("✗\n");
+            console.log(c.error("✗") + "\n");
             console.error(
                 `Could not register with the relay server: ${result.error ?? "unknown error"}\n` +
                 "Check that the server is running, your credentials are correct, and try again.\n",
             );
             return false;
         }
-        console.log("✓\n");
+        console.log(c.success("✓") + "\n");
 
         // Derive ws:// URL for the relay config
         const wsRelayUrl = relayUrl.replace(/^http/, "ws");
@@ -153,8 +159,8 @@ export async function runSetup(opts: { force?: boolean } = {}): Promise<boolean>
         process.env.PIZZAPI_API_KEY = result.key;
         process.env.PIZZAPI_RELAY_URL = wsRelayUrl;
 
-        console.log(`✓ API key saved to ${configPath}`);
-        console.log(`✓ Relay: ${wsRelayUrl}\n`);
+        console.log(`${c.success("✓")} API key saved to ${c.dim(configPath)}`);
+        console.log(`${c.success("✓")} Relay: ${c.accent(wsRelayUrl)}\n`);
         return true;
     } finally {
         try { iface.close(); } catch {}
