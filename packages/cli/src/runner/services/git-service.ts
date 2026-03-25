@@ -10,16 +10,28 @@ export class GitService implements ServiceHandler {
     readonly id = "git";
 
     init(socket: Socket, { isShuttingDown }: ServiceInitOptions): void {
+        // Helper: emit file_result on both channels (direct + service envelope).
+        // ALL file_result emissions in this service go through this helper so
+        // error paths and success paths are both covered.
+        const emitFileResult = (payload: Record<string, unknown>) => {
+            socket.emit("file_result" as any, payload);
+            (socket as any).emit("service_message", {
+                serviceId: "git",
+                type: "file_result",
+                payload,
+            });
+        };
+
         socket.on("git_status", async (data: any) => {
             if (isShuttingDown()) return;
             const requestId = data.requestId;
             const cwd = data.cwd ?? "";
             if (!cwd) {
-                socket.emit("file_result", { requestId, ok: false, message: "Missing cwd" });
+                emitFileResult({ requestId, ok: false, message: "Missing cwd" });
                 return;
             }
             if (!isCwdAllowed(cwd)) {
-                socket.emit("file_result", { requestId, ok: false, message: "Path outside allowed roots" });
+                emitFileResult({ requestId, ok: false, message: "Path outside allowed roots" });
                 return;
             }
             try {
@@ -66,7 +78,7 @@ export class GitService implements ServiceHandler {
                     behind = parseInt(b, 10) || 0;
                 }
 
-                const statusPayload = {
+                emitFileResult({
                     requestId,
                     ok: true,
                     branch,
@@ -74,16 +86,9 @@ export class GitService implements ServiceHandler {
                     ahead,
                     behind,
                     diffStaged,
-                };
-                socket.emit("file_result", statusPayload);
-                // Dual-emit via service envelope for Phase 3 UI hooks
-                (socket as any).emit("service_message", {
-                    serviceId: "git",
-                    type: "git_status",
-                    payload: statusPayload,
                 });
             } catch (err) {
-                socket.emit("file_result", {
+                emitFileResult({
                     requestId,
                     ok: false,
                     message: err instanceof Error ? err.message : String(err),
@@ -99,26 +104,19 @@ export class GitService implements ServiceHandler {
             const staged = (data as any).staged === true;
 
             if (!cwd || !filePath) {
-                socket.emit("file_result", { requestId, ok: false, message: "Missing cwd or path" });
+                emitFileResult({ requestId, ok: false, message: "Missing cwd or path" });
                 return;
             }
             if (!isCwdAllowed(cwd)) {
-                socket.emit("file_result", { requestId, ok: false, message: "Path outside allowed roots" });
+                emitFileResult({ requestId, ok: false, message: "Path outside allowed roots" });
                 return;
             }
             try {
                 const args = staged ? ["diff", "--cached", "--", filePath] : ["diff", "--", filePath];
                 const { stdout: diff } = await execFileAsync("git", args, { cwd, timeout: 10000 });
-                const diffPayload = { requestId, ok: true, diff };
-                socket.emit("file_result", diffPayload);
-                // Dual-emit via service envelope for Phase 3 UI hooks
-                (socket as any).emit("service_message", {
-                    serviceId: "git",
-                    type: "git_diff",
-                    payload: diffPayload,
-                });
+                emitFileResult({ requestId, ok: true, diff });
             } catch (err) {
-                socket.emit("file_result", {
+                emitFileResult({
                     requestId,
                     ok: false,
                     message: err instanceof Error ? err.message : String(err),
