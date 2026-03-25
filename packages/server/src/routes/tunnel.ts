@@ -24,6 +24,47 @@ const MAX_TUNNEL_BODY_SIZE = 10 * 1024 * 1024;
 /** Pattern: /api/tunnel/:sessionId/:port/<rest> */
 const TUNNEL_PATH_RE = /^\/api\/tunnel\/([^/]+)\/(\d+)(\/.*)?$/;
 
+function getTunnelBasePath(sessionId: string, port: number): string {
+    return `/api/tunnel/${encodeURIComponent(sessionId)}/${port}`;
+}
+
+function rewriteTunnelUrl(value: string, sessionId: string, port: number): string {
+    if (!value) return value;
+    if (value.startsWith("//")) return value;
+    if (/^[a-zA-Z][a-zA-Z\d+.-]*:/.test(value)) {
+        try {
+            const parsed = new URL(value);
+            if ((parsed.protocol === "http:" || parsed.protocol === "https:") && (parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost")) {
+                return `${getTunnelBasePath(sessionId, port)}${parsed.pathname}${parsed.search}${parsed.hash}`;
+            }
+        } catch {
+            return value;
+        }
+        return value;
+    }
+    if (!value.startsWith("/")) return value;
+    return `${getTunnelBasePath(sessionId, port)}${value}`;
+}
+
+function rewriteTunnelHtml(html: string, sessionId: string, port: number): string {
+    const rewritten = html
+        .replace(/(<(?:img|script|iframe|audio|video|source|track|embed|input)\b[^>]*\bsrc=["'])(\/[^"']*)(["'])/gi, (_m, start, path, end) => `${start}${rewriteTunnelUrl(path, sessionId, port)}${end}`)
+        .replace(/(<(?:a|link|area)\b[^>]*\bhref=["'])(\/[^"']*)(["'])/gi, (_m, start, path, end) => `${start}${rewriteTunnelUrl(path, sessionId, port)}${end}`)
+        .replace(/(<(?:form)\b[^>]*\baction=["'])(\/[^"']*)(["'])/gi, (_m, start, path, end) => `${start}${rewriteTunnelUrl(path, sessionId, port)}${end}`)
+        .replace(/(<meta\b[^>]*\bcontent=["'][^"']*?url=)(\/[^"']*)(["'])/gi, (_m, start, path, end) => `${start}${rewriteTunnelUrl(path, sessionId, port)}${end}`)
+        .replace(/(\burl\(["']?)(\/[^)"']*)(["']?\))/gi, (_m, start, path, end) => `${start}${rewriteTunnelUrl(path, sessionId, port)}${end}`);
+
+    if (/<head\b[^>]*>/i.test(rewritten)) {
+        return rewritten.replace(/<head\b[^>]*>/i, (match) => `${match}<base href="${getTunnelBasePath(sessionId, port)}/">`);
+    }
+
+    return `<base href="${getTunnelBasePath(sessionId, port)}/">${rewritten}`;
+}
+
+function shouldRewriteTunnelHtml(contentType: string | null): boolean {
+    return !!contentType && /text\/html|application\/xhtml\+xml/i.test(contentType);
+}
+
 /**
  * Tunnel route handler.
  *
@@ -140,7 +181,7 @@ export const handleTunnelRoute: RouteHandler = async (req, url) => {
     }
 
     // ── Write response back to viewer ─────────────────────────────────────────
-    const responseBody = Buffer.from(tunnelResponse.body, "base64");
+    let responseBody = Buffer.from(tunnelResponse.body, "base64");
 
     const responseHeaders = new Headers();
     for (const [k, v] of Object.entries(tunnelResponse.headers)) {
@@ -151,8 +192,22 @@ export const handleTunnelRoute: RouteHandler = async (req, url) => {
         }
     }
 
+    const location = responseHeaders.get("location");
+    if (location) {
+        responseHeaders.set("location", rewriteTunnelUrl(location, sessionId, port));
+    }
+
+    if (shouldRewriteTunnelHtml(responseHeaders.get("content-type"))) {
+        const html = responseBody.toString("utf8");
+        responseBody = Buffer.from(rewriteTunnelHtml(html, sessionId, port), "utf8");
+        responseHeaders.delete("content-length");
+        responseHeaders.delete("content-encoding");
+    }
+
     return new Response(responseBody, {
         status: tunnelResponse.status,
         headers: responseHeaders,
     });
 };
+
+export { getTunnelBasePath, rewriteTunnelUrl, rewriteTunnelHtml, shouldRewriteTunnelHtml };
