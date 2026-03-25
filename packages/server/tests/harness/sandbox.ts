@@ -24,6 +24,7 @@ import {
     buildToolResultEvent,
     type ConversationTurn,
 } from "./builders.js";
+import { startSandboxApi, type SandboxApi } from "./sandbox-api.js";
 
 // ── Suppress noisy server logs so the REPL stays clean ───────────────────────
 // Keep errors but hide connection/disconnect/startup spam.
@@ -448,6 +449,7 @@ async function main() {
     // Session 1: active with a conversation
     const s1 = await scenario.addSession({
         cwd: "/Users/jordan/Documents/Projects/PizzaPi",
+        collabMode: true,
     });
     sessionCounter++;
     s1.relay.emitEvent(s1.sessionId, s1.token, buildHeartbeat({
@@ -474,6 +476,7 @@ async function main() {
     // Session 2: active, different model
     const s2 = await scenario.addSession({
         cwd: "/Users/jordan/Projects/cool-app",
+        collabMode: true,
     });
     sessionCounter++;
     s2.relay.emitEvent(s2.sessionId, s2.token, buildHeartbeat({
@@ -493,6 +496,7 @@ async function main() {
     // Session 3: child of session 1
     const s3 = await scenario.addSession({
         cwd: "/Users/jordan/Documents/Projects/PizzaPi",
+        collabMode: true,
         parentSessionId: s1.sessionId,
     });
     sessionCounter++;
@@ -529,9 +533,18 @@ async function main() {
         } catch { /* not ready */ }
     }
 
+    // ── Start HTTP control API ────────────────────────────────────────
+    const sandboxApi = await startSandboxApi({
+        scenario,
+        scenarios: SCENARIOS,
+        models: MODELS,
+        cwds: CWDS,
+    });
+
     console.log(`\n✅ Sandbox ready!`);
     console.log(`   📺 UI (HMR):  http://127.0.0.1:${vitePort}`);
-    console.log(`   🔌 Server:    ${server.baseUrl}\n`);
+    console.log(`   🔌 Server:    ${server.baseUrl}`);
+    console.log(`   🎮 API:       ${sandboxApi.baseUrl}\n`);
 
     // ── Live token ticker — grows s1 & s2 usage over time ───────────────
     // Simulates an active session consuming context so the donut animates.
@@ -648,7 +661,7 @@ async function main() {
                         const name = args[0] || pickRandom(SESSION_NAMES);
                         const model = pickRandom(MODELS);
                         const cwd = pickRandom(CWDS);
-                        const sess = await scenario.addSession({ cwd });
+                        const sess = await scenario.addSession({ cwd, collabMode: true });
                         sessionCounter++;
                         sess.relay.emitEvent(sess.sessionId, sess.token, buildHeartbeat({
                             active: true,
@@ -694,6 +707,7 @@ async function main() {
                         const model = pickRandom(MODELS);
                         const child = await scenario.addSession({
                             cwd: pickRandom(CWDS),
+                            collabMode: true,
                             parentSessionId: parent.sessionId,
                         });
                         sessionCounter++;
@@ -742,7 +756,7 @@ async function main() {
                             const name = pickRandom(SESSION_NAMES);
                             const model = pickRandom(MODELS);
                             const cwd = pickRandom(CWDS);
-                            const sess = await scenario.addSession({ cwd });
+                            const sess = await scenario.addSession({ cwd, collabMode: true });
                             sessionCounter++;
                             sess.relay.emitEvent(sess.sessionId, sess.token, buildHeartbeat({
                                 active: Math.random() > 0.3,
@@ -753,6 +767,50 @@ async function main() {
                             await sleep(50);
                         }
                         console.log(`  ✅ Created ${count} sessions (total: ${scenario.sessions.length})`);
+                        break;
+                    }
+
+                    case "oauth":
+                    case "paste": {
+                        const idx = parseInt(args[0] ?? "1", 10);
+                        const serverName = args[1] || "figma";
+                        const sess = scenario.sessions[idx - 1];
+                        if (!sess) {
+                            console.log(`  ❌ No session at index ${idx}. Use 'status' to see sessions.`);
+                            break;
+                        }
+                        const nonce = Math.random().toString(36).slice(2, 18);
+                        const authUrl = `https://www.figma.com/oauth?client_id=mock123&redirect_uri=http%3A%2F%2Flocalhost%3A1%2Fcallback&scope=mcp%3Aconnect&state=mock_state&response_type=code`;
+                        sess.relay.emitEvent(sess.sessionId, sess.token, {
+                            type: "mcp_auth_paste_required",
+                            serverName,
+                            authUrl,
+                            nonce,
+                            ts: Date.now(),
+                        });
+                        console.log(`  🔐 Emitted mcp_auth_paste_required for "${serverName}" into session ${idx}`);
+                        console.log(`     Nonce: ${nonce}`);
+                        console.log(`     Auth URL: ${authUrl.slice(0, 60)}...`);
+
+                        // Listen for the paste response routed through the server.
+                        // The relay socket is in the session's room, so
+                        // emitToRelaySession(..., "mcp_oauth_paste", ...) will
+                        // reach us here.
+                        sess.relay.socket.on("mcp_oauth_paste" as any, (data: any) => {
+                            if (data && typeof data === "object" && data.nonce === nonce) {
+                                console.log(`\n  ✅ OAuth paste received!`);
+                                console.log(`     Nonce: ${data.nonce}`);
+                                console.log(`     Code: ${data.code}`);
+                                // Simulate auth completion
+                                sess.relay.emitEvent(sess.sessionId, sess.token, {
+                                    type: "mcp_auth_complete",
+                                    serverName,
+                                    ts: Date.now(),
+                                });
+                                console.log(`  🎉 Emitted mcp_auth_complete — paste UI should disappear`);
+                                process.stdout.write("\n🍕 sandbox> ");
+                            }
+                        });
                         break;
                     }
 
@@ -833,6 +891,7 @@ async function main() {
         } else {
             process.env.PIZZAPI_BASE_URL = savedBaseUrl;
         }
+        sandboxApi.stop();
         await scenario.teardown();
         viteProc.kill();
         stopRedis();
@@ -856,6 +915,7 @@ function printHelp() {
     console.log("  end <n>              — End session n");
     console.log("  heartbeat <n> [bool] — Send heartbeat (active=true/false)");
     console.log("  flood [count]        — Create N sessions at once (default: 10)");
+    console.log("  oauth <n> [server]   — Simulate MCP OAuth paste prompt (e.g. figma)");
     console.log("  runner [name]        — Add a faux runner (with skills/agents)");
     console.log("  runners              — List all runners");
     console.log("  status               — Show all sessions");
