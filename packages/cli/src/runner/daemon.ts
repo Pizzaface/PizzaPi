@@ -1,20 +1,14 @@
-import { exec, execFile } from "node:child_process";
+import { exec } from "node:child_process";
 import { promisify } from "node:util";
 
 const execAsync = promisify(exec);
-const execFileAsync = promisify(execFile);
-import { readdir, stat } from "node:fs/promises";
 import { existsSync, mkdirSync, renameSync, cpSync, rmSync } from "node:fs";
 import { hostname, homedir } from "node:os";
-import {
-    spawnTerminal,
-    writeTerminalInput,
-    resizeTerminal,
-    killTerminal,
-    listTerminals,
-    killAllTerminals,
-} from "./terminal.js";
-import { join, basename } from "node:path";
+import { join } from "node:path";
+import { ServiceRegistry } from "./service-handler.js";
+import { TerminalService } from "./services/terminal-service.js";
+import { FileExplorerService } from "./services/file-explorer-service.js";
+import { GitService } from "./services/git-service.js";
 import { io, type Socket } from "socket.io-client";
 import type { RunnerClientToServerEvents, RunnerServerToClientEvents } from "@pizzapi/protocol";
 import { loadGlobalConfig } from "../config.js";
@@ -27,7 +21,6 @@ import { getWorkspaceRoots, isCwdAllowed } from "./workspace.js";
 import { type RunnerSession, spawnSession } from "./session-spawner.js";
 
 import {
-    type SkillMeta,
     scanGlobalSkills,
     readSkillContent,
     writeSkill,
@@ -35,7 +28,6 @@ import {
 } from "../skills.js";
 
 import {
-    type AgentMeta,
     scanGlobalAgents,
     readAgentContent,
     writeAgent,
@@ -222,6 +214,12 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         let runnerId: string | null = null;
         let isFirstConnect = true;
 
+        // ── Service registry ──────────────────────────────────────────────
+        const registry = new ServiceRegistry();
+        registry.register(new TerminalService());
+        registry.register(new FileExplorerService());
+        registry.register(new GitService());
+
         const socket: Socket<RunnerServerToClientEvents, RunnerClientToServerEvents> = io(
             sioUrl + "/runner",
             {
@@ -237,6 +235,9 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             },
         );
 
+        // Initialize all services — registers socket event handlers
+        registry.initAll(socket, { isShuttingDown: () => isShuttingDown });
+
         logInfo(`connecting to relay at ${sioUrl}/runner…`);
 
         // Start periodic usage scan (every 5 minutes)
@@ -249,7 +250,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             isShuttingDown = true;
             clearInterval(endedSessionSweep);
             clearInterval(usageScanInterval);
-            killAllTerminals();
+            registry.disposeAll();
             stopUsageRefreshLoop();
             closeUsage();
             releaseStateLock(statePath);
@@ -516,99 +517,6 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             (socket as any).emit("pong", { now: Date.now() });
         });
 
-        // ── Terminal PTY management ───────────────────────────────────────
-
-        socket.on("new_terminal", (data: any) => {
-            if (isShuttingDown) return;
-            const { terminalId, cwd: requestedCwd, cols, rows, shell } = data;
-            logInfo(
-                `[terminal] new_terminal received: terminalId=${terminalId} cwd=${requestedCwd ?? "(default)"} cols=${cols ?? 80} rows=${rows ?? 24} shell=${shell ?? "(default)"}`,
-            );
-            if (!terminalId) {
-                logWarn("[terminal] new_terminal: missing terminalId — rejecting");
-                socket.emit("terminal_error", { terminalId: "", message: "Missing terminalId" });
-                return;
-            }
-            if (requestedCwd && !isCwdAllowed(requestedCwd)) {
-                logWarn(
-                    `[terminal] new_terminal: cwd="${requestedCwd}" outside allowed roots — rejecting terminalId=${terminalId}`,
-                );
-                socket.emit("terminal_error", {
-                    terminalId,
-                    message: `cwd outside allowed roots: ${requestedCwd}`,
-                });
-                return;
-            }
-            // The terminal module calls termSend with { type: "terminal_*", ... } payloads.
-            // Extract the type field and emit it as a socket.io event.
-            const termSend = (payload: Record<string, unknown>) => {
-                try {
-                    const { type, runnerId: _drop, ...rest } = payload;
-                    if (typeof type === "string") {
-                        (socket as any).emit(type, rest);
-                    }
-                } catch (err) {
-                    logError(
-                        `[terminal] termSend: failed to send ${payload.type} for terminalId=${terminalId}: ${err}`,
-                    );
-                }
-            };
-            spawnTerminal(terminalId, termSend, {
-                cwd: requestedCwd,
-                cols,
-                rows,
-                shell,
-            });
-        });
-
-        socket.on("terminal_input", (data: any) => {
-            if (isShuttingDown) return;
-            const { terminalId, data: inputData } = data;
-            if (!terminalId || !inputData) {
-                logWarn(
-                    `[terminal] terminal_input: missing terminalId or data (terminalId=${terminalId} dataLen=${inputData?.length ?? 0})`,
-                );
-                return;
-            }
-            writeTerminalInput(terminalId, inputData);
-        });
-
-        socket.on("terminal_resize", (data: any) => {
-            if (isShuttingDown) return;
-            const { terminalId, cols, rows } = data;
-            if (!terminalId) {
-                logWarn("[terminal] terminal_resize: missing terminalId");
-                return;
-            }
-            logInfo(`[terminal] terminal_resize: terminalId=${terminalId} ${cols}x${rows}`);
-            resizeTerminal(terminalId, cols, rows);
-        });
-
-        socket.on("kill_terminal", (data: any) => {
-            if (isShuttingDown) return;
-            const { terminalId } = data;
-            if (!terminalId) {
-                logWarn("[terminal] kill_terminal: missing terminalId");
-                return;
-            }
-            logInfo(`[terminal] kill_terminal: terminalId=${terminalId}`);
-            const killed = killTerminal(terminalId);
-            logInfo(`[terminal] kill_terminal: result=${killed} terminalId=${terminalId}`);
-            if (killed) {
-                socket.emit("terminal_exit", { terminalId, exitCode: -1 });
-            } else {
-                socket.emit("terminal_error", { terminalId, message: "Terminal not found" });
-            }
-        });
-
-        socket.on("list_terminals", () => {
-            if (isShuttingDown) return;
-            const list = listTerminals();
-            logInfo(`[terminal] list_terminals: ${list.length} active (${list.join(", ") || "none"})`);
-            // terminals_list is not in the typed protocol yet — emit untyped
-            (socket as any).emit("terminals_list", { terminals: list });
-        });
-
         // ── Skills management ─────────────────────────────────────────────
 
         socket.on("list_skills", (data: any) => {
@@ -849,275 +757,6 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             const plugins = scanAllPluginInfo(scanCwd, { includeProjectLocal: includeLocal });
             // Echo scoped flag so the server can skip cache updates for per-session scans
             socket.emit("plugins_list", { plugins, requestId, ...(rawCwd ? { scoped: true } : {}) });
-        });
-
-        // ── File Explorer ─────────────────────────────────────────────────
-
-        socket.on("list_files", async (data: any) => {
-            if (isShuttingDown) return;
-            const requestId = data.requestId;
-            const dirPath = data.path ?? "";
-            if (!dirPath) {
-                socket.emit("file_result", { requestId, ok: false, message: "Missing path" });
-                return;
-            }
-            if (!isCwdAllowed(dirPath)) {
-                socket.emit("file_result", { requestId, ok: false, message: "Path outside allowed roots" });
-                return;
-            }
-            try {
-                const entries = await readdir(dirPath, { withFileTypes: true });
-                const items = await Promise.all(
-                    entries
-                        .filter((e) => {
-                            // Show all dotfiles/dotfolders except .git (too noisy)
-                            if (e.name === ".git") return false;
-                            return true;
-                        })
-                        .map(async (e) => {
-                            const fullPath = join(dirPath, e.name);
-                            let size: number | undefined;
-                            try {
-                                const s = await stat(fullPath);
-                                size = s.size;
-                            } catch {}
-                            return {
-                                name: e.name,
-                                path: fullPath,
-                                isDirectory: e.isDirectory(),
-                                isSymlink: e.isSymbolicLink(),
-                                size,
-                            };
-                        }),
-                );
-                // Directories first, then files, alphabetically
-                items.sort((a, b) => {
-                    if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
-                    return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
-                });
-                socket.emit("file_result", { requestId, ok: true, files: items });
-            } catch (err) {
-                socket.emit("file_result", {
-                    requestId,
-                    ok: false,
-                    message: err instanceof Error ? err.message : String(err),
-                });
-            }
-        });
-
-        socket.on("search_files", async (data: any) => {
-            if (isShuttingDown) return;
-            const requestId = data.requestId;
-            const cwd = (data as any).cwd ?? "";
-            const query = (data as any).query ?? "";
-            const limit = typeof (data as any).limit === "number" ? (data as any).limit : 100;
-
-            if (!cwd) {
-                socket.emit("file_result", { requestId, ok: false, message: "Missing cwd" });
-                return;
-            }
-            if (!isCwdAllowed(cwd)) {
-                socket.emit("file_result", { requestId, ok: false, message: "Path outside allowed roots" });
-                return;
-            }
-            if (!query) {
-                socket.emit("file_result", { requestId, ok: true, files: [] });
-                return;
-            }
-            try {
-                // Use git ls-files to get tracked + untracked-not-ignored files.
-                // Use async exec to avoid blocking the event loop (which would
-                // prevent Socket.IO pings from being answered).
-                const { stdout } = await execFileAsync(
-                    "git",
-                    ["ls-files", "--cached", "--others", "--exclude-standard"],
-                    { cwd, timeout: 10000, maxBuffer: 10 * 1024 * 1024 },
-                );
-                const lowerQuery = query.toLowerCase();
-                const files = stdout
-                    .split("\n")
-                    .filter((line) => {
-                        if (!line) return false;
-                        return line.toLowerCase().includes(lowerQuery);
-                    })
-                    .slice(0, limit)
-                    .map((relativePath) => ({
-                        name: relativePath.split("/").pop() ?? relativePath,
-                        path: join(cwd, relativePath),
-                        relativePath,
-                        isDirectory: false,
-                        isSymlink: false,
-                    }));
-                socket.emit("file_result", { requestId, ok: true, files });
-            } catch (err) {
-                // If git fails (not a git repo, etc.), return empty list
-                const isGitError = err instanceof Error && (err as any).code !== undefined;
-                if (isGitError) {
-                    socket.emit("file_result", { requestId, ok: true, files: [] });
-                    return;
-                }
-                socket.emit("file_result", {
-                    requestId,
-                    ok: false,
-                    message: err instanceof Error ? err.message : String(err),
-                });
-            }
-        });
-
-        socket.on("read_file", async (data: any) => {
-            if (isShuttingDown) return;
-            const requestId = data.requestId;
-            const filePath = data.path ?? "";
-            const encoding = (data as any).encoding ?? "utf8";
-            const maxBytes = typeof (data as any).maxBytes === "number"
-                ? (data as any).maxBytes
-                : encoding === "base64"
-                    ? 10 * 1024 * 1024
-                    : 256 * 1024; // 10MB for base64, 256KB for text
-
-            if (!filePath) {
-                socket.emit("file_result", { requestId, ok: false, message: "Missing path" });
-                return;
-            }
-            if (!isCwdAllowed(filePath)) {
-                socket.emit("file_result", { requestId, ok: false, message: "Path outside allowed roots" });
-                return;
-            }
-            try {
-                const s = await stat(filePath);
-                const truncated = s.size > maxBytes;
-                if (encoding === "base64") {
-                    const buf = await Bun.file(filePath).slice(0, maxBytes).arrayBuffer();
-                    const b64 = Buffer.from(buf).toString("base64");
-                    socket.emit("file_result", {
-                        requestId,
-                        ok: true,
-                        content: b64,
-                        encoding: "base64",
-                        size: s.size,
-                        truncated,
-                    });
-                } else {
-                    const fd = await Bun.file(filePath).slice(0, maxBytes).text();
-                    socket.emit("file_result", {
-                        requestId,
-                        ok: true,
-                        content: fd,
-                        size: s.size,
-                        truncated,
-                    });
-                }
-            } catch (err) {
-                socket.emit("file_result", {
-                    requestId,
-                    ok: false,
-                    message: err instanceof Error ? err.message : String(err),
-                });
-            }
-        });
-
-        // ── Git operations ────────────────────────────────────────────────
-
-        socket.on("git_status", async (data: any) => {
-            if (isShuttingDown) return;
-            const requestId = data.requestId;
-            const cwd = data.cwd ?? "";
-            if (!cwd) {
-                socket.emit("file_result", { requestId, ok: false, message: "Missing cwd" });
-                return;
-            }
-            if (!isCwdAllowed(cwd)) {
-                socket.emit("file_result", { requestId, ok: false, message: "Path outside allowed roots" });
-                return;
-            }
-            try {
-                // Run all git commands asynchronously to avoid blocking the
-                // event loop (which would prevent Socket.IO pings from being
-                // answered, causing spurious disconnects).
-                const [branchResult, statusResult, diffStagedResult, abResult] = await Promise.allSettled([
-                    execFileAsync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd, timeout: 5000 }),
-                    execFileAsync("git", ["status", "--porcelain=v1", "-uall"], { cwd, timeout: 10000 }),
-                    execFileAsync("git", ["diff", "--cached", "--stat"], { cwd, timeout: 10000 }),
-                    execFileAsync("git", ["rev-list", "--left-right", "--count", "HEAD...@{u}"], { cwd, timeout: 5000 }),
-                ]);
-
-                const branch = branchResult.status === "fulfilled" ? branchResult.value.stdout.trim() : "";
-                const statusOutput = statusResult.status === "fulfilled" ? statusResult.value.stdout : "";
-                const diffStaged = diffStagedResult.status === "fulfilled" ? diffStagedResult.value.stdout : "";
-
-                // Parse porcelain output
-                const changes: Array<{ status: string; path: string; originalPath?: string }> = [];
-                for (const line of statusOutput.split("\n")) {
-                    if (!line.trim()) continue;
-                    const xy = line.substring(0, 2);
-                    const rest = line.substring(3);
-                    // Handle renames: "R  old -> new"
-                    const arrowIdx = rest.indexOf(" -> ");
-                    if (arrowIdx >= 0) {
-                        changes.push({
-                            status: xy.trim(),
-                            path: rest.substring(arrowIdx + 4),
-                            originalPath: rest.substring(0, arrowIdx),
-                        });
-                    } else {
-                        changes.push({ status: xy.trim(), path: rest });
-                    }
-                }
-
-                // Get ahead/behind counts
-                let ahead = 0;
-                let behind = 0;
-                if (abResult.status === "fulfilled") {
-                    const abOutput = abResult.value.stdout.trim();
-                    const [a, b] = abOutput.split(/\s+/);
-                    ahead = parseInt(a, 10) || 0;
-                    behind = parseInt(b, 10) || 0;
-                }
-
-                socket.emit("file_result", {
-                    requestId,
-                    ok: true,
-                    branch,
-                    changes,
-                    ahead,
-                    behind,
-                    diffStaged,
-                });
-            } catch (err) {
-                socket.emit("file_result", {
-                    requestId,
-                    ok: false,
-                    message: err instanceof Error ? err.message : String(err),
-                });
-            }
-        });
-
-        socket.on("git_diff", async (data: any) => {
-            if (isShuttingDown) return;
-            const requestId = data.requestId;
-            const cwd = data.cwd ?? "";
-            const filePath = (data as any).path ?? "";
-            const staged = (data as any).staged === true;
-
-            if (!cwd || !filePath) {
-                socket.emit("file_result", { requestId, ok: false, message: "Missing cwd or path" });
-                return;
-            }
-            if (!isCwdAllowed(cwd)) {
-                socket.emit("file_result", { requestId, ok: false, message: "Path outside allowed roots" });
-                return;
-            }
-            try {
-                const args = staged ? ["diff", "--cached", "--", filePath] : ["diff", "--", filePath];
-                const { stdout: diff } = await execFileAsync("git", args, { cwd, timeout: 10000 });
-                socket.emit("file_result", { requestId, ok: true, diff });
-            } catch (err) {
-                socket.emit("file_result", {
-                    requestId,
-                    ok: false,
-                    message: err instanceof Error ? err.message : String(err),
-                });
-            }
         });
 
         // ── Sandbox ────────────────────────────────────────────────────────
