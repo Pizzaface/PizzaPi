@@ -216,6 +216,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         const runnerName = process.env.PIZZAPI_RUNNER_NAME?.trim() || hostname();
         let runnerId: string | null = null;
         let isFirstConnect = true;
+        let servicesInitialized = false;
 
         // ── Service registry ──────────────────────────────────────────────
         const registry = new ServiceRegistry();
@@ -225,14 +226,15 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         registry.register(new TunnelService());
 
         // Discover and register plugin-provided services.
-        // Re-announce after loading so viewers get the full service list including plugins.
+        // pluginServicesReady resolves once discovery + registration is complete.
+        // The runner_registered handler awaits this before announcing services.
+        let resolvePluginServices: () => void;
+        const pluginServicesReady = new Promise<void>(r => { resolvePluginServices = r; });
         discoverServices({ pluginDirs: globalPluginDirs() }).then(({ services, errors }) => {
-            let added = 0;
             for (const { handler, source } of services) {
                 try {
                     registry.register(handler);
                     logInfo(`[services] loaded plugin service "${handler.id}" from ${source.pluginName ?? source.path}`);
-                    added++;
                 } catch (err) {
                     logWarn(`[services] failed to register plugin service "${handler.id}": ${err}`);
                 }
@@ -240,23 +242,10 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             for (const { path, error } of errors) {
                 logWarn(`[services] plugin service load error at ${path}: ${error}`);
             }
-            // Re-announce so any connected viewers get the updated service list
-            if (added > 0 && socket.connected) {
-                (socket as any).emit("service_announce", {
-                    serviceIds: registry.getAll().map((s) => s.id),
-                });
-                logInfo(`[services] re-announced ${registry.getAll().length} services (${added} plugins loaded)`);
-                // Init the newly-loaded plugin services against the live socket
-                for (const { handler } of services) {
-                    try {
-                        handler.init(socket, { isShuttingDown: () => isShuttingDown });
-                    } catch (err) {
-                        logWarn(`[services] failed to init plugin service "${handler.id}": ${err}`);
-                    }
-                }
-            }
         }).catch(err => {
             logWarn(`[services] plugin service discovery failed: ${err}`);
+        }).finally(() => {
+            resolvePluginServices!();
         });
 
         const socket: Socket<RunnerServerToClientEvents, RunnerClientToServerEvents> = io(
@@ -274,8 +263,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             },
         );
 
-        // Initialize all services — registers socket event handlers
-        registry.initAll(socket, { isShuttingDown: () => isShuttingDown });
+        // Service init happens in runner_registered after plugin discovery completes.
 
         logInfo(`connecting to relay at ${sioUrl}/runner…`);
 
@@ -347,18 +335,25 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
 
         // ── Registration confirmation ─────────────────────────────────────
 
-        socket.on("runner_registered", (data: any) => {
+        socket.on("runner_registered", async (data: any) => {
             runnerId = data.runnerId;
             if (runnerId !== identity.runnerId) {
                 logWarn(`server assigned unexpected ID ${runnerId} (expected ${identity.runnerId})`);
             }
             logInfo(`registered as ${runnerId}`);
 
-            // Announce available services AFTER registration is confirmed —
-            // runnerId is now set on the server, so the announce won't be dropped.
-            (socket as any).emit("service_announce", {
-                serviceIds: registry.getAll().map((s) => s.id),
-            });
+            // Wait for plugin service discovery to finish, then init ALL services
+            // (built-in + plugins) and announce the full list.
+            // On reconnect, dispose first to clear stale listeners from the old socket.
+            await pluginServicesReady;
+            if (servicesInitialized) {
+                registry.disposeAll();
+            }
+            servicesInitialized = true;
+            registry.initAll(socket, { isShuttingDown: () => isShuttingDown });
+            const allServiceIds = registry.getAll().map((s) => s.id);
+            logInfo(`[services] initialized ${allServiceIds.length} services: ${allServiceIds.join(", ")}`);
+            (socket as any).emit("service_announce", { serviceIds: allServiceIds });
 
             // Re-adopt orphaned sessions that survived a daemon restart.
             // Their worker processes are still running and connected to the relay.
