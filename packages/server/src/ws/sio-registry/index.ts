@@ -46,6 +46,7 @@ export {
     getLocalRunnerSocket,
     removeRunner,
     touchRunner,
+    sweepOrphanedRunners,
 } from "./runners.js";
 export type { TerminalSpawnOpts } from "./terminals.js";
 export {

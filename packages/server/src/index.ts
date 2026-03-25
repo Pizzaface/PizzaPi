@@ -5,7 +5,7 @@ import {
     pruneExpiredRelaySessions,
 } from "./sessions/store.js";
 import { deleteRelayEventCaches, initializeRelayRedisCache } from "./sessions/redis.js";
-import { sweepExpiredSessions } from "./ws/sio-registry.js";
+import { sweepExpiredSessions, sweepOrphanedRunners } from "./ws/sio-registry.js";
 import { sweepExpiredAttachments, rehydrateExtractedAttachments } from "./attachments/store.js";
 import { runAllMigrations } from "./migrations.js";
 
@@ -306,6 +306,19 @@ setInterval(() => {
 }, sweepMs);
 
 console.log(`Relay session maintenance enabled (every ${Math.round(sweepMs / 1000)}s).`);
+
+// ── Post-startup orphaned runner sweep ───────────────────────────────────────
+// After a graceful shutdown, runner Redis entries are intentionally preserved
+// so reconnecting runners find their state intact.  But if the previous
+// server was stopped permanently (not restarted), or a runner died, those
+// entries become ghosts.  Give runners a 90-second grace period to reconnect,
+// then prune any that didn't.
+const RUNNER_RECONNECT_GRACE_MS = 90_000;
+setTimeout(() => {
+    void sweepOrphanedRunners().catch((err) => {
+        console.error("[startup] Failed to sweep orphaned runners:", err);
+    });
+}, RUNNER_RECONNECT_GRACE_MS);
 
 // ── Graceful shutdown ────────────────────────────────────────────────────────
 // Registered after httpServer and io are initialized so there's no TDZ risk

@@ -402,3 +402,33 @@ export async function removeRunner(runnerId: string): Promise<void> {
 export async function touchRunner(runnerId: string): Promise<void> {
     await refreshRunnerTTL(runnerId);
 }
+
+/**
+ * Sweep runners in Redis that have no live Socket.IO connection on this
+ * server node.  This catches "ghost" runners preserved during a graceful
+ * shutdown when the runner never reconnected — e.g. the runner process
+ * was also stopped, or the server was shut down permanently rather than
+ * restarted.
+ *
+ * Called once after a startup grace period to give runners time to
+ * reconnect before being pruned.
+ */
+export async function sweepOrphanedRunners(): Promise<void> {
+    const allRunners = await getAllRunners();
+    let pruned = 0;
+    for (const runner of allRunners) {
+        if (!localRunnerSockets.has(runner.runnerId)) {
+            console.log(`[sio-registry] Pruning orphaned runner ${runner.runnerId} (${runner.name ?? "unnamed"}) — not reconnected after restart`);
+            await deleteRunnerState(runner.runnerId);
+            void broadcastToRunnersNs(
+                "runner_removed",
+                { runnerId: runner.runnerId },
+                runner.userId ?? undefined,
+            );
+            pruned++;
+        }
+    }
+    if (pruned > 0) {
+        console.log(`[sio-registry] Pruned ${pruned} orphaned runner(s)`);
+    }
+}
