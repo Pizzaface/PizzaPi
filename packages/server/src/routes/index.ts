@@ -17,12 +17,14 @@ import { handleChatRoute } from "./chat.js";
 import { handlePushRoute } from "./push.js";
 import { handleSettingsRoute } from "./settings.js";
 import { handleMcpOAuthRoute } from "./mcp-oauth.js";
+import { handleTunnelRoute } from "./tunnel.js";
 import type { RouteHandler } from "./types.js";
 
 /** All domain routers, tried in order. */
 const routers: RouteHandler[] = [
     handleMcpOAuthRoute,   // Before auth — OAuth callback must be unauthenticated
     handleAuthRoute,
+    handleTunnelRoute,     // Before runners — /api/tunnel/* is session-scoped, not runner-scoped
     handleRunnersRoute,
     handleSessionsRoute,
     handleAttachmentsRoute,

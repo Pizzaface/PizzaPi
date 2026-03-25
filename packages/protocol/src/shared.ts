@@ -101,3 +101,35 @@ export interface ServiceEnvelope {
   requestId?: string;
   payload: unknown;
 }
+
+// ── Tunnel service types ──────────────────────────────────────────────────────
+
+/** Information about an exposed tunnel port. */
+export interface TunnelInfo {
+  port: number;
+  name?: string;
+  /** Relay tunnel URL fragment — actual URL is /api/tunnel/{sessionId}/{port}/ */
+  url: string;
+}
+
+/** Server → Runner: HTTP proxy request forwarded from an authenticated viewer. */
+export interface TunnelRequestData {
+  requestId: string;
+  port: number;
+  method: string;
+  path: string;
+  headers: Record<string, string>;
+  /** Request body, base64-encoded. Absent for bodyless methods (GET, HEAD, DELETE). */
+  body?: string;
+}
+
+/** Runner → Server: HTTP proxy response from the local service. */
+export interface TunnelResponseData {
+  requestId: string;
+  status: number;
+  headers: Record<string, string>;
+  /** Response body, base64-encoded. */
+  body: string;
+  /** Set when the proxy itself failed (connection refused, timeout, etc.). */
+  error?: string;
+}
