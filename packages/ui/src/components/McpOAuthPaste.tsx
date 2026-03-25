@@ -15,8 +15,8 @@ interface McpOAuthPasteProps {
   serverName: string;
   authUrl: string;
   nonce: string;
-  /** Returns true if the code was sent, false if delivery failed (e.g. disconnected). */
-  onSubmit: (nonce: string, code: string, state?: string) => boolean;
+  /** Resolves with delivery status after the server confirms receipt. */
+  onSubmit: (nonce: string, code: string, state?: string) => Promise<{ ok: boolean; error?: string }>;
   onDismiss: (serverName: string) => void;
   /** Disable this MCP server (removes it from the active config). */
   onDisable?: (serverName: string) => void;
@@ -42,18 +42,22 @@ export function McpOAuthPaste({
     }
   }, [step]);
 
-  const handleSubmit = () => {
+  const [submitting, setSubmitting] = React.useState(false);
+
+  const handleSubmit = async () => {
     const { code, state } = extractOAuthParams(value);
     if (!code) {
       setError("Couldn't find an auth code in that URL. Copy the full URL from your browser's address bar — it should contain \"code=\".");
       return;
     }
-    const sent = onSubmit(nonce, code, state ?? undefined);
-    if (sent) {
-      setError(null);
+    setSubmitting(true);
+    setError(null);
+    const result = await onSubmit(nonce, code, state ?? undefined);
+    setSubmitting(false);
+    if (result.ok) {
       setSubmitted(true);
     } else {
-      setError("Not connected to the server. Wait for reconnection and try again.");
+      setError(result.error ?? "Failed to deliver auth code to the runner. Try again.");
     }
   };
 
@@ -71,13 +75,16 @@ export function McpOAuthPaste({
     if (code) {
       e.preventDefault();
       setValue(pasted);
-      const sent = onSubmit(nonce, code, state ?? undefined);
-      if (sent) {
-        setError(null);
-        setSubmitted(true);
-      } else {
-        setError("Not connected to the server. Wait for reconnection and try again.");
-      }
+      setSubmitting(true);
+      setError(null);
+      onSubmit(nonce, code, state ?? undefined).then((result) => {
+        setSubmitting(false);
+        if (result.ok) {
+          setSubmitted(true);
+        } else {
+          setError(result.error ?? "Failed to deliver auth code to the runner. Try again.");
+        }
+      });
     }
   };
 
@@ -168,9 +175,9 @@ export function McpOAuthPaste({
           <Button
             size="sm"
             onClick={handleSubmit}
-            disabled={!value.trim() || step === 1}
+            disabled={!value.trim() || step === 1 || submitting}
           >
-            Submit
+            {submitting ? "Sending…" : "Submit"}
           </Button>
         </div>
         {error && (

@@ -161,8 +161,8 @@ export interface SessionViewerProps {
   runnerInfo?: import("@pizzapi/protocol").RunnerInfo | null;
   /** Pending MCP OAuth paste prompts (localhost redirect not reachable remotely). */
   mcpOAuthPastes?: Array<{ serverName: string; authUrl: string; nonce: string; ts: number }>;
-  /** Submit a pasted OAuth callback URL code to the runner. Returns true if sent. */
-  onMcpOAuthPaste?: (nonce: string, code: string, state?: string) => boolean;
+  /** Submit a pasted OAuth callback URL code to the runner. Resolves with delivery status. */
+  onMcpOAuthPaste?: (nonce: string, code: string, state?: string) => Promise<{ ok: boolean; error?: string }>;
   /** Dismiss an MCP OAuth paste prompt. */
   onMcpOAuthPasteDismiss?: (serverName: string) => void;
   /** Disable an MCP server (from OAuth paste prompt). */

@@ -3922,11 +3922,14 @@ export function App() {
                     mcpOAuthPastes={mcpOAuthPastes}
                     onMcpOAuthPaste={(nonce, code, state) => {
                       const socket = viewerWsRef.current;
-                      if (socket?.connected) {
-                        socket.emit("mcp_oauth_paste", { nonce, code, state });
-                        return true;
-                      }
-                      return false;
+                      if (!socket?.connected) return Promise.resolve({ ok: false, error: "Not connected" });
+                      return new Promise<{ ok: boolean; error?: string }>((resolve) => {
+                        const timeout = setTimeout(() => resolve({ ok: false, error: "Delivery timed out" }), 5000);
+                        socket.emit("mcp_oauth_paste", { nonce, code, state }, (result: any) => {
+                          clearTimeout(timeout);
+                          resolve(result && typeof result === "object" ? result : { ok: false, error: "Invalid response" });
+                        });
+                      });
                     }}
                     onMcpOAuthPasteDismiss={(serverName) => {
                       setMcpOAuthPastes((prev) => prev.filter((p) => p.serverName !== serverName));
