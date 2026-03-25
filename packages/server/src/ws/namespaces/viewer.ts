@@ -515,8 +515,10 @@ export function registerViewerNamespace(io: SocketIOServer): void {
 
         // Send cached service_announce so the viewer knows which runner
         // services are available without waiting for a fresh announce.
+        console.log(`[sio/viewer] service_announce check: runnerId=${freshSession.runnerId ?? "null"}`);
         if (freshSession.runnerId) {
             const serviceIds = getRunnerServiceIds(freshSession.runnerId);
+            console.log(`[sio/viewer] service_announce: runnerId=${freshSession.runnerId}, cached serviceIds=[${serviceIds.join(",")}]`);
             if (serviceIds.length > 0) {
                 socket.emit("service_announce", { serviceIds });
             }

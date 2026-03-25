@@ -3165,7 +3165,7 @@ export function App() {
     && !!activeSessionInfo?.runnerId && !!activeSessionInfo?.cwd;
 
   // Runner service panels — dynamically discovered
-  const availableServices = useRunnerServices();
+  const availableServices = useRunnerServices(viewerSocket);
   const { activePanelId: activeServicePanel, togglePanel: toggleServicePanel, closePanel: closeServicePanel } = useServicePanelState();
 
   if (isPending) {
