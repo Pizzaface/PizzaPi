@@ -18,6 +18,83 @@ import { emitPlanPending, emitPlanCleared } from "./remote-meta-events.js";
 
 const PLAN_MODE_TOOL_NAME = "plan_mode";
 
+// ── Exported pure helpers (testable at module scope) ─────────────────────────
+
+/** Visible display width — strips ANSI escape codes and counts wide (astral) chars as 2. */
+export const vlen = (s: string): number => {
+    const stripped = s.replace(/\x1b\[[0-9;]*m/g, "");
+    let len = 0;
+    for (const ch of stripped) {
+        len += (ch.codePointAt(0) ?? 0) > 0xffff ? 2 : 1;
+    }
+    return len;
+};
+
+/**
+ * Split a single word into chunks that are each at most maxWidth characters.
+ * Used internally by wrap() to prevent single words from silently overflowing.
+ */
+const splitLongWord = (word: string, maxWidth: number): string[] => {
+    if (word.length <= maxWidth) return [word];
+    const chunks: string[] = [];
+    let i = 0;
+    while (i < word.length) {
+        chunks.push(word.slice(i, i + maxWidth));
+        i += maxWidth;
+    }
+    return chunks;
+};
+
+/**
+ * Word-wrap plain text at maxWidth characters.
+ * Words that individually exceed maxWidth are split into fixed-width chunks
+ * so they never silently overflow the box border.
+ */
+export const wrap = (text: string, maxWidth: number): string[] => {
+    if (maxWidth <= 0) return [text];
+    const words = text.split(" ");
+    const out: string[] = [];
+    let cur = "";
+    for (const word of words) {
+        // Split any word that is wider than the column before fitting
+        const parts = word.length > maxWidth ? splitLongWord(word, maxWidth) : [word];
+        for (const part of parts) {
+            if (!cur) { cur = part; continue; }
+            if (cur.length + 1 + part.length <= maxWidth) { cur += " " + part; }
+            else { out.push(cur); cur = part; }
+        }
+    }
+    if (cur) out.push(cur);
+    return out.length ? out : [""];
+};
+
+/**
+ * Compute the inner content width for the plan-mode box.
+ *
+ * Grows with the title up to a hard cap of min(termCols − 4, 120) so the box
+ * never overflows the terminal on long titles or wide displays.
+ *
+ * @param titleLen  Length of the plan title (used as a sizing hint).
+ * @param termCols  Terminal column count (defaults to process.stdout.columns or 80).
+ */
+export const computeBoxWidth = (titleLen: number, termCols?: number): number => {
+    const cols = termCols ?? (process.stdout.columns || 80);
+    const upper = Math.min(cols - 4, 120);
+    return Math.max(62, Math.min(titleLen + 16, upper));
+};
+
+/**
+ * Build a two-column option row for the action-choice footer.
+ *
+ * @param o1        Left option string (may contain ANSI escapes).
+ * @param o2        Right option string (may contain ANSI escapes).
+ * @param col1Width Target visible width for the left column (default 30).
+ */
+export const makeOptRow = (o1: string, o2: string, col1Width = 30): string => {
+    const gap = " ".repeat(Math.max(2, col1Width - vlen(o1)));
+    return "  " + o1 + gap + o2;
+};
+
 // ── Pending plan mode management ─────────────────────────────────────────────
 
 export function consumePendingPlanModeFromWeb(rctx: RelayContext, text: string): boolean {
@@ -142,20 +219,71 @@ async function askPlanMode(
         }
 
         if (canAskViaTui) {
-            const displayParts: string[] = [`📋 Plan: ${title}`];
-            if (description) displayParts.push(description);
+            // ── ANSI style helpers ──────────────────────────────────────────
+            const bold = (s: string) => `\x1b[1m${s}\x1b[22m`;
+            const accent = (s: string) => `\x1b[38;2;232;180;248m${s}\x1b[39m`;
+            const dimText = (s: string) => `\x1b[2m${s}\x1b[22m`;
+            const bc = (s: string) => `\x1b[38;2;196;167;224m${s}\x1b[39m`;
+
+            // ── Box dimensions ──────────────────────────────────────────────
+            // INNER = content width between the "│ " and " │" borders.
+            // Capped at min(termCols − 4, 120) to prevent unbounded growth on
+            // long titles or wide terminals.
+            const INNER = computeBoxWidth(title.length);
+            const HBAR = "─".repeat(INNER + 2); // fills between corner chars
+
+            const topBar = bc("╭" + HBAR + "╮");
+            const midBar = bc("├" + HBAR + "┤");
+            const botBar = bc("╰" + HBAR + "╯");
+
+            /** Wrap content in border chars, padded to INNER visible chars. */
+            const row = (content: string): string => {
+                const pad = " ".repeat(Math.max(0, INNER - vlen(content)));
+                return bc("│") + " " + content + pad + " " + bc("│");
+            };
+            const blankRow = () => row("");
+
+            // ── Build display lines ─────────────────────────────────────────
+            const displayLines: string[] = [];
+
+            displayLines.push(topBar);
+            displayLines.push(row("📋  " + accent(bold(title))));
+
+            if (description) {
+                displayLines.push(blankRow());
+                for (const dl of wrap(description, INNER - 4)) {
+                    displayLines.push(row("  " + dimText(dl)));
+                }
+            }
+
             if (steps.length > 0) {
-                displayParts.push("");
+                displayLines.push(blankRow());
                 steps.forEach((s, i) => {
-                    displayParts.push(`  ${i + 1}. ${s.title}`);
-                    if (s.description) displayParts.push(`     ${s.description}`);
+                    displayLines.push(row("  " + accent(bold(`${i + 1}.`)) + " " + bold(s.title)));
+                    if (s.description) {
+                        for (const dl of wrap(s.description, INNER - 8)) {
+                            displayLines.push(row("     " + dimText(dl)));
+                        }
+                    }
                 });
             }
-            displayParts.push("");
-            displayParts.push("Options: (1) Clear Context & Begin, (2) Begin, (3) Suggest Edit, (4) Cancel");
+
+            displayLines.push(blankRow());
+            displayLines.push(midBar);
+
+            // Options in two-column layout (COL1 = 30 default matches makeOptRow default)
+            displayLines.push(row(makeOptRow(
+                accent("(1)") + " Clear Context & Begin",
+                accent("(2)") + " Begin",
+            )));
+            displayLines.push(row(makeOptRow(
+                accent("(3)") + " Suggest Edit",
+                accent("(4)") + " Cancel",
+            )));
+            displayLines.push(botBar);
 
             void ctx.ui
-                .input(displayParts.join("\n"), "Enter choice (1-4) or edit suggestion…", { signal: localAbort.signal })
+                .input(displayLines.join("\n"), "Enter choice (1-4) or edit suggestion…", { signal: localAbort.signal })
                 .then((value) => {
                     const answer = value?.trim();
                     if (!answer) {
