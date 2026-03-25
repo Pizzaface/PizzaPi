@@ -1122,6 +1122,7 @@ export const remoteExtension: ExtensionFactory = (pi) => {
     // ── MCP events ────────────────────────────────────────────────────────
 
     pi.events.on("mcp:auth_required", (data: unknown) => rctx.forwardEvent(data));
+    pi.events.on("mcp:auth_paste_required", (data: unknown) => rctx.forwardEvent(data));
     pi.events.on("mcp:auth_complete", (data: unknown) => rctx.forwardEvent(data));
 
     pi.events.on("mcp:startup_report", (report: unknown) => {
