@@ -6,6 +6,7 @@
  */
 import React, { useState, useCallback } from "react";
 import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { X } from "lucide-react";
 import { SERVICE_PANELS, type ServicePanelDef } from "./registry";
 
@@ -29,20 +30,23 @@ export function ServicePanelButtons({
     return (
         <>
             {visiblePanels.map(panel => (
-                <Button
-                    key={panel.serviceId}
-                    className={`h-7 w-7 ${
-                        activePanelId === panel.serviceId ? "bg-accent text-accent-foreground" : ""
-                    }`}
-                    onClick={() => onTogglePanel(panel.serviceId)}
-                    size="icon"
-                    type="button"
-                    variant="outline"
-                    title={`Toggle ${panel.label}`}
-                    aria-label={`Toggle ${panel.label}`}
-                >
-                    {panel.icon}
-                </Button>
+                <Tooltip key={panel.serviceId}>
+                    <TooltipTrigger asChild>
+                        <Button
+                            className={`h-7 w-7 ${
+                                activePanelId === panel.serviceId ? "bg-accent text-accent-foreground" : ""
+                            }`}
+                            onClick={() => onTogglePanel(panel.serviceId)}
+                            size="icon"
+                            type="button"
+                            variant="outline"
+                            aria-label={`Toggle ${panel.label}`}
+                        >
+                            {panel.icon}
+                        </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>{panel.label}</TooltipContent>
+                </Tooltip>
             ))}
         </>
     );
