@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionFactory } from "@mariozechner/pi-coding-agent";
+import { Text } from "@mariozechner/pi-tui";
 import { loadConfig } from "../config.js";
 import { getRelaySessionId } from "./remote.js";
 import { buildProviderUsage, refreshAllUsage } from "./remote-provider-usage.js";
@@ -224,8 +225,39 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
             }
         },
 
-        renderCall: () => silent,
-        renderResult: () => silent,
+        renderCall: (args: any, theme: any) => {
+            const model = args.model ? ` [${args.model.provider}/${args.model.id}]` : "";
+            const rawCwd = args.cwd ?? "";
+            const cwdDisplay = rawCwd ? ` in ${rawCwd.split("/").slice(-2).join("/")}` : "";
+            return new Text(
+                theme.fg("accent", "⟳") + " " +
+                theme.fg("muted", "spawning session") +
+                theme.fg("dim", model + cwdDisplay),
+                0, 0
+            );
+        },
+        renderResult: (result: any, _opts: any, theme: any) => {
+            try {
+                const text: string = result?.content?.[0]?.text ?? "";
+                if (text.startsWith("Error:") || text.startsWith("{\"error\"")) {
+                    const msg = text.length > 80 ? text.slice(0, 77) + "..." : text;
+                    return new Text(theme.fg("error", "✗ ") + theme.fg("muted", msg), 0, 0);
+                }
+                const data = JSON.parse(text);
+                const rawId: string = data.sessionId ?? "";
+                const sessionId = rawId.length > 8 ? rawId.slice(-8) : rawId || "?";
+                const url: string = data.shareUrl ? " " + data.shareUrl : "";
+                return new Text(
+                    theme.fg("success", "✓") + " " +
+                    theme.fg("muted", "session ") +
+                    theme.fg("accent", sessionId) +
+                    theme.fg("dim", url),
+                    0, 0
+                );
+            } catch {
+                return new Text(theme.fg("success", "✓ ") + theme.fg("muted", "session spawned"), 0, 0);
+            }
+        },
     });
 
     pi.registerTool({
