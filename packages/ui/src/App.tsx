@@ -54,7 +54,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Sun, Moon, LogOut, KeyRound, X, User, ChevronsUpDown, PanelLeftOpen, HardDrive, Bell, BellOff, Check, Plus, TerminalIcon, FolderTree, Keyboard, EyeOff, Lock, Network } from "lucide-react";
+import { Sun, Moon, LogOut, KeyRound, X, User, ChevronsUpDown, PanelLeftOpen, HardDrive, Bell, BellOff, Check, Plus, TerminalIcon, FolderTree, Keyboard, EyeOff, Lock, Network, Activity } from "lucide-react";
 import { NotificationToggle, MobileNotificationMenuItem } from "@/components/NotificationToggle";
 import { HapticsToggle, MobileHapticsMenuItem } from "@/components/HapticsToggle";
 import { UsageIndicator, type ProviderUsageMap } from "@/components/UsageIndicator";
@@ -63,6 +63,7 @@ import { FileExplorer } from "@/components/FileExplorer";
 import { CombinedPanel } from "@/components/CombinedPanel";
 import { ViewerSocketContext } from "@/lib/viewer-socket-context";
 import { TunnelPanel } from "@/components/TunnelPanel";
+import { SystemMonitorPanel } from "@/components/SystemMonitorPanel";
 import {
   ModelSelector,
   ModelSelectorContent,
@@ -3965,6 +3966,12 @@ export function App() {
                           <TunnelPanel sessionId={activeSessionId} />
                         ),
                       }] : []),
+                      {
+                        id: "system-monitor",
+                        label: "System",
+                        icon: <Activity className="size-3.5" />,
+                        content: <SystemMonitorPanel />,
+                      },
                     ]}
                   />
                 </div>
