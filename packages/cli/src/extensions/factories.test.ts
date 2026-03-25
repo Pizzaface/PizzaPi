@@ -19,6 +19,7 @@ import { triggersExtension } from "./triggers/extension.js";
 import { sandboxEventsExtension } from "./sandbox-events.js";
 import { pizzapiTitleExtension } from "./pizzapi-title.js";
 import { initialPromptExtension } from "./initial-prompt.js";
+import { pizzapiHeaderExtension } from "./pizzapi-header.js";
 
 const CORE_EXTENSIONS: ExtensionFactory[] = [
     triggersExtension,  // Must be before remoteExtension (shutdown ordering)
@@ -33,6 +34,7 @@ const CORE_EXTENSIONS: ExtensionFactory[] = [
     planModeToggleExtension,
     sandboxEventsExtension,
     pizzapiTitleExtension,
+    pizzapiHeaderExtension,
 ];
 
 /**
