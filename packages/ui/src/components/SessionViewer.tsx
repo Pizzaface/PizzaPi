@@ -79,6 +79,7 @@ import { AtMentionPopover } from "@/components/AtMentionPopover";
 import type { Entry as AtMentionEntry } from "@/hooks/useAtMentionFiles";
 import { McpToggleContext, type McpToggleHandler } from "@/components/session-viewer/McpToggleContext";
 import { isTriggerMessage, renderTriggerCard } from "@/components/session-viewer/cards/InterAgentCards";
+import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 
 
 export type { RelayMessage } from "@/components/session-viewer/types";
@@ -137,6 +138,8 @@ export interface SessionViewerProps {
   onToggleFileExplorer?: () => void;
   /** Whether to show the file explorer button */
   showFileExplorerButton?: boolean;
+  /** Extra buttons to render in the header bar (e.g. service panel toggles) */
+  extraHeaderButtons?: React.ReactNode;
   /** Current agent todo list */
   todoList?: TodoItem[];
   /** Whether plan mode (read-only exploration) is currently active */
@@ -552,7 +555,7 @@ function SessionSkeleton() {
   );
 }
 
-export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, pendingPlan, pluginTrustPrompt, onPluginTrustResponse, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, isCompacting, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onEditQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], planModeEnabled, runnerId, sessionCwd, onAppendSystemMessage, onSpawnAgentSession, onTriggerResponse, onQuestionDismiss, onPlanDismiss, onDuplicateSession, runnerInfo, mcpOAuthPastes, onMcpOAuthPaste, onMcpOAuthPasteDismiss, onMcpServerDisable }: SessionViewerProps) {
+export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, pendingPlan, pluginTrustPrompt, onPluginTrustResponse, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, isCompacting, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onEditQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], planModeEnabled, runnerId, sessionCwd, onAppendSystemMessage, onSpawnAgentSession, onTriggerResponse, onQuestionDismiss, onPlanDismiss, onDuplicateSession, runnerInfo, extraHeaderButtons, mcpOAuthPastes, onMcpOAuthPaste, onMcpOAuthPasteDismiss, onMcpServerDisable }: SessionViewerProps) {
   const [input, setInput] = React.useState("");
   // Per-session draft storage so switching sessions preserves unsent text
   const draftsRef = React.useRef<Map<string, string>>(new Map());
@@ -1571,94 +1574,115 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
               </span>
             )}
             {showTerminalButton && onToggleTerminal && (
-              <Button
-                className="h-7 w-7 sm:h-7 sm:w-auto sm:px-2.5 sm:text-[0.7rem]"
-                onClick={onToggleTerminal}
-                size="icon"
-                type="button"
-                variant="outline"
-                title="Toggle terminal"
-                aria-label="Toggle terminal"
-              >
-                <TerminalIcon className="size-3.5" />
-                <span className="hidden sm:inline ml-1">Terminal</span>
-              </Button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    className="h-7 w-7"
+                    onClick={onToggleTerminal}
+                    size="icon"
+                    type="button"
+                    variant="outline"
+                    aria-label="Toggle terminal"
+                  >
+                    <TerminalIcon className="size-3.5" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Terminal</TooltipContent>
+              </Tooltip>
             )}
             {showFileExplorerButton && onToggleFileExplorer && (
-              <Button
-                className="h-7 w-7 sm:h-7 sm:w-auto sm:px-2.5 sm:text-[0.7rem]"
-                onClick={onToggleFileExplorer}
-                size="icon"
-                type="button"
-                variant="outline"
-                title="Toggle file explorer"
-                aria-label="Toggle file explorer"
-              >
-                <FolderTree className="size-3.5" />
-                <span className="hidden sm:inline ml-1">Files</span>
-              </Button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    className="h-7 w-7"
+                    onClick={onToggleFileExplorer}
+                    size="icon"
+                    type="button"
+                    variant="outline"
+                    aria-label="Toggle file explorer"
+                  >
+                    <FolderTree className="size-3.5" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Files</TooltipContent>
+              </Tooltip>
             )}
-            <ConversationExport
-              messages={sortedMessages}
-              filename={`session-${sessionId || "export"}.md`}
-              className="static top-auto right-auto h-7 w-7 sm:h-7 sm:w-auto sm:px-2.5 sm:text-[0.7rem] border-border bg-background hover:bg-accent hover:text-accent-foreground rounded-md"
-              variant="outline"
-              size="icon"
-            />
+            {extraHeaderButtons}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <ConversationExport
+                  messages={sortedMessages}
+                  filename={`session-${sessionId || "export"}.md`}
+                  className="static top-auto right-auto h-7 w-7 border-border bg-background hover:bg-accent hover:text-accent-foreground rounded-md"
+                  variant="outline"
+                  size="icon"
+                />
+              </TooltipTrigger>
+              <TooltipContent>Export</TooltipContent>
+            </Tooltip>
             {onDuplicateSession && (
-              <Button
-                className="h-7 w-7 sm:h-7 sm:w-auto sm:px-2.5 sm:text-[0.7rem]"
-                onClick={onDuplicateSession}
-                size="icon"
-                type="button"
-                variant="outline"
-                title="Duplicate session (same runner & directory)"
-                aria-label="Duplicate session"
-              >
-                <Copy className="size-3.5" />
-                <span className="hidden sm:inline ml-1">Duplicate</span>
-              </Button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    className="h-7 w-7"
+                    onClick={onDuplicateSession}
+                    size="icon"
+                    type="button"
+                    variant="outline"
+                    aria-label="Duplicate session"
+                  >
+                    <Copy className="size-3.5" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Duplicate</TooltipContent>
+              </Tooltip>
             )}
-            <Button
-              className="h-7 w-7 sm:h-7 sm:w-auto sm:px-2.5 sm:text-[0.7rem]"
-              disabled={!onExec}
-              onClick={() => {
-                if (!onExec || !sessionId) return;
-                if (window.innerWidth < 640) {
-                  setShowEndSessionDialog(true);
-                } else {
-                  onExec({ type: "exec", id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, command: "end_session" });
-                }
-              }}
-              size="icon"
-              type="button"
-              variant="destructive"
-              title="End Session"
-              aria-label="End session"
-            >
-              <OctagonX className="size-3.5" />
-              <span className="hidden sm:inline ml-1">End</span>
-            </Button>
-            <Button
-              className="h-7 w-7 sm:h-7 sm:w-auto sm:px-2.5 sm:text-[0.7rem]"
-              disabled={!onExec}
-              onClick={() => {
-                if (!onExec) return;
-                if (window.innerWidth < 640) {
-                  setShowClearDialog(true);
-                } else {
-                  onExec({ type: "exec", id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, command: "new_session" });
-                }
-              }}
-              size="icon"
-              type="button"
-              variant="outline"
-              title="New conversation (/new)"
-              aria-label="Clear conversation"
-            >
-              <Plus className="size-3.5" />
-              <span className="hidden sm:inline ml-1">Clear</span>
-            </Button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  className="h-7 w-7"
+                  disabled={!onExec}
+                  onClick={() => {
+                    if (!onExec || !sessionId) return;
+                    if (window.innerWidth < 640) {
+                      setShowEndSessionDialog(true);
+                    } else {
+                      onExec({ type: "exec", id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, command: "end_session" });
+                    }
+                  }}
+                  size="icon"
+                  type="button"
+                  variant="destructive"
+                  aria-label="End session"
+                >
+                  <OctagonX className="size-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>End Session</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  className="h-7 w-7"
+                  disabled={!onExec}
+                  onClick={() => {
+                    if (!onExec) return;
+                    if (window.innerWidth < 640) {
+                      setShowClearDialog(true);
+                    } else {
+                      onExec({ type: "exec", id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, command: "new_session" });
+                    }
+                  }}
+                  size="icon"
+                  type="button"
+                  variant="outline"
+                  aria-label="New conversation"
+                >
+                  <Plus className="size-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>New Conversation</TooltipContent>
+            </Tooltip>
           </div>
         </div>
       )}

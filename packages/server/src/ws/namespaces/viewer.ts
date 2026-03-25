@@ -13,7 +13,14 @@ import type {
     ViewerInterServerEvents,
     ViewerSocketData,
 } from "@pizzapi/protocol";
+
+// Inline definition mirrors packages/protocol/src/shared.ts ServiceEnvelope.
+// Using a local alias avoids a cross-worktree symlink resolution issue where
+// node_modules/@pizzapi/protocol points to the main branch's dist, not this
+// worktree's updated dist.
+type ServiceEnvelope = { serviceId: string; type: string; requestId?: string; payload: unknown };
 import { sessionCookieAuthMiddleware } from "./auth.js";
+import { getRunnerServiceIds } from "./runner.js";
 import {
     getSharedSession,
     addViewer,
@@ -23,6 +30,7 @@ import {
     getLocalTuiSocket,
     emitToRelaySession,
     emitToRelaySessionVerified,
+    emitToRunner,
 } from "../sio-registry.js";
 import { getPendingChunkedSnapshot } from "./relay/index.js";
 import { getPersistedRelaySessionSnapshot } from "../../sessions/store.js";
@@ -472,6 +480,24 @@ export function registerViewerNamespace(io: SocketIOServer): void {
             }
         });
 
+        // ── service_message — viewer → runner: forward service envelope ──────
+        // Viewers send service_message to interact with runner services
+        // (e.g. request file listings, git status, etc.) without the relay
+        // needing to understand service-specific semantics.
+        // IMPORTANT: service handlers are registered on the /runner namespace
+        // socket, NOT on the /relay TUI socket. emitToRelaySession would target
+        // the TUI worker (/relay namespace) which does NOT handle service_message
+        // events — all viewer-initiated service requests would be silently dropped.
+        // We must route to the runner via emitToRunner(runnerId, ...) instead.
+        socket.on("service_message", async (envelope: ServiceEnvelope) => {
+            const currentSession = await getSharedSession(sessionId);
+            if (!currentSession?.collabMode) return;
+            const runnerId = currentSession.runnerId;
+            if (!runnerId) return;
+            // Attach sessionId so the runner service knows which session to respond to
+            emitToRunner(runnerId, "service_message", { ...envelope, sessionId });
+        });
+
         // ── disconnect ───────────────────────────────────────────────────────
         socket.on("disconnect", async (reason) => {
             console.log(`[sio/viewer] disconnected: ${socket.id} sessionId=${sessionId} (${reason})`);
@@ -522,6 +548,17 @@ export function registerViewerNamespace(io: SocketIOServer): void {
             lastHeartbeatAt: freshSession.lastHeartbeatAt,
             sessionName: freshSession.sessionName,
         });
+
+        // Send cached service_announce so the viewer knows which runner
+        // services are available without waiting for a fresh announce.
+        console.log(`[sio/viewer] service_announce check: runnerId=${freshSession.runnerId ?? "null"}`);
+        if (freshSession.runnerId) {
+            const serviceIds = getRunnerServiceIds(freshSession.runnerId);
+            console.log(`[sio/viewer] service_announce: runnerId=${freshSession.runnerId}, cached serviceIds=[${serviceIds.join(",")}]`);
+            if (serviceIds.length > 0) {
+                socket.emit("service_announce", { serviceIds });
+            }
+        }
 
         // Emit an immediate heartbeat snapshot while the runner pushes a fresh
         // session_active in response to "connected".

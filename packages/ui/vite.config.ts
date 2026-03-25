@@ -82,6 +82,16 @@ export default defineConfig({
                 navigateFallbackDenylist: [/^\/api\//],
                 runtimeCaching: [
                     {
+                        // API calls (including tunnel proxy) always go to the network — never cache.
+                        // MUST be first: tunnel sub-resources like /api/tunnel/.../app.js
+                        // would otherwise match the .js$ StaleWhileRevalidate rule below
+                        // and get served from the PizzaPi JS cache instead of the tunneled app.
+                        // NOTE: Workbox RegExpRoute tests against url.href (full URL), not pathname,
+                        // so we match `/api/` anywhere in the URL string.
+                        urlPattern: /\/api\//,
+                        handler: "NetworkOnly",
+                    },
+                    {
                         // Cache JS chunks (including lazy shiki/mermaid language chunks)
                         // after first load, so they're available instantly on revisits.
                         urlPattern: /\.js$/,
@@ -90,11 +100,6 @@ export default defineConfig({
                             cacheName: "js-chunks",
                             expiration: { maxEntries: 200, maxAgeSeconds: 7 * 24 * 60 * 60 },
                         },
-                    },
-                    {
-                        // API calls always go to the network — never cache
-                        urlPattern: /^\/api\//,
-                        handler: "NetworkOnly",
                     },
                     {
                         // WebSocket upgrade requests — ignored by workbox automatically,

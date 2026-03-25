@@ -14,6 +14,10 @@ export type {
   RunnerPlugin,
   RunnerHook,
   Attachment,
+  ServiceEnvelope,
+  TunnelInfo,
+  TunnelRequestData,
+  TunnelResponseData,
 } from "./shared.js";
 
 // Password validation (shared across server, UI, CLI)

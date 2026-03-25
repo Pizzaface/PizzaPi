@@ -272,7 +272,16 @@ export function CombinedPanel({
                 {tab.onClose && (
                   <button
                     type="button"
-                    onClick={(e) => { e.stopPropagation(); tab.onClose!(); }}
+                    onPointerDown={(e) => {
+                      e.stopPropagation();
+                    }}
+                    onPointerUp={(e) => {
+                      e.stopPropagation();
+                    }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      tab.onClose!();
+                    }}
                     className={cn(
                       "rounded p-0.5 transition-colors ml-0.5",
                       isActive
