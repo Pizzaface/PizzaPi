@@ -8,7 +8,7 @@
 
 const isColorEnabled =
     process.stdout.isTTY === true &&
-    !process.env["NO_COLOR"] &&
+    !("NO_COLOR" in process.env) &&
     process.env["TERM"] !== "dumb";
 
 const esc = (code: string, s: string, reset: string) =>
@@ -67,7 +67,7 @@ export function usageBar(utilization: number, width = 10): string {
     let colored: string;
     if (pct < 50) {
         colored = `\x1b[32m${bar}\x1b[39m`;
-    } else if (pct < 80) {
+    } else if (pct <= 80) {
         colored = `\x1b[33m${bar}\x1b[39m`;
     } else {
         colored = `\x1b[31m${bar}\x1b[39m`;
@@ -76,7 +76,7 @@ export function usageBar(utilization: number, width = 10): string {
     let pctColored: string;
     if (pct < 50) {
         pctColored = `\x1b[32m${pctStr}\x1b[39m`;
-    } else if (pct < 80) {
+    } else if (pct <= 80) {
         pctColored = `\x1b[33m${pctStr}\x1b[39m`;
     } else {
         pctColored = `\x1b[31m${pctStr}\x1b[39m`;
@@ -93,6 +93,6 @@ export function colorPct(pct: number): string {
     const s = `${pct.toFixed(1)}%`;
     if (!isColorEnabled) return s;
     if (pct < 50) return `\x1b[32m${s}\x1b[39m`;
-    if (pct < 80) return `\x1b[33m${s}\x1b[39m`;
+    if (pct <= 80) return `\x1b[33m${s}\x1b[39m`;
     return `\x1b[31m${s}\x1b[39m`;
 }
