@@ -137,6 +137,8 @@ export interface SessionViewerProps {
   onToggleFileExplorer?: () => void;
   /** Whether to show the file explorer button */
   showFileExplorerButton?: boolean;
+  /** Extra buttons to render in the header bar (e.g. service panel toggles) */
+  extraHeaderButtons?: React.ReactNode;
   /** Current agent todo list */
   todoList?: TodoItem[];
   /** Whether plan mode (read-only exploration) is currently active */
@@ -552,7 +554,7 @@ function SessionSkeleton() {
   );
 }
 
-export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, pendingPlan, pluginTrustPrompt, onPluginTrustResponse, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, isCompacting, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onEditQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], planModeEnabled, runnerId, sessionCwd, onAppendSystemMessage, onSpawnAgentSession, onTriggerResponse, onQuestionDismiss, onPlanDismiss, onDuplicateSession, runnerInfo, mcpOAuthPastes, onMcpOAuthPaste, onMcpOAuthPasteDismiss, onMcpServerDisable }: SessionViewerProps) {
+export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, pendingPlan, pluginTrustPrompt, onPluginTrustResponse, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, isCompacting, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onEditQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], planModeEnabled, runnerId, sessionCwd, onAppendSystemMessage, onSpawnAgentSession, onTriggerResponse, onQuestionDismiss, onPlanDismiss, onDuplicateSession, runnerInfo, extraHeaderButtons, mcpOAuthPastes, onMcpOAuthPaste, onMcpOAuthPasteDismiss, onMcpServerDisable }: SessionViewerProps) {
   const [input, setInput] = React.useState("");
   // Per-session draft storage so switching sessions preserves unsent text
   const draftsRef = React.useRef<Map<string, string>>(new Map());
@@ -1598,6 +1600,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                 <span className="hidden sm:inline ml-1">Files</span>
               </Button>
             )}
+            {extraHeaderButtons}
             <ConversationExport
               messages={sortedMessages}
               filename={`session-${sessionId || "export"}.md`}
