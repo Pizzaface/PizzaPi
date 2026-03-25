@@ -7,3 +7,6 @@ export const authClient = createAuthClient({
 });
 
 export const { signIn, signUp, signOut, useSession } = authClient;
+
+/** Typed shape of the session data returned by useSession().data */
+export type BetterAuthSession = typeof authClient.$Infer.Session;
