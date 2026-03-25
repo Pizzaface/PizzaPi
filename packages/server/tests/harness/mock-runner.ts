@@ -16,6 +16,7 @@ import type {
     RunnerAgent,
     RunnerPlugin,
     RunnerHook,
+    ServicePanelInfo,
 } from "@pizzapi/protocol";
 
 import type { TestServer } from "./types.js";
@@ -99,6 +100,8 @@ export interface MockRunnerOptions {
     mockGitStatus?: MockGitStatus;
     /** Service IDs this runner announces (e.g. ["terminal", "system-monitor"]) */
     serviceIds?: string[];
+    /** Service panels to announce (dynamic iframe panels). */
+    panels?: ServicePanelInfo[];
 }
 
 export interface MockRunner {
@@ -128,7 +131,7 @@ export interface MockRunner {
     onFileRequest(handler: (data: unknown) => unknown): void;
 
     // Services
-    announceServices(serviceIds: string[]): void;
+    announceServices(serviceIds: string[], panels?: ServicePanelInfo[]): void;
 
     // Utilities
     waitForEvent(eventName: string, timeout?: number): Promise<unknown>;
@@ -373,7 +376,10 @@ export async function createMockRunner(
                 }
                 // Announce services after registration (like real daemon)
                 if (opts?.serviceIds && opts.serviceIds.length > 0) {
-                    (socket as any).emit("service_announce", { serviceIds: opts.serviceIds });
+                    (socket as any).emit("service_announce", {
+                        serviceIds: opts.serviceIds,
+                        ...(opts.panels && opts.panels.length > 0 ? { panels: opts.panels } : {}),
+                    });
                 }
                 resolve();
             });
@@ -928,6 +934,72 @@ export async function createMockRunner(
         });
     });
 
+    // --- Tunnel proxy (for service panel iframes) ---
+
+    // Track registered tunnel ports (from service_announce panels)
+    const tunnelPorts = new Set<number>();
+    if (opts?.panels) {
+        for (const p of opts.panels) tunnelPorts.add(p.port);
+    }
+
+    socket.on("tunnel_request", async (data: any) => {
+        if (isShuttingDown) return;
+        const { requestId, port, method, path, headers, body } = data;
+
+        if (!tunnelPorts.has(port)) {
+            (socket as any).emit("tunnel_response", {
+                requestId,
+                status: 404,
+                headers: {},
+                body: Buffer.from(`Port ${port} is not exposed`).toString("base64"),
+                error: `Port ${port} is not exposed`,
+            });
+            return;
+        }
+
+        try {
+            const url = `http://127.0.0.1:${port}${path}`;
+            const bodyBytes = body ? Buffer.from(body, "base64") : undefined;
+            const forwardHeaders: Record<string, string> = {};
+            if (headers) {
+                for (const [k, v] of Object.entries(headers)) {
+                    const lk = k.toLowerCase();
+                    if (!["connection", "keep-alive", "transfer-encoding", "cookie", "authorization"].includes(lk)) {
+                        forwardHeaders[k] = v as string;
+                    }
+                }
+            }
+
+            const resp = await fetch(url, {
+                method,
+                headers: forwardHeaders,
+                body: bodyBytes && bodyBytes.byteLength > 0 ? bodyBytes : undefined,
+                signal: AbortSignal.timeout(10_000),
+                redirect: "manual",
+            });
+
+            const respBuffer = await resp.arrayBuffer();
+            const respHeaders: Record<string, string> = {};
+            resp.headers.forEach((v, k) => { respHeaders[k] = v; });
+
+            (socket as any).emit("tunnel_response", {
+                requestId,
+                status: resp.status,
+                headers: respHeaders,
+                body: Buffer.from(respBuffer).toString("base64"),
+            });
+        } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            (socket as any).emit("tunnel_response", {
+                requestId,
+                status: 502,
+                headers: {},
+                body: Buffer.from(msg).toString("base64"),
+                error: msg,
+            });
+        }
+    });
+
     // --- Usage ---
 
     socket.on("get_usage", (data: any) => {
@@ -997,8 +1069,11 @@ export async function createMockRunner(
             return shutdownRequested;
         },
 
-        announceServices(serviceIds: string[]): void {
-            (socket as any).emit("service_announce", { serviceIds });
+        announceServices(serviceIds: string[], panels?: ServicePanelInfo[]): void {
+            (socket as any).emit("service_announce", {
+                serviceIds,
+                ...(panels && panels.length > 0 ? { panels } : {}),
+            });
         },
 
         onSkillRequest(handler: (data: unknown) => unknown): void {
