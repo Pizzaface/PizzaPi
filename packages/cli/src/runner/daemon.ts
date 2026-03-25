@@ -9,6 +9,7 @@ import { ServiceRegistry } from "./service-handler.js";
 import { TerminalService } from "./services/terminal-service.js";
 import { FileExplorerService } from "./services/file-explorer-service.js";
 import { GitService } from "./services/git-service.js";
+import { TunnelService } from "./services/tunnel-service.js";
 import { io, type Socket } from "socket.io-client";
 import type { RunnerClientToServerEvents, RunnerServerToClientEvents } from "@pizzapi/protocol";
 import { loadGlobalConfig } from "../config.js";
@@ -219,6 +220,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         registry.register(new TerminalService());
         registry.register(new FileExplorerService());
         registry.register(new GitService());
+        registry.register(new TunnelService());
 
         const socket: Socket<RunnerServerToClientEvents, RunnerClientToServerEvents> = io(
             sioUrl + "/runner",
