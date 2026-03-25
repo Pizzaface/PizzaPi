@@ -72,4 +72,19 @@ describe("tunnel route HTML rewriting", () => {
         const bodyIdx = rewritten.indexOf('<body>');
         expect(interceptIdx).toBeLessThan(bodyIdx);
     });
+
+    test("rewriteTunnelHtml base href includes the proxy subpath directory", () => {
+        const html = `<!doctype html><html><head></head><body></body></html>`;
+        // App served at /web/ — base should include /web/
+        const rewritten = rewriteTunnelHtml(html, "s-1", 8096, "/web/");
+        expect(rewritten).toContain('<base href="/api/tunnel/s-1/8096/web/">');
+
+        // Request to /web/index.html — base should be /web/ (directory)
+        const rewritten2 = rewriteTunnelHtml(html, "s-1", 8096, "/web/index.html");
+        expect(rewritten2).toContain('<base href="/api/tunnel/s-1/8096/web/">');
+
+        // Root request — base should be /
+        const rewritten3 = rewriteTunnelHtml(html, "s-1", 8096, "/");
+        expect(rewritten3).toContain('<base href="/api/tunnel/s-1/8096/">');
+    });
 });

@@ -241,9 +241,13 @@ export class TunnelService implements ServiceHandler {
             } else {
                 response.status = fetchResponse.status;
                 response.body = Buffer.from(responseBuffer).toString("base64");
-                // Copy response headers (strip hop-by-hop)
+                // Copy response headers (strip hop-by-hop + content-encoding).
+                // content-encoding is stripped because fetch() auto-decompresses
+                // the body but leaves the header — forwarding it would cause the
+                // browser to try to decompress already-decompressed content.
                 fetchResponse.headers.forEach((v, k) => {
-                    if (!HOP_BY_HOP.has(k.toLowerCase())) response.headers[k] = v;
+                    const lk = k.toLowerCase();
+                    if (!HOP_BY_HOP.has(lk) && lk !== "content-encoding") response.headers[k] = v;
                 });
             }
         } catch (err) {

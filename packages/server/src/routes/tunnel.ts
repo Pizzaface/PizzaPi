@@ -98,8 +98,12 @@ function buildTunnelInterceptScript(basePath: string): string {
 </script>`;
 }
 
-function rewriteTunnelHtml(html: string, sessionId: string, port: number): string {
+function rewriteTunnelHtml(html: string, sessionId: string, port: number, proxyPath = "/"): string {
     const basePath = getTunnelBasePath(sessionId, port);
+    // Use the directory of the actual request path so relative asset URLs
+    // resolve correctly for apps served from subdirectories (e.g. /web/).
+    const dir = proxyPath.endsWith("/") ? proxyPath : proxyPath.replace(/\/[^/]*$/, "/");
+    const baseHref = `${basePath}${dir}`;
     const rewritten = html
         .replace(/(<(?:img|script|iframe|audio|video|source|track|embed|input)\b[^>]*\bsrc=["'])(\/[^"']*)(["'])/gi, (_m, start, path, end) => `${start}${rewriteTunnelUrl(path, sessionId, port)}${end}`)
         .replace(/(<(?:a|link|area)\b[^>]*\bhref=["'])(\/[^"']*)(["'])/gi, (_m, start, path, end) => `${start}${rewriteTunnelUrl(path, sessionId, port)}${end}`)
@@ -107,7 +111,7 @@ function rewriteTunnelHtml(html: string, sessionId: string, port: number): strin
         .replace(/(<meta\b[^>]*\bcontent=["'][^"']*?url=)(\/[^"']*)(["'])/gi, (_m, start, path, end) => `${start}${rewriteTunnelUrl(path, sessionId, port)}${end}`)
         .replace(/(\burl\(["']?)(\/[^)"']*)(["']?\))/gi, (_m, start, path, end) => `${start}${rewriteTunnelUrl(path, sessionId, port)}${end}`);
 
-    const injection = `<base href="${basePath}/">${buildTunnelInterceptScript(basePath)}`;
+    const injection = `<base href="${baseHref}">${buildTunnelInterceptScript(basePath)}`;
 
     if (/<head\b[^>]*>/i.test(rewritten)) {
         return rewritten.replace(/<head\b[^>]*>/i, (match) => `${match}${injection}`);
@@ -254,7 +258,7 @@ export const handleTunnelRoute: RouteHandler = async (req, url) => {
 
     if (shouldRewriteTunnelHtml(responseHeaders.get("content-type"))) {
         const html = responseBody.toString("utf8");
-        responseBody = Buffer.from(rewriteTunnelHtml(html, sessionId, port), "utf8");
+        responseBody = Buffer.from(rewriteTunnelHtml(html, sessionId, port, proxyPath), "utf8");
         responseHeaders.delete("content-length");
         responseHeaders.delete("content-encoding");
     }
