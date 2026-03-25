@@ -20,11 +20,13 @@ import type {
     RunnerAgent,
 } from "@pizzapi/protocol";
 
-// Inline definition mirrors packages/protocol/src/shared.ts ServiceEnvelope.
-// Using a local alias avoids a cross-worktree symlink resolution issue where
+// Inline definitions mirror packages/protocol/src/shared.ts.
+// Using local aliases avoids a cross-worktree symlink resolution issue where
 // node_modules/@pizzapi/protocol points to the main branch's dist, not this
 // worktree's updated dist.
 type ServiceEnvelope = { serviceId: string; type: string; requestId?: string; payload: unknown };
+type TunnelRequestData = { requestId: string; port: number; method: string; path: string; headers: Record<string, string>; body?: string };
+type TunnelResponseData = { requestId: string; status: number; headers: Record<string, string>; body: string; error?: string };
 import { apiKeyAuthMiddleware } from "./auth.js";
 import {
     registerRunner,
@@ -205,6 +207,74 @@ export async function sendRunnerCommand(
     });
 }
 
+// ── Tunnel HTTP proxy request/response registry ───────────────────────────────
+// Maps requestId → resolve callback. Correlates server-initiated tunnel_request
+// events with tunnel_response events from the runner.
+//
+// This map is module-level (not per-socket) because the HTTP route handler
+// that calls sendTunnelRequest() lives outside the socket connection handler.
+// Cleanup on disconnect rejects all pending requests for that runner so HTTP
+// callers don't hang until their timeout fires.
+
+interface PendingTunnelRequest {
+    resolve: (response: TunnelResponseData) => void;
+    reject: (err: Error) => void;
+    timer: ReturnType<typeof setTimeout>;
+    runnerId: string;
+}
+
+const pendingTunnelRequests = new Map<string, PendingTunnelRequest>();
+
+// ── Runner service ID cache ──────────────────────────────────────────────────
+// Stores the last service_announce payload per runnerId so newly-joining
+// viewers can receive it immediately without waiting for a fresh announce.
+const runnerServiceIds = new Map<string, string[]>();
+
+/** Get cached service IDs for a runner (empty array if none). */
+export function getRunnerServiceIds(runnerId: string): string[] {
+    return runnerServiceIds.get(runnerId) ?? [];
+}
+
+/**
+ * Send an HTTP proxy request to a runner and await its response.
+ *
+ * The runner receives a `tunnel_request` event and must respond with
+ * `tunnel_response` carrying the same `requestId`.  The response is NOT
+ * broadcast to viewers — it is resolved here and returned to the HTTP caller.
+ *
+ * Throws if the runner is not connected or the request times out.
+ */
+export async function sendTunnelRequest(
+    runnerId: string,
+    request: TunnelRequestData,
+    timeoutMs = 10_000,
+): Promise<TunnelResponseData> {
+    const socket = getLocalRunnerSocket(runnerId);
+    if (!socket) throw new Error(`Runner ${runnerId} not connected`);
+
+    return new Promise<TunnelResponseData>((resolve, reject) => {
+        const timer = setTimeout(() => {
+            pendingTunnelRequests.delete(request.requestId);
+            reject(new Error("Tunnel request timed out"));
+        }, timeoutMs);
+
+        pendingTunnelRequests.set(request.requestId, {
+            resolve,
+            reject,
+            timer,
+            runnerId,
+        });
+
+        try {
+            (socket as Socket).emit("tunnel_request" as any, request);
+        } catch (err) {
+            clearTimeout(timer);
+            pendingTunnelRequests.delete(request.requestId);
+            reject(err);
+        }
+    });
+}
+
 // ── Namespace registration ───────────────────────────────────────────────────
 
 export function registerRunnerNamespace(io: SocketIOServer): void {
@@ -291,7 +361,7 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
                 }
                 const sessionSet = runnerSessionIds.get(result)!;
                 for (const sid of existingSessions) {
-                    sessionSet.add(sid);
+                    sessionSet.add(sid.sessionId);
                 }
             }
 
@@ -570,16 +640,36 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
             }
         });
 
+        // ── tunnel_response — runner responds to an HTTP proxy request ────────
+        // Resolve the pending request (initiated by sendTunnelRequest) so the
+        // HTTP route handler can write the response back to the viewer.
+        // This event must NOT be forwarded to viewers.
+        socket.on("tunnel_response" as any, (data: TunnelResponseData) => {
+            const pending = pendingTunnelRequests.get(data.requestId);
+            if (pending) {
+                clearTimeout(pending.timer);
+                pendingTunnelRequests.delete(data.requestId);
+                pending.resolve(data);
+            }
+        });
+
         // ── Generic service message relay: runner → viewers ──────────────────
         // Forward service envelopes verbatim to all viewers watching sessions
         // on this runner. The relay does not inspect serviceId — it just routes.
         socket.on("service_message", (envelope: ServiceEnvelope) => {
             const runnerId = socket.data.runnerId;
             if (!runnerId) return;
-            const sessionIds = runnerSessionIds.get(runnerId);
-            if (!sessionIds || sessionIds.size === 0) return;
-            for (const sessionId of sessionIds) {
-                broadcastToSessionViewers(sessionId, "service_message", envelope);
+            // If envelope carries a sessionId, route only to that session's viewers.
+            // Otherwise broadcast to all sessions on this runner (e.g. push announcements).
+            const targetSessionId = (envelope as ServiceEnvelope & { sessionId?: string }).sessionId;
+            if (targetSessionId) {
+                broadcastToSessionViewers(targetSessionId, "service_message", envelope);
+            } else {
+                const sessionIds = runnerSessionIds.get(runnerId);
+                if (!sessionIds || sessionIds.size === 0) return;
+                for (const sid of sessionIds) {
+                    broadcastToSessionViewers(sid, "service_message", envelope);
+                }
             }
         });
 
@@ -589,6 +679,8 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
         socket.on("service_announce", (data: { serviceIds: string[] }) => {
             const runnerId = socket.data.runnerId;
             if (!runnerId) return;
+            // Cache for late-joining viewers
+            runnerServiceIds.set(runnerId, data.serviceIds);
             const sessionIds = runnerSessionIds.get(runnerId);
             if (!sessionIds || sessionIds.size === 0) return;
             for (const sessionId of sessionIds) {
@@ -605,8 +697,18 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
             }
             const runnerId = socket.data.runnerId;
             if (runnerId) {
+                // Reject any pending tunnel requests for this runner so HTTP
+                // callers don't hang until their timeout fires.
+                for (const [requestId, pending] of pendingTunnelRequests) {
+                    if (pending.runnerId === runnerId) {
+                        clearTimeout(pending.timer);
+                        pendingTunnelRequests.delete(requestId);
+                        pending.reject(new Error("Runner disconnected"));
+                    }
+                }
                 // Clean up local session tracking
                 runnerSessionIds.delete(runnerId);
+                runnerServiceIds.delete(runnerId);
                 // Clean up any terminals owned by this runner
                 const terminalIds = await getTerminalIdsForRunner(runnerId);
                 for (const tid of terminalIds) {
