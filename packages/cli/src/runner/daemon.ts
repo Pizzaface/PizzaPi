@@ -224,18 +224,36 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         registry.register(new GitService());
         registry.register(new TunnelService());
 
-        // Discover and register plugin-provided services (fire-and-forget with logging)
+        // Discover and register plugin-provided services.
+        // Re-announce after loading so viewers get the full service list including plugins.
         discoverServices({ pluginDirs: globalPluginDirs() }).then(({ services, errors }) => {
+            let added = 0;
             for (const { handler, source } of services) {
                 try {
                     registry.register(handler);
                     logInfo(`[services] loaded plugin service "${handler.id}" from ${source.pluginName ?? source.path}`);
+                    added++;
                 } catch (err) {
                     logWarn(`[services] failed to register plugin service "${handler.id}": ${err}`);
                 }
             }
             for (const { path, error } of errors) {
                 logWarn(`[services] plugin service load error at ${path}: ${error}`);
+            }
+            // Re-announce so any connected viewers get the updated service list
+            if (added > 0 && socket.connected) {
+                (socket as any).emit("service_announce", {
+                    serviceIds: registry.getAll().map((s) => s.id),
+                });
+                logInfo(`[services] re-announced ${registry.getAll().length} services (${added} plugins loaded)`);
+                // Init the newly-loaded plugin services against the live socket
+                for (const { handler } of services) {
+                    try {
+                        handler.init(socket, { isShuttingDown: () => isShuttingDown });
+                    } catch (err) {
+                        logWarn(`[services] failed to init plugin service "${handler.id}": ${err}`);
+                    }
+                }
             }
         }).catch(err => {
             logWarn(`[services] plugin service discovery failed: ${err}`);
