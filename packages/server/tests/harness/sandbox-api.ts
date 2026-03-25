@@ -72,8 +72,84 @@ export async function startSandboxApi(opts: SandboxApiOptions): Promise<SandboxA
         return jsonResponse({ error: message }, status);
     }
 
+    function htmlResponse(html: string, status = 200): Response {
+        return new Response(html, {
+            status,
+            headers: { "Content-Type": "text/html; charset=utf-8" },
+        });
+    }
+
     function getSession(index: number): ScenarioSession | null {
         return scenario.sessions[index - 1] ?? null;
+    }
+
+    const scenarioNames = Object.keys(scenarios);
+    let apiBaseUrl = "";
+
+    function buildOpenApiSpec() {
+        return {
+            openapi: "3.1.0",
+            info: {
+                title: "PizzaPi Sandbox Control API",
+                version: "1.0.0",
+                description: "Programmatic control surface for the PizzaPi sandbox harness.",
+            },
+            servers: apiBaseUrl ? [{ url: apiBaseUrl }] : [],
+            paths: {
+                "/status": { get: { summary: "List sessions and credentials", responses: { "200": { description: "OK" } } } },
+                "/credentials": { get: { summary: "Get sandbox login credentials", responses: { "200": { description: "OK" } } } },
+                "/session": { post: { summary: "Create a session", requestBody: { required: false }, responses: { "200": { description: "Created" } } } },
+                "/chat": { post: { summary: "Stream a named chat scenario into a session", requestBody: { required: true }, responses: { "200": { description: "OK" } } } },
+                "/oauth": { post: { summary: "Emit MCP OAuth paste flow for a session", requestBody: { required: true }, responses: { "200": { description: "OK" } } } },
+                "/child": { post: { summary: "Create a child session", requestBody: { required: true }, responses: { "200": { description: "Created" } } } },
+                "/end": { post: { summary: "End a session", requestBody: { required: true }, responses: { "200": { description: "OK" } } } },
+                "/heartbeat": { post: { summary: "Send heartbeat to a session", requestBody: { required: true }, responses: { "200": { description: "OK" } } } },
+                "/event": { post: { summary: "Emit an arbitrary relay event", requestBody: { required: true }, responses: { "200": { description: "OK" } } } },
+            },
+            "x-scenarios": scenarioNames,
+        };
+    }
+
+    function buildIndexHtml() {
+        const endpoints = [
+            ["GET", "/status", "List sessions and credentials"],
+            ["GET", "/credentials", "Get sandbox login credentials"],
+            ["POST", "/session", "Create a session"],
+            ["POST", "/chat", "Stream a named scenario into a session"],
+            ["POST", "/oauth", "Trigger MCP OAuth paste flow"],
+            ["POST", "/child", "Create a child session"],
+            ["POST", "/end", "End a session"],
+            ["POST", "/heartbeat", "Send heartbeat"],
+            ["POST", "/event", "Emit arbitrary event"],
+        ];
+        const sessionItems = scenario.sessions.map((s, i) => `<li><code>${i + 1}</code> — <code>${s.sessionId}</code></li>`).join("");
+        const endpointRows = endpoints.map(([m, p, d]) => `<tr><td><code>${m}</code></td><td><code>${p}</code></td><td>${d}</td></tr>`).join("");
+        return `<!doctype html>
+<html><head><meta charset="utf-8" /><title>PizzaPi Sandbox API</title>
+<style>
+body{font-family:system-ui,sans-serif;max-width:980px;margin:40px auto;padding:0 16px;line-height:1.45}
+code{background:#f4f4f5;padding:2px 4px;border-radius:4px}
+pre{background:#0f172a;color:#e2e8f0;padding:12px;border-radius:8px;overflow:auto}
+table{border-collapse:collapse;width:100%}td,th{border:1px solid #e4e4e7;padding:8px;text-align:left}
+.small{color:#52525b}.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.card{border:1px solid #e4e4e7;border-radius:10px;padding:16px}
+</style></head><body>
+<h1>🍕 PizzaPi Sandbox Control API</h1>
+<p class="small">Use this API to drive the sandbox without the REPL.</p>
+<div class="grid">
+  <div class="card"><h2>Base URLs</h2><ul>
+    <li>Sandbox API: <a href="${apiBaseUrl}">${apiBaseUrl}</a></li>
+    <li>PizzaPi server: <code>${scenario.server.baseUrl}</code></li>
+    <li>OpenAPI: <a href="/openapi.json">/openapi.json</a></li>
+  </ul></div>
+  <div class="card"><h2>Credentials</h2><pre>${JSON.stringify({ email: scenario.server.userEmail, password: "HarnessPass123", apiKey: scenario.server.apiKey }, null, 2)}</pre></div>
+</div>
+<div class="card"><h2>Scenarios</h2><p>${scenarioNames.map((s) => `<code>${s}</code>`).join(" ")}</p></div>
+<div class="card"><h2>Sessions</h2><ul>${sessionItems || "<li>None</li>"}</ul></div>
+<div class="card"><h2>Endpoints</h2><table><thead><tr><th>Method</th><th>Path</th><th>Description</th></tr></thead><tbody>${endpointRows}</tbody></table></div>
+<div class="card"><h2>Quick examples</h2><pre>curl ${apiBaseUrl}/status
+curl -X POST ${apiBaseUrl}/oauth -H 'Content-Type: application/json' -d '{"session":1,"server":"figma"}'
+curl -X POST ${apiBaseUrl}/chat -H 'Content-Type: application/json' -d '{"session":1,"scenario":"review"}'</pre></div>
+</body></html>`;
     }
 
     const server = Bun.serve({
@@ -84,6 +160,16 @@ export async function startSandboxApi(opts: SandboxApiOptions): Promise<SandboxA
             const url = new URL(req.url);
             const path = url.pathname;
             const method = req.method;
+
+            // ── GET / ───────────────────────────────────────────────────
+            if (method === "GET" && path === "/") {
+                return htmlResponse(buildIndexHtml());
+            }
+
+            // ── GET /openapi.json ───────────────────────────────────────
+            if (method === "GET" && path === "/openapi.json") {
+                return jsonResponse(buildOpenApiSpec());
+            }
 
             // ── GET /status ──────────────────────────────────────────────
             if (method === "GET" && path === "/status") {
@@ -282,8 +368,9 @@ export async function startSandboxApi(opts: SandboxApiOptions): Promise<SandboxA
     });
 
     const resolvedPort = server.port ?? 0;
+    apiBaseUrl = `http://127.0.0.1:${resolvedPort}`;
     return {
-        baseUrl: `http://127.0.0.1:${resolvedPort}`,
+        baseUrl: apiBaseUrl,
         port: resolvedPort,
         stop: () => server.stop(true),
     };

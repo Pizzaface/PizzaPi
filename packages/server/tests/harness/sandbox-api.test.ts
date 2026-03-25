@@ -21,6 +21,53 @@ describe("sandbox-api", () => {
         }
     });
 
+    test("GET / returns HTML landing page and /openapi.json returns schema", async () => {
+        const sessions: FakeSession[] = [
+            {
+                sessionId: "s1",
+                token: "t1",
+                shareUrl: "http://share/1",
+                relay: {
+                    emitEvent: () => {},
+                    emitSessionEnd: () => {},
+                    socket: { on: () => {} },
+                },
+            },
+        ];
+        const scenario = {
+            sessions,
+            server: {
+                baseUrl: "http://127.0.0.1:9999",
+                userEmail: "test@example.com",
+                apiKey: "key-123",
+            },
+            addSession: async () => { throw new Error("unused"); },
+        } as any;
+
+        const api = await startSandboxApi({
+            scenario,
+            scenarios: { review: { name: "Review", builder: () => [] } },
+            models: [{ provider: "x", id: "m1", name: "Model 1", contextWindow: 1 }],
+            cwds: ["/tmp"],
+        });
+        apis.push(api);
+
+        const landing = await fetch(`${api.baseUrl}/`);
+        expect(landing.ok).toBe(true);
+        const html = await landing.text();
+        expect(html).toContain("PizzaPi Sandbox Control API");
+        expect(html).toContain("/openapi.json");
+        expect(html).toContain("test@example.com");
+
+        const openapiRes = await fetch(`${api.baseUrl}/openapi.json`);
+        expect(openapiRes.ok).toBe(true);
+        const spec = await openapiRes.json() as any;
+        expect(spec.openapi).toBe("3.1.0");
+        expect(spec.paths["/oauth"]).toBeDefined();
+        expect(spec["x-scenarios"]).toContain("review");
+        expect(spec.servers[0].url).toBe(api.baseUrl);
+    });
+
     test("GET /status returns sessions and credentials", async () => {
         const emitted: unknown[] = [];
         const sessions: FakeSession[] = [
