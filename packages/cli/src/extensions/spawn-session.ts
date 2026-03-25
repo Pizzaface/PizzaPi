@@ -237,26 +237,27 @@ export const spawnSessionExtension: ExtensionFactory = (pi) => {
             );
         },
         renderResult: (result: any, _opts: any, theme: any) => {
-            try {
-                const text: string = result?.content?.[0]?.text ?? "";
-                if (text.startsWith("Error:") || text.startsWith("{\"error\"")) {
-                    const msg = text.length > 80 ? text.slice(0, 77) + "..." : text;
-                    return new Text(theme.fg("error", "✗ ") + theme.fg("muted", msg), 0, 0);
-                }
-                const data = JSON.parse(text);
-                const rawId: string = data.sessionId ?? "";
-                const sessionId = rawId.length > 8 ? rawId.slice(-8) : rawId || "?";
-                const url: string = data.shareUrl ? " " + data.shareUrl : "";
-                return new Text(
-                    theme.fg("success", "✓") + " " +
-                    theme.fg("muted", "session ") +
-                    theme.fg("accent", sessionId) +
-                    theme.fg("dim", url),
-                    0, 0
-                );
-            } catch {
-                return new Text(theme.fg("success", "✓ ") + theme.fg("muted", "session spawned"), 0, 0);
+            const details = result?.details as Record<string, unknown> | undefined;
+            const text: string = result?.content?.[0]?.text ?? "";
+
+            // Error: details has an "error" key, or text starts with "Error"
+            if (details?.error || text.startsWith("Error")) {
+                const msg = (typeof details?.error === "string" ? details.error : text);
+                const display = msg.length > 80 ? msg.slice(0, 77) + "..." : msg;
+                return new Text(theme.fg("error", "✗ " + display), 0, 0);
             }
+
+            // Success: use details.sessionId and details.shareUrl
+            const rawId = typeof details?.sessionId === "string" ? details.sessionId : "";
+            const sessionId = rawId.length > 8 ? rawId.slice(-8) : rawId || "?";
+            const url = typeof details?.shareUrl === "string" ? " " + details.shareUrl : "";
+            return new Text(
+                theme.fg("success", "✓") + " " +
+                theme.fg("muted", "session ") +
+                theme.fg("accent", sessionId) +
+                theme.fg("dim", url),
+                0, 0
+            );
         },
     });
 
