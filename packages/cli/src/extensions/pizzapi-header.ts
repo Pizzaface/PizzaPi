@@ -172,12 +172,36 @@ export function pizzapiHeaderExtension(pi: ExtensionAPI): void {
                 render(width: number): string[] {
                     const innerWidth = width - 4;
 
-                    // ── Narrow fallback (< 80 cols) ──────────────────────────
-                    if (width < 80) {
-                        return [
-                            theme.fg("accent", `🍕 PizzaPi v${version}`) +
-                            theme.fg("dim", "  Ctrl+C clear · Ctrl+D exit · Ctrl+Z suspend"),
-                        ];
+                    // ── Narrow fallback (< 100 cols) ─────────────────────────
+                    if (width < 100) {
+                        if (width <= 0) return [];
+
+                        // Build title, truncating to fit within width
+                        const titleRaw = `🍕 PizzaPi v${version}`;
+                        let titleFit = "";
+                        let titleFitWidth = 0;
+                        for (const char of titleRaw) {
+                            const cw = visibleWidth(char);
+                            if (titleFitWidth + cw > width) break;
+                            titleFit += char;
+                            titleFitWidth += cw;
+                        }
+
+                        const titleStyled = theme.fg("accent", titleFit);
+
+                        // Remaining space after title and 2-char separator ("  ")
+                        const hintSpace = width - titleFitWidth - 2;
+                        if (hintSpace <= 0) {
+                            return [titleStyled];
+                        }
+
+                        const hintsLine = buildHintLine(theme, [
+                            hint(theme, KEYS.clear, "clear"),
+                            hint(theme, KEYS.exit, "exit"),
+                            hint(theme, KEYS.suspend, "suspend"),
+                        ], hintSpace);
+
+                        return [hintsLine ? titleStyled + "  " + hintsLine : titleStyled];
                     }
 
                     // ── Wide layout with box-drawing frame ───────────────────
