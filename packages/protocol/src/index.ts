@@ -15,6 +15,8 @@ export type {
   RunnerHook,
   Attachment,
   ServiceEnvelope,
+  ServicePanelInfo,
+  ServiceAnnounceData,
   TunnelInfo,
   TunnelRequestData,
   TunnelResponseData,

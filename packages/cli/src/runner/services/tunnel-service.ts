@@ -107,6 +107,29 @@ export class TunnelService implements ServiceHandler {
         this.socket = null;
     }
 
+    // ── Internal API (called by daemon, not via socket) ───────────────────
+
+    /**
+     * Register a port for HTTP proxying without a viewer-initiated tunnel_expose.
+     * Used by the daemon to auto-expose panel ports from folder-based services.
+     */
+    registerPort(port: number, name?: string): void {
+        if (this.tunnels.has(port)) return;
+        const url = `/tunnel/${port}`;
+        const info: TunnelInfo = { port, ...(name ? { name } : {}), url };
+        this.tunnels.set(port, info);
+        logInfo(`[tunnel] auto-registered panel port ${port}${name ? ` (${name})` : ""}`);
+
+        // Announce to server so it knows the port is proxiable
+        if (this.socket) {
+            (this.socket as any).emit("service_message", {
+                serviceId: "tunnel",
+                type: "tunnel_registered",
+                payload: info,
+            } satisfies ServiceEnvelope);
+        }
+    }
+
     // ── Command handlers ──────────────────────────────────────────────────────
 
     private handleList(requestId?: string): void {

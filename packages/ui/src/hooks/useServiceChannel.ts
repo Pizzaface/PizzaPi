@@ -1,6 +1,6 @@
 import { useEffect, useCallback, useRef, useState } from "react";
 import { useViewerSocket } from "@/lib/viewer-socket-context";
-import type { ServiceEnvelope } from "@pizzapi/protocol";
+import type { ServiceAnnounceData, ServiceEnvelope } from "@pizzapi/protocol";
 
 const SERVICE_IDS_KEY = "__serviceIds" as const;
 
@@ -42,7 +42,7 @@ export function useServiceChannel<TSend = unknown, TPayload = unknown>(
             onMessageRef.current?.(envelope.type, envelope.payload as TPayload, envelope.requestId);
         };
 
-        const handleAnnounce = (data: { serviceIds: string[] }) => {
+        const handleAnnounce = (data: ServiceAnnounceData) => {
             setAvailable(data.serviceIds.includes(serviceId));
         };
 

@@ -20,9 +20,22 @@ import type { ServiceHandler } from "./service-handler.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
+/** Manifest for folder-based service plugins. */
+export interface ServiceManifest {
+    id: string;
+    label: string;
+    icon: string;
+    entry?: string;
+    panel?: {
+        dir?: string;
+    };
+}
+
 export interface ServicePluginResult {
     handler: ServiceHandler;
     source: ServicePluginSource;
+    /** Present for folder-based services with a manifest.json. */
+    manifest?: ServiceManifest;
 }
 
 export interface ServicePluginSource {
@@ -87,38 +100,85 @@ async function loadServicesFromDir(
     }
 
     for (const entry of entries) {
-        // Skip dotfiles, test files, type declarations
+        // Skip dotfiles and underscore-prefixed entries
         if (entry.startsWith(".") || entry.startsWith("_")) continue;
+
+        const entryPath = join(dir, entry);
+        let stats;
+        try {
+            stats = statSync(entryPath);
+        } catch {
+            continue;
+        }
+
+        // ── Directory: folder-based service with manifest.json ────────────
+        if (stats.isDirectory()) {
+            const manifestPath = join(entryPath, "manifest.json");
+            if (!existsSync(manifestPath)) continue;
+
+            try {
+                const manifest = parseServiceManifest(manifestPath);
+                const moduleEntry = manifest.entry ?? findDefaultEntry(entryPath);
+                if (!moduleEntry) {
+                    errors.push({
+                        path: entryPath,
+                        error: "No entry point found (no 'entry' in manifest and no index.ts/index.js)",
+                    });
+                    continue;
+                }
+                const modulePath = resolve(entryPath, moduleEntry);
+                if (!existsSync(modulePath)) {
+                    errors.push({
+                        path: modulePath,
+                        error: `Service entry "${moduleEntry}" declared in manifest does not exist`,
+                    });
+                    continue;
+                }
+
+                const handler = await loadServiceModule(modulePath);
+                if (handler) {
+                    services.push({
+                        handler,
+                        source: { origin, path: entryPath },
+                        manifest,
+                    });
+                } else {
+                    errors.push({
+                        path: modulePath,
+                        error: "Module does not export a valid ServiceHandler (needs default export with id, init, dispose)",
+                    });
+                }
+            } catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                errors.push({ path: entryPath, error: msg });
+            }
+            continue;
+        }
+
+        // ── File: simple file-based service ───────────────────────────────
+        if (!stats.isFile()) continue;
         if (entry.includes(".test.") || entry.includes(".spec.")) continue;
         if (entry.endsWith(".d.ts") || entry.endsWith(".d.mts")) continue;
 
         const ext = extname(entry);
         if (!SERVICE_EXTENSIONS.has(ext)) continue;
 
-        const filePath = join(dir, entry);
         try {
-            const stats = statSync(filePath);
-            if (!stats.isFile()) continue;
-        } catch {
-            continue;
-        }
-
-        try {
-            const handler = await loadServiceModule(filePath);
+            const handler = await loadServiceModule(entryPath);
             if (handler) {
                 services.push({
                     handler,
-                    source: { origin, path: filePath },
+                    source: { origin, path: entryPath },
                 });
             } else {
                 errors.push({
-                    path: filePath,
+                    path: entryPath,
                     error: "Module does not export a valid ServiceHandler (needs default export with id, init, dispose)",
                 });
             }
         } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
-            errors.push({ path: filePath, error: msg });
+            errors.push({ path: entryPath, error: msg });
         }
     }
 
@@ -271,6 +331,39 @@ function readServiceDeclarations(pluginDir: string, pluginName: string): Service
         }
     }
 
+    return null;
+}
+
+// ── Service manifest parsing ──────────────────────────────────────────────────
+
+function parseServiceManifest(manifestPath: string): ServiceManifest {
+    const raw = JSON.parse(readFileSync(manifestPath, "utf-8"));
+    if (!raw || typeof raw !== "object") {
+        throw new Error("manifest.json is not a JSON object");
+    }
+    if (typeof raw.id !== "string" || !raw.id) {
+        throw new Error('manifest.json missing required "id" field');
+    }
+    if (typeof raw.label !== "string" || !raw.label) {
+        throw new Error('manifest.json missing required "label" field');
+    }
+    return {
+        id: raw.id,
+        label: raw.label,
+        icon: typeof raw.icon === "string" ? raw.icon : "square",
+        entry: typeof raw.entry === "string" ? raw.entry : undefined,
+        panel: raw.panel && typeof raw.panel === "object"
+            ? { dir: typeof raw.panel.dir === "string" ? raw.panel.dir : undefined }
+            : undefined,
+    };
+}
+
+const DEFAULT_ENTRIES = ["index.ts", "index.js", "index.mts", "index.mjs"];
+
+function findDefaultEntry(dir: string): string | null {
+    for (const name of DEFAULT_ENTRIES) {
+        if (existsSync(join(dir, name))) return `./${name}`;
+    }
     return null;
 }
 
