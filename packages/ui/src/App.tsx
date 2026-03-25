@@ -54,7 +54,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Sun, Moon, LogOut, KeyRound, X, User, ChevronsUpDown, PanelLeftOpen, HardDrive, Bell, BellOff, Check, Plus, TerminalIcon, FolderTree, Keyboard, EyeOff, Lock, Network, Activity } from "lucide-react";
+import { Sun, Moon, LogOut, KeyRound, X, User, ChevronsUpDown, PanelLeftOpen, HardDrive, Bell, BellOff, Check, Plus, TerminalIcon, FolderTree, Keyboard, EyeOff, Lock } from "lucide-react";
 import { NotificationToggle, MobileNotificationMenuItem } from "@/components/NotificationToggle";
 import { HapticsToggle, MobileHapticsMenuItem } from "@/components/HapticsToggle";
 import { UsageIndicator, type ProviderUsageMap } from "@/components/UsageIndicator";
@@ -62,8 +62,8 @@ import { TerminalManager } from "@/components/TerminalManager";
 import { FileExplorer } from "@/components/FileExplorer";
 import { CombinedPanel } from "@/components/CombinedPanel";
 import { ViewerSocketContext } from "@/lib/viewer-socket-context";
-import { TunnelPanel } from "@/components/TunnelPanel";
-import { SystemMonitorPanel } from "@/components/SystemMonitorPanel";
+import { useRunnerServices } from "@/hooks/useRunnerServices";
+import { ServicePanelButtons, ServicePanelContainer, useServicePanelState } from "@/components/service-panels/ServicePanels";
 import {
   ModelSelector,
   ModelSelectorContent,
@@ -3164,6 +3164,10 @@ export function App() {
   const areCombined = showTerminal && showFileExplorer && terminalPosition === filesPosition
     && !!activeSessionInfo?.runnerId && !!activeSessionInfo?.cwd;
 
+  // Runner service panels — dynamically discovered
+  const availableServices = useRunnerServices();
+  const { activePanelId: activeServicePanel, togglePanel: toggleServicePanel, closePanel: closeServicePanel } = useServicePanelState();
+
   if (isPending) {
     return (
       <div className="flex h-[100dvh] w-full flex-col items-center justify-center bg-background gap-2 animate-in fade-in duration-300">
@@ -3833,6 +3837,13 @@ export function App() {
                     showTerminalButton
                     onToggleFileExplorer={() => setShowFileExplorer((v) => !v)}
                     showFileExplorerButton={!!activeSessionInfo?.runnerId && !!activeSessionInfo?.cwd}
+                    extraHeaderButtons={
+                      <ServicePanelButtons
+                        availableServices={availableServices}
+                        activePanelId={activeServicePanel}
+                        onTogglePanel={toggleServicePanel}
+                      />
+                    }
                     todoList={todoList}
                     planModeEnabled={planModeEnabled}
                     runnerId={activeSessionInfo?.runnerId ?? undefined}
@@ -3848,6 +3859,17 @@ export function App() {
                 </ErrorBoundary>
               )}
             </div>
+
+            {/* Service panel (System Monitor, Tunnels, etc.) — dynamic based on runner services */}
+            {activeServicePanel && activeSessionId && (
+              <ServicePanelContainer
+                activePanelId={activeServicePanel}
+                sessionId={activeSessionId}
+                onClose={closeServicePanel}
+                position="bottom"
+              />
+            )}
+
             {/* Mobile: terminal overlay (always separate from combined) */}
             {showTerminal && (
               <div
@@ -3958,20 +3980,8 @@ export function App() {
                           />
                         ),
                       },
-                      ...(activeSessionId ? [{
-                        id: "tunnels",
-                        label: "Tunnels",
-                        icon: <Network className="size-3.5" />,
-                        content: (
-                          <TunnelPanel sessionId={activeSessionId} />
-                        ),
-                      }] : []),
-                      {
-                        id: "system-monitor",
-                        label: "System",
-                        icon: <Activity className="size-3.5" />,
-                        content: <SystemMonitorPanel />,
-                      },
+                      // Service panels (Tunnels, System Monitor, etc.) are now rendered
+                      // as their own standalone panels via ServicePanelContainer.
                     ]}
                   />
                 </div>
