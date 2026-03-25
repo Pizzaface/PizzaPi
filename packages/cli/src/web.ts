@@ -827,11 +827,12 @@ interface ParsedArgs {
     port?: number;
     origins?: string;
     detach: boolean;
+    noCache: boolean;
     help: boolean;
 }
 
 export function parseArgs(args: string[]): ParsedArgs {
-    const result: ParsedArgs = { detach: true, help: false };
+    const result: ParsedArgs = { detach: true, noCache: false, help: false };
 
     for (let i = 0; i < args.length; i++) {
         const arg = args[i];
@@ -857,6 +858,8 @@ export function parseArgs(args: string[]): ParsedArgs {
             i++;
         } else if (arg === "--foreground" || arg === "-f") {
             result.detach = false;
+        } else if (arg === "--no-cache") {
+            result.noCache = true;
         } else if (arg === "--help" || arg === "-h") {
             result.help = true;
         }
@@ -883,6 +886,7 @@ function printWebHelp(): void {
     console.log(`  ${c.flag("--port")} ${c.dim("<port>")}       Set the host port ${c.dim("(persisted to config.json)")}`);
     console.log(`  ${c.flag("--origins")} ${c.dim("<list>")}    Set extra allowed CORS origins ${c.dim("(comma-separated, persisted)")}`);
     console.log(`  ${c.flag("-f, --foreground")}    Run in the foreground ${c.dim("(don't detach)")}`);
+    console.log(`  ${c.flag("--no-cache")}          Rebuild Docker image without layer cache`);
     console.log(`  ${c.flag("-h, --help")}          Show this help`);
     console.log();
     console.log(`${c.label("Configuration")} ${c.dim(`(${CONFIG_PATH})`)}`);
@@ -1087,11 +1091,12 @@ export async function runWeb(args: string[]): Promise<void> {
     // When the host prebuild actually rebuilt, force-recreate containers so
     // Docker picks up the new image even if BuildKit's layer cache didn't
     // detect the change (common on macOS Docker Desktop with virtiofs).
-    const forceRecreate = prebuildResult.rebuilt;
+    const forceRecreate = prebuildResult.rebuilt || parsed.noCache;
 
     if (parsed.detach) {
         const upArgs = ["up", "-d", "--build"];
         if (forceRecreate) upArgs.push("--force-recreate");
+        if (parsed.noCache) upArgs.push("--no-cache");
         await composeExecAsync(composePath, upArgs);
         console.log();
         console.log(`✅ PizzaPi web is running at http://localhost:${config.port}`);
@@ -1103,6 +1108,7 @@ export async function runWeb(args: string[]): Promise<void> {
     } else {
         const upArgs = ["up", "--build"];
         if (forceRecreate) upArgs.push("--force-recreate");
+        if (parsed.noCache) upArgs.push("--no-cache");
         await composeExecAsync(composePath, upArgs);
     }
 }
