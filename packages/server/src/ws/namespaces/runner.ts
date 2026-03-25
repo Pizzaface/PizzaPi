@@ -19,6 +19,7 @@ import type {
     RunnerSkill,
     RunnerAgent,
 } from "@pizzapi/protocol";
+import { isServerShuttingDown } from "../../health.js";
 import { apiKeyAuthMiddleware } from "./auth.js";
 import {
     registerRunner,
@@ -543,6 +544,15 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
             }
             const runnerId = socket.data.runnerId;
             if (runnerId) {
+                // During graceful shutdown (SIGTERM/SIGINT), skip destructive
+                // Redis cleanup.  The runner is still alive and will reconnect
+                // to the new server instance.  Deleting its Redis state would
+                // force a full re-registration and orphan all its sessions.
+                if (isServerShuttingDown) {
+                    console.log(`[sio/runner] server shutting down — preserving Redis state for runner ${runnerId}`);
+                    return;
+                }
+
                 // Clean up any terminals owned by this runner
                 const terminalIds = await getTerminalIdsForRunner(runnerId);
                 for (const tid of terminalIds) {
