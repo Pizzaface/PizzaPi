@@ -8,10 +8,16 @@
 // ============================================================================
 
 import type { ExtensionFactory } from "@mariozechner/pi-coding-agent";
+import { Text } from "@mariozechner/pi-tui";
 import type { ConversationTrigger } from "./types.js";
 import { getRelaySocket, getRelaySessionId } from "../remote.js";
 
-const silent = { render: (_w: number): string[] => [], invalidate: () => {} };
+function shortId(id: string, len = 8): string {
+    return id.length > len ? id.slice(-len) : id;
+}
+function preview(text: string, max = 50): string {
+    return text.length > max ? text.slice(0, max) + "..." : text;
+}
 
 /** Tracks triggers this session has received (as parent) for response routing. */
 export const receivedTriggers = new Map<string, { sourceSessionId: string; type: string; trackedAt: number }>();
@@ -141,8 +147,25 @@ export const triggersExtension: ExtensionFactory = (pi) => {
 
             return { content: [{ type: "text" as const, text: result }], details: null as any };
         },
-        renderCall: () => silent,
-        renderResult: () => silent,
+        renderCall: (args: any, theme: any) => {
+            const sid = shortId(args.sessionId ?? "", 8);
+            const msg = preview(args.message ?? "", 50);
+            return new Text(
+                theme.fg("accent", "→") + " " +
+                theme.fg("muted", "child ") +
+                theme.fg("dim", sid) +
+                theme.fg("muted", ": ") +
+                theme.fg("dim", msg),
+                0, 0
+            );
+        },
+        renderResult: (result: any, _opts: any, theme: any) => {
+            const text: string = result?.content?.[0]?.text ?? "";
+            if (text.startsWith("Error:")) {
+                return new Text(theme.fg("error", "✗ ") + theme.fg("muted", preview(text, 60)), 0, 0);
+            }
+            return new Text(theme.fg("success", "✓ ") + theme.fg("dim", "delivered"), 0, 0);
+        },
     });
 
     // ── respond_to_trigger ────────────────────────────────────────────────
@@ -249,8 +272,31 @@ export const triggersExtension: ExtensionFactory = (pi) => {
             receivedTriggers.delete(params.triggerId);
             return { content: [{ type: "text" as const, text: `Response sent for trigger ${params.triggerId}` }], details: null as any };
         },
-        renderCall: () => silent,
-        renderResult: () => silent,
+        renderCall: (args: any, theme: any) => {
+            const tid = shortId(args.triggerId ?? "", 8);
+            const action = args.action ?? "respond";
+            const actionColor =
+                action === "approve" || action === "ack" ? "success" :
+                action === "cancel" ? "error" :
+                action === "followUp" || action === "edit" ? "warning" : "muted";
+            const resp = preview(args.response ?? "", 40);
+            return new Text(
+                theme.fg("accent", "↩") + " " +
+                theme.fg("muted", "trigger ") +
+                theme.fg("dim", tid) + " " +
+                theme.fg(actionColor, `[${action}]`) +
+                (resp ? theme.fg("dim", " " + resp) : ""),
+                0, 0
+            );
+        },
+        renderResult: (result: any, _opts: any, theme: any) => {
+            const text: string = result?.content?.[0]?.text ?? "";
+            const isSuccess = text.startsWith("Response sent for trigger") || text.startsWith("Acknowledged") || text.startsWith("Follow-up sent");
+            if (!isSuccess) {
+                return new Text(theme.fg("error", "✗ ") + theme.fg("muted", preview(text, 60)), 0, 0);
+            }
+            return new Text(theme.fg("success", "✓ ") + theme.fg("dim", "trigger responded"), 0, 0);
+        },
     });
 
     // ── escalate_trigger ──────────────────────────────────────────────────
@@ -296,7 +342,21 @@ export const triggersExtension: ExtensionFactory = (pi) => {
             // the response back to the child (not the parent).
             return { content: [{ type: "text" as const, text: `Trigger ${params.triggerId} escalated to human` }], details: null as any };
         },
-        renderCall: () => silent,
-        renderResult: () => silent,
+        renderCall: (args: any, theme: any) => {
+            const tid = shortId(args.triggerId ?? "", 8);
+            return new Text(
+                theme.fg("warning", "↑") + " " +
+                theme.fg("muted", "escalating trigger ") +
+                theme.fg("dim", tid),
+                0, 0
+            );
+        },
+        renderResult: (result: any, _opts: any, theme: any) => {
+            const text: string = result?.content?.[0]?.text ?? "";
+            if (text.startsWith("Error:")) {
+                return new Text(theme.fg("error", "✗ ") + theme.fg("muted", preview(text, 60)), 0, 0);
+            }
+            return new Text(theme.fg("warning", "↑ ") + theme.fg("dim", "trigger escalated to human"), 0, 0);
+        },
     });
 };
