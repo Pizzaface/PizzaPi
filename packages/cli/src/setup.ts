@@ -1,7 +1,7 @@
 import { createInterface } from "readline";
 import { homedir } from "os";
 import { join, dirname } from "path";
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { saveGlobalConfig } from "./config.js";
 import { validatePassword, PASSWORD_REQUIREMENTS } from "@pizzapi/protocol";
 import { c } from "./cli-colors.js";
@@ -167,24 +167,11 @@ export async function runSetup(opts: { force?: boolean } = {}): Promise<boolean>
         try {
             const piSettingsPath = join(homedir(), ".pizzapi", "settings.json");
             let piSettings: Record<string, unknown> = {};
-            let skipThemeWrite = false;
-            if (existsSync(piSettingsPath)) {
-                try {
-                    const existing = readFileSync(piSettingsPath, "utf-8");
-                    const parsed: unknown = JSON.parse(existing);
-                    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-                        skipThemeWrite = true;
-                        console.warn("Note: ~/.pizzapi/settings.json has unexpected format — skipping theme auto-selection.");
-                    } else {
-                        piSettings = parsed as Record<string, unknown>;
-                    }
-                } catch {
-                    // File exists but has invalid JSON — bail to avoid clobbering user settings
-                    skipThemeWrite = true;
-                    console.warn("Note: ~/.pizzapi/settings.json has invalid JSON — skipping theme auto-selection.");
-                }
-            }
-            if (!skipThemeWrite && !Object.hasOwn(piSettings, "theme")) {
+            try {
+                const existing = readFileSync(piSettingsPath, "utf-8");
+                piSettings = JSON.parse(existing);
+            } catch {}
+            if (!piSettings.theme) {
                 piSettings.theme = "pizzapi-dark";
                 mkdirSync(dirname(piSettingsPath), { recursive: true });
                 writeFileSync(piSettingsPath, JSON.stringify(piSettings, null, 2) + "\n", "utf-8");
