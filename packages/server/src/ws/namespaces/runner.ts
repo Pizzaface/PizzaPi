@@ -351,7 +351,7 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
                 }
                 const sessionSet = runnerSessionIds.get(result)!;
                 for (const sid of existingSessions) {
-                    sessionSet.add(sid);
+                    sessionSet.add(sid.sessionId);
                 }
             }
 
