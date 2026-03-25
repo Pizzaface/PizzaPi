@@ -17,6 +17,7 @@ import { subagentExtension } from "./subagent.js";
 import { planModeToggleExtension } from "./plan-mode-toggle.js";
 import { triggersExtension } from "./triggers/extension.js";
 import { sandboxEventsExtension } from "./sandbox-events.js";
+import { pizzapiTitleExtension } from "./pizzapi-title.js";
 import { initialPromptExtension } from "./initial-prompt.js";
 
 const CORE_EXTENSIONS: ExtensionFactory[] = [
@@ -31,6 +32,7 @@ const CORE_EXTENSIONS: ExtensionFactory[] = [
     subagentExtension,
     planModeToggleExtension,
     sandboxEventsExtension,
+    pizzapiTitleExtension,
 ];
 
 /**
