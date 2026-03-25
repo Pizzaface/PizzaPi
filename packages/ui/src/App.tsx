@@ -54,13 +54,15 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Sun, Moon, LogOut, KeyRound, X, User, ChevronsUpDown, PanelLeftOpen, HardDrive, Bell, BellOff, Check, Plus, TerminalIcon, FolderTree, Keyboard, EyeOff, Lock } from "lucide-react";
+import { Sun, Moon, LogOut, KeyRound, X, User, ChevronsUpDown, PanelLeftOpen, HardDrive, Bell, BellOff, Check, Plus, TerminalIcon, FolderTree, Keyboard, EyeOff, Lock, Network } from "lucide-react";
 import { NotificationToggle, MobileNotificationMenuItem } from "@/components/NotificationToggle";
 import { HapticsToggle, MobileHapticsMenuItem } from "@/components/HapticsToggle";
 import { UsageIndicator, type ProviderUsageMap } from "@/components/UsageIndicator";
 import { TerminalManager } from "@/components/TerminalManager";
 import { FileExplorer } from "@/components/FileExplorer";
 import { CombinedPanel } from "@/components/CombinedPanel";
+import { ViewerSocketContext } from "@/lib/viewer-socket-context";
+import { TunnelPanel } from "@/components/TunnelPanel";
 import {
   ModelSelector,
   ModelSelectorContent,
@@ -395,6 +397,8 @@ export function App() {
   }, [newSessionOpen, spawnRunnerId]);
 
   const viewerWsRef = React.useRef<Socket<ViewerServerToClientEvents, ViewerClientToServerEvents> | null>(null);
+  // Tracked as state so ViewerSocketContext consumers re-render when the socket changes.
+  const [viewerSocket, setViewerSocket] = React.useState<Socket<ViewerServerToClientEvents, ViewerClientToServerEvents> | null>(null);
   const hubSocketRef = React.useRef<Socket<HubServerToClientEvents, HubClientToServerEvents> | null>(null);
   const activeSessionRef = React.useRef<string | null>(null);
 
@@ -492,6 +496,7 @@ export function App() {
       }
       viewerWsRef.current?.disconnect();
       viewerWsRef.current = null;
+      setViewerSocket(null);
     };
   }, []);
 
@@ -502,6 +507,7 @@ export function App() {
     }
     viewerWsRef.current?.disconnect();
     viewerWsRef.current = null;
+    setViewerSocket(null);
     activeSessionRef.current = null;
     lastSeqRef.current = null;
     awaitingSnapshotRef.current = false;
@@ -2252,6 +2258,7 @@ export function App() {
 
     viewerWsRef.current?.disconnect();
     viewerWsRef.current = null;
+    setViewerSocket(null);
 
     // Clear any existing stale-connection timer from a previous session.
     if (staleCheckTimerRef.current !== null) {
@@ -2309,6 +2316,7 @@ export function App() {
       withCredentials: true,
     });
     viewerWsRef.current = socket;
+    setViewerSocket(socket);
 
     // Stale-connection watchdog: if the socket thinks it's connected but
     // no event has arrived for STALE_THRESHOLD_MS, force a reconnect.
@@ -3291,6 +3299,7 @@ export function App() {
   }
 
   return (
+    <ViewerSocketContext.Provider value={viewerSocket}>
     <TooltipProvider delayDuration={0}>
     <div className="flex h-[100dvh] w-full flex-col overflow-hidden bg-background pp-safe-left pp-safe-right">
       <a
@@ -4086,6 +4095,14 @@ export function App() {
                           />
                         ),
                       },
+                      ...(activeSessionId ? [{
+                        id: "tunnels",
+                        label: "Tunnels",
+                        icon: <Network className="size-3.5" />,
+                        content: (
+                          <TunnelPanel sessionId={activeSessionId} />
+                        ),
+                      }] : []),
                     ]}
                   />
                 </div>
@@ -4226,5 +4243,6 @@ export function App() {
       </div>
     </div>
     </TooltipProvider>
+    </ViewerSocketContext.Provider>
   );
 }
