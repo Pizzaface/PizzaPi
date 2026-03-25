@@ -96,3 +96,16 @@ export function colorPct(pct: number): string {
     if (pct <= 80) return `\x1b[33m${s}\x1b[39m`;
     return `\x1b[31m${s}\x1b[39m`;
 }
+
+/**
+ * Return a colored remaining-percentage string.
+ * Coloring is based on remaining (high remaining = green, low remaining = red):
+ * Green >50%, amber 20-50%, red ≤20%.
+ */
+export function colorRemaining(pct: number): string {
+    const s = `${pct.toFixed(1)}%`;
+    if (!isColorEnabled) return s;
+    if (pct > 50) return `\x1b[32m${s}\x1b[39m`;
+    if (pct > 20) return `\x1b[33m${s}\x1b[39m`;
+    return `\x1b[31m${s}\x1b[39m`;
+}

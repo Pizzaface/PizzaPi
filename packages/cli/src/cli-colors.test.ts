@@ -125,6 +125,23 @@ describe("cli-colors helpers (logic)", () => {
         }
     });
 
+    test("colorRemaining shows correct remaining % (not used %)", async () => {
+        const origNoColor = process.env["NO_COLOR"];
+        process.env["NO_COLOR"] = "1";
+        try {
+            const mod = await import(`./cli-colors.ts?remaining=${Date.now()}`);
+            // 90% remaining → should display "90.0%", not "10.0%"
+            expect(mod.colorRemaining(90)).toBe("90.0%");
+            // 10% remaining → should display "10.0%", not "90.0%"
+            expect(mod.colorRemaining(10)).toBe("10.0%");
+            // 50% remaining → should display "50.0%"
+            expect(mod.colorRemaining(50)).toBe("50.0%");
+        } finally {
+            if (origNoColor === undefined) delete process.env["NO_COLOR"];
+            else process.env["NO_COLOR"] = origNoColor;
+        }
+    });
+
     test("c helpers are identity functions when NO_COLOR is set", async () => {
         const origNoColor = process.env["NO_COLOR"];
         process.env["NO_COLOR"] = "1";
