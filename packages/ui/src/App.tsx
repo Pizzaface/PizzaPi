@@ -60,7 +60,8 @@ import { HapticsToggle, MobileHapticsMenuItem } from "@/components/HapticsToggle
 import { UsageIndicator, type ProviderUsageMap } from "@/components/UsageIndicator";
 import { TerminalManager } from "@/components/TerminalManager";
 import { FileExplorer } from "@/components/FileExplorer";
-import { CombinedPanel } from "@/components/CombinedPanel";
+import { CombinedPanel, type CombinedPanelTab } from "@/components/CombinedPanel";
+import { DockedPanelGroup } from "@/components/DockedPanelGroup";
 import { ViewerSocketContext } from "@/lib/viewer-socket-context";
 import { useRunnerServices, attachServiceAnnounceListener } from "@/hooks/useRunnerServices";
 import { ServicePanelButtons, useServicePanelState } from "@/components/service-panels/ServicePanels";
@@ -164,19 +165,16 @@ export function App() {
   const {
     showTerminal, setShowTerminal,
     terminalPosition, terminalHeight, terminalWidth, terminalColumnRef,
-    handleTerminalResizeStart, handleTerminalPositionChange,
+    handleTerminalPositionChange, startPanelResizeForPosition,
     panelDragActive, panelDragZone,
-    handlePanelDragStart, handleTerminalTabDragStart,
+    startPanelDragWith,
     handleOuterPointerMove, handleOuterPointerUp,
-    combinedActiveTab, handleCombinedTabChange, handleCombinedPositionChange,
+    combinedActiveTab, handleCombinedTabChange,
     terminalTabs, activeTerminalId, setActiveTerminalId,
     handleTerminalTabAdd, handleTerminalTabClose,
     showFileExplorer, setShowFileExplorer,
-    filesPosition, filesWidth, filesHeight, filesContainerRef,
-    handleFilesWidthLeftResizeStart, handleFilesWidthRightResizeStart, handleFilesHeightResizeStart,
+    filesPosition, filesContainerRef,
     handleFilesPositionChange,
-    filesDragActive, filesDragZone, handleFilesDragStart,
-    handleFilesOuterPointerMove, handleFilesOuterPointerUp,
   } = panelLayout;
 
   const [newSessionOpen, setNewSessionOpen] = React.useState(false);
@@ -3165,18 +3163,73 @@ export function App() {
     [feedRunners, activeSessionInfo?.runnerId],
   );
 
-  // When both panels are at the same position, combine them into a single tabbed panel
-  const areCombined = showTerminal && showFileExplorer && terminalPosition === filesPosition
-    && !!activeSessionInfo?.runnerId && !!activeSessionInfo?.cwd;
-
   // Runner service panels — dynamically discovered
   const availableServices = useRunnerServices(viewerSocket);
   const { activePanelId: activeServicePanel, togglePanel: toggleServicePanel, closePanel: closeServicePanel } = useServicePanelState();
+  const [servicePanelPosition, setServicePanelPosition] = React.useState<import("@/hooks/usePanelLayout").PanelPosition>(() => {
+    try { return (localStorage.getItem("pp-service-panel-position") as import("@/hooks/usePanelLayout").PanelPosition) ?? "right"; } catch { return "right"; }
+  });
+  const handleServicePanelPositionChange = React.useCallback((pos: import("@/hooks/usePanelLayout").PanelPosition) => {
+    setServicePanelPosition(pos);
+    try { localStorage.setItem("pp-service-panel-position", pos); } catch {}
+  }, []);
 
-  // When a service panel is toggled, switch the combined panel's active tab to it
-  // (or back to terminal/files when closed).
-  // Build service panel tabs for the CombinedPanel (memoized to avoid recreation every render)
-  const servicePanelTabs = React.useMemo(() => {
+  const handleToggleServicePanel = React.useCallback((serviceId: string) => {
+    if (activeServicePanel === serviceId) {
+      closeServicePanel();
+      if (showTerminal) handleCombinedTabChange("terminal");
+      else if (showFileExplorer) handleCombinedTabChange("files");
+    } else {
+      toggleServicePanel(serviceId);
+      handleCombinedTabChange(serviceId);
+    }
+  }, [activeServicePanel, closeServicePanel, toggleServicePanel, handleCombinedTabChange, showTerminal, showFileExplorer]);
+
+  const terminalPanelTab = React.useMemo<CombinedPanelTab | null>(() => showTerminal ? {
+    id: "terminal",
+    label: "Terminal",
+    icon: <TerminalIcon className="size-3.5" />,
+    onClose: () => setShowTerminal(false),
+    onDragStart: (e) => startPanelDragWith(e, handleTerminalPositionChange),
+    content: (
+      <TerminalManager
+        className="h-full"
+        embedded
+        sessionId={activeSessionId}
+        runnerId={activeSessionInfo?.runnerId ?? undefined}
+        defaultCwd={activeSessionInfo?.cwd || undefined}
+        runners={feedRunners.map(r => ({
+          runnerId: r.runnerId,
+          name: r.name,
+          roots: r.roots,
+          sessionCount: liveSessions.filter(s => s.runnerId === r.runnerId).length,
+        }))}
+        runnersLoading={runnersStatus === "connecting"}
+        tabs={terminalTabs}
+        activeTabId={activeTerminalId}
+        onActiveTabChange={setActiveTerminalId}
+        onTabAdd={handleTerminalTabAdd}
+        onTabClose={handleTerminalTabClose}
+      />
+    ),
+  } : null, [showTerminal, activeSessionId, activeSessionInfo?.runnerId, activeSessionInfo?.cwd, feedRunners, liveSessions, runnersStatus, terminalTabs, activeTerminalId, setActiveTerminalId, handleTerminalTabAdd, handleTerminalTabClose, startPanelDragWith, handleTerminalPositionChange]);
+
+  const filesPanelTab = React.useMemo<CombinedPanelTab | null>(() => (showFileExplorer && activeSessionInfo?.runnerId && activeSessionInfo?.cwd) ? {
+    id: "files",
+    label: "Files",
+    icon: <FolderTree className="size-3.5" />,
+    onClose: () => setShowFileExplorer(false),
+    onDragStart: (e) => startPanelDragWith(e, handleFilesPositionChange),
+    content: (
+      <FileExplorer
+        runnerId={activeSessionInfo.runnerId}
+        cwd={activeSessionInfo.cwd}
+        className="h-full"
+      />
+    ),
+  } : null, [showFileExplorer, activeSessionInfo?.runnerId, activeSessionInfo?.cwd, startPanelDragWith, handleFilesPositionChange]);
+
+  const servicePanelTabs = React.useMemo<CombinedPanelTab[]>(() => {
     if (!activeServicePanel || !activeSessionId) return [];
     const panelDef = SERVICE_PANELS.find(p => p.serviceId === activeServicePanel);
     if (!panelDef) return [];
@@ -3185,8 +3238,7 @@ export function App() {
       id: panelDef.serviceId,
       label: panelDef.label,
       icon: panelDef.icon,
-      // Dragging the service panel tab detaches it (same as Terminal tab drag)
-      onDragStart: handleTerminalTabDragStart,
+      onDragStart: (e) => startPanelDragWith(e, handleServicePanelPositionChange),
       onClose: () => {
         closeServicePanel();
         if (showTerminal) handleCombinedTabChange("terminal");
@@ -3194,19 +3246,34 @@ export function App() {
       },
       content: <PanelComponent sessionId={activeSessionId} />,
     }];
-  }, [activeServicePanel, activeSessionId, closeServicePanel, showTerminal, showFileExplorer, handleCombinedTabChange, handleTerminalTabDragStart]);
+  }, [activeServicePanel, activeSessionId, startPanelDragWith, handleServicePanelPositionChange, closeServicePanel, showTerminal, showFileExplorer, handleCombinedTabChange]);
 
-  const handleToggleServicePanel = React.useCallback((serviceId: string) => {
-    if (activeServicePanel === serviceId) {
-      closeServicePanel();
-      // Switch back to an open panel tab
-      if (showTerminal) handleCombinedTabChange("terminal");
-      else if (showFileExplorer) handleCombinedTabChange("files");
-    } else {
-      toggleServicePanel(serviceId);
-      handleCombinedTabChange(serviceId);
-    }
-  }, [activeServicePanel, closeServicePanel, toggleServicePanel, handleCombinedTabChange, showTerminal, showFileExplorer]);
+  const panelGroups = React.useMemo(() => {
+    const groups: Record<"left" | "right" | "bottom", CombinedPanelTab[]> = { left: [], right: [], bottom: [] };
+    if (terminalPanelTab) groups[terminalPosition].push(terminalPanelTab);
+    if (filesPanelTab) groups[filesPosition].push(filesPanelTab);
+    if (servicePanelTabs[0]) groups[servicePanelPosition].push(servicePanelTabs[0]);
+    return groups;
+  }, [terminalPanelTab, terminalPosition, filesPanelTab, filesPosition, servicePanelTabs, servicePanelPosition]);
+
+  const handleGroupPositionChange = React.useCallback((tabIds: string[], pos: import("@/hooks/usePanelLayout").PanelPosition) => {
+    if (tabIds.includes("terminal")) handleTerminalPositionChange(pos);
+    if (tabIds.includes("files")) handleFilesPositionChange(pos);
+    if (activeServicePanel && tabIds.includes(activeServicePanel)) handleServicePanelPositionChange(pos);
+  }, [handleTerminalPositionChange, handleFilesPositionChange, activeServicePanel, handleServicePanelPositionChange]);
+
+  const handleGroupDragStart = React.useCallback((tabIds: string[]) => (e: React.PointerEvent) => {
+    startPanelDragWith(e, (pos) => handleGroupPositionChange(tabIds, pos));
+  }, [startPanelDragWith, handleGroupPositionChange]);
+
+  const mobilePanelTabs = React.useMemo(() => {
+    return [terminalPanelTab, filesPanelTab, ...servicePanelTabs].filter(Boolean) as CombinedPanelTab[];
+  }, [terminalPanelTab, filesPanelTab, servicePanelTabs]);
+
+  const resolveActiveTabId = React.useCallback((tabs: CombinedPanelTab[]) => {
+    if (tabs.length === 0) return combinedActiveTab;
+    return tabs.some((tab) => tab.id === combinedActiveTab) ? combinedActiveTab : tabs[0]!.id;
+  }, [combinedActiveTab]);
 
   if (isPending) {
     return (
@@ -3686,156 +3753,32 @@ export function App() {
 
         <div
           ref={filesContainerRef}
-          className={cn(
-            "relative flex flex-1 min-w-0 h-full overflow-hidden",
-            showFileExplorer && filesPosition === "bottom" ? "flex-col" : "flex-row",
-          )}
-          onPointerMove={showFileExplorer ? handleFilesOuterPointerMove : undefined}
-          onPointerUp={showFileExplorer ? handleFilesOuterPointerUp : undefined}
-          onPointerCancel={showFileExplorer ? handleFilesOuterPointerUp : undefined}
+          className="relative flex flex-1 min-w-0 h-full overflow-hidden"
         >
-          {/* Drop-zone overlay while dragging the file explorer header */}
-          {filesDragActive && (
-            <div className="absolute inset-0 z-50 pointer-events-none hidden md:block">
-              <div className={cn(
-                "absolute top-0 left-0 w-[35%] h-[55%] flex flex-col items-center justify-center gap-2 border-r-2 transition-colors duration-100",
-                filesDragZone === "left" ? "bg-blue-500/20 border-blue-500" : "bg-zinc-900/60 border-zinc-700/60",
-              )}>
-                <svg className={cn("size-6 transition-colors", filesDragZone === "left" ? "text-blue-400" : "text-zinc-500")} viewBox="0 0 16 16" fill="currentColor"><rect x="1" y="1" width="6" height="14" rx="1.5"/><rect x="9" y="1" width="6" height="14" rx="1.5" opacity=".3"/></svg>
-                <span className={cn("text-xs font-medium transition-colors", filesDragZone === "left" ? "text-blue-300" : "text-zinc-500")}>Left</span>
-              </div>
-              <div className={cn(
-                "absolute top-0 right-0 w-[35%] h-[55%] flex flex-col items-center justify-center gap-2 border-l-2 transition-colors duration-100",
-                filesDragZone === "right" ? "bg-blue-500/20 border-blue-500" : "bg-zinc-900/60 border-zinc-700/60",
-              )}>
-                <svg className={cn("size-6 transition-colors", filesDragZone === "right" ? "text-blue-400" : "text-zinc-500")} viewBox="0 0 16 16" fill="currentColor"><rect x="9" y="1" width="6" height="14" rx="1.5"/><rect x="1" y="1" width="6" height="14" rx="1.5" opacity=".3"/></svg>
-                <span className={cn("text-xs font-medium transition-colors", filesDragZone === "right" ? "text-blue-300" : "text-zinc-500")}>Right</span>
-              </div>
-              <div className={cn(
-                "absolute bottom-0 left-0 right-0 h-[40%] flex flex-col items-center justify-center gap-2 border-t-2 transition-colors duration-100",
-                filesDragZone === "bottom" ? "bg-blue-500/20 border-blue-500" : "bg-zinc-900/60 border-zinc-700/60",
-              )}>
-                <svg className={cn("size-6 transition-colors", filesDragZone === "bottom" ? "text-blue-400" : "text-zinc-500")} viewBox="0 0 16 16" fill="currentColor"><rect x="1" y="9" width="14" height="6" rx="1.5"/><rect x="1" y="1" width="14" height="6" rx="1.5" opacity=".3"/></svg>
-                <span className={cn("text-xs font-medium transition-colors", filesDragZone === "bottom" ? "text-blue-300" : "text-zinc-500")}>Bottom</span>
-              </div>
-            </div>
-          )}
-
-          {/* ── File Explorer panels ── */}
-          {/* Mobile overlay — always rendered when file explorer is open */}
-          {showFileExplorer && activeSessionInfo?.runnerId && activeSessionInfo?.cwd && (
-            <div
-              className="md:hidden fixed inset-0 z-[60] flex flex-col bg-zinc-950 pp-safe-left pp-safe-right"
-              style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
-            >
-              <FileExplorer
-                runnerId={activeSessionInfo.runnerId}
-                cwd={activeSessionInfo.cwd}
-                className="h-full"
-                onClose={() => setShowFileExplorer(false)}
-                position={filesPosition}
-                onPositionChange={handleFilesPositionChange}
-                onDragStart={handleFilesDragStart}
-              />
-            </div>
-          )}
-
-          {/* Desktop file explorer — only when NOT combined with terminal */}
-          {showFileExplorer && !areCombined && activeSessionInfo?.runnerId && activeSessionInfo?.cwd && (
-            <>
-              {/* Desktop: left panel */}
-              {filesPosition === "left" && (
-                <>
-                  <div className="hidden md:flex flex-col shrink-0" style={{ width: filesWidth }}>
-                    <FileExplorer
-                      runnerId={activeSessionInfo.runnerId}
-                      cwd={activeSessionInfo.cwd}
-                      className="h-full"
-                      onClose={() => setShowFileExplorer(false)}
-                      position={filesPosition}
-                      onPositionChange={handleFilesPositionChange}
-                      onDragStart={handleFilesDragStart}
-                    />
-                  </div>
-                  <div
-                    className="hidden md:flex w-[5px] cursor-col-resize shrink-0 items-center justify-center group"
-                    onPointerDown={handleFilesWidthLeftResizeStart}
-                  >
-                    <div className="h-full w-px bg-zinc-800 group-hover:bg-blue-500/60 group-active:bg-blue-500 transition-colors" />
-                  </div>
-                </>
-              )}
-
-              {/* Desktop: right panel — order-last so it appears after the terminal column */}
-              {filesPosition === "right" && (
-                <>
-                  <div
-                    className="hidden md:flex w-[5px] cursor-col-resize shrink-0 items-center justify-center group order-last"
-                    onPointerDown={handleFilesWidthRightResizeStart}
-                  >
-                    <div className="h-full w-px bg-zinc-800 group-hover:bg-blue-500/60 group-active:bg-blue-500 transition-colors" />
-                  </div>
-                  <div className="hidden md:flex flex-col shrink-0 order-last" style={{ width: filesWidth }}>
-                    <FileExplorer
-                      runnerId={activeSessionInfo.runnerId}
-                      cwd={activeSessionInfo.cwd}
-                      className="h-full"
-                      onClose={() => setShowFileExplorer(false)}
-                      position={filesPosition}
-                      onPositionChange={handleFilesPositionChange}
-                      onDragStart={handleFilesDragStart}
-                    />
-                  </div>
-                </>
-              )}
-
-              {/* Desktop: bottom panel — order-last so it appears below the terminal column */}
-              {filesPosition === "bottom" && (
-                <>
-                  <div
-                    className="hidden md:flex h-[5px] cursor-row-resize shrink-0 items-center justify-center group order-last"
-                    onPointerDown={handleFilesHeightResizeStart}
-                  >
-                    <div className="w-full h-px bg-zinc-800 group-hover:bg-blue-500/60 group-active:bg-blue-500 transition-colors" />
-                  </div>
-                  <div className="hidden md:flex flex-col shrink-0 order-last" style={{ height: filesHeight }}>
-                    <FileExplorer
-                      runnerId={activeSessionInfo.runnerId}
-                      cwd={activeSessionInfo.cwd}
-                      className="h-full"
-                      onClose={() => setShowFileExplorer(false)}
-                      position={filesPosition}
-                      onPositionChange={handleFilesPositionChange}
-                      onDragStart={handleFilesDragStart}
-                    />
-                  </div>
-                </>
-              )}
-            </>
-          )}
-
           <div
             ref={terminalColumnRef}
-            className={cn(
-              "relative flex flex-1 min-w-0",
-              showFileExplorer && filesPosition === "bottom" ? "min-h-0" : "h-full",
-              showTerminal && terminalPosition !== "bottom" ? "flex-row" : "flex-col",
-            )}
-            onPointerMove={showTerminal ? handleOuterPointerMove : undefined}
-            onPointerUp={showTerminal ? handleOuterPointerUp : undefined}
-            onPointerCancel={showTerminal ? handleOuterPointerUp : undefined}
+            className="relative flex flex-1 min-w-0 h-full flex-col"
+            onPointerMove={mobilePanelTabs.length > 0 ? handleOuterPointerMove : undefined}
+            onPointerUp={mobilePanelTabs.length > 0 ? handleOuterPointerUp : undefined}
+            onPointerCancel={mobilePanelTabs.length > 0 ? handleOuterPointerUp : undefined}
           >
-            <div
-              id="main-content"
-              tabIndex={-1}
-              className={cn(
-              "flex flex-col flex-1 min-h-0",
-              showTerminal && "overflow-hidden",
-              showTerminal && terminalPosition !== "bottom" && "min-w-0",
-              showTerminal && terminalPosition === "left" && "order-last",
-            )}>
-              {showRunners ? (
-                <RunnerManager
+            <div className="flex flex-1 min-w-0 min-h-0">
+              {panelGroups.left.length > 0 && (
+                <DockedPanelGroup
+                  position="left"
+                  size={terminalWidth}
+                  tabs={panelGroups.left}
+                  activeTabId={resolveActiveTabId(panelGroups.left)}
+                  onActiveTabChange={handleCombinedTabChange}
+                  onPositionChange={(pos) => handleGroupPositionChange(panelGroups.left.map(tab => tab.id), pos)}
+                  onDragStart={handleGroupDragStart(panelGroups.left.map(tab => tab.id))}
+                  onResizeStart={(e) => startPanelResizeForPosition("left", e)}
+                />
+              )}
+
+              <div id="main-content" tabIndex={-1} className="flex flex-col flex-1 min-w-0 min-h-0 overflow-hidden">
+                {showRunners ? (
+                  <RunnerManager
                     runners={feedRunners}
                     runnersStatus={runnersStatus}
                     sessions={liveSessions}
@@ -3843,349 +3786,107 @@ export function App() {
                     selectedRunnerId={selectedRunnerId}
                     onSelectRunner={setSelectedRunnerId}
                   />
-              ) : (
-                <ErrorBoundary level="section" resetKeys={[activeSessionId]}>
-                  <SessionViewer
-                    sessionId={activeSessionId}
-                    sessionName={sessionName}
-                    messages={messages}
-                    activeModel={activeModel}
-                    activeToolCalls={activeToolCalls}
-                    pendingQuestion={pendingQuestion}
-                    pendingPlan={pendingPlan}
-                    pluginTrustPrompt={pluginTrustPrompt}
-                    onPluginTrustResponse={respondPluginTrust}
-                    availableCommands={availableCommands}
-                    resumeSessions={resumeSessions}
-                    resumeSessionsLoading={resumeSessionsLoading}
-                    onRequestResumeSessions={requestResumeSessions}
-                    onSendInput={sendSessionInput}
-                    onExec={sendRemoteExec}
-                    onShowModelSelector={() => setModelSelectorOpen(true)}
-                    agentActive={agentActive}
-                    isCompacting={isCompacting}
-                    effortLevel={effortLevel}
-                    tokenUsage={tokenUsage}
-                    lastHeartbeatAt={lastHeartbeatAt}
-                    viewerStatus={viewerStatus}
-                    retryState={retryState}
-                    messageQueue={messageQueue}
-                    onRemoveQueuedMessage={removeQueuedMessage}
-                    onEditQueuedMessage={editQueuedMessage}
-                    onClearMessageQueue={clearMessageQueue}
-                    onToggleTerminal={() => setShowTerminal((v) => !v)}
-                    showTerminalButton
-                    onToggleFileExplorer={() => setShowFileExplorer((v) => !v)}
-                    showFileExplorerButton={!!activeSessionInfo?.runnerId && !!activeSessionInfo?.cwd}
-                    extraHeaderButtons={
-                      <ServicePanelButtons
-                        availableServices={availableServices}
-                        activePanelId={activeServicePanel}
-                        onTogglePanel={handleToggleServicePanel}
-                      />
-                    }
-                    todoList={todoList}
-                    planModeEnabled={planModeEnabled}
-                    runnerId={activeSessionInfo?.runnerId ?? undefined}
-                    sessionCwd={activeSessionInfo?.cwd || undefined}
-                    onAppendSystemMessage={appendLocalSystemMessage}
-                    onSpawnAgentSession={handleSpawnAgentSession}
-                    onTriggerResponse={handleTriggerResponse}
-                    onQuestionDismiss={() => setPendingQuestion(null)}
-                    onPlanDismiss={() => setPendingPlan(null)}
-                    onDuplicateSession={activeSessionInfo?.runnerId ? () => handleDuplicateSession(activeSessionInfo.runnerId!, activeSessionInfo.cwd || "") : undefined}
-                    runnerInfo={activeRunnerInfo}
-                  />
-                </ErrorBoundary>
+                ) : (
+                  <ErrorBoundary level="section" resetKeys={[activeSessionId]}>
+                    <SessionViewer
+                      sessionId={activeSessionId}
+                      sessionName={sessionName}
+                      messages={messages}
+                      activeModel={activeModel}
+                      activeToolCalls={activeToolCalls}
+                      pendingQuestion={pendingQuestion}
+                      pendingPlan={pendingPlan}
+                      pluginTrustPrompt={pluginTrustPrompt}
+                      onPluginTrustResponse={respondPluginTrust}
+                      availableCommands={availableCommands}
+                      resumeSessions={resumeSessions}
+                      resumeSessionsLoading={resumeSessionsLoading}
+                      onRequestResumeSessions={requestResumeSessions}
+                      onSendInput={sendSessionInput}
+                      onExec={sendRemoteExec}
+                      onShowModelSelector={() => setModelSelectorOpen(true)}
+                      agentActive={agentActive}
+                      isCompacting={isCompacting}
+                      effortLevel={effortLevel}
+                      tokenUsage={tokenUsage}
+                      lastHeartbeatAt={lastHeartbeatAt}
+                      viewerStatus={viewerStatus}
+                      retryState={retryState}
+                      messageQueue={messageQueue}
+                      onRemoveQueuedMessage={removeQueuedMessage}
+                      onEditQueuedMessage={editQueuedMessage}
+                      onClearMessageQueue={clearMessageQueue}
+                      onToggleTerminal={() => setShowTerminal((v) => !v)}
+                      showTerminalButton
+                      onToggleFileExplorer={() => setShowFileExplorer((v) => !v)}
+                      showFileExplorerButton={!!activeSessionInfo?.runnerId && !!activeSessionInfo?.cwd}
+                      extraHeaderButtons={
+                        <ServicePanelButtons
+                          availableServices={availableServices}
+                          activePanelId={activeServicePanel}
+                          onTogglePanel={handleToggleServicePanel}
+                        />
+                      }
+                      todoList={todoList}
+                      planModeEnabled={planModeEnabled}
+                      runnerId={activeSessionInfo?.runnerId ?? undefined}
+                      sessionCwd={activeSessionInfo?.cwd || undefined}
+                      onAppendSystemMessage={appendLocalSystemMessage}
+                      onSpawnAgentSession={handleSpawnAgentSession}
+                      onTriggerResponse={handleTriggerResponse}
+                      onQuestionDismiss={() => setPendingQuestion(null)}
+                      onPlanDismiss={() => setPendingPlan(null)}
+                      onDuplicateSession={activeSessionInfo?.runnerId ? () => handleDuplicateSession(activeSessionInfo.runnerId!, activeSessionInfo.cwd || "") : undefined}
+                      runnerInfo={activeRunnerInfo}
+                    />
+                  </ErrorBoundary>
+                )}
+              </div>
+
+              {panelGroups.right.length > 0 && (
+                <DockedPanelGroup
+                  position="right"
+                  size={terminalWidth}
+                  tabs={panelGroups.right}
+                  activeTabId={resolveActiveTabId(panelGroups.right)}
+                  onActiveTabChange={handleCombinedTabChange}
+                  onPositionChange={(pos) => handleGroupPositionChange(panelGroups.right.map(tab => tab.id), pos)}
+                  onDragStart={handleGroupDragStart(panelGroups.right.map(tab => tab.id))}
+                  onResizeStart={(e) => startPanelResizeForPosition("right", e)}
+                />
               )}
             </div>
 
-            {/* Mobile: service panel overlay */}
-            {activeServicePanel && activeSessionId && (
-              <div className="md:hidden fixed inset-0 z-[60] flex flex-col bg-background pp-safe-left pp-safe-right"
-                style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
-              >
-                {(() => {
-                  const panelDef = SERVICE_PANELS.find(p => p.serviceId === activeServicePanel);
-                  if (!panelDef) return null;
-                  const PanelComponent = panelDef.component;
-                  return (
-                    <>
-                      <div className="flex items-center justify-between px-3 py-2 border-b border-border bg-muted/30 shrink-0">
-                        <div className="flex items-center gap-1.5 text-sm font-medium">
-                          {panelDef.icon}
-                          {panelDef.label}
-                        </div>
-                        <button type="button" onClick={closeServicePanel} className="p-1 text-muted-foreground hover:text-foreground">
-                          <X className="size-4" />
-                        </button>
-                      </div>
-                      <div className="flex-1 overflow-hidden">
-                        <PanelComponent sessionId={activeSessionId} />
-                      </div>
-                    </>
-                  );
-                })()}
-              </div>
+            {panelGroups.bottom.length > 0 && (
+              <DockedPanelGroup
+                position="bottom"
+                size={terminalHeight}
+                tabs={panelGroups.bottom}
+                activeTabId={resolveActiveTabId(panelGroups.bottom)}
+                onActiveTabChange={handleCombinedTabChange}
+                onPositionChange={(pos) => handleGroupPositionChange(panelGroups.bottom.map(tab => tab.id), pos)}
+                onDragStart={handleGroupDragStart(panelGroups.bottom.map(tab => tab.id))}
+                onResizeStart={(e) => startPanelResizeForPosition("bottom", e)}
+              />
             )}
 
-            {/* Mobile: terminal overlay (always separate from combined) */}
-            {showTerminal && (
+            {mobilePanelTabs.length > 0 && (
               <div
-                className="md:hidden fixed inset-0 z-[60] flex flex-col bg-zinc-950 pp-safe-left pp-safe-right"
-                style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
+                className="md:hidden fixed inset-0 z-[60] flex flex-col bg-background pp-safe-left pp-safe-right"
+                style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
               >
-                <TerminalManager
+                <CombinedPanel
+                  activeTabId={resolveActiveTabId(mobilePanelTabs)}
+                  onActiveTabChange={handleCombinedTabChange}
+                  position="bottom"
                   className="h-full"
-                  onClose={() => setShowTerminal(false)}
-                  position={terminalPosition}
-                  onPositionChange={handleTerminalPositionChange}
-                  onDragStart={handlePanelDragStart}
-                  sessionId={activeSessionId}
-                  runnerId={activeSessionInfo?.runnerId ?? undefined}
-                  defaultCwd={activeSessionInfo?.cwd || undefined}
-                  runners={feedRunners.map(r => ({
-                    runnerId: r.runnerId,
-                    name: r.name,
-                    roots: r.roots,
-                    sessionCount: liveSessions.filter(s => s.runnerId === r.runnerId).length,
-                  }))}
-                  runnersLoading={runnersStatus === "connecting"}
-                  tabs={terminalTabs}
-                  activeTabId={activeTerminalId}
-                  onActiveTabChange={setActiveTerminalId}
-                  onTabAdd={handleTerminalTabAdd}
-                  onTabClose={handleTerminalTabClose}
+                  tabs={mobilePanelTabs}
                 />
               </div>
             )}
 
-            {/* Desktop: Combined panel (terminal + file explorer at same position) */}
-            {areCombined && (
-              <>
-                <div
-                  className={cn(
-                    "hidden md:flex shrink-0 items-center justify-center group",
-                    terminalPosition === "bottom"
-                      ? "h-[5px] cursor-row-resize"
-                      : "w-[5px] cursor-col-resize",
-                  )}
-                  style={{ order: terminalPosition === "left" ? 1 : 9998 }}
-                  onPointerDown={handleTerminalResizeStart}
-                >
-                  <div className={cn(
-                    "bg-zinc-800 group-hover:bg-blue-500/60 group-active:bg-blue-500 transition-colors",
-                    terminalPosition === "bottom" ? "w-full h-px" : "h-full w-px",
-                  )} />
-                </div>
-                <div
-                  className="hidden md:flex flex-col shrink-0"
-                  style={{
-                    order: terminalPosition === "left" ? 0 : 9999,
-                    ...(terminalPosition === "bottom"
-                      ? { height: terminalHeight }
-                      : { width: terminalWidth }),
-                  }}
-                >
-                  <CombinedPanel
-                    activeTabId={combinedActiveTab}
-                    onActiveTabChange={handleCombinedTabChange}
-                    position={terminalPosition}
-                    onPositionChange={handleCombinedPositionChange}
-                    onDragStart={handlePanelDragStart}
-                    className="h-full"
-                    tabs={[
-                      {
-                        id: "terminal",
-                        label: "Terminal",
-                        icon: <TerminalIcon className="size-3.5" />,
-                        onClose: () => { setShowTerminal(false); handleCombinedTabChange("files"); },
-                        // Dragging the Terminal tab detaches it (moves only the terminal panel)
-                        onDragStart: handleTerminalTabDragStart,
-                        content: (
-                          <TerminalManager
-                            className="h-full"
-                            embedded
-                            sessionId={activeSessionId}
-                            runnerId={activeSessionInfo?.runnerId ?? undefined}
-                            defaultCwd={activeSessionInfo?.cwd || undefined}
-                            runners={feedRunners.map(r => ({
-                              runnerId: r.runnerId,
-                              name: r.name,
-                              roots: r.roots,
-                              sessionCount: liveSessions.filter(s => s.runnerId === r.runnerId).length,
-                            }))}
-                            runnersLoading={runnersStatus === "connecting"}
-                            tabs={terminalTabs}
-                            activeTabId={activeTerminalId}
-                            onActiveTabChange={setActiveTerminalId}
-                            onTabAdd={handleTerminalTabAdd}
-                            onTabClose={handleTerminalTabClose}
-                          />
-                        ),
-                      },
-                      {
-                        id: "files",
-                        label: "Files",
-                        icon: <FolderTree className="size-3.5" />,
-                        onClose: () => { setShowFileExplorer(false); handleCombinedTabChange("terminal"); },
-                        // Dragging the Files tab detaches it (moves only the files panel)
-                        onDragStart: handleFilesDragStart,
-                        content: (
-                          <FileExplorer
-                            runnerId={activeSessionInfo!.runnerId!}
-                            cwd={activeSessionInfo!.cwd}
-                            className="h-full"
-                          />
-                        ),
-                      },
-                      // Service panels (Tunnels, etc.) — dynamically added as tabs
-                      ...servicePanelTabs,
-                    ]}
-                  />
-                </div>
-              </>
-            )}
-
-            {/* Desktop: standalone terminal (when not combined with files) */}
-            {showTerminal && !areCombined && (
-              <>
-                <div
-                  className={cn(
-                    "hidden md:flex shrink-0 items-center justify-center group",
-                    terminalPosition === "bottom"
-                      ? "h-[5px] cursor-row-resize"
-                      : "w-[5px] cursor-col-resize",
-                  )}
-                  style={{ order: terminalPosition === "left" ? 1 : 9998 }}
-                  onPointerDown={handleTerminalResizeStart}
-                >
-                  <div className={cn(
-                    "bg-zinc-800 group-hover:bg-blue-500/60 group-active:bg-blue-500 transition-colors",
-                    terminalPosition === "bottom" ? "w-full h-px" : "h-full w-px",
-                  )} />
-                </div>
-                <div
-                  className="hidden md:flex flex-col shrink-0"
-                  style={{
-                    order: terminalPosition === "left" ? 0 : 9999,
-                    ...(terminalPosition === "bottom"
-                      ? { height: terminalHeight }
-                      : { width: terminalWidth }),
-                  }}
-                >
-                  {/* When a service panel is active, wrap terminal in CombinedPanel with service tab */}
-                  {activeServicePanel && activeSessionId ? (
-                    <CombinedPanel
-                      activeTabId={combinedActiveTab}
-                      onActiveTabChange={handleCombinedTabChange}
-                      position={terminalPosition}
-                      onPositionChange={handleTerminalPositionChange}
-                      onDragStart={handlePanelDragStart}
-                      className="h-full"
-                      tabs={[
-                        {
-                          id: "terminal",
-                          label: "Terminal",
-                          icon: <TerminalIcon className="size-3.5" />,
-                          onClose: () => setShowTerminal(false),
-                          content: (
-                            <TerminalManager
-                              className="h-full"
-                              embedded
-                              sessionId={activeSessionId}
-                              runnerId={activeSessionInfo?.runnerId ?? undefined}
-                              defaultCwd={activeSessionInfo?.cwd || undefined}
-                              runners={feedRunners.map(r => ({
-                                runnerId: r.runnerId,
-                                name: r.name,
-                                roots: r.roots,
-                                sessionCount: liveSessions.filter(s => s.runnerId === r.runnerId).length,
-                              }))}
-                              runnersLoading={runnersStatus === "connecting"}
-                              tabs={terminalTabs}
-                              activeTabId={activeTerminalId}
-                              onActiveTabChange={setActiveTerminalId}
-                              onTabAdd={handleTerminalTabAdd}
-                              onTabClose={handleTerminalTabClose}
-                            />
-                          ),
-                        },
-                        ...servicePanelTabs,
-                      ]}
-                    />
-                  ) : (
-                    <TerminalManager
-                      className="h-full"
-                      onClose={() => setShowTerminal(false)}
-                      position={terminalPosition}
-                      onPositionChange={handleTerminalPositionChange}
-                      onDragStart={handlePanelDragStart}
-                      sessionId={activeSessionId}
-                      runnerId={activeSessionInfo?.runnerId ?? undefined}
-                      defaultCwd={activeSessionInfo?.cwd || undefined}
-                      runners={feedRunners.map(r => ({
-                        runnerId: r.runnerId,
-                        name: r.name,
-                        roots: r.roots,
-                        sessionCount: liveSessions.filter(s => s.runnerId === r.runnerId).length,
-                      }))}
-                      runnersLoading={runnersStatus === "connecting"}
-                      tabs={terminalTabs}
-                      activeTabId={activeTerminalId}
-                      onActiveTabChange={setActiveTerminalId}
-                      onTabAdd={handleTerminalTabAdd}
-                      onTabClose={handleTerminalTabClose}
-                    />
-                  )}
-                </div>
-              </>
-            )}
-
-            {/* Desktop: standalone service panel (no terminal or files open) */}
-            {activeServicePanel && activeSessionId && !showTerminal && !areCombined && (
-              <>
-                <div
-                  className={cn(
-                    "hidden md:flex shrink-0 items-center justify-center group",
-                    terminalPosition === "bottom"
-                      ? "h-[5px] cursor-row-resize"
-                      : "w-[5px] cursor-col-resize",
-                  )}
-                  style={{ order: terminalPosition === "left" ? 1 : 9998 }}
-                  onPointerDown={handleTerminalResizeStart}
-                >
-                  <div className={cn(
-                    "bg-zinc-800 group-hover:bg-blue-500/60 group-active:bg-blue-500 transition-colors",
-                    terminalPosition === "bottom" ? "w-full h-px" : "h-full w-px",
-                  )} />
-                </div>
-                <div
-                  className="hidden md:flex flex-col shrink-0"
-                  style={{
-                    order: terminalPosition === "left" ? 0 : 9999,
-                    ...(terminalPosition === "bottom"
-                      ? { height: terminalHeight }
-                      : { width: terminalWidth }),
-                  }}
-                >
-                  <CombinedPanel
-                    activeTabId={combinedActiveTab}
-                    onActiveTabChange={handleCombinedTabChange}
-                    position={terminalPosition}
-                    onPositionChange={handleTerminalPositionChange}
-                    onDragStart={handlePanelDragStart}
-                    className="h-full"
-                    tabs={servicePanelTabs}
-                  />
-                </div>
-              </>
-            )}
-
-            {/* Drop-zone overlay shown while dragging the panel header */}
             {panelDragActive && (
               <div className="absolute inset-0 z-50 pointer-events-none hidden md:block">
-                {/* Bottom zone */}
                 <div className={cn(
                   "absolute bottom-0 left-0 right-0 h-[40%] flex flex-col items-center justify-center gap-2 border-t-2 transition-colors duration-100",
                   panelDragZone === "bottom" ? "bg-blue-500/20 border-blue-500" : "bg-zinc-900/60 border-zinc-700/60",
@@ -4193,7 +3894,6 @@ export function App() {
                   <svg className={cn("size-6 transition-colors", panelDragZone === "bottom" ? "text-blue-400" : "text-zinc-500")} viewBox="0 0 16 16" fill="currentColor"><rect x="1" y="9" width="14" height="6" rx="1.5"/><rect x="1" y="1" width="14" height="6" rx="1.5" opacity=".3"/></svg>
                   <span className={cn("text-xs font-medium transition-colors", panelDragZone === "bottom" ? "text-blue-300" : "text-zinc-500")}>Bottom</span>
                 </div>
-                {/* Right zone */}
                 <div className={cn(
                   "absolute top-0 right-0 w-[35%] h-[55%] flex flex-col items-center justify-center gap-2 border-l-2 transition-colors duration-100",
                   panelDragZone === "right" ? "bg-blue-500/20 border-blue-500" : "bg-zinc-900/60 border-zinc-700/60",
@@ -4201,7 +3901,6 @@ export function App() {
                   <svg className={cn("size-6 transition-colors", panelDragZone === "right" ? "text-blue-400" : "text-zinc-500")} viewBox="0 0 16 16" fill="currentColor"><rect x="9" y="1" width="6" height="14" rx="1.5"/><rect x="1" y="1" width="6" height="14" rx="1.5" opacity=".3"/></svg>
                   <span className={cn("text-xs font-medium transition-colors", panelDragZone === "right" ? "text-blue-300" : "text-zinc-500")}>Right</span>
                 </div>
-                {/* Left zone */}
                 <div className={cn(
                   "absolute top-0 left-0 w-[35%] h-[55%] flex flex-col items-center justify-center gap-2 border-r-2 transition-colors duration-100",
                   panelDragZone === "left" ? "bg-blue-500/20 border-blue-500" : "bg-zinc-900/60 border-zinc-700/60",
@@ -4213,7 +3912,6 @@ export function App() {
             )}
           </div>
         </div>
-
         <NewSessionWizardDialog
           open={newSessionOpen}
           onOpenChange={(open) => { if (!spawningSession) setNewSessionOpen(open); }}
