@@ -291,7 +291,7 @@ export const triggersExtension: ExtensionFactory = (pi) => {
         },
         renderResult: (result: any, _opts: any, theme: any) => {
             const text: string = result?.content?.[0]?.text ?? "";
-            const isSuccess = text.startsWith("Response sent for trigger") || text.startsWith("Acknowledged");
+            const isSuccess = text.startsWith("Response sent for trigger") || text.startsWith("Acknowledged") || text.startsWith("Follow-up sent");
             if (!isSuccess) {
                 return new Text(theme.fg("error", "✗ ") + theme.fg("muted", preview(text, 60)), 0, 0);
             }
