@@ -269,8 +269,8 @@ async function main() {
                                 ? (1 - bucket.remainingFraction) * 100
                                 : null;
                             const bar = usedPct !== null ? usageBar(usedPct) : "";
-                            const remainingStr = usedPct !== null
-                                ? ` ${colorPct(usedPct)} used`
+                            const remainingStr = bucket.remainingFraction != null
+                                ? ` ${colorRemaining(bucket.remainingFraction * 100)} remaining`
                                 : "";
                             const amt = bucket.remainingAmount != null ? c.dim(` (${bucket.remainingAmount} left)`) : "";
                             const reset = bucket.resetTime ? c.dim(`  resets ${new Date(bucket.resetTime).toLocaleString()}`) : "";
@@ -440,7 +440,17 @@ async function main() {
     }
 
     if (safeMode) {
-        console.log("\n⚡ Safe mode — MCP servers, plugins, hooks, and relay are disabled.\n");
+        if (process.stdout.isTTY) {
+            console.log(
+                "\n\x1b[33m⚡ Safe mode\x1b[0m\x1b[2m — \x1b[0m" +
+                "\x1b[31mMCP servers\x1b[0m\x1b[2m, \x1b[0m" +
+                "\x1b[31mplugins\x1b[0m\x1b[2m, \x1b[0m" +
+                "\x1b[31mhooks\x1b[0m\x1b[2m, and \x1b[0m" +
+                "\x1b[31mrelay\x1b[0m\x1b[2m are disabled.\x1b[0m\n",
+            );
+        } else {
+            console.log("\n⚡ Safe mode — MCP servers, plugins, hooks, and relay are disabled.\n");
+        }
     }
 
     // ── Sandbox initialization ─────────────────────────────────────────────
