@@ -142,20 +142,100 @@ async function askPlanMode(
         }
 
         if (canAskViaTui) {
-            const displayParts: string[] = [`📋 Plan: ${title}`];
-            if (description) displayParts.push(description);
+            // ── ANSI style helpers ──────────────────────────────────────────
+            const bold = (s: string) => `\x1b[1m${s}\x1b[22m`;
+            const accent = (s: string) => `\x1b[38;2;232;180;248m${s}\x1b[39m`;
+            const dimText = (s: string) => `\x1b[2m${s}\x1b[22m`;
+            const bc = (s: string) => `\x1b[38;2;196;167;224m${s}\x1b[39m`;
+
+            /** Visible display width — strips ANSI codes and counts wide emoji as 2. */
+            const vlen = (s: string): number => {
+                const stripped = s.replace(/\x1b\[[0-9;]*m/g, "");
+                let len = 0;
+                for (const ch of stripped) {
+                    len += (ch.codePointAt(0) ?? 0) > 0xffff ? 2 : 1;
+                }
+                return len;
+            };
+
+            /** Word-wrap plain text at maxWidth characters. */
+            const wrap = (text: string, maxWidth: number): string[] => {
+                if (maxWidth <= 0) return [text];
+                const words = text.split(" ");
+                const out: string[] = [];
+                let cur = "";
+                for (const w of words) {
+                    if (!cur) { cur = w; continue; }
+                    if (cur.length + 1 + w.length <= maxWidth) { cur += " " + w; }
+                    else { out.push(cur); cur = w; }
+                }
+                if (cur) out.push(cur);
+                return out.length ? out : [""];
+            };
+
+            // ── Box dimensions ──────────────────────────────────────────────
+            // INNER = content width between the "│ " and " │" borders
+            const INNER = Math.max(62, title.length + 16);
+            const HBAR = "─".repeat(INNER + 2); // fills between corner chars
+
+            const topBar = bc("╭" + HBAR + "╮");
+            const midBar = bc("├" + HBAR + "┤");
+            const botBar = bc("╰" + HBAR + "╯");
+
+            /** Wrap content in border chars, padded to INNER visible chars. */
+            const row = (content: string): string => {
+                const pad = " ".repeat(Math.max(0, INNER - vlen(content)));
+                return bc("│") + " " + content + pad + " " + bc("│");
+            };
+            const blankRow = () => row("");
+
+            // ── Build display lines ─────────────────────────────────────────
+            const displayLines: string[] = [];
+
+            displayLines.push(topBar);
+            displayLines.push(row("📋  " + accent(bold(title))));
+
+            if (description) {
+                displayLines.push(blankRow());
+                for (const dl of wrap(description, INNER - 4)) {
+                    displayLines.push(row("  " + dimText(dl)));
+                }
+            }
+
             if (steps.length > 0) {
-                displayParts.push("");
+                displayLines.push(blankRow());
                 steps.forEach((s, i) => {
-                    displayParts.push(`  ${i + 1}. ${s.title}`);
-                    if (s.description) displayParts.push(`     ${s.description}`);
+                    displayLines.push(row("  " + accent(bold(`${i + 1}.`)) + " " + bold(s.title)));
+                    if (s.description) {
+                        for (const dl of wrap(s.description, INNER - 8)) {
+                            displayLines.push(row("     " + dimText(dl)));
+                        }
+                    }
                 });
             }
-            displayParts.push("");
-            displayParts.push("Options: (1) Clear Context & Begin, (2) Begin, (3) Suggest Edit, (4) Cancel");
+
+            displayLines.push(blankRow());
+            displayLines.push(midBar);
+
+            // Options in two-column layout
+            const COL1 = 30; // target width for first option column
+            const makeOptRow = (o1: string, o2: string): string => {
+                const gap = " ".repeat(Math.max(2, COL1 - vlen(o1)));
+                return "  " + o1 + gap + o2;
+            };
+
+            displayLines.push(row(makeOptRow(
+                accent("(1)") + " Clear Context & Begin",
+                accent("(2)") + " Begin",
+            )));
+            displayLines.push(row(makeOptRow(
+                accent("(3)") + " Suggest Edit",
+                accent("(4)") + " Cancel",
+            )));
+            displayLines.push(botBar);
 
             void ctx.ui
-                .input(displayParts.join("\n"), "Enter choice (1-4) or edit suggestion…", { signal: localAbort.signal })
+                .input(displayLines.join("\n"), "Enter choice (1-4) or edit suggestion…", { signal: localAbort.signal })
                 .then((value) => {
                     const answer = value?.trim();
                     if (!answer) {
