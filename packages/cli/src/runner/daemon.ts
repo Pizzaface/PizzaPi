@@ -238,11 +238,6 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         // Initialize all services — registers socket event handlers
         registry.initAll(socket, { isShuttingDown: () => isShuttingDown });
 
-        // Announce available services to viewers
-        (socket as any).emit("service_announce", {
-            serviceIds: registry.getAll().map((s) => s.id),
-        });
-
         logInfo(`connecting to relay at ${sioUrl}/runner…`);
 
         // Start periodic usage scan (every 5 minutes)
@@ -319,6 +314,12 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 logWarn(`server assigned unexpected ID ${runnerId} (expected ${identity.runnerId})`);
             }
             logInfo(`registered as ${runnerId}`);
+
+            // Announce available services AFTER registration is confirmed —
+            // runnerId is now set on the server, so the announce won't be dropped.
+            (socket as any).emit("service_announce", {
+                serviceIds: registry.getAll().map((s) => s.id),
+            });
 
             // Re-adopt orphaned sessions that survived a daemon restart.
             // Their worker processes are still running and connected to the relay.
@@ -407,6 +408,15 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     isFirstSpawn = false;
                     spawnSession(sessionId, apiKey!, relayRaw, requestedCwd, runningSessions, restartingSessions, doSpawn, spawnOpts);
                     socket.emit("session_ready", { sessionId });
+                    // Re-emit service_announce so viewers that connect for this
+                    // session receive the service list.  The relay only forwards
+                    // service_message/service_announce to sessions in its tracking
+                    // map — by the time session_ready fires the session is
+                    // registered there, so this announce is guaranteed to reach
+                    // any already-connected viewer for this session.
+                    (socket as any).emit("service_announce", {
+                        serviceIds: registry.getAll().map((s) => s.id),
+                    });
                 } catch (err) {
                     socket.emit("session_error", {
                         sessionId,
