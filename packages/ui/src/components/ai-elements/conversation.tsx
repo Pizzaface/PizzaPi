@@ -260,7 +260,6 @@ export const ConversationExport = ({
           ) : (
             <ShareIcon className="size-3.5" />
           )}
-          <span className="hidden sm:inline ml-1">Export</span>
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">

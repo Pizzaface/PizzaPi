@@ -1574,7 +1574,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
             )}
             {showTerminalButton && onToggleTerminal && (
               <Button
-                className="h-7 w-7 sm:h-7 sm:w-auto sm:px-2.5 sm:text-[0.7rem]"
+                className="h-7 w-7"
                 onClick={onToggleTerminal}
                 size="icon"
                 type="button"
@@ -1583,12 +1583,11 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                 aria-label="Toggle terminal"
               >
                 <TerminalIcon className="size-3.5" />
-                <span className="hidden sm:inline ml-1">Terminal</span>
               </Button>
             )}
             {showFileExplorerButton && onToggleFileExplorer && (
               <Button
-                className="h-7 w-7 sm:h-7 sm:w-auto sm:px-2.5 sm:text-[0.7rem]"
+                className="h-7 w-7"
                 onClick={onToggleFileExplorer}
                 size="icon"
                 type="button"
@@ -1597,20 +1596,19 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                 aria-label="Toggle file explorer"
               >
                 <FolderTree className="size-3.5" />
-                <span className="hidden sm:inline ml-1">Files</span>
               </Button>
             )}
             {extraHeaderButtons}
             <ConversationExport
               messages={sortedMessages}
               filename={`session-${sessionId || "export"}.md`}
-              className="static top-auto right-auto h-7 w-7 sm:h-7 sm:w-auto sm:px-2.5 sm:text-[0.7rem] border-border bg-background hover:bg-accent hover:text-accent-foreground rounded-md"
+              className="static top-auto right-auto h-7 w-7 border-border bg-background hover:bg-accent hover:text-accent-foreground rounded-md"
               variant="outline"
               size="icon"
             />
             {onDuplicateSession && (
               <Button
-                className="h-7 w-7 sm:h-7 sm:w-auto sm:px-2.5 sm:text-[0.7rem]"
+                className="h-7 w-7"
                 onClick={onDuplicateSession}
                 size="icon"
                 type="button"
@@ -1619,11 +1617,10 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                 aria-label="Duplicate session"
               >
                 <Copy className="size-3.5" />
-                <span className="hidden sm:inline ml-1">Duplicate</span>
               </Button>
             )}
             <Button
-              className="h-7 w-7 sm:h-7 sm:w-auto sm:px-2.5 sm:text-[0.7rem]"
+              className="h-7 w-7"
               disabled={!onExec}
               onClick={() => {
                 if (!onExec || !sessionId) return;
@@ -1640,10 +1637,9 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
               aria-label="End session"
             >
               <OctagonX className="size-3.5" />
-              <span className="hidden sm:inline ml-1">End</span>
             </Button>
             <Button
-              className="h-7 w-7 sm:h-7 sm:w-auto sm:px-2.5 sm:text-[0.7rem]"
+              className="h-7 w-7"
               disabled={!onExec}
               onClick={() => {
                 if (!onExec) return;
@@ -1660,7 +1656,6 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
               aria-label="Clear conversation"
             >
               <Plus className="size-3.5" />
-              <span className="hidden sm:inline ml-1">Clear</span>
             </Button>
           </div>
         </div>

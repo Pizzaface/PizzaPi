@@ -31,7 +31,7 @@ export function ServicePanelButtons({
             {visiblePanels.map(panel => (
                 <Button
                     key={panel.serviceId}
-                    className={`h-7 w-7 sm:h-7 sm:w-auto sm:px-2.5 sm:text-[0.7rem] ${
+                    className={`h-7 w-7 ${
                         activePanelId === panel.serviceId ? "bg-accent text-accent-foreground" : ""
                     }`}
                     onClick={() => onTogglePanel(panel.serviceId)}
@@ -42,7 +42,6 @@ export function ServicePanelButtons({
                     aria-label={`Toggle ${panel.label}`}
                 >
                     {panel.icon}
-                    <span className="hidden sm:inline ml-1">{panel.label}</span>
                 </Button>
             ))}
         </>
