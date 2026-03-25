@@ -7,8 +7,16 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { expandHome } from "./config.js";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+
+/** Built-in skills shipped with the CLI package. */
+export function builtinSkillsDir(): string {
+    return join(__dirname, "skills");
+}
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -189,6 +197,7 @@ export function deleteSkill(name: string, dir?: string): boolean {
  */
 export function buildInteractiveSkillPaths(cwd: string, configSkills?: string[]): string[] {
     const paths: string[] = [
+        builtinSkillsDir(),
         join(homedir(), ".pizzapi", "skills"),
         join(cwd, ".pizzapi", "skills"),
     ];
@@ -211,6 +220,7 @@ export function buildInteractiveSkillPaths(cwd: string, configSkills?: string[])
  */
 export function buildWorkerSkillPaths(cwd: string, configSkills?: string[]): string[] {
     const paths: string[] = [
+        builtinSkillsDir(),
         join(cwd, ".pizzapi", "skills"),
         join(homedir(), ".pizzapi", "agents"),
         join(cwd, ".pizzapi", "agents"),
