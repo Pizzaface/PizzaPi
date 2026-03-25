@@ -291,7 +291,8 @@ export const triggersExtension: ExtensionFactory = (pi) => {
         },
         renderResult: (result: any, _opts: any, theme: any) => {
             const text: string = result?.content?.[0]?.text ?? "";
-            if (text.startsWith("Error:") || text.includes("error")) {
+            const isSuccess = text.startsWith("Response sent for trigger") || text.startsWith("Acknowledged");
+            if (!isSuccess) {
                 return new Text(theme.fg("error", "✗ ") + theme.fg("muted", preview(text, 60)), 0, 0);
             }
             return new Text(theme.fg("success", "✓ ") + theme.fg("dim", "trigger responded"), 0, 0);
@@ -350,7 +351,11 @@ export const triggersExtension: ExtensionFactory = (pi) => {
                 0, 0
             );
         },
-        renderResult: (_result: any, _opts: any, theme: any) => {
+        renderResult: (result: any, _opts: any, theme: any) => {
+            const text: string = result?.content?.[0]?.text ?? "";
+            if (text.startsWith("Error:")) {
+                return new Text(theme.fg("error", "✗ ") + theme.fg("muted", preview(text, 60)), 0, 0);
+            }
             return new Text(theme.fg("warning", "↑ ") + theme.fg("dim", "trigger escalated to human"), 0, 0);
         },
     });
