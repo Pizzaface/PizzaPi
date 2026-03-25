@@ -70,8 +70,9 @@ export const handleTunnelRoute: RouteHandler = async (req, url) => {
         return Response.json({ error: "Session not found" }, { status: 404 });
     }
 
-    // Only the session owner may access the tunnel — it exposes localhost
-    if (sessionData.userId && sessionData.userId !== identity.userId) {
+    // Only the session owner may access the tunnel — it exposes localhost.
+    // Fail-closed: reject if userId is missing (no confirmed owner) OR mismatched.
+    if (!sessionData.userId || sessionData.userId !== identity.userId) {
         return Response.json({ error: "Forbidden" }, { status: 403 });
     }
 
