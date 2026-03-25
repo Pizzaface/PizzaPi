@@ -2,7 +2,7 @@
 // /runner namespace — Runner daemon ↔ Server
 // ============================================================================
 
-import type { RunnerSkill, RunnerAgent, RunnerPlugin, RunnerHook } from "./shared.js";
+import type { RunnerSkill, RunnerAgent, RunnerPlugin, RunnerHook, ServiceEnvelope } from "./shared.js";
 
 // ---------------------------------------------------------------------------
 // Client → Server (Runner daemon sends to server)
@@ -113,6 +113,14 @@ export interface RunnerClientToServerEvents {
   disconnect_session: (data: {
     sessionId: string;
   }) => void;
+
+  /** Generic service message from runner → relay → viewer.
+   *  The relay forwards this verbatim; it does not inspect serviceId. */
+  service_message: (envelope: ServiceEnvelope) => void;
+
+  /** Announce which services this runner supports.
+   *  Forwarded to all viewers watching sessions on this runner. */
+  service_announce: (data: { serviceIds: string[] }) => void;
 
   /** Terminal is ready for interaction */
   terminal_ready: (data: {
@@ -346,6 +354,10 @@ export interface RunnerServerToClientEvents {
     requestId?: string;
     range?: "7d" | "30d" | "90d" | "all";
   }) => void;
+
+  /** Generic service message from viewer → relay → runner.
+   *  The relay forwards this verbatim; it does not inspect serviceId. */
+  service_message: (envelope: ServiceEnvelope) => void;
 
   /** Generic error */
   error: (data: {

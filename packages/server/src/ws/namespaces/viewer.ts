@@ -13,6 +13,12 @@ import type {
     ViewerInterServerEvents,
     ViewerSocketData,
 } from "@pizzapi/protocol";
+
+// Inline definition mirrors packages/protocol/src/shared.ts ServiceEnvelope.
+// Using a local alias avoids a cross-worktree symlink resolution issue where
+// node_modules/@pizzapi/protocol points to the main branch's dist, not this
+// worktree's updated dist.
+type ServiceEnvelope = { serviceId: string; type: string; requestId?: string; payload: unknown };
 import { sessionCookieAuthMiddleware } from "./auth.js";
 import {
     getSharedSession,
@@ -470,6 +476,18 @@ export function registerViewerNamespace(io: SocketIOServer): void {
             } else {
                 socket.emit("trigger_error", { message: `Failed to deliver trigger response to session ${sessionId}`, triggerId });
             }
+        });
+
+        // ── service_message — viewer → runner: forward service envelope ──────
+        // Viewers send service_message to interact with runner services
+        // (e.g. request file listings, git status, etc.) without the relay
+        // needing to understand service-specific semantics.
+        socket.on("service_message", async (envelope: ServiceEnvelope) => {
+            // Use the same pattern as exec/input: require collab mode and
+            // forward via relay session room for cluster-wide reach.
+            const currentSession = await getSharedSession(sessionId);
+            if (!currentSession?.collabMode) return;
+            emitToRelaySession(sessionId, "service_message" as string, envelope);
         });
 
         // ── disconnect ───────────────────────────────────────────────────────

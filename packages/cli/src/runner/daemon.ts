@@ -238,6 +238,11 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         // Initialize all services — registers socket event handlers
         registry.initAll(socket, { isShuttingDown: () => isShuttingDown });
 
+        // Announce available services to viewers
+        (socket as any).emit("service_announce", {
+            serviceIds: registry.getAll().map((s) => s.id),
+        });
+
         logInfo(`connecting to relay at ${sioUrl}/runner…`);
 
         // Start periodic usage scan (every 5 minutes)
