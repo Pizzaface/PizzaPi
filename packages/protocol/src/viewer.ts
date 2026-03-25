@@ -2,7 +2,7 @@
 // /viewer namespace — Browser viewer ↔ Server
 // ============================================================================
 
-import type { Attachment } from "./shared.js";
+import type { Attachment, ServiceEnvelope } from "./shared.js";
 
 // ---------------------------------------------------------------------------
 // Server → Client (Server sends to browser viewer)
@@ -39,6 +39,13 @@ export interface ViewerServerToClientEvents {
     result?: unknown;
     error?: string;
   }) => void;
+
+  /** Generic service message from runner → relay → viewer.
+   *  serviceId identifies which runner service sent the message. */
+  service_message: (envelope: ServiceEnvelope) => void;
+
+  /** Announces which services the connected runner supports. */
+  service_announce: (data: { serviceIds: string[] }) => void;
 
   /** Generic error */
   error: (data: {
@@ -85,6 +92,9 @@ export interface ViewerClientToServerEvents {
     command: string;
     [key: string]: unknown;
   }) => void;
+
+  /** Generic service message from viewer → relay → runner. */
+  service_message: (envelope: ServiceEnvelope) => void;
 
   /** Human viewer responds to a pending trigger from a child session.
    *  Supports Socket.IO ack — server calls the ack callback only on

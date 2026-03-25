@@ -19,6 +19,12 @@ import type {
     RunnerSkill,
     RunnerAgent,
 } from "@pizzapi/protocol";
+
+// Inline definition mirrors packages/protocol/src/shared.ts ServiceEnvelope.
+// Using a local alias avoids a cross-worktree symlink resolution issue where
+// node_modules/@pizzapi/protocol points to the main branch's dist, not this
+// worktree's updated dist.
+type ServiceEnvelope = { serviceId: string; type: string; requestId?: string; payload: unknown };
 import { apiKeyAuthMiddleware } from "./auth.js";
 import {
     registerRunner,
@@ -38,6 +44,7 @@ import {
     getTerminalEntry,
     getConnectedSessionsForRunner,
     touchRunner,
+    broadcastToSessionViewers,
 } from "../sio-registry.js";
 import { resolveSpawnReady, resolveSpawnError } from "../runner-control.js";
 
@@ -210,6 +217,14 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
 
     // Auth: validate API key from handshake
     runner.use(apiKeyAuthMiddleware() as Parameters<typeof runner.use>[0]);
+
+    // ── Per-runner session tracking (in-memory) ──────────────────────────────
+    // Maps runnerId → Set<sessionId>. Used to broadcast service_message and
+    // service_announce to all viewers watching sessions on this runner.
+    // This mirrors the session_ready / session_killed lifecycle already tracked
+    // in Redis, but is kept in-memory here to avoid async Redis reads on every
+    // service_message event (which may be high-frequency terminal output).
+    const runnerSessionIds = new Map<string, Set<string>>();
 
     runner.on("connection", (socket) => {
         console.log(`[sio/runner] connected: ${socket.id}`);
@@ -439,6 +454,11 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
                 await recordRunnerSession(runnerId, data.sessionId);
                 await linkSessionToRunner(runnerId, data.sessionId);
                 resolveSpawnReady(data.sessionId);
+                // Track this session for service_message broadcasting
+                if (!runnerSessionIds.has(runnerId)) {
+                    runnerSessionIds.set(runnerId, new Set());
+                }
+                runnerSessionIds.get(runnerId)!.add(data.sessionId);
             }
         });
 
@@ -454,6 +474,8 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
             const runnerId = socket.data.runnerId;
             if (runnerId && data.sessionId) {
                 await removeRunnerSession(runnerId, data.sessionId);
+                // Remove from local tracking
+                runnerSessionIds.get(runnerId)?.delete(data.sessionId);
             }
         });
 
@@ -534,6 +556,32 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
             }
         });
 
+        // ── Generic service message relay: runner → viewers ──────────────────
+        // Forward service envelopes verbatim to all viewers watching sessions
+        // on this runner. The relay does not inspect serviceId — it just routes.
+        socket.on("service_message", (envelope: ServiceEnvelope) => {
+            const runnerId = socket.data.runnerId;
+            if (!runnerId) return;
+            const sessionIds = runnerSessionIds.get(runnerId);
+            if (!sessionIds || sessionIds.size === 0) return;
+            for (const sessionId of sessionIds) {
+                broadcastToSessionViewers(sessionId, "service_message", envelope);
+            }
+        });
+
+        // ── service_announce — runner announces available services ────────────
+        // Forward to all viewers watching sessions on this runner so they know
+        // which services are available.
+        socket.on("service_announce", (data: { serviceIds: string[] }) => {
+            const runnerId = socket.data.runnerId;
+            if (!runnerId) return;
+            const sessionIds = runnerSessionIds.get(runnerId);
+            if (!sessionIds || sessionIds.size === 0) return;
+            for (const sessionId of sessionIds) {
+                broadcastToSessionViewers(sessionId, "service_announce", data);
+            }
+        });
+
         // ── disconnect — clean up runner resources ───────────────────────────
         socket.on("disconnect", async (reason) => {
             console.log(`[sio/runner] disconnected: ${socket.id} (${reason})`);
@@ -543,6 +591,8 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
             }
             const runnerId = socket.data.runnerId;
             if (runnerId) {
+                // Clean up local session tracking
+                runnerSessionIds.delete(runnerId);
                 // Clean up any terminals owned by this runner
                 const terminalIds = await getTerminalIdsForRunner(runnerId);
                 for (const tid of terminalIds) {

@@ -91,3 +91,13 @@ export interface Attachment {
   filename?: string;
   url?: string;
 }
+
+/** Generic relay protocol envelope for service messages.
+ *  Enables runner services to communicate with viewers without
+ *  the relay needing to understand service-specific semantics. */
+export interface ServiceEnvelope {
+  serviceId: string;
+  type: string;
+  requestId?: string;
+  payload: unknown;
+}

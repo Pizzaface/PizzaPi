@@ -241,6 +241,21 @@ export async function emitToRelaySessionAwaitingAck(
     }
 }
 
+/**
+ * Broadcast an event to all viewers of a specific session.
+ * Used to forward runner service messages to session watchers.
+ */
+export function broadcastToSessionViewers(sessionId: string, eventName: string, data: unknown): void {
+    if (!io) return;
+    try {
+        io.of("/viewer")
+            .to(viewerSessionRoom(sessionId))
+            .emit(eventName, data);
+    } catch (err) {
+        console.warn("[sio-registry] broadcastToSessionViewers failed:", (err as Error)?.message);
+    }
+}
+
 /** Extract a ModelInfo from a raw heartbeat payload (or return null). */
 export function modelFromHeartbeat(rawHeartbeat: unknown): ModelInfo | null {
     const hb = rawHeartbeat && typeof rawHeartbeat === "object"
