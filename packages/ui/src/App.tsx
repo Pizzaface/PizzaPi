@@ -1723,7 +1723,7 @@ export function App() {
           key: `mcp_auth:${serverName}:${ts}`,
           role: "system",
           timestamp: ts,
-          content: `🔐 **${serverName}** requires authentication.\n\n[Click here to authenticate](${authUrl})\n\nAfter authenticating, you'll be redirected to a page that won't load. **Copy the URL** from your browser's address bar and paste it below.`,
+          content: `🔐 **${serverName}** requires authentication — use the prompt below to sign in.`,
           isError: false,
         };
         injectedMessagesRef.current = [

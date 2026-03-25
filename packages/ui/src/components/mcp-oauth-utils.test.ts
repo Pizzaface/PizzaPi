@@ -1,28 +1,9 @@
 /**
- * Tests for the McpOAuthPaste component's URL parsing logic.
+ * Tests for MCP OAuth URL parsing logic.
  */
 
 import { describe, test, expect } from "bun:test";
-
-// Import the extractCodeFromUrl helper by re-implementing it inline
-// (it's not exported from the component). We test the same logic.
-function extractCodeFromUrl(input: string): string | null {
-  const trimmed = input.trim();
-  if (!trimmed) return null;
-
-  try {
-    const url = new URL(trimmed);
-    return url.searchParams.get("code");
-  } catch {
-    if (trimmed.includes("code=")) {
-      const params = new URLSearchParams(
-        trimmed.startsWith("?") ? trimmed : `?${trimmed}`,
-      );
-      return params.get("code");
-    }
-    return null;
-  }
-}
+import { extractCodeFromUrl } from "./mcp-oauth-utils";
 
 describe("extractCodeFromUrl", () => {
   test("extracts code from full localhost callback URL", () => {

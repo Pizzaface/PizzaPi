@@ -2256,6 +2256,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
               <McpOAuthPaste
                 key={`${p.serverName}:${p.nonce}`}
                 serverName={p.serverName}
+                authUrl={p.authUrl}
                 nonce={p.nonce}
                 onSubmit={onMcpOAuthPaste}
                 onDismiss={onMcpOAuthPasteDismiss ?? (() => {})}
