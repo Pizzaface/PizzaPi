@@ -5,6 +5,9 @@
   "piConfig": {
     "configDir": ".pizzapi"
   },
+  "pi": {
+    "themes": ["themes/pizzapi-dark.json"]
+  },
   "bin": {
     "pizza": "src/index.ts",
     "pizzapi": "src/index.ts"
