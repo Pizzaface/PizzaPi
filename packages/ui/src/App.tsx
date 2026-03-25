@@ -3920,6 +3920,30 @@ export function App() {
                     onMcpOAuthPasteDismiss={(serverName) => {
                       setMcpOAuthPastes((prev) => prev.filter((p) => p.serverName !== serverName));
                     }}
+                    onMcpServerDisable={(serverName) => {
+                      // Remove the paste prompt immediately
+                      setMcpOAuthPastes((prev) => prev.filter((p) => p.serverName !== serverName));
+                      // Remove the auth system message
+                      const stableKey = `mcp_auth:${serverName}`;
+                      injectedMessagesRef.current = injectedMessagesRef.current.filter(
+                        (m) => m.key !== stableKey && !m.key.startsWith(`${stableKey}:`),
+                      );
+                      setMessages((prev) => {
+                        const next = prev.filter((m) => m.key !== stableKey && !m.key.startsWith(`${stableKey}:`));
+                        if (next.length !== prev.length) patchSessionCache({ messages: next });
+                        return next.length !== prev.length ? next : prev;
+                      });
+                      // Send exec command to disable the server on the runner
+                      const socket = viewerWsRef.current;
+                      if (socket?.connected) {
+                        socket.emit("exec", {
+                          id: `disable-mcp-${serverName}-${Date.now()}`,
+                          command: "mcp_toggle_server",
+                          serverName,
+                          disabled: true,
+                        });
+                      }
+                    }}
                   />
                 </ErrorBoundary>
               )}

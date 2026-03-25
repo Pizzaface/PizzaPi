@@ -8,7 +8,7 @@
 import React from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { ExternalLink, X, CheckCircle2, AlertCircle, KeyRound } from "lucide-react";
+import { ExternalLink, X, CheckCircle2, AlertCircle, KeyRound, Ban } from "lucide-react";
 import { extractCodeFromUrl } from "./mcp-oauth-utils";
 
 interface McpOAuthPasteProps {
@@ -17,6 +17,8 @@ interface McpOAuthPasteProps {
   nonce: string;
   onSubmit: (nonce: string, code: string) => void;
   onDismiss: (serverName: string) => void;
+  /** Disable this MCP server (removes it from the active config). */
+  onDisable?: (serverName: string) => void;
 }
 
 export function McpOAuthPaste({
@@ -25,6 +27,7 @@ export function McpOAuthPaste({
   nonce,
   onSubmit,
   onDismiss,
+  onDisable,
 }: McpOAuthPasteProps) {
   const [value, setValue] = React.useState("");
   const [error, setError] = React.useState<string | null>(null);
@@ -86,14 +89,27 @@ export function McpOAuthPaste({
         <div className="flex-1 text-sm font-medium text-amber-800 dark:text-amber-300">
           {serverName} needs authentication
         </div>
-        <button
-          type="button"
-          onClick={() => onDismiss(serverName)}
-          className="shrink-0 rounded p-0.5 text-amber-600 hover:bg-amber-500/20 dark:text-amber-400"
-          aria-label="Dismiss"
-        >
-          <X className="h-3.5 w-3.5" />
-        </button>
+        <div className="flex shrink-0 items-center gap-1">
+          {onDisable && (
+            <button
+              type="button"
+              onClick={() => onDisable(serverName)}
+              className="flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-amber-700 hover:bg-amber-500/20 dark:text-amber-400"
+              title={`Disable ${serverName} MCP server`}
+            >
+              <Ban className="h-3 w-3" />
+              <span>Disable</span>
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => onDismiss(serverName)}
+            className="rounded p-0.5 text-amber-600 hover:bg-amber-500/20 dark:text-amber-400"
+            aria-label="Dismiss"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
       </div>
 
       {/* Step 1: Open auth link */}

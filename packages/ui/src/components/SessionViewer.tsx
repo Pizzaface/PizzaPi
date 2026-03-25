@@ -165,6 +165,8 @@ export interface SessionViewerProps {
   onMcpOAuthPaste?: (nonce: string, code: string) => void;
   /** Dismiss an MCP OAuth paste prompt. */
   onMcpOAuthPasteDismiss?: (serverName: string) => void;
+  /** Disable an MCP server (from OAuth paste prompt). */
+  onMcpServerDisable?: (serverName: string) => void;
 }
 
 function formatTokenCount(n: number): string {
@@ -550,7 +552,7 @@ function SessionSkeleton() {
   );
 }
 
-export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, pendingPlan, pluginTrustPrompt, onPluginTrustResponse, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, isCompacting, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onEditQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], planModeEnabled, runnerId, sessionCwd, onAppendSystemMessage, onSpawnAgentSession, onTriggerResponse, onQuestionDismiss, onPlanDismiss, onDuplicateSession, runnerInfo, mcpOAuthPastes, onMcpOAuthPaste, onMcpOAuthPasteDismiss }: SessionViewerProps) {
+export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, pendingPlan, pluginTrustPrompt, onPluginTrustResponse, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, isCompacting, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onEditQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], planModeEnabled, runnerId, sessionCwd, onAppendSystemMessage, onSpawnAgentSession, onTriggerResponse, onQuestionDismiss, onPlanDismiss, onDuplicateSession, runnerInfo, mcpOAuthPastes, onMcpOAuthPaste, onMcpOAuthPasteDismiss, onMcpServerDisable }: SessionViewerProps) {
   const [input, setInput] = React.useState("");
   // Per-session draft storage so switching sessions preserves unsent text
   const draftsRef = React.useRef<Map<string, string>>(new Map());
@@ -2260,6 +2262,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                 nonce={p.nonce}
                 onSubmit={onMcpOAuthPaste}
                 onDismiss={onMcpOAuthPasteDismiss ?? (() => {})}
+                onDisable={onMcpServerDisable}
               />
             ))}
           </div>
