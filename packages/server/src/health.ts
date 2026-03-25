@@ -25,6 +25,18 @@ export function setServerShuttingDown(): void {
 }
 
 /**
+ * Returns true when socket disconnect handlers should preserve Redis state.
+ *
+ * During deploy/restart windows, disconnect reasons are not consistently
+ * reported as "server shutting down" across transports/adapters. Once we
+ * have received a shutdown signal, treat all ensuing disconnects as part of
+ * graceful shutdown and preserve state for fast reconnect on the new server.
+ */
+export function shouldPreserveOnSocketDisconnect(_reason?: string): boolean {
+    return isServerShuttingDown;
+}
+
+/**
  * Reset the shutdown flag. **Test-only** — allows test suites to restore
  * the default state after exercising shutdown behavior.
  */

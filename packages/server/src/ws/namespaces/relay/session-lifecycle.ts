@@ -2,7 +2,7 @@
 // Handles register, session_end, exec_result, and disconnect events.
 
 import type { RelaySocketData } from "@pizzapi/protocol";
-import { isServerShuttingDown } from "../../../health.js";
+import { shouldPreserveOnSocketDisconnect } from "../../../health.js";
 import {
     registerTuiSession,
     getLocalTuiSocket,
@@ -109,7 +109,7 @@ export function registerSessionLifecycleHandlers(socket: RelaySocket): void {
             // all sockets with reason "server shutting down".  Skip
             // destructive Redis cleanup for those — the TUI worker is
             // still alive and will reconnect to the new server instance.
-            if (isServerShuttingDown && reason === "server shutting down") {
+            if (shouldPreserveOnSocketDisconnect(reason)) {
                 console.log(`[sio/relay] server shutting down — preserving Redis state for session ${sessionId}`);
                 socketAckedSeqs.delete(socket.id);
                 return;
