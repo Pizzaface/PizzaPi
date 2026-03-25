@@ -11,6 +11,16 @@ import { Input } from "@/components/ui/input";
 import { ExternalLink, X, CheckCircle2, AlertCircle, KeyRound, Ban } from "lucide-react";
 import { extractOAuthParams } from "./mcp-oauth-utils";
 
+/** Only allow http/https auth URLs to prevent XSS via javascript: or data: schemes. */
+function isSafeAuthUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 interface McpOAuthPasteProps {
   serverName: string;
   authUrl: string;
@@ -136,16 +146,23 @@ export function McpOAuthPaste({
             Click to sign in. After approving, you'll see an <strong>error page</strong> — that's expected.
           </span>
         </div>
-        <a
-          href={authUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          onClick={() => setStep(2)}
-          className="ml-7 inline-flex w-fit items-center gap-1.5 rounded-md bg-amber-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition-colors hover:bg-amber-700 dark:bg-amber-500 dark:text-amber-950 dark:hover:bg-amber-400"
-        >
-          <ExternalLink className="h-3 w-3" />
-          Sign in to {serverName}
-        </a>
+        {isSafeAuthUrl(authUrl) ? (
+          <a
+            href={authUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={() => setStep(2)}
+            className="ml-7 inline-flex w-fit items-center gap-1.5 rounded-md bg-amber-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm transition-colors hover:bg-amber-700 dark:bg-amber-500 dark:text-amber-950 dark:hover:bg-amber-400"
+          >
+            <ExternalLink className="h-3 w-3" />
+            Sign in to {serverName}
+          </a>
+        ) : (
+          <div className="ml-7 flex items-start gap-1.5 text-xs text-red-600 dark:text-red-400">
+            <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />
+            <span>Unsafe auth URL blocked (only https:// URLs are allowed)</span>
+          </div>
+        )}
       </div>
 
       {/* Step 2: Paste the URL */}

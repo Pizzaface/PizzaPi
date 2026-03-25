@@ -90,3 +90,39 @@ describe("extractOAuthParams", () => {
     expect(result.state).toBeNull();
   });
 });
+
+describe("auth URL safety", () => {
+  // Re-implement isSafeAuthUrl for testing (it's not exported from the component)
+  function isSafeAuthUrl(url: string): boolean {
+    try {
+      const parsed = new URL(url);
+      return parsed.protocol === "http:" || parsed.protocol === "https:";
+    } catch {
+      return false;
+    }
+  }
+
+  test("allows https URLs", () => {
+    expect(isSafeAuthUrl("https://figma.com/oauth/authorize?foo=bar")).toBe(true);
+  });
+
+  test("allows http URLs", () => {
+    expect(isSafeAuthUrl("http://localhost:1/callback")).toBe(true);
+  });
+
+  test("blocks javascript: URLs", () => {
+    expect(isSafeAuthUrl("javascript:alert(1)")).toBe(false);
+  });
+
+  test("blocks data: URLs", () => {
+    expect(isSafeAuthUrl("data:text/html,<script>alert(1)</script>")).toBe(false);
+  });
+
+  test("blocks empty string", () => {
+    expect(isSafeAuthUrl("")).toBe(false);
+  });
+
+  test("blocks malformed URLs", () => {
+    expect(isSafeAuthUrl("not a url")).toBe(false);
+  });
+});

@@ -1691,7 +1691,11 @@ export function App() {
       const authUrl = typeof evt.authUrl === "string" ? evt.authUrl : null;
       const ts = typeof evt.ts === "number" ? evt.ts : Date.now();
 
-      if (authUrl) {
+      // Only render clickable link for safe http/https URLs to prevent XSS
+      const isSafeUrl = (() => {
+        try { const p = new URL(authUrl); return p.protocol === "http:" || p.protocol === "https:"; } catch { return false; }
+      })();
+      if (authUrl && isSafeUrl) {
         const stableKey = `mcp_auth:${serverName}`;
         const message: RelayMessage = {
           key: stableKey,
