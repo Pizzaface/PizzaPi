@@ -14,6 +14,7 @@ export type {
   RunnerPlugin,
   RunnerHook,
   Attachment,
+  ServiceEnvelope,
 } from "./shared.js";
 
 // Password validation (shared across server, UI, CLI)

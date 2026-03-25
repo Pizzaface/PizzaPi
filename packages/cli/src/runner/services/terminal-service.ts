@@ -38,11 +38,19 @@ export class TerminalService implements ServiceHandler {
             }
             // The terminal module calls termSend with { type: "terminal_*", ... } payloads.
             // Extract the type field and emit it as a socket.io event.
+            // Also dual-emit via service_message envelope for Phase 3 UI hooks.
             const termSend = (payload: Record<string, unknown>) => {
                 try {
                     const { type, runnerId: _drop, ...rest } = payload;
                     if (typeof type === "string") {
+                        // Existing named event — keeps backward compatibility
                         (socket as any).emit(type, rest);
+                        // Also emit via service envelope for useServiceChannel hooks
+                        (socket as any).emit("service_message", {
+                            serviceId: "terminal",
+                            type,
+                            payload: rest,
+                        });
                     }
                 } catch (err) {
                     logError(

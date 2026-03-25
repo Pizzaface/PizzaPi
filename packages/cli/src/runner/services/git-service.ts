@@ -66,7 +66,7 @@ export class GitService implements ServiceHandler {
                     behind = parseInt(b, 10) || 0;
                 }
 
-                socket.emit("file_result", {
+                const statusPayload = {
                     requestId,
                     ok: true,
                     branch,
@@ -74,6 +74,13 @@ export class GitService implements ServiceHandler {
                     ahead,
                     behind,
                     diffStaged,
+                };
+                socket.emit("file_result", statusPayload);
+                // Dual-emit via service envelope for Phase 3 UI hooks
+                (socket as any).emit("service_message", {
+                    serviceId: "git",
+                    type: "git_status",
+                    payload: statusPayload,
                 });
             } catch (err) {
                 socket.emit("file_result", {
@@ -102,7 +109,14 @@ export class GitService implements ServiceHandler {
             try {
                 const args = staged ? ["diff", "--cached", "--", filePath] : ["diff", "--", filePath];
                 const { stdout: diff } = await execFileAsync("git", args, { cwd, timeout: 10000 });
-                socket.emit("file_result", { requestId, ok: true, diff });
+                const diffPayload = { requestId, ok: true, diff };
+                socket.emit("file_result", diffPayload);
+                // Dual-emit via service envelope for Phase 3 UI hooks
+                (socket as any).emit("service_message", {
+                    serviceId: "git",
+                    type: "git_diff",
+                    payload: diffPayload,
+                });
             } catch (err) {
                 socket.emit("file_result", {
                     requestId,
