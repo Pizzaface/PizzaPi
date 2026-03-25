@@ -460,9 +460,10 @@ export async function registerMcpTools(
   const serverTools: Record<string, string[]> = {};
   const liveClients: McpClient[] = [];
 
-  const initResults = await Promise.all(
-    clients.map(async (client): Promise<McpServerInitResult> => {
-      const start = Date.now();
+  // Helper: run a single server through init → listTools → registerTool.
+  function initAndRegisterServer(client: McpClient): Promise<McpServerInitResult> {
+    const start = Date.now();
+    return (async (): Promise<McpServerInitResult> => {
       try {
         if (signal?.aborted) {
           try { client.close(); } catch {}
@@ -472,15 +473,6 @@ export async function registerMcpTools(
         // OAuth flows have their own 2-min callback timeout; the init timeout
         // (default 3 min) is a safety net against hung processes / stalled
         // endpoints that would otherwise block forever.
-        //
-        // When the timeout fires we:
-        //  1. Abort the in-flight request via AbortController (cancels fetch /
-        //     STDIO pending request so the handshake doesn't complete late).
-        //  2. Close the client immediately (kills child process / marks
-        //     streamable client as closed so a late response can't set
-        //     sessionId and leak a remote MCP session).
-        //  3. Suppress the dangling initPromise rejection to prevent
-        //     unhandled-rejection crashes.
         if (initTimeoutMs > 0) {
           const ac = new AbortController();
           const onOuterAbort = () => ac.abort();
@@ -495,11 +487,8 @@ export async function registerMcpTools(
             });
             await Promise.race([initPromise, initTimer]);
           } catch (err) {
-            // Abort in-flight requests and close the client to prevent
-            // orphaned remote MCP sessions from late-arriving responses.
             ac.abort();
             try { client.close(); } catch {}
-            // Suppress the dangling init promise to avoid unhandled rejection
             initPromise.catch(() => {});
             throw err;
           } finally {
@@ -508,10 +497,6 @@ export async function registerMcpTools(
           }
         } else {
           if (signal?.aborted) throw new Error("MCP registration aborted");
-          // Even without a timeout, forward the lifecycle abort signal so
-          // session shutdown can interrupt a hung initialize/OAuth flow.
-          // Without this, disabling the init timeout (mcpInitTimeout: 0)
-          // would leave stale eager loads uninterruptible on shutdown.
           const ac = new AbortController();
           const onOuterAbort = () => ac.abort();
           signal?.addEventListener("abort", onOuterAbort, { once: true });
@@ -526,18 +511,14 @@ export async function registerMcpTools(
           }
         }
 
-        // Now list tools with the configurable timeout.  Since initialize()
-        // already resolved, ensureInitialized() inside listTools() returns
-        // immediately — the timeout only covers the tools/list request.
+        // List tools (separate timeout from init).
         const { tools, error, timedOut } = await listToolsWithTimeout(client, timeoutMs, signal);
         const durationMs = Date.now() - start;
         if (error) {
           return { name: client.name, tools: [], error, durationMs, timedOut };
         }
 
-        // ── Eagerly register this server's tools ───────────────────────────
-        // Don't wait for other servers — register tools as soon as this
-        // server is ready so the agent can use them immediately.
+        // Register this server's tools immediately so the agent can use them.
         if (!signal?.aborted) {
           liveClients.push(client);
           const serverToolList: string[] = [];
@@ -587,8 +568,79 @@ export async function registerMcpTools(
           timedOut: false,
         };
       }
-    }),
+    })();
+  }
+
+  // ── Launch all servers in parallel ───────────────────────────────────────
+  //
+  // Each server independently inits → lists tools → registers tools with pi.
+  // Fast servers (stdio, non-OAuth) finish in seconds. Slow servers (OAuth
+  // waiting for user interaction) may take minutes.
+  //
+  // We return as soon as ALL servers have either completed OR been deferred
+  // to the background. The grace period gives fast servers time to finish
+  // so their results appear in the startup report. Slow servers continue
+  // in the background — their tools appear when they eventually resolve.
+  const serverPromises = clients.map((client) => initAndRegisterServer(client));
+
+  // Track which servers are still pending.
+  const settled = new Array<McpServerInitResult | null>(clients.length).fill(null);
+  const wrappedPromises = serverPromises.map(async (p, i) => {
+    const result = await p;
+    settled[i] = result;
+    return result;
+  });
+
+  // Wait up to a short grace period for all servers. If some are still
+  // pending (e.g. OAuth waiting for paste), return immediately with what
+  // we have. The slow servers continue in the background.
+  const GRACE_MS = 10_000; // 10s — enough for stdio + non-OAuth HTTP servers
+  const graceTimer = new Promise<"timeout">((resolve) =>
+    setTimeout(() => resolve("timeout"), GRACE_MS),
   );
+
+  const allDone = Promise.all(wrappedPromises).then(() => "done" as const);
+  const raceResult = await Promise.race([allDone, graceTimer]);
+
+  // If all servers finished within the grace period, we have all results.
+  // Otherwise, collect what's settled and let the rest continue in background.
+  let initResults: McpServerInitResult[];
+
+  if (raceResult === "done") {
+    initResults = settled as McpServerInitResult[];
+  } else {
+    // Grace period expired — collect settled results, mark pending as deferred.
+    initResults = settled.map((result, i) => {
+      if (result) return result;
+      // This server is still pending — mark it as deferred in the report.
+      return {
+        name: clients[i].name,
+        tools: [],
+        error: undefined,
+        durationMs: Date.now() - totalStart,
+        timedOut: false,
+        deferred: true,
+      } as McpServerInitResult & { deferred?: boolean };
+    });
+
+    // Let slow servers continue in the background. When they finish, their
+    // tools are already registered (inside initAndRegisterServer). We just
+    // need to handle errors/cleanup for ones that eventually fail.
+    Promise.all(wrappedPromises).then((finalResults) => {
+      for (let i = 0; i < finalResults.length; i++) {
+        if (settled[i] !== null && !finalResults[i].error) continue; // already handled
+        const result = finalResults[i];
+        if (result.error) {
+          const client = clients[i];
+          if (client && !liveClients.includes(client)) {
+            try { client.close(); } catch {}
+          }
+          // Log the background failure so it's visible in runner logs.
+          console.warn(`pizzapi: MCP server "${result.name}" failed in background: ${result.error}`);
+        }
+      }
+    }).catch(() => {}); // Suppress unhandled rejection from background work
+  }
 
   if (signal?.aborted) {
     closeAllClients();
@@ -600,7 +652,6 @@ export async function registerMcpTools(
   for (const result of initResults) {
     if (result.error) {
       errors.push({ server: result.name, error: result.error });
-      // Close errored clients so child processes don't leak
       const client = clients.find((c) => c.name === result.name);
       if (client && !liveClients.includes(client)) {
         try { client.close(); } catch {}
@@ -608,7 +659,7 @@ export async function registerMcpTools(
     }
   }
 
-  // Best-effort shutdown.
+  // Best-effort shutdown — includes background servers that resolve later.
   pi.on?.("session_shutdown", () => {
     for (const c of liveClients) c.close();
   });
