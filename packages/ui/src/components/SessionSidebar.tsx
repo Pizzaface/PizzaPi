@@ -106,6 +106,8 @@ export interface SessionSidebarProps {
     onSelectRunner?: (runnerId: string) => void;
     /** Set of session IDs that currently have a pending AskUserQuestion or plan_mode review. */
     sessionsAwaitingInput?: Set<string>;
+    /** Set of session IDs that are actively compacting their context window. */
+    sessionsCompacting?: Set<string>;
 }
 
 function formatRelativeDate(isoString: string): string {
@@ -192,6 +194,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     onSelectRunner,
     onShowSessions,
     sessionsAwaitingInput,
+    sessionsCompacting,
 }: SessionSidebarProps) {
     const [collapsed, setCollapsed] = React.useState(false);
 
@@ -1316,9 +1319,11 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                             "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
                                                             !hasOffset && "transition-transform duration-200 ease-out",
                                                             visualState === "selected" && "bg-sidebar-accent text-sidebar-accent-foreground",
-                                                            visualState === "selectedActive" && "bg-sidebar-accent text-sidebar-accent-foreground animate-selected-active-chase",
+                                                            visualState === "selectedActive" && !sessionsCompacting?.has(s.sessionId) && "bg-sidebar-accent text-sidebar-accent-foreground animate-selected-active-chase",
+                                                            visualState === "selectedActive" && sessionsCompacting?.has(s.sessionId) && "bg-sidebar-accent text-sidebar-accent-foreground animate-compacting-chase",
                                                             visualState === "awaiting" && "text-sidebar-foreground animate-awaiting-pulse",
-                                                            visualState === "active" && "text-sidebar-foreground animate-working-chase",
+                                                            visualState === "active" && !sessionsCompacting?.has(s.sessionId) && "text-sidebar-foreground animate-working-chase",
+                                                            visualState === "active" && sessionsCompacting?.has(s.sessionId) && "text-sidebar-foreground animate-compacting-chase",
                                                             visualState === "completedUnread" && "text-sidebar-foreground animate-completed-pulse",
                                                             visualState === "idle" && "bg-sidebar text-sidebar-foreground hover:bg-sidebar-accent/50",
                                                         )}
@@ -1397,8 +1402,10 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                         <div
                                                             className={cn(
                                                                 "relative flex-shrink-0 flex items-center justify-center w-7 h-7 rounded-md transition-all duration-300",
-                                                                visualState === "active" && "bg-blue-500/20 shadow-[0_0_8px_#3b82f680] animate-pulse",
-                                                                visualState === "selectedActive" && "bg-blue-500/10 shadow-[0_0_6px_#3b82f640] animate-pulse",
+                                                                visualState === "active" && !sessionsCompacting?.has(s.sessionId) && "bg-blue-500/20 shadow-[0_0_8px_#3b82f680] animate-pulse",
+                                                                visualState === "active" && sessionsCompacting?.has(s.sessionId) && "bg-yellow-500/20 shadow-[0_0_8px_#eab30880] animate-pulse",
+                                                                visualState === "selectedActive" && !sessionsCompacting?.has(s.sessionId) && "bg-blue-500/10 shadow-[0_0_6px_#3b82f640] animate-pulse",
+                                                                visualState === "selectedActive" && sessionsCompacting?.has(s.sessionId) && "bg-yellow-500/10 shadow-[0_0_6px_#eab30840] animate-pulse",
                                                                 visualState === "awaiting" && "bg-amber-500/20 shadow-[0_0_8px_#f59e0b60]",
                                                                 visualState === "completedUnread" && "bg-green-500/20 shadow-[0_0_8px_#22c55e60]",
                                                                 (visualState === "idle" || visualState === "selected") && "bg-sidebar-accent/50",
