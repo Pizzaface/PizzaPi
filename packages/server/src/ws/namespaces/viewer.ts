@@ -29,6 +29,7 @@ import {
     getLocalTuiSocket,
     emitToRelaySession,
     emitToRelaySessionVerified,
+    emitToRunner,
 } from "../sio-registry.js";
 import { getPendingChunkedSnapshot } from "./relay/index.js";
 import { getPersistedRelaySessionSnapshot } from "../../sessions/store.js";
@@ -446,12 +447,17 @@ export function registerViewerNamespace(io: SocketIOServer): void {
         // Viewers send service_message to interact with runner services
         // (e.g. request file listings, git status, etc.) without the relay
         // needing to understand service-specific semantics.
+        // IMPORTANT: service handlers are registered on the /runner namespace
+        // socket, NOT on the /relay TUI socket. emitToRelaySession would target
+        // the TUI worker (/relay namespace) which does NOT handle service_message
+        // events — all viewer-initiated service requests would be silently dropped.
+        // We must route to the runner via emitToRunner(runnerId, ...) instead.
         socket.on("service_message", async (envelope: ServiceEnvelope) => {
-            // Use the same pattern as exec/input: require collab mode and
-            // forward via relay session room for cluster-wide reach.
             const currentSession = await getSharedSession(sessionId);
             if (!currentSession?.collabMode) return;
-            emitToRelaySession(sessionId, "service_message" as string, envelope);
+            const runnerId = currentSession.runnerId;
+            if (!runnerId) return;
+            emitToRunner(runnerId, "service_message", envelope);
         });
 
         // ── disconnect ───────────────────────────────────────────────────────
