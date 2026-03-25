@@ -574,6 +574,7 @@ services:
     depends_on:
       - redis
     restart: unless-stopped
+    stop_grace_period: 30s
 `;
 
 // ─── Host-side UI pre-build ──────────────────────────────────────────────────

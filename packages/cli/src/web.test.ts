@@ -46,6 +46,7 @@ services:
     depends_on:
       - redis
     restart: unless-stopped
+    stop_grace_period: 30s
 `;
 
 describe("web.ts compose template", () => {
