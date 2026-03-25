@@ -2,7 +2,7 @@
 // /runner namespace — Runner daemon ↔ Server
 // ============================================================================
 
-import type { RunnerSkill, RunnerAgent, RunnerPlugin, RunnerHook, ServiceEnvelope, TunnelRequestData, TunnelResponseData } from "./shared.js";
+import type { RunnerSkill, RunnerAgent, RunnerPlugin, RunnerHook, ServiceAnnounceData, ServiceEnvelope, TunnelRequestData, TunnelResponseData } from "./shared.js";
 
 // ---------------------------------------------------------------------------
 // Client → Server (Runner daemon sends to server)
@@ -124,7 +124,7 @@ export interface RunnerClientToServerEvents {
 
   /** Announce which services this runner supports.
    *  Forwarded to all viewers watching sessions on this runner. */
-  service_announce: (data: { serviceIds: string[] }) => void;
+  service_announce: (data: ServiceAnnounceData) => void;
 
   /** Terminal is ready for interaction */
   terminal_ready: (data: {

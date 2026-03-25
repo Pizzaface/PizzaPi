@@ -2,7 +2,7 @@
 // /viewer namespace — Browser viewer ↔ Server
 // ============================================================================
 
-import type { Attachment, ServiceEnvelope } from "./shared.js";
+import type { Attachment, ServiceAnnounceData, ServiceEnvelope } from "./shared.js";
 
 // ---------------------------------------------------------------------------
 // Server → Client (Server sends to browser viewer)
@@ -45,7 +45,7 @@ export interface ViewerServerToClientEvents {
   service_message: (envelope: ServiceEnvelope) => void;
 
   /** Announces which services the connected runner supports. */
-  service_announce: (data: { serviceIds: string[] }) => void;
+  service_announce: (data: ServiceAnnounceData) => void;
 
   /** Generic error */
   error: (data: {

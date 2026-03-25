@@ -66,6 +66,8 @@ import { ViewerSocketContext } from "@/lib/viewer-socket-context";
 import { useRunnerServices, attachServiceAnnounceListener } from "@/hooks/useRunnerServices";
 import { ServicePanelButtons, useServicePanelState } from "@/components/service-panels/ServicePanels";
 import { SERVICE_PANELS } from "@/components/service-panels/registry";
+import { DynamicLucideIcon } from "@/components/service-panels/lucide-icon";
+import { IframeServicePanel } from "@/components/service-panels/IframeServicePanel";
 import {
   ModelSelector,
   ModelSelectorContent,
@@ -3300,7 +3302,7 @@ export function App() {
   );
 
   // Runner service panels — dynamically discovered
-  const availableServices = useRunnerServices(viewerSocket);
+  const { services: availableServices, panels: dynamicPanels } = useRunnerServices(viewerSocket);
   const { activePanelId: activeServicePanel, togglePanel: toggleServicePanel, closePanel: closeServicePanel } = useServicePanelState();
   const [servicePanelPosition, setServicePanelPosition] = React.useState<import("@/hooks/usePanelLayout").PanelPosition>(() => {
     try { return (localStorage.getItem("pp-service-panel-position") as import("@/hooks/usePanelLayout").PanelPosition) ?? "right"; } catch { return "right"; }
@@ -3367,22 +3369,33 @@ export function App() {
 
   const servicePanelTabs = React.useMemo<CombinedPanelTab[]>(() => {
     if (!activeServicePanel || !activeSessionId) return [];
-    const panelDef = SERVICE_PANELS.find(p => p.serviceId === activeServicePanel);
-    if (!panelDef) return [];
-    const PanelComponent = panelDef.component;
+
+    // Try static registry first
+    const staticDef = SERVICE_PANELS.find(p => p.serviceId === activeServicePanel);
+    // Then dynamic panels
+    const dynamicDef = !staticDef ? dynamicPanels.find(p => p.serviceId === activeServicePanel) : null;
+
+    if (!staticDef && !dynamicDef) return [];
+
+    const label = staticDef?.label ?? dynamicDef!.label;
+    const icon = staticDef?.icon ?? <DynamicLucideIcon name={dynamicDef!.icon} />;
+    const content = staticDef
+      ? <staticDef.component sessionId={activeSessionId} />
+      : <IframeServicePanel sessionId={activeSessionId} port={dynamicDef!.port} />;
+
     return [{
-      id: panelDef.serviceId,
-      label: panelDef.label,
-      icon: panelDef.icon,
+      id: staticDef?.serviceId ?? dynamicDef!.serviceId,
+      label,
+      icon,
       onDragStart: (e) => startPanelDragWith(e, handleServicePanelPositionChange),
       onClose: () => {
         closeServicePanel();
         if (showTerminal) handleCombinedTabChange("terminal");
         else if (showFileExplorer) handleCombinedTabChange("files");
       },
-      content: <PanelComponent sessionId={activeSessionId} />,
+      content,
     }];
-  }, [activeServicePanel, activeSessionId, startPanelDragWith, handleServicePanelPositionChange, closeServicePanel, showTerminal, showFileExplorer, handleCombinedTabChange]);
+  }, [activeServicePanel, activeSessionId, dynamicPanels, startPanelDragWith, handleServicePanelPositionChange, closeServicePanel, showTerminal, showFileExplorer, handleCombinedTabChange]);
 
   const panelGroups = React.useMemo(() => {
     const groups: Record<"left" | "right" | "bottom", CombinedPanelTab[]> = { left: [], right: [], bottom: [] };
@@ -3960,6 +3973,7 @@ export function App() {
                       extraHeaderButtons={
                         <ServicePanelButtons
                           availableServices={availableServices}
+                          dynamicPanels={dynamicPanels}
                           activePanelId={activeServicePanel}
                           onTogglePanel={handleToggleServicePanel}
                         />

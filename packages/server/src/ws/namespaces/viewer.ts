@@ -20,7 +20,7 @@ import type {
 // worktree's updated dist.
 type ServiceEnvelope = { serviceId: string; type: string; requestId?: string; payload: unknown };
 import { sessionCookieAuthMiddleware } from "./auth.js";
-import { getRunnerServiceIds } from "./runner.js";
+import { getRunnerServiceAnnounce, getRunnerServiceIds } from "./runner.js";
 import {
     getSharedSession,
     addViewer,
@@ -553,10 +553,11 @@ export function registerViewerNamespace(io: SocketIOServer): void {
         // services are available without waiting for a fresh announce.
         console.log(`[sio/viewer] service_announce check: runnerId=${freshSession.runnerId ?? "null"}`);
         if (freshSession.runnerId) {
-            const serviceIds = getRunnerServiceIds(freshSession.runnerId);
+            const announce = getRunnerServiceAnnounce(freshSession.runnerId);
+            const serviceIds = announce?.serviceIds ?? [];
             console.log(`[sio/viewer] service_announce: runnerId=${freshSession.runnerId}, cached serviceIds=[${serviceIds.join(",")}]`);
             if (serviceIds.length > 0) {
-                socket.emit("service_announce", { serviceIds });
+                socket.emit("service_announce", announce!);
             }
         }
 

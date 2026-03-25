@@ -9,6 +9,7 @@ import {
     readSkillContent,
     writeSkill,
     deleteSkill,
+    builtinSkillsDir,
     buildInteractiveSkillPaths,
     buildWorkerSkillPaths,
 } from "./skills.js";
@@ -434,19 +435,19 @@ describe("buildInteractiveSkillPaths", () => {
 
     test("filters out empty and whitespace-only config entries", () => {
         const paths = buildInteractiveSkillPaths("/tmp", ["", "  ", "/valid"]);
-        // Should have 2 default paths + 1 valid config path
-        expect(paths).toHaveLength(3);
-        expect(paths[2]).toBe("/valid");
+        // Should have 3 default paths (builtin + global + project) + 1 valid config path
+        expect(paths).toHaveLength(4);
+        expect(paths[3]).toBe("/valid");
     });
 
     test("handles undefined configSkills", () => {
         const paths = buildInteractiveSkillPaths("/tmp");
-        expect(paths).toHaveLength(2);
+        expect(paths).toHaveLength(3);
     });
 
     test("handles empty configSkills array", () => {
         const paths = buildInteractiveSkillPaths("/tmp", []);
-        expect(paths).toHaveLength(2);
+        expect(paths).toHaveLength(3);
     });
 });
 
@@ -482,7 +483,7 @@ describe("buildWorkerSkillPaths", () => {
 
     test("handles undefined configSkills", () => {
         const paths = buildWorkerSkillPaths("/tmp");
-        expect(paths).toHaveLength(5); // 5 default paths
+        expect(paths).toHaveLength(6); // 6 default paths (builtin + 5 existing)
     });
 });
 

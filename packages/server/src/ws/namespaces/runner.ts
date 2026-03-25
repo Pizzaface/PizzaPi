@@ -226,14 +226,21 @@ interface PendingTunnelRequest {
 
 const pendingTunnelRequests = new Map<string, PendingTunnelRequest>();
 
-// ── Runner service ID cache ──────────────────────────────────────────────────
+// ── Runner service announce cache ─────────────────────────────────────────────
 // Stores the last service_announce payload per runnerId so newly-joining
 // viewers can receive it immediately without waiting for a fresh announce.
-const runnerServiceIds = new Map<string, string[]>();
+import type { ServiceAnnounceData } from "@pizzapi/protocol";
+
+const runnerServiceAnnounce = new Map<string, ServiceAnnounceData>();
 
 /** Get cached service IDs for a runner (empty array if none). */
 export function getRunnerServiceIds(runnerId: string): string[] {
-    return runnerServiceIds.get(runnerId) ?? [];
+    return runnerServiceAnnounce.get(runnerId)?.serviceIds ?? [];
+}
+
+/** Get the full cached service announce data for a runner. */
+export function getRunnerServiceAnnounce(runnerId: string): ServiceAnnounceData | null {
+    return runnerServiceAnnounce.get(runnerId) ?? null;
 }
 
 /**
@@ -677,11 +684,11 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
         // ── service_announce — runner announces available services ────────────
         // Forward to all viewers watching sessions on this runner so they know
         // which services are available.
-        socket.on("service_announce", (data: { serviceIds: string[] }) => {
+        socket.on("service_announce", (data: ServiceAnnounceData) => {
             const runnerId = socket.data.runnerId;
             if (!runnerId) return;
             // Cache for late-joining viewers
-            runnerServiceIds.set(runnerId, data.serviceIds);
+            runnerServiceAnnounce.set(runnerId, data);
             const sessionIds = runnerSessionIds.get(runnerId);
             if (!sessionIds || sessionIds.size === 0) return;
             for (const sessionId of sessionIds) {
@@ -721,7 +728,7 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
                 }
                 // Clean up local session tracking
                 runnerSessionIds.delete(runnerId);
-                runnerServiceIds.delete(runnerId);
+                runnerServiceAnnounce.delete(runnerId);
                 // Clean up any terminals owned by this runner
                 const terminalIds = await getTerminalIdsForRunner(runnerId);
                 for (const tid of terminalIds) {

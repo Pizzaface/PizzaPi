@@ -25,6 +25,7 @@ import {
     type ConversationTurn,
 } from "./builders.js";
 import { startSandboxApi, type SandboxApi } from "./sandbox-api.js";
+import { addTrustedOrigin } from "../../src/auth.js";
 import { RedisMemoryServer } from "redis-memory-server";
 
 // ── Suppress noisy server logs so the REPL stays clean ───────────────────────
@@ -448,6 +449,130 @@ async function getFreePort(): Promise<number> {
     return port;
 }
 
+// ── Mock system monitor panel server ─────────────────────────────────────────
+
+import { cpus, freemem, totalmem, loadavg } from "node:os";
+
+function startMockSystemMonitor(): { port: number; stop: () => void } {
+    // Generate synthetic but realistic-looking stats
+    function mockStats() {
+        const cores = cpus();
+        const numCpus = cores.length;
+        const load = loadavg();
+        const total = totalmem();
+        const free = freemem();
+        const used = total - free;
+
+        return {
+            timestamp: Date.now(),
+            cpu: {
+                loadAvg1: Math.round((load[0] / numCpus) * 100) / 100,
+                loadAvg5: Math.round((load[1] / numCpus) * 100) / 100,
+                loadAvg15: Math.round((load[2] / numCpus) * 100) / 100,
+                cores: numCpus,
+                overallPct: Math.round(20 + Math.random() * 40),
+                perCore: Array.from({ length: numCpus }, () => Math.round(5 + Math.random() * 60)),
+            },
+            mem: {
+                totalMb: Math.round(total / 1024 / 1024),
+                usedMb: Math.round(used / 1024 / 1024),
+                freeMb: Math.round(free / 1024 / 1024),
+                usedPct: Math.round((used / total) * 100),
+            },
+            disk: {
+                path: "/",
+                totalGb: 494.4,
+                usedGb: Math.round((280 + Math.random() * 20) * 10) / 10,
+                availableGb: Math.round((200 - Math.random() * 20) * 10) / 10,
+                usedPct: Math.round(56 + Math.random() * 5),
+            },
+            net: { interfaces: ["en0", "en1"] },
+            processes: [
+                { pid: 1234, cpu: +(12 + Math.random() * 8).toFixed(1), mem: 4.2, command: "/usr/bin/node" },
+                { pid: 5678, cpu: +(8 + Math.random() * 5).toFixed(1), mem: 3.1, command: "/opt/homebrew/bin/bun" },
+                { pid: 9012, cpu: +(3 + Math.random() * 4).toFixed(1), mem: 2.8, command: "/Applications/Safari.app/Contents/MacOS/Safari" },
+                { pid: 3456, cpu: +(2 + Math.random() * 3).toFixed(1), mem: 1.9, command: "/usr/sbin/WindowServer" },
+                { pid: 7890, cpu: +(1 + Math.random() * 2).toFixed(1), mem: 1.2, command: "/usr/libexec/rapportd" },
+            ],
+        };
+    }
+
+    const PANEL_HTML = `<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>System Monitor</title><style>
+:root{--bg:#0a0a0b;--bg-card:#131316;--border:#27272a;--text:#e4e4e7;--text-muted:#71717a;--green:#22c55e;--yellow:#eab308;--red:#ef4444}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--text);font-size:11px;overflow-y:auto;height:100vh}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:8px;padding:8px}
+.card{background:var(--bg-card);border:1px solid var(--border);border-radius:6px;padding:8px 10px}
+.card-title{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--text-muted);margin-bottom:6px}
+.metric{display:flex;justify-content:space-between;align-items:center;margin-bottom:3px}
+.metric-label{color:var(--text-muted)}.metric-value{font-weight:600;font-variant-numeric:tabular-nums}
+.bar-track{width:100%;height:6px;background:var(--border);border-radius:3px;overflow:hidden;margin-top:3px}
+.bar-fill{height:100%;border-radius:3px;transition:width .5s ease}
+.bar-fill.green{background:var(--green)}.bar-fill.yellow{background:var(--yellow)}.bar-fill.red{background:var(--red)}
+.core-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(28px,1fr));gap:3px;margin-top:4px}
+.core-bar{height:24px;background:var(--border);border-radius:3px;position:relative;overflow:hidden}
+.core-bar-fill{position:absolute;bottom:0;width:100%;border-radius:3px;transition:height .5s ease}
+.core-bar-label{position:absolute;top:1px;left:0;right:0;text-align:center;font-size:8px;color:var(--text-muted);z-index:1}
+.proc-table{width:100%;border-collapse:collapse}
+.proc-table th{text-align:left;font-size:9px;font-weight:600;color:var(--text-muted);padding:2px 4px;border-bottom:1px solid var(--border)}
+.proc-table td{padding:2px 4px;font-size:10px;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:120px}
+.status{font-size:9px;color:var(--text-muted);padding:4px 8px;text-align:right}
+.loading{display:flex;align-items:center;justify-content:center;height:100vh;color:var(--text-muted)}
+</style></head><body>
+<div id="app" class="loading">Connecting…</div>
+<script>
+(function(){
+  function bc(p){return p>90?'red':p>70?'yellow':'green'}
+  function fm(m){return m>=1024?(m/1024).toFixed(1)+' GB':m+' MB'}
+  function render(d){
+    var c=d.cpu,m=d.mem,dk=d.disk,pr=d.processes,a=document.getElementById('app');
+    a.className='';var h='<div class="grid">';
+    h+='<div class="card"><div class="card-title">CPU</div>';
+    h+='<div class="metric"><span class="metric-label">Usage</span><span class="metric-value">'+c.overallPct+'%</span></div>';
+    h+='<div class="bar-track"><div class="bar-fill '+bc(c.overallPct)+'" style="width:'+c.overallPct+'%"></div></div>';
+    h+='<div class="metric" style="margin-top:4px"><span class="metric-label">Load</span><span class="metric-value">'+c.loadAvg1+' / '+c.loadAvg5+' / '+c.loadAvg15+'</span></div>';
+    if(c.perCore&&c.perCore.length>0){h+='<div class="core-grid">';c.perCore.forEach(function(p,i){h+='<div class="core-bar"><div class="core-bar-label">'+i+'</div><div class="core-bar-fill '+bc(p)+'" style="height:'+Math.max(p,2)+'%"></div></div>'});h+='</div>'}
+    h+='</div>';
+    h+='<div class="card"><div class="card-title">Memory</div>';
+    h+='<div class="metric"><span class="metric-label">Used</span><span class="metric-value">'+fm(m.usedMb)+' / '+fm(m.totalMb)+'</span></div>';
+    h+='<div class="bar-track"><div class="bar-fill '+bc(m.usedPct)+'" style="width:'+m.usedPct+'%"></div></div>';
+    h+='<div class="metric" style="margin-top:4px"><span class="metric-label">Free</span><span class="metric-value">'+fm(m.freeMb)+'</span></div></div>';
+    if(dk){h+='<div class="card"><div class="card-title">Disk /</div>';
+    h+='<div class="metric"><span class="metric-label">Used</span><span class="metric-value">'+dk.usedGb+' / '+dk.totalGb+' GB</span></div>';
+    h+='<div class="bar-track"><div class="bar-fill '+bc(dk.usedPct)+'" style="width:'+dk.usedPct+'%"></div></div>';
+    h+='<div class="metric" style="margin-top:4px"><span class="metric-label">Available</span><span class="metric-value">'+dk.availableGb+' GB</span></div></div>'}
+    h+='</div>';
+    if(pr&&pr.length>0){h+='<div style="padding:0 8px 8px"><div class="card"><div class="card-title">Top Processes</div><table class="proc-table"><thead><tr><th>PID</th><th>CPU%</th><th>MEM%</th><th>Command</th></tr></thead><tbody>';
+    pr.slice(0,8).forEach(function(p){var cmd=p.command.split('/').pop()||p.command;h+='<tr><td>'+p.pid+'</td><td>'+p.cpu+'</td><td>'+p.mem+'</td><td title="'+p.command+'">'+cmd+'</td></tr>'});
+    h+='</tbody></table></div></div>'}
+    h+='<div class="status">Updated '+new Date(d.timestamp).toLocaleTimeString()+'</div>';
+    a.innerHTML=h;
+  }
+  async function poll(){try{var r=await fetch('./api/stats');if(r.ok)render(await r.json())}catch(e){}}
+  poll();setInterval(poll,3000);
+})();
+</script></body></html>`;
+
+    const server = Bun.serve({
+        port: 0,
+        fetch(req) {
+            const url = new URL(req.url);
+            if (url.pathname === "/api/stats" || url.pathname.endsWith("/api/stats")) {
+                return new Response(JSON.stringify(mockStats()), {
+                    headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+                });
+            }
+            return new Response(PANEL_HTML, {
+                headers: { "Content-Type": "text/html; charset=utf-8" },
+            });
+        },
+    });
+
+    return { port: server.port!, stop: () => server.stop(true) };
+}
+
 async function main() {
     const opts = parseCliOptions(process.argv.slice(2));
 
@@ -483,6 +608,11 @@ async function main() {
 
     console.log("Populating mock sessions...\n");
 
+    // Start mock system monitor HTTP server for the service panel demo.
+    const monitorServer = startMockSystemMonitor();
+    const monitorPort = monitorServer.port;
+    console.log(`  📊 Mock system monitor panel on port ${monitorPort}`);
+
     // Create a default mock runner so sessions have a runner association
     // and service_announce reaches viewers.
     const defaultRunner = await createMockRunner(server, {
@@ -490,6 +620,9 @@ async function main() {
         roots: ["/Users/jordan/Documents/Projects/PizzaPi"],
         platform: "darwin",
         serviceIds: ["terminal", "file-explorer", "git", "tunnel", "system-monitor"],
+        panels: [
+            { serviceId: "system-monitor", port: monitorPort, label: "System Monitor", icon: "activity" },
+        ],
         skills: [
             { name: "code-review", description: "Code review", filePath: "/skills/code-review/SKILL.md" },
             { name: "brainstorming", description: "Explore ideas", filePath: "/skills/brainstorming/SKILL.md" },
@@ -592,6 +725,9 @@ async function main() {
             if (resp.ok) break;
         } catch { /* not ready */ }
     }
+
+    // Add the Vite dev URL as a trusted origin so auth works from the HMR UI.
+    addTrustedOrigin(`http://127.0.0.1:${vitePort}`);
 
     // ── Start HTTP control API ────────────────────────────────────────
     const sandboxApi = await startSandboxApi({
@@ -979,6 +1115,7 @@ async function main() {
             process.env.PIZZAPI_BASE_URL = savedBaseUrl;
         }
         sandboxApi.stop();
+        monitorServer.stop();
         await scenario.teardown();
         viteProc.kill();
         await stopRedis();

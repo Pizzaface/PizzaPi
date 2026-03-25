@@ -104,6 +104,27 @@ export interface ServiceEnvelope {
   payload: unknown;
 }
 
+// ── Service panel types ───────────────────────────────────────────────────────
+
+/** Metadata for a service panel announced by the runner. */
+export interface ServicePanelInfo {
+  /** Must match the runner service's `id`. */
+  serviceId: string;
+  /** Local port the service's HTTP server is listening on (proxied via tunnel). */
+  port: number;
+  /** Human-readable label for the panel button. */
+  label: string;
+  /** Lucide icon name (e.g. "activity", "cpu"). */
+  icon: string;
+}
+
+/** Payload for the service_announce event. */
+export interface ServiceAnnounceData {
+  serviceIds: string[];
+  /** Panels exposed by plugin services (present when ≥1 service has a panel). */
+  panels?: ServicePanelInfo[];
+}
+
 // ── Tunnel service types ──────────────────────────────────────────────────────
 
 /** Information about an exposed tunnel port. */

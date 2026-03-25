@@ -223,7 +223,23 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         registry.register(new TerminalService());
         registry.register(new FileExplorerService());
         registry.register(new GitService());
-        registry.register(new TunnelService());
+        const tunnelService = new TunnelService();
+        registry.register(tunnelService);
+
+        // Panel tracking — manifests from folder-based services, ports from announcePanel()
+        type PanelEntry = { serviceId: string; label: string; icon: string; port?: number };
+        const panelEntries = new Map<string, PanelEntry>();
+
+        /** Emit service_announce with current service IDs and panel metadata. */
+        const emitServiceAnnounce = () => {
+            const allServiceIds = registry.getAll().map((s) => s.id);
+            const panels = Array.from(panelEntries.values())
+                .filter((p): p is PanelEntry & { port: number } => p.port != null);
+            (socket as any).emit("service_announce", {
+                serviceIds: allServiceIds,
+                ...(panels.length > 0 ? { panels } : {}),
+            });
+        };
 
         // Discover and register plugin-provided services.
         // pluginServicesReady resolves once discovery + registration is complete.
@@ -231,10 +247,18 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         let resolvePluginServices: () => void;
         const pluginServicesReady = new Promise<void>(r => { resolvePluginServices = r; });
         discoverServices({ pluginDirs: globalPluginDirs() }).then(({ services, errors }) => {
-            for (const { handler, source } of services) {
+            for (const { handler, source, manifest } of services) {
                 try {
                     registry.register(handler);
                     logInfo(`[services] loaded plugin service "${handler.id}" from ${source.pluginName ?? source.path}`);
+                    // Track panel metadata from folder-based services
+                    if (manifest?.panel) {
+                        panelEntries.set(handler.id, {
+                            serviceId: handler.id,
+                            label: manifest.label,
+                            icon: manifest.icon,
+                        });
+                    }
                 } catch (err) {
                     logWarn(`[services] failed to register plugin service "${handler.id}": ${err}`);
                 }
@@ -350,10 +374,29 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 registry.disposeAll();
             }
             servicesInitialized = true;
-            registry.initAll(socket, { isShuttingDown: () => isShuttingDown });
+            // Build announcePanel callback — when a service calls it, we register
+            // the port with the tunnel service and re-announce to viewers.
+            const announcePanel = (serviceId: string) => (port: number) => {
+                const entry = panelEntries.get(serviceId);
+                if (!entry) return;
+                entry.port = port;
+                tunnelService.registerPort(port, entry.label);
+                logInfo(`[services] panel announced for "${serviceId}" on port ${port}`);
+                // Re-announce so viewers pick up the panel
+                emitServiceAnnounce();
+            };
+
+            // Init all services — pass announcePanel to those with panel manifests
+            for (const handler of registry.getAll()) {
+                const opts: any = { isShuttingDown: () => isShuttingDown };
+                if (panelEntries.has(handler.id)) {
+                    opts.announcePanel = announcePanel(handler.id);
+                }
+                handler.init(socket, opts);
+            }
             const allServiceIds = registry.getAll().map((s) => s.id);
             logInfo(`[services] initialized ${allServiceIds.length} services: ${allServiceIds.join(", ")}`);
-            (socket as any).emit("service_announce", { serviceIds: allServiceIds });
+            emitServiceAnnounce();
 
             // Re-adopt orphaned sessions that survived a daemon restart.
             // Their worker processes are still running and connected to the relay.
@@ -448,9 +491,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     // map — by the time session_ready fires the session is
                     // registered there, so this announce is guaranteed to reach
                     // any already-connected viewer for this session.
-                    (socket as any).emit("service_announce", {
-                        serviceIds: registry.getAll().map((s) => s.id),
-                    });
+                    emitServiceAnnounce();
                 } catch (err) {
                     socket.emit("session_error", {
                         sessionId,

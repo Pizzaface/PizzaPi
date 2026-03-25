@@ -2,12 +2,23 @@
  * Service Panel Registry
  *
  * Maps runner service IDs to their UI panel components, labels, and icons.
- * When the runner announces a service and this registry has a panel for it,
- * the UI renders a toggleable panel button in the session header.
+ * Two sources of panels:
  *
- * To add a new service panel:
+ * 1. **Static panels** — hardcoded in SERVICE_PANELS below (e.g. Tunnel).
+ *    These have custom React components compiled into the bundle.
+ *
+ * 2. **Dynamic panels** — announced by runner services at runtime via
+ *    service_announce.panels[]. These render in a generic iframe that
+ *    proxies to the service's HTTP server via the tunnel system.
+ *
+ * To add a new static panel:
  * 1. Create a React component (e.g. MyServicePanel.tsx)
  * 2. Add an entry to SERVICE_PANELS below
+ *
+ * To add a dynamic panel:
+ * 1. Create a folder-based service in ~/.pizzapi/services/<name>/
+ * 2. Include a manifest.json with label, icon, and panel config
+ * 3. Start an HTTP server in init() and call announcePanel(port)
  */
 import React from "react";
 import { Network } from "lucide-react";
@@ -25,7 +36,7 @@ export interface ServicePanelDef {
 }
 
 /**
- * All known service panels. Order determines button order in the header.
+ * Static service panels. Order determines button order in the header.
  * A panel only appears if the runner announces its serviceId.
  */
 export const SERVICE_PANELS: ServicePanelDef[] = [

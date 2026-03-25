@@ -6,6 +6,7 @@ import {
     discoverServices,
     globalServicesDir,
     projectServicesDir,
+    type ServiceManifest,
 } from "./service-loader.js";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -406,5 +407,148 @@ describe("discoverServices — plugin manifest discovery", () => {
         } finally {
             process.env.HOME = origHome;
         }
+    });
+});
+
+// ── Folder-based service discovery ────────────────────────────────────────────
+
+describe("discoverServices — folder-based services", () => {
+    let tmpDir: string;
+    let servicesDir: string;
+    let origHome: string;
+
+    beforeEach(() => {
+        tmpDir = makeTmpDir();
+        servicesDir = join(tmpDir, ".pizzapi", "services");
+        mkdirSync(servicesDir, { recursive: true });
+        origHome = process.env.HOME!;
+        process.env.HOME = tmpDir;
+    });
+
+    afterEach(() => {
+        process.env.HOME = origHome;
+        rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    function writeFolderService(name: string, manifest: Record<string, unknown>, handlerId?: string): string {
+        const dir = join(servicesDir, name);
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest));
+        const id = handlerId ?? (manifest.id as string) ?? name;
+        writeFileSync(
+            join(dir, "index.ts"),
+            `export default class {
+  get id() { return "${id}"; }
+  init() {}
+  dispose() {}
+}
+`,
+        );
+        return dir;
+    }
+
+    test("loads a folder-based service with manifest.json", async () => {
+        writeFolderService("my-panel", {
+            id: "my-panel",
+            label: "My Panel",
+            icon: "activity",
+            panel: { dir: "./panel" },
+        });
+
+        const result = await discoverServices();
+        expect(result.errors).toHaveLength(0);
+        expect(result.services).toHaveLength(1);
+        expect(result.services[0].handler.id).toBe("my-panel");
+        expect(result.services[0].manifest).toBeDefined();
+        expect(result.services[0].manifest!.label).toBe("My Panel");
+        expect(result.services[0].manifest!.icon).toBe("activity");
+        expect(result.services[0].manifest!.panel).toEqual({ dir: "./panel" });
+    });
+
+    test("uses default icon when not specified in manifest", async () => {
+        writeFolderService("no-icon", {
+            id: "no-icon",
+            label: "No Icon Service",
+        });
+
+        const result = await discoverServices();
+        expect(result.services).toHaveLength(1);
+        expect(result.services[0].manifest!.icon).toBe("square");
+    });
+
+    test("errors when manifest is missing required fields", async () => {
+        const dir = join(servicesDir, "bad-manifest");
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, "manifest.json"), JSON.stringify({ icon: "cpu" }));
+        writeFileSync(join(dir, "index.ts"), `export default { id: "bad", init() {}, dispose() {} };`);
+
+        const result = await discoverServices();
+        expect(result.services).toHaveLength(0);
+        expect(result.errors).toHaveLength(1);
+        expect(result.errors[0].error).toContain("missing required");
+    });
+
+    test("errors when entry point does not exist", async () => {
+        const dir = join(servicesDir, "no-entry");
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, "manifest.json"), JSON.stringify({
+            id: "no-entry",
+            label: "No Entry",
+            entry: "./missing.ts",
+        }));
+
+        const result = await discoverServices();
+        expect(result.services).toHaveLength(0);
+        expect(result.errors).toHaveLength(1);
+        expect(result.errors[0].error).toContain("does not exist");
+    });
+
+    test("skips directories without manifest.json", async () => {
+        const dir = join(servicesDir, "no-manifest");
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, "index.ts"), `export default { id: "nm", init() {}, dispose() {} };`);
+
+        const result = await discoverServices();
+        expect(result.services).toHaveLength(0);
+        expect(result.errors).toHaveLength(0);
+    });
+
+    test("coexists with file-based services", async () => {
+        writeFolderService("folder-svc", {
+            id: "folder-svc",
+            label: "Folder Service",
+            icon: "box",
+            panel: {},
+        });
+        writeHandler(servicesDir, "file-svc.ts", "file-svc");
+
+        const result = await discoverServices();
+        expect(result.errors).toHaveLength(0);
+        expect(result.services).toHaveLength(2);
+        const ids = result.services.map(s => s.handler.id).sort();
+        expect(ids).toEqual(["file-svc", "folder-svc"]);
+        const folderResult = result.services.find(s => s.handler.id === "folder-svc");
+        const fileResult = result.services.find(s => s.handler.id === "file-svc");
+        expect(folderResult!.manifest).toBeDefined();
+        expect(fileResult!.manifest).toBeUndefined();
+    });
+
+    test("respects custom entry path in manifest", async () => {
+        const dir = join(servicesDir, "custom-entry");
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, "manifest.json"), JSON.stringify({
+            id: "custom-entry",
+            label: "Custom Entry",
+            entry: "./service.ts",
+        }));
+        writeFileSync(
+            join(dir, "service.ts"),
+            `export default { id: "custom-entry", init() {}, dispose() {} };`,
+        );
+
+        const result = await discoverServices();
+        expect(result.errors).toHaveLength(0);
+        expect(result.services).toHaveLength(1);
+        expect(result.services[0].handler.id).toBe("custom-entry");
     });
 });

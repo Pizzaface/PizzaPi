@@ -16,8 +16,10 @@
  */
 import { useState, useEffect, useRef } from "react";
 import type { Socket } from "socket.io-client";
+import type { ServiceAnnounceData, ServicePanelInfo } from "@pizzapi/protocol";
 
 const SERVICE_IDS_KEY = "__serviceIds" as const;
+const PANELS_KEY = "__panels" as const;
 
 /**
  * Call this synchronously right after creating the viewer socket.
@@ -25,11 +27,13 @@ const SERVICE_IDS_KEY = "__serviceIds" as const;
  * so they're available before any React hooks mount.
  */
 export function attachServiceAnnounceListener(socket: Socket): void {
-    socket.on("service_announce", (data: { serviceIds: string[] }) => {
+    socket.on("service_announce", (data: ServiceAnnounceData) => {
         (socket as any)[SERVICE_IDS_KEY] = data.serviceIds;
+        (socket as any)[PANELS_KEY] = data.panels;
     });
     socket.on("disconnect", () => {
         (socket as any)[SERVICE_IDS_KEY] = undefined;
+        (socket as any)[PANELS_KEY] = undefined;
     });
 }
 
@@ -39,8 +43,19 @@ function getEagerServiceIds(socket: Socket | null): Set<string> {
     return ids ? new Set(ids) : new Set();
 }
 
-export function useRunnerServices(socket: Socket | null): Set<string> {
+/** Read any already-captured panels from the socket. */
+function getEagerPanels(socket: Socket | null): ServicePanelInfo[] {
+    return (socket ? (socket as any)[PANELS_KEY] as ServicePanelInfo[] | undefined : undefined) ?? [];
+}
+
+export interface RunnerServicesState {
+    services: Set<string>;
+    panels: ServicePanelInfo[];
+}
+
+export function useRunnerServices(socket: Socket | null): RunnerServicesState {
     const [services, setServices] = useState<Set<string>>(() => getEagerServiceIds(socket));
+    const [panels, setPanels] = useState<ServicePanelInfo[]>(() => getEagerPanels(socket));
     const prevSocketRef = useRef(socket);
 
     // When the socket changes, eagerly read any cached announce
@@ -56,6 +71,7 @@ export function useRunnerServices(socket: Socket | null): Set<string> {
     useEffect(() => {
         if (!socket) {
             setServices(new Set());
+            setPanels([]);
             return;
         }
 
@@ -64,11 +80,19 @@ export function useRunnerServices(socket: Socket | null): Set<string> {
         if (cached.size > 0) {
             setServices(cached);
         }
+        const cachedPanels = getEagerPanels(socket);
+        if (cachedPanels.length > 0) {
+            setPanels(cachedPanels);
+        }
 
-        const handleAnnounce = (data: { serviceIds: string[] }) => {
+        const handleAnnounce = (data: ServiceAnnounceData) => {
             setServices(new Set(data.serviceIds));
+            setPanels(data.panels ?? []);
         };
-        const handleDisconnect = () => setServices(new Set());
+        const handleDisconnect = () => {
+            setServices(new Set());
+            setPanels([]);
+        };
 
         socket.on("service_announce", handleAnnounce);
         socket.on("disconnect", handleDisconnect);
@@ -79,5 +103,5 @@ export function useRunnerServices(socket: Socket | null): Set<string> {
         };
     }, [socket]);
 
-    return services;
+    return { services, panels };
 }

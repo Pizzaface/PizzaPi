@@ -23,6 +23,8 @@ export interface ServiceHandler {
 
 export interface ServiceInitOptions {
     isShuttingDown: () => boolean;
+    /** Call to announce a panel HTTP server port. Only provided to services with a panel manifest. */
+    announcePanel?: (port: number) => void;
 }
 
 /**
