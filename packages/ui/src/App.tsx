@@ -3274,6 +3274,8 @@ export function App() {
       id: panelDef.serviceId,
       label: panelDef.label,
       icon: panelDef.icon,
+      // Dragging the service panel tab detaches it (same as Terminal tab drag)
+      onDragStart: handleTerminalTabDragStart,
       onClose: () => {
         closeServicePanel();
         if (showTerminal) handleCombinedTabChange("terminal");
@@ -3281,7 +3283,7 @@ export function App() {
       },
       content: <PanelComponent sessionId={activeSessionId} />,
     }];
-  }, [activeServicePanel, activeSessionId, closeServicePanel, showTerminal, showFileExplorer, handleCombinedTabChange]);
+  }, [activeServicePanel, activeSessionId, closeServicePanel, showTerminal, showFileExplorer, handleCombinedTabChange, handleTerminalTabDragStart]);
 
   const handleToggleServicePanel = React.useCallback((serviceId: string) => {
     if (activeServicePanel === serviceId) {
