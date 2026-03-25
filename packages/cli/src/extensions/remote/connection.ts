@@ -504,7 +504,10 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
 
     (sock as any).on("mcp_oauth_callback", (data: any) => {
         if (data && typeof data === "object" && typeof data.nonce === "string" && typeof data.code === "string") {
-            const state = typeof data.state === "string" ? data.state : undefined;
+            // Accept both "state" (new) and "oauthState" (server relay route) field names
+            const state = typeof data.state === "string" ? data.state
+                : typeof data.oauthState === "string" ? data.oauthState
+                : undefined;
             const resolve = oauthPendingCallbacks.get(data.nonce);
             if (resolve) {
                 oauthPendingCallbacks.delete(data.nonce);

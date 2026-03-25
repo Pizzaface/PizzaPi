@@ -2270,6 +2270,7 @@ export function App() {
     setViewerStatus("Connecting…");
     setRetryState(null);
     setActiveToolCalls(new Map());
+    setMcpOAuthPastes([]);
     setIsChangingModel(false);
     setUsageRefreshing(false);
     setResumeSessions([]);
