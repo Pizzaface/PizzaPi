@@ -270,7 +270,7 @@ async function main() {
                                 : null;
                             const bar = usedPct !== null ? usageBar(usedPct) : "";
                             const remainingStr = bucket.remainingFraction != null
-                                ? ` ${colorPct(bucket.remainingFraction * 100)} remaining`
+                                ? ` ${colorPct((1 - bucket.remainingFraction) * 100)} remaining`
                                 : "";
                             const amt = bucket.remainingAmount != null ? c.dim(` (${bucket.remainingAmount} left)`) : "";
                             const reset = bucket.resetTime ? c.dim(`  resets ${new Date(bucket.resetTime).toLocaleString()}`) : "";
