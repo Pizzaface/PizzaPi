@@ -75,30 +75,32 @@ export function TunnelPanel({ sessionId }: TunnelPanelProps) {
             <div className="flex items-center gap-1.5 px-3 py-1.5 border-b border-border bg-muted/20 shrink-0 flex-wrap">
                 {/* Tunnel tabs */}
                 {tunnels.map((tunnel: TunnelInfo) => (
-                    <button
+                    <div
                         key={tunnel.port}
-                        type="button"
-                        onClick={() => setPreviewPort(tunnel.port)}
                         className={`inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded border transition-colors ${
                             previewPort === tunnel.port
                                 ? "border-primary/40 bg-primary/10 text-primary font-medium"
                                 : "border-border bg-background text-muted-foreground hover:bg-accent"
                         }`}
                     >
-                        <span className="font-mono">{tunnel.port}</span>
-                        {tunnel.name && <span className="max-w-20 truncate">{tunnel.name}</span>}
                         <button
                             type="button"
-                            onClick={e => {
-                                e.stopPropagation();
-                                send("tunnel_unexpose", { port: tunnel.port });
-                            }}
+                            onClick={() => setPreviewPort(tunnel.port)}
+                            className="inline-flex items-center gap-1 min-w-0"
+                        >
+                            <span className="font-mono">{tunnel.port}</span>
+                            {tunnel.name && <span className="max-w-20 truncate">{tunnel.name}</span>}
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => send("tunnel_unexpose", { port: tunnel.port })}
                             className="ml-0.5 text-muted-foreground hover:text-destructive"
                             title="Close tunnel"
+                            aria-label={`Close tunnel ${tunnel.port}`}
                         >
                             <X size={10} />
                         </button>
-                    </button>
+                    </div>
                 ))}
 
                 {/* Actions for active preview */}

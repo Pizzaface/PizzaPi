@@ -2,6 +2,15 @@ import { useEffect, useCallback, useRef, useState } from "react";
 import { useViewerSocket } from "@/lib/viewer-socket-context";
 import type { ServiceEnvelope } from "@pizzapi/protocol";
 
+const SERVICE_IDS_KEY = "__serviceIds" as const;
+
+export function getEagerServiceAvailability(socket: unknown, serviceId: string): boolean {
+    const ids = socket && typeof socket === "object"
+        ? ((socket as Record<string, unknown>)[SERVICE_IDS_KEY] as string[] | undefined)
+        : undefined;
+    return Array.isArray(ids) && ids.includes(serviceId);
+}
+
 export interface ServiceChannelOptions<TPayload = unknown> {
     onMessage?: (type: string, payload: TPayload, requestId?: string) => void;
 }
@@ -16,7 +25,7 @@ export function useServiceChannel<TSend = unknown, TPayload = unknown>(
     options: ServiceChannelOptions<TPayload> = {}
 ): ServiceChannel<TSend> {
     const socket = useViewerSocket();
-    const [available, setAvailable] = useState(false);
+    const [available, setAvailable] = useState(() => getEagerServiceAvailability(socket, serviceId));
     const onMessageRef = useRef(options.onMessage);
     onMessageRef.current = options.onMessage;
 
@@ -25,6 +34,8 @@ export function useServiceChannel<TSend = unknown, TPayload = unknown>(
             setAvailable(false);
             return;
         }
+
+        setAvailable(getEagerServiceAvailability(socket, serviceId));
 
         const handleMessage = (envelope: ServiceEnvelope) => {
             if (envelope.serviceId !== serviceId) return;
