@@ -10,8 +10,7 @@
  * 2. Add an entry to SERVICE_PANELS below
  */
 import React from "react";
-import { Activity, Network } from "lucide-react";
-import { SystemMonitorPanel } from "@/components/SystemMonitorPanel";
+import { Network } from "lucide-react";
 import { TunnelPanel } from "@/components/TunnelPanel";
 
 export interface ServicePanelDef {
@@ -35,11 +34,5 @@ export const SERVICE_PANELS: ServicePanelDef[] = [
         label: "Tunnels",
         icon: <Network className="size-3.5" />,
         component: TunnelPanel,
-    },
-    {
-        serviceId: "system-monitor",
-        label: "System",
-        icon: <Activity className="size-3.5" />,
-        component: SystemMonitorPanel as React.ComponentType<{ sessionId: string }>,
     },
 ];
