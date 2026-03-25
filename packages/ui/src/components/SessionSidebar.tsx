@@ -1191,6 +1191,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                 isSelected: isActiveSession || (selectMode && isChecked),
                                                 isAwaiting: !!sessionsAwaitingInput?.has(s.sessionId),
                                                 isActive: !!s.isActive,
+                                                isCompacting: !!sessionsCompacting?.has(s.sessionId),
                                                 isCompletedUnread: completedUnreadSessions.has(s.sessionId),
                                             });
                                             const provider = s.model?.provider ??

@@ -55,4 +55,34 @@ describe("getSessionVisualState", () => {
       isSelected: true,
     })).toBe("selectedActive");
   });
+
+  test("returns 'active' when compacting but not heartbeat-active", () => {
+    expect(getSessionVisualState({
+      isActive: false,
+      isAwaiting: false,
+      isCompletedUnread: false,
+      isSelected: false,
+      isCompacting: true,
+    })).toBe("active");
+  });
+
+  test("returns 'selectedActive' when selected and compacting", () => {
+    expect(getSessionVisualState({
+      isActive: false,
+      isAwaiting: false,
+      isCompletedUnread: false,
+      isSelected: true,
+      isCompacting: true,
+    })).toBe("selectedActive");
+  });
+
+  test("awaiting still wins over compacting", () => {
+    expect(getSessionVisualState({
+      isActive: false,
+      isAwaiting: true,
+      isCompletedUnread: false,
+      isSelected: false,
+      isCompacting: true,
+    })).toBe("awaiting");
+  });
 });
