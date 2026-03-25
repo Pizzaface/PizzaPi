@@ -242,7 +242,7 @@ export type RelayContext = {
   /** Emit a pi.events event (forwarded to web UI via the remote extension). */
   emitEvent: (eventName: string, data: unknown) => void;
   /** Wait for a relay callback (code + optional state delivered from server → runner). */
-  waitForCallback: (nonce: string, timeoutMs?: number) => Promise<{ code: string; state?: string }>;
+  waitForCallback: (nonce: string, timeoutMs?: number, signal?: AbortSignal) => Promise<{ code: string; state?: string }>;
 };
 
 /**
@@ -628,7 +628,7 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
    * paste the callback URL via the web UI.
    * In local mode, starts a localhost callback server.
    */
-  startCallbackAndWait(): Promise<OAuthCallbackResult> {
+  startCallbackAndWait(signal?: AbortSignal): Promise<OAuthCallbackResult> {
     if (this._useRelay && this._currentNonce) {
       // Both relay-callback mode and paste mode wait for the code via the
       // same relay waitForCallback mechanism. The difference is only in how
@@ -661,7 +661,7 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
         }, 15_000); // Re-emit every 15s
       }
 
-      return this.relayContext!.waitForCallback(nonce).then((result) => {
+      return this.relayContext!.waitForCallback(nonce, undefined, signal).then((result) => {
         this._clearReEmitTimer();
         return { code: result.code, state: result.state };
       }, (err) => {

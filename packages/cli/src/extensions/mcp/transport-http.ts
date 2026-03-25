@@ -391,7 +391,7 @@ export function createStreamableMcpClient(opts: {
 
         if (result1 === "REDIRECT") {
           // Wait for the OAuth callback (browser → local server)
-          const { code, state: callbackState } = await oauthProvider.startCallbackAndWait();
+          const { code, state: callbackState } = await oauthProvider.startCallbackAndWait(signal);
           oauthProvider.closeCallback();
 
           // Validate state to prevent CSRF (defense-in-depth alongside PKCE)

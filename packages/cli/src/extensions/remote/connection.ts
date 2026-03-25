@@ -119,15 +119,26 @@ function updateMcpRelayContext(rctx: RelayContext): void {
             emitEvent: (_eventName: string, data: unknown) => {
                 rctx.forwardEvent(data);
             },
-            waitForCallback: (nonce: string, timeoutMs: number = 120_000) => {
+            waitForCallback: (nonce: string, timeoutMs: number = 120_000, signal?: AbortSignal) => {
                 return new Promise<{ code: string; state?: string }>((resolve, reject) => {
-                    const timer = setTimeout(() => {
+                    const cleanup = () => {
                         oauthPendingCallbacks.delete(nonce);
+                        clearTimeout(timer);
+                        signal?.removeEventListener("abort", onAbort);
+                    };
+                    const timer = setTimeout(() => {
+                        cleanup();
                         reject(new Error("OAuth callback timed out"));
                     }, timeoutMs);
+                    const onAbort = () => {
+                        cleanup();
+                        reject(new DOMException("OAuth callback aborted", "AbortError"));
+                    };
+                    if (signal?.aborted) { cleanup(); reject(new DOMException("OAuth callback aborted", "AbortError")); return; }
+                    signal?.addEventListener("abort", onAbort, { once: true });
 
                     oauthPendingCallbacks.set(nonce, (result) => {
-                        clearTimeout(timer);
+                        cleanup();
                         resolve(result);
                     });
                 });
