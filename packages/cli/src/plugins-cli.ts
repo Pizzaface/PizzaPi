@@ -25,6 +25,7 @@ import {
     trustPlugin,
     untrustPlugin,
 } from "./config.js";
+import { c } from "./cli-colors.js";
 
 // ── Formatting helpers ────────────────────────────────────────────────────────
 
@@ -184,27 +185,27 @@ function showTrusted(): void {
 }
 
 function showHelp(): void {
-    console.log(`
-pizza plugins — Manage Claude Code plugins
-
-Usage:
-  pizza plugins                List all discovered plugins (global + local)
-  pizza plugins list           Same as above
-  pizza plugins trust [path]   Trust project-local plugin(s)
-                               No path → trust all untrusted local plugins
-                               With path → trust plugin at that path
-  pizza plugins untrust [path] Remove plugin(s) from the trust list
-                               No path → clear the entire trust list
-                               With path → remove that specific plugin
-  pizza plugins trusted        Show the current trust list
-
-Trusted plugins auto-load without prompting. Global plugins
-(~/.pizzapi/plugins/, ~/.agents/plugins/, ~/.claude/plugins/) are
-always auto-trusted. Project-local plugins require explicit trust
-via this command or interactive confirmation at session start.
-
-Trust state is stored in ~/.pizzapi/config.json (trustedPlugins).
-`.trim());
+    console.log();
+    console.log(`${c.brand("pizza plugins")} ${c.dim("— Manage Claude Code plugins")}`);
+    console.log();
+    console.log(c.label("Commands"));
+    console.log(`  ${c.cmd("pizza plugins")}                List all discovered plugins (global + local)`);
+    console.log(`  ${c.cmd("pizza plugins list")}           Same as above`);
+    console.log(`  ${c.cmd("pizza plugins trust")} ${c.dim("[path]")}   Trust project-local plugin(s)`);
+    console.log(`                               ${c.dim("No path → trust all untrusted local plugins")}`);
+    console.log(`                               ${c.dim("With path → trust plugin at that path")}`);
+    console.log(`  ${c.cmd("pizza plugins untrust")} ${c.dim("[path]")} Remove plugin(s) from the trust list`);
+    console.log(`                               ${c.dim("No path → clear the entire trust list")}`);
+    console.log(`                               ${c.dim("With path → remove that specific plugin")}`);
+    console.log(`  ${c.cmd("pizza plugins trusted")}        Show the current trust list`);
+    console.log();
+    console.log(c.dim("Trusted plugins auto-load without prompting. Global plugins"));
+    console.log(c.dim("(~/.pizzapi/plugins/, ~/.agents/plugins/, ~/.claude/plugins/) are"));
+    console.log(c.dim("always auto-trusted. Project-local plugins require explicit trust"));
+    console.log(c.dim("via this command or interactive confirmation at session start."));
+    console.log();
+    console.log(c.dim("Trust state is stored in ~/.pizzapi/config.json (trustedPlugins)."));
+    console.log();
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────
