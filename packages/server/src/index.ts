@@ -9,43 +9,7 @@ import { sweepExpiredSessions } from "./ws/sio-registry.js";
 import { sweepExpiredAttachments, rehydrateExtractedAttachments } from "./attachments/store.js";
 import { runAllMigrations } from "./migrations.js";
 
-// ── Graceful shutdown ────────────────────────────────────────────────────────
-// On SIGTERM/SIGINT (e.g. Docker stop, pizza web restart), set a flag so
-// Socket.IO disconnect handlers skip destructive state cleanup.  The runners
-// and TUI workers will reconnect to the new server — their Redis state must
-// survive the restart.
 import { setServerShuttingDown } from "./health.js";
-
-function onShutdownSignal(signal: string): void {
-    console.log(`[shutdown] Received ${signal} — marking server as shutting down`);
-    setServerShuttingDown();
-
-    // Close the Socket.IO server so disconnect handlers fire with the
-    // shuttingDown flag already set, then close the HTTP server.
-    if (io) {
-        io.close(() => {
-            console.log("[shutdown] Socket.IO closed");
-            httpServer.close(() => {
-                console.log("[shutdown] HTTP server closed");
-                process.exit(0);
-            });
-        });
-    } else {
-        httpServer.close(() => {
-            console.log("[shutdown] HTTP server closed");
-            process.exit(0);
-        });
-    }
-
-    // Force exit after 10s if graceful shutdown stalls
-    setTimeout(() => {
-        console.warn("[shutdown] Graceful shutdown timed out — forcing exit");
-        process.exit(1);
-    }, 10_000).unref();
-}
-
-process.on("SIGTERM", () => onShutdownSignal("SIGTERM"));
-process.on("SIGINT", () => onShutdownSignal("SIGINT"));
 
 // ── Process-level safety net ─────────────────────────────────────────────────
 // The Socket.IO Redis adapter can throw EPIPE synchronously when the Redis
@@ -342,3 +306,38 @@ setInterval(() => {
 }, sweepMs);
 
 console.log(`Relay session maintenance enabled (every ${Math.round(sweepMs / 1000)}s).`);
+
+// ── Graceful shutdown ────────────────────────────────────────────────────────
+// Registered after httpServer and io are initialized so there's no TDZ risk
+// if SIGTERM arrives during startup.  Sets isServerShuttingDown before closing
+// Socket.IO so disconnect handlers can skip destructive Redis cleanup.
+function onShutdownSignal(signal: string): void {
+    console.log(`[shutdown] Received ${signal} — marking server as shutting down`);
+    setServerShuttingDown();
+
+    // Close the Socket.IO server so disconnect handlers fire with the
+    // shuttingDown flag already set, then close the HTTP server.
+    if (io) {
+        io.close(() => {
+            console.log("[shutdown] Socket.IO closed");
+            httpServer.close(() => {
+                console.log("[shutdown] HTTP server closed");
+                process.exit(0);
+            });
+        });
+    } else {
+        httpServer.close(() => {
+            console.log("[shutdown] HTTP server closed");
+            process.exit(0);
+        });
+    }
+
+    // Force exit after 10s if graceful shutdown stalls
+    setTimeout(() => {
+        console.warn("[shutdown] Graceful shutdown timed out — forcing exit");
+        process.exit(1);
+    }, 10_000).unref();
+}
+
+process.on("SIGTERM", () => onShutdownSignal("SIGTERM"));
+process.on("SIGINT", () => onShutdownSignal("SIGINT"));

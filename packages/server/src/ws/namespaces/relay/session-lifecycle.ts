@@ -105,12 +105,11 @@ export function registerSessionLifecycleHandlers(socket: RelaySocket): void {
                 return;
             }
 
-            // During graceful shutdown (SIGTERM/SIGINT), skip destructive
-            // Redis cleanup.  The TUI worker is still alive and will
-            // reconnect to the new server instance.  Deleting the session
-            // from Redis would force it to re-register from scratch and
-            // lose its runner association.
-            if (isServerShuttingDown) {
+            // During graceful shutdown (io.close()), Socket.IO disconnects
+            // all sockets with reason "server shutting down".  Skip
+            // destructive Redis cleanup for those — the TUI worker is
+            // still alive and will reconnect to the new server instance.
+            if (isServerShuttingDown && reason === "server shutting down") {
                 console.log(`[sio/relay] server shutting down — preserving Redis state for session ${sessionId}`);
                 socketAckedSeqs.delete(socket.id);
                 return;
