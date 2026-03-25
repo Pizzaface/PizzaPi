@@ -30,6 +30,12 @@ export interface BuildExtensionFactoriesOptions {
     skipRelay?: boolean;
 }
 
+/** Tag a factory with a display name for the boot info listing. */
+function named(factory: ExtensionFactory, displayName: string): ExtensionFactory {
+    (factory as any).displayName = displayName;
+    return factory;
+}
+
 /**
  * Build the standard PizzaPi extension factory list.
  *
@@ -40,43 +46,43 @@ export function buildPizzaPiExtensionFactories(options: BuildExtensionFactoriesO
 
     // triggersExtension provides tell_child, respond_to_trigger, escalate_trigger tools.
     // session_complete is fired from remoteExtension's shutdown handler (before disconnect).
-    factories.push(triggersExtension);
+    factories.push(named(triggersExtension, "triggers"));
 
     if (!options.skipRelay) {
-        factories.push(remoteExtension);
+        factories.push(named(remoteExtension, "relay"));
     }
 
     if (!options.skipMcp) {
-        factories.push(mcpExtension);
+        factories.push(named(mcpExtension, "mcp"));
     }
 
     factories.push(
-        restartExtension,
-        setSessionNameExtension,
-        updateTodoExtension,
-        spawnSessionExtension,
-        sessionMessagingExtension,
-        subagentExtension,
-        planModeToggleExtension,
-        sandboxEventsExtension,
-        pizzapiTitleExtension,
-        pizzapiHeaderExtension,
+        named(restartExtension, "restart"),
+        named(setSessionNameExtension, "session-name"),
+        named(updateTodoExtension, "todo"),
+        named(spawnSessionExtension, "spawn-session"),
+        named(sessionMessagingExtension, "messaging"),
+        named(subagentExtension, "subagent"),
+        named(planModeToggleExtension, "plan-mode"),
+        named(sandboxEventsExtension, "sandbox"),
+        named(pizzapiTitleExtension, "title"),
+        named(pizzapiHeaderExtension, "header"),
     );
 
     if (options.includeInitialPrompt) {
-        factories.push(initialPromptExtension);
+        factories.push(named(initialPromptExtension, "initial-prompt"));
     }
 
     const hooksExtension = createHooksExtension(options.hooks, options.cwd);
     if (hooksExtension) {
-        factories.push(hooksExtension);
+        factories.push(named(hooksExtension, "hooks"));
     }
 
     // Claude Code plugin adapter — discovers and loads plugins from standard dirs
     if (!options.skipPlugins) {
         const pluginExtension = createClaudePluginExtension(options.cwd);
         if (pluginExtension) {
-            factories.push(pluginExtension);
+            factories.push(named(pluginExtension, "plugins"));
         }
     }
 

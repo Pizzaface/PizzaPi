@@ -4,6 +4,9 @@ index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2
 diff --git a/node_modules/@mariozechner/pi-coding-agent/.bun-tag-8164784f1eb34c4d b/.bun-tag-8164784f1eb34c4d
 new file mode 100644
 index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+diff --git a/node_modules/@mariozechner/pi-coding-agent/.bun-tag-e7a6243888af15fb b/.bun-tag-e7a6243888af15fb
+new file mode 100644
+index 0000000000000000000000000000000000000000..e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
 diff --git a/dist/config.js b/dist/config.js
 index 51cdae907f8cda750b66dd361b3acc7143ae22a2..f9e667986119c512aa1d222f2a171c08d9570323 100644
 --- a/dist/config.js
@@ -86,8 +89,22 @@ index 8ef7aa25255056266cf9103bbd6f14685a09937c..79394dadbd85abef0c8847754289f2ea
      }
      setUIContext(uiContext) {
          this.uiContext = uiContext ?? noOpUIContext;
+diff --git a/dist/core/resource-loader.js b/dist/core/resource-loader.js
+index d47894a1441798e3b93ab28c1c90faf4f12e0b38..6662fa276771364d5bf6446531852ad4112f03e0 100644
+--- a/dist/core/resource-loader.js
++++ b/dist/core/resource-loader.js
+@@ -493,7 +493,8 @@ export class DefaultResourceLoader {
+         const extensions = [];
+         const errors = [];
+         for (const [index, factory] of this.extensionFactories.entries()) {
+-            const extensionPath = `<inline:${index + 1}>`;
++            // PATCH(pizzapi): use factory displayName/name instead of <inline:N>
++            const extensionPath = factory.displayName || factory.name || `<inline:${index + 1}>`;
+             try {
+                 const extension = await loadExtensionFromFactory(factory, this.cwd, this.eventBus, runtime, extensionPath);
+                 extensions.push(extension);
 diff --git a/dist/modes/interactive/interactive-mode.js b/dist/modes/interactive/interactive-mode.js
-index 038e6600ead762073fda085c806f8aa1eafef9a1..11a82c0fc46f22a71a85654f847543ee5f430cbe 100644
+index 038e6600ead762073fda085c806f8aa1eafef9a1..796bcdccec9a342b29aa1c6d9eaadac46fa9459d 100644
 --- a/dist/modes/interactive/interactive-mode.js
 +++ b/dist/modes/interactive/interactive-mode.js
 @@ -354,12 +354,6 @@ export class InteractiveMode {
@@ -130,7 +147,53 @@ index 038e6600ead762073fda085c806f8aa1eafef9a1..11a82c0fc46f22a71a85654f847543ee
      async checkTmuxKeyboardSetup() {
          if (!process.env.TMUX)
              return undefined;
-@@ -2386,17 +2360,6 @@ export class InteractiveMode {
+@@ -692,7 +666,12 @@ export class InteractiveMode {
+             return;
+         }
+         const metadata = this.session.resourceLoader.getPathMetadata();
+-        const sectionHeader = (name, color = "mdHeading") => theme.fg(color, `[${name}]`);
++        // PATCH(pizzapi): themed section headers with box-drawing
++        const sectionHeader = (name, color = "accent") => {
++            const label = ` ${name} `;
++            const line = "─".repeat(Math.max(0, 40 - label.length));
++            return theme.fg(color, `├${label}`) + theme.fg("dim", line);
++        };
+         const skillsResult = this.session.resourceLoader.getSkills();
+         const promptsResult = this.session.resourceLoader.getPrompts();
+         const themesResult = this.session.resourceLoader.getThemes();
+@@ -763,13 +742,13 @@ export class InteractiveMode {
+             const skillDiagnostics = skillsResult.diagnostics;
+             if (skillDiagnostics.length > 0) {
+                 const warningLines = this.formatDiagnostics(skillDiagnostics, metadata);
+-                this.chatContainer.addChild(new Text(`${theme.fg("warning", "[Skill conflicts]")}\n${warningLines}`, 0, 0));
++                this.chatContainer.addChild(new Text(`${sectionHeader("Skill Issues", "warning")}\n${warningLines}`, 0, 0));
+                 this.chatContainer.addChild(new Spacer(1));
+             }
+             const promptDiagnostics = promptsResult.diagnostics;
+             if (promptDiagnostics.length > 0) {
+                 const warningLines = this.formatDiagnostics(promptDiagnostics, metadata);
+-                this.chatContainer.addChild(new Text(`${theme.fg("warning", "[Prompt conflicts]")}\n${warningLines}`, 0, 0));
++                this.chatContainer.addChild(new Text(`${sectionHeader("Prompt Issues", "warning")}\n${warningLines}`, 0, 0));
+                 this.chatContainer.addChild(new Spacer(1));
+             }
+             const extensionDiagnostics = [];
+@@ -785,13 +764,13 @@ export class InteractiveMode {
+             extensionDiagnostics.push(...shortcutDiagnostics);
+             if (extensionDiagnostics.length > 0) {
+                 const warningLines = this.formatDiagnostics(extensionDiagnostics, metadata);
+-                this.chatContainer.addChild(new Text(`${theme.fg("warning", "[Extension issues]")}\n${warningLines}`, 0, 0));
++                this.chatContainer.addChild(new Text(`${sectionHeader("Extension Issues", "warning")}\n${warningLines}`, 0, 0));
+                 this.chatContainer.addChild(new Spacer(1));
+             }
+             const themeDiagnostics = themesResult.diagnostics;
+             if (themeDiagnostics.length > 0) {
+                 const warningLines = this.formatDiagnostics(themeDiagnostics, metadata);
+-                this.chatContainer.addChild(new Text(`${theme.fg("warning", "[Theme conflicts]")}\n${warningLines}`, 0, 0));
++                this.chatContainer.addChild(new Text(`${sectionHeader("Theme Issues", "warning")}\n${warningLines}`, 0, 0));
+                 this.chatContainer.addChild(new Spacer(1));
+             }
+         }
+@@ -2386,17 +2365,6 @@ export class InteractiveMode {
          this.chatContainer.addChild(new Text(theme.fg("warning", `Warning: ${warningMessage}`), 1, 0));
          this.ui.requestRender();
      }
@@ -148,7 +211,7 @@ index 038e6600ead762073fda085c806f8aa1eafef9a1..11a82c0fc46f22a71a85654f847543ee
      /**
       * Get all queued messages (read-only).
       * Combines session queue and compaction queue.
-@@ -3163,7 +3126,8 @@ export class InteractiveMode {
+@@ -3163,7 +3131,8 @@ export class InteractiveMode {
              restoreEditor();
              this.session.modelRegistry.refresh();
              await this.updateAvailableProviderCount();
