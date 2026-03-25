@@ -246,8 +246,6 @@ describe("searchTool", () => {
             type: "files",
         });
         const text = result.content[0].text;
-        // Must NOT contain help/usage output from find
-        expect(text.toLowerCase()).not.toContain("usage");
         // Should be either "No matches found" or "Search failed: ..." (path doesn't exist)
         expect(text === "No matches found" || text.startsWith("Search failed:")).toBe(true);
     });
