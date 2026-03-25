@@ -282,6 +282,10 @@ export function App() {
   // Needed for the new slim-heartbeat CLI that no longer retries in every heartbeat.
   const pendingMcpReportRef = React.useRef<Record<string, unknown> | null>(null);
 
+  // Locally-injected messages (e.g. MCP auth banners) that must survive
+  // wholesale setMessages replacements from session_active / agent_end.
+  const injectedMessagesRef = React.useRef<RelayMessage[]>([]);
+
   // Tracks the highest meta state version seen per session, to prevent stale
   // state_snapshot from rolling back state already updated by meta_event.
   const metaVersionsRef = React.useRef<Map<string, number>>(new Map());
@@ -497,6 +501,7 @@ export function App() {
     lastSeqRef.current = null;
     awaitingSnapshotRef.current = false;
     renderedMcpReportTsRef.current = null;
+    injectedMessagesRef.current = [];
     setActiveSessionId(null);
     setMessages([]);
     setViewerStatus("Idle");
@@ -1213,7 +1218,10 @@ export function App() {
       // Flush any queued streaming-delta RAF before replacing state so stale
       // partials can't be re-inserted on top of the fresh snapshot.
       cancelPendingDeltas();
-      setMessages(normalizedMessages);
+      // Re-append locally-injected messages (e.g. MCP auth banners) that
+      // aren't part of the server-side state snapshot.
+      const injected = injectedMessagesRef.current;
+      setMessages(injected.length > 0 ? [...normalizedMessages, ...injected] : normalizedMessages);
       setActiveModel(stateModel);
       if (hasSessionName) {
         setSessionName(nextSessionName);
@@ -1379,8 +1387,10 @@ export function App() {
     if (type === "agent_end" && Array.isArray(evt.messages)) {
       const normalized = normalizeMessages(evt.messages as unknown[]);
       cancelPendingDeltas();
-      setMessages(normalized);
-      patchSessionCache({ messages: normalized });
+      const injected = injectedMessagesRef.current;
+      const withInjected = injected.length > 0 ? [...normalized, ...injected] : normalized;
+      setMessages(withInjected);
+      patchSessionCache({ messages: withInjected });
       setPendingQuestion(null);
       setPendingPlan(null);
       setRetryState(null);
@@ -1602,6 +1612,7 @@ export function App() {
 
       if (command === "new_session") {
         cancelPendingDeltas();
+        injectedMessagesRef.current = [];
         setMessages([]);
         setPendingQuestion(null);
         setPendingPlan(null);
@@ -1675,12 +1686,17 @@ export function App() {
 
       if (authUrl) {
         const message: RelayMessage = {
-          key: `mcp_auth:${ts}:${Math.random().toString(16).slice(2)}`,
+          key: `mcp_auth:${serverName}:${ts}`,
           role: "system",
           timestamp: ts,
           content: `🔐 **${serverName}** requires authentication.\n\n[Click here to authenticate](${authUrl})`,
           isError: false,
         };
+        // Store in ref so it survives wholesale setMessages replacements
+        injectedMessagesRef.current = [
+          ...injectedMessagesRef.current.filter((m) => !m.key.startsWith(`mcp_auth:${serverName}:`)),
+          message,
+        ];
         setMessages((prev) => {
           const next = [...prev, message];
           patchSessionCache({ messages: next });
@@ -1691,8 +1707,19 @@ export function App() {
     }
 
     if (type === "mcp_auth_complete") {
-      // Silently ignore — auth success is noise on the happy path.
-      // The CLI still logs to stderr for debugging.
+      const serverName = typeof evt.serverName === "string" ? evt.serverName : "MCP server";
+      // Remove the auth banner for this server — auth succeeded
+      injectedMessagesRef.current = injectedMessagesRef.current.filter(
+        (m) => !m.key.startsWith(`mcp_auth:${serverName}:`),
+      );
+      // Also remove from rendered messages
+      setMessages((prev) => {
+        const next = prev.filter((m) => !m.key.startsWith(`mcp_auth:${serverName}:`));
+        if (next.length !== prev.length) {
+          patchSessionCache({ messages: next });
+        }
+        return next.length !== prev.length ? next : prev;
+      });
       return;
     }
 
@@ -2182,6 +2209,7 @@ export function App() {
     pendingMcpReportRef.current = null;
     chunkedDeliveryRef.current = null;
     lastCompletedSnapshotRef.current = null;
+    injectedMessagesRef.current = [];
     setActiveSessionId(relaySessionId);
     setViewerStatus("Connecting…");
     setRetryState(null);
