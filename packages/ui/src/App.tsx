@@ -11,7 +11,7 @@ import { RunnerTokenManager } from "@/components/RunnerTokenManager";
 import { RunnerManager } from "@/components/RunnerManager";
 import { NewSessionWizardDialog } from "@/components/NewSessionWizardDialog";
 import { PizzaLogo } from "@/components/PizzaLogo";
-import { authClient, useSession, signOut } from "@/lib/auth-client";
+import { authClient, useSession, signOut, type BetterAuthSession } from "@/lib/auth-client";
 import { useRunnersFeed } from "@/lib/useRunnersFeed";
 import { io, type Socket } from "socket.io-client";
 import type {
@@ -133,7 +133,7 @@ export function App() {
   }>>([]);
   // User-scoped cache key for sidebar runners (prevents cross-account data leakage)
   const sidebarCacheKey = React.useMemo(() => {
-    const userId = session && typeof session === "object" ? (session as any).user?.id : null;
+    const userId = (session as BetterAuthSession | null)?.user?.id ?? null;
     return userId ? `pp-sidebar-runners:${userId}` : null;
   }, [session]);
   // Hydrate from cache once we know the user
@@ -3256,7 +3256,7 @@ export function App() {
     return <AuthPage onAuthenticated={() => authClient.$store.notify("$sessionSignal")} />
   }
 
-  const rawUser = session && typeof session === "object" ? (session as any).user : undefined;
+  const rawUser = (session as BetterAuthSession | null)?.user;
   const userName = rawUser && typeof rawUser.name === "string" ? (rawUser.name as string) : "";
   const userEmail = rawUser && typeof rawUser.email === "string" ? (rawUser.email as string) : "";
   const userLabel = userName || userEmail || "Account";
