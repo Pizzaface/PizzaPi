@@ -1693,7 +1693,7 @@ export function App() {
 
       // Only render clickable link for safe http/https URLs to prevent XSS
       const isSafeUrl = (() => {
-        try { const p = new URL(authUrl); return p.protocol === "http:" || p.protocol === "https:"; } catch { return false; }
+        try { const p = new URL(authUrl ?? ""); return p.protocol === "http:" || p.protocol === "https:"; } catch { return false; }
       })();
       if (authUrl && isSafeUrl) {
         const stableKey = `mcp_auth:${serverName}`;
