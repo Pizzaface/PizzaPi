@@ -439,12 +439,27 @@ export async function registerMcpTools(
   const timeoutMs = typeof (config as any).mcpTimeout === "number" ? (config as any).mcpTimeout : DEFAULT_MCP_TIMEOUT;
   const initTimeoutMs = typeof (config as any).mcpInitTimeout === "number" ? (config as any).mcpInitTimeout : DEFAULT_MCP_INIT_TIMEOUT;
 
-  // ── Phase 1: Initialize + list tools for all servers in parallel ─────────
+  // ── Initialize, list tools, and register — progressively per server ─────
   //
-  // Initialization is performed first (may trigger OAuth which requires user
-  // interaction and can take minutes). The tool-listing timeout only applies
-  // to the subsequent tools/list call — not the auth flow — so servers that
-  // require OAuth are not killed by the 30 s default timeout.
+  // Each server initializes (may trigger OAuth which requires user interaction
+  // and can take minutes), lists its tools, and registers them with pi
+  // immediately — without waiting for slower servers. This prevents a single
+  // slow/hung server (e.g. Figma OAuth waiting for user paste) from blocking
+  // all other MCP tools from being available.
+  //
+  // Shared state (usedToolNames, toolCount, etc.) is safe without a mutex
+  // because tool registration is synchronous (`pi.registerTool` is sync) and
+  // the only contended resource is `usedToolNames` which is only written to
+  // in the synchronous registration loop after each server's async phase.
+  // JavaScript's single-threaded event loop guarantees these sync sections
+  // don't interleave.
+  let toolCount = 0;
+  const toolNames: string[] = [];
+  const errors: Array<{ server: string; error: string }> = [];
+  const usedToolNames = new Set<string>();
+  const serverTools: Record<string, string[]> = {};
+  const liveClients: McpClient[] = [];
+
   const initResults = await Promise.all(
     clients.map(async (client): Promise<McpServerInitResult> => {
       const start = Date.now();
@@ -519,6 +534,48 @@ export async function registerMcpTools(
         if (error) {
           return { name: client.name, tools: [], error, durationMs, timedOut };
         }
+
+        // ── Eagerly register this server's tools ───────────────────────────
+        // Don't wait for other servers — register tools as soon as this
+        // server is ready so the agent can use them immediately.
+        if (!signal?.aborted) {
+          liveClients.push(client);
+          const serverToolList: string[] = [];
+          serverTools[client.name] = serverToolList;
+
+          for (const tool of tools) {
+            if (!tool?.name) continue;
+
+            const sourceName = `mcp:${client.name}:${tool.name}`;
+            const toolName = allocateProviderSafeToolName(client.name, tool.name, usedToolNames);
+
+            toolCount++;
+            toolNames.push(toolName);
+            serverToolList.push(toolName);
+
+            const parameters = (tool.inputSchema ?? { type: "object", additionalProperties: true }) as any;
+            if (parameters && typeof parameters === "object" && "$schema" in parameters) {
+              delete parameters.$schema;
+            }
+
+            pi.registerTool({
+              name: toolName,
+              label: `${client.name}:${tool.name}`,
+              description: tool.description
+                ? `${tool.description} (source: ${sourceName})`
+                : `MCP tool from ${client.name} (source: ${sourceName})`,
+              parameters,
+              async execute(_toolCallId: string, rawParams: unknown, signal: AbortSignal | undefined) {
+                const result = await client.callTool(tool.name, rawParams ?? {}, signal);
+                if (result && typeof result === "object" && "content" in result) {
+                  return (result as any);
+                }
+                return { content: result };
+              },
+            });
+          }
+        }
+
         return { name: client.name, tools, durationMs, timedOut };
       } catch (err) {
         const durationMs = Date.now() - start;
@@ -539,68 +596,15 @@ export async function registerMcpTools(
     return { ...empty, totalDurationMs: Date.now() - totalStart, serverTimings: initResults };
   }
 
-  // ── Phase 2: Register tools sequentially (name allocation needs Set) ─────
-  let toolCount = 0;
-  const toolNames: string[] = [];
-  const errors: Array<{ server: string; error: string }> = [];
-  const usedToolNames = new Set<string>();
-  const serverTools: Record<string, string[]> = {};
-  const liveClients: McpClient[] = [];
-
-  for (let i = 0; i < clients.length; i++) {
-    // Re-check abort before registering each server's tools — if abort fired
-    // between the phase-1 check and here, stop early so we don't register
-    // tools that point at clients closeAllClients() already shut down.
-    if (signal?.aborted) {
-      closeAllClients();
-      signal.removeEventListener("abort", closeAllClients);
-      return { ...empty, totalDurationMs: Date.now() - totalStart, serverTimings: initResults };
-    }
-
-    const client = clients[i];
-    const result = initResults[i];
-
+  // Collect errors from servers that failed init/listing (tools were not registered).
+  for (const result of initResults) {
     if (result.error) {
-      errors.push({ server: client.name, error: result.error });
+      errors.push({ server: result.name, error: result.error });
       // Close errored clients so child processes don't leak
-      try { client.close(); } catch {}
-      continue;
-    }
-
-    liveClients.push(client);
-    const serverToolList: string[] = [];
-    serverTools[client.name] = serverToolList;
-
-    for (const tool of result.tools) {
-      if (!tool?.name) continue;
-
-      const sourceName = `mcp:${client.name}:${tool.name}`;
-      const toolName = allocateProviderSafeToolName(client.name, tool.name, usedToolNames);
-
-      toolCount++;
-      toolNames.push(toolName);
-      serverToolList.push(toolName);
-
-      const parameters = (tool.inputSchema ?? { type: "object", additionalProperties: true }) as any;
-      if (parameters && typeof parameters === "object" && "$schema" in parameters) {
-        delete parameters.$schema;
+      const client = clients.find((c) => c.name === result.name);
+      if (client && !liveClients.includes(client)) {
+        try { client.close(); } catch {}
       }
-
-      pi.registerTool({
-        name: toolName,
-        label: `${client.name}:${tool.name}`,
-        description: tool.description
-          ? `${tool.description} (source: ${sourceName})`
-          : `MCP tool from ${client.name} (source: ${sourceName})`,
-        parameters,
-        async execute(_toolCallId: string, rawParams: unknown, signal: AbortSignal | undefined) {
-          const result = await client.callTool(tool.name, rawParams ?? {}, signal);
-          if (result && typeof result === "object" && "content" in result) {
-            return (result as any);
-          }
-          return { content: result };
-        },
-      });
     }
   }
 
