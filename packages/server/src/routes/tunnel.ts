@@ -204,6 +204,9 @@ export const handleTunnelRoute: RouteHandler = async (req, url) => {
         responseHeaders.delete("content-encoding");
     }
 
+    // Mark as tunnel response so withSecurityHeaders applies relaxed policy.
+    responseHeaders.set("x-pizzapi-tunnel", "1");
+
     return new Response(responseBody, {
         status: tunnelResponse.status,
         headers: responseHeaders,

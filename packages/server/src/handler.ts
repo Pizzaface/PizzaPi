@@ -150,19 +150,39 @@ export async function enforceBodySizeLimit(req: Request, url: URL): Promise<Resp
 /**
  * Clone a Response and inject the standard security headers.
  * Called on every response returned by handleFetch.
+ *
+ * Tunnel proxy responses (marked with x-pizzapi-tunnel) get a relaxed policy:
+ * the tunneled app's content needs its own CSP/framing rules, not PizzaPi's
+ * restrictive defaults.
+ *
  * Exported for testing.
  */
 export function withSecurityHeaders(res: Response): Response {
     const headers = new Headers(res.headers);
+    const isTunnel = headers.has("x-pizzapi-tunnel");
+    // Strip internal marker before sending to client
+    headers.delete("x-pizzapi-tunnel");
+
     headers.set("X-Content-Type-Options", "nosniff");
-    headers.set("X-Frame-Options", "DENY");
     headers.set("X-XSS-Protection", "0");
     headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
     headers.set("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
-    headers.set(
-        "Content-Security-Policy",
-        "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws: wss: blob:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'",
-    );
+
+    if (isTunnel) {
+        // Tunnel responses: allow same-origin framing (for the TunnelPanel iframe)
+        // and use a permissive CSP so the tunneled app's scripts/styles/resources load.
+        headers.set("X-Frame-Options", "SAMEORIGIN");
+        // Intentionally omit Content-Security-Policy — the tunneled app may need
+        // inline scripts, external CDN resources, etc. that PizzaPi's strict CSP
+        // would block. The iframe sandbox attribute provides defence-in-depth.
+    } else {
+        headers.set("X-Frame-Options", "DENY");
+        headers.set(
+            "Content-Security-Policy",
+            "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws: wss: blob:; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'",
+        );
+    }
+
     return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
 }
 
