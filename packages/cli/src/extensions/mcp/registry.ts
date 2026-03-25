@@ -150,8 +150,11 @@ function isMcpDomainAllowed(url: string, serverName: string): boolean {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConfig): Promise<McpClient[]> {
-  // Clear stale OAuth providers from previous loads (e.g. /mcp reload)
-  // to prevent unbounded growth and iteration over dead providers.
+  // Clean up stale OAuth providers from previous loads (e.g. /mcp reload).
+  // This stops any active re-emit timers and prevents unbounded growth.
+  for (const provider of activeOAuthProviders) {
+    provider.closeCallback();
+  }
   activeOAuthProviders.length = 0;
 
   const disabled = new Set(config.disabledMcpServers ?? []);
@@ -626,7 +629,12 @@ export async function registerMcpTools(
     // Let slow servers continue in the background. When they finish, their
     // tools are already registered (inside initAndRegisterServer). We just
     // need to handle errors/cleanup for ones that eventually fail.
+    //
+    // Keep the abort listener alive so that load() aborting the signal
+    // (e.g. on /mcp disable) kills the background clients and cancels
+    // their in-flight OAuth flows.
     Promise.all(wrappedPromises).then((finalResults) => {
+      signal?.removeEventListener("abort", closeAllClients);
       for (let i = 0; i < finalResults.length; i++) {
         if (settled[i] !== null && !finalResults[i].error) continue; // already handled
         const result = finalResults[i];
@@ -639,7 +647,9 @@ export async function registerMcpTools(
           console.warn(`pizzapi: MCP server "${result.name}" failed in background: ${result.error}`);
         }
       }
-    }).catch(() => {}); // Suppress unhandled rejection from background work
+    }).catch(() => {
+      signal?.removeEventListener("abort", closeAllClients);
+    });
   }
 
   if (signal?.aborted) {
@@ -665,6 +675,11 @@ export async function registerMcpTools(
   });
 
   const totalDurationMs = Date.now() - totalStart;
-  signal?.removeEventListener("abort", closeAllClients);
+  // NOTE: don't removeEventListener("abort", closeAllClients) here — background
+  // tasks may still be running. The listener is cleaned up when they finish.
+  // For the "all done within grace" path, clean up now since no background work exists.
+  if (raceResult === "done") {
+    signal?.removeEventListener("abort", closeAllClients);
+  }
   return { clients: liveClients, toolCount, toolNames, errors, serverTools, serverTimings: initResults, totalDurationMs };
 }

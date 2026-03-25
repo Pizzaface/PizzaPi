@@ -290,6 +290,9 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
   /** Nonce for the current auth flow (relay mode). */
   private _currentNonce: string | null = null;
 
+  /** Active re-emit timer for paste mode (cleared on close/cancel). */
+  private _reEmitTimer: ReturnType<typeof setInterval> | null = null;
+
   /** Expected OAuth state from the most recent authorization request (for CSRF validation). */
   private _pendingState: string | null = null;
 
@@ -644,12 +647,11 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
       // viewers (who connect after the initial event was published) still
       // see the paste prompt. The event is cached in Redis on each publish,
       // so viewers that join mid-wait will receive it during replay.
-      let reEmitTimer: ReturnType<typeof setInterval> | null = null;
       if (this._useLocalhostForRegistration && this._pendingAuthUrl) {
         const ctx = this.relayContext!;
         const serverName = this._serverName;
         const authUrl = this._pendingAuthUrl;
-        reEmitTimer = setInterval(() => {
+        this._reEmitTimer = setInterval(() => {
           ctx.emitEvent("mcp:auth_paste_required", {
             type: "mcp_auth_paste_required",
             serverName,
@@ -661,10 +663,10 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
       }
 
       return this.relayContext!.waitForCallback(nonce).then((code) => {
-        if (reEmitTimer) clearInterval(reEmitTimer);
+        this._clearReEmitTimer();
         return { code, state: relayState };
       }, (err) => {
-        if (reEmitTimer) clearInterval(reEmitTimer);
+        this._clearReEmitTimer();
         throw err;
       });
     }
@@ -677,8 +679,17 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
     return this._callbackServer.promise;
   }
 
+  /** Stop the paste-mode re-emit timer. */
+  private _clearReEmitTimer(): void {
+    if (this._reEmitTimer) {
+      clearInterval(this._reEmitTimer);
+      this._reEmitTimer = null;
+    }
+  }
+
   /** Clean up the callback server. */
   closeCallback(): void {
+    this._clearReEmitTimer();
     if (this._callbackServer) {
       // Suppress unhandled rejection — same rationale as in the relayContext
       // setter: the promise may have been created eagerly with no consumer.

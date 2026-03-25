@@ -410,6 +410,11 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
     // Remember previous MCP tool names so we can update active tools after reload.
     const previousMcpToolNames = new Set(lastSnapshot.toolNames);
 
+    // Abort any in-flight load (e.g. background OAuth from the grace period)
+    // so stale flows don't keep re-emitting events after a reload/disable.
+    loadLifecycleController.abort();
+    loadLifecycleController = new AbortController();
+
     // Pass current relay context so that freshly created OAuth providers have
     // it *before* initialization begins.  During /mcp reload the relay is
     // already connected — without this, providers fall back to local OAuth.
