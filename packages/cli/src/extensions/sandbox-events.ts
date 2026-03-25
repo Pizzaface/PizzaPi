@@ -76,20 +76,26 @@ function formatStatus(): string {
     const violations = getViolations();
     const last5 = violations.slice(-5);
 
+    const modeColor = mode === "full" ? "\x1b[32m" : mode === "basic" ? "\x1b[33m" : "\x1b[2m";
+    const violationCount = violations.length > 0
+        ? `\x1b[33m${violations.length}\x1b[0m`
+        : `\x1b[32m${violations.length}\x1b[0m`;
+
     const lines: string[] = [
         `## 🔒 Sandbox Status`,
         ``,
-        `- **Mode:** ${mode}`,
-        `- **Active:** ${active ? "✅ yes" : "❌ no"}`,
+        `- **Mode:** ${modeColor}${mode}\x1b[0m`,
+        `- **Active:** ${active ? "\x1b[32m✅ yes\x1b[0m" : "\x1b[31m❌ no\x1b[0m"}`,
         `- **Platform:** ${process.platform}`,
-        `- **Violations:** ${violations.length}`,
+        `- **Violations:** ${violationCount}`,
     ];
 
     if (last5.length > 0) {
         lines.push("", "### Recent Violations", "");
         for (const v of last5) {
             const icon = v.operation === "read" ? "📖" : v.operation === "write" ? "✏️" : "⚡";
-            lines.push(`- ${icon} \`${v.operation}\` → \`${v.target}\` — ${v.reason}`);
+            const opColor = v.operation === "write" ? "\x1b[31m" : "\x1b[33m";
+            lines.push(`- ${icon} ${opColor}\`${v.operation}\`\x1b[0m → \`${v.target}\` \x1b[2m— ${v.reason}\x1b[0m`);
         }
     }
 
@@ -100,18 +106,19 @@ function formatViolations(): string {
     const violations = getViolations();
 
     if (violations.length === 0) {
-        return "No sandbox violations recorded.";
+        return "\x1b[32m✓ No sandbox violations recorded.\x1b[0m";
     }
 
     const lines: string[] = [
-        `## Sandbox Violations (${violations.length})`,
+        `## \x1b[33mSandbox Violations (${violations.length})\x1b[0m`,
         "",
     ];
 
     for (const v of violations) {
         const ts = v.timestamp.toISOString();
+        const opColor = v.operation === "write" ? "\x1b[31m" : "\x1b[33m";
         lines.push(
-            `- **${ts}** | \`${v.operation}\` | \`${v.target}\` | ${v.reason}`,
+            `- \x1b[2m${ts}\x1b[0m | ${opColor}\`${v.operation}\`\x1b[0m | \`${v.target}\` \x1b[2m| ${v.reason}\x1b[0m`,
         );
     }
 
