@@ -62,7 +62,7 @@ import { TerminalManager } from "@/components/TerminalManager";
 import { FileExplorer } from "@/components/FileExplorer";
 import { CombinedPanel } from "@/components/CombinedPanel";
 import { ViewerSocketContext } from "@/lib/viewer-socket-context";
-import { useRunnerServices } from "@/hooks/useRunnerServices";
+import { useRunnerServices, attachServiceAnnounceListener } from "@/hooks/useRunnerServices";
 import { ServicePanelButtons, ServicePanelContainer, useServicePanelState } from "@/components/service-panels/ServicePanels";
 import {
   ModelSelector,
@@ -2317,6 +2317,10 @@ export function App() {
       withCredentials: true,
     });
     viewerWsRef.current = socket;
+    // Attach service_announce listener BEFORE setViewerSocket triggers a render,
+    // so the announce event (sent by the server during connection) is captured
+    // eagerly and available when useRunnerServices reads it.
+    attachServiceAnnounceListener(socket);
     setViewerSocket(socket);
 
     // Stale-connection watchdog: if the socket thinks it's connected but
