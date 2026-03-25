@@ -171,7 +171,13 @@ export async function runSetup(opts: { force?: boolean } = {}): Promise<boolean>
             if (existsSync(piSettingsPath)) {
                 try {
                     const existing = readFileSync(piSettingsPath, "utf-8");
-                    piSettings = JSON.parse(existing);
+                    const parsed: unknown = JSON.parse(existing);
+                    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+                        skipThemeWrite = true;
+                        console.warn("Note: ~/.pizzapi/settings.json has unexpected format — skipping theme auto-selection.");
+                    } else {
+                        piSettings = parsed as Record<string, unknown>;
+                    }
                 } catch {
                     // File exists but has invalid JSON — bail to avoid clobbering user settings
                     skipThemeWrite = true;
