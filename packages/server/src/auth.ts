@@ -345,6 +345,14 @@ export function getTrustedOrigins(): string[] {
     return _trustedOrigins!;
 }
 
+/** Add an origin to the trusted origins list at runtime (e.g. Vite dev port in sandbox). */
+export function addTrustedOrigin(origin: string): void {
+    ensureInitialized();
+    if (!_trustedOrigins!.includes(origin)) {
+        _trustedOrigins!.push(origin);
+    }
+}
+
 /** Get API key rate limit configuration. */
 export function getApiKeyRateLimitConfig() {
     ensureInitialized();
