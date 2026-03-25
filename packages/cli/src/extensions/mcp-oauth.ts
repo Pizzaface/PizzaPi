@@ -580,9 +580,7 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
           nonce: this._currentNonce,
           ts: Date.now(),
         });
-        process.stderr.write(
-          `🔐 ${this._serverName} requires authentication (paste mode) — check web UI\n`,
-        );
+        // Web UI receives the event above — no need to duplicate to stderr.
       } else {
         // Relay mode: emit event for web UI to show clickable link
         this.relayContext!.emitEvent("mcp:auth_required", {
@@ -591,8 +589,7 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
           authUrl: url,
           ts: Date.now(),
         });
-        // Inform the user in case no web viewer is currently attached.
-        process.stderr.write(`🔐 ${this._serverName} requires authentication — check web UI\n`);
+        // Web UI receives the event above — no need to duplicate to stderr.
       }
     } else {
       // Local mode: open browser directly

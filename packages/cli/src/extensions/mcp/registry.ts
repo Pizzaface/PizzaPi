@@ -643,8 +643,14 @@ export async function registerMcpTools(
           if (client && !liveClients.includes(client)) {
             try { client.close(); } catch {}
           }
-          // Log the background failure so it's visible in runner logs.
-          console.warn(`pizzapi: MCP server "${result.name}" failed in background: ${result.error}`);
+          // Log non-auth background failures. OAuth/auth errors are already surfaced
+          // to the user via web UI events (mcp:auth_required / mcp:auth_paste_required),
+          // so there's no need to repeat them as noisy console output.
+          const errStr = String(result.error);
+          const isAuthError = /oauth|authentication|auth callback/i.test(errStr);
+          if (!isAuthError) {
+            console.warn(`pizzapi: MCP server "${result.name}" failed in background: ${result.error}`);
+          }
         }
       }
     }).catch(() => {

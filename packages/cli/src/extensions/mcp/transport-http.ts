@@ -375,9 +375,7 @@ export function createStreamableMcpClient(opts: {
           // Retry with localhost-only registration: register with a localhost
           // placeholder, but keep using the relay URL for the actual redirect.
           if (oauthProvider.relayContext && !oauthProvider.clientInformation()) {
-            process.stderr.write(
-              `⚠ ${opts.name}: registration failed with relay redirect — retrying with localhost registration\n`,
-            );
+            // Silent fallback — no need to surface this implementation detail to the user.
             oauthProvider.enableLocalhostRegistration();
             result1 = await auth(oauthProvider, {
               serverUrl: opts.url,
