@@ -649,10 +649,17 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
         socket.on("service_message", (envelope: ServiceEnvelope) => {
             const runnerId = socket.data.runnerId;
             if (!runnerId) return;
-            const sessionIds = runnerSessionIds.get(runnerId);
-            if (!sessionIds || sessionIds.size === 0) return;
-            for (const sessionId of sessionIds) {
-                broadcastToSessionViewers(sessionId, "service_message", envelope);
+            // If envelope carries a sessionId, route only to that session's viewers.
+            // Otherwise broadcast to all sessions on this runner (e.g. push announcements).
+            const targetSessionId = (envelope as ServiceEnvelope & { sessionId?: string }).sessionId;
+            if (targetSessionId) {
+                broadcastToSessionViewers(targetSessionId, "service_message", envelope);
+            } else {
+                const sessionIds = runnerSessionIds.get(runnerId);
+                if (!sessionIds || sessionIds.size === 0) return;
+                for (const sid of sessionIds) {
+                    broadcastToSessionViewers(sid, "service_message", envelope);
+                }
             }
         });
 
