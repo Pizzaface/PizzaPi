@@ -34,6 +34,7 @@ import {
     runnerRoom,
     safeJsonParse,
     modelFromHeartbeat,
+    getIo,
 } from "./context.js";
 import { broadcastToHub } from "./hub.js";
 import { broadcastToRunnersNs } from "./runners-broadcast.js";
@@ -401,4 +402,49 @@ export async function removeRunner(runnerId: string): Promise<void> {
 /** Refresh a runner's TTL in Redis (call on heartbeat/activity). */
 export async function touchRunner(runnerId: string): Promise<void> {
     await refreshRunnerTTL(runnerId);
+}
+
+/**
+ * Sweep runners in Redis that have no live Socket.IO connection on ANY
+ * server node.  This catches "ghost" runners preserved during a graceful
+ * shutdown when the runner never reconnected — e.g. the runner process
+ * was also stopped, or the server was shut down permanently rather than
+ * restarted.
+ *
+ * Uses the Socket.IO Redis adapter's cluster-wide room query so that
+ * in multi-node deployments a runner connected to a different relay
+ * node is NOT pruned.
+ *
+ * Called once after a startup grace period to give runners time to
+ * reconnect before being pruned.
+ */
+export async function sweepOrphanedRunners(): Promise<void> {
+    const allRunners = await getAllRunners();
+    const io = getIo();
+    const runnerNs = io.of("/runner");
+    let pruned = 0;
+    for (const runner of allRunners) {
+        // Check cluster-wide: is any socket in this runner's room?
+        // adapter.fetchSockets queries all nodes via the Redis adapter.
+        try {
+            const sockets = await runnerNs.in(runnerRoom(runner.runnerId)).fetchSockets();
+            if (sockets.length > 0) continue; // runner is alive on some node
+        } catch {
+            // If the adapter query fails (e.g. Redis issue), skip this
+            // runner rather than risk pruning a live one.
+            continue;
+        }
+
+        console.log(`[sio-registry] Pruning orphaned runner ${runner.runnerId} (${runner.name ?? "unnamed"}) — not reconnected after restart`);
+        await deleteRunnerState(runner.runnerId);
+        void broadcastToRunnersNs(
+            "runner_removed",
+            { runnerId: runner.runnerId },
+            runner.userId ?? undefined,
+        );
+        pruned++;
+    }
+    if (pruned > 0) {
+        console.log(`[sio-registry] Pruned ${pruned} orphaned runner(s)`);
+    }
 }

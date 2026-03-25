@@ -5,9 +5,11 @@ import {
     pruneExpiredRelaySessions,
 } from "./sessions/store.js";
 import { deleteRelayEventCaches, initializeRelayRedisCache } from "./sessions/redis.js";
-import { sweepExpiredSessions } from "./ws/sio-registry.js";
+import { sweepExpiredSessions, sweepOrphanedRunners } from "./ws/sio-registry.js";
 import { sweepExpiredAttachments, rehydrateExtractedAttachments } from "./attachments/store.js";
 import { runAllMigrations } from "./migrations.js";
+
+import { setServerShuttingDown } from "./health.js";
 
 // ── Process-level safety net ─────────────────────────────────────────────────
 // The Socket.IO Redis adapter can throw EPIPE synchronously when the Redis
@@ -304,3 +306,51 @@ setInterval(() => {
 }, sweepMs);
 
 console.log(`Relay session maintenance enabled (every ${Math.round(sweepMs / 1000)}s).`);
+
+// ── Post-startup orphaned runner sweep ───────────────────────────────────────
+// After a graceful shutdown, runner Redis entries are intentionally preserved
+// so reconnecting runners find their state intact.  But if the previous
+// server was stopped permanently (not restarted), or a runner died, those
+// entries become ghosts.  Give runners a 90-second grace period to reconnect,
+// then prune any that didn't.
+const RUNNER_RECONNECT_GRACE_MS = 90_000;
+setTimeout(() => {
+    void sweepOrphanedRunners().catch((err) => {
+        console.error("[startup] Failed to sweep orphaned runners:", err);
+    });
+}, RUNNER_RECONNECT_GRACE_MS);
+
+// ── Graceful shutdown ────────────────────────────────────────────────────────
+// Registered after httpServer and io are initialized so there's no TDZ risk
+// if SIGTERM arrives during startup.  Sets isServerShuttingDown before closing
+// Socket.IO so disconnect handlers can skip destructive Redis cleanup.
+function onShutdownSignal(signal: string): void {
+    console.log(`[shutdown] Received ${signal} — marking server as shutting down`);
+    setServerShuttingDown();
+
+    // Close the Socket.IO server so disconnect handlers fire with the
+    // shuttingDown flag already set, then close the HTTP server.
+    if (io) {
+        io.close(() => {
+            console.log("[shutdown] Socket.IO closed");
+            httpServer.close(() => {
+                console.log("[shutdown] HTTP server closed");
+                process.exit(0);
+            });
+        });
+    } else {
+        httpServer.close(() => {
+            console.log("[shutdown] HTTP server closed");
+            process.exit(0);
+        });
+    }
+
+    // Force exit after 10s if graceful shutdown stalls
+    setTimeout(() => {
+        console.warn("[shutdown] Graceful shutdown timed out — forcing exit");
+        process.exit(1);
+    }, 10_000).unref();
+}
+
+process.on("SIGTERM", () => onShutdownSignal("SIGTERM"));
+process.on("SIGINT", () => onShutdownSignal("SIGINT"));
