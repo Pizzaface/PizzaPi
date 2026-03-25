@@ -159,14 +159,61 @@ async function askUserQuestion(
         }
 
         if (canAskViaTui) {
-            const displayParts = questions.map((q, i) => {
-                let text = questions.length > 1 ? `Q${i + 1}: ${q.question}` : q.question;
+            // ── Branded TUI display ────────────────────────────────────────
+            const P  = "\x1b[38;2;196;167;224m"; // border soft purple
+            const Ac = "\x1b[38;2;232;180;248m"; // accent plum
+            const RF = "\x1b[39m";               // reset fg color
+            const bold = (s: string) => `\x1b[1m${s}\x1b[22m`;
+            const dim  = (s: string) => `\x1b[2m${s}\x1b[22m`;
+            const clrP = (s: string) => `${P}${s}${RF}`;
+            const clrA = (s: string) => `${Ac}${s}${RF}`;
+
+            const BOX_W = 58; // visible chars between │ borders
+
+            /** Strip ANSI escapes to measure visual display width */
+            const visLen = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "").length;
+            /** Pad a styled string to exactly BOX_W visual chars */
+            const padTo  = (s: string) => s + " ".repeat(Math.max(0, BOX_W - visLen(s)));
+
+            const bRow     = (inner: string) => clrP("│") + inner + clrP("│");
+            const emptyRow = bRow(" ".repeat(BOX_W));
+
+            const typeLabel = (type: AskUserQuestionType | undefined): string =>
+                type === "checkbox" ? "[select multiple]"
+                : type === "ranked" ? "[rank in order]"
+                : "[select one]";
+
+            const buildBox = (q: AskUserQuestionItem, idx: number): string => {
+                const rows: string[] = [];
+
+                // Header row
+                const hdr       = " AskUserQuestion ";
+                const hdrDashes = "─".repeat(Math.max(0, BOX_W - 1 - hdr.length));
+                rows.push(clrP(`╭─${hdr}${hdrDashes}╮`));
+                rows.push(emptyRow);
+
+                // Step counter (multi-question) + type hint
+                const step = questions.length > 1 ? `  Q${idx + 1} of ${questions.length}: ` : "  ";
+                rows.push(bRow(padTo(dim(`${step}${typeLabel(q.type)}`))));
+
+                // Question text in bold
+                rows.push(bRow(padTo(`  ${bold(q.question)}`)));
+
+                // Numbered options
                 if (q.options.length > 0) {
-                    text += ` (Options: ${q.options.join(", ")})`;
+                    rows.push(emptyRow);
+                    for (let j = 0; j < q.options.length; j++) {
+                        rows.push(bRow(padTo(`  ${clrA(`(${j + 1})`)} ${q.options[j]}`)));
+                    }
                 }
-                return text;
-            });
-            const displayQuestion = displayParts.join("\n");
+
+                rows.push(emptyRow);
+                rows.push(clrP(`╰${"─".repeat(BOX_W)}╯`));
+                return rows.join("\n");
+            };
+
+            const displayQuestion = questions.map((q, i) => buildBox(q, i)).join("\n\n");
+            // ── End branded TUI display ────────────────────────────────────
 
             void ctx.ui
                 .input(displayQuestion, placeholder, { signal: localAbort.signal })
