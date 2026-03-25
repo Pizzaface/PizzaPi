@@ -34,7 +34,7 @@ const _origLog = console.log;
 const SUPPRESSED = [
     "[sio/relay]",
     "[sio/hub]",
-    "[sio/viewer]",
+    // "[sio/viewer]",  // temporarily unsuppressed for service_announce debugging
     "[sio/runners]",
     "[sio/runner]",
     "[sio-state]",

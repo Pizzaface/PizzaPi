@@ -1,12 +1,15 @@
 /**
  * Track which runner services are available via service_announce events.
  * Returns a Set<string> of service IDs that updates reactively.
+ *
+ * Accepts the viewer socket directly (rather than reading from context)
+ * because App.tsx creates the Provider and calls this hook in the same
+ * component — context isn't available until the Provider renders in JSX.
  */
 import { useState, useEffect } from "react";
-import { useViewerSocket } from "@/lib/viewer-socket-context";
+import type { Socket } from "socket.io-client";
 
-export function useRunnerServices(): Set<string> {
-    const socket = useViewerSocket();
+export function useRunnerServices(socket: Socket | null): Set<string> {
     const [services, setServices] = useState<Set<string>>(new Set());
 
     useEffect(() => {
