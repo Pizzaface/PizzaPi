@@ -1690,23 +1690,25 @@ export function App() {
       const ts = typeof evt.ts === "number" ? evt.ts : Date.now();
 
       if (authUrl) {
+        const stableKey = `mcp_auth:${serverName}`;
         const message: RelayMessage = {
-          key: `mcp_auth:${serverName}:${ts}`,
+          key: stableKey,
           role: "system",
           timestamp: ts,
           content: `🔐 **${serverName}** requires authentication.\n\n[Click here to authenticate](${authUrl})`,
           isError: false,
         };
-        // Store in ref so it survives wholesale setMessages replacements
-        injectedMessagesRef.current = [
-          ...injectedMessagesRef.current.filter((m) => !m.key.startsWith(`mcp_auth:${serverName}:`)),
-          message,
-        ];
-        setMessages((prev) => {
-          const next = [...prev, message];
-          patchSessionCache({ messages: next });
-          return next;
-        });
+        // Store in ref so it survives wholesale setMessages replacements.
+        // Deduplicate: only inject once per server.
+        const alreadyInjected = injectedMessagesRef.current.some((m) => m.key === stableKey);
+        if (!alreadyInjected) {
+          injectedMessagesRef.current = [...injectedMessagesRef.current, message];
+          setMessages((prev) => {
+            const next = [...prev, message];
+            patchSessionCache({ messages: next });
+            return next;
+          });
+        }
       }
       return;
     }
@@ -1718,24 +1720,28 @@ export function App() {
       const ts = typeof evt.ts === "number" ? evt.ts : Date.now();
 
       if (authUrl && nonce) {
-        // Inject a system message with the auth link
+        // Inject a system message pointing to the paste component.
+        // Use a stable key (no timestamp) so re-emitted events replace
+        // the existing message instead of accumulating duplicates.
+        const stableKey = `mcp_auth:${serverName}`;
         const message: RelayMessage = {
-          key: `mcp_auth:${serverName}:${ts}`,
+          key: stableKey,
           role: "system",
           timestamp: ts,
           content: `🔐 **${serverName}** requires authentication — use the prompt below to sign in.`,
           isError: false,
         };
-        injectedMessagesRef.current = [
-          ...injectedMessagesRef.current.filter((m) => !m.key.startsWith(`mcp_auth:${serverName}:`)),
-          message,
-        ];
-        setMessages((prev) => {
-          const next = [...prev, message];
-          patchSessionCache({ messages: next });
-          return next;
-        });
-        // Add to pending paste prompts
+        // Deduplicate: keep at most one auth message per server
+        const alreadyInjected = injectedMessagesRef.current.some((m) => m.key === stableKey);
+        if (!alreadyInjected) {
+          injectedMessagesRef.current = [...injectedMessagesRef.current, message];
+          setMessages((prev) => {
+            const next = [...prev, message];
+            patchSessionCache({ messages: next });
+            return next;
+          });
+        }
+        // Add/update pending paste prompt (always update nonce/authUrl)
         setMcpOAuthPastes((prev) => [
           ...prev.filter((p) => p.serverName !== serverName),
           { serverName, authUrl, nonce, ts },
@@ -1746,13 +1752,14 @@ export function App() {
 
     if (type === "mcp_auth_complete") {
       const serverName = typeof evt.serverName === "string" ? evt.serverName : "MCP server";
+      const stableKey = `mcp_auth:${serverName}`;
       // Remove the auth banner for this server — auth succeeded
       injectedMessagesRef.current = injectedMessagesRef.current.filter(
-        (m) => !m.key.startsWith(`mcp_auth:${serverName}:`),
+        (m) => m.key !== stableKey && !m.key.startsWith(`${stableKey}:`),
       );
       // Also remove from rendered messages
       setMessages((prev) => {
-        const next = prev.filter((m) => !m.key.startsWith(`mcp_auth:${serverName}:`));
+        const next = prev.filter((m) => m.key !== stableKey && !m.key.startsWith(`${stableKey}:`));
         if (next.length !== prev.length) {
           patchSessionCache({ messages: next });
         }

@@ -293,6 +293,9 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
   /** Expected OAuth state from the most recent authorization request (for CSRF validation). */
   private _pendingState: string | null = null;
 
+  /** The auth URL from the most recent redirectToAuthorization call (for re-emit in paste mode). */
+  private _pendingAuthUrl: string | null = null;
+
   /**
    * When true, use a localhost placeholder in `clientMetadata.redirect_uris`
    * for OAuth dynamic client registration, even in relay mode. Some servers
@@ -558,6 +561,7 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
 
   redirectToAuthorization(authorizationUrl: URL): void {
     const url = authorizationUrl.toString();
+    this._pendingAuthUrl = url;
     this._onAuthStart?.(url);
 
     if (this._useRelay) {
@@ -634,10 +638,35 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
       // our `state()` method and stored in `_pendingState`. Return it here
       // so the caller can pass it to `validateCallbackState()`.
       const relayState = this._pendingState ?? undefined;
-      return this.relayContext!.waitForCallback(this._currentNonce).then((code) => ({
-        code,
-        state: relayState,
-      }));
+      const nonce = this._currentNonce;
+
+      // In paste mode, periodically re-emit the auth event so late-joining
+      // viewers (who connect after the initial event was published) still
+      // see the paste prompt. The event is cached in Redis on each publish,
+      // so viewers that join mid-wait will receive it during replay.
+      let reEmitTimer: ReturnType<typeof setInterval> | null = null;
+      if (this._useLocalhostForRegistration && this._pendingAuthUrl) {
+        const ctx = this.relayContext!;
+        const serverName = this._serverName;
+        const authUrl = this._pendingAuthUrl;
+        reEmitTimer = setInterval(() => {
+          ctx.emitEvent("mcp:auth_paste_required", {
+            type: "mcp_auth_paste_required",
+            serverName,
+            authUrl,
+            nonce,
+            ts: Date.now(),
+          });
+        }, 15_000); // Re-emit every 15s
+      }
+
+      return this.relayContext!.waitForCallback(nonce).then((code) => {
+        if (reEmitTimer) clearInterval(reEmitTimer);
+        return { code, state: relayState };
+      }, (err) => {
+        if (reEmitTimer) clearInterval(reEmitTimer);
+        throw err;
+      });
     }
 
     // Local mode: localhost callback server
@@ -658,6 +687,7 @@ export class PizzaPiOAuthProvider implements OAuthClientProvider {
       this._callbackServer = null;
     }
     this._currentNonce = null;
+    this._pendingAuthUrl = null;
   }
 
   /**
