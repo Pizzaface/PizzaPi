@@ -214,4 +214,14 @@ describe("pizzapiHeaderExtension", () => {
         const lines = capturedRender!(5);
         expect(Array.isArray(lines)).toBe(true);
     });
+
+    test("wide top border visible width equals terminal width", () => {
+        pizzapiHeaderExtension(mockPi);
+        for (const width of [100, 120, 160]) {
+            const lines = capturedRender!(width);
+            const topBorder = lines[0]!;
+            const actual = visibleWidth(topBorder);
+            expect(actual).toBe(width);
+        }
+    });
 });

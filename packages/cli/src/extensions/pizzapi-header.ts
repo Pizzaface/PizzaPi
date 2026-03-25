@@ -119,20 +119,25 @@ function topBorder(
     version: string,
     width: number,
 ): string {
-    const titleRaw = ` 🍕 PizzaPi v${version} `;
+    // The rendered title zone is: "🍕 PizzaPi v${version}" + " " (1 trailing space before right dashes).
+    // We must use visibleWidth() here because the emoji occupies 2 terminal columns
+    // and we need exact column counts, not JS string lengths.
+    const titleText = `🍕 PizzaPi v${version}`;
+    // +1 for the trailing space between the title and the right dashes
+    const titleZoneWidth = visibleWidth(titleText) + 1;
     // +2 for the corner chars; the title sits inside the horizontal rule
     const ruleWidth = width - 2;
-    if (ruleWidth <= titleRaw.length) {
+    if (ruleWidth <= titleZoneWidth) {
         // Too narrow: just horizontal rule
         return theme.fg("border", "╭" + "─".repeat(Math.max(0, ruleWidth)) + "╮");
     }
-    const remaining = ruleWidth - titleRaw.length;
+    const remaining = ruleWidth - titleZoneWidth;
     const leftDashes = Math.floor(remaining / 2);
     const rightDashes = remaining - leftDashes;
-    // Rebuild: corner + dashes + styled-title + dashes + corner
+    // Rebuild: corner + dashes + styled-title + space + dashes + corner
     return (
         theme.fg("border", "╭" + "─".repeat(leftDashes)) +
-        theme.fg("accent", `🍕 PizzaPi v${version}`) +
+        theme.fg("accent", titleText) +
         theme.fg("border", " " + "─".repeat(rightDashes) + "╮")
     );
 }
