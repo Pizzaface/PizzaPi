@@ -281,6 +281,20 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
             // Look up sessions still connected to the relay that belong to this runner.
             // This allows the daemon to re-adopt orphaned worker processes after a restart.
             const existingSessions = await getConnectedSessionsForRunner(result);
+
+            // Seed runnerSessionIds so that service_message / service_announce
+            // forwarding works immediately for sessions that existed before this
+            // socket connection (e.g. after a daemon restart / reconnect).
+            if (existingSessions.length > 0) {
+                if (!runnerSessionIds.has(result)) {
+                    runnerSessionIds.set(result, new Set());
+                }
+                const sessionSet = runnerSessionIds.get(result)!;
+                for (const sid of existingSessions) {
+                    sessionSet.add(sid);
+                }
+            }
+
             socket.emit("runner_registered", {
                 runnerId: result,
                 ...(existingSessions.length > 0 ? { existingSessions } : {}),
