@@ -6,6 +6,7 @@
  */
 
 import { describe, test, expect } from "bun:test";
+import { visibleWidth } from "@mariozechner/pi-tui";
 
 // ── Minimal mock theme that returns plain text (no ANSI codes) ───────────────
 // This makes it easy to check visible output without stripping escape codes.
@@ -69,19 +70,53 @@ describe("pizzapiHeaderExtension", () => {
         expect(lines.length).toBeGreaterThan(0);
     });
 
-    test("wide render (>= 80 cols) returns 7 lines with box-drawing frame", () => {
+    test("wide render (>= 100 cols) returns 7 lines with box-drawing frame", () => {
         pizzapiHeaderExtension(mockPi);
         const lines = capturedRender!(100);
         // Wide mode: top border + row1 + separator + row2 + row3 + row4 + bottom border = 7
         expect(lines.length).toBe(7);
     });
 
-    test("narrow render (< 80 cols) returns single compact line", () => {
+    test("narrow render (< 100 cols) returns single compact line", () => {
         pizzapiHeaderExtension(mockPi);
         const lines = capturedRender!(60);
         expect(lines.length).toBe(1);
         expect(lines[0]).toContain("🍕");
         expect(lines[0]).toContain("PizzaPi");
+    });
+
+    test("width=99 is narrow (< 100 threshold)", () => {
+        pizzapiHeaderExtension(mockPi);
+        const lines = capturedRender!(99);
+        expect(lines.length).toBe(1);
+    });
+
+    test("width=100 is wide (>= 100 threshold)", () => {
+        pizzapiHeaderExtension(mockPi);
+        const lines = capturedRender!(100);
+        expect(lines.length).toBe(7);
+    });
+
+    test("narrow mode: line visible width does not exceed given width", () => {
+        pizzapiHeaderExtension(mockPi);
+        for (const width of [5, 10, 17, 20, 40, 60, 80, 99]) {
+            const lines = capturedRender!(width);
+            for (const line of lines) {
+                const lw = visibleWidth(line!);
+                expect(lw).toBeLessThanOrEqual(width);
+            }
+        }
+    });
+
+    test("wide mode: all lines visible width does not exceed given width", () => {
+        pizzapiHeaderExtension(mockPi);
+        for (const width of [100, 120, 160, 200]) {
+            const lines = capturedRender!(width);
+            for (const line of lines) {
+                const lw = visibleWidth(line!);
+                expect(lw).toBeLessThanOrEqual(width);
+            }
+        }
     });
 
     test("wide top border contains PizzaPi branding", () => {
