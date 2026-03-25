@@ -35,12 +35,19 @@ export function useServiceChannel<TSend = unknown, TPayload = unknown>(
             setAvailable(data.serviceIds.includes(serviceId));
         };
 
+        const handleDisconnect = () => setAvailable(false);
+        const handleConnect = () => setAvailable(false);
+
         socket.on("service_message", handleMessage);
         socket.on("service_announce", handleAnnounce);
+        socket.on("disconnect", handleDisconnect);
+        socket.on("connect", handleConnect);
 
         return () => {
             socket.off("service_message", handleMessage);
             socket.off("service_announce", handleAnnounce);
+            socket.off("disconnect", handleDisconnect);
+            socket.off("connect", handleConnect);
             setAvailable(false);
         };
     }, [socket, serviceId]);
