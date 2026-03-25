@@ -71,6 +71,25 @@ function hashFile(path: string): string | null {
     }
 }
 
+/**
+ * Compute a short content hash of the UI dist/ directory for Docker cache-busting.
+ * Uses the .build-stamp file (written on every prebuild) as a fast proxy —
+ * if it's missing, falls back to hashing the index.html.
+ */
+function computeDistHash(distDir: string): string {
+    const stampPath = join(distDir, ".build-stamp");
+    const indexPath = join(distDir, "index.html");
+    try {
+        const content = existsSync(stampPath)
+            ? readFileSync(stampPath, "utf-8")
+            : readFileSync(indexPath, "utf-8");
+        return createHash("sha256").update(content).digest("hex").slice(0, 12);
+    } catch {
+        // Fallback: unique per invocation so Docker always rebuilds
+        return Date.now().toString(36);
+    }
+}
+
 function computeUiSignature(repoPath: string): string | null {
     try {
         const head = execFileSync("git", ["-C", repoPath, "rev-parse", "HEAD"], { encoding: "utf-8" }).trim();
@@ -566,6 +585,7 @@ services:
       dockerfile: Dockerfile
       args:
         PREBUILT_UI: "{{PREBUILT_UI}}"
+        UI_DIST_HASH: "{{UI_DIST_HASH}}"
     ports:
       - "{{PORT}}:7492"
     environment:
@@ -590,6 +610,8 @@ export interface PrebuildResult {
     prebuilt: boolean;
     /** Whether a build was actually performed (vs. cache hit) */
     rebuilt: boolean;
+    /** Content hash of dist/ for Docker cache-busting (only set when prebuilt=true) */
+    distHash?: string;
 }
 
 /**
@@ -645,7 +667,7 @@ function prebuildUI(repoPath: string): PrebuildResult {
         if (!needsUiBuild && distReady) {
             console.log("  Host UI build is up to date (reusing dist/).");
             if (stateDirty) saveHostBuildState(state);
-            return { prebuilt: true, rebuilt: false };
+            return { prebuilt: true, rebuilt: false, distHash: computeDistHash(uiDist) };
         }
 
         // Explicitly clean dist/ before building to prevent stale artifacts.
@@ -674,7 +696,7 @@ function prebuildUI(repoPath: string): PrebuildResult {
                 stateDirty = true;
             }
             if (stateDirty) saveHostBuildState(state);
-            return { prebuilt: true, rebuilt: true };
+            return { prebuilt: true, rebuilt: true, distHash: computeDistHash(uiDist) };
         }
     } catch (err) {
         console.warn("Warning: Host UI build failed, falling back to Docker build.");
@@ -704,7 +726,7 @@ function writeBuildStamp(distDir: string): void {
     }
 }
 
-function generateComposeFile(repoPath: string, config: WebConfig, prebuiltUi: boolean): string {
+function generateComposeFile(repoPath: string, config: WebConfig, prebuiltUi: boolean, uiDistHash?: string): string {
     const composePath = join(WEB_DIR, "compose.yml");
     mkdirSync(WEB_DIR, { recursive: true });
 
@@ -765,7 +787,8 @@ function generateComposeFile(repoPath: string, config: WebConfig, prebuiltUi: bo
         .replace(/\{\{EXTRA_ORIGINS_LINE}}/g, extraOriginsLine)
         .replace(/\{\{TRUST_PROXY_LINE}}/g, trustProxyLine)
         .replace(/\{\{PROXY_DEPTH_LINE}}/g, proxyDepthLine)
-        .replace(/\{\{PREBUILT_UI}}/g, prebuiltUi ? "true" : "false");
+        .replace(/\{\{PREBUILT_UI}}/g, prebuiltUi ? "true" : "false")
+        .replace(/\{\{UI_DIST_HASH}}/g, uiDistHash ?? "none");
 
     // Only write if changed
     const existing = existsSync(composePath) ? readFileSync(composePath, "utf-8") : null;
@@ -1054,7 +1077,7 @@ export async function runWeb(args: string[]): Promise<void> {
     const prebuildResult: PrebuildResult = useHostPrebuild
         ? prebuildUI(repoPath)
         : { prebuilt: false, rebuilt: false };
-    const composePath = generateComposeFile(repoPath, config, prebuildResult.prebuilt);
+    const composePath = generateComposeFile(repoPath, config, prebuildResult.prebuilt, prebuildResult.distHash);
 
     console.log(`Starting PizzaPi web on port ${config.port}...`);
     console.log(`  Repo:    ${repoPath}`);

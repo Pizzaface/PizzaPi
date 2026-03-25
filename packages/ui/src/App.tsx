@@ -190,6 +190,9 @@ export function App() {
   /** Set of session IDs that currently have a pending AskUserQuestion. */
   const [sessionsAwaitingInput, setSessionsAwaitingInput] = React.useState<Set<string>>(new Set());
 
+  /** Set of session IDs that are actively compacting their context window. */
+  const [sessionsCompacting, setSessionsCompacting] = React.useState<Set<string>>(new Set());
+
   /** Pending plan mode prompt from the worker — shown as a plan review panel in the viewer. */
   const [pendingPlan, setPendingPlan] = React.useState<{
     toolCallId: string;
@@ -867,6 +870,14 @@ export function App() {
       if (state.isCompacting) {
         setViewerStatus("Compacting…");
       }
+      const snapSessionId = activeSessionRef.current;
+      if (snapSessionId) {
+        setSessionsCompacting((prev) => {
+          const next = new Set(prev);
+          if (state.isCompacting) { next.add(snapSessionId); } else { next.delete(snapSessionId); }
+          return next;
+        });
+      }
     }
 
     if (Object.prototype.hasOwnProperty.call(state, "retryState")) {
@@ -991,6 +1002,14 @@ export function App() {
     if (patch.isCompacting !== undefined) {
       setIsCompacting(patch.isCompacting);
       cachePatch.isCompacting = patch.isCompacting;
+      const patchSessionId = activeSessionRef.current;
+      if (patchSessionId) {
+        setSessionsCompacting((prev) => {
+          const next = new Set(prev);
+          if (patch.isCompacting) { next.add(patchSessionId); } else { next.delete(patchSessionId); }
+          return next;
+        });
+      }
       if (patch.viewerStatusOverride) {
         setViewerStatus(patch.viewerStatusOverride);
       } else if (!patch.isCompacting) {
@@ -1113,6 +1132,15 @@ export function App() {
 
       setAgentActive(nextAgentActive);
       setIsCompacting(nextIsCompacting);
+
+      const hbSessionId = activeSessionRef.current;
+      if (hbSessionId) {
+        setSessionsCompacting((prev) => {
+          const next = new Set(prev);
+          if (nextIsCompacting) { next.add(hbSessionId); } else { next.delete(hbSessionId); }
+          return next;
+        });
+      }
 
       if (nextIsCompacting) {
         setViewerStatus("Compacting…");
@@ -1612,6 +1640,10 @@ export function App() {
 
       if (command === "compact") {
         setIsCompacting(false);
+        const compactDoneId = activeSessionRef.current;
+        if (compactDoneId) {
+          setSessionsCompacting((prev) => { const next = new Set(prev); next.delete(compactDoneId); return next; });
+        }
         const tokensBefore = typeof result?.tokensBefore === "number" ? result.tokensBefore : 0;
         const summary = typeof result?.summary === "string"
           ? `Compacted (${tokensBefore > 0 ? `${Math.round(tokensBefore / 1000)}k tokens summarized` : "done"})`
@@ -2123,6 +2155,21 @@ export function App() {
         setSessionsAwaitingInput((prev) => {
           const next = new Set(prev);
           if (payload.pendingQuestion || payload.pendingPlan) {
+            next.add(payload.sessionId);
+          } else {
+            next.delete(payload.sessionId);
+          }
+          return next;
+        });
+      }
+
+      // Track compaction state for ANY session's meta event (same pattern as
+      // sessionsAwaitingInput above) so the sidebar shows the yellow chase
+      // indicator even for background sessions.
+      if (payload.type === "compact_started" || payload.type === "compact_ended") {
+        setSessionsCompacting((prev) => {
+          const next = new Set(prev);
+          if (payload.type === "compact_started") {
             next.add(payload.sessionId);
           } else {
             next.delete(payload.sessionId);
@@ -3818,6 +3865,7 @@ export function App() {
               onSelectRunner={setSelectedRunnerId}
               onShowSessions={() => setShowRunners(false)}
               sessionsAwaitingInput={sessionsAwaitingInput}
+              sessionsCompacting={sessionsCompacting}
             />
           </ErrorBoundary>
         </div>

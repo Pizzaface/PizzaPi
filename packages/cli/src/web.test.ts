@@ -35,6 +35,7 @@ services:
       dockerfile: Dockerfile
       args:
         PREBUILT_UI: "{{PREBUILT_UI}}"
+        UI_DIST_HASH: "{{UI_DIST_HASH}}"
     ports:
       - "{{PORT}}:7492"
     environment:
@@ -156,6 +157,7 @@ describe("readBooleanEnv", () => {
         expect(COMPOSE_TEMPLATE).toContain("{{VAPID_SUBJECT}}");
         expect(COMPOSE_TEMPLATE).toContain("{{EXTRA_ORIGINS_LINE}}");
         expect(COMPOSE_TEMPLATE).toContain("{{PREBUILT_UI}}");
+        expect(COMPOSE_TEMPLATE).toContain("{{UI_DIST_HASH}}");
     });
 
     test("template substitution produces valid compose structure", () => {
@@ -170,7 +172,8 @@ describe("readBooleanEnv", () => {
             .replace(/\{\{EXTRA_ORIGINS_LINE}}/g, "      - PIZZAPI_EXTRA_ORIGINS=https://example.com\n")
             .replace(/\{\{TRUST_PROXY_LINE}}/g, "      # - PIZZAPI_TRUST_PROXY=\n")
             .replace(/\{\{PROXY_DEPTH_LINE}}/g, "      # - PIZZAPI_PROXY_DEPTH=\n")
-            .replace(/\{\{PREBUILT_UI}}/g, "true");
+            .replace(/\{\{PREBUILT_UI}}/g, "true")
+            .replace(/\{\{UI_DIST_HASH}}/g, "abc123def456");
 
         // No unsubstituted placeholders remain
         expect(composed).not.toContain("{{");
@@ -203,7 +206,8 @@ describe("readBooleanEnv", () => {
             .replace(/\{\{EXTRA_ORIGINS_LINE}}/g, "      # - PIZZAPI_EXTRA_ORIGINS=\n")
             .replace(/\{\{TRUST_PROXY_LINE}}/g, "      # - PIZZAPI_TRUST_PROXY=\n")
             .replace(/\{\{PROXY_DEPTH_LINE}}/g, "      # - PIZZAPI_PROXY_DEPTH=\n")
-            .replace(/\{\{PREBUILT_UI}}/g, "false");
+            .replace(/\{\{PREBUILT_UI}}/g, "false")
+            .replace(/\{\{UI_DIST_HASH}}/g, "none");
 
         expect(composed).toContain("# - PIZZAPI_EXTRA_ORIGINS=");
         expect(composed).not.toContain("{{");

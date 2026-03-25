@@ -137,6 +137,41 @@
   pointer-events: none;
 }
 
+/* Compacting — yellow/amber dot chase */
+.animate-compacting-chase {
+  isolation: isolate;
+}
+
+.animate-compacting-chase::after {
+  content: '';
+  position: absolute;
+  inset: 1.5px;
+  border-radius: 5px;
+  background: var(--sidebar);
+  z-index: -1;
+  pointer-events: none;
+}
+
+.animate-compacting-chase::before {
+  content: '';
+  position: absolute;
+  inset: -1.5px;
+  border-radius: 8px;
+  background: conic-gradient(from var(--chase-angle),
+    transparent                  0deg,
+    transparent                  290deg,
+    oklch(0.65 0.18  80 / 0)     290deg,
+    oklch(0.75 0.20  80 / 0.4)   310deg,
+    oklch(0.88 0.22  85 / 0.85)  330deg,
+    oklch(0.97 0.18  90 / 1)     345deg,
+    oklch(0.88 0.22  85 / 0.5)   355deg,
+    oklch(0.65 0.18  80 / 0)     360deg
+  );
+  animation: chase-spin 2s linear infinite;
+  z-index: -1;
+  pointer-events: none;
+}
+
 /* Awaiting input — soft amber pulse */
 @keyframes awaiting-pulse {
   0%, 100% {
