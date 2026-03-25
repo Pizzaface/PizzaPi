@@ -16,6 +16,7 @@ import { planModeToggleExtension } from "./plan-mode-toggle.js";
 import { triggersExtension } from "./triggers/extension.js";
 import { sandboxEventsExtension } from "./sandbox-events.js";
 import { pizzapiTitleExtension } from "./pizzapi-title.js";
+import { pizzapiHeaderExtension } from "./pizzapi-header.js";
 
 export interface BuildExtensionFactoriesOptions {
     cwd: string;
@@ -59,6 +60,7 @@ export function buildPizzaPiExtensionFactories(options: BuildExtensionFactoriesO
         planModeToggleExtension,
         sandboxEventsExtension,
         pizzapiTitleExtension,
+        pizzapiHeaderExtension,
     );
 
     if (options.includeInitialPrompt) {
