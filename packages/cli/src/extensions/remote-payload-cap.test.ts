@@ -64,7 +64,7 @@ describe("needsChunkedDelivery", () => {
     });
 
     test("returns true for single oversized message", () => {
-        // One message > 10 MB threshold
+        // One message > 5 MB threshold
         const huge = "x".repeat(15_000_000);
         expect(needsChunkedDelivery([{ role: "user", content: huge }])).toBe(true);
     });
@@ -77,8 +77,8 @@ describe("needsChunkedDelivery", () => {
         expect(needsChunkedDelivery(msgs)).toBe(false);
     });
 
-    test("returns true for messages exceeding 10 MB threshold", () => {
-        // Each message ~10 KB, 2000 messages ≈ 20 MB > 10 MB threshold
+    test("returns true for messages exceeding 5 MB threshold", () => {
+        // Each message ~10 KB, 2000 messages ≈ 20 MB > 5 MB threshold
         const bigContent = "x".repeat(10_000);
         const msgs = Array.from({ length: 2000 }, (_, i) => ({
             role: i % 2 === 0 ? "user" : "assistant",
@@ -103,7 +103,7 @@ describe("computeChunkBoundaries", () => {
     });
 
     test("splits by byte size when messages are large", () => {
-        // 10 messages each ~2 MB — byte limit is 8 MB, so should get ~3 chunks
+        // 10 messages each ~2 MB — byte limit is 6 MB, so should get ~4 chunks
         const bigContent = "x".repeat(2_000_000);
         const msgs = Array.from({ length: 10 }, (_, i) => ({ role: "user", content: `${bigContent}-${i}` }));
         const boundaries = computeChunkBoundaries(msgs);
@@ -115,14 +115,14 @@ describe("computeChunkBoundaries", () => {
         const total = boundaries.reduce((sum, [s, e]) => sum + (e - s), 0);
         expect(total).toBe(10);
 
-        // Each chunk should have ≤4 messages (each ~2 MB, limit 8 MB)
+        // Each chunk should have ≤4 messages (each ~2 MB, limit 6 MB)
         for (const [start, end] of boundaries) {
             expect(end - start).toBeLessThanOrEqual(4);
         }
     });
 
     test("handles single message larger than byte limit", () => {
-        // One message > 8 MB — must still produce a chunk (safety: advance by 1)
+        // One message > 6 MB — must still produce a chunk (safety: advance by 1)
         const hugeContent = "x".repeat(10_000_000);
         const msgs = [{ role: "user", content: hugeContent }];
         const boundaries = computeChunkBoundaries(msgs);
@@ -153,7 +153,7 @@ describe("capOversizedMessages", () => {
         expect(result).toBe(msgs); // same reference — no copy
     });
 
-    test("truncates messages exceeding 50 MB", () => {
+    test("truncates messages exceeding the 5 MB cap", () => {
         const hugeContent = "x".repeat(55_000_000); // ~55 MB
         const msgs = [
             { role: "user", content: "hello" },
