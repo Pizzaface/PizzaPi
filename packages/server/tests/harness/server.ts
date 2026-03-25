@@ -22,7 +22,7 @@ import { initAuth, getTrustedOrigins } from "../../src/auth.js";
 import { runAllMigrations } from "../../src/migrations.js";
 import { handleFetch } from "../../src/handler.js";
 import { initStateRedis, closeStateRedis } from "../../src/ws/sio-state.js";
-import { serverHealth } from "../../src/health.js";
+import { serverHealth, setServerShuttingDown, resetServerShuttingDown } from "../../src/health.js";
 import { initSioRegistry } from "../../src/ws/sio-registry.js";
 import { registerNamespaces } from "../../src/ws/namespaces/index.js";
 
@@ -212,49 +212,63 @@ export async function createTestServer(opts?: TestServerOptions): Promise<TestSe
     // 6. We'll track the resolved port for the request converter
     let resolvedPort = 0;
 
-    // Create the HTTP server with the handleFetch handler
-    const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
-        try {
-            const fetchReq = await nodeReqToFetchRequest(req, resolvedPort);
-            const fetchRes = await handleFetch(fetchReq);
-            await sendFetchResponse(res, fetchRes);
-        } catch (e) {
-            console.error("[test-harness] Unhandled error:", e);
-            if (!res.headersSent) {
-                res.writeHead(500, { "content-type": "application/json" });
-            }
-            res.end(JSON.stringify({ error: "Internal server error" }));
-        }
-    });
+    // ── httpServer / io are mutable so restart() can swap them in-place ──────
+    // The returned TestServer object uses getters to always reflect the current
+    // instance after a restart.
 
-    // 7. Create Socket.IO server with Redis adapter
-    const io = new SocketIOServer(httpServer, {
-        cors: {
-            origin: getTrustedOrigins(),
-            credentials: true,
-        },
-        maxHttpBufferSize: 100 * 1024 * 1024,
-        pingInterval: 30_000,
-        pingTimeout: 60_000,
-        adapter: createAdapter(pubClient, subClient, { key: `pizzapi-sio-test-${randomBytes(8).toString("hex")}` }),
-        transports: ["websocket", "polling"],
-    });
+    function makeHttpServer(): ReturnType<typeof createServer> {
+        return createServer(async (req: IncomingMessage, res: ServerResponse) => {
+            try {
+                const fetchReq = await nodeReqToFetchRequest(req, resolvedPort);
+                const fetchRes = await handleFetch(fetchReq);
+                await sendFetchResponse(res, fetchRes);
+            } catch (e) {
+                console.error("[test-harness] Unhandled error:", e);
+                if (!res.headersSent) {
+                    res.writeHead(500, { "content-type": "application/json" });
+                }
+                res.end(JSON.stringify({ error: "Internal server error" }));
+            }
+        });
+    }
+
+    function makeSocketIO(
+        httpSrv: ReturnType<typeof createServer>,
+        pub: RedisClientType,
+        sub: RedisClientType,
+    ): SocketIOServer {
+        return new SocketIOServer(httpSrv, {
+            cors: {
+                origin: getTrustedOrigins(),
+                credentials: true,
+            },
+            maxHttpBufferSize: 100 * 1024 * 1024,
+            pingInterval: 30_000,
+            pingTimeout: 60_000,
+            adapter: createAdapter(pub, sub, { key: `pizzapi-sio-test-${randomBytes(8).toString("hex")}` }),
+            transports: ["websocket", "polling"],
+        });
+    }
+
+    // 7. Create HTTP server + Socket.IO
+    let currentHttpServer = makeHttpServer();
+    let currentIo = makeSocketIO(currentHttpServer, pubClient!, subClient!);
 
     // 8. Init state Redis
     await initStateRedis();
 
     // 9. Init the Socket.IO registry
-    initSioRegistry(io);
+    initSioRegistry(currentIo);
 
     // 10. Register all namespaces
-    registerNamespaces(io);
+    registerNamespaces(currentIo);
     serverHealth.socketio = true;
 
     // 11. Listen on port 0 (OS assigns an ephemeral port) on IPv4 loopback
     const listenPort = opts?.port ?? 0;
-    await new Promise<void>((resolve) => httpServer.listen(listenPort, "127.0.0.1", resolve));
+    await new Promise<void>((resolve) => currentHttpServer.listen(listenPort, "127.0.0.1", resolve));
 
-    const addr = httpServer.address();
+    const addr = currentHttpServer.address();
     if (!addr || typeof addr === "string") {
         throw new Error("[test-harness] Could not determine server port");
     }
@@ -356,6 +370,65 @@ export async function createTestServer(opts?: TestServerOptions): Promise<TestSe
         return fetch(url, { ...init, headers });
     }
 
+    // ── Shared teardown helper (used by both cleanup and restart) ────────────
+
+    async function teardownSocketsAndRedis(graceful: boolean): Promise<void> {
+        if (graceful) {
+            // Mirror real SIGTERM: set shutdown flag so disconnect handlers
+            // skip destructive Redis cleanup (runners/sessions preserved).
+            setServerShuttingDown();
+
+            // Manually fire "_onclose('server shutting down')" on every
+            // connected socket across all namespaces.  This is identical to
+            // what io.close() does internally, but we do it BEFORE
+            // force-closing the transports so the disconnect handlers see the
+            // "server shutting down" reason and skip destructive Redis cleanup.
+            for (const [, nsp] of (currentIo as unknown as { _nsps: Map<string, { sockets: Map<string, { _onclose?: (reason: string) => void }> }> })._nsps) {
+                for (const [, socket] of nsp.sockets) {
+                    socket._onclose?.("server shutting down");
+                }
+            }
+
+            // Brief pause for synchronous parts of disconnect handlers.
+            await new Promise<void>((resolve) => setTimeout(resolve, 50));
+        }
+
+        // Force-close all transport connections so httpServer.close() can
+        // complete promptly.  Since graceful sockets already fired _onclose
+        // above (connected=false), this is effectively a no-op for them on
+        // the server side and just closes the underlying WebSocket TCP stream.
+        await currentIo.disconnectSockets(true);
+        await new Promise<void>((resolve) => setTimeout(resolve, 100));
+
+        // Also close any lingering idle HTTP keep-alive connections.
+        const nodeHttpServer = currentIo as unknown as {
+            httpServer?: {
+                closeIdleConnections?(): void;
+                closeAllConnections?(): void;
+            };
+        };
+        nodeHttpServer.httpServer?.closeAllConnections?.();
+        nodeHttpServer.httpServer?.closeIdleConnections?.();
+
+        // Now io.close() can complete immediately (no live connections remain).
+        await new Promise<void>((resolve) => currentIo.close(() => resolve()));
+
+        // Non-graceful: give async disconnect handlers (removeRunner etc.) time
+        // to complete before closing the Redis client they depend on.
+        if (!graceful) {
+            await new Promise<void>((resolve) => setTimeout(resolve, 200));
+        }
+
+        if (graceful) {
+            resetServerShuttingDown();
+        }
+
+        // Close Redis adapter clients + state client.
+        await Promise.allSettled([pubClient?.quit(), subClient?.quit(), closeStateRedis()]);
+        serverHealth.redis = false;
+        serverHealth.socketio = false;
+    }
+
     // ── Cleanup ──────────────────────────────────────────────────────────────
 
     async function cleanup(): Promise<void> {
@@ -365,25 +438,9 @@ export async function createTestServer(opts?: TestServerOptions): Promise<TestSe
         // Restore PIZZAPI_TRUST_PROXY
         restoreEnv();
 
-        // Gracefully disconnect Socket.IO clients first so their async
-        // disconnect handlers can flush Redis-backed broadcasts before the
-        // adapter clients are closed.
-        await io.disconnectSockets(true);
-        await new Promise<void>((resolve) => setTimeout(resolve, 100));
-
-        // Close idle keep-alive HTTP connections so io.close() can complete
-        // promptly without cutting active WebSocket traffic too early.
-        const nodeHttpServer = io as unknown as {
-            httpServer?: { closeIdleConnections?(): void; closeAllConnections?(): void };
-        };
-        nodeHttpServer.httpServer?.closeIdleConnections?.();
-
-        // Close Socket.IO — this also closes the underlying httpServer internally,
-        // so we do NOT call httpServer.close() separately (it would throw ERR_SERVER_NOT_RUNNING).
-        await new Promise<void>((resolve) => io.close(() => resolve()));
-
-        // Disconnect Redis clients (adapter pub/sub + dedicated state client)
-        await Promise.allSettled([pubClient?.quit(), subClient?.quit(), closeStateRedis()]);
+        // graceful=false: disconnect handlers run destructive Redis cleanup,
+        // which is correct for a final teardown (no reconnecting clients).
+        await teardownSocketsAndRedis(false);
 
         // Clean up temp directory
         try {
@@ -393,10 +450,41 @@ export async function createTestServer(opts?: TestServerOptions): Promise<TestSe
         }
     }
 
-    return {
+    // ── Restart ───────────────────────────────────────────────────────────────
+
+    async function restart(restartOpts?: { graceful?: boolean }): Promise<void> {
+        const graceful = restartOpts?.graceful ?? true;
+
+        // Phase 1: tear down current server (optionally graceful).
+        await teardownSocketsAndRedis(graceful);
+        pubClient = null;
+        subClient = null;
+
+        // Phase 2: bring everything back up on the same port + same DB.
+        // Re-connect Redis adapter clients.
+        pubClient = createClient({ url: getRedisUrl() }) as RedisClientType;
+        subClient = createClient({ url: getRedisUrl() }) as RedisClientType;
+        await Promise.all([pubClient.connect(), subClient.connect()]);
+        serverHealth.redis = true;
+
+        // Re-create HTTP server + Socket.IO.
+        currentHttpServer = makeHttpServer();
+        currentIo = makeSocketIO(currentHttpServer, pubClient, subClient);
+
+        // Re-init state Redis and registry.
+        await initStateRedis();
+        initSioRegistry(currentIo);
+        registerNamespaces(currentIo);
+        serverHealth.socketio = true;
+
+        // Listen on the *same* port that was assigned at initial startup.
+        await new Promise<void>((resolve) => currentHttpServer.listen(resolvedPort, "127.0.0.1", resolve));
+    }
+
+    const testServer: TestServer = {
         port: resolvedPort,
         baseUrl,
-        io,
+        get io() { return currentIo; },
         apiKey,
         userId,
         userName: testUserName,
@@ -404,7 +492,10 @@ export async function createTestServer(opts?: TestServerOptions): Promise<TestSe
         sessionCookie,
         fetch: testFetch,
         cleanup,
+        restart,
     };
+
+    return testServer;
 
     } catch (err) {
         // Setup failed — clear guard, restore env var, close all leaked Redis

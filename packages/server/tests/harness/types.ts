@@ -34,6 +34,21 @@ export interface TestServer {
     fetch(path: string, init?: RequestInit): Promise<Response>;
     /** Shut down everything and clean up */
     cleanup(): Promise<void>;
+    /**
+     * Simulate a `pizza web` restart in-place.
+     *
+     * - `graceful` (default `true`): sets `isServerShuttingDown` before
+     *   disconnecting all Socket.IO clients, so disconnect handlers skip
+     *   destructive Redis cleanup — exactly what happens on a real SIGTERM.
+     * - `graceful: false`: simulates a crash restart — disconnects without
+     *   setting the shutdown flag, so handlers DO wipe runner/session state.
+     *
+     * After the method resolves the HTTP server and Socket.IO are back up on
+     * the same port and the `io` property reflects the new instance.
+     * Connected runners and viewers need to reconnect manually (they
+     * received a `disconnect` event during the restart window).
+     */
+    restart(opts?: { graceful?: boolean }): Promise<void>;
 }
 
 // ── MockRelay types ──────────────────────────────────────────────────────────

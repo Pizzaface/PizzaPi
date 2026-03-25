@@ -599,6 +599,7 @@ async function main() {
         scenarios: SCENARIOS,
         models: MODELS,
         cwds: CWDS,
+        runners,
     });
 
     console.log(`\n✅ Sandbox ready!`);
@@ -928,6 +929,41 @@ async function main() {
                         break;
                     }
 
+                    case "restart": {
+                        // Simulate a `pizza web` restart:
+                        //   restart          → graceful (isServerShuttingDown=true before disconnect)
+                        //   restart crash    → hard restart (no shutdown flag; handlers wipe Redis state)
+                        const mode = args[0] ?? "graceful";
+                        if (mode !== "graceful" && mode !== "crash") {
+                            console.log(`  ❌ Unknown mode: ${mode}. Use 'restart' or 'restart crash'.`);
+                            break;
+                        }
+                        const graceful = mode === "graceful";
+                        console.log(`\n  🔄 Simulating ${graceful ? "graceful" : "crash"} server restart...`);
+                        console.log("  ⏳ Disconnecting all clients (runners + viewers will receive disconnect)...");
+
+                        await scenario.server.restart({ graceful });
+
+                        console.log("  ✅ Server restarted — HTTP + Socket.IO back up on same port");
+                        console.log("  🔌 Reconnecting runners...");
+
+                        // Reconnect all mock runners. The real daemon auto-reconnects;
+                        // mocks use reconnection:false, so we drive it manually.
+                        let reconnected = 0;
+                        for (let i = 0; i < runners.length; i++) {
+                            try {
+                                await runners[i].reconnect();
+                                reconnected++;
+                            } catch (err) {
+                                console.log(`  ⚠️  Runner ${i + 1} failed to reconnect: ${(err as Error).message}`);
+                            }
+                        }
+
+                        console.log(`  ✅ ${reconnected}/${runners.length} runner(s) reconnected`);
+                        console.log(`  ℹ️  Sessions still exist in the relay — viewers may need to refresh\n`);
+                        break;
+                    }
+
                     case "quit":
                     case "q":
                     case "exit":
@@ -1006,6 +1042,8 @@ function printHelp() {
     console.log("  runner [name]        — Add a faux runner (with skills/agents)");
     console.log("  runners              — List all runners");
     console.log("  services [ids...]    — Re-announce services (default: all 5)");
+    console.log("  restart [crash]      — Simulate pizza web restart (graceful by default)");
+    console.log("                         'restart crash' skips shutdown flag (wipes Redis state)");
     console.log("  status               — Show all sessions");
     console.log("  help                 — Show this help");
     console.log("  quit                 — Shut down and exit");

@@ -106,4 +106,60 @@ describe("createTestServer", () => {
         }
         expect(threw).toBe(true);
     }, TEST_TIMEOUT_MS);
+
+    test("restart() brings server back up on the same port (graceful)", async () => {
+        const server = await createTestServer();
+        const port = server.port;
+        const baseUrl = server.baseUrl;
+
+        // Verify server is up
+        const before = await fetch(`${baseUrl}/health`);
+        expect([200, 503]).toContain(before.status);
+
+        try {
+            await server.restart({ graceful: true });
+
+            // Port must be unchanged
+            expect(server.port).toBe(port);
+
+            // Server must respond after restart
+            const after = await fetch(`${baseUrl}/health`);
+            expect([200, 503]).toContain(after.status);
+
+            // Auth still works (DB was preserved)
+            const me = await server.fetch("/api/auth/get-session");
+            expect(me.status).toBe(200);
+        } finally {
+            await server.cleanup();
+        }
+    }, TEST_TIMEOUT_MS * 2);
+
+    test("restart() with graceful:false also restores the server", async () => {
+        const server = await createTestServer();
+        const baseUrl = server.baseUrl;
+
+        try {
+            await server.restart({ graceful: false });
+
+            const res = await fetch(`${baseUrl}/health`);
+            expect([200, 503]).toContain(res.status);
+        } finally {
+            await server.cleanup();
+        }
+    }, TEST_TIMEOUT_MS * 2);
+
+    test("server.io getter reflects new Socket.IO instance after restart", async () => {
+        const server = await createTestServer();
+
+        try {
+            const ioBefore = server.io;
+            await server.restart({ graceful: true });
+            const ioAfter = server.io;
+
+            // The io instance must have been replaced.
+            expect(ioAfter).not.toBe(ioBefore);
+        } finally {
+            await server.cleanup();
+        }
+    }, TEST_TIMEOUT_MS * 2);
 });

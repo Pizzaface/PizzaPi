@@ -133,6 +133,16 @@ export interface MockRunner {
     // Utilities
     waitForEvent(eventName: string, timeout?: number): Promise<unknown>;
     disconnect(): Promise<void>;
+    /**
+     * Reconnect to the server after a `restart()`.
+     *
+     * The underlying socket is disconnected during a server restart.  Because
+     * mock runners use `reconnection: false`, this method must be called
+     * explicitly to re-establish the connection and re-register with the server.
+     * It mirrors the real daemon's reconnect behaviour: emits `register_runner`
+     * on connect and waits for `runner_registered` acknowledgement.
+     */
+    reconnect(): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -1047,6 +1057,62 @@ export async function createMockRunner(
             await new Promise<void>((resolve) => {
                 socket.once("disconnect", () => resolve());
                 socket.disconnect();
+            });
+        },
+
+        async reconnect(): Promise<void> {
+            if (socket.connected) return; // already connected
+
+            isShuttingDown = false;
+
+            await new Promise<void>((resolve, reject) => {
+                let settled = false;
+
+                const settle = (fn: () => void): void => {
+                    if (settled) return;
+                    settled = true;
+                    clearTimeout(timer);
+                    fn();
+                };
+
+                const timer = setTimeout(() => {
+                    socket.off("runner_registered", onRegistered);
+                    socket.off("connect_error", onConnectError);
+                    reject(new Error("Mock runner reconnect timed out after 5000ms"));
+                }, 5_000);
+
+                const onConnectError = (err: Error) => {
+                    settle(() => reject(new Error(`Mock runner reconnect_error: ${err.message}`)));
+                };
+
+                const onRegistered = (data: { runnerId: string; existingSessions?: Array<{ sessionId: string; cwd?: string }> }) => {
+                    settle(() => {
+                        // Re-adopt sessions the server remembers for this runner.
+                        if (data.existingSessions) {
+                            for (const s of data.existingSessions) {
+                                if (!sessionsMap.has(s.sessionId)) {
+                                    sessionsMap.set(s.sessionId, {
+                                        sessionId: s.sessionId,
+                                        cwd: s.cwd ?? "/tmp/test",
+                                        startedAt: Date.now(),
+                                    });
+                                }
+                            }
+                        }
+                        // Re-announce services after re-registration.
+                        if (opts?.serviceIds && opts.serviceIds.length > 0) {
+                            (socket as any).emit("service_announce", { serviceIds: opts.serviceIds });
+                        }
+                        resolve();
+                    });
+                };
+
+                socket.once("connect_error", onConnectError);
+                socket.once("runner_registered", onRegistered);
+
+                // socket.io-client allows calling .connect() on a manually
+                // disconnected socket even when reconnection: false.
+                socket.connect();
             });
         },
     };

@@ -18,6 +18,7 @@
  */
 
 import type { TestScenario, ScenarioSession } from "./scenario.js";
+import type { MockRunner } from "./mock-runner.js";
 import { buildHeartbeat } from "./builders.js";
 
 export interface SandboxApiOptions {
@@ -28,6 +29,12 @@ export interface SandboxApiOptions {
     models: Array<{ provider: string; id: string; name: string; contextWindow: number }>;
     /** Working directories pool */
     cwds: string[];
+    /**
+     * Live reference to the sandbox's mock runner array.
+     * When provided, `/restart` will reconnect all runners after the server
+     * comes back up, mirroring the real daemon auto-reconnect behaviour.
+     */
+    runners?: MockRunner[];
     /** Port to listen on (0 = auto) */
     port?: number;
 }
@@ -56,7 +63,7 @@ let sessionCounter = 0;
  * Start the sandbox HTTP control API.
  */
 export async function startSandboxApi(opts: SandboxApiOptions): Promise<SandboxApi> {
-    const { scenario, scenarios, models, cwds } = opts;
+    const { scenario, scenarios, models, cwds, runners = [] } = opts;
 
     /** Track OAuth nonces for paste completion. */
     const pendingOAuthNonces = new Map<string, { session: ScenarioSession; serverName: string }>();
@@ -105,6 +112,7 @@ export async function startSandboxApi(opts: SandboxApiOptions): Promise<SandboxA
                 "/end": { post: { summary: "End a session", requestBody: { required: true }, responses: { "200": { description: "OK" } } } },
                 "/heartbeat": { post: { summary: "Send heartbeat to a session", requestBody: { required: true }, responses: { "200": { description: "OK" } } } },
                 "/event": { post: { summary: "Emit an arbitrary relay event", requestBody: { required: true }, responses: { "200": { description: "OK" } } } },
+                "/restart": { post: { summary: "Simulate a pizza web restart", requestBody: { required: false }, responses: { "200": { description: "OK" } } } },
             },
             "x-scenarios": scenarioNames,
         };
@@ -121,6 +129,7 @@ export async function startSandboxApi(opts: SandboxApiOptions): Promise<SandboxA
             ["POST", "/end", "End a session"],
             ["POST", "/heartbeat", "Send heartbeat"],
             ["POST", "/event", "Emit arbitrary event"],
+            ["POST", "/restart", "Simulate pizza web restart (graceful or crash)"],
         ];
         const sessionItems = scenario.sessions.map((s, i) => `<li><code>${i + 1}</code> — <code>${s.sessionId}</code></li>`).join("");
         const endpointRows = endpoints.map(([m, p, d]) => `<tr><td><code>${m}</code></td><td><code>${p}</code></td><td>${d}</td></tr>`).join("");
@@ -364,6 +373,36 @@ curl -X POST ${apiBaseUrl}/chat -H 'Content-Type: application/json' -d '{"sessio
 
                 sess.relay.emitEvent(sess.sessionId, sess.token, event);
                 return jsonResponse({ session: idx, emitted: true });
+            }
+
+            // ── POST /restart — simulate pizza web restart ────────────────────
+            if (method === "POST" && path === "/restart") {
+                const body = await req.json().catch(() => ({})) as Record<string, unknown>;
+                // graceful (default true): sets isServerShuttingDown before disconnecting
+                // crash (graceful: false): skips the shutdown flag — handlers wipe Redis state
+                const graceful = body.graceful !== false;
+
+                // Restart the server — all clients receive a disconnect event.
+                await scenario.server.restart({ graceful });
+
+                // Reconnect mock runners (they use reconnection:false — must be driven manually).
+                const results: Array<{ index: number; runnerId: string; ok: boolean; error?: string }> = [];
+                for (let i = 0; i < runners.length; i++) {
+                    try {
+                        await runners[i].reconnect();
+                        results.push({ index: i + 1, runnerId: runners[i].runnerId, ok: true });
+                    } catch (err) {
+                        results.push({ index: i + 1, runnerId: runners[i].runnerId, ok: false, error: (err as Error).message });
+                    }
+                }
+
+                return jsonResponse({
+                    restarted: true,
+                    graceful,
+                    runnersReconnected: results.filter((r) => r.ok).length,
+                    runnersTotal: runners.length,
+                    runners: results,
+                });
             }
 
             return errorResponse("Not found", 404);
