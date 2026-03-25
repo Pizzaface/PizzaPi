@@ -493,7 +493,8 @@ export function registerViewerNamespace(io: SocketIOServer): void {
             if (!currentSession?.collabMode) return;
             const runnerId = currentSession.runnerId;
             if (!runnerId) return;
-            emitToRunner(runnerId, "service_message", envelope);
+            // Attach sessionId so the runner service knows which session to respond to
+            emitToRunner(runnerId, "service_message", { ...envelope, sessionId });
         });
 
         // ── disconnect ───────────────────────────────────────────────────────
