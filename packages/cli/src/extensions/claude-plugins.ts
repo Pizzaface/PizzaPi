@@ -507,7 +507,8 @@ export function createClaudePluginExtension(cwd: string): ExtensionFactory | nul
             // Notify about global plugins
             if (globalPlugins.length > 0) {
                 ctx.ui.notify(
-                    `Loaded ${globalPlugins.length} Claude plugin${globalPlugins.length > 1 ? "s" : ""}: ${globalPlugins.map(pluginSummary).join(", ")}`,
+                    `\x1b[32m✓ Loaded ${globalPlugins.length} Claude plugin${globalPlugins.length > 1 ? "s" : ""}:\x1b[39m ` +
+                    globalPlugins.map(p => `\x1b[95m${pluginSummary(p)}\x1b[39m`).join(", "),
                     "info",
                 );
             }
@@ -540,7 +541,8 @@ export function createClaudePluginExtension(cwd: string): ExtensionFactory | nul
                 }
                 pi.events.emit("plugin:loaded", { count: newPreTrusted.length });
                 ctx.ui.notify(
-                    `Loaded ${newPreTrusted.length} trusted local plugin${newPreTrusted.length > 1 ? "s" : ""}: ${newPreTrusted.map(pluginSummary).join(", ")}`,
+                    `\x1b[32m✓ Loaded ${newPreTrusted.length} trusted local plugin${newPreTrusted.length > 1 ? "s" : ""}:\x1b[39m ` +
+                    newPreTrusted.map(p => `\x1b[95m${pluginSummary(p)}\x1b[39m`).join(", "),
                     "info",
                 );
             }
@@ -566,8 +568,8 @@ export function createClaudePluginExtension(cwd: string): ExtensionFactory | nul
                 // TUI mode — direct confirmation dialog
                 ok = await ctx.ui.confirm(
                     "Untrusted Claude Plugins",
-                    `Found ${untrusted.length} project-local plugin${untrusted.length > 1 ? "s" : ""} (${names}). ` +
-                    `These can execute shell commands via hooks.\n\nTrust and load them?`,
+                    `Found ${untrusted.length} project-local plugin${untrusted.length > 1 ? "s" : ""} (\x1b[95m${names}\x1b[39m). ` +
+                    `\x1b[33mThese can execute shell commands via hooks.\x1b[39m\n\nTrust and load them?`,
                 );
             } else {
                 // Headless/worker mode — emit trust prompt event for remote bridge
@@ -623,13 +625,14 @@ export function createClaudePluginExtension(cwd: string): ExtensionFactory | nul
                 // re-send the capabilities snapshot to the web viewer.
                 pi.events.emit("plugin:loaded", { count: untrusted.length });
                 ctx.ui.notify(
-                    `Loaded ${untrusted.length} local plugin${untrusted.length > 1 ? "s" : ""}: ${untrusted.map(pluginSummary).join(", ")}`,
+                    `\x1b[32m✓ Loaded ${untrusted.length} local plugin${untrusted.length > 1 ? "s" : ""}:\x1b[39m ` +
+                    untrusted.map(p => `\x1b[95m${pluginSummary(p)}\x1b[39m`).join(", "),
                     "info",
                 );
             } else {
                 ctx.ui.notify(
-                    `Skipped ${untrusted.length} untrusted local plugin${untrusted.length > 1 ? "s" : ""}. ` +
-                    `Use \`pizza plugins trust\` to pre-approve.`,
+                    `\x1b[33m⚠ Skipped ${untrusted.length} untrusted local plugin${untrusted.length > 1 ? "s" : ""}.\x1b[39m ` +
+                    `Use \x1b[95m\`pizza plugins trust\`\x1b[39m to pre-approve.`,
                     "warning",
                 );
             }

@@ -783,8 +783,8 @@ export const remoteExtension: ExtensionFactory = (pi) => {
         doConnect();
         if (!rctx.apiKey()) {
             ctx.ui.notify(
-                "⚠ Relay not configured — sessions won't appear in the web UI.\n" +
-                "Run `pizza setup` or set PIZZAPI_API_KEY to connect.",
+                "\x1b[33m⚠ Relay not configured\x1b[39m\x1b[2m — sessions won't appear in the web UI.\x1b[22m\n" +
+                "Run \x1b[95m`pizza setup`\x1b[39m or set \x1b[95mPIZZAPI_API_KEY\x1b[39m to connect.",
             );
         }
     });
@@ -1043,21 +1043,28 @@ export const remoteExtension: ExtensionFactory = (pi) => {
             const arg = args.trim().toLowerCase();
             if (arg === "stop") {
                 doDisconnect();
-                ctx.ui.notify("Disconnected from relay.");
+                ctx.ui.notify("\x1b[31m✕ Disconnected from relay.\x1b[39m");
                 return;
             }
             if (arg === "reconnect") {
                 doDisconnect();
                 rctx.shuttingDown = false;
                 doConnect();
-                ctx.ui.notify("Reconnecting to relay…");
+                ctx.ui.notify("\x1b[33m↻ Reconnecting to relay…\x1b[39m");
                 return;
             }
             if (rctx.relay) {
-                ctx.ui.notify(`Connected to Relay\nShare URL: ${rctx.relay.shareUrl}`);
+                ctx.ui.notify(
+                    `\x1b[32m✓ Connected to Relay\x1b[39m\n` +
+                    `\x1b[2mShare URL:\x1b[22m \x1b[95m${rctx.relay.shareUrl}\x1b[39m`,
+                );
             } else {
                 const url = isDisabled() ? "(disabled — set PIZZAPI_RELAY_URL to enable)" : rctx.relayUrl();
-                ctx.ui.notify(`Not connected to relay.\nRelay: ${url}\nUse /remote reconnect to retry.`);
+                ctx.ui.notify(
+                    `\x1b[31m✕ Not connected to relay.\x1b[39m\n` +
+                    `\x1b[2mRelay:\x1b[22m ${url}\n` +
+                    `\x1b[2mUse\x1b[22m \x1b[95m/remote reconnect\x1b[39m \x1b[2mto retry.\x1b[22m`,
+                );
             }
         },
     });

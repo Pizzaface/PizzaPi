@@ -419,8 +419,12 @@ export async function touchRunner(runnerId: string): Promise<void> {
  * reconnect before being pruned.
  */
 export async function sweepOrphanedRunners(): Promise<void> {
-    const allRunners = await getAllRunners();
     const io = getIo();
+    if (!io) {
+        console.warn("[sweepOrphanedRunners] Socket.IO not initialized — skipping sweep");
+        return;
+    }
+    const allRunners = await getAllRunners();
     const runnerNs = io.of("/runner");
     let pruned = 0;
     for (const runner of allRunners) {

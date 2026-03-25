@@ -18,7 +18,7 @@ export function renderSubagentCall(args: any, theme: any): any {
     const scope = args.agentScope ?? "user";
     if (args.chain && args.chain.length > 0) {
         let text =
-            theme.fg("toolTitle", theme.bold("subagent ")) +
+            theme.fg("accent", "◈ ") + theme.fg("toolTitle", theme.bold("subagent")) + " " +
             theme.fg("accent", `chain (${args.chain.length} steps)`) +
             theme.fg("muted", ` [${scope}]`);
         for (let i = 0; i < Math.min(args.chain.length, 3); i++) {
@@ -36,7 +36,7 @@ export function renderSubagentCall(args: any, theme: any): any {
     }
     if (args.tasks && args.tasks.length > 0) {
         let text =
-            theme.fg("toolTitle", theme.bold("subagent ")) +
+            theme.fg("accent", "◈ ") + theme.fg("toolTitle", theme.bold("subagent")) + " " +
             theme.fg("accent", `parallel (${args.tasks.length} tasks)`) +
             theme.fg("muted", ` [${scope}]`);
         for (const t of args.tasks.slice(0, 3)) {
@@ -100,10 +100,10 @@ export function renderSubagentResult(result: any, opts: { expanded: boolean }, t
             if (isError && r.errorMessage)
                 container.addChild(new Text(theme.fg("error", `Error: ${r.errorMessage}`), 0, 0));
             container.addChild(new Spacer(1));
-            container.addChild(new Text(theme.fg("muted", "─── Task ───"), 0, 0));
+            container.addChild(new Text(theme.fg("border", "─── Task ───"), 0, 0));
             container.addChild(new Text(theme.fg("dim", r.task), 0, 0));
             container.addChild(new Spacer(1));
-            container.addChild(new Text(theme.fg("muted", "─── Output ───"), 0, 0));
+            container.addChild(new Text(theme.fg("border", "─── Output ───"), 0, 0));
             if (displayItems.length === 0 && !finalOutput) {
                 container.addChild(new Text(theme.fg("muted", "(no output)"), 0, 0));
             } else {
@@ -166,7 +166,7 @@ export function renderSubagentResult(result: any, opts: { expanded: boolean }, t
 
                 container.addChild(new Spacer(1));
                 container.addChild(
-                    new Text(`${theme.fg("muted", `─── Step ${r.step}: `) + theme.fg("accent", r.agent)} ${rIcon}`, 0, 0),
+                    new Text(theme.fg("border", "─── ") + theme.fg("muted", "Step ") + theme.fg("accent", `${r.step}: `) + theme.fg("accent", r.agent) + " " + rIcon, 0, 0),
                 );
                 container.addChild(new Text(theme.fg("muted", "Task: ") + theme.fg("dim", r.task), 0, 0));
 
@@ -193,7 +193,7 @@ export function renderSubagentResult(result: any, opts: { expanded: boolean }, t
             const usageStr = formatUsageStats(aggregateUsage(details.results));
             if (usageStr) {
                 container.addChild(new Spacer(1));
-                container.addChild(new Text(theme.fg("dim", `Total: ${usageStr}`), 0, 0));
+                container.addChild(new Text(theme.fg("muted", "Total: ") + theme.fg("dim", usageStr), 0, 0));
             }
             return container;
         }
@@ -206,12 +206,12 @@ export function renderSubagentResult(result: any, opts: { expanded: boolean }, t
         for (const r of details.results) {
             const rIcon = r.exitCode === 0 ? theme.fg("success", "✓") : theme.fg("error", "✗");
             const displayItems = getDisplayItems(r.messages);
-            text += `\n\n${theme.fg("muted", `─── Step ${r.step}: `)}${theme.fg("accent", r.agent)} ${rIcon}`;
+            text += `\n\n${theme.fg("border", "─── ")}${theme.fg("muted", "Step ")}${theme.fg("accent", `${r.step}: `)}${theme.fg("accent", r.agent)} ${rIcon}`;
             if (displayItems.length === 0) text += `\n${theme.fg("muted", "(no output)")}`;
             else text += `\n${renderDisplayItems(displayItems, 5)}`;
         }
         const usageStr = formatUsageStats(aggregateUsage(details.results));
-        if (usageStr) text += `\n\n${theme.fg("dim", `Total: ${usageStr}`)}`;
+        if (usageStr) text += `\n\n${theme.fg("muted", "Total: ")}${theme.fg("dim", usageStr)}`;
         text += `\n${theme.fg("muted", "(Ctrl+O to expand)")}`;
         return new Text(text, 0, 0);
     }
@@ -244,7 +244,7 @@ export function renderSubagentResult(result: any, opts: { expanded: boolean }, t
 
                 container.addChild(new Spacer(1));
                 container.addChild(
-                    new Text(`${theme.fg("muted", "─── ") + theme.fg("accent", r.agent)} ${rIcon}`, 0, 0),
+                    new Text(theme.fg("border", "─── ") + theme.fg("accent", r.agent) + " " + rIcon, 0, 0),
                 );
                 container.addChild(new Text(theme.fg("muted", "Task: ") + theme.fg("dim", r.task), 0, 0));
 
@@ -271,7 +271,7 @@ export function renderSubagentResult(result: any, opts: { expanded: boolean }, t
             const usageStr = formatUsageStats(aggregateUsage(details.results));
             if (usageStr) {
                 container.addChild(new Spacer(1));
-                container.addChild(new Text(theme.fg("dim", `Total: ${usageStr}`), 0, 0));
+                container.addChild(new Text(theme.fg("muted", "Total: ") + theme.fg("dim", usageStr), 0, 0));
             }
             return container;
         }
@@ -286,14 +286,14 @@ export function renderSubagentResult(result: any, opts: { expanded: boolean }, t
                         ? theme.fg("success", "✓")
                         : theme.fg("error", "✗");
             const displayItems = getDisplayItems(r.messages);
-            text += `\n\n${theme.fg("muted", "─── ")}${theme.fg("accent", r.agent)} ${rIcon}`;
+            text += `\n\n${theme.fg("border", "─── ")}${theme.fg("accent", r.agent)} ${rIcon}`;
             if (displayItems.length === 0)
                 text += `\n${theme.fg("muted", r.exitCode === -1 ? "(running...)" : "(no output)")}`;
             else text += `\n${renderDisplayItems(displayItems, 5)}`;
         }
         if (!isRunning) {
             const usageStr = formatUsageStats(aggregateUsage(details.results));
-            if (usageStr) text += `\n\n${theme.fg("dim", `Total: ${usageStr}`)}`;
+            if (usageStr) text += `\n\n${theme.fg("muted", "Total: ")}${theme.fg("dim", usageStr)}`;
         }
         if (!expanded) text += `\n${theme.fg("muted", "(Ctrl+O to expand)")}`;
         return new Text(text, 0, 0);

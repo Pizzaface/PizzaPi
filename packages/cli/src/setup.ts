@@ -1,6 +1,7 @@
 import { createInterface } from "readline";
 import { homedir } from "os";
-import { join } from "path";
+import { join, dirname } from "path";
+import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { saveGlobalConfig } from "./config.js";
 import { validatePassword, PASSWORD_REQUIREMENTS } from "@pizzapi/protocol";
 import { c } from "./cli-colors.js";
@@ -161,6 +162,25 @@ export async function runSetup(opts: { force?: boolean } = {}): Promise<boolean>
 
         console.log(`${c.success("✓")} API key saved to ${c.dim(configPath)}`);
         console.log(`${c.success("✓")} Relay: ${c.accent(wsRelayUrl)}\n`);
+
+        // Auto-select the PizzaPi dark theme for new installations
+        try {
+            const piSettingsPath = join(homedir(), ".pizzapi", "settings.json");
+            let piSettings: Record<string, unknown> = {};
+            try {
+                const existing = readFileSync(piSettingsPath, "utf-8");
+                piSettings = JSON.parse(existing);
+            } catch {}
+            if (!piSettings.theme) {
+                piSettings.theme = "pizzapi-dark";
+                mkdirSync(dirname(piSettingsPath), { recursive: true });
+                writeFileSync(piSettingsPath, JSON.stringify(piSettings, null, 2) + "\n", "utf-8");
+                console.log("✓ Theme set to pizzapi-dark\n");
+            }
+        } catch (err) {
+            console.warn("Note: Could not set default theme:", err instanceof Error ? err.message : String(err));
+        }
+
         return true;
     } finally {
         try { iface.close(); } catch {}
