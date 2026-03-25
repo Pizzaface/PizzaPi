@@ -63,7 +63,8 @@ import { FileExplorer } from "@/components/FileExplorer";
 import { CombinedPanel } from "@/components/CombinedPanel";
 import { ViewerSocketContext } from "@/lib/viewer-socket-context";
 import { useRunnerServices, attachServiceAnnounceListener } from "@/hooks/useRunnerServices";
-import { ServicePanelButtons, ServicePanelContainer, useServicePanelState } from "@/components/service-panels/ServicePanels";
+import { ServicePanelButtons, useServicePanelState } from "@/components/service-panels/ServicePanels";
+import { SERVICE_PANELS } from "@/components/service-panels/registry";
 import {
   ModelSelector,
   ModelSelectorContent,
@@ -3261,6 +3262,26 @@ export function App() {
   const availableServices = useRunnerServices(viewerSocket);
   const { activePanelId: activeServicePanel, togglePanel: toggleServicePanel, closePanel: closeServicePanel } = useServicePanelState();
 
+  // When a service panel is toggled, switch the combined panel's active tab to it
+  // (or back to terminal/files when closed).
+  const handleToggleServicePanel = React.useCallback((serviceId: string) => {
+    // If this service is already active, close it and switch to another tab
+    if (activeServicePanel === serviceId) {
+      closeServicePanel();
+      // Switch back to terminal or files tab
+      if (showTerminal) handleCombinedTabChange("terminal");
+      else if (showFileExplorer) handleCombinedTabChange("files");
+    } else {
+      toggleServicePanel(serviceId);
+      handleCombinedTabChange(serviceId);
+      // Ensure the terminal panel is visible so the CombinedPanel renders
+      // (service panels live as tabs inside the terminal/combined panel)
+      if (!showTerminal) {
+        setShowTerminal(true);
+      }
+    }
+  }, [activeServicePanel, closeServicePanel, toggleServicePanel, handleCombinedTabChange, showTerminal, showFileExplorer, setShowTerminal]);
+
   if (isPending) {
     return (
       <div className="flex h-[100dvh] w-full flex-col items-center justify-center bg-background gap-2 animate-in fade-in duration-300">
@@ -3934,7 +3955,7 @@ export function App() {
                       <ServicePanelButtons
                         availableServices={availableServices}
                         activePanelId={activeServicePanel}
-                        onTogglePanel={toggleServicePanel}
+                        onTogglePanel={handleToggleServicePanel}
                       />
                     }
                     todoList={todoList}
@@ -4002,14 +4023,33 @@ export function App() {
               )}
             </div>
 
-            {/* Service panel (System Monitor, Tunnels, etc.) — dynamic based on runner services */}
+            {/* Mobile: service panel overlay */}
             {activeServicePanel && activeSessionId && (
-              <ServicePanelContainer
-                activePanelId={activeServicePanel}
-                sessionId={activeSessionId}
-                onClose={closeServicePanel}
-                position="bottom"
-              />
+              <div className="md:hidden fixed inset-0 z-[60] flex flex-col bg-background pp-safe-left pp-safe-right"
+                style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
+              >
+                {(() => {
+                  const panelDef = SERVICE_PANELS.find(p => p.serviceId === activeServicePanel);
+                  if (!panelDef) return null;
+                  const PanelComponent = panelDef.component;
+                  return (
+                    <>
+                      <div className="flex items-center justify-between px-3 py-2 border-b border-border bg-muted/30 shrink-0">
+                        <div className="flex items-center gap-1.5 text-sm font-medium">
+                          {panelDef.icon}
+                          {panelDef.label}
+                        </div>
+                        <button type="button" onClick={closeServicePanel} className="p-1 text-muted-foreground hover:text-foreground">
+                          <X className="size-4" />
+                        </button>
+                      </div>
+                      <div className="flex-1 overflow-hidden">
+                        <PanelComponent sessionId={activeSessionId} />
+                      </div>
+                    </>
+                  );
+                })()}
+              </div>
             )}
 
             {/* Mobile: terminal overlay (always separate from combined) */}
@@ -4122,24 +4162,34 @@ export function App() {
                           />
                         ),
                       },
-                      // Service panels (Tunnels, System Monitor, etc.) are now rendered
-                      // as their own standalone panels via ServicePanelContainer.
+                      // Service panels (Tunnels, etc.) — dynamically added as tabs
+                      ...(() => {
+                        if (!activeServicePanel || !activeSessionId) return [];
+                        const panelDef = SERVICE_PANELS.find(p => p.serviceId === activeServicePanel);
+                        if (!panelDef) return [];
+                        const PanelComponent = panelDef.component;
+                        return [{
+                          id: panelDef.serviceId,
+                          label: panelDef.label,
+                          icon: panelDef.icon,
+                          onClose: () => {
+                            closeServicePanel();
+                            // Switch to terminal or files tab
+                            if (showTerminal) handleCombinedTabChange("terminal");
+                            else if (showFileExplorer) handleCombinedTabChange("files");
+                          },
+                          content: <PanelComponent sessionId={activeSessionId} />,
+                        }];
+                      })(),
                     ]}
                   />
                 </div>
               </>
             )}
 
-            {/* Desktop: standalone terminal (when not combined) */}
+            {/* Desktop: standalone terminal (when not combined with files) */}
             {showTerminal && !areCombined && (
               <>
-                {/*
-                  Single always-mounted instance so xterm state survives position changes.
-                  CSS `order` repositions the handle and panel without unmounting:
-                    left   → panel(0)  handle(1)  session(9999 via order-last)
-                    right  → session(0) handle(9998) panel(9999)
-                    bottom → session(0) handle(9998) panel(9999)  [outer is flex-col]
-                */}
                 <div
                   className={cn(
                     "hidden md:flex shrink-0 items-center justify-center group",
@@ -4164,28 +4214,84 @@ export function App() {
                       : { width: terminalWidth }),
                   }}
                 >
-                  <TerminalManager
-                    className="h-full"
-                    onClose={() => setShowTerminal(false)}
-                    position={terminalPosition}
-                    onPositionChange={handleTerminalPositionChange}
-                    onDragStart={handlePanelDragStart}
-                    sessionId={activeSessionId}
-                    runnerId={activeSessionInfo?.runnerId ?? undefined}
-                    defaultCwd={activeSessionInfo?.cwd || undefined}
-                    runners={feedRunners.map(r => ({
-                      runnerId: r.runnerId,
-                      name: r.name,
-                      roots: r.roots,
-                      sessionCount: liveSessions.filter(s => s.runnerId === r.runnerId).length,
-                    }))}
-                    runnersLoading={runnersStatus === "connecting"}
-                    tabs={terminalTabs}
-                    activeTabId={activeTerminalId}
-                    onActiveTabChange={setActiveTerminalId}
-                    onTabAdd={handleTerminalTabAdd}
-                    onTabClose={handleTerminalTabClose}
-                  />
+                  {/* When a service panel is active, wrap terminal in CombinedPanel with service tab */}
+                  {activeServicePanel && activeSessionId ? (
+                    <CombinedPanel
+                      activeTabId={combinedActiveTab}
+                      onActiveTabChange={handleCombinedTabChange}
+                      position={terminalPosition}
+                      onPositionChange={handleTerminalPositionChange}
+                      onDragStart={handlePanelDragStart}
+                      className="h-full"
+                      tabs={[
+                        {
+                          id: "terminal",
+                          label: "Terminal",
+                          icon: <TerminalIcon className="size-3.5" />,
+                          onClose: () => setShowTerminal(false),
+                          content: (
+                            <TerminalManager
+                              className="h-full"
+                              embedded
+                              sessionId={activeSessionId}
+                              runnerId={activeSessionInfo?.runnerId ?? undefined}
+                              defaultCwd={activeSessionInfo?.cwd || undefined}
+                              runners={feedRunners.map(r => ({
+                                runnerId: r.runnerId,
+                                name: r.name,
+                                roots: r.roots,
+                                sessionCount: liveSessions.filter(s => s.runnerId === r.runnerId).length,
+                              }))}
+                              runnersLoading={runnersStatus === "connecting"}
+                              tabs={terminalTabs}
+                              activeTabId={activeTerminalId}
+                              onActiveTabChange={setActiveTerminalId}
+                              onTabAdd={handleTerminalTabAdd}
+                              onTabClose={handleTerminalTabClose}
+                            />
+                          ),
+                        },
+                        ...(() => {
+                          const panelDef = SERVICE_PANELS.find(p => p.serviceId === activeServicePanel);
+                          if (!panelDef) return [];
+                          const PanelComponent = panelDef.component;
+                          return [{
+                            id: panelDef.serviceId,
+                            label: panelDef.label,
+                            icon: panelDef.icon,
+                            onClose: () => {
+                              closeServicePanel();
+                              handleCombinedTabChange("terminal");
+                            },
+                            content: <PanelComponent sessionId={activeSessionId} />,
+                          }];
+                        })(),
+                      ]}
+                    />
+                  ) : (
+                    <TerminalManager
+                      className="h-full"
+                      onClose={() => setShowTerminal(false)}
+                      position={terminalPosition}
+                      onPositionChange={handleTerminalPositionChange}
+                      onDragStart={handlePanelDragStart}
+                      sessionId={activeSessionId}
+                      runnerId={activeSessionInfo?.runnerId ?? undefined}
+                      defaultCwd={activeSessionInfo?.cwd || undefined}
+                      runners={feedRunners.map(r => ({
+                        runnerId: r.runnerId,
+                        name: r.name,
+                        roots: r.roots,
+                        sessionCount: liveSessions.filter(s => s.runnerId === r.runnerId).length,
+                      }))}
+                      runnersLoading={runnersStatus === "connecting"}
+                      tabs={terminalTabs}
+                      activeTabId={activeTerminalId}
+                      onActiveTabChange={setActiveTerminalId}
+                      onTabAdd={handleTerminalTabAdd}
+                      onTabClose={handleTerminalTabClose}
+                    />
+                  )}
                 </div>
               </>
             )}

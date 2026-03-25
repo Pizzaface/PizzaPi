@@ -79,6 +79,7 @@ import { AtMentionPopover } from "@/components/AtMentionPopover";
 import type { Entry as AtMentionEntry } from "@/hooks/useAtMentionFiles";
 import { McpToggleContext, type McpToggleHandler } from "@/components/session-viewer/McpToggleContext";
 import { isTriggerMessage, renderTriggerCard } from "@/components/session-viewer/cards/InterAgentCards";
+import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 
 
 export type { RelayMessage } from "@/components/session-viewer/types";
@@ -1573,90 +1574,115 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
               </span>
             )}
             {showTerminalButton && onToggleTerminal && (
-              <Button
-                className="h-7 w-7"
-                onClick={onToggleTerminal}
-                size="icon"
-                type="button"
-                variant="outline"
-                title="Toggle terminal"
-                aria-label="Toggle terminal"
-              >
-                <TerminalIcon className="size-3.5" />
-              </Button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    className="h-7 w-7"
+                    onClick={onToggleTerminal}
+                    size="icon"
+                    type="button"
+                    variant="outline"
+                    aria-label="Toggle terminal"
+                  >
+                    <TerminalIcon className="size-3.5" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Terminal</TooltipContent>
+              </Tooltip>
             )}
             {showFileExplorerButton && onToggleFileExplorer && (
-              <Button
-                className="h-7 w-7"
-                onClick={onToggleFileExplorer}
-                size="icon"
-                type="button"
-                variant="outline"
-                title="Toggle file explorer"
-                aria-label="Toggle file explorer"
-              >
-                <FolderTree className="size-3.5" />
-              </Button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    className="h-7 w-7"
+                    onClick={onToggleFileExplorer}
+                    size="icon"
+                    type="button"
+                    variant="outline"
+                    aria-label="Toggle file explorer"
+                  >
+                    <FolderTree className="size-3.5" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Files</TooltipContent>
+              </Tooltip>
             )}
             {extraHeaderButtons}
-            <ConversationExport
-              messages={sortedMessages}
-              filename={`session-${sessionId || "export"}.md`}
-              className="static top-auto right-auto h-7 w-7 border-border bg-background hover:bg-accent hover:text-accent-foreground rounded-md"
-              variant="outline"
-              size="icon"
-            />
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <ConversationExport
+                  messages={sortedMessages}
+                  filename={`session-${sessionId || "export"}.md`}
+                  className="static top-auto right-auto h-7 w-7 border-border bg-background hover:bg-accent hover:text-accent-foreground rounded-md"
+                  variant="outline"
+                  size="icon"
+                />
+              </TooltipTrigger>
+              <TooltipContent>Export</TooltipContent>
+            </Tooltip>
             {onDuplicateSession && (
-              <Button
-                className="h-7 w-7"
-                onClick={onDuplicateSession}
-                size="icon"
-                type="button"
-                variant="outline"
-                title="Duplicate session (same runner & directory)"
-                aria-label="Duplicate session"
-              >
-                <Copy className="size-3.5" />
-              </Button>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    className="h-7 w-7"
+                    onClick={onDuplicateSession}
+                    size="icon"
+                    type="button"
+                    variant="outline"
+                    aria-label="Duplicate session"
+                  >
+                    <Copy className="size-3.5" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Duplicate</TooltipContent>
+              </Tooltip>
             )}
-            <Button
-              className="h-7 w-7"
-              disabled={!onExec}
-              onClick={() => {
-                if (!onExec || !sessionId) return;
-                if (window.innerWidth < 640) {
-                  setShowEndSessionDialog(true);
-                } else {
-                  onExec({ type: "exec", id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, command: "end_session" });
-                }
-              }}
-              size="icon"
-              type="button"
-              variant="destructive"
-              title="End Session"
-              aria-label="End session"
-            >
-              <OctagonX className="size-3.5" />
-            </Button>
-            <Button
-              className="h-7 w-7"
-              disabled={!onExec}
-              onClick={() => {
-                if (!onExec) return;
-                if (window.innerWidth < 640) {
-                  setShowClearDialog(true);
-                } else {
-                  onExec({ type: "exec", id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, command: "new_session" });
-                }
-              }}
-              size="icon"
-              type="button"
-              variant="outline"
-              title="New conversation (/new)"
-              aria-label="Clear conversation"
-            >
-              <Plus className="size-3.5" />
-            </Button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  className="h-7 w-7"
+                  disabled={!onExec}
+                  onClick={() => {
+                    if (!onExec || !sessionId) return;
+                    if (window.innerWidth < 640) {
+                      setShowEndSessionDialog(true);
+                    } else {
+                      onExec({ type: "exec", id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, command: "end_session" });
+                    }
+                  }}
+                  size="icon"
+                  type="button"
+                  variant="destructive"
+                  aria-label="End session"
+                >
+                  <OctagonX className="size-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>End Session</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  className="h-7 w-7"
+                  disabled={!onExec}
+                  onClick={() => {
+                    if (!onExec) return;
+                    if (window.innerWidth < 640) {
+                      setShowClearDialog(true);
+                    } else {
+                      onExec({ type: "exec", id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, command: "new_session" });
+                    }
+                  }}
+                  size="icon"
+                  type="button"
+                  variant="outline"
+                  aria-label="New conversation"
+                >
+                  <Plus className="size-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>New Conversation</TooltipContent>
+            </Tooltip>
           </div>
         </div>
       )}

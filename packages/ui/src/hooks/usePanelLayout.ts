@@ -24,8 +24,8 @@ export interface PanelLayoutState {
   handleOuterPointerMove: (e: React.PointerEvent) => void;
   handleOuterPointerUp: () => void;
 
-  // ── Combined panel (terminal + file explorer at same position) ──────────
-  combinedActiveTab: "terminal" | "files";
+  // ── Combined panel (terminal + file explorer + service panels) ───────────
+  combinedActiveTab: string;
   handleCombinedTabChange: (tab: string) => void;
   handleCombinedPositionChange: (pos: PanelPosition) => void;
 
@@ -190,13 +190,12 @@ export function usePanelLayout(activeSessionId: string | null): PanelLayoutState
   }, [handleTerminalResizeEnd, handlePanelDragEnd]);
 
   // ── Combined panel tab state ──────────────────────────────────────────
-  const [combinedActiveTab, setCombinedActiveTab] = React.useState<"terminal" | "files">(() => {
-    try { return (localStorage.getItem("pp-combined-tab") as "terminal" | "files") ?? "terminal"; } catch { return "terminal"; }
+  const [combinedActiveTab, setCombinedActiveTab] = React.useState<string>(() => {
+    try { return localStorage.getItem("pp-combined-tab") ?? "terminal"; } catch { return "terminal"; }
   });
   const handleCombinedTabChange = React.useCallback((tab: string) => {
-    const t = tab as "terminal" | "files";
-    setCombinedActiveTab(t);
-    try { localStorage.setItem("pp-combined-tab", t); } catch {}
+    setCombinedActiveTab(tab);
+    try { localStorage.setItem("pp-combined-tab", tab); } catch {}
   }, []);
 
   // ── Lifted terminal tab state ─────────────────────────────────────────
