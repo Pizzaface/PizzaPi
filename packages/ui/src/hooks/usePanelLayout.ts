@@ -4,7 +4,7 @@ import type { TerminalTab } from "@/components/TerminalManager";
 export type PanelPosition = "bottom" | "right" | "left";
 
 export interface PanelLayoutState {
-  // ── Terminal panel ──────────────────────────────────────────────────────
+  // ── Shared docked panel state ────────────────────────────────────────────
   showTerminal: boolean;
   setShowTerminal: React.Dispatch<React.SetStateAction<boolean>>;
   terminalPosition: PanelPosition;
@@ -13,14 +13,16 @@ export interface PanelLayoutState {
   terminalColumnRef: React.RefObject<HTMLDivElement | null>;
   handleTerminalResizeStart: (e: React.PointerEvent) => void;
   handleTerminalPositionChange: (pos: PanelPosition) => void;
+  startPanelResizeForPosition: (position: PanelPosition, e: React.PointerEvent) => void;
 
-  // ── Terminal drag-to-reposition ─────────────────────────────────────────
+  // ── Shared drag-to-reposition ───────────────────────────────────────────
   panelDragActive: boolean;
   panelDragZone: PanelPosition | null;
   handlePanelDragStart: (e: React.PointerEvent) => void;
   handleTerminalTabDragStart: (e: React.PointerEvent) => void;
+  startPanelDragWith: (e: React.PointerEvent, applyPosition: (pos: PanelPosition) => void) => void;
 
-  // ── Terminal outer pointer handlers (resize + drag combined) ────────────
+  // ── Shared outer pointer handlers (resize + drag combined) ──────────────
   handleOuterPointerMove: (e: React.PointerEvent) => void;
   handleOuterPointerUp: () => void;
 
@@ -87,14 +89,18 @@ export function usePanelLayout(activeSessionId: string | null): PanelLayoutState
   // "height" = bottom panel vertical drag, "width-right" = right panel, "width-left" = left panel
   const resizeDir = React.useRef<"height" | "width-right" | "width-left" | null>(null);
 
-  // Single handler — direction is derived from current terminalPosition at drag start
-  const handleTerminalResizeStart = React.useCallback((e: React.PointerEvent) => {
+  const startPanelResizeForPosition = React.useCallback((position: PanelPosition, e: React.PointerEvent) => {
     e.preventDefault();
-    resizeDir.current = terminalPosition === "bottom" ? "height"
-      : terminalPosition === "right" ? "width-right"
+    resizeDir.current = position === "bottom" ? "height"
+      : position === "right" ? "width-right"
       : "width-left";
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-  }, [terminalPosition]);
+  }, []);
+
+  // Single handler — direction is derived from current terminalPosition at drag start
+  const handleTerminalResizeStart = React.useCallback((e: React.PointerEvent) => {
+    startPanelResizeForPosition(terminalPosition, e);
+  }, [terminalPosition, startPanelResizeForPosition]);
 
   const handleTerminalResizeMove = React.useCallback((e: React.PointerEvent) => {
     const dir = resizeDir.current;
@@ -131,14 +137,21 @@ export function usePanelLayout(activeSessionId: string | null): PanelLayoutState
     try { localStorage.setItem("pp-terminal-position", pos); } catch {}
   }, []);
 
-  const handlePanelDragStart = React.useCallback((e: React.PointerEvent) => {
+  const dragApplyRef = React.useRef<((zone: PanelPosition) => void) | null>(null);
+
+  const startPanelDragWith = React.useCallback((e: React.PointerEvent, applyPosition: (pos: PanelPosition) => void) => {
     e.preventDefault();
+    dragApplyRef.current = applyPosition;
     isPanelDragging.current = true;
     panelDragZoneRef.current = null;
     setPanelDragActive(true);
     setPanelDragZone(null);
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
   }, []);
+
+  const handlePanelDragStart = React.useCallback((e: React.PointerEvent) => {
+    startPanelDragWith(e, handleTerminalPositionChange);
+  }, [startPanelDragWith, handleTerminalPositionChange]);
 
   const handlePanelDragMove = React.useCallback((e: React.PointerEvent) => {
     if (!isPanelDragging.current || !terminalColumnRef.current) return;
@@ -153,17 +166,11 @@ export function usePanelLayout(activeSessionId: string | null): PanelLayoutState
     setPanelDragZone(zone);
   }, []);
 
-  // Ref to sync file explorer position when panels are combined (avoids forward-reference issues)
-  const combinedDragSyncRef = React.useRef<((zone: PanelPosition) => void) | null>(null);
-
   // Drag start handler for the Terminal tab inside the combined panel.
-  // Unlike the grip handle (which moves both panels together), this only moves
-  // the terminal panel so it can be detached from the files panel.
+  // Unlike the grip handle, this only moves the terminal panel.
   const handleTerminalTabDragStart = React.useCallback((e: React.PointerEvent) => {
-    // Clear the sync ref so handlePanelDragEnd doesn't also reposition the files panel
-    combinedDragSyncRef.current = null;
-    handlePanelDragStart(e);
-  }, [handlePanelDragStart]);
+    startPanelDragWith(e, handleTerminalPositionChange);
+  }, [startPanelDragWith, handleTerminalPositionChange]);
 
   const handlePanelDragEnd = React.useCallback(() => {
     if (!isPanelDragging.current) return;
@@ -173,11 +180,10 @@ export function usePanelLayout(activeSessionId: string | null): PanelLayoutState
     setPanelDragActive(false);
     setPanelDragZone(null);
     if (zone) {
-      handleTerminalPositionChange(zone);
-      // When panels are combined (same position), also move file explorer
-      combinedDragSyncRef.current?.(zone);
+      dragApplyRef.current?.(zone);
     }
-  }, [handleTerminalPositionChange]);
+    dragApplyRef.current = null;
+  }, []);
 
   const handleOuterPointerMove = React.useCallback((e: React.PointerEvent) => {
     handleTerminalResizeMove(e);
@@ -324,15 +330,6 @@ export function usePanelLayout(activeSessionId: string | null): PanelLayoutState
     handleFilesPositionChange(pos);
   }, [handleTerminalPositionChange, handleFilesPositionChange]);
 
-  // Keep the drag sync ref up-to-date so handlePanelDragEnd can sync file explorer
-  React.useEffect(() => {
-    if (showTerminal && showFileExplorer && terminalPosition === filesPosition) {
-      combinedDragSyncRef.current = handleFilesPositionChange;
-    } else {
-      combinedDragSyncRef.current = null;
-    }
-  }, [showTerminal, showFileExplorer, terminalPosition, filesPosition, handleFilesPositionChange]);
-
   // ── File explorer drag-to-reposition ──────────────────────────────────
   const isFilesDragging = React.useRef(false);
   const filesDragZoneRef = React.useRef<PanelPosition | null>(null);
@@ -386,10 +383,12 @@ export function usePanelLayout(activeSessionId: string | null): PanelLayoutState
     terminalColumnRef,
     handleTerminalResizeStart,
     handleTerminalPositionChange,
+    startPanelResizeForPosition,
     panelDragActive,
     panelDragZone,
     handlePanelDragStart,
     handleTerminalTabDragStart,
+    startPanelDragWith,
     handleOuterPointerMove,
     handleOuterPointerUp,
     combinedActiveTab,
