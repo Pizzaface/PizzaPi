@@ -61,4 +61,15 @@ describe("tunnel route HTML rewriting", () => {
         expect(rewritten).toContain('src="/api/tunnel/session-123/60434/logo.png"');
         expect(rewritten).toContain("url('/api/tunnel/session-123/60434/bg.png')");
     });
+
+    test("rewriteTunnelHtml injects fetch/XHR interceptor script", () => {
+        const html = `<!doctype html><html><head></head><body>hello</body></html>`;
+        const rewritten = rewriteTunnelHtml(html, "s-1", 3000);
+        expect(rewritten).toContain('data-pizzapi-tunnel-intercept');
+        expect(rewritten).toContain('/api/tunnel/s-1/3000');
+        // Interceptor must appear before any app scripts
+        const interceptIdx = rewritten.indexOf('data-pizzapi-tunnel-intercept');
+        const bodyIdx = rewritten.indexOf('<body>');
+        expect(interceptIdx).toBeLessThan(bodyIdx);
+    });
 });
