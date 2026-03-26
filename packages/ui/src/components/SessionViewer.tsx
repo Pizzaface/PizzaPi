@@ -592,8 +592,10 @@ function HeaderOverflowMenu({ showTerminalButton, onToggleTerminal, isTerminalOp
   const [copyState, setCopyState] = React.useState<"idle" | "copied">("idle");
   const timerRef = React.useRef<ReturnType<typeof setTimeout>>(undefined);
 
-  const hasItems = (showTerminalButton && !!onToggleTerminal) || (showFileExplorerButton && !!onToggleFileExplorer) || (showGitButton && !!onToggleGit) || !!onDuplicateSession || true;
-  if (!hasItems) return null;
+  // Clear the reset timer on unmount to avoid state updates on an unmounted component.
+  React.useEffect(() => () => clearTimeout(timerRef.current), []);
+
+  // The menu always has at least the Copy/Download export items, so no guard needed.
 
   const handleCopyExport = async () => {
     const md = exportToMarkdown(messages);
