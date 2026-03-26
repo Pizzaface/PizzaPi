@@ -20,27 +20,13 @@ import type {
     RunnerAgent,
 } from "@pizzapi/protocol";
 import { shouldPreserveOnSocketDisconnect } from "../../health.js";
-import {
-    handleTunnelWsOpened,
-    handleTunnelWsData,
-    handleTunnelWsClose,
-    handleTunnelWsError,
-    cleanupRunnerTunnelWs,
-    cleanupFrameParser,
-} from "../../routes/tunnel-ws.js";
+import { apiKeyAuthMiddleware } from "./auth.js";
 
 // Inline definitions mirror packages/protocol/src/shared.ts.
 // Using local aliases avoids a cross-worktree symlink resolution issue where
 // node_modules/@pizzapi/protocol points to the main branch's dist, not this
 // worktree's updated dist.
 type ServiceEnvelope = { serviceId: string; type: string; requestId?: string; payload: unknown };
-type TunnelRequestData = { requestId: string; port: number; method: string; path: string; headers: Record<string, string>; body?: string };
-type TunnelResponseData = { requestId: string; status: number; headers: Record<string, string>; body: string; error?: string };
-type TunnelWsOpenedData = { tunnelWsId: string; protocol?: string };
-type TunnelWsDataPayload = { tunnelWsId: string; data: string; binary?: boolean };
-type TunnelWsCloseData = { tunnelWsId: string; code?: number; reason?: string };
-type TunnelWsErrorData = { tunnelWsId: string; message: string };
-import { apiKeyAuthMiddleware } from "./auth.js";
 import {
     registerRunner,
     updateRunnerSkills,
@@ -223,24 +209,6 @@ export async function sendRunnerCommand(
     });
 }
 
-// ── Tunnel HTTP proxy request/response registry ───────────────────────────────
-// Maps requestId → resolve callback. Correlates server-initiated tunnel_request
-// events with tunnel_response events from the runner.
-//
-// This map is module-level (not per-socket) because the HTTP route handler
-// that calls sendTunnelRequest() lives outside the socket connection handler.
-// Cleanup on disconnect rejects all pending requests for that runner so HTTP
-// callers don't hang until their timeout fires.
-
-interface PendingTunnelRequest {
-    resolve: (response: TunnelResponseData) => void;
-    reject: (err: Error) => void;
-    timer: ReturnType<typeof setTimeout>;
-    runnerId: string;
-}
-
-const pendingTunnelRequests = new Map<string, PendingTunnelRequest>();
-
 // ── Runner service announce cache ─────────────────────────────────────────────
 // In-memory hot cache for service_announce payloads. Also persisted to Redis
 // via updateRunnerServices() so late-joining viewers (or viewers after a server
@@ -274,46 +242,6 @@ export async function seedServiceAnnounceCache(runnerId: string): Promise<void> 
             panels: persisted.panels,
         });
     }
-}
-
-/**
- * Send an HTTP proxy request to a runner and await its response.
- *
- * The runner receives a `tunnel_request` event and must respond with
- * `tunnel_response` carrying the same `requestId`.  The response is NOT
- * broadcast to viewers — it is resolved here and returned to the HTTP caller.
- *
- * Throws if the runner is not connected or the request times out.
- */
-export async function sendTunnelRequest(
-    runnerId: string,
-    request: TunnelRequestData,
-    timeoutMs = 10_000,
-): Promise<TunnelResponseData> {
-    const socket = getLocalRunnerSocket(runnerId);
-    if (!socket) throw new Error(`Runner ${runnerId} not connected`);
-
-    return new Promise<TunnelResponseData>((resolve, reject) => {
-        const timer = setTimeout(() => {
-            pendingTunnelRequests.delete(request.requestId);
-            reject(new Error("Tunnel request timed out"));
-        }, timeoutMs);
-
-        pendingTunnelRequests.set(request.requestId, {
-            resolve,
-            reject,
-            timer,
-            runnerId,
-        });
-
-        try {
-            (socket as Socket).emit("tunnel_request" as any, request);
-        } catch (err) {
-            clearTimeout(timer);
-            pendingTunnelRequests.delete(request.requestId);
-            reject(err);
-        }
-    });
 }
 
 // ── Namespace registration ───────────────────────────────────────────────────
@@ -687,41 +615,6 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
             }
         });
 
-        // ── tunnel_response — runner responds to an HTTP proxy request ────────
-        // Resolve the pending request (initiated by sendTunnelRequest) so the
-        // HTTP route handler can write the response back to the viewer.
-        // This event must NOT be forwarded to viewers.
-        socket.on("tunnel_response" as any, (data: TunnelResponseData) => {
-            const pending = pendingTunnelRequests.get(data.requestId);
-            if (pending) {
-                clearTimeout(pending.timer);
-                pendingTunnelRequests.delete(data.requestId);
-                pending.resolve(data);
-            }
-        });
-
-        // ── tunnel_ws_opened — runner confirms local WS connection is open ───
-        socket.on("tunnel_ws_opened" as any, (data: TunnelWsOpenedData) => {
-            handleTunnelWsOpened(data.tunnelWsId, data.protocol);
-        });
-
-        // ── tunnel_ws_data — runner forwards a WS frame from local service ───
-        socket.on("tunnel_ws_data" as any, (data: TunnelWsDataPayload) => {
-            handleTunnelWsData(data.tunnelWsId, data.data, data.binary);
-        });
-
-        // ── tunnel_ws_close — runner signals local WS closed ─────────────────
-        socket.on("tunnel_ws_close" as any, (data: TunnelWsCloseData) => {
-            handleTunnelWsClose(data.tunnelWsId, data.code, data.reason);
-            cleanupFrameParser(data.tunnelWsId);
-        });
-
-        // ── tunnel_ws_error — runner reports a WS error ──────────────────────
-        socket.on("tunnel_ws_error" as any, (data: TunnelWsErrorData) => {
-            handleTunnelWsError(data.tunnelWsId, data.message);
-            cleanupFrameParser(data.tunnelWsId);
-        });
-
         // ── Generic service message relay: runner → viewers ──────────────────
         // Forward service envelopes verbatim to all viewers watching sessions
         // on this runner. The relay does not inspect serviceId — it just routes.
@@ -788,17 +681,6 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
                     return;
                 }
 
-                // Reject any pending tunnel requests for this runner so HTTP
-                // callers don't hang until their timeout fires.
-                for (const [requestId, pending] of pendingTunnelRequests) {
-                    if (pending.runnerId === runnerId) {
-                        clearTimeout(pending.timer);
-                        pendingTunnelRequests.delete(requestId);
-                        pending.reject(new Error("Runner disconnected"));
-                    }
-                }
-                // Clean up tunnel WebSocket connections for this runner
-                cleanupRunnerTunnelWs(runnerId);
                 // Clean up local session tracking
                 runnerSessionIds.delete(runnerId);
                 runnerServiceAnnounce.delete(runnerId);

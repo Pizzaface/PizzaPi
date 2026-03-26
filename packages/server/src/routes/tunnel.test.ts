@@ -181,9 +181,15 @@ describe("tunnel route HTML rewriting", () => {
             EventSource: undefined as undefined,
         };
 
-        const runScript = new Function("window", "location", "XMLHttpRequest", "Request", scriptBody) as (
+        const mockHistory = {
+            pushState: (_state: unknown, _title: string, _url?: string | URL | null) => {},
+            replaceState: (_state: unknown, _title: string, _url?: string | URL | null) => {},
+        };
+
+        const runScript = new Function("window", "location", "history", "XMLHttpRequest", "Request", scriptBody) as (
             window: typeof mockWindow,
             location: { protocol: string; host: string },
+            history: typeof mockHistory,
             XMLHttpRequest: typeof MockXHR,
             RequestCtor: typeof Request,
         ) => void;
@@ -191,6 +197,7 @@ describe("tunnel route HTML rewriting", () => {
         runScript(
             mockWindow,
             { protocol: "https:", host: "jordans-mac-mini.tail65556b.ts.net" },
+            mockHistory,
             MockXHR,
             Request,
         );
@@ -198,6 +205,340 @@ describe("tunnel route HTML rewriting", () => {
         new mockWindow.WebSocket("ws://jordans-mac-mini.tail65556b.ts.net");
 
         expect(capturedUrls).toEqual(["wss://jordans-mac-mini.tail65556b.ts.net/api/tunnel/s-1/3000/"]);
+    });
+
+    test("rewriteTunnelHtml fetch/XHR interceptor rewrites same-origin and localhost full URLs", () => {
+        const html = `<!doctype html><html><head></head><body>hello</body></html>`;
+        const rewritten = rewriteTunnelHtml(html, "s-1", 8096);
+        const scriptMatch = rewritten.match(/<script data-pizzapi-tunnel-intercept>\n([\s\S]*?)<\/script>/);
+        expect(scriptMatch).toBeTruthy();
+        const scriptBody = scriptMatch![1];
+
+        const fetchedUrls: string[] = [];
+        const xhrUrls: string[] = [];
+
+        class MockXHR {
+            open(_method: string, url: string): void {
+                xhrUrls.push(url);
+            }
+        }
+
+        const mockWindow = {
+            fetch: (input: string | Request) => {
+                fetchedUrls.push(typeof input === "string" ? input : input.url);
+                return Promise.resolve(new Response(null, { status: 200 }));
+            },
+            WebSocket: function () {} as unknown as typeof WebSocket,
+            EventSource: undefined as undefined,
+        };
+        // Copy static props to avoid errors
+        (mockWindow.WebSocket as any).prototype = {};
+        (mockWindow.WebSocket as any).CONNECTING = 0;
+        (mockWindow.WebSocket as any).OPEN = 1;
+        (mockWindow.WebSocket as any).CLOSING = 2;
+        (mockWindow.WebSocket as any).CLOSED = 3;
+
+        const mockLocation = { protocol: "https:", host: "pizzapi.example.com" };
+
+        const mockHistory = {
+            pushState: (_state: unknown, _title: string, _url?: string | URL | null) => {},
+            replaceState: (_state: unknown, _title: string, _url?: string | URL | null) => {},
+        };
+
+        const runScript = new Function("window", "location", "history", "XMLHttpRequest", "Request", scriptBody) as (
+            window: typeof mockWindow,
+            location: typeof mockLocation,
+            history: typeof mockHistory,
+            XMLHttpRequest: typeof MockXHR,
+            RequestCtor: typeof Request,
+        ) => void;
+
+        runScript(mockWindow, mockLocation, mockHistory, MockXHR, Request);
+
+        // ── fetch: same-origin full URL ──
+        mockWindow.fetch("https://pizzapi.example.com/Users/AuthenticateByName");
+        expect(fetchedUrls.at(-1)).toBe(
+            "https://pizzapi.example.com/api/tunnel/s-1/8096/Users/AuthenticateByName",
+        );
+
+        // ── fetch: same-origin URL already tunnel-prefixed ──
+        mockWindow.fetch("https://pizzapi.example.com/api/tunnel/s-1/8096/System/Info");
+        expect(fetchedUrls.at(-1)).toBe(
+            "https://pizzapi.example.com/api/tunnel/s-1/8096/System/Info",
+        );
+
+        // ── fetch: localhost full URL ──
+        mockWindow.fetch("http://127.0.0.1:8096/System/Info/Public");
+        expect(fetchedUrls.at(-1)).toBe(
+            "https://pizzapi.example.com/api/tunnel/s-1/8096/System/Info/Public",
+        );
+
+        // ── fetch: localhost (hostname) full URL ──
+        mockWindow.fetch("http://localhost:8096/Items");
+        expect(fetchedUrls.at(-1)).toBe(
+            "https://pizzapi.example.com/api/tunnel/s-1/8096/Items",
+        );
+
+        // ── fetch: external URL — should NOT be rewritten ──
+        mockWindow.fetch("https://api.external.com/data");
+        expect(fetchedUrls.at(-1)).toBe("https://api.external.com/data");
+
+        // ── fetch: root-relative — still works ──
+        mockWindow.fetch("/Users/AuthenticateByName");
+        expect(fetchedUrls.at(-1)).toBe("/api/tunnel/s-1/8096/Users/AuthenticateByName");
+
+        // ── XHR: same-origin full URL ──
+        // The interceptor patches XMLHttpRequest.prototype.open (the MockXHR passed
+        // as the XMLHttpRequest parameter), so we instantiate MockXHR directly.
+        const xhr = new MockXHR();
+        xhr.open("GET", "https://pizzapi.example.com/System/Info");
+        expect(xhrUrls.at(-1)).toBe(
+            "https://pizzapi.example.com/api/tunnel/s-1/8096/System/Info",
+        );
+
+        // ── XHR: root-relative ──
+        xhr.open("POST", "/Users/AuthenticateByName");
+        expect(xhrUrls.at(-1)).toBe("/api/tunnel/s-1/8096/Users/AuthenticateByName");
+
+        // ── fetch: localhost URL without trailing path ──
+        mockWindow.fetch("http://127.0.0.1:8096");
+        expect(fetchedUrls.at(-1)).toBe(
+            "https://pizzapi.example.com/api/tunnel/s-1/8096/",
+        );
+
+        // ── fetch: same-origin URL without trailing path ──
+        mockWindow.fetch("https://pizzapi.example.com");
+        expect(fetchedUrls.at(-1)).toBe(
+            "https://pizzapi.example.com/api/tunnel/s-1/8096/",
+        );
+    });
+
+    test("rewriteTunnelHtml interceptor patches history/location navigation APIs", () => {
+        const html = `<!doctype html><html><head></head><body>hello</body></html>`;
+        const rewritten = rewriteTunnelHtml(html, "s-1", 3000);
+        const scriptMatch = rewritten.match(/<script data-pizzapi-tunnel-intercept>\n([\s\S]*?)<\/script>/);
+        expect(scriptMatch).toBeTruthy();
+        const scriptBody = scriptMatch![1];
+
+        const pushUrls: Array<string | URL | null | undefined> = [];
+        const replaceUrls: Array<string | URL | null | undefined> = [];
+        const assignUrls: Array<string | URL | null | undefined> = [];
+        const locationReplaceUrls: Array<string | URL | null | undefined> = [];
+
+        class MockXHR {
+            open(_method: string, _url: string): void {}
+        }
+
+        const mockWindow = {
+            fetch: () => Promise.resolve(new Response(null, { status: 200 })),
+            open: (_url: string) => null,
+            WebSocket: function () {} as unknown as typeof WebSocket,
+            EventSource: undefined as undefined,
+        };
+        (mockWindow.WebSocket as any).prototype = {};
+        (mockWindow.WebSocket as any).CONNECTING = 0;
+        (mockWindow.WebSocket as any).OPEN = 1;
+        (mockWindow.WebSocket as any).CLOSING = 2;
+        (mockWindow.WebSocket as any).CLOSED = 3;
+
+        const mockLocation = {
+            protocol: "https:",
+            host: "myserver.example.com",
+            assign: (url: string | URL) => { assignUrls.push(url); },
+            replace: (url: string | URL) => { locationReplaceUrls.push(url); },
+        };
+
+        const mockHistory = {
+            pushState: (_state: unknown, _title: string, url?: string | URL | null) => { pushUrls.push(url); },
+            replaceState: (_state: unknown, _title: string, url?: string | URL | null) => { replaceUrls.push(url); },
+        };
+
+        const mockNavigator = { sendBeacon: (_url: string, _data?: unknown) => true };
+        const wrappedBody = `var navigator = __nav__;\n${scriptBody}`;
+        const runScript = new Function("window", "location", "history", "XMLHttpRequest", "Request", "__nav__", wrappedBody);
+        runScript(mockWindow, mockLocation, mockHistory, MockXHR, Request, mockNavigator);
+
+        mockHistory.pushState({}, "", "/gallery/adventuretime");
+        expect(pushUrls.at(-1)).toBe("/api/tunnel/s-1/3000/gallery/adventuretime");
+
+        mockHistory.replaceState({}, "", "https://myserver.example.com/gallery/adventuretime");
+        expect(replaceUrls.at(-1)).toBe("https://myserver.example.com/api/tunnel/s-1/3000/gallery/adventuretime");
+
+        mockLocation.assign("/quotes");
+        expect(assignUrls.at(-1)).toBe("/api/tunnel/s-1/3000/quotes");
+
+        mockLocation.replace("https://myserver.example.com/search");
+        expect(locationReplaceUrls.at(-1)).toBe("https://myserver.example.com/api/tunnel/s-1/3000/search");
+    });
+
+    test("rewriteTunnelHtml interceptor rewrites dynamic element src/href/action for runtime-created resources", () => {
+        const html = `<!doctype html><html><head></head><body>hello</body></html>`;
+        const rewritten = rewriteTunnelHtml(html, "s-1", 3000);
+        const scriptMatch = rewritten.match(/<script data-pizzapi-tunnel-intercept>\n([\s\S]*?)<\/script>/);
+        expect(scriptMatch).toBeTruthy();
+        const scriptBody = scriptMatch![1];
+
+        class MockElement {
+            attrs: Record<string, string> = {};
+            setAttribute(name: string, value: string): void {
+                this.attrs[name] = value;
+            }
+        }
+        class MockScriptElement extends MockElement {
+            private _src = "";
+            get src(): string { return this._src; }
+            set src(value: string) { this._src = value; }
+        }
+        class MockLinkElement extends MockElement {
+            private _href = "";
+            get href(): string { return this._href; }
+            set href(value: string) { this._href = value; }
+        }
+        class MockIFrameElement extends MockElement {
+            private _src = "";
+            get src(): string { return this._src; }
+            set src(value: string) { this._src = value; }
+        }
+
+        class MockXHR {
+            open(_method: string, _url: string): void {}
+        }
+
+        const mockWindow = {
+            fetch: () => Promise.resolve(new Response(null, { status: 200 })),
+            open: (_url: string) => null,
+            WebSocket: function () {} as unknown as typeof WebSocket,
+            EventSource: undefined as undefined,
+        };
+        (mockWindow.WebSocket as any).prototype = {};
+        (mockWindow.WebSocket as any).CONNECTING = 0;
+        (mockWindow.WebSocket as any).OPEN = 1;
+        (mockWindow.WebSocket as any).CLOSING = 2;
+        (mockWindow.WebSocket as any).CLOSED = 3;
+
+        const mockLocation = {
+            protocol: "https:",
+            host: "myserver.example.com",
+            assign: (_url: string | URL) => {},
+            replace: (_url: string | URL) => {},
+        };
+        const mockHistory = {
+            pushState: (_state: unknown, _title: string, _url?: string | URL | null) => {},
+            replaceState: (_state: unknown, _title: string, _url?: string | URL | null) => {},
+        };
+        const mockNavigator = { sendBeacon: (_url: string, _data?: unknown) => true };
+
+        const wrappedBody = `var navigator = __nav__;\n${scriptBody}`;
+        const runScript = new Function(
+            "window",
+            "location",
+            "history",
+            "XMLHttpRequest",
+            "Request",
+            "__nav__",
+            "Element",
+            "HTMLScriptElement",
+            "HTMLImageElement",
+            "HTMLLinkElement",
+            "HTMLMediaElement",
+            "HTMLSourceElement",
+            "HTMLIFrameElement",
+            wrappedBody,
+        );
+        runScript(
+            mockWindow,
+            mockLocation,
+            mockHistory,
+            MockXHR,
+            Request,
+            mockNavigator,
+            MockElement,
+            MockScriptElement,
+            class extends MockElement {},
+            MockLinkElement,
+            undefined,
+            undefined,
+            MockIFrameElement,
+        );
+
+        const script = new MockScriptElement();
+        script.src = "/_next/static/chunks/main.js";
+        expect(script.src).toBe("/api/tunnel/s-1/3000/_next/static/chunks/main.js");
+
+        const link = new MockLinkElement();
+        link.setAttribute("href", "/styles.css");
+        expect(link.attrs.href).toBe("/api/tunnel/s-1/3000/styles.css");
+
+        const iframe = new MockIFrameElement();
+        iframe.src = "https://myserver.example.com/embed/demo";
+        expect(iframe.src).toBe("https://myserver.example.com/api/tunnel/s-1/3000/embed/demo");
+    });
+
+    test("rewriteTunnelHtml interceptor patches sendBeacon and window.open", () => {
+        const html = `<!doctype html><html><head></head><body>hello</body></html>`;
+        const rewritten = rewriteTunnelHtml(html, "s-1", 3000);
+        const scriptMatch = rewritten.match(/<script data-pizzapi-tunnel-intercept>\n([\s\S]*?)<\/script>/);
+        expect(scriptMatch).toBeTruthy();
+        const scriptBody = scriptMatch![1];
+
+        const beaconUrls: string[] = [];
+        const openedUrls: string[] = [];
+
+        class MockXHR {
+            open(_method: string, _url: string): void {}
+        }
+
+        const mockNavigator = {
+            sendBeacon: (url: string, _data?: unknown) => {
+                beaconUrls.push(url);
+                return true;
+            },
+        };
+
+        const mockWindow = {
+            fetch: () => Promise.resolve(new Response(null, { status: 200 })),
+            open: (url: string) => { openedUrls.push(url); return null; },
+            WebSocket: function () {} as unknown as typeof WebSocket,
+            EventSource: undefined as undefined,
+        };
+        (mockWindow.WebSocket as any).prototype = {};
+        (mockWindow.WebSocket as any).CONNECTING = 0;
+        (mockWindow.WebSocket as any).OPEN = 1;
+        (mockWindow.WebSocket as any).CLOSING = 2;
+        (mockWindow.WebSocket as any).CLOSED = 3;
+
+        const mockLocation = { protocol: "https:", host: "myserver.example.com" };
+
+        // The script reads `navigator` from the outer scope, so we need to
+        // inject it. Wrap the script body so `navigator` is a local variable.
+        const mockHistory = {
+            pushState: (_state: unknown, _title: string, _url?: string | URL | null) => {},
+            replaceState: (_state: unknown, _title: string, _url?: string | URL | null) => {},
+        };
+
+        const wrappedBody = `var navigator = __nav__;\n${scriptBody}`;
+        const runScript = new Function("window", "location", "history", "XMLHttpRequest", "Request", "__nav__", wrappedBody);
+        runScript(mockWindow, mockLocation, mockHistory, MockXHR, Request, mockNavigator);
+
+        // ── sendBeacon: root-relative ──
+        mockNavigator.sendBeacon("/api/heartbeat", "{}");
+        expect(beaconUrls.at(-1)).toBe("/api/tunnel/s-1/3000/api/heartbeat");
+
+        // ── sendBeacon: same-origin full URL ──
+        mockNavigator.sendBeacon("https://myserver.example.com/api/heartbeat", "{}");
+        expect(beaconUrls.at(-1)).toBe("https://myserver.example.com/api/tunnel/s-1/3000/api/heartbeat");
+
+        // ── window.open: root-relative ──
+        mockWindow.open("/help");
+        expect(openedUrls.at(-1)).toBe("/api/tunnel/s-1/3000/help");
+
+        // ── window.open: same-origin full URL ──
+        mockWindow.open("https://myserver.example.com/settings");
+        expect(openedUrls.at(-1)).toBe("https://myserver.example.com/api/tunnel/s-1/3000/settings");
+
+        // ── window.open: external URL — should NOT be rewritten ──
+        mockWindow.open("https://docs.example.com/guide");
+        expect(openedUrls.at(-1)).toBe("https://docs.example.com/guide");
     });
 });
 

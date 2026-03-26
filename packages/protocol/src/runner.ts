@@ -2,7 +2,7 @@
 // /runner namespace — Runner daemon ↔ Server
 // ============================================================================
 
-import type { RunnerSkill, RunnerAgent, RunnerPlugin, RunnerHook, ServiceAnnounceData, ServiceEnvelope, TunnelRequestData, TunnelResponseData, TunnelWsOpenData, TunnelWsDataPayload, TunnelWsCloseData, TunnelWsErrorData, TunnelWsOpenedData } from "./shared.js";
+import type { RunnerSkill, RunnerAgent, RunnerPlugin, RunnerHook, ServiceAnnounceData, ServiceEnvelope } from "./shared.js";
 
 // ---------------------------------------------------------------------------
 // Client → Server (Runner daemon sends to server)
@@ -117,22 +117,6 @@ export interface RunnerClientToServerEvents {
   /** Generic service message from runner → relay → viewer.
    *  The relay forwards this verbatim; it does not inspect serviceId. */
   service_message: (envelope: ServiceEnvelope) => void;
-
-  /** Runner responds to an HTTP proxy request from the server.
-   *  NOT forwarded to viewers — resolved directly by the pending request map. */
-  tunnel_response: (data: TunnelResponseData) => void;
-
-  /** Runner confirms local WebSocket connection is open. */
-  tunnel_ws_opened: (data: TunnelWsOpenedData) => void;
-
-  /** Runner forwards a WebSocket frame from the local service to the viewer. */
-  tunnel_ws_data: (data: TunnelWsDataPayload) => void;
-
-  /** Runner signals the local WebSocket connection was closed. */
-  tunnel_ws_close: (data: TunnelWsCloseData) => void;
-
-  /** Runner reports a WebSocket error (connection refused, etc.). */
-  tunnel_ws_error: (data: TunnelWsErrorData) => void;
 
   /** Announce which services this runner supports.
    *  Forwarded to all viewers watching sessions on this runner. */
@@ -374,19 +358,6 @@ export interface RunnerServerToClientEvents {
   /** Generic service message from viewer → relay → runner.
    *  The relay forwards this verbatim; it does not inspect serviceId. */
   service_message: (envelope: ServiceEnvelope) => void;
-
-  /** Server-initiated HTTP proxy request sent directly to the runner.
-   *  Bypasses the viewer broadcast path — used exclusively by the tunnel route. */
-  tunnel_request: (data: TunnelRequestData) => void;
-
-  /** Server requests the runner to open a WebSocket to a local port. */
-  tunnel_ws_open: (data: TunnelWsOpenData) => void;
-
-  /** Server forwards a WebSocket frame from the viewer to the runner's local WS. */
-  tunnel_ws_data: (data: TunnelWsDataPayload) => void;
-
-  /** Server signals the viewer's WebSocket was closed. */
-  tunnel_ws_close: (data: TunnelWsCloseData) => void;
 
   /** Generic error */
   error: (data: {

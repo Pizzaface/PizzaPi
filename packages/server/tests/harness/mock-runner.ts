@@ -934,71 +934,32 @@ export async function createMockRunner(
         });
     });
 
-    // --- Tunnel proxy (for service panel iframes) ---
+    // --- Tunnel proxy (via @pizzapi/tunnel TunnelClient) ---
+    // Connects to the server's /_tunnel WebSocket endpoint and proxies
+    // HTTP requests to local ports (service panel iframes).
 
-    // Track registered tunnel ports (from service_announce panels)
-    const tunnelPorts = new Set<number>();
-    if (opts?.panels) {
-        for (const p of opts.panels) tunnelPorts.add(p.port);
+    let tunnelClient: import("@pizzapi/tunnel").TunnelClient | null = null;
+    if (opts?.panels && opts.panels.length > 0) {
+        const { TunnelClient } = await import("@pizzapi/tunnel");
+        const wsUrl = server.baseUrl.replace(/^http/, "ws") + "/_tunnel";
+        tunnelClient = new TunnelClient({
+            runnerId: assignedRunnerId,
+            apiKey: opts?.apiKey ?? server.apiKey,
+            relayUrl: wsUrl,
+            autoReconnect: false,
+            log: { info() {}, debug() {}, error() {}, warn() {} },
+        });
+        for (const p of opts.panels) {
+            tunnelClient.exposePort(p.port);
+        }
+        const registered = new Promise<void>((resolve, reject) => {
+            const timeout = setTimeout(() => reject(new Error("TunnelClient registration timed out")), 5_000);
+            tunnelClient!.once("registered", () => { clearTimeout(timeout); resolve(); });
+            tunnelClient!.once("error", (err: Error) => { clearTimeout(timeout); reject(err); });
+        });
+        tunnelClient.connect();
+        await registered;
     }
-
-    socket.on("tunnel_request", async (data: any) => {
-        if (isShuttingDown) return;
-        const { requestId, port, method, path, headers, body } = data;
-
-        if (!tunnelPorts.has(port)) {
-            (socket as any).emit("tunnel_response", {
-                requestId,
-                status: 404,
-                headers: {},
-                body: Buffer.from(`Port ${port} is not exposed`).toString("base64"),
-                error: `Port ${port} is not exposed`,
-            });
-            return;
-        }
-
-        try {
-            const url = `http://127.0.0.1:${port}${path}`;
-            const bodyBytes = body ? Buffer.from(body, "base64") : undefined;
-            const forwardHeaders: Record<string, string> = {};
-            if (headers) {
-                for (const [k, v] of Object.entries(headers)) {
-                    const lk = k.toLowerCase();
-                    if (!["connection", "keep-alive", "transfer-encoding", "cookie", "authorization"].includes(lk)) {
-                        forwardHeaders[k] = v as string;
-                    }
-                }
-            }
-
-            const resp = await fetch(url, {
-                method,
-                headers: forwardHeaders,
-                body: bodyBytes && bodyBytes.byteLength > 0 ? bodyBytes : undefined,
-                signal: AbortSignal.timeout(10_000),
-                redirect: "manual",
-            });
-
-            const respBuffer = await resp.arrayBuffer();
-            const respHeaders: Record<string, string> = {};
-            resp.headers.forEach((v, k) => { respHeaders[k] = v; });
-
-            (socket as any).emit("tunnel_response", {
-                requestId,
-                status: resp.status,
-                headers: respHeaders,
-                body: Buffer.from(respBuffer).toString("base64"),
-            });
-        } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            (socket as any).emit("tunnel_response", {
-                requestId,
-                status: 502,
-                headers: {},
-                body: Buffer.from(msg).toString("base64"),
-                error: msg,
-            });
-        }
-    });
 
     // --- Usage ---
 
@@ -1118,6 +1079,8 @@ export async function createMockRunner(
 
         async disconnect(): Promise<void> {
             isShuttingDown = true;
+            tunnelClient?.dispose();
+            tunnelClient = null;
             if (!socket.connected) return;
             await new Promise<void>((resolve) => {
                 socket.once("disconnect", () => resolve());

@@ -14,8 +14,6 @@ export const MAX_BODY_SIZE = 1 * 1024 * 1024;
 /** Body size limit for attachment upload routes (50 MB). */
 export const MAX_ATTACHMENT_BODY_SIZE = 50 * 1024 * 1024;
 
-/** Body size limit for tunnel proxy routes (10 MB — Option C). */
-export const MAX_TUNNEL_BODY_SIZE = 10 * 1024 * 1024;
 
 /**
  * Returns true if the URL path is an attachment upload route.
@@ -55,11 +53,15 @@ export async function enforceBodySizeLimit(req: Request, url: URL): Promise<Resp
         return req;
     }
 
+    if (isTunnelPath(url.pathname)) {
+        // Tunnel routes stream request bodies directly to the runner relay.
+        // Do not pre-buffer or size-cap them here.
+        return req;
+    }
+
     const limit = isAttachmentUploadPath(url.pathname, method)
         ? MAX_ATTACHMENT_BODY_SIZE
-        : isTunnelPath(url.pathname)
-            ? MAX_TUNNEL_BODY_SIZE
-            : MAX_BODY_SIZE;
+        : MAX_BODY_SIZE;
 
     const contentLengthHeader = req.headers.get("content-length");
 
