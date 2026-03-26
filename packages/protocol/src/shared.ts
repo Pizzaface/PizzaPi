@@ -21,6 +21,10 @@ export interface SessionInfo {
   runnerName: string | null;
   /** ID of the parent session that spawned this one, or null for top-level. */
   parentSessionId?: string | null;
+  /** Worker type — "pi" for the standard pi agent, "claude-code" for the
+   *  Claude Code CLI worker.  Derived from the session's last heartbeat.
+   *  Undefined for sessions that have never sent a heartbeat. */
+  workerType?: "pi" | "claude-code";
 }
 
 /** Model provider and identifier */

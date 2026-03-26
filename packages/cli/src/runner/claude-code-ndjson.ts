@@ -85,6 +85,7 @@ export function translateNdjsonLine(line: string): TranslationResult {
       controlRequestId: typeof msg.request_id === "string" ? msg.request_id : undefined,
       toolName: typeof req?.tool_name === "string" ? req.tool_name : undefined,
       toolInput: req?.input,
+      parentToolUseId,
     };
   }
 
@@ -167,6 +168,7 @@ export function translateNdjsonLine(line: string): TranslationResult {
           toolCallId: typeof b.id === "string" ? b.id : undefined,
           questions,
           relayEvent: { type: "message_update", role: "assistant", message: normalizedMessage },
+          parentToolUseId,
         };
       }
 

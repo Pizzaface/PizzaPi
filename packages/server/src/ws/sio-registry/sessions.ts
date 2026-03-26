@@ -369,6 +369,11 @@ export async function getSessions(filterUserId?: string): Promise<SessionInfo[]>
     return sessions.map((s) => {
         const heartbeat = s.lastHeartbeat ? safeJsonParse(s.lastHeartbeat) : null;
         const model = modelFromHeartbeat(heartbeat);
+        const rawWorkerType = (heartbeat as any)?.workerType;
+        const workerType: "pi" | "claude-code" | undefined =
+            rawWorkerType === "claude-code" ? "claude-code" :
+            rawWorkerType === "pi" ? "pi" :
+            undefined;
 
         return {
             sessionId: s.sessionId,
@@ -388,6 +393,7 @@ export async function getSessions(filterUserId?: string): Promise<SessionInfo[]>
             runnerId: s.runnerId,
             runnerName: s.runnerName,
             parentSessionId: s.parentSessionId,
+            workerType,
         };
     });
 }
