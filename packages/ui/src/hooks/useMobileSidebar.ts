@@ -64,7 +64,7 @@ export function useMobileSidebar(): MobileSidebarState {
     if (s.isVertical || !s.locked) return;
     s.didSwipe = true;
     // Only allow leftward swipes (negative dx), with a tiny rightward overscroll
-    const clamped = Math.min(8, dx);
+    const clamped = Math.max(-288, Math.min(8, dx));
     sidebarSwipeOffsetRef.current = clamped;
     setSidebarSwipeOffset(clamped);
     e.preventDefault();

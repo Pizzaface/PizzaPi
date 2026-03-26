@@ -1314,6 +1314,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                         onPointerDown={selectMode ? undefined : (e) => handleSessionPointerDown(e, s.sessionId, s.runnerId ? REVEAL_WIDTH : REVEAL_WIDTH_NO_RUNNER)}
                                                         onPointerMove={selectMode ? undefined : handleSessionPointerMove}
                                                         onPointerUp={selectMode ? undefined : handleSessionPointerUp}
+                                                        onPointerCancel={selectMode ? undefined : handleSessionPointerUp}
                                                         onContextMenu={(e) => e.preventDefault()}
                                                         className={cn(
                                                             "relative flex items-center gap-2.5 w-full min-w-0 px-2.5 py-3 md:py-2.5 text-left rounded-md",
@@ -1559,6 +1560,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                                                 onPointerDown={(e) => handleSessionPointerDown(e, p.sessionId)}
                                                 onPointerMove={handleSessionPointerMove}
                                                 onPointerUp={handleSessionPointerUp}
+                                                onPointerCancel={handleSessionPointerUp}
                                                 onContextMenu={(e) => e.preventDefault()}
                                                 title={`View pinned session ${p.sessionId}`}
                                                 className={cn(
