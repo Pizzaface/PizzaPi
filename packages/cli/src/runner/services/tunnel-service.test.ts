@@ -70,17 +70,20 @@ describe("httpProxy()", () => {
 
     // ── P2.2 security tests ───────────────────────────────────────────────
 
-    test("SSRF guard: rejects path containing @ that would inject a different host", async () => {
+    test("SSRF guard: rejects path-injection that shifts hostname out of 127.0.0.1", async () => {
         // No network call should be made; the SSRF check must short-circuit.
         (globalThis as any).fetch = mock(async () => {
             throw new Error("fetch should not be called");
         });
 
-        // `/@evil.com/` causes `new URL("http://127.0.0.1:3000/@evil.com/")` to
-        // produce hostname "127.0.0.1" (no injection), but a path like
-        // `//evil.com/` or containing `@` can trick some parsers.
-        // Specifically test the documented attack vector.
-        const result = await httpProxy(3000, "GET", "/@evil.com/", {}, undefined);
+        // Attack vector: path without a leading `/` turns the URL into
+        //   http://127.0.0.1:3000@evil.com/
+        // where the URL parser treats `127.0.0.1:3000` as userinfo and
+        // `evil.com` as the actual hostname.  The SSRF guard compares the
+        // parsed hostname against "127.0.0.1" and must reject it.
+        // (A path with a leading `/` is safe — the `/` terminates the authority
+        // section before the `@` is encountered.)
+        const result = await httpProxy(3000, "GET", "@evil.com/", {}, undefined);
 
         expect(result.status).toBe(400);
         expect(result.error).toMatch(/SSRF guard/i);
