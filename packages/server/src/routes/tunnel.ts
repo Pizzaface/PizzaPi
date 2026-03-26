@@ -144,6 +144,80 @@ function shouldRewriteTunnelHtml(contentType: string | null): boolean {
 }
 
 /**
+ * Check if the response is a JavaScript/TypeScript module that may contain
+ * absolute import paths needing tunnel-prefix rewriting.
+ */
+function shouldRewriteTunnelJs(contentType: string | null): boolean {
+    if (!contentType) return false;
+    return /application\/javascript|text\/javascript|application\/x-javascript|text\/x-javascript/i.test(contentType);
+}
+
+/**
+ * Check if the response is CSS that may contain absolute @import or url() paths.
+ */
+function shouldRewriteTunnelCss(contentType: string | null): boolean {
+    if (!contentType) return false;
+    return /text\/css/i.test(contentType);
+}
+
+/**
+ * Rewrite absolute paths in ES module source code so imports resolve through
+ * the tunnel proxy prefix instead of hitting the host origin directly.
+ *
+ * Handles:
+ *   - Static imports:  `import x from "/path"`, `import "/path"`
+ *   - Re-exports:      `export { x } from "/path"`
+ *   - Dynamic imports: `import("/path")`
+ *   - `new URL("/path", import.meta.url)`
+ *
+ * Only rewrites root-relative paths (`/...`). Leaves relative paths, bare
+ * specifiers, and full URLs (http://, //) untouched.
+ */
+function rewriteTunnelJsModule(js: string, sessionId: string, port: number): string {
+    const basePath = getTunnelBasePath(sessionId, port);
+
+    // Already-rewritten paths start with basePath — skip them.
+    // The regex matches: (from/import)( whitespace "or' )( /path )( "or' )
+    // We capture the absolute path and prefix it.
+    return js
+        // Static import/export ... from "/path"
+        // Matches: from "/...", from '/...'
+        .replace(/((?:from|import)\s*)(["'])(\/(?!\/)[^"']*)(["'])/g, (match, prefix, q1, path, q2) => {
+            if (path.startsWith(basePath)) return match; // already rewritten
+            return `${prefix}${q1}${basePath}${path}${q2}`;
+        })
+        // Dynamic import("/path") — import( "/..." ) or import( '/...' )
+        .replace(/(import\s*\(\s*)(["'])(\/(?!\/)[^"']*)(["'])/g, (match, prefix, q1, path, q2) => {
+            if (path.startsWith(basePath)) return match;
+            return `${prefix}${q1}${basePath}${path}${q2}`;
+        })
+        // new URL("/path", import.meta.url)
+        .replace(/(new\s+URL\s*\(\s*)(["'])(\/(?!\/)[^"']*)(["'])/g, (match, prefix, q1, path, q2) => {
+            if (path.startsWith(basePath)) return match;
+            return `${prefix}${q1}${basePath}${path}${q2}`;
+        });
+}
+
+/**
+ * Rewrite absolute paths in CSS — @import and url() references.
+ */
+function rewriteTunnelCss(css: string, sessionId: string, port: number): string {
+    const basePath = getTunnelBasePath(sessionId, port);
+
+    return css
+        // @import "/path" or @import '/path' or @import url("/path")
+        .replace(/(@import\s+)(["'])(\/(?!\/)[^"']*)(["'])/g, (match, prefix, q1, path, q2) => {
+            if (path.startsWith(basePath)) return match;
+            return `${prefix}${q1}${basePath}${path}${q2}`;
+        })
+        // url(/path), url("/path"), url('/path')
+        .replace(/(url\s*\(\s*)(["']?)(\/(?!\/)[^)"']*)(["']?\s*\))/g, (match, prefix, q1, path, q2) => {
+            if (path.startsWith(basePath)) return match;
+            return `${prefix}${q1}${basePath}${path}${q2}`;
+        });
+}
+
+/**
  * Tunnel route handler.
  *
  * Auth: the caller must be authenticated (session cookie or API key) AND must
@@ -275,9 +349,20 @@ export const handleTunnelRoute: RouteHandler = async (req, url) => {
         responseHeaders.set("location", rewriteTunnelUrl(location, sessionId, port));
     }
 
-    if (shouldRewriteTunnelHtml(responseHeaders.get("content-type"))) {
+    const contentType = responseHeaders.get("content-type");
+    if (shouldRewriteTunnelHtml(contentType)) {
         const html = responseBody.toString("utf8");
         responseBody = Buffer.from(rewriteTunnelHtml(html, sessionId, port), "utf8");
+        responseHeaders.delete("content-length");
+        responseHeaders.delete("content-encoding");
+    } else if (shouldRewriteTunnelJs(contentType)) {
+        const js = responseBody.toString("utf8");
+        responseBody = Buffer.from(rewriteTunnelJsModule(js, sessionId, port), "utf8");
+        responseHeaders.delete("content-length");
+        responseHeaders.delete("content-encoding");
+    } else if (shouldRewriteTunnelCss(contentType)) {
+        const css = responseBody.toString("utf8");
+        responseBody = Buffer.from(rewriteTunnelCss(css, sessionId, port), "utf8");
         responseHeaders.delete("content-length");
         responseHeaders.delete("content-encoding");
     }
@@ -291,4 +376,13 @@ export const handleTunnelRoute: RouteHandler = async (req, url) => {
     });
 };
 
-export { getTunnelBasePath, rewriteTunnelUrl, rewriteTunnelHtml, shouldRewriteTunnelHtml };
+export {
+    getTunnelBasePath,
+    rewriteTunnelUrl,
+    rewriteTunnelHtml,
+    shouldRewriteTunnelHtml,
+    shouldRewriteTunnelJs,
+    shouldRewriteTunnelCss,
+    rewriteTunnelJsModule,
+    rewriteTunnelCss,
+};
