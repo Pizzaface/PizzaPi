@@ -58,6 +58,12 @@ export interface PanelLayoutState {
   // ── File explorer outer pointer handlers (resize + drag combined) ───────
   handleFilesOuterPointerMove: (e: React.PointerEvent) => void;
   handleFilesOuterPointerUp: () => void;
+
+  // ── Git panel ───────────────────────────────────────────────────────────
+  showGit: boolean;
+  setShowGit: React.Dispatch<React.SetStateAction<boolean>>;
+  gitPosition: PanelPosition;
+  handleGitPositionChange: (pos: PanelPosition) => void;
 }
 
 /**
@@ -374,6 +380,16 @@ export function usePanelLayout(activeSessionId: string | null): PanelLayoutState
     handleFilesDragEnd();
   }, [handleFilesResizeEnd, handleFilesDragEnd]);
 
+  // ── Git panel state ───────────────────────────────────────────────────
+  const [showGit, setShowGit] = React.useState(false);
+  const [gitPosition, setGitPosition] = React.useState<PanelPosition>(() => {
+    try { return (localStorage.getItem("pp-git-position") as PanelPosition) ?? "left"; } catch { return "left"; }
+  });
+  const handleGitPositionChange = React.useCallback((pos: PanelPosition) => {
+    setGitPosition(pos);
+    try { localStorage.setItem("pp-git-position", pos); } catch {}
+  }, []);
+
   return {
     showTerminal,
     setShowTerminal,
@@ -414,5 +430,9 @@ export function usePanelLayout(activeSessionId: string | null): PanelLayoutState
     handleFilesDragStart,
     handleFilesOuterPointerMove,
     handleFilesOuterPointerUp,
+    showGit,
+    setShowGit,
+    gitPosition,
+    handleGitPositionChange,
   };
 }

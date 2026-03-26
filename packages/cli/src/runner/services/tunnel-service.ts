@@ -22,6 +22,8 @@ interface TunnelInfo {
     name?: string;
     /** Relay tunnel URL fragment — actual URL is /api/tunnel/{sessionId}/{port}/ */
     url: string;
+    /** Auto-registered by the daemon (e.g. service panel port) — hidden from session TunnelPanel. */
+    pinned?: boolean;
 }
 
 interface TunnelRequestData {
@@ -116,7 +118,7 @@ export class TunnelService implements ServiceHandler {
     registerPort(port: number, name?: string): void {
         if (this.tunnels.has(port)) return;
         const url = `/tunnel/${port}`;
-        const info: TunnelInfo = { port, ...(name ? { name } : {}), url };
+        const info: TunnelInfo = { port, ...(name ? { name } : {}), url, pinned: true };
         this.tunnels.set(port, info);
         logInfo(`[tunnel] auto-registered panel port ${port}${name ? ` (${name})` : ""}`);
 

@@ -6,6 +6,7 @@ interface TunnelInfo {
     port: number;
     name?: string;
     url: string;
+    pinned?: boolean;
 }
 
 interface TunnelPanelProps {
@@ -27,12 +28,14 @@ export function TunnelPanel({ sessionId }: TunnelPanelProps) {
         onMessage: (type, payload) => {
             const p = payload as Record<string, unknown>;
             if (type === "tunnel_list_result") {
-                setTunnels((p.tunnels as TunnelInfo[]) ?? []);
+                setTunnels(((p.tunnels as TunnelInfo[]) ?? []).filter((t: TunnelInfo) => !t.pinned));
             } else if (type === "tunnel_registered") {
                 const info = p as unknown as TunnelInfo;
+                if (info.pinned) return;
                 setTunnels((prev: TunnelInfo[]) => [...prev.filter((t: TunnelInfo) => t.port !== info.port), info]);
             } else if (type === "tunnel_removed") {
                 const port = p.port as number;
+                // pinned tunnels are never in state, so this is a no-op for them — safe to run regardless
                 setTunnels((prev: TunnelInfo[]) => prev.filter((t: TunnelInfo) => t.port !== port));
                 // If the removed tunnel was being previewed, clear it
                 if (previewPort === port) setPreviewPort(null);

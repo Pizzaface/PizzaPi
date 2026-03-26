@@ -54,12 +54,12 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Sun, Moon, LogOut, KeyRound, X, User, ChevronsUpDown, PanelLeftOpen, HardDrive, Bell, BellOff, Check, Plus, TerminalIcon, FolderTree, Keyboard, EyeOff, Lock } from "lucide-react";
+import { Sun, Moon, LogOut, KeyRound, X, User, ChevronsUpDown, PanelLeftOpen, HardDrive, Bell, BellOff, Check, Plus, TerminalIcon, FolderTree, GitBranch, Keyboard, EyeOff, Lock } from "lucide-react";
 import { NotificationToggle, MobileNotificationMenuItem } from "@/components/NotificationToggle";
 import { HapticsToggle, MobileHapticsMenuItem } from "@/components/HapticsToggle";
 import { UsageIndicator, type ProviderUsageMap } from "@/components/UsageIndicator";
 import { TerminalManager } from "@/components/TerminalManager";
-import { FileExplorer } from "@/components/FileExplorer";
+import { FileExplorer, GitChangesView } from "@/components/FileExplorer";
 import { CombinedPanel, type CombinedPanelTab } from "@/components/CombinedPanel";
 import { DockedPanelGroup } from "@/components/DockedPanelGroup";
 import { ViewerSocketContext } from "@/lib/viewer-socket-context";
@@ -177,6 +177,8 @@ export function App() {
     showFileExplorer, setShowFileExplorer,
     filesPosition, filesContainerRef,
     handleFilesPositionChange,
+    showGit, setShowGit,
+    gitPosition, handleGitPositionChange,
   } = panelLayout;
 
   const [newSessionOpen, setNewSessionOpen] = React.useState(false);
@@ -3303,25 +3305,16 @@ export function App() {
 
   // Runner service panels — dynamically discovered
   const { services: availableServices, panels: dynamicPanels } = useRunnerServices(viewerSocket);
-  const { activePanelId: activeServicePanel, togglePanel: toggleServicePanel, closePanel: closeServicePanel } = useServicePanelState();
-  const [servicePanelPosition, setServicePanelPosition] = React.useState<import("@/hooks/usePanelLayout").PanelPosition>(() => {
-    try { return (localStorage.getItem("pp-service-panel-position") as import("@/hooks/usePanelLayout").PanelPosition) ?? "right"; } catch { return "right"; }
-  });
-  const handleServicePanelPositionChange = React.useCallback((pos: import("@/hooks/usePanelLayout").PanelPosition) => {
-    setServicePanelPosition(pos);
-    try { localStorage.setItem("pp-service-panel-position", pos); } catch {}
-  }, []);
+  const { activePanelIds: activeServicePanels, togglePanel: toggleServicePanel, closePanelById: closeServicePanelById, closeAllPanels: closeAllServicePanels, getPanelPosition: getServicePanelPosition, setPanelPosition: setServicePanelPosition } = useServicePanelState();
 
   const handleToggleServicePanel = React.useCallback((serviceId: string) => {
-    if (activeServicePanel === serviceId) {
-      closeServicePanel();
-      if (showTerminal) handleCombinedTabChange("terminal");
-      else if (showFileExplorer) handleCombinedTabChange("files");
+    if (activeServicePanels.has(serviceId)) {
+      closeServicePanelById(serviceId);
     } else {
       toggleServicePanel(serviceId);
       handleCombinedTabChange(serviceId);
     }
-  }, [activeServicePanel, closeServicePanel, toggleServicePanel, handleCombinedTabChange, showTerminal, showFileExplorer]);
+  }, [activeServicePanels, closeServicePanelById, toggleServicePanel, handleCombinedTabChange]);
 
   const terminalPanelTab = React.useMemo<CombinedPanelTab | null>(() => showTerminal ? {
     id: "terminal",
@@ -3367,57 +3360,73 @@ export function App() {
     ),
   } : null, [showFileExplorer, activeSessionInfo?.runnerId, activeSessionInfo?.cwd, startPanelDragWith, handleFilesPositionChange]);
 
+  const gitPanelTab = React.useMemo<CombinedPanelTab | null>(() => (showGit && activeSessionInfo?.runnerId && activeSessionInfo?.cwd) ? {
+    id: "git",
+    label: "Git",
+    icon: <GitBranch className="size-3.5" />,
+    onClose: () => setShowGit(false),
+    onDragStart: (e) => startPanelDragWith(e, handleGitPositionChange),
+    content: (
+      <GitChangesView
+        runnerId={activeSessionInfo.runnerId}
+        cwd={activeSessionInfo.cwd}
+      />
+    ),
+  } : null, [showGit, activeSessionInfo?.runnerId, activeSessionInfo?.cwd, startPanelDragWith, handleGitPositionChange]);
+
   const servicePanelTabs = React.useMemo<CombinedPanelTab[]>(() => {
-    if (!activeServicePanel || !activeSessionId) return [];
+    if (activeServicePanels.size === 0 || !activeSessionId) return [];
 
-    // Try static registry first
-    const staticDef = SERVICE_PANELS.find(p => p.serviceId === activeServicePanel);
-    // Then dynamic panels
-    const dynamicDef = !staticDef ? dynamicPanels.find(p => p.serviceId === activeServicePanel) : null;
+    const tabs: CombinedPanelTab[] = [];
+    for (const serviceId of activeServicePanels) {
+      // Try static registry first, then dynamic panels
+      const staticDef = SERVICE_PANELS.find(p => p.serviceId === serviceId);
+      const dynamicDef = !staticDef ? dynamicPanels.find(p => p.serviceId === serviceId) : null;
+      if (!staticDef && !dynamicDef) continue;
 
-    if (!staticDef && !dynamicDef) return [];
+      const label = staticDef?.label ?? dynamicDef!.label;
+      const icon = staticDef?.icon ?? <DynamicLucideIcon name={dynamicDef!.icon} />;
+      const content = staticDef
+        ? <staticDef.component sessionId={activeSessionId} />
+        : <IframeServicePanel sessionId={activeSessionId} port={dynamicDef!.port} />;
 
-    const label = staticDef?.label ?? dynamicDef!.label;
-    const icon = staticDef?.icon ?? <DynamicLucideIcon name={dynamicDef!.icon} />;
-    const content = staticDef
-      ? <staticDef.component sessionId={activeSessionId} />
-      : <IframeServicePanel sessionId={activeSessionId} port={dynamicDef!.port} />;
-
-    return [{
-      id: staticDef?.serviceId ?? dynamicDef!.serviceId,
-      label,
-      icon,
-      onDragStart: (e) => startPanelDragWith(e, handleServicePanelPositionChange),
-      onClose: () => {
-        closeServicePanel();
-        if (showTerminal) handleCombinedTabChange("terminal");
-        else if (showFileExplorer) handleCombinedTabChange("files");
-      },
-      content,
-    }];
-  }, [activeServicePanel, activeSessionId, dynamicPanels, startPanelDragWith, handleServicePanelPositionChange, closeServicePanel, showTerminal, showFileExplorer, handleCombinedTabChange]);
+      tabs.push({
+        id: serviceId,
+        label,
+        icon,
+        onDragStart: (e) => startPanelDragWith(e, (pos) => setServicePanelPosition(serviceId, pos)),
+        onClose: () => closeServicePanelById(serviceId),
+        content,
+      });
+    }
+    return tabs;
+  }, [activeServicePanels, activeSessionId, dynamicPanels, startPanelDragWith, setServicePanelPosition, closeServicePanelById]);
 
   const panelGroups = React.useMemo(() => {
     const groups: Record<"left" | "right" | "bottom", CombinedPanelTab[]> = { left: [], right: [], bottom: [] };
     if (terminalPanelTab) groups[terminalPosition].push(terminalPanelTab);
     if (filesPanelTab) groups[filesPosition].push(filesPanelTab);
-    if (servicePanelTabs[0]) groups[servicePanelPosition].push(servicePanelTabs[0]);
+    if (gitPanelTab) groups[gitPosition].push(gitPanelTab);
+    for (const tab of servicePanelTabs) groups[getServicePanelPosition(tab.id)].push(tab);
     return groups;
-  }, [terminalPanelTab, terminalPosition, filesPanelTab, filesPosition, servicePanelTabs, servicePanelPosition]);
+  }, [terminalPanelTab, terminalPosition, filesPanelTab, filesPosition, gitPanelTab, gitPosition, servicePanelTabs, getServicePanelPosition]);
 
   const handleGroupPositionChange = React.useCallback((tabIds: string[], pos: import("@/hooks/usePanelLayout").PanelPosition) => {
     if (tabIds.includes("terminal")) handleTerminalPositionChange(pos);
     if (tabIds.includes("files")) handleFilesPositionChange(pos);
-    if (activeServicePanel && tabIds.includes(activeServicePanel)) handleServicePanelPositionChange(pos);
-  }, [handleTerminalPositionChange, handleFilesPositionChange, activeServicePanel, handleServicePanelPositionChange]);
+    if (tabIds.includes("git")) handleGitPositionChange(pos);
+    for (const id of activeServicePanels) {
+      if (tabIds.includes(id)) setServicePanelPosition(id, pos);
+    }
+  }, [handleTerminalPositionChange, handleFilesPositionChange, handleGitPositionChange, activeServicePanels, setServicePanelPosition]);
 
   const handleGroupDragStart = React.useCallback((tabIds: string[]) => (e: React.PointerEvent) => {
     startPanelDragWith(e, (pos) => handleGroupPositionChange(tabIds, pos));
   }, [startPanelDragWith, handleGroupPositionChange]);
 
   const mobilePanelTabs = React.useMemo(() => {
-    return [terminalPanelTab, filesPanelTab, ...servicePanelTabs].filter(Boolean) as CombinedPanelTab[];
-  }, [terminalPanelTab, filesPanelTab, servicePanelTabs]);
+    return [terminalPanelTab, filesPanelTab, gitPanelTab, ...servicePanelTabs].filter(Boolean) as CombinedPanelTab[];
+  }, [terminalPanelTab, filesPanelTab, gitPanelTab, servicePanelTabs]);
 
   const resolveActiveTabId = React.useCallback((tabs: CombinedPanelTab[]) => {
     if (tabs.length === 0) return combinedActiveTab;
@@ -3970,11 +3979,13 @@ export function App() {
                       showTerminalButton
                       onToggleFileExplorer={() => setShowFileExplorer((v) => !v)}
                       showFileExplorerButton={!!activeSessionInfo?.runnerId && !!activeSessionInfo?.cwd}
+                      onToggleGit={() => setShowGit((v) => !v)}
+                      showGitButton={!!activeSessionInfo?.runnerId && !!activeSessionInfo?.cwd}
                       extraHeaderButtons={
                         <ServicePanelButtons
                           availableServices={availableServices}
                           dynamicPanels={dynamicPanels}
-                          activePanelId={activeServicePanel}
+                          activePanelIds={activeServicePanels}
                           onTogglePanel={handleToggleServicePanel}
                         />
                       }
