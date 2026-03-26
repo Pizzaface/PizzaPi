@@ -92,9 +92,18 @@ async function handleUpgradeAsync(
     const port = parseInt(match[2], 10);
     const proxyPath = match[3] ?? "/";
 
-    // Reconstruct query string
+    // Reconstruct query string, stripping auth query params (apiKey) so they
+    // are not forwarded to the local service — SSRF auth-leakage vector.
+    let pathWithQuery: string;
     const qIdx = fullUrl.indexOf("?");
-    const pathWithQuery = qIdx >= 0 ? `${proxyPath}${fullUrl.slice(qIdx)}` : proxyPath;
+    if (qIdx >= 0) {
+        const qs = new URLSearchParams(fullUrl.slice(qIdx + 1));
+        qs.delete("apiKey");
+        const qsStr = qs.toString();
+        pathWithQuery = qsStr ? `${proxyPath}?${qsStr}` : proxyPath;
+    } else {
+        pathWithQuery = proxyPath;
+    }
 
     // ── Validate ──────────────────────────────────────────────────────────
     if (!sessionId || !Number.isFinite(port) || port < 1 || port > 65535) {
@@ -152,8 +161,8 @@ async function handleUpgradeAsync(
         if (v === undefined) continue;
         const lk = k.toLowerCase();
         if (HOP_BY_HOP.has(lk)) continue;
-        // Strip auth headers (cookie, authorization) — SSRF auth-leakage vector
-        if (lk === "cookie" || lk === "authorization") continue;
+        // Strip auth headers (cookie, authorization, x-api-key) — SSRF auth-leakage vector
+        if (lk === "cookie" || lk === "authorization" || lk === "x-api-key") continue;
         forwardHeaders[k] = Array.isArray(v) ? v.join(", ") : v;
     }
 
@@ -352,6 +361,8 @@ export function cleanupRunnerTunnelWs(runnerId: string): void {
             rawSocket.end();
         }
         activeTunnelWs.delete(tunnelWsId);
+        // Clear frame parser state to prevent memory leaks on runner disconnect.
+        frameParsers.delete(tunnelWsId);
     }
 
     runnerTunnelWsIds.delete(runnerId);
@@ -563,6 +574,8 @@ function handleIncomingWsFrame(tunnelWsId: string, runnerId: string, chunk: Buff
         }
 
         // Data frames (text=0x01, binary=0x02, continuation=0x00)
+        // NOTE: WS frame fragmentation not yet supported — continuation frames (0x00) are
+        // forwarded as-is. Most modern WS libraries send unfragmented frames by default.
         const isBinary = opcode === 0x02;
         (runnerSocket as Socket).emit("tunnel_ws_data" as any, {
             tunnelWsId,

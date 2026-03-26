@@ -272,8 +272,17 @@ export const handleTunnelRoute: RouteHandler = async (req, url) => {
         return Response.json({ error: "Invalid port" }, { status: 400 });
     }
 
-    // Reconstruct proxy path with query string
-    const pathWithQuery = url.search ? `${proxyPath}${url.search}` : proxyPath;
+    // Reconstruct proxy path with query string, stripping auth query params (apiKey)
+    // so they are not forwarded to the local service — SSRF auth-leakage vector.
+    let pathWithQuery: string;
+    if (url.search) {
+        const qs = new URLSearchParams(url.search.slice(1));
+        qs.delete("apiKey");
+        const qsStr = qs.toString();
+        pathWithQuery = qsStr ? `${proxyPath}?${qsStr}` : proxyPath;
+    } else {
+        pathWithQuery = proxyPath;
+    }
 
     // ── Look up session and verify ownership ─────────────────────────────────
     const sessionData = await getSession(sessionId);
@@ -321,9 +330,15 @@ export const handleTunnelRoute: RouteHandler = async (req, url) => {
         "host",
     ]);
 
+    // Auth headers that must not be forwarded to the runner/local service.
+    // x-api-key is used to authenticate against the PizzaPi server — it must
+    // never reach the tunneled localhost service (SSRF auth-leakage vector).
+    const STRIP_AUTH = new Set(["cookie", "authorization", "x-api-key"]);
+
     const forwardHeaders: Record<string, string> = {};
     req.headers.forEach((v, k) => {
-        if (!HOP_BY_HOP.has(k.toLowerCase())) forwardHeaders[k] = v;
+        const lk = k.toLowerCase();
+        if (!HOP_BY_HOP.has(lk) && !STRIP_AUTH.has(lk)) forwardHeaders[k] = v;
     });
 
     // ── Build requestId and emit tunnel_request ───────────────────────────────

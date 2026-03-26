@@ -102,7 +102,7 @@ const HOP_BY_HOP = new Set([
  * localhost service.  Stripping these prevents credential forwarding (SSRF
  * auth-leakage vector).
  */
-const STRIP_AUTH_HEADERS = new Set(["cookie", "authorization"]);
+const STRIP_AUTH_HEADERS = new Set(["cookie", "authorization", "x-api-key"]);
 
 // ── Response cache ────────────────────────────────────────────────────────
 
