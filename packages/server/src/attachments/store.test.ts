@@ -1,5 +1,25 @@
-import { describe, expect, test } from "bun:test";
-import { sanitizeFilename, sanitizeStoredFilename, attachmentMaxFileSizeBytes } from "./store";
+import { describe, expect, test, beforeAll, afterAll } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { initAuth, getKysely } from "../auth.js";
+import { sanitizeFilename, sanitizeStoredFilename, attachmentMaxFileSizeBytes, storeSessionAttachment, ensureExtractedAttachmentTable } from "./store";
+
+// ── Persistence integration test setup ──────────────────────────────────────
+// Uses a temp SQLite DB so tests don't interfere with any real server DB.
+const tmpDir = mkdtempSync(join(tmpdir(), "pizzapi-attach-persist-test-"));
+const dbPath = join(tmpDir, "test.db");
+
+beforeAll(async () => {
+    // Override HOME so auth.ts doesn't write to the real home directory
+    process.env.HOME = tmpDir;
+    initAuth({ dbPath, baseURL: "http://localhost:7777", secret: "test-secret-attach-persist" });
+    await ensureExtractedAttachmentTable();
+});
+
+afterAll(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+});
 
 describe("sanitizeFilename", () => {
     test("preserves safe characters", () => {
@@ -93,5 +113,64 @@ describe("attachmentMaxFileSizeBytes", () => {
         } else {
             delete process.env.PIZZAPI_ATTACHMENT_MAX_FILE_SIZE_BYTES;
         }
+    });
+});
+
+describe("storeSessionAttachment SQLite persistence", () => {
+    test("persists user-uploaded attachment to SQLite", async () => {
+        const file = new File(["hello world"], "persist-test.txt", { type: "text/plain" });
+        const record = await storeSessionAttachment({
+            sessionId: "test-session-persist-001",
+            ownerUserId: "test-owner-001",
+            uploaderUserId: "test-uploader-001",
+            file,
+        });
+
+        expect(record.attachmentId).toBeTruthy();
+        expect(record.uploaderUserId).toBe("test-uploader-001");
+
+        // Allow the fire-and-forget SQLite persist to complete before querying
+        await Bun.sleep(100);
+
+        // Verify the record landed in SQLite
+        const rows = await getKysely()
+            .selectFrom("extracted_attachment")
+            .selectAll()
+            .where("attachmentId", "=", record.attachmentId)
+            .execute();
+
+        expect(rows).toHaveLength(1);
+        const row = rows[0]!;
+        expect(row.sessionId).toBe("test-session-persist-001");
+        expect(row.ownerUserId).toBe("test-owner-001");
+        expect(row.filename).toBe("persist-test.txt");
+        // Bun's File may append ";charset=utf-8" to text types
+        expect(row.mimeType).toStartWith("text/plain");
+
+        // Clean up the written file from disk
+        try { rmSync(record.filePath); } catch {}
+    });
+
+    test("record is found by getKysely after a second store (dedup via ON CONFLICT DO UPDATE)", async () => {
+        // Verify that re-storing an existing attachment ID updates (upserts) rather than throwing
+        const file = new File(["content"], "dedup-test.txt", { type: "text/plain" });
+        const record = await storeSessionAttachment({
+            sessionId: "test-session-dedup",
+            ownerUserId: "test-owner-dedup",
+            uploaderUserId: "test-uploader-dedup",
+            file,
+        });
+
+        await Bun.sleep(100);
+
+        // Should exist exactly once
+        const rows = await getKysely()
+            .selectFrom("extracted_attachment")
+            .selectAll()
+            .where("attachmentId", "=", record.attachmentId)
+            .execute();
+        expect(rows).toHaveLength(1);
+
+        try { rmSync(record.filePath); } catch {}
     });
 });

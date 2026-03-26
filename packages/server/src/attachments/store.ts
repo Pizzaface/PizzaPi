@@ -93,6 +93,9 @@ export async function storeSessionAttachment(input: {
     };
 
     attachments.set(attachmentId, record);
+    void persistExtractedAttachment(record).catch((err) => {
+        console.warn("[attachments] Failed to persist user attachment to SQLite:", err);
+    });
     return record;
 }
 
