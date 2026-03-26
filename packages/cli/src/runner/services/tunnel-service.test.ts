@@ -68,6 +68,57 @@ describe("httpProxy()", () => {
         expect(capturedHeaders["accept-encoding"]).toBe("identity");
     });
 
+    // ── P2.2 security tests ───────────────────────────────────────────────
+
+    test("SSRF guard: rejects path containing @ that would inject a different host", async () => {
+        // No network call should be made; the SSRF check must short-circuit.
+        (globalThis as any).fetch = mock(async () => {
+            throw new Error("fetch should not be called");
+        });
+
+        // `/@evil.com/` causes `new URL("http://127.0.0.1:3000/@evil.com/")` to
+        // produce hostname "127.0.0.1" (no injection), but a path like
+        // `//evil.com/` or containing `@` can trick some parsers.
+        // Specifically test the documented attack vector.
+        const result = await httpProxy(3000, "GET", "/@evil.com/", {}, undefined);
+
+        expect(result.status).toBe(400);
+        expect(result.error).toMatch(/SSRF guard/i);
+    });
+
+    test("rejects response body that exceeds MAX_RESPONSE_BYTES (10 MB)", async () => {
+        const MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
+
+        (globalThis as any).fetch = mock(async () => ({
+            status: 200,
+            headers: new Headers(),
+            arrayBuffer: async () => new ArrayBuffer(MAX_RESPONSE_BYTES + 1),
+        }));
+
+        const result = await httpProxy(3000, "GET", "/big-file", {}, undefined);
+
+        expect(result.status).toBe(413);
+        expect(result.error).toMatch(/limit/i);
+    });
+
+    test("passes redirect: manual to fetch and returns 3xx responses without following", async () => {
+        let capturedInit: RequestInit | undefined;
+
+        (globalThis as any).fetch = mock(async (_url: any, init: any) => {
+            capturedInit = init;
+            return new Response(null, {
+                status: 301,
+                headers: { location: "http://other.internal/target" },
+            });
+        });
+
+        const result = await httpProxy(3000, "GET", "/redirect-me", {}, undefined);
+
+        expect(capturedInit?.redirect).toBe("manual");
+        // 3xx must be passed back as-is, not silently followed
+        expect(result.status).toBe(301);
+    });
+
     test("strips authorization and cookie headers before forwarding", async () => {
         let capturedHeaders: Record<string, string> = {};
 
@@ -257,6 +308,43 @@ describe("TunnelService response cache", () => {
 
         expect(cache.has("3000:GET:/page-a")).toBe(false);
         expect(cache.has("3000:GET:/page-b")).toBe(false);
+    });
+
+    // ── P2.3: TTL expiry ──────────────────────────────────────────────────
+
+    test("expired cache entries are not returned after TTL elapses", async () => {
+        let fetchCallCount = 0;
+
+        (globalThis as any).fetch = mock(async () => {
+            fetchCallCount++;
+            return new Response("body", { status: 200 });
+        });
+
+        const { service } = createServiceWithPort(3002);
+
+        const baseRequest = {
+            port: 3002,
+            method: "GET",
+            path: "/ttl-test",
+            headers: {},
+            body: undefined,
+        };
+
+        // First request — populates cache using real Date.now()
+        await (service as any).handleHttpRequest({ ...baseRequest, requestId: "r1" });
+        expect(fetchCallCount).toBe(1);
+
+        // Advance Date.now() past CACHE_TTL_MS (60 000 ms) so the entry expires
+        const realDateNow = Date.now;
+        try {
+            Date.now = () => realDateNow() + 61_000;
+
+            // Second request — cache entry is expired → must fetch again
+            await (service as any).handleHttpRequest({ ...baseRequest, requestId: "r2" });
+            expect(fetchCallCount).toBe(2);
+        } finally {
+            Date.now = realDateNow;
+        }
     });
 
     // ── Test 7 ────────────────────────────────────────────────────────────
