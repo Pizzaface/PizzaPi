@@ -70,6 +70,7 @@ RUN echo "ui-dist-hash: $UI_DIST_HASH" \
         echo "Using pre-built UI dist from host"; \
     else \
         node_modules/typescript/bin/tsc --build packages/protocol/tsconfig.json \
+        && node_modules/typescript/bin/tsc --build packages/tools/tsconfig.json \
         && cd packages/ui && bun run build; \
     fi
 
