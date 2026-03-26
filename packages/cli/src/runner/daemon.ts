@@ -445,7 +445,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 // sessions that ended while the daemon was down or crashed.
                 void sweepOrphanedAttachments(new Set(runningSessions.keys())).catch(() => {});
             } catch (err) {
-                logError("[daemon] runner_registered handler failed:", err);
+                logError(`[daemon] runner_registered handler failed: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
             }
         });
 
