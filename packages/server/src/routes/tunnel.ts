@@ -77,7 +77,7 @@ function buildTunnelInterceptScript(basePath: string): string {
   function rwWs(u){
     if(typeof u!=="string")return u;
     // Absolute ws(s)://<host>/<path> URLs
-    var m=u.match(/^wss?:\\/\\/([^\\/]+)(\\/.*)$/);
+    var m=u.match(/^wss?:\\/\\/([^\\/]+)(\\/.*)?$/);
     if(m){
       var host=m[1];
       var path=m[2]||"/";

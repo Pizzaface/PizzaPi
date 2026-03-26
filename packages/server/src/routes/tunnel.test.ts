@@ -111,6 +111,59 @@ describe("tunnel route HTML rewriting", () => {
         expect(rewritten).toContain("CLOSING");
         expect(rewritten).toContain("CLOSED");
     });
+
+    test("rewriteTunnelHtml WebSocket patch upgrades host-only ws:// URLs to wss:// on HTTPS", () => {
+        const html = `<!doctype html><html><head></head><body>hello</body></html>`;
+        const rewritten = rewriteTunnelHtml(html, "s-1", 3000);
+        const scriptMatch = rewritten.match(/<script data-pizzapi-tunnel-intercept>\n([\s\S]*?)<\/script>/);
+        expect(scriptMatch).toBeTruthy();
+        const scriptBody = scriptMatch![1];
+
+        const capturedUrls: string[] = [];
+        const NativeWebSocket = function (this: unknown, url: string) {
+            capturedUrls.push(url);
+        } as unknown as {
+            new (url: string, protocols?: string | string[]): unknown;
+            prototype: Record<string, unknown>;
+            CONNECTING: number;
+            OPEN: number;
+            CLOSING: number;
+            CLOSED: number;
+        };
+        NativeWebSocket.prototype = {};
+        NativeWebSocket.CONNECTING = 0;
+        NativeWebSocket.OPEN = 1;
+        NativeWebSocket.CLOSING = 2;
+        NativeWebSocket.CLOSED = 3;
+
+        class MockXHR {
+            open(_method: string, _url: string): void {}
+        }
+
+        const mockWindow = {
+            fetch: (_input: RequestInfo | URL, _init?: RequestInit) => Promise.resolve(new Response(null, { status: 200 })),
+            WebSocket: NativeWebSocket,
+            EventSource: undefined as undefined,
+        };
+
+        const runScript = new Function("window", "location", "XMLHttpRequest", "Request", scriptBody) as (
+            window: typeof mockWindow,
+            location: { protocol: string; host: string },
+            XMLHttpRequest: typeof MockXHR,
+            RequestCtor: typeof Request,
+        ) => void;
+
+        runScript(
+            mockWindow,
+            { protocol: "https:", host: "jordans-mac-mini.tail65556b.ts.net" },
+            MockXHR,
+            Request,
+        );
+
+        new mockWindow.WebSocket("ws://jordans-mac-mini.tail65556b.ts.net");
+
+        expect(capturedUrls).toEqual(["wss://jordans-mac-mini.tail65556b.ts.net/api/tunnel/s-1/3000/"]);
+    });
 });
 
 describe("tunnel JS module rewriting", () => {
