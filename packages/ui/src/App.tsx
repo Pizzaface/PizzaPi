@@ -1398,7 +1398,17 @@ export function App() {
         .map((m, i) => toRelayMessage(m, `snapshot-${keyOffset + i}`))
         .filter((m): m is RelayMessage => m !== null);
 
-      setMessages((prev) => [...prev, ...convertedChunk]);
+      // For the final chunk, append + dedupe in a single updater pass so the
+      // dedup operates on the complete message array (including this chunk).
+      // For non-final chunks, just append.
+      let dedupedForSideEffects: RelayMessage[] | null = null;
+      setMessages((prev) => {
+        const appended = [...prev, ...convertedChunk];
+        if (!isFinal) return appended;
+        const deduped = deduplicateMessages(appended);
+        dedupedForSideEffects = deduped;
+        return deduped;
+      });
 
       // Update chunked delivery tracking
       if (chunkedDeliveryRef.current) {
@@ -1420,14 +1430,12 @@ export function App() {
         }
         setViewerStatus("Connected");
 
-        // Now that all messages are assembled, run global dedupe to remove
-        // cross-chunk duplicates (e.g., partial messages from one chunk and
-        // their final timestamped versions from another). This prevents
-        // duplicate assistant/tool content from appearing in large-session reloads.
-        const deduped = deduplicateMessages(messagesRef.current);
-        setActiveToolCalls(detectInFlightTools(deduped));
-        setMessages(deduped);
-        patchSessionCache({ messages: deduped });
+        // Side effects from the deduped result — the updater above assigned
+        // dedupedForSideEffects synchronously before returning.
+        if (dedupedForSideEffects) {
+          setActiveToolCalls(detectInFlightTools(dedupedForSideEffects));
+          patchSessionCache({ messages: dedupedForSideEffects });
+        }
       }
       return;
     }
