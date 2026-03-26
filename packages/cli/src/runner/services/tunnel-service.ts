@@ -1,9 +1,11 @@
 /**
  * TunnelService — expose local ports to authenticated remote viewers via the PizzaPi relay.
  *
- * Option C constraints (HTTP-only, no WebSocket upgrade, no streaming, max 10 MB body):
- *   - No WebSocket upgrade (no HMR, no Socket.IO through tunnel)
- *   - No streaming responses (body fully buffered before forwarding)
+ * Supports both HTTP proxy (request/response over Socket.IO) and WebSocket
+ * proxy (WS-over-Socket.IO framing for Vite HMR, Socket.IO apps, etc.).
+ *
+ * Remaining limitations:
+ *   - No streaming HTTP responses (body fully buffered before forwarding)
  *   - No SSE support
  *   - No CORS handling beyond header passthrough
  *   - Not suitable for large file downloads (>10 MB)
@@ -46,6 +48,38 @@ interface TunnelResponseData {
     error?: string;
 }
 
+// ── Tunnel WebSocket proxy types (mirrors protocol/shared.ts) ─────────────
+
+interface TunnelWsOpenData {
+    tunnelWsId: string;
+    port: number;
+    path: string;
+    protocols?: string[];
+    headers: Record<string, string>;
+}
+
+interface TunnelWsDataPayload {
+    tunnelWsId: string;
+    data: string;
+    binary?: boolean;
+}
+
+interface TunnelWsCloseData {
+    tunnelWsId: string;
+    code?: number;
+    reason?: string;
+}
+
+interface TunnelWsErrorData {
+    tunnelWsId: string;
+    message: string;
+}
+
+interface TunnelWsOpenedData {
+    tunnelWsId: string;
+    protocol?: string;
+}
+
 /** Maximum response body size that will be relayed (10 MB). */
 const MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
 
@@ -75,6 +109,8 @@ export class TunnelService implements ServiceHandler {
 
     private tunnels = new Map<number, TunnelInfo>();
     private socket: Socket | null = null;
+    /** Active WebSocket tunnel connections: tunnelWsId → WebSocket */
+    private wsConnections = new Map<string, WebSocket>();
 
     init(socket: Socket, { isShuttingDown }: ServiceInitOptions): void {
         this.socket = socket;
@@ -102,9 +138,31 @@ export class TunnelService implements ServiceHandler {
             if (isShuttingDown()) return;
             await this.handleHttpRequest(data);
         });
+
+        // ── Server → Runner: tunnel_ws_open (WebSocket proxy) ─────────────────
+        (socket as any).on("tunnel_ws_open", (data: TunnelWsOpenData) => {
+            if (isShuttingDown()) return;
+            this.handleWsOpen(data);
+        });
+
+        // ── Server → Runner: tunnel_ws_data (WebSocket frame from viewer) ─────
+        (socket as any).on("tunnel_ws_data", (data: TunnelWsDataPayload) => {
+            if (isShuttingDown()) return;
+            this.handleWsData(data);
+        });
+
+        // ── Server → Runner: tunnel_ws_close (viewer WS closed) ──────────────
+        (socket as any).on("tunnel_ws_close", (data: TunnelWsCloseData) => {
+            this.handleWsClose(data);
+        });
     }
 
     dispose(): void {
+        // Close all active WebSocket tunnel connections
+        for (const [id, ws] of this.wsConnections) {
+            try { ws.close(1001, "tunnel service disposed"); } catch { /* ignore */ }
+        }
+        this.wsConnections.clear();
         this.tunnels.clear();
         this.socket = null;
     }
@@ -283,5 +341,143 @@ export class TunnelService implements ServiceHandler {
         // one of the awaits above.
         if (!this.socket) return;
         (this.socket as any).emit("tunnel_response", response);
+    }
+
+    // ── WebSocket proxy ───────────────────────────────────────────────────────
+
+    private handleWsOpen(data: TunnelWsOpenData): void {
+        if (!this.socket) return;
+        const { tunnelWsId, port, path, protocols, headers } = data;
+
+        // Reject requests for unexposed ports
+        if (!this.tunnels.has(port)) {
+            (this.socket as any).emit("tunnel_ws_error", {
+                tunnelWsId,
+                message: `Port ${port} is not exposed`,
+            } satisfies TunnelWsErrorData);
+            return;
+        }
+
+        // SSRF guard: validate the constructed URL
+        const rawUrl = `ws://127.0.0.1:${port}${path}`;
+        let parsedUrl: URL;
+        try {
+            parsedUrl = new URL(rawUrl);
+        } catch {
+            (this.socket as any).emit("tunnel_ws_error", {
+                tunnelWsId,
+                message: `Invalid WebSocket URL: ${rawUrl}`,
+            } satisfies TunnelWsErrorData);
+            return;
+        }
+
+        if (parsedUrl.hostname !== "127.0.0.1") {
+            (this.socket as any).emit("tunnel_ws_error", {
+                tunnelWsId,
+                message: `SSRF guard: unexpected hostname '${parsedUrl.hostname}'`,
+            } satisfies TunnelWsErrorData);
+            return;
+        }
+
+        logInfo(`[tunnel] WS open tunnelWsId=${tunnelWsId} → ws://127.0.0.1:${port}${path}`);
+
+        // Strip hop-by-hop and auth headers before forwarding
+        const forwardHeaders: Record<string, string> = {};
+        for (const [k, v] of Object.entries(headers)) {
+            const lk = k.toLowerCase();
+            if (!HOP_BY_HOP.has(lk) && !STRIP_AUTH_HEADERS.has(lk)) forwardHeaders[k] = v;
+        }
+        // Set the correct Host header for the local service
+        forwardHeaders["host"] = `127.0.0.1:${port}`;
+
+        try {
+            const ws = new WebSocket(parsedUrl.toString(), protocols);
+
+            // Store immediately so we can close on dispose
+            this.wsConnections.set(tunnelWsId, ws);
+
+            ws.binaryType = "arraybuffer";
+
+            ws.addEventListener("open", () => {
+                if (!this.socket) return;
+                (this.socket as any).emit("tunnel_ws_opened", {
+                    tunnelWsId,
+                    protocol: ws.protocol || undefined,
+                } satisfies TunnelWsOpenedData);
+            });
+
+            ws.addEventListener("message", (event: MessageEvent) => {
+                if (!this.socket) return;
+                const isBinary = event.data instanceof ArrayBuffer;
+                const payload: TunnelWsDataPayload = {
+                    tunnelWsId,
+                    data: isBinary
+                        ? Buffer.from(event.data as ArrayBuffer).toString("base64")
+                        : (event.data as string),
+                    binary: isBinary || undefined,
+                };
+                (this.socket as any).emit("tunnel_ws_data", payload);
+            });
+
+            ws.addEventListener("close", (event: CloseEvent) => {
+                this.wsConnections.delete(tunnelWsId);
+                if (!this.socket) return;
+                (this.socket as any).emit("tunnel_ws_close", {
+                    tunnelWsId,
+                    code: event.code,
+                    reason: event.reason,
+                } satisfies TunnelWsCloseData);
+                logInfo(`[tunnel] WS closed tunnelWsId=${tunnelWsId} code=${event.code}`);
+            });
+
+            ws.addEventListener("error", (_event: Event) => {
+                this.wsConnections.delete(tunnelWsId);
+                if (!this.socket) return;
+                (this.socket as any).emit("tunnel_ws_error", {
+                    tunnelWsId,
+                    message: "WebSocket connection error",
+                } satisfies TunnelWsErrorData);
+                logError(`[tunnel] WS error tunnelWsId=${tunnelWsId}`);
+            });
+        } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            logError(`[tunnel] WS open error for port ${port}: ${msg}`);
+            this.wsConnections.delete(tunnelWsId);
+            if (this.socket) {
+                (this.socket as any).emit("tunnel_ws_error", {
+                    tunnelWsId,
+                    message: msg,
+                } satisfies TunnelWsErrorData);
+            }
+        }
+    }
+
+    private handleWsData(data: TunnelWsDataPayload): void {
+        const { tunnelWsId, data: frameData, binary } = data;
+        const ws = this.wsConnections.get(tunnelWsId);
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+        try {
+            if (binary) {
+                ws.send(Buffer.from(frameData, "base64"));
+            } else {
+                ws.send(frameData);
+            }
+        } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            logError(`[tunnel] WS send error tunnelWsId=${tunnelWsId}: ${msg}`);
+        }
+    }
+
+    private handleWsClose(data: TunnelWsCloseData): void {
+        const { tunnelWsId, code, reason } = data;
+        const ws = this.wsConnections.get(tunnelWsId);
+        if (!ws) return;
+
+        this.wsConnections.delete(tunnelWsId);
+        try {
+            ws.close(code ?? 1000, reason ?? "");
+        } catch { /* ignore — may already be closed */ }
+        logInfo(`[tunnel] WS close (from viewer) tunnelWsId=${tunnelWsId}`);
     }
 }

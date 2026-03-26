@@ -72,4 +72,20 @@ describe("tunnel route HTML rewriting", () => {
         const bodyIdx = rewritten.indexOf('<body>');
         expect(interceptIdx).toBeLessThan(bodyIdx);
     });
+
+    test("rewriteTunnelHtml includes WebSocket intercept in the injected script", () => {
+        const html = `<!doctype html><html><head></head><body>hello</body></html>`;
+        const rewritten = rewriteTunnelHtml(html, "s-1", 3000);
+        // The intercept script must patch WebSocket constructor
+        expect(rewritten).toContain("WebSocket");
+        expect(rewritten).toContain("rwWs");
+        // Should handle ws:// and wss:// localhost URLs
+        expect(rewritten).toContain("127\\.0\\.0\\.1");
+        expect(rewritten).toContain("localhost");
+        // Should copy static properties from native WebSocket
+        expect(rewritten).toContain("CONNECTING");
+        expect(rewritten).toContain("OPEN");
+        expect(rewritten).toContain("CLOSING");
+        expect(rewritten).toContain("CLOSED");
+    });
 });

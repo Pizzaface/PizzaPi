@@ -162,3 +162,66 @@ export interface TunnelResponseData {
   /** Set when the proxy itself failed (connection refused, timeout, etc.). */
   error?: string;
 }
+
+// ── Tunnel WebSocket proxy types ──────────────────────────────────────────────
+
+/**
+ * Server → Runner: open a WebSocket connection to a local port.
+ * The runner should connect to ws://127.0.0.1:{port}{path} and bridge
+ * frames back via tunnel_ws_data events.
+ */
+export interface TunnelWsOpenData {
+  /** Unique ID for this WebSocket tunnel connection. */
+  tunnelWsId: string;
+  port: number;
+  /** Path + query string (e.g. "/__vite_hmr?token=abc"). */
+  path: string;
+  /** WebSocket sub-protocols requested by the client (Sec-WebSocket-Protocol). */
+  protocols?: string[];
+  /** Forwarded request headers (stripped of hop-by-hop and auth headers). */
+  headers: Record<string, string>;
+}
+
+/**
+ * Bidirectional: carries a WebSocket frame between server and runner.
+ * Used in both directions (server→runner for client messages, runner→server
+ * for local service messages).
+ */
+export interface TunnelWsDataPayload {
+  tunnelWsId: string;
+  /** Frame data, base64-encoded for binary frames, plain string for text frames. */
+  data: string;
+  /** true when data is base64-encoded binary; false/absent for text frames. */
+  binary?: boolean;
+}
+
+/**
+ * Bidirectional: close a tunneled WebSocket connection.
+ * Either side can initiate (viewer disconnect or local service disconnect).
+ */
+export interface TunnelWsCloseData {
+  tunnelWsId: string;
+  /** WebSocket close code (e.g. 1000 for normal). */
+  code?: number;
+  /** WebSocket close reason string. */
+  reason?: string;
+}
+
+/**
+ * Runner → Server: report a WebSocket error (connection refused, etc.).
+ * The server should close the viewer's WebSocket with an appropriate error.
+ */
+export interface TunnelWsErrorData {
+  tunnelWsId: string;
+  message: string;
+}
+
+/**
+ * Runner → Server: confirms the local WebSocket connection is open.
+ * The server completes the WebSocket handshake with the viewer.
+ */
+export interface TunnelWsOpenedData {
+  tunnelWsId: string;
+  /** The sub-protocol selected by the local service (if any). */
+  protocol?: string;
+}
