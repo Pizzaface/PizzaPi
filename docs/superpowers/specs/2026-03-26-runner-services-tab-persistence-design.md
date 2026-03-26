@@ -22,6 +22,13 @@ All data comes from existing fields on the `RunnerInfo` protocol type (already b
 
 No server-side or protocol changes required.
 
+**Data normalization:** All UI surfaces (header badges, service cards, tab count) derive from a single `normalizedServiceIds: string[]` computed once from `runner.serviceIds`:
+- Deduplicate entries
+- Ignore `panels` entries whose `serviceId` doesn't appear in the deduplicated set
+- For plugin services with no matching panel entry, use fallback icon `"square"` and the raw service ID as label
+
+**Ordering:** Built-in services first (in `BUILTIN_SERVICE_LABELS` map insertion order), then plugin services alphabetically by ID.
+
 ### Header Badges
 
 A new row in the `RunnerDetailPanel` header (below the runner ID, above the tab bar) showing compact pill badges for each active service:
@@ -36,16 +43,17 @@ A new row in the `RunnerDetailPanel` header (below the runner ID, above the tab 
 
 New tab added to the `TABS` array in `RunnerDetailPanel` with key `"services"`. Tab content:
 
-- **Responsive card grid**: `grid-template-columns: repeat(auto-fill, minmax(80px, 1fr))` with breakpoints:
-  - Wide (≥640px): ~4 cards per row
-  - Medium (≥400px): ~3 cards per row
-  - Narrow/mobile: 2 cards per row
+- **Responsive card grid** using explicit Tailwind breakpoints:
+  - Default: `grid-cols-2`
+  - `sm` (≥640px): `grid-cols-3`
+  - `md` (≥768px): `grid-cols-4`
+  - Gap: `gap-2`
 - **Card layout**: Square aspect ratio (`aspect-ratio: 1`), centered Lucide icon, label below, green status dot top-right
 - **Sections**: "Built-in Services" and "Plugin Services" (if any plugin services exist), separated by a small uppercase label
 - **Plugin service cards**: Blue-tinted border/background, "panel" chip (top-left) when the service has a `ServicePanelInfo` entry
-- **Icon resolution**: For built-in services, use a hardcoded map of service ID → Lucide icon name. For plugin services, use the `icon` field from `ServicePanelInfo` (rendered via the existing `DynamicLucideIcon` component). Services with no panel info get a fallback icon (e.g. `"square"`).
+- **Icon resolution**: For built-in services, use a hardcoded map of service ID → Lucide icon name. For plugin services, use the `icon` field from `ServicePanelInfo` (rendered via the existing `DynamicLucideIcon` component, which already falls back to `"square"` for invalid/unknown icon names). Services with no panel info also get the `"square"` fallback.
 - **Empty state**: Standard empty state with message "No active services" (consistent with HooksList pattern)
-- **Tab badge count**: Show `serviceIds.length` in the tab bar
+- **Tab badge count**: Show `normalizedServiceIds.length` in the tab bar
 
 ### Built-in Service Icon Map
 
@@ -81,8 +89,11 @@ const BUILTIN_SERVICE_LABELS: Record<string, string> = {
 
 - **Lift `activeTab` state** out of `RunnerDetailPanel` into `RunnerManager`
 - Persist to `localStorage` under key `pp.runner-tab`
-- Read initial value from localStorage on mount (fallback: `"sessions"`)
-- Write to localStorage on every tab change
+- Read/write via helper functions in `packages/ui/src/lib/runner-tab-storage.ts` (unit-tested in isolation):
+  - `readRunnerTab(): RunnerTab` — reads from localStorage, validates against the `RunnerTab` union. Returns `"sessions"` on any failure (missing key, invalid value, storage access denied, privacy mode).
+  - `writeRunnerTab(tab: RunnerTab): void` — writes to localStorage, silently ignores errors.
+- Read initial value from `readRunnerTab()` on mount
+- Write via `writeRunnerTab()` on every tab change
 - `RunnerDetailPanel` receives `activeTab` and `onTabChange` as props instead of owning the state
 
 ### RunnerTab Type Update
@@ -111,6 +122,8 @@ The `useEffect` on `runner.runnerId` resets the tab to `"sessions"` every time a
 |------|--------|
 | `packages/ui/src/components/RunnerDetailPanel.tsx` | Add Services tab + header badges, accept `activeTab`/`onTabChange` as props, remove internal state + reset useEffect, add `"services"` to `RunnerTab` and `TABS` |
 | `packages/ui/src/components/RunnerManager.tsx` | Own `activeTab` state, persist to localStorage, pass to `RunnerDetailPanel` |
+| `packages/ui/src/lib/runner-tab-storage.ts` | `readRunnerTab()` / `writeRunnerTab()` helpers with validation and safe fallback |
+| `packages/ui/src/lib/runner-tab-storage.test.ts` | Unit tests for read/write helpers |
 
 ## Files NOT Changed
 
@@ -126,3 +139,7 @@ The `useEffect` on `runner.runnerId` resets the tab to `"sessions"` every time a
 - Verify tab persists across: runner switches, session navigation, page refresh
 - Verify empty states when no services / no panels
 - Verify responsive grid at different viewport widths
+- Verify `readRunnerTab()` returns `"sessions"` for invalid/missing/corrupt localStorage values
+- Verify duplicate `serviceIds` are deduplicated
+- Verify `panels` entries with no matching `serviceId` are ignored
+- Verify persisted `"services"` tab shows empty state when switching to a runner with zero `serviceIds`
