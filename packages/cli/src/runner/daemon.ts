@@ -366,67 +366,87 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         // ── Registration confirmation ─────────────────────────────────────
 
         socket.on("runner_registered", async (data: any) => {
-            runnerId = data.runnerId;
-            if (runnerId !== identity.runnerId) {
-                logWarn(`server assigned unexpected ID ${runnerId} (expected ${identity.runnerId})`);
-            }
-            logInfo(`registered as ${runnerId}`);
+            // Fix 3 (P2): wrap the entire handler in try/catch so that any
+            // service init() error doesn't silently swallow and leave the
+            // daemon in a half-initialized state.
+            try {
+                runnerId = data.runnerId;
+                if (runnerId !== identity.runnerId) {
+                    logWarn(`server assigned unexpected ID ${runnerId} (expected ${identity.runnerId})`);
+                }
+                logInfo(`registered as ${runnerId}`);
 
-            // Wait for plugin service discovery to finish, then init ALL services
-            // (built-in + plugins) and announce the full list.
-            // On reconnect, dispose first to clear stale listeners from the old socket.
-            await pluginServicesReady;
-            if (servicesInitialized) {
-                registry.disposeAll();
-            }
-            servicesInitialized = true;
-            // Build announcePanel callback — when a service calls it, we register
-            // the port with the tunnel service and re-announce to viewers.
-            const announcePanel = (serviceId: string) => (port: number) => {
-                const entry = panelEntries.get(serviceId);
-                if (!entry) return;
-                entry.port = port;
-                tunnelService.registerPort(port, entry.label);
-                logInfo(`[services] panel announced for "${serviceId}" on port ${port}`);
-                // Re-announce so viewers pick up the panel
+                // Wait for plugin service discovery to finish, then init ALL services
+                // (built-in + plugins) and announce the full list.
+                // On reconnect, dispose first to clear stale listeners from the old socket.
+                await pluginServicesReady;
+                if (servicesInitialized) {
+                    registry.disposeAll();
+                }
+                servicesInitialized = true;
+                // Build announcePanel callback — when a service calls it, we register
+                // the port with the tunnel service and re-announce to viewers.
+                const announcePanel = (serviceId: string) => (port: number) => {
+                    const entry = panelEntries.get(serviceId);
+                    if (!entry) return;
+                    entry.port = port;
+                    tunnelService.registerPort(port, entry.label);
+                    logInfo(`[services] panel announced for "${serviceId}" on port ${port}`);
+                    // Re-announce so viewers pick up the panel
+                    emitServiceAnnounce();
+                };
+
+                // Init all services — pass announcePanel to those with panel manifests
+                for (const handler of registry.getAll()) {
+                    const opts: any = { isShuttingDown: () => isShuttingDown };
+                    if (panelEntries.has(handler.id)) {
+                        opts.announcePanel = announcePanel(handler.id);
+                    }
+                    handler.init(socket, opts);
+                }
+                const allServiceIds = registry.getAll().map((s) => s.id);
+                logInfo(`[services] initialized ${allServiceIds.length} services: ${allServiceIds.join(", ")}`);
+
+                // Fix 2 (P1): Re-register already-known panel ports after reconnect.
+                // Folder-based services don't re-call announcePanel() on reconnect
+                // because their HTTP servers are already running. TunnelService.dispose()
+                // clears this.tunnels, so all ports must be re-registered explicitly or
+                // tunnel_requests return 404 for the rest of the connection.
+                for (const [, entry] of panelEntries) {
+                    if (entry.port) {
+                        tunnelService.registerPort(entry.port, entry.label);
+                        logInfo(`[services] re-registered panel port ${entry.port} for "${entry.serviceId}" after reconnect`);
+                    }
+                }
+
                 emitServiceAnnounce();
-            };
 
-            // Init all services — pass announcePanel to those with panel manifests
-            for (const handler of registry.getAll()) {
-                const opts: any = { isShuttingDown: () => isShuttingDown };
-                if (panelEntries.has(handler.id)) {
-                    opts.announcePanel = announcePanel(handler.id);
+                // Re-adopt orphaned sessions that survived a daemon restart.
+                // Their worker processes are still running and connected to the relay.
+                const existingSessions = data.existingSessions ?? [];
+                if (existingSessions.length > 0) {
+                    let adopted = 0;
+                    for (const { sessionId, cwd } of existingSessions) {
+                        if (runningSessions.has(sessionId)) continue; // already tracked
+                        runningSessions.set(sessionId, {
+                            sessionId,
+                            child: null,
+                            startedAt: Date.now(),
+                            adopted: true,
+                        });
+                        adopted++;
+                    }
+                    if (adopted > 0) {
+                        logInfo(`re-adopted ${adopted} orphaned session(s): ${existingSessions.map((s: any) => s.sessionId.slice(0, 8)).join(", ")}`);
+                    }
                 }
-                handler.init(socket, opts);
+
+                // Sweep orphaned session attachment directories — removes dirs for
+                // sessions that ended while the daemon was down or crashed.
+                void sweepOrphanedAttachments(new Set(runningSessions.keys())).catch(() => {});
+            } catch (err) {
+                logError(`[daemon] runner_registered handler failed: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
             }
-            const allServiceIds = registry.getAll().map((s) => s.id);
-            logInfo(`[services] initialized ${allServiceIds.length} services: ${allServiceIds.join(", ")}`);
-            emitServiceAnnounce();
-
-            // Re-adopt orphaned sessions that survived a daemon restart.
-            // Their worker processes are still running and connected to the relay.
-            const existingSessions = data.existingSessions ?? [];
-            if (existingSessions.length > 0) {
-                let adopted = 0;
-                for (const { sessionId, cwd } of existingSessions) {
-                    if (runningSessions.has(sessionId)) continue; // already tracked
-                    runningSessions.set(sessionId, {
-                        sessionId,
-                        child: null,
-                        startedAt: Date.now(),
-                        adopted: true,
-                    });
-                    adopted++;
-                }
-                if (adopted > 0) {
-                    logInfo(`re-adopted ${adopted} orphaned session(s): ${existingSessions.map((s: any) => s.sessionId.slice(0, 8)).join(", ")}`);
-                }
-            }
-
-            // Sweep orphaned session attachment directories — removes dirs for
-            // sessions that ended while the daemon was down or crashed.
-            void sweepOrphanedAttachments(new Set(runningSessions.keys())).catch(() => {});
         });
 
         // ── Session management ────────────────────────────────────────────
