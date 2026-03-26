@@ -76,8 +76,15 @@ export function handleTunnelWsUpgrade(
     const match = pathname.match(TUNNEL_PATH_RE);
     if (!match) return false;
 
-    // This is a tunnel path — we handle it (async, but return true synchronously)
-    void handleUpgradeAsync(req, socket, head, match, url);
+    // This is a tunnel path — we handle it (async, but return true synchronously).
+    // The catch handles any unexpected errors (e.g. auth library throws synchronously
+    // after an await point) so the rejected promise never becomes unhandled.
+    handleUpgradeAsync(req, socket, head, match, url).catch((err) => {
+        console.error("[tunnel-ws] Unexpected error in upgrade handler:", err);
+        if (!socket.destroyed) {
+            rejectUpgrade(socket, 500, "Internal Server Error");
+        }
+    });
     return true;
 }
 
@@ -88,7 +95,13 @@ async function handleUpgradeAsync(
     match: RegExpMatchArray,
     fullUrl: string,
 ): Promise<void> {
-    const sessionId = decodeURIComponent(match[1]);
+    let sessionId: string;
+    try {
+        sessionId = decodeURIComponent(match[1]);
+    } catch {
+        rejectUpgrade(rawSocket, 400, "Bad Request");
+        return;
+    }
     const port = parseInt(match[2], 10);
     const proxyPath = match[3] ?? "/";
 
@@ -363,6 +376,7 @@ export function cleanupRunnerTunnelWs(runnerId: string): void {
         activeTunnelWs.delete(tunnelWsId);
         // Clear frame parser state to prevent memory leaks on runner disconnect.
         frameParsers.delete(tunnelWsId);
+        currentMsgIsBinary.delete(tunnelWsId);
     }
 
     runnerTunnelWsIds.delete(runnerId);
@@ -528,6 +542,14 @@ class WsFrameParser {
 /** Per-connection frame parsers for incoming viewer data. */
 const frameParsers = new Map<string, WsFrameParser>();
 
+/**
+ * Tracks the binary/text type of the currently-in-progress fragmented message,
+ * keyed by tunnelWsId.  Set when the initial frame (text=0x01 or binary=0x02)
+ * is seen; consulted for continuation frames (opcode=0x00) so they are
+ * forwarded with the correct encoding.
+ */
+const currentMsgIsBinary = new Map<string, boolean>();
+
 function handleIncomingWsFrame(tunnelWsId: string, runnerId: string, chunk: Buffer): void {
     if (!frameParsers.has(tunnelWsId)) {
         frameParsers.set(tunnelWsId, new WsFrameParser());
@@ -554,6 +576,7 @@ function handleIncomingWsFrame(tunnelWsId: string, runnerId: string, chunk: Buff
             }
             activeTunnelWs.delete(tunnelWsId);
             frameParsers.delete(tunnelWsId);
+            currentMsgIsBinary.delete(tunnelWsId);
             removeTunnelWsFromRunner(runnerId, tunnelWsId);
             return;
         }
@@ -573,10 +596,19 @@ function handleIncomingWsFrame(tunnelWsId: string, runnerId: string, chunk: Buff
             continue;
         }
 
-        // Data frames (text=0x01, binary=0x02, continuation=0x00)
-        // NOTE: WS frame fragmentation not yet supported — continuation frames (0x00) are
-        // forwarded as-is. Most modern WS libraries send unfragmented frames by default.
-        const isBinary = opcode === 0x02;
+        // Data frames (text=0x01, binary=0x02, continuation=0x00).
+        // RFC 6455 §5.4: fragmented messages start with a non-zero opcode (0x01 or
+        // 0x02) and are followed by continuation frames (0x00).  We track the
+        // initial frame's type so continuation frames are forwarded with the
+        // correct encoding rather than always being treated as text.
+        let isBinary: boolean;
+        if (opcode === 0x01 || opcode === 0x02) {
+            isBinary = opcode === 0x02;
+            currentMsgIsBinary.set(tunnelWsId, isBinary);
+        } else {
+            // opcode === 0x00: continuation — inherit type from the initial frame.
+            isBinary = currentMsgIsBinary.get(tunnelWsId) ?? false;
+        }
         (runnerSocket as Socket).emit("tunnel_ws_data" as any, {
             tunnelWsId,
             data: isBinary
@@ -590,4 +622,5 @@ function handleIncomingWsFrame(tunnelWsId: string, runnerId: string, chunk: Buff
 // Export for cleanup when frame parser is no longer needed
 export function cleanupFrameParser(tunnelWsId: string): void {
     frameParsers.delete(tunnelWsId);
+    currentMsgIsBinary.delete(tunnelWsId);
 }
