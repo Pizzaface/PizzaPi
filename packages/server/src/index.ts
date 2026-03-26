@@ -12,6 +12,11 @@ import { runAllMigrations } from "./migrations.js";
 import { setServerShuttingDown } from "./health.js";
 import { handleTunnelWsUpgrade } from "./routes/tunnel-ws.js";
 import { createLogger } from "@pizzapi/tools";
+import {
+    disposeTunnelRelay,
+    handleTunnelRelayUpgrade,
+    initTunnelRelay,
+} from "./tunnel-relay.js";
 
 // ── Process-level safety net ─────────────────────────────────────────────────
 // The Socket.IO Redis adapter can throw EPIPE synchronously when the Redis
@@ -282,25 +287,6 @@ try {
 
         registerNamespaces(io);
 
-        // ── Tunnel WebSocket upgrade interception ─────────────────────────
-        // Socket.IO attaches its own 'upgrade' listener to httpServer.
-        // We intercept tunnel-path upgrades BEFORE Socket.IO sees them by
-        // removing all existing upgrade listeners, adding ours first, then
-        // re-adding the original listeners.
-        const existingUpgradeListeners = httpServer.listeners("upgrade").slice();
-        httpServer.removeAllListeners("upgrade");
-
-        httpServer.on("upgrade", (req, socket, head) => {
-            // Check if this is a tunnel WebSocket upgrade
-            if (handleTunnelWsUpgrade(req, socket, head)) {
-                return; // handled — don't pass to Socket.IO
-            }
-            // Not a tunnel path — delegate to Socket.IO's upgrade handlers
-            for (const listener of existingUpgradeListeners) {
-                (listener as Function).call(httpServer, req, socket, head);
-            }
-        });
-
         // Mark Socket.IO as initialized so the Redis event listeners above
         // can also flip serverHealth.socketio on future reconnects/disconnects.
         sioInitialized = true;
@@ -313,6 +299,29 @@ try {
     socketIoLog.error("Failed to connect to Redis:", err);
     socketIoLog.error("The server will continue without Redis and Socket.IO support.");
 }
+
+initTunnelRelay();
+
+// ── WebSocket upgrade interception ───────────────────────────────────────
+// Socket.IO attaches its own 'upgrade' listener to httpServer.
+// We intercept the streaming relay endpoint first, then viewer tunnel WS
+// proxy paths, then delegate everything else back to Socket.IO.
+const existingUpgradeListeners = httpServer.listeners("upgrade").slice();
+httpServer.removeAllListeners("upgrade");
+
+httpServer.on("upgrade", (req, socket, head) => {
+    if (handleTunnelRelayUpgrade(req, socket, head)) {
+        return;
+    }
+
+    if (handleTunnelWsUpgrade(req, socket, head)) {
+        return;
+    }
+
+    for (const listener of existingUpgradeListeners) {
+        (listener as Function).call(httpServer, req, socket, head);
+    }
+});
 
 httpServer.listen(PORT, () => {
     log.info(`PizzaPi server running on http://localhost:${PORT}`);
@@ -356,6 +365,7 @@ setTimeout(() => {
 function onShutdownSignal(signal: string): void {
     shutdownLog.info(`Received ${signal} — marking server as shutting down`);
     setServerShuttingDown();
+    disposeTunnelRelay();
 
     // Close the Socket.IO server so disconnect handlers fire with the
     // shuttingDown flag already set, then close the HTTP server.
