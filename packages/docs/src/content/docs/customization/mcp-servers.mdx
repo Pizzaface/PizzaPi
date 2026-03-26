@@ -158,6 +158,23 @@ Per-server values take precedence over the global setting.
   Figma's remote MCP server currently accepts `"Claude Code"` and `"Codex"` as client names. If you're getting `403 Forbidden` during OAuth registration, try setting `oauthClientName` to one of those values.
 </Aside>
 
+### Headless / Remote OAuth (Paste Fallback)
+
+Some MCP servers (e.g., Figma) require localhost redirects for OAuth, which doesn't work when the runner is remote or headless. PizzaPi provides a **paste fallback** flow:
+
+1. The web UI shows a 2-step prompt: click the auth link to sign in, then paste the callback URL from the browser's error page
+2. The runner validates the pasted URL's state parameter and completes the OAuth flow
+3. If a server is causing problems, click **Disable** in the prompt to remove it from the session
+
+This flow activates automatically when the runner detects it can't open a local browser. Key behaviors:
+- **Progressive loading**: Fast MCP servers (local tools) connect immediately; slow OAuth servers continue connecting in the background with a 10-second grace period
+- **Late-join support**: The paste prompt re-emits every 15 seconds so viewers who connect late still see it
+- **Session isolation**: Paste prompts are scoped to the current session and won't leak across session switches
+
+<Aside type="tip">
+  If you're connecting to MCP servers that need OAuth from a headless runner (e.g., via the runner daemon), the paste fallback is the expected flow — no local browser is needed.
+</Aside>
+
 ## Managing Servers at Runtime
 
 Use the `/mcp` slash command to inspect and manage MCP servers without restarting your session:

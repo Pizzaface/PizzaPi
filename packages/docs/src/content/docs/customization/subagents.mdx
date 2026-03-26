@@ -234,6 +234,32 @@ No additional configuration is needed — streaming works automatically when usi
 
 Use `subagent` for focused, quick tasks. Use `spawn_session` for independent, long-running work.
 
+## Linked Session Triggers
+
+When using `spawn_session`, spawned sessions are **automatically linked** — child events surface as trigger messages in the parent's conversation. Three trigger types are delivered:
+
+### `session_complete`
+
+Fires when the child session finishes. The trigger includes the child's final output and an `exitReason` field:
+- `exitReason: 'completed'` — normal completion
+- `exitReason: 'error'` — the child hit a usage limit or provider failure
+
+### `session_error`
+
+When a child session hits a **usage limit** or **provider error**, a `session_error` trigger fires immediately to the parent — before `session_complete`. This allows the parent to react early (e.g., retry with a different model, skip the task, or escalate to the user).
+
+<Aside type="tip">
+  Check `exitReason` in the `session_complete` trigger to distinguish between successful completions and error exits. An `exitReason` of `'error'` means the child hit a limit or provider failure.
+</Aside>
+
+### `plan_review` and `ask_user_question`
+
+When a child calls `plan_mode` or `AskUserQuestion`, a trigger appears in the parent's conversation. The parent responds with `respond_to_trigger(triggerId, response)`.
+
+### Push notification suppression
+
+Linked child sessions (spawned via `spawn_session`) **do not trigger push notifications**. Only top-level sessions — those started by a user or the runner daemon directly — send push notifications. This prevents notification spam when orchestrating multiple child sessions.
+
 ## Claude Code compatibility
 
 PizzaPi subagents are designed to be compatible with [Claude Code agent files](https://code.claude.com/docs/en/sub-agents):

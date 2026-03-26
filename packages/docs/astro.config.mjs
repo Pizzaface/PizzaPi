@@ -91,6 +91,7 @@ export default defineConfig({
                         { label: "Skills", slug: "customization/skills" },
                         { label: "Agent Definitions", slug: "customization/agent-definitions" },
                         { label: "Claude Code Plugins", slug: "customization/claude-plugins" },
+                        { label: "Runner Services", slug: "customization/runner-services" },
                         { label: "Subagents", slug: "customization/subagents" },
                     ],
                 },

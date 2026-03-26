@@ -9,7 +9,7 @@ import { Aside } from "@astrojs/starlight/components";
 
 ## System Overview
 
-PizzaPi is built around a **relay pattern**: the CLI on your dev machine connects outward to the relay server over a persistent WebSocket, so the relay never needs to reach into your firewall.
+PizzaPi is built around a **relay pattern**: the CLI on your dev machine connects outward to the relay server over persistent WebSockets, so the relay never needs to reach into your firewall. Two channels connect the runner to the relay: the **SIO WebSocket** for the agent control plane (session events, triggers, service announcements) and the **`/_tunnel` WebSocket** for streaming HTTP proxy traffic (service panel iframes, video, SSE, large downloads).
 
 ```
 ┌────────────────────────────────────────────────────────┐
@@ -20,18 +20,20 @@ PizzaPi is built around a **relay pattern**: the CLI on your dev machine connect
 │  │   ├─ pi coding agent (LLM + tools)               │ │
 │  │   ├─ sandbox layer (OS-level enforcement)         │ │
 │  │   ├─ remote extension (event serializer)          │ │
+│  │   ├─ tunnel client (streaming HTTP proxy)         │ │
 │  │   └─ runner daemon (optional)                     │ │
-│  └───────────────────────┬───────────────────────────┘ │
-└──────────────────────────┼─────────────────────────────┘
-                           │ WebSocket (outbound)
-                           ▼
+│  └──────────┬────────────────────┬───────────────────┘ │
+└─────────────┼────────────────────┼─────────────────────┘
+              │ SIO WebSocket      │ /_tunnel WebSocket
+              │ (agent control)    │ (streaming HTTP)
+              ▼                    ▼
 ┌────────────────────────────────────────────────────────┐
 │  Relay Server                                          │
 │                                                        │
 │  ┌──────────────┐   ┌──────────────┐  ┌────────────┐  │
 │  │  Bun HTTP/WS │   │  Redis       │  │  SQLite DB │  │
-│  │  server      │──►│  event buffer│  │  (users,   │  │
-│  │              │   │              │  │   sessions)│  │
+│  │  + tunnel    │──►│  event buffer│  │  (users,   │  │
+│  │    relay     │   │              │  │   sessions)│  │
 │  └──────┬───────┘   └──────────────┘  └────────────┘  │
 │         │                                              │
 └─────────┼──────────────────────────────────────────────┘
@@ -42,6 +44,7 @@ PizzaPi is built around a **relay pattern**: the CLI on your dev machine connect
 │   ├─ Live session stream (tokens, tool calls, diffs)   │
 │   ├─ Send messages to the agent                        │
 │   ├─ Manage runners and spawn sessions                 │
+│   ├─ Service panel iframes (via tunnel)                │
 │   └─ API key management and settings                   │
 └────────────────────────────────────────────────────────┘
 ```
@@ -55,6 +58,7 @@ The monorepo is organized into focused packages:
 | Package | Description |
 |---------|-------------|
 | `packages/protocol` | Shared TypeScript types for the relay wire protocol |
+| `packages/tunnel` | Streaming HTTP/WebSocket tunnel library — proxies service traffic between runner and relay |
 | `packages/tools` | Shared agent tools (bash, read-file, write-file, search) and [sandbox enforcement](/PizzaPi/security/sandbox/) |
 | `packages/server` | Bun HTTP + WebSocket relay server (auth, sessions, push notifications) |
 | `packages/ui` | React 19 PWA web interface (Vite, TailwindCSS v4, Radix UI) |
@@ -63,7 +67,7 @@ The monorepo is organized into focused packages:
 | `packages/docs` | This documentation site (Astro Starlight) |
 | `packages/npm` | npm distribution tooling — builds and publishes the `npx pizzapi` packages |
 
-**Build order**: `protocol` → `tools` → `server` → `ui` → `cli`
+**Build order**: `protocol` → `tunnel` → `tools` → `server` → `ui` → `cli`
 
 <Aside type="note">
   `docs` and `npm` are built independently and are not part of the main build chain. The `control-plane` package is only needed for multi-tenant hosted deployments.
@@ -107,6 +111,38 @@ WebSocket → Relay Server
     └──► WebSocket broadcast → all connected browser tabs
 ```
 
+The web UI also displays a **context window donut graph** in the chat footer, showing real-time token usage (input, output, cache) as a proportion of the model's context window. This updates live as the conversation progresses.
+
+---
+
+## Streaming Tunnel
+
+The runner maintains a dedicated **`/_tunnel` WebSocket** connection to the relay alongside the main SIO connection. This channel handles all HTTP proxy traffic for [runner services](/PizzaPi/customization/runner-services/) — service panel iframes, video streams, SSE, and large downloads.
+
+**Components:**
+- **`TunnelRelay`** (server-side, `packages/tunnel`) — manages runner connections, proxies incoming HTTP requests with streaming callbacks, and bridges WebSocket connections
+- **`TunnelClient`** (runner-side, `packages/tunnel`) — connects to the relay, streams local HTTP responses from service ports, and bridges WebSocket connections to local services
+
+```
+Runner                     Relay                     Browser
+  │                          │                          │
+  ├── SIO WebSocket ────────►│◄── SIO WebSocket ────────┤  (agent events)
+  │                          │                          │
+  ├── /_tunnel WS ──────────►│                          │
+  │   (TunnelClient)         │  (TunnelRelay)           │
+  │                          │                          │
+  │   local HTTP service     │  GET /api/tunnel/...  ───┤  (service panel)
+  │   ◄── stream chunks ───►│◄── stream chunks ───────►│
+```
+
+**Key improvements** over the previous buffered proxy:
+- Response chunks stream via `ReadableStream` as they arrive — no full-body buffering
+- No size cap — video, large downloads, and SSE all work
+- Dedicated WebSocket channel (not muxed on the SIO control connection)
+- Native `ws` library handles framing (replaced hand-rolled RFC 6455 parser)
+
+When a browser requests `/api/tunnel/{sessionId}/{port}/{path}`, the relay forwards the request through the tunnel to the runner's local HTTP service on that port, and streams the response back.
+
 ---
 
 ## Authentication
@@ -131,6 +167,16 @@ See the [Runner Daemon guide](/PizzaPi/running/runner-daemon/) for the full proc
 
 ---
 
+## Usage Dashboard
+
+The runner includes a **usage analytics dashboard** that tracks token consumption and costs across sessions.
+
+- **Data pipeline**: A scanner processes session JSONL files from `~/.pizzapi/agent/sessions/` into a local SQLite database with daily rollups, model breakdowns, and project breakdowns
+- **Server endpoint**: `GET /api/runners/:id/usage?range=7d|30d|90d|all` serves aggregated data to the UI
+- **Web UI**: Interactive charts showing token usage over time, cost breakdown, model distribution, and sessions by project — lazy-loaded via `React.lazy` to keep `recharts` out of the main bundle
+
+---
+
 ## Claude Code Plugin Adapter
 
 The CLI includes a **plugin adapter** that discovers Claude Code plugins and maps them into pi's runtime:
@@ -142,6 +188,14 @@ The CLI includes a **plugin adapter** that discovers Claude Code plugins and map
 The adapter scans global dirs (`~/.pizzapi/plugins/`, `~/.agents/plugins/`, `~/.claude/plugins/`) automatically. Project-local plugins require explicit trust — managed via `pizza plugins trust` or interactive confirmation at session start.
 
 See the [Claude Code Plugins guide](/PizzaPi/customization/claude-plugins/) for full details.
+
+---
+
+## Runner Services
+
+Runner services are background processes that run on the runner and expose interactive UI panels in the web interface. Each service ships its own HTML panel rendered in an iframe — no React compilation needed. Services are discovered automatically from `~/.pizzapi/services/` and from plugins.
+
+See the [Runner Services guide](/PizzaPi/customization/runner-services/) for full details on creating custom services.
 
 ---
 
