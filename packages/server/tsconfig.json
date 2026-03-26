@@ -4,7 +4,7 @@
         "outDir": "dist",
         "rootDir": "src"
     },
-    "references": [{ "path": "../tools" }, { "path": "../protocol" }],
+    "references": [{ "path": "../tools" }, { "path": "../protocol" }, { "path": "../tunnel" }],
     "include": ["src"],
     "exclude": ["src/**/*.test.ts", "src/**/*.spec.ts"]
 }

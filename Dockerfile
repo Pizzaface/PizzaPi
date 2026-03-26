@@ -17,13 +17,14 @@ RUN cat /tmp/full-package.json | bun -e ' \
     const f = JSON.parse(await Bun.stdin.text()); \
     const slim = { \
         name: f.name, version: f.version, \
-        workspaces: ["packages/protocol","packages/tools","packages/server","packages/ui"], \
+        workspaces: ["packages/protocol","packages/tunnel","packages/tools","packages/server","packages/ui"], \
         devDependencies: { typescript: f.devDependencies?.typescript ?? "^5.7.0" }, \
         patchedDependencies: f.patchedDependencies \
     }; \
     await Bun.write("/app/package.json", JSON.stringify(slim, null, 2));'
 
 COPY packages/protocol/package.json packages/protocol/
+COPY packages/tunnel/package.json packages/tunnel/
 COPY packages/tools/package.json packages/tools/
 COPY packages/server/package.json packages/server/
 COPY packages/ui/package.json packages/ui/
@@ -43,6 +44,7 @@ COPY packages/protocol/ packages/protocol/
 # ── Build server (runs in parallel with build-ui) ───────────────────────────
 # tsc --build follows project references: protocol → tools → server
 FROM builder AS build-server
+COPY packages/tunnel/ packages/tunnel/
 COPY packages/tools/ packages/tools/
 COPY packages/server/ packages/server/
 RUN node_modules/typescript/bin/tsc --build packages/server/tsconfig.json
@@ -78,6 +80,8 @@ WORKDIR /app
 COPY --from=build-server /app/node_modules ./node_modules
 COPY --from=build-server /app/packages/protocol/dist ./packages/protocol/dist
 COPY --from=build-server /app/packages/protocol/package.json ./packages/protocol/
+COPY --from=build-server /app/packages/tunnel/dist ./packages/tunnel/dist
+COPY --from=build-server /app/packages/tunnel/package.json ./packages/tunnel/
 COPY --from=build-server /app/packages/tools/dist ./packages/tools/dist
 COPY --from=build-server /app/packages/tools/package.json ./packages/tools/
 COPY --from=build-server /app/packages/tools/node_modules ./packages/tools/node_modules
