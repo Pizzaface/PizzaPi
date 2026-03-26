@@ -257,6 +257,40 @@ This requires human attention. Respond with \`respond_to_trigger\` using trigger
       expect(parsed.type).toBe("unknown");
     });
 
+    // ── Regression: ordering — session_complete must run before unanchored checks ──
+
+    test('session_complete whose summary contains \'" asks:\' is NOT mis-routed to ask_user_question', () => {
+      // A summary can legitimately say e.g. 'The child "worker" asks: ...' as part of
+      // its completion report.  The unanchored includes('" asks:') check must NOT fire
+      // because session_complete is now checked first via an anchored regex.
+      const body = `🔗 Child "orchestrator" completed:
+Exit reason: completed
+---
+Finished. The sub-child "helper" asks: should we clean up? We said yes.
+
+Respond with \`respond_to_trigger\` using trigger ID \`sc-asks-123\`.`;
+
+      const parsed = parseTriggerBody(body);
+      expect(parsed.type).toBe("session_complete");
+      expect(parsed.childName).toBe("orchestrator");
+      expect(parsed.exitReason).toBe("completed");
+    });
+
+    test('session_complete whose summary contains "submitted a plan for review" is NOT mis-routed to plan_review', () => {
+      // Symmetric regression test for the plan_review unanchored check.
+      const body = `🔗 Child "planner-proxy" completed:
+Exit reason: completed
+---
+Child "inner" submitted a plan for review and it was approved automatically.
+
+Respond with \`respond_to_trigger\` using trigger ID \`sc-plan-456\`.`;
+
+      const parsed = parseTriggerBody(body);
+      expect(parsed.type).toBe("session_complete");
+      expect(parsed.childName).toBe("planner-proxy");
+      expect(parsed.exitReason).toBe("completed");
+    });
+
     test("handles ask_user_question without options", () => {
       const body = `🔗 Child "questioner" asks:
 > Simple yes/no question?

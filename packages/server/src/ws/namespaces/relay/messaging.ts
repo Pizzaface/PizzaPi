@@ -214,7 +214,7 @@ export function registerMessagingHandlers(socket: RelaySocket): void {
         targetSessionId: string;
     }, ack: ((result: { ok: boolean; error?: string }) => void) | undefined) => {
         const { triggerId, response, action, targetSessionId } = data ?? {};
-        if (!triggerId || !response || !targetSessionId) {
+        if (!triggerId || response == null || !targetSessionId) {
             socket.emit("error", { message: "trigger_response requires triggerId, response, and targetSessionId" });
             if (typeof ack === "function") ack({ ok: false, error: "Missing required fields" });
             return;

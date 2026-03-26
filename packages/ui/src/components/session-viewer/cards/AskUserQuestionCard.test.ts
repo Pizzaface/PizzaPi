@@ -104,9 +104,12 @@ describe("parseAnswerResult", () => {
     ]);
   });
 
-  test("falls back to single answer if JSON parse fails for multi-Q", () => {
+  test("falls back to ALL questions if JSON parse fails for multi-Q", () => {
+    // Fix: when the raw answer is not valid JSON, attribute it to every question
+    // so none are silently discarded.  Previously only questions[0] got the answer.
     expect(parseAnswerResult("User answered: just text", multiQ)).toEqual([
       { question: "Color?", answer: "just text" },
+      { question: "Size?", answer: "just text" },
     ]);
   });
 });

@@ -80,6 +80,8 @@ export function parseAnswerResult(
     }
   }
 
-  // Single question or JSON-parse fallback
-  return [{ question: questions[0].question, answer: raw }];
+  // Single question: return just that one.
+  // Multi-question JSON-parse fallback: attribute the raw text to ALL questions so
+  // none are silently discarded when the structured JSON wasn't available.
+  return questions.map((q) => ({ question: q.question, answer: raw }));
 }
