@@ -37,6 +37,19 @@ export function attachServiceAnnounceListener(socket: Socket): void {
     });
 }
 
+/**
+ * Copy service IDs and panel info from a previous viewer socket onto a new one.
+ * Used during same-runner session switches so useRunnerServices doesn't flash
+ * to empty while waiting for the new socket's service_announce event.
+ */
+export function seedServiceCache(newSocket: Socket, prevSocket: Socket | null): void {
+    if (!prevSocket) return;
+    const ids = (prevSocket as any)[SERVICE_IDS_KEY] as string[] | undefined;
+    const panels = (prevSocket as any)[PANELS_KEY] as ServicePanelInfo[] | undefined;
+    if (ids) (newSocket as any)[SERVICE_IDS_KEY] = ids;
+    if (panels) (newSocket as any)[PANELS_KEY] = panels;
+}
+
 /** Read any already-captured service IDs from the socket. */
 function getEagerServiceIds(socket: Socket | null): Set<string> {
     const ids = socket ? (socket as any)[SERVICE_IDS_KEY] as string[] | undefined : undefined;

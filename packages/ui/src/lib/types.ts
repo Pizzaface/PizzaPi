@@ -49,18 +49,15 @@ export interface QueuedMessage {
 }
 
 export interface SessionUiCacheEntry {
+  // ── Session-scoped (always reset on session switch) ───────────────────
   messages: RelayMessage[];
   activeModel: ConfiguredModelInfo | null;
   sessionName: string | null;
-  availableModels: ConfiguredModelInfo[];
-  availableCommands: Array<{ name: string; description?: string; source?: string }>;
   agentActive: boolean;
   isCompacting: boolean;
   effortLevel: string | null;
   planModeEnabled: boolean;
-  authSource: string | null;
   tokenUsage: TokenUsage | null;
-  providerUsage: ProviderUsageMap | null;
   lastHeartbeatAt: number | null;
   todoList: TodoItem[];
   pendingQuestion: { toolCallId: string; questions: Array<{ question: string; options: string[]; type?: QuestionType }>; display: QuestionDisplayMode } | null;
@@ -70,5 +67,16 @@ export interface SessionUiCacheEntry {
     description: string | null;
     steps: Array<{ title: string; description?: string }>;
   } | null;
+
+  // ── Runner-scoped (preserved on same-runner session switch) ───────────
+  // These values are identical across sessions on the same runner.
+  // openSession() skips resetting them when the runnerId hasn't changed
+  // to avoid flash-to-empty and unnecessary header re-renders.
+  availableModels: ConfiguredModelInfo[];
+  availableCommands: Array<{ name: string; description?: string; source?: string }>;
+  authSource: string | null;
+  providerUsage: ProviderUsageMap | null;
+
+  // ── Metadata ──────────────────────────────────────────────────────────
   lastAccessed: number;
 }
