@@ -5,10 +5,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 describe("session-spawner", () => {
-    test("spawns workers with the expected env and handles restart/cleanup paths", () => {
-        const repoRoot = join(import.meta.dir, "../../../..");
+    test("spawns workers with the expected env, handles restart/cleanup, and guards killed sessions from re-spawn", () => {
         const tmpHome = mkdtempSync(join(tmpdir(), "session-spawner-test-"));
         const childTestPath = join(import.meta.dir, `.session-spawner-child-${Date.now()}-${Math.random().toString(16).slice(2)}.test.ts`);
+
+        // Use the packages/cli directory as the cwd so bun picks up its local
+        // bunfig.toml (root="./src", no preload) instead of the root bunfig.toml
+        // which has a redis preload that fails in isolated test runs.
+        const cliDir = join(import.meta.dir, "../../..");
 
         try {
             writeFileSync(
@@ -80,6 +84,7 @@ describe("session-spawner child", () => {
         try {
             const runningSessions = new Map();
             const restartingSessions = new Set<string>();
+            const killedSessions = new Set<string>();
 
             spawnSession(
                 "sess-main",
@@ -88,6 +93,7 @@ describe("session-spawner child", () => {
                 tempCwd,
                 runningSessions,
                 restartingSessions,
+                killedSessions,
                 undefined,
                 {
                     prompt: "hello",
@@ -134,6 +140,7 @@ describe("session-spawner child", () => {
 
             const restartRunningSessions = new Map();
             const restartRestartingSessions = new Set<string>();
+            const restartKilledSessions = new Set<string>();
             const onRestartRequested = mock(() => {});
             spawnSession(
                 "sess-restart",
@@ -142,6 +149,7 @@ describe("session-spawner child", () => {
                 tempCwd,
                 restartRunningSessions,
                 restartRestartingSessions,
+                restartKilledSessions,
                 onRestartRequested,
             );
             latestChild!.exitCode = 43;
@@ -155,7 +163,8 @@ describe("session-spawner child", () => {
 
             const normalRunningSessions = new Map();
             const normalRestartingSessions = new Set<string>();
-            spawnSession("sess-exit", "api-key", "https://relay.example", tempCwd, normalRunningSessions, normalRestartingSessions);
+            const normalKilledSessions = new Set<string>();
+            spawnSession("sess-exit", "api-key", "https://relay.example", tempCwd, normalRunningSessions, normalRestartingSessions, normalKilledSessions);
             latestChild!.exitCode = 0;
             latestChild!.emit("exit", 0, null);
             await Promise.resolve();
@@ -164,8 +173,86 @@ describe("session-spawner child", () => {
 
             allowCwd = false;
             expect(() =>
-                spawnSession("sess-bad", "api-key", "https://relay.example", tempCwd, new Map(), new Set()),
+                spawnSession("sess-bad", "api-key", "https://relay.example", tempCwd, new Map(), new Set(), new Set()),
             ).toThrow("Requested cwd is outside allowed workspace root(s): " + tempCwd);
+        } finally {
+            rmSync(tempCwd, { recursive: true, force: true });
+        }
+    });
+
+    test("killed session with exit code 43 does not re-spawn (race condition guard)", async () => {
+        const cleanupSessionAttachments = mock(async (_sessionId: string) => {});
+        const logInfo = mock((_message: string) => {});
+        const trackSessionCwd = mock((_sessionId: string, _cwd: string) => {});
+        const untrackSessionCwd = mock((_sessionId: string, _cwd: string) => {});
+        const runnerUsageCacheFilePath = mock(() => "/tmp/test-usage-cache.json");
+        const isCwdAllowed = mock((_cwd: string | undefined) => true);
+
+        let latestChild: FakeChild | null = null;
+
+        const spawnMock = mock((_execPath: string, _args: string[], _options: { stdio: string[]; env: Record<string, string> }) => {
+            latestChild = new FakeChild();
+            return latestChild;
+        });
+
+        mock.module("node:child_process", () => ({
+            spawn: spawnMock,
+        }));
+
+        mock.module("../extensions/session-attachments.js", () => ({
+            cleanupSessionAttachments,
+        }));
+
+        mock.module("./logger.js", () => ({
+            logInfo,
+        }));
+
+        mock.module("./runner-usage-cache.js", () => ({
+            runnerUsageCacheFilePath,
+            trackSessionCwd,
+            untrackSessionCwd,
+        }));
+
+        mock.module("./workspace.js", () => ({
+            isCwdAllowed,
+        }));
+
+        const { spawnSession } = await import("./session-spawner.js");
+        const tempCwd = mkdtempSync(join(tmpdir(), "session-spawner-killed-race-"));
+
+        try {
+            const runningSessions = new Map();
+            const restartingSessions = new Set<string>();
+            const killedSessions = new Set<string>();
+            const onRestartRequested = mock(() => {});
+
+            spawnSession(
+                "sess-killed-race",
+                "api-key",
+                "https://relay.example",
+                tempCwd,
+                runningSessions,
+                restartingSessions,
+                killedSessions,
+                onRestartRequested,
+            );
+
+            // Simulate kill_session: daemon marks session as killed before SIGTERM
+            killedSessions.add("sess-killed-race");
+
+            // Race: worker exits with code 43 (restart-in-place) before SIGTERM arrives
+            latestChild!.exitCode = 43;
+            latestChild!.emit("exit", 43, null);
+            await Promise.resolve();
+
+            // Guard must prevent re-spawning for an explicitly killed session
+            expect(onRestartRequested).not.toHaveBeenCalled();
+            // Should clean up attachments (treated as true termination, not restart)
+            expect(cleanupSessionAttachments).toHaveBeenCalledWith("sess-killed-race");
+            // killedSessions entry must be removed to prevent set growth
+            expect(killedSessions.has("sess-killed-race")).toBe(false);
+            // Session must be removed from runningSessions
+            expect(runningSessions.has("sess-killed-race")).toBe(false);
         } finally {
             rmSync(tempCwd, { recursive: true, force: true });
         }
@@ -175,7 +262,7 @@ describe("session-spawner child", () => {
             );
 
             execFileSync(process.execPath, ["test", childTestPath], {
-                cwd: repoRoot,
+                cwd: cliDir,
                 encoding: "utf-8",
                 env: {
                     ...process.env,

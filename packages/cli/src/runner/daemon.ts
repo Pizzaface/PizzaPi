@@ -194,6 +194,12 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         // relay (triggered when the new worker's registerTuiSession tears down the old
         // connection) must be ignored — the new worker is already live.
         const restartingSessions = new Set<string>();
+        // Sessions that have been explicitly killed via kill_session.
+        // Prevents a race where the worker calls process.exit(43) (restart-in-place)
+        // before SIGTERM is delivered — without this guard, exit code 43 in the child's
+        // exit handler would trigger doSpawn() even for an explicitly killed session,
+        // creating a zombie re-spawn.
+        const killedSessions = new Set<string>();
         // Sessions we've already handled session_ended for.  Prevents log
         // spam when the relay fires duplicate session_ended events (e.g. the
         // orphan sweeper runs after the relay already sent session_ended on
@@ -483,7 +489,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                         ? { prompt: requestedPrompt, model: requestedModel, hiddenModels: requestedHiddenModels, agent: resolvedAgent, parentSessionId: requestedParentSessionId }
                         : { hiddenModels: requestedHiddenModels, agent: resolvedAgent, parentSessionId: requestedParentSessionId }; // Always pass agent + hidden models + parent on restart
                     isFirstSpawn = false;
-                    spawnSession(sessionId, apiKey!, relayRaw, requestedCwd, runningSessions, restartingSessions, doSpawn, spawnOpts);
+                    spawnSession(sessionId, apiKey!, relayRaw, requestedCwd, runningSessions, restartingSessions, killedSessions, doSpawn, spawnOpts);
                     socket.emit("session_ready", { sessionId });
                     // Re-emit service_announce so viewers that connect for this
                     // session receive the service list.  The relay only forwards
@@ -509,6 +515,10 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             if (entry) {
                 if (entry.child) {
                     try {
+                        // Mark as killed BEFORE sending SIGTERM so the child's
+                        // exit handler sees it even if exit code 43 (restart-in-place)
+                        // arrives before SIGTERM is delivered.
+                        killedSessions.add(sessionId);
                         entry.child.kill("SIGTERM");
                     } catch {}
                 } else if (entry.adopted) {
@@ -561,6 +571,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     return;
                 }
                 runningSessions.delete(sessionId);
+                killedSessions.delete(sessionId);
                 endedSessionIds.set(sessionId, Date.now());
                 logInfo(`session ${sessionId} ended on relay${entry.adopted ? " (adopted)" : ""}${reason ? ` (${reason})` : ""}`);
             } else if (!endedSessionIds.has(sessionId)) {
