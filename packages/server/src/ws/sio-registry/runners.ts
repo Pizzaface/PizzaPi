@@ -239,6 +239,45 @@ export async function updateRunnerPlugins(runnerId: string, plugins: unknown[]):
     }
 }
 
+/**
+ * Persist service announce data (service IDs + panels) to Redis.
+ * Called when a runner emits service_announce so the data survives
+ * server restarts and is available to late-joining viewers without
+ * waiting for a fresh announce from the runner.
+ */
+export async function updateRunnerServices(
+    runnerId: string,
+    serviceIds: string[],
+    panels?: Array<{ serviceId: string; port: number; label: string; icon: string }>,
+): Promise<void> {
+    const fields: Record<string, string> = {
+        serviceIds: JSON.stringify(serviceIds),
+    };
+    if (panels && panels.length > 0) {
+        fields.panels = JSON.stringify(panels);
+    } else {
+        fields.panels = "[]";
+    }
+    await updateRunnerFields(runnerId, fields);
+    // No broadcast here — service_announce is already forwarded to viewers
+    // in real-time via the socket event. This is just persistence.
+}
+
+/**
+ * Read cached service announce data from Redis for a runner.
+ * Returns null if no service data has been persisted yet.
+ */
+export async function getRunnerServices(
+    runnerId: string,
+): Promise<{ serviceIds: string[]; panels?: Array<{ serviceId: string; port: number; label: string; icon: string }> } | null> {
+    const runner = await getRunnerState(runnerId);
+    if (!runner?.serviceIds) return null;
+    const serviceIds: string[] = safeJsonParse(runner.serviceIds) ?? [];
+    if (serviceIds.length === 0) return null;
+    const panels = runner.panels ? safeJsonParse(runner.panels) ?? undefined : undefined;
+    return { serviceIds, ...(panels && panels.length > 0 ? { panels } : {}) };
+}
+
 /** Record that a runner spawned a session. */
 export async function recordRunnerSession(runnerId: string, sessionId: string): Promise<void> {
     // Runner-session associations tracked via session.runnerId in Redis
@@ -327,6 +366,8 @@ export async function getConnectedSessionsForRunner(runnerId: string): Promise<A
  * sessionCount is set to 0 — the client computes it from live sessions.
  */
 function runnerDataToInfo(r: RedisRunnerData): RunnerInfo {
+    const serviceIds: string[] | undefined = r.serviceIds ? safeJsonParse(r.serviceIds) ?? undefined : undefined;
+    const panels = r.panels ? safeJsonParse(r.panels) ?? undefined : undefined;
     return {
         runnerId: r.runnerId,
         name: r.name,
@@ -338,6 +379,8 @@ function runnerDataToInfo(r: RedisRunnerData): RunnerInfo {
         hooks: safeJsonParse(r.hooks ?? "[]") ?? [],
         version: r.version ?? null,
         platform: r.platform ?? null,
+        ...(serviceIds ? { serviceIds } : {}),
+        ...(panels ? { panels } : {}),
     };
 }
 

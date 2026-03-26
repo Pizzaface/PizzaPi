@@ -77,7 +77,7 @@ function buildTunnelInterceptScript(basePath: string): string {
   function rwWs(u){
     if(typeof u!=="string")return u;
     // Absolute ws(s)://<host>/<path> URLs
-    var m=u.match(/^wss?:\\/\\/([^\\/]+)(\\/.*)$/);
+    var m=u.match(/^wss?:\\/\\/([^\\/]+)(\\/.*)?$/);
     if(m){
       var host=m[1];
       var path=m[2]||"/";
@@ -135,10 +135,25 @@ function rewriteInlineModuleScripts(html: string, sessionId: string, port: numbe
     });
 }
 
-function rewriteTunnelHtml(html: string, sessionId: string, port: number): string {
+function rewriteTunnelHtml(html: string, sessionId: string, port: number, proxyPath?: string): string {
     const basePath = getTunnelBasePath(sessionId, port);
+
+    // Compute the base href from the actual document path so relative URLs
+    // in apps served from sub-paths (e.g. Jellyfin at /web/) resolve correctly.
+    // The interceptor script still uses the tunnel root for root-relative rewrites.
+    const docDir = proxyPath
+        ? proxyPath.endsWith("/")
+            ? proxyPath
+            : proxyPath.substring(0, proxyPath.lastIndexOf("/") + 1) || "/"
+        : "/";
+    const baseHref = `${basePath}${docDir}`;
+
+    // Strip any existing <base> tags from the original HTML — the injected one
+    // must be the only <base> so it takes effect per the HTML spec (first wins).
+    const cleaned = html.replace(/<base\b[^>]*>/gi, "");
+
     const rewritten = rewriteInlineModuleScripts(
-        html
+        cleaned
             .replace(/(<(?:img|script|iframe|audio|video|source|track|embed|input)\b[^>]*\bsrc=["'])(\/[^"']*)(["'])/gi, (_m, start, path, end) => `${start}${rewriteTunnelUrl(path, sessionId, port)}${end}`)
             .replace(/(<(?:a|link|area)\b[^>]*\bhref=["'])(\/[^"']*)(["'])/gi, (_m, start, path, end) => `${start}${rewriteTunnelUrl(path, sessionId, port)}${end}`)
             .replace(/(<(?:form)\b[^>]*\baction=["'])(\/[^"']*)(["'])/gi, (_m, start, path, end) => `${start}${rewriteTunnelUrl(path, sessionId, port)}${end}`)
@@ -148,7 +163,7 @@ function rewriteTunnelHtml(html: string, sessionId: string, port: number): strin
         port,
     );
 
-    const injection = `<base href="${basePath}/">${buildTunnelInterceptScript(basePath)}`;
+    const injection = `<base href="${baseHref}">${buildTunnelInterceptScript(basePath)}`;
 
     if (/<head\b[^>]*>/i.test(rewritten)) {
         return rewritten.replace(/<head\b[^>]*>/i, (match) => `${match}${injection}`);
@@ -385,7 +400,7 @@ export const handleTunnelRoute: RouteHandler = async (req, url) => {
     const contentType = responseHeaders.get("content-type");
     if (shouldRewriteTunnelHtml(contentType)) {
         const html = responseBody.toString("utf8");
-        responseBody = Buffer.from(rewriteTunnelHtml(html, sessionId, port), "utf8");
+        responseBody = Buffer.from(rewriteTunnelHtml(html, sessionId, port, proxyPath), "utf8");
         responseHeaders.delete("content-length");
         responseHeaders.delete("content-encoding");
     } else if (shouldRewriteTunnelJs(contentType)) {

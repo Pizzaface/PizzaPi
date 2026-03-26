@@ -17,6 +17,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import { ProviderIcon } from "@/components/ProviderIcon";
 import { cn } from "@/lib/utils";
 
 export type ModelSelectorProps = ComponentProps<typeof Dialog>;
@@ -114,83 +115,18 @@ export const ModelSelectorSeparator = (props: ModelSelectorSeparatorProps) => (
   <CommandSeparator {...props} />
 );
 
-export type ModelSelectorLogoProps = Omit<
-  ComponentProps<"img">,
-  "src" | "alt"
-> & {
-  provider:
-    | "moonshotai-cn"
-    | "lucidquery"
-    | "moonshotai"
-    | "zai-coding-plan"
-    | "alibaba"
-    | "xai"
-    | "vultr"
-    | "nvidia"
-    | "upstage"
-    | "groq"
-    | "github-copilot"
-    | "mistral"
-    | "vercel"
-    | "nebius"
-    | "deepseek"
-    | "alibaba-cn"
-    | "google-vertex-anthropic"
-    | "venice"
-    | "chutes"
-    | "cortecs"
-    | "github-models"
-    | "togetherai"
-    | "azure"
-    | "baseten"
-    | "huggingface"
-    | "opencode"
-    | "fastrouter"
-    | "google"
-    | "google-vertex"
-    | "cloudflare-workers-ai"
-    | "inception"
-    | "wandb"
-    | "openai"
-    | "zhipuai-coding-plan"
-    | "perplexity"
-    | "openrouter"
-    | "zenmux"
-    | "v0"
-    | "iflowcn"
-    | "synthetic"
-    | "deepinfra"
-    | "zhipuai"
-    | "submodel"
-    | "zai"
-    | "inference"
-    | "requesty"
-    | "morph"
-    | "lmstudio"
-    | "anthropic"
-    | "aihubmix"
-    | "fireworks-ai"
-    | "modelscope"
-    | "llama"
-    | "scaleway"
-    | "amazon-bedrock"
-    | "cerebras"
-    // oxlint-disable-next-line typescript-eslint(ban-types) -- intentional pattern for autocomplete-friendly string union
-    | (string & {});
+export type ModelSelectorLogoProps = {
+  provider: string;
+  className?: string;
 };
 
 export const ModelSelectorLogo = ({
   provider,
   className,
-  ...props
 }: ModelSelectorLogoProps) => (
-  <img
-    {...props}
-    alt={`${provider} logo`}
-    className={cn("size-3 dark:invert", className)}
-    height={12}
-    src={`https://models.dev/logos/${provider}.svg`}
-    width={12}
+  <ProviderIcon
+    provider={provider}
+    className={cn("size-3", className)}
   />
 );
 
@@ -202,7 +138,7 @@ export const ModelSelectorLogoGroup = ({
 }: ModelSelectorLogoGroupProps) => (
   <div
     className={cn(
-      "flex shrink-0 items-center -space-x-1 [&>img]:rounded-full [&>img]:bg-background [&>img]:p-px [&>img]:ring-1 dark:[&>img]:bg-foreground",
+      "flex shrink-0 items-center -space-x-1 [&>svg]:rounded-full [&>svg]:bg-background [&>svg]:p-px [&>svg]:ring-1 dark:[&>svg]:bg-foreground",
       className
     )}
     {...props}

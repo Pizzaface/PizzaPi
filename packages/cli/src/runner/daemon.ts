@@ -511,13 +511,9 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                     isFirstSpawn = false;
                     spawnSession(sessionId, apiKey!, relayRaw, requestedCwd, runningSessions, restartingSessions, killedSessions, doSpawn, spawnOpts);
                     socket.emit("session_ready", { sessionId });
-                    // Re-emit service_announce so viewers that connect for this
-                    // session receive the service list.  The relay only forwards
-                    // service_message/service_announce to sessions in its tracking
-                    // map — by the time session_ready fires the session is
-                    // registered there, so this announce is guaranteed to reach
-                    // any already-connected viewer for this session.
-                    emitServiceAnnounce();
+                    // No need to re-emit service_announce here — the server
+                    // persists the announce data in Redis and sends it to
+                    // viewers automatically when they connect to a session.
                 } catch (err) {
                     socket.emit("session_error", {
                         sessionId,

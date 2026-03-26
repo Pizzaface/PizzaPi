@@ -2,14 +2,9 @@ import { useEffect, useCallback, useRef, useState } from "react";
 import { useViewerSocket } from "@/lib/viewer-socket-context";
 import type { ServiceAnnounceData, ServiceEnvelope } from "@pizzapi/protocol";
 
-const SERVICE_IDS_KEY = "__serviceIds" as const;
-
-export function getEagerServiceAvailability(socket: unknown, serviceId: string): boolean {
-    const ids = socket && typeof socket === "object"
-        ? ((socket as Record<string, unknown>)[SERVICE_IDS_KEY] as string[] | undefined)
-        : undefined;
-    return Array.isArray(ids) && ids.includes(serviceId);
-}
+// Re-export so existing consumers that import from this module still work.
+export { getEagerServiceAvailability } from "./service-availability";
+import { getEagerServiceAvailability } from "./service-availability";
 
 export interface ServiceChannelOptions<TPayload = unknown> {
     onMessage?: (type: string, payload: TPayload, requestId?: string) => void;

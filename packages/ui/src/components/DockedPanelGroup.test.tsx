@@ -1,4 +1,4 @@
-import { afterEach, describe, test, expect, mock } from "bun:test";
+import { afterAll, afterEach, describe, test, expect, mock } from "bun:test";
 import { Window } from "happy-dom";
 import { render, fireEvent, cleanup } from "@testing-library/react";
 import React from "react";
@@ -27,6 +27,10 @@ mock.module("@/lib/utils", () => ({
 // when Bun evaluates modules in parallel across test files.
 const CombinedPanelModule = await import("./CombinedPanel");
 mock.module("@/components/CombinedPanel", () => CombinedPanelModule);
+
+// Restore all module mocks after this file so they don't bleed into other
+// test files running in the same Bun worker process.
+afterAll(() => mock.restore());
 
 const { DockedPanelGroup } = await import("./DockedPanelGroup");
 

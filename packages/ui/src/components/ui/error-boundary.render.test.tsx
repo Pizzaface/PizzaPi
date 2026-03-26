@@ -9,7 +9,7 @@
  * cover the pure state-machine behaviour without a DOM dependency.
  */
 
-import { beforeAll, afterEach, describe, test, expect, mock } from "bun:test";
+import { afterAll, beforeAll, afterEach, describe, test, expect, mock } from "bun:test";
 import { Window } from "happy-dom";
 import { render, fireEvent, act, cleanup } from "@testing-library/react";
 import React from "react";
@@ -21,6 +21,10 @@ mock.module("@/lib/utils", () => ({
 	cn: (...classes: (string | undefined | null | false)[]) =>
 		classes.filter(Boolean).join(" "),
 }));
+
+// Restore all module mocks after this file so they don't bleed into other
+// test files running in the same Bun worker process.
+afterAll(() => mock.restore());
 
 // Dynamically imported after mock.module so the alias is already intercepted.
 const { ErrorBoundary } = await import("./error-boundary");

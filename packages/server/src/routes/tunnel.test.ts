@@ -72,6 +72,41 @@ describe("tunnel route HTML rewriting", () => {
         expect(rewritten).toContain("url('/api/tunnel/session-123/60434/bg.png')");
     });
 
+    test("rewriteTunnelHtml uses sub-path-aware base href when proxyPath is provided", () => {
+        const html = `<!doctype html><html><head></head><body>
+<script src="runtime.bundle.js"></script>
+</body></html>`;
+        // Jellyfin scenario: HTML served from /web/index.html
+        const rewritten = rewriteTunnelHtml(html, "session-123", 8096, "/web/index.html");
+        // Base should point to the document's directory, not the tunnel root
+        expect(rewritten).toContain('<base href="/api/tunnel/session-123/8096/web/">');
+        // Interceptor script should still use tunnel root for absolute path rewrites
+        expect(rewritten).toContain('var B="/api/tunnel/session-123/8096"');
+    });
+
+    test("rewriteTunnelHtml uses directory path for trailing-slash proxyPath", () => {
+        const html = `<!doctype html><html><head></head><body>hello</body></html>`;
+        const rewritten = rewriteTunnelHtml(html, "s-1", 3000, "/app/dashboard/");
+        expect(rewritten).toContain('<base href="/api/tunnel/s-1/3000/app/dashboard/">');
+    });
+
+    test("rewriteTunnelHtml defaults to tunnel root when proxyPath is omitted", () => {
+        const html = `<!doctype html><html><head></head><body>hello</body></html>`;
+        const rewritten = rewriteTunnelHtml(html, "s-1", 3000);
+        expect(rewritten).toContain('<base href="/api/tunnel/s-1/3000/">');
+    });
+
+    test("rewriteTunnelHtml strips existing <base> tags from original HTML", () => {
+        const html = `<!doctype html><html><head><base href="/web/"></head><body>hello</body></html>`;
+        const rewritten = rewriteTunnelHtml(html, "s-1", 3000, "/web/index.html");
+        // Should only have one <base> — the injected one
+        const baseMatches = rewritten.match(/<base\b[^>]*>/gi);
+        expect(baseMatches).toHaveLength(1);
+        expect(rewritten).toContain('<base href="/api/tunnel/s-1/3000/web/">');
+        // Original <base href="/web/"> should be gone
+        expect(rewritten).not.toContain('<base href="/web/">');
+    });
+
     test("rewriteTunnelHtml injects fetch/XHR interceptor script", () => {
         const html = `<!doctype html><html><head></head><body>hello</body></html>`;
         const rewritten = rewriteTunnelHtml(html, "s-1", 3000);
@@ -110,6 +145,59 @@ describe("tunnel route HTML rewriting", () => {
         expect(rewritten).toContain("OPEN");
         expect(rewritten).toContain("CLOSING");
         expect(rewritten).toContain("CLOSED");
+    });
+
+    test("rewriteTunnelHtml WebSocket patch upgrades host-only ws:// URLs to wss:// on HTTPS", () => {
+        const html = `<!doctype html><html><head></head><body>hello</body></html>`;
+        const rewritten = rewriteTunnelHtml(html, "s-1", 3000);
+        const scriptMatch = rewritten.match(/<script data-pizzapi-tunnel-intercept>\n([\s\S]*?)<\/script>/);
+        expect(scriptMatch).toBeTruthy();
+        const scriptBody = scriptMatch![1];
+
+        const capturedUrls: string[] = [];
+        const NativeWebSocket = function (this: unknown, url: string) {
+            capturedUrls.push(url);
+        } as unknown as {
+            new (url: string, protocols?: string | string[]): unknown;
+            prototype: Record<string, unknown>;
+            CONNECTING: number;
+            OPEN: number;
+            CLOSING: number;
+            CLOSED: number;
+        };
+        NativeWebSocket.prototype = {};
+        NativeWebSocket.CONNECTING = 0;
+        NativeWebSocket.OPEN = 1;
+        NativeWebSocket.CLOSING = 2;
+        NativeWebSocket.CLOSED = 3;
+
+        class MockXHR {
+            open(_method: string, _url: string): void {}
+        }
+
+        const mockWindow = {
+            fetch: (_input: RequestInfo | URL, _init?: RequestInit) => Promise.resolve(new Response(null, { status: 200 })),
+            WebSocket: NativeWebSocket,
+            EventSource: undefined as undefined,
+        };
+
+        const runScript = new Function("window", "location", "XMLHttpRequest", "Request", scriptBody) as (
+            window: typeof mockWindow,
+            location: { protocol: string; host: string },
+            XMLHttpRequest: typeof MockXHR,
+            RequestCtor: typeof Request,
+        ) => void;
+
+        runScript(
+            mockWindow,
+            { protocol: "https:", host: "jordans-mac-mini.tail65556b.ts.net" },
+            MockXHR,
+            Request,
+        );
+
+        new mockWindow.WebSocket("ws://jordans-mac-mini.tail65556b.ts.net");
+
+        expect(capturedUrls).toEqual(["wss://jordans-mac-mini.tail65556b.ts.net/api/tunnel/s-1/3000/"]);
     });
 });
 

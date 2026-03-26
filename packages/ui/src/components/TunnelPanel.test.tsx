@@ -3,7 +3,7 @@
  *   when `available` transitions false the component must clear `tunnels` and
  *   `previewPort` so that on the next reconnect no stale entries flash.
  */
-import { afterEach, describe, test, expect, mock } from "bun:test";
+import { afterAll, afterEach, describe, test, expect, mock } from "bun:test";
 import { Window } from "happy-dom";
 import { render, act, cleanup } from "@testing-library/react";
 import React from "react";
@@ -56,6 +56,10 @@ mock.module("@/hooks/useServiceChannel", () => ({
     // Re-export the pure helper so indirect imports still resolve
     getEagerServiceAvailability: () => false,
 }));
+
+// Restore all module mocks after this file so they don't bleed into other
+// test files running in the same Bun worker process.
+afterAll(() => mock.restore());
 
 // Import AFTER mock is registered
 const { TunnelPanel } = await import("./TunnelPanel");
