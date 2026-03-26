@@ -219,7 +219,7 @@ export function handleTunnelWsOpened(tunnelWsId: string, protocol?: string): voi
 
     // Complete the WebSocket handshake with the viewer
     const acceptKey = createHash("sha1")
-        .update(wsKey + "258EAFA5-E914-47DA-95CA-5AB5DC65")
+        .update(wsKey + "258EAFA5-E914-47DA-95CA-C5AB5DC65340")
         .digest("base64");
 
     let upgradeResponse = "HTTP/1.1 101 Switching Protocols\r\n" +
