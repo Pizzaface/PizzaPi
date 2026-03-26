@@ -124,6 +124,12 @@ export function App() {
   });
   const [activeSessionId, setActiveSessionId] = React.useState<string | null>(null);
   const [messages, setMessages] = React.useState<RelayMessage[]>([]);
+  // Ref kept in sync with `messages` via useLayoutEffect so we can read the
+  // latest committed value in event handlers without needing functional updaters.
+  // This lets us move patchSessionCache side effects OUT of setMessages updaters,
+  // which would otherwise be called speculatively in React concurrent mode.
+  const messagesRef = React.useRef<RelayMessage[]>(messages);
+  React.useLayoutEffect(() => { messagesRef.current = messages; }, [messages]);
   const [viewerStatus, setViewerStatus] = React.useState("Idle");
   const [retryState, setRetryState] = React.useState<{ errorMessage: string; detectedAt: number } | null>(null);
   const [relayStatus, setRelayStatus] = React.useState<DotState>("connecting");
@@ -753,11 +759,9 @@ export function App() {
       content: typeof content === "string" ? content.trim() : content,
     };
 
-    setMessages((prev) => {
-      const next = [...prev, message];
-      patchSessionCache({ messages: next });
-      return next;
-    });
+    const next = [...messagesRef.current, message];
+    setMessages(next);
+    patchSessionCache({ messages: next });
   }, [patchSessionCache]);
 
 
@@ -801,12 +805,11 @@ export function App() {
       content: parts.join("\n"),
       isError: hasErrors,
     };
-    setMessages((prev) => {
-      if (prev.some((m) => m.key?.startsWith(`mcp_startup:${reportTs}`))) return prev;
-      const next = [...prev, message];
+    if (!messagesRef.current.some((m) => m.key?.startsWith(`mcp_startup:${reportTs}`))) {
+      const next = [...messagesRef.current, message];
+      setMessages(next);
       patchSessionCache({ messages: next });
-      return next;
-    });
+    }
   }, [patchSessionCache]);
 
   const applyMetaStateSnapshot = React.useCallback((state: SessionMetaState) => {
@@ -1418,12 +1421,10 @@ export function App() {
         // cross-chunk duplicates (e.g., partial messages from one chunk and
         // their final timestamped versions from another). This prevents
         // duplicate assistant/tool content from appearing in large-session reloads.
-        setMessages((current) => {
-          const deduped = deduplicateMessages(current);
-          setActiveToolCalls(detectInFlightTools(deduped));
-          patchSessionCache({ messages: deduped });
-          return deduped;
-        });
+        const deduped = deduplicateMessages(messagesRef.current);
+        setActiveToolCalls(detectInFlightTools(deduped));
+        setMessages(deduped);
+        patchSessionCache({ messages: deduped });
       }
       return;
     }
@@ -1755,11 +1756,9 @@ export function App() {
           setMessages((prev) => prev.map((m) => m.key === stableKey ? message : m));
         } else {
           injectedMessagesRef.current = [...injectedMessagesRef.current, message];
-          setMessages((prev) => {
-            const next = [...prev, message];
-            patchSessionCache({ messages: next });
-            return next;
-          });
+          const next = [...messagesRef.current, message];
+          setMessages(next);
+          patchSessionCache({ messages: next });
         }
       }
       return;
@@ -1790,11 +1789,9 @@ export function App() {
           setMessages((prev) => prev.map((m) => m.key === stableKey ? message : m));
         } else {
           injectedMessagesRef.current = [...injectedMessagesRef.current, message];
-          setMessages((prev) => {
-            const next = [...prev, message];
-            patchSessionCache({ messages: next });
-            return next;
-          });
+          const next = [...messagesRef.current, message];
+          setMessages(next);
+          patchSessionCache({ messages: next });
         }
         // Add/update pending paste prompt (always update nonce/authUrl)
         setMcpOAuthPastes((prev) => [
@@ -1813,13 +1810,13 @@ export function App() {
         (m) => m.key !== stableKey && !m.key.startsWith(`${stableKey}:`),
       );
       // Also remove from rendered messages
-      setMessages((prev) => {
-        const next = prev.filter((m) => m.key !== stableKey && !m.key.startsWith(`${stableKey}:`));
-        if (next.length !== prev.length) {
-          patchSessionCache({ messages: next });
-        }
-        return next.length !== prev.length ? next : prev;
-      });
+      const filteredNext = messagesRef.current.filter(
+        (m) => m.key !== stableKey && !m.key.startsWith(`${stableKey}:`),
+      );
+      if (filteredNext.length !== messagesRef.current.length) {
+        setMessages(filteredNext);
+        patchSessionCache({ messages: filteredNext });
+      }
       // Remove from pending paste prompts
       setMcpOAuthPastes((prev) => prev.filter((p) => p.serverName !== serverName));
       return;
@@ -1837,11 +1834,9 @@ export function App() {
         content: `⚠ ${label}: ${message}`,
         isError: true,
       };
-      setMessages((prev) => {
-        const next = [...prev, errMessage];
-        patchSessionCache({ messages: next });
-        return next;
-      });
+      const next = [...messagesRef.current, errMessage];
+      setMessages(next);
+      patchSessionCache({ messages: next });
       return;
     }
 
@@ -4029,11 +4024,13 @@ export function App() {
                         injectedMessagesRef.current = injectedMessagesRef.current.filter(
                           (m) => m.key !== stableKey && !m.key.startsWith(`${stableKey}:`),
                         );
-                        setMessages((prev) => {
-                          const next = prev.filter((m) => m.key !== stableKey && !m.key.startsWith(`${stableKey}:`));
-                          if (next.length !== prev.length) patchSessionCache({ messages: next });
-                          return next.length !== prev.length ? next : prev;
-                        });
+                        const disableNext = messagesRef.current.filter(
+                          (m) => m.key !== stableKey && !m.key.startsWith(`${stableKey}:`),
+                        );
+                        if (disableNext.length !== messagesRef.current.length) {
+                          setMessages(disableNext);
+                          patchSessionCache({ messages: disableNext });
+                        }
                         const socket = viewerWsRef.current;
                         if (socket?.connected) {
                           socket.emit("exec", {
