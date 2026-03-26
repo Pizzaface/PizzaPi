@@ -14,6 +14,7 @@ import { discoverServices } from "./service-loader.js";
 import { globalPluginDirs } from "../plugins/discover.js";
 import { io, type Socket } from "socket.io-client";
 import type { RunnerClientToServerEvents, RunnerServerToClientEvents } from "@pizzapi/protocol";
+import { TunnelClient } from "@pizzapi/tunnel";
 import { loadGlobalConfig } from "../config.js";
 import { cleanupSessionAttachments, sweepOrphanedAttachments } from "../extensions/session-attachments.js";
 import { setLogComponent, logInfo, logWarn, logError } from "./logger.js";
@@ -186,7 +187,16 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             // No scheme — treat as an https host (e.g. "example.com" or "example.com:5173")
             return `https://${raw}`;
         }
+
+        function toTunnelRelayUrl(raw: string): string {
+            if (raw.startsWith("http://")) return `${raw.replace(/^http:\/\//, "ws://")}/_tunnel`;
+            if (raw.startsWith("https://")) return `${raw.replace(/^https:\/\//, "wss://")}/_tunnel`;
+            if (raw.startsWith("ws://") || raw.startsWith("wss://")) return `${raw}/_tunnel`;
+            return `wss://${raw}/_tunnel`;
+        }
+
         const sioUrl = normaliseRelayUrl(relayRaw);
+        const tunnelRelayUrl = toTunnelRelayUrl(sioUrl);
 
         const runningSessions = new Map<string, RunnerSession>();
         // Sessions currently in the middle of a restart-in-place (exit code 43).
@@ -231,6 +241,28 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
         registry.register(new GitService());
         const tunnelService = new TunnelService();
         registry.register(tunnelService);
+
+        const formatTunnelLog = (...args: unknown[]) => args.map((arg) => {
+            if (typeof arg === "string") return arg;
+            if (arg instanceof Error) return arg.stack ?? arg.message;
+            return String(arg);
+        }).join(" ");
+
+        const tunnelClient = apiKey
+            ? new TunnelClient({
+                runnerId: identity.runnerId,
+                apiKey,
+                relayUrl: tunnelRelayUrl,
+                log: {
+                    info: (...args) => logInfo(formatTunnelLog(...args)),
+                    debug: (...args) => logInfo(formatTunnelLog(...args)),
+                    warn: (...args) => logWarn(formatTunnelLog(...args)),
+                    error: (...args) => logError(formatTunnelLog(...args)),
+                },
+            })
+            : null;
+        let tunnelClientStarted = false;
+        tunnelService.setTunnelClient(tunnelClient);
 
         // Panel tracking — manifests from folder-based services, ports from announcePanel()
         type PanelEntry = { serviceId: string; label: string; icon: string; port?: number };
@@ -295,6 +327,23 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
 
         // Service init happens in runner_registered after plugin discovery completes.
 
+        if (tunnelClient) {
+            tunnelClient.on("registered", () => {
+                logInfo(`[tunnel] registered at ${tunnelRelayUrl}`);
+                tunnelService.setTunnelClient(tunnelClient);
+            });
+            tunnelClient.on("disconnect", () => {
+                if (!isShuttingDown) {
+                    logInfo(`[tunnel] disconnected from ${tunnelRelayUrl}`);
+                }
+            });
+            tunnelClient.on("error", (error) => {
+                logError(`[tunnel] ${error instanceof Error ? error.message : String(error)}`);
+            });
+        } else {
+            logWarn("[tunnel] disabled: runner is missing an API key for tunnel authentication");
+        }
+
         logInfo(`connecting to relay at ${sioUrl}/runner…`);
 
         // Start periodic usage scan (every 5 minutes)
@@ -307,6 +356,7 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             isShuttingDown = true;
             clearInterval(endedSessionSweep);
             clearInterval(usageScanInterval);
+            tunnelClient?.dispose();
             registry.disposeAll();
             stopUsageRefreshLoop();
             closeUsage();
@@ -351,6 +401,10 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
             if (isShuttingDown) {
                 socket.disconnect();
                 return;
+            }
+            if (tunnelClient && !tunnelClientStarted) {
+                tunnelClientStarted = true;
+                tunnelClient.connect();
             }
             const verb = isFirstConnect ? "connected" : "reconnected";
             isFirstConnect = false;
@@ -407,18 +461,8 @@ export async function runDaemon(_args: string[] = []): Promise<number> {
                 const allServiceIds = registry.getAll().map((s) => s.id);
                 logInfo(`[services] initialized ${allServiceIds.length} services: ${allServiceIds.join(", ")}`);
 
-                // Fix 2 (P1): Re-register already-known panel ports after reconnect.
-                // Folder-based services don't re-call announcePanel() on reconnect
-                // because their HTTP servers are already running. TunnelService.dispose()
-                // clears this.tunnels, so all ports must be re-registered explicitly or
-                // tunnel_requests return 404 for the rest of the connection.
-                for (const [, entry] of panelEntries) {
-                    if (entry.port) {
-                        tunnelService.registerPort(entry.port, entry.label);
-                        logInfo(`[services] re-registered panel port ${entry.port} for "${entry.serviceId}" after reconnect`);
-                    }
-                }
-
+                // TunnelService now preserves its exposed-port state across Socket.IO
+                // reconnects and re-announces known ports when re-initialized.
                 emitServiceAnnounce();
 
                 // Re-adopt orphaned sessions that survived a daemon restart.
