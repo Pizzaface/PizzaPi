@@ -1,13 +1,6 @@
 /**
  * Tests for the MockRunner test harness.
  *
- * SKIPPED in full-suite runs: mock.module("redis", …) in unit test files
- * poisons the Redis module for these integration tests when Bun shares a
- * worker process. Run in isolation with:
- *   bun test packages/server/tests/harness/mock-runner.test.ts
- *
- * Tracking: Godmother idea "harness Redis mock.module contamination"
- *
  * Each test creates and cleans up its OWN server (following the pattern from
  * server.test.ts).  Do NOT use beforeAll/afterAll with a shared server —
  * module-level singletons (auth, sio-state) mean servers must be created

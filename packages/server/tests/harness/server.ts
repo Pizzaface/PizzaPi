@@ -22,7 +22,6 @@ import { initAuth, getTrustedOrigins } from "../../src/auth.js";
 import { runAllMigrations } from "../../src/migrations.js";
 import { handleFetch } from "../../src/handler.js";
 import { initStateRedis, closeStateRedis } from "../../src/ws/sio-state.js";
-import { initializeRelayRedisCache, _resetRelayRedisCacheForTesting } from "../../src/sessions/redis.js";
 import { serverHealth } from "../../src/health.js";
 import { initSioRegistry } from "../../src/ws/sio-registry.js";
 import { registerNamespaces } from "../../src/ws/namespaces/index.js";
@@ -36,24 +35,9 @@ function getRedisUrl(): string {
 
 // ── Active-server guard ──────────────────────────────────────────────────────
 // Module-level singletons (auth, sio-state) mean only one test server can be
-// active at a time. Bun can execute multiple test files in the same worker,
-// so callers may race to create servers. By default we serialize creation until
-// the previous server is cleaned up; strict callers can still request an error.
+// active at a time. This flag prevents accidental concurrent creation which
+// would silently corrupt the first server's behavior.
 let _activeServer = false;
-const DEFAULT_ACTIVE_SERVER_WAIT_MS = 5 * 60_000;
-
-async function waitForNoActiveServer(timeoutMs: number): Promise<void> {
-    const start = Date.now();
-    while (_activeServer) {
-        if (Date.now() - start >= timeoutMs) {
-            throw new Error(
-                "[test-harness] Timed out waiting for active test server cleanup. " +
-                "A prior test likely leaked server resources.",
-            );
-        }
-        await new Promise<void>((resolve) => setTimeout(resolve, 25));
-    }
-}
 
 // ── Unique IP generator ──────────────────────────────────────────────────────
 // The register rate limiter in routes/auth.ts is a module-level singleton
@@ -154,31 +138,16 @@ async function sendFetchResponse(res: ServerResponse, response: Response): Promi
  * Always call `cleanup()` when done to release all resources.
  *
  * NOTE: Uses module-level singletons (auth, sio-state). Only one active
- * server is allowed at a time. By default, createTestServer() waits for an
- * existing server to be cleaned up (serialization). Pass
- * `{ activeServerMode: "error" }` for strict immediate-failure behavior.
+ * server is allowed at a time — an error is thrown if you try to create
+ * a second without cleaning up the first.
  */
 export async function createTestServer(opts?: TestServerOptions): Promise<TestServer> {
-    const activeServerMode = opts?.activeServerMode ?? "serialize";
-
-    if (activeServerMode === "error") {
-        if (_activeServer) {
-            throw new Error(
-                "[test-harness] Another test server is already active. " +
-                "Call cleanup() on the existing server before creating a new one.",
-            );
-        }
-    } else {
-        // Serialize creators: callers wait until the active server is cleaned up.
-        // Looping here handles multiple waiters safely — if another waiter acquires
-        // first, this caller simply waits again until the slot is free.
-        const deadline = Date.now() + (opts?.waitForActiveServerMs ?? DEFAULT_ACTIVE_SERVER_WAIT_MS);
-        while (_activeServer) {
-            const remainingMs = deadline - Date.now();
-            await waitForNoActiveServer(Math.max(1, remainingMs));
-        }
+    if (_activeServer) {
+        throw new Error(
+            "[test-harness] Another test server is already active. " +
+            "Call cleanup() on the existing server before creating a new one.",
+        );
     }
-
     _activeServer = true;
 
     // 1. Temp directory for the SQLite DB
@@ -271,15 +240,8 @@ export async function createTestServer(opts?: TestServerOptions): Promise<TestSe
         transports: ["websocket", "polling"],
     });
 
-    // 8. Init state Redis — pass the real createClient to avoid mock.module
-    //    contamination from unit tests that may share this Bun process.
-    await initStateRedis(createClient as typeof import("redis").createClient);
-
-    // 8b. Pre-initialize the relay Redis cache with the real createClient too.
-    //     Without this, the lazy init inside sessions/redis.ts would use the
-    //     (potentially mocked) top-level import when a relay event triggers it.
-    _resetRelayRedisCacheForTesting();
-    await initializeRelayRedisCache(createClient as typeof import("redis").createClient);
+    // 8. Init state Redis
+    await initStateRedis();
 
     // 9. Init the Socket.IO registry
     initSioRegistry(io);
