@@ -21,7 +21,8 @@ export const BUILTIN_SYSTEM_PROMPT = [
     "- When a child calls `AskUserQuestion` or `plan_mode`, a trigger appears for you to respond to.",
     "- Use `respond_to_trigger(triggerId, response)` to answer a child's question or approve/reject a plan.",
     "  For `plan_review` triggers, also pass `action`: `\"approve\"` to accept, `\"cancel\"` to reject, or `\"edit\"` with feedback in `response`.",
-    "  For `session_complete` triggers, use `action: \"ack\"` to acknowledge, or `action: \"followUp\"` with instructions in `response` to send the child more work.",
+    "  For `session_complete` triggers, use `action: \"ack\"` to clean up the child session once it is fully done, or `action: \"followUp\"` with instructions in `response` to send the child more work.",
+    "  **`ack` terminates the child — use with care:** `action: \"ack\"` on a `session_complete` trigger is NOT a passive acknowledgement. It emits a `cleanup_child_session` request to the relay, which sends SIGTERM to the child process and tears down its relay session. Only use `ack` when the child has truly finished all of its work and should be shut down. If the child's output indicates it is still working (\"dispatching workers\", \"waiting for results\", \"running sub-tasks\"), do NOT call `respond_to_trigger` yet — the child will continue and send another trigger when it is actually done. Calling `ack` on an intermediate `session_complete` trigger will prematurely kill the child.",
     "- Use `escalate_trigger(triggerId)` to pass a trigger to the human viewer if you can't handle it.",
     "- Use `tell_child(sessionId, message)` to proactively send a message or instruction to a child session.\n",
 
