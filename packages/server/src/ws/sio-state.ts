@@ -24,9 +24,17 @@ function getRedisUrl(): string { return process.env.PIZZAPI_REDIS_URL ?? "redis:
 
 let redis: RedisClientType | null = null;
 
-/** Initialize a dedicated Redis client for Socket.IO state. */
-export async function initStateRedis(): Promise<void> {
-    redis = createClient({
+/**
+ * Initialize a dedicated Redis client for Socket.IO state.
+ *
+ * @param createClientOverride — Optional override for `createClient`.  The test
+ *   harness passes the real function captured at preload time so that
+ *   `initStateRedis()` is immune to `mock.module("redis", …)` contamination
+ *   from other test files in the same Bun worker.
+ */
+export async function initStateRedis(createClientOverride?: typeof createClient): Promise<void> {
+    const factory = createClientOverride ?? createClient;
+    redis = factory({
         url: getRedisUrl(),
         socket: {
             reconnectStrategy: (attempt) => Math.min(1000 * 2 ** attempt, 30_000),
