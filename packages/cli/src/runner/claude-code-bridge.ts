@@ -1100,6 +1100,14 @@ function handleNdjsonLine(line: string): void {
   }
 
   if (result.kind === "control_request") {
+    // Suppress permission/control requests that originate inside a subagent.
+    // These should never surface as top-level permission prompts in the parent session.
+    if (result.parentToolUseId) {
+      if (VERBOSE_EVENT_LOG) {
+        logInfo(`suppressed subagent control_request (parent=${result.parentToolUseId.slice(0, 12)})`);
+      }
+      return;
+    }
     if (result.controlRequestId && result.toolName) {
       handleControlRequest(result.controlRequestId, result.toolName, result.toolInput);
     }
@@ -1120,6 +1128,14 @@ function handleNdjsonLine(line: string): void {
   }
 
   if (result.kind === "ask_user_question") {
+    // Suppress AskUserQuestion calls that originate inside a subagent.
+    // Subagent questions must not create pending question state in the parent session.
+    if (result.parentToolUseId) {
+      if (VERBOSE_EVENT_LOG) {
+        logInfo(`suppressed subagent ask_user_question (parent=${result.parentToolUseId.slice(0, 12)})`);
+      }
+      return;
+    }
     // Forward the assistant message to history first so reconnecting viewers
     // see the full conversation including the AskUserQuestion turn.
     if (result.relayEvent?.message) {

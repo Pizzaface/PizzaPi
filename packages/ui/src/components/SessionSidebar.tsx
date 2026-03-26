@@ -698,6 +698,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                         runnerId: s.runnerId ?? null,
                         runnerName: s.runnerName ?? null,
                         parentSessionId: s.parentSessionId ?? null,
+                        workerType: s.workerType,
                     },
                 ];
             });
