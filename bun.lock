@@ -30,6 +30,7 @@
         "@modelcontextprotocol/sdk": "^1.27.1",
         "@pizzapi/protocol": "workspace:*",
         "@pizzapi/tools": "workspace:*",
+        "@pizzapi/tunnel": "workspace:*",
         "@zenyr/bun-pty": "^0.4.4",
         "socket.io-client": "^4.8.1",
       },
