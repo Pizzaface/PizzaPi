@@ -17,7 +17,18 @@ import { dirname, join } from "node:path";
 
 // ── Version ──────────────────────────────────────────────────────────────────
 
+// In compiled binaries, __PIZZAPI_VERSION__ is replaced at build time by
+// `--define __PIZZAPI_VERSION__='"X.Y.Z"'` in build-binaries.ts.
+// In dev mode (running from source), the identifier is undeclared and the
+// `typeof` check safely returns "undefined", falling through to the
+// filesystem-based resolution.
+declare const __PIZZAPI_VERSION__: string;
+
 function getPizzaPiVersion(): string {
+    // Compiled binary: version is inlined at build time via --define
+    if (typeof __PIZZAPI_VERSION__ === "string") return __PIZZAPI_VERSION__;
+
+    // Dev mode: read from package.json relative to source file
     try {
         const require = createRequire(import.meta.url);
         const __filename = fileURLToPath(import.meta.url);
