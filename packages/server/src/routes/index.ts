@@ -13,7 +13,6 @@ import { handleAuthRoute } from "./auth.js";
 import { handleRunnersRoute } from "./runners.js";
 import { handleSessionsRoute } from "./sessions.js";
 import { handleAttachmentsRoute } from "./attachments.js";
-import { handleChatRoute } from "./chat.js";
 import { handlePushRoute } from "./push.js";
 import { handleSettingsRoute } from "./settings.js";
 import { handleMcpOAuthRoute } from "./mcp-oauth.js";
@@ -28,7 +27,6 @@ const routers: RouteHandler[] = [
     handleRunnersRoute,
     handleSessionsRoute,
     handleAttachmentsRoute,
-    handleChatRoute,
     handlePushRoute,
     handleSettingsRoute,
 ];
