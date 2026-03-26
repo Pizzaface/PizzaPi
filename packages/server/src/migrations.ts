@@ -5,6 +5,9 @@ import { ensurePushSubscriptionTable } from "./push.js";
 import { ensureRunnerRecentFoldersTable } from "./runner-recent-folders.js";
 import { ensureUserHiddenModelTable } from "./user-hidden-models.js";
 import { ensureExtractedAttachmentTable } from "./attachments/store.js";
+import { createLogger } from "@pizzapi/tools";
+
+const log = createLogger("startup");
 
 /**
  * Run all database migrations (better-auth + custom tables).
@@ -19,9 +22,9 @@ export async function runAllMigrations(): Promise<void> {
         await ensureUserHiddenModelTable();
         await ensureRunnerRecentFoldersTable();
         await ensureExtractedAttachmentTable();
-        console.log("[startup] All database migrations complete.");
+        log.info("All database migrations complete.");
     } catch (e) {
-        console.error("[startup] Migration failed:", e);
+        log.error("Migration failed:", e);
         process.exit(1);
     }
 }

@@ -16,6 +16,9 @@
 // ============================================================================
 
 import { createClient, type RedisClientType } from "redis";
+import { createLogger } from "@pizzapi/tools";
+
+const log = createLogger("sio-state");
 
 // ── Redis connection ────────────────────────────────────────────────────────
 
@@ -42,11 +45,11 @@ export async function initStateRedis(createClientOverride?: typeof createClient)
     }) as RedisClientType;
 
     redis.on("error", (err) => {
-        console.error("[sio-state] Redis error:", err);
+        log.error("Redis error:", err);
     });
 
     await redis.connect();
-    console.log(`[sio-state] Redis connected at ${getRedisUrl()}`);
+    log.info(`Redis connected at ${getRedisUrl()}`);
 }
 
 /** Return the state Redis client (or null if not initialized). */

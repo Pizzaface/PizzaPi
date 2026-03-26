@@ -24,6 +24,12 @@ import { isValidSkillName } from "../validation.js";
 import { parseJsonArray } from "./utils.js";
 import { isHiddenModel } from "./model-guard.js";
 import type { RouteHandler } from "./types.js";
+import { createLogger } from "@pizzapi/tools";
+
+const log = createLogger("runners");
+const skillsLog = createLogger("skills");
+const agentsLog = createLogger("agents");
+const pluginsLog = createLogger("plugins");
 
 export const handleRunnersRoute: RouteHandler = async (req, url) => {
     // ── List runners ───────────────────────────────────────────────────
@@ -116,7 +122,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         try {
             hiddenModels = await getHiddenModels(identity.userId);
         } catch (err) {
-            console.error("Failed to fetch hidden models for user", identity.userId, err);
+            log.error("Failed to fetch hidden models for user", identity.userId, err);
             return Response.json({ error: "Unable to validate model availability" }, { status: 500 });
         }
 
@@ -316,7 +322,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
                 if (!result.ok) return Response.json({ error: result.message ?? "Skill scan failed" }, { status: 500 });
                 return Response.json({ ok: true, skills: result.skills ?? [] });
             } catch (err) {
-                console.error(`[skills] refresh failed:`, err);
+                skillsLog.error("refresh failed:", err);
                 return Response.json({ error: "Failed to refresh skills" }, { status: 502 });
             }
         }
@@ -334,7 +340,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
                 if (!result.ok) return Response.json({ error: result.message ?? "Skill not found" }, { status: 404 });
                 return Response.json({ name: result.name, content: result.content });
             } catch (err) {
-                console.error(`[skills] GET ${skillName} failed:`, err);
+                skillsLog.error(`GET ${skillName} failed:`, err);
                 return Response.json({ error: "Failed to retrieve skill" }, { status: 502 });
             }
         }
@@ -354,7 +360,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
                 if (!result.ok) return Response.json({ error: result.message ?? "Failed to create skill" }, { status: 400 });
                 return Response.json({ ok: true, skills: result.skills ?? [] });
             } catch (err) {
-                console.error(`[skills] POST ${name} failed:`, err);
+                skillsLog.error(`POST ${name} failed:`, err);
                 return Response.json({ error: "Failed to create skill" }, { status: 502 });
             }
         }
@@ -370,7 +376,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
                 if (!result.ok) return Response.json({ error: result.message ?? "Failed to update skill" }, { status: 400 });
                 return Response.json({ ok: true, skills: result.skills ?? [] });
             } catch (err) {
-                console.error(`[skills] PUT ${skillName} failed:`, err);
+                skillsLog.error(`PUT ${skillName} failed:`, err);
                 return Response.json({ error: "Failed to update skill" }, { status: 502 });
             }
         }
@@ -383,7 +389,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
                 if (!result.ok) return Response.json({ error: result.message ?? "Skill not found" }, { status: 404 });
                 return Response.json({ ok: true, skills: result.skills ?? [] });
             } catch (err) {
-                console.error(`[skills] DELETE ${skillName} failed:`, err);
+                skillsLog.error(`DELETE ${skillName} failed:`, err);
                 return Response.json({ error: "Failed to delete skill" }, { status: 502 });
             }
         }
@@ -411,7 +417,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
                 if (!result.ok) return Response.json({ error: result.message ?? "Agent scan failed" }, { status: 500 });
                 return Response.json({ ok: true, agents: result.agents ?? [] });
             } catch (err) {
-                console.error(`[agents] refresh failed:`, err);
+                agentsLog.error("refresh failed:", err);
                 return Response.json({ error: "Failed to refresh agents" }, { status: 502 });
             }
         }
@@ -429,7 +435,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
                 if (!result.ok) return Response.json({ error: result.message ?? "Agent not found" }, { status: 404 });
                 return Response.json({ name: result.name, content: result.content });
             } catch (err) {
-                console.error(`[agents] GET ${agentName} failed:`, err);
+                agentsLog.error(`GET ${agentName} failed:`, err);
                 return Response.json({ error: "Failed to retrieve agent" }, { status: 502 });
             }
         }
@@ -449,7 +455,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
                 if (!result.ok) return Response.json({ error: result.message ?? "Failed to create agent" }, { status: 400 });
                 return Response.json({ ok: true, agents: result.agents ?? [] });
             } catch (err) {
-                console.error(`[agents] POST ${name} failed:`, err);
+                agentsLog.error(`POST ${name} failed:`, err);
                 return Response.json({ error: "Failed to create agent" }, { status: 502 });
             }
         }
@@ -465,7 +471,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
                 if (!result.ok) return Response.json({ error: result.message ?? "Failed to update agent" }, { status: 400 });
                 return Response.json({ ok: true, agents: result.agents ?? [] });
             } catch (err) {
-                console.error(`[agents] PUT ${agentName} failed:`, err);
+                agentsLog.error(`PUT ${agentName} failed:`, err);
                 return Response.json({ error: "Failed to update agent" }, { status: 502 });
             }
         }
@@ -478,7 +484,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
                 if (!result.ok) return Response.json({ error: result.message ?? "Agent not found" }, { status: 404 });
                 return Response.json({ ok: true, agents: result.agents ?? [] });
             } catch (err) {
-                console.error(`[agents] DELETE ${agentName} failed:`, err);
+                agentsLog.error(`DELETE ${agentName} failed:`, err);
                 return Response.json({ error: "Failed to delete agent" }, { status: 502 });
             }
         }
@@ -519,7 +525,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
                 }
                 return Response.json({ plugins: result?.plugins ?? [] });
             } catch (err) {
-                console.error(`[plugins] cwd-scoped scan failed:`, err);
+                pluginsLog.error("cwd-scoped scan failed:", err);
                 return Response.json({ error: "Failed to scan plugins" }, { status: 502 });
             }
         }
@@ -546,7 +552,7 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
             }
             return Response.json({ ok: true, plugins: result?.plugins ?? [] });
         } catch (err) {
-            console.error(`[plugins] refresh failed:`, err);
+            pluginsLog.error("refresh failed:", err);
             return Response.json({ error: "Failed to refresh plugins" }, { status: 502 });
         }
     }

@@ -17,6 +17,9 @@ import { socketAckedSeqs } from "./ack-tracker.js";
 import { clearThinkingMaps } from "./thinking-tracker.js";
 import { pendingChunkedStates, enqueueSessionEvent } from "./event-pipeline.js";
 import type { RelaySocket } from "./types.js";
+import { createLogger } from "@pizzapi/tools";
+
+const log = createLogger("sio/relay");
 
 export function registerSessionLifecycleHandlers(socket: RelaySocket): void {
     // ── register ─────────────────────────────────────────────────────────
@@ -91,7 +94,7 @@ export function registerSessionLifecycleHandlers(socket: RelaySocket): void {
 
     // ── disconnect ───────────────────────────────────────────────────────
     socket.on("disconnect", async (reason) => {
-        console.log(`[sio/relay] disconnected: ${socket.id} (${reason})`);
+        log.info(`disconnected: ${socket.id} (${reason})`);
         const sessionId = socket.data.sessionId;
         if (sessionId) {
             // If a newer socket already re-registered this session (reconnect),
@@ -100,7 +103,7 @@ export function registerSessionLifecycleHandlers(socket: RelaySocket): void {
             // for any remaining race windows.
             const currentSocket = getLocalTuiSocket(sessionId);
             if (currentSocket && currentSocket !== socket) {
-                console.log(`[sio/relay] disconnect for ${socket.id} — session ${sessionId} already owned by ${currentSocket.id}, skipping teardown`);
+                log.info(`disconnect for ${socket.id} — session ${sessionId} already owned by ${currentSocket.id}, skipping teardown`);
                 socketAckedSeqs.delete(socket.id);
                 return;
             }
@@ -110,7 +113,7 @@ export function registerSessionLifecycleHandlers(socket: RelaySocket): void {
             // destructive Redis cleanup for those — the TUI worker is
             // still alive and will reconnect to the new server instance.
             if (shouldPreserveOnSocketDisconnect(reason)) {
-                console.log(`[sio/relay] server shutting down — preserving Redis state for session ${sessionId}`);
+                log.info(`server shutting down — preserving Redis state for session ${sessionId}`);
                 socketAckedSeqs.delete(socket.id);
                 return;
             }

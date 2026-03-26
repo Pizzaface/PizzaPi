@@ -1,3 +1,5 @@
+export { createLogger } from "./log.js";
+export type { Logger } from "./log.js";
 export { bashTool } from "./bash.js";
 export { readFileTool } from "./read-file.js";
 export { writeFileTool } from "./write-file.js";

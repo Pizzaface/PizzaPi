@@ -3,8 +3,11 @@ import { readFileSync, statSync, existsSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { createLogger } from "@pizzapi/tools";
 import type { SessionHeader, UsageMessage } from "./types.js";
 import { getSessionsDir } from "./schema.js";
+
+const log = createLogger("usage");
 
 export interface ParsedSessionHeader extends SessionHeader {}
 
@@ -409,7 +412,7 @@ export async function scanSessions(db: Database): Promise<void> {
         try {
           processFile(db, filePath, relativePath, sessionHeader, content, state?.last_offset);
         } catch (e) {
-          console.error(`Error processing ${filePath}:`, e);
+          log.error(`Error processing ${filePath}:`, e);
         }
       }
     }

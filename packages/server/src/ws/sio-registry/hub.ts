@@ -7,8 +7,11 @@
 
 import type { Socket } from "socket.io";
 import { getIo, HUB_ROOM, hubUserRoom } from "./context.js";
+import { createLogger } from "@pizzapi/tools";
 
 // ── Hub broadcasting ────────────────────────────────────────────────────────
+
+const log = createLogger("sio-registry");
 
 /**
  * Broadcast a message to all hub clients, optionally filtered by user.
@@ -31,7 +34,7 @@ export async function broadcastToHub(
         // Redis adapter publishes before local fan-out, so EPIPE drops the
         // event for local sockets too. Fall back to local-only delivery so
         // browsers on this server still get session_added/session_removed.
-        console.warn("[sio-registry] broadcastToHub failed, falling back to local:", (err as Error)?.message);
+        log.warn("broadcastToHub failed, falling back to local:", (err as Error)?.message);
         try {
             const hubNs = io.of("/hub");
             if (targetUserId) {

@@ -26,6 +26,9 @@ import {
     untrustPlugin,
 } from "./config.js";
 import { c } from "./cli-colors.js";
+import { createLogger } from "@pizzapi/tools";
+
+const log = createLogger("plugins");
 
 // ── Formatting helpers ────────────────────────────────────────────────────────
 
@@ -64,38 +67,38 @@ function listPlugins(cwd: string): void {
     const localOnly = localPlugins.filter((p) => !globalNames.has(p.name));
 
     if (globalPlugins.length === 0 && localOnly.length === 0) {
-        console.log("No Claude Code plugins found.");
-        console.log("\nSearch directories (global):");
+        log.info("No Claude Code plugins found.");
+        log.info("\nSearch directories (global):");
         for (const dir of globalPluginDirs()) {
-            console.log(`  ${dir}`);
+            log.info(`  ${dir}`);
         }
         if (localDirs.length > 0) {
-            console.log("\nSearch directories (project-local):");
+            log.info("\nSearch directories (project-local):");
             for (const dir of localDirs) {
-                console.log(`  ${dir}`);
+                log.info(`  ${dir}`);
             }
         }
         return;
     }
 
     if (globalPlugins.length > 0) {
-        console.log(`Global plugins (auto-trusted): ${globalPlugins.length}`);
+        log.info(`Global plugins (auto-trusted): ${globalPlugins.length}`);
         for (const p of globalPlugins) {
-            console.log(pluginLine(p));
+            log.info(pluginLine(p));
         }
     }
 
     if (localOnly.length > 0) {
-        if (globalPlugins.length > 0) console.log();
-        console.log(`Project-local plugins: ${localOnly.length}`);
+        if (globalPlugins.length > 0) log.info("");
+        log.info(`Project-local plugins: ${localOnly.length}`);
         for (const p of localOnly) {
-            console.log(pluginLine(p, isPluginTrusted(p.rootPath)));
+            log.info(pluginLine(p, isPluginTrusted(p.rootPath)));
         }
     }
 
     const untrustedLocal = localOnly.filter((p) => !isPluginTrusted(p.rootPath));
     if (untrustedLocal.length > 0) {
-        console.log(
+        log.info(
             `\n💡 ${untrustedLocal.length} untrusted local plugin${untrustedLocal.length > 1 ? "s" : ""}. ` +
             `Run \`pizza plugins trust <path>\` to pre-approve.`
         );
@@ -113,17 +116,17 @@ function trustCommand(args: string[], cwd: string): void {
         const untrusted = localPlugins.filter((p) => !isPluginTrusted(p.rootPath));
 
         if (untrusted.length === 0) {
-            console.log("No untrusted project-local plugins found.");
+            log.info("No untrusted project-local plugins found.");
             return;
         }
 
         // Trust all untrusted local plugins
-        console.log(`Trusting ${untrusted.length} local plugin${untrusted.length > 1 ? "s" : ""}:`);
+        log.info(`Trusting ${untrusted.length} local plugin${untrusted.length > 1 ? "s" : ""}:`);
         for (const p of untrusted) {
             const added = trustPlugin(p.rootPath);
-            console.log(`  ${added ? "✓" : "⋅"} ${p.name} → ${p.rootPath}`);
+            log.info(`  ${added ? "✓" : "⋅"} ${p.name} → ${p.rootPath}`);
         }
-        console.log("\nPlugins will auto-load on next session start.");
+        log.info("\nPlugins will auto-load on next session start.");
         return;
     }
 
@@ -134,15 +137,15 @@ function trustCommand(args: string[], cwd: string): void {
         // Path is a plugins directory — trust all plugins in it
         for (const p of plugins) {
             const added = trustPlugin(p.rootPath);
-            console.log(`${added ? "✓ Trusted" : "⋅ Already trusted"}: ${p.name} (${p.rootPath})`);
+            log.info(`${added ? "✓ Trusted" : "⋅ Already trusted"}: ${p.name} (${p.rootPath})`);
         }
     } else {
         // Path might be a single plugin directory
         const added = trustPlugin(target);
         if (added) {
-            console.log(`✓ Trusted: ${target}`);
+            log.info(`✓ Trusted: ${target}`);
         } else {
-            console.log(`⋅ Already trusted: ${target}`);
+            log.info(`⋅ Already trusted: ${target}`);
         }
     }
 }
@@ -151,61 +154,61 @@ function untrustCommand(args: string[], cwd: string): void {
     if (args.length === 0) {
         const list = getTrustedPlugins();
         if (list.length === 0) {
-            console.log("No plugins in the trust list.");
+            log.info("No plugins in the trust list.");
             return;
         }
         // Remove all
         for (const p of [...list]) {
             untrustPlugin(p);
         }
-        console.log(`Removed ${list.length} plugin${list.length > 1 ? "s" : ""} from the trust list.`);
+        log.info(`Removed ${list.length} plugin${list.length > 1 ? "s" : ""} from the trust list.`);
         return;
     }
 
     const target = resolve(cwd, args[0]);
     const removed = untrustPlugin(target);
     if (removed) {
-        console.log(`✓ Removed from trust list: ${target}`);
+        log.info(`✓ Removed from trust list: ${target}`);
     } else {
-        console.log(`⋅ Not in trust list: ${target}`);
+        log.info(`⋅ Not in trust list: ${target}`);
     }
 }
 
 function showTrusted(): void {
     const list = getTrustedPlugins();
     if (list.length === 0) {
-        console.log("No plugins in the trust list.");
-        console.log('Use `pizza plugins trust <path>` to add plugins.');
+        log.info("No plugins in the trust list.");
+        log.info('Use `pizza plugins trust <path>` to add plugins.');
         return;
     }
-    console.log(`Trusted plugins (${list.length}):`);
+    log.info(`Trusted plugins (${list.length}):`);
     for (const p of list) {
-        console.log(`  ${p}`);
+        log.info(`  ${p}`);
     }
 }
 
 function showHelp(): void {
-    console.log();
-    console.log(`${c.brand("pizza plugins")} ${c.dim("— Manage Claude Code plugins")}`);
-    console.log();
-    console.log(c.label("Commands"));
-    console.log(`  ${c.cmd("pizza plugins")}                List all discovered plugins (global + local)`);
-    console.log(`  ${c.cmd("pizza plugins list")}           Same as above`);
-    console.log(`  ${c.cmd("pizza plugins trust")} ${c.dim("[path]")}   Trust project-local plugin(s)`);
-    console.log(`                               ${c.dim("No path → trust all untrusted local plugins")}`);
-    console.log(`                               ${c.dim("With path → trust plugin at that path")}`);
-    console.log(`  ${c.cmd("pizza plugins untrust")} ${c.dim("[path]")} Remove plugin(s) from the trust list`);
-    console.log(`                               ${c.dim("No path → clear the entire trust list")}`);
-    console.log(`                               ${c.dim("With path → remove that specific plugin")}`);
-    console.log(`  ${c.cmd("pizza plugins trusted")}        Show the current trust list`);
-    console.log();
-    console.log(c.dim("Trusted plugins auto-load without prompting. Global plugins"));
-    console.log(c.dim("(~/.pizzapi/plugins/, ~/.agents/plugins/, ~/.claude/plugins/) are"));
-    console.log(c.dim("always auto-trusted. Project-local plugins require explicit trust"));
-    console.log(c.dim("via this command or interactive confirmation at session start."));
-    console.log();
-    console.log(c.dim("Trust state is stored in ~/.pizzapi/config.json (trustedPlugins)."));
-    console.log();
+    log.info("");
+    log.info(`${c.brand("pizza plugins")} ${c.dim("— Manage Claude Code plugins")}`);
+    log.info("");
+    log.info(c.label("Commands"));
+    log.info(`  ${c.cmd("pizza plugins")}                List all discovered plugins (global + local)`);
+    log.info(`  ${c.cmd("pizza plugins list")}           Same as above`);
+    log.info(`  ${c.cmd("pizza plugins trust")} ${c.dim("[path]")}   Trust project-local plugin(s)`);
+    log.info(`                               ${c.dim("No path → trust all untrusted local plugins")}`);
+    log.info(`                               ${c.dim("With path → trust plugin at that path")}`);
+    log.info(`  ${c.cmd("pizza plugins untrust")} ${c.dim("[path]")} Remove plugin(s) from the trust list`);
+    log.info(`                               ${c.dim("No path → clear the entire trust list")}`);
+    log.info(`                               ${c.dim("With path → remove that specific plugin")}`);
+    log.info(`  ${c.cmd("pizza plugins trusted")}        Show the current trust list`);
+    log.info("");
+    log.info(c.dim("Trusted plugins auto-load without prompting. Global plugins"));
+    log.info(c.dim("(~/.pizzapi/plugins/, ~/.agents/plugins/, ~/.claude/plugins/) are"));
+    log.info(c.dim("always auto-trusted. Project-local plugins require explicit trust"));
+    log.info(c.dim("via this command or interactive confirmation at session start."));
+    log.info("");
+    log.info(c.dim("Trust state is stored in ~/.pizzapi/config.json (trustedPlugins)."));
+    log.info("");
 }
 
 // ── Entry point ───────────────────────────────────────────────────────────────

@@ -3,6 +3,9 @@ import type { HooksConfig } from "../../config.js";
 import { normalizeToolInput } from "./matcher.js";
 import { runHook, parseHookOutput } from "./runner.js";
 import { getMatchingHooks, runEventHooks, runFireAndForgetHooks } from "./events.js";
+import { createLogger } from "@pizzapi/tools";
+
+const log = createLogger("hooks");
 
 // ---------------------------------------------------------------------------
 // Extension factory
@@ -113,7 +116,7 @@ export function createHooksExtension(hooksConfig: HooksConfig | undefined, cwd: 
                 } catch (err) {
                     // Defensive: never let hook errors crash the tool pipeline
                     const msg = err instanceof Error ? err.message : String(err);
-                    console.error(`[hooks] PreToolUse handler error: ${msg}`);
+                    log.error(`PreToolUse handler error: ${msg}`);
                 }
             });
         }
@@ -179,7 +182,7 @@ export function createHooksExtension(hooksConfig: HooksConfig | undefined, cwd: 
                 } catch (err) {
                     // Defensive: never let hook errors crash the tool pipeline
                     const msg = err instanceof Error ? err.message : String(err);
-                    console.error(`[hooks] PostToolUse handler error: ${msg}`);
+                    log.error(`PostToolUse handler error: ${msg}`);
                 }
             });
         }
@@ -206,7 +209,7 @@ export function createHooksExtension(hooksConfig: HooksConfig | undefined, cwd: 
 
                     // Block → mark as handled so the agent doesn't see it
                     if (blocked) {
-                        console.error(`[hooks] Input blocked: ${reason}`);
+                        log.error(`Input blocked: ${reason}`);
                         return { action: "handled" as const };
                     }
 
@@ -226,7 +229,7 @@ export function createHooksExtension(hooksConfig: HooksConfig | undefined, cwd: 
                     return { action: "continue" as const };
                 } catch (err) {
                     const msg = err instanceof Error ? err.message : String(err);
-                    console.error(`[hooks] Input handler error: ${msg}`);
+                    log.error(`Input handler error: ${msg}`);
                     return { action: "continue" as const };
                 }
             });
@@ -254,7 +257,7 @@ export function createHooksExtension(hooksConfig: HooksConfig | undefined, cwd: 
 
                     // BeforeAgentStart doesn't support blocking — just log
                     if (blocked) {
-                        console.error("[hooks] BeforeAgentStart hook failed (non-fatal)");
+                        log.error("BeforeAgentStart hook failed (non-fatal)");
                     }
 
                     // Collect context and system prompt overrides
@@ -287,7 +290,7 @@ export function createHooksExtension(hooksConfig: HooksConfig | undefined, cwd: 
                     if (Object.keys(result).length > 0) return result;
                 } catch (err) {
                     const msg = err instanceof Error ? err.message : String(err);
-                    console.error(`[hooks] BeforeAgentStart handler error: ${msg}`);
+                    log.error(`BeforeAgentStart handler error: ${msg}`);
                 }
             });
         }
@@ -328,7 +331,7 @@ export function createHooksExtension(hooksConfig: HooksConfig | undefined, cwd: 
                     }
                 } catch (err) {
                     const msg = err instanceof Error ? err.message : String(err);
-                    console.error(`[hooks] UserBash handler error: ${msg}`);
+                    log.error(`UserBash handler error: ${msg}`);
                 }
             });
         }
@@ -354,12 +357,12 @@ export function createHooksExtension(hooksConfig: HooksConfig | undefined, cwd: 
                     );
 
                     if (blocked) {
-                        console.error(`[hooks] Session switch cancelled: ${reason}`);
+                        log.error(`Session switch cancelled: ${reason}`);
                         return { cancel: true };
                     }
                 } catch (err) {
                     const msg = err instanceof Error ? err.message : String(err);
-                    console.error(`[hooks] SessionBeforeSwitch handler error: ${msg}`);
+                    log.error(`SessionBeforeSwitch handler error: ${msg}`);
                 }
             });
         }
@@ -380,12 +383,12 @@ export function createHooksExtension(hooksConfig: HooksConfig | undefined, cwd: 
                     );
 
                     if (blocked) {
-                        console.error(`[hooks] Session fork cancelled: ${reason}`);
+                        log.error(`Session fork cancelled: ${reason}`);
                         return { cancel: true };
                     }
                 } catch (err) {
                     const msg = err instanceof Error ? err.message : String(err);
-                    console.error(`[hooks] SessionBeforeFork handler error: ${msg}`);
+                    log.error(`SessionBeforeFork handler error: ${msg}`);
                 }
             });
         }
@@ -402,7 +405,7 @@ export function createHooksExtension(hooksConfig: HooksConfig | undefined, cwd: 
                     );
                 } catch (err) {
                     const msg = err instanceof Error ? err.message : String(err);
-                    console.error(`[hooks] SessionShutdown handler error: ${msg}`);
+                    log.error(`SessionShutdown handler error: ${msg}`);
                 }
             });
         }
@@ -427,12 +430,12 @@ export function createHooksExtension(hooksConfig: HooksConfig | undefined, cwd: 
                     );
 
                     if (blocked) {
-                        console.error(`[hooks] Session compaction cancelled: ${reason}`);
+                        log.error(`Session compaction cancelled: ${reason}`);
                         return { cancel: true };
                     }
                 } catch (err) {
                     const msg = err instanceof Error ? err.message : String(err);
-                    console.error(`[hooks] SessionBeforeCompact handler error: ${msg}`);
+                    log.error(`SessionBeforeCompact handler error: ${msg}`);
                 }
             });
         }
@@ -455,12 +458,12 @@ export function createHooksExtension(hooksConfig: HooksConfig | undefined, cwd: 
                     );
 
                     if (blocked) {
-                        console.error(`[hooks] Session tree navigation cancelled: ${reason}`);
+                        log.error(`Session tree navigation cancelled: ${reason}`);
                         return { cancel: true };
                     }
                 } catch (err) {
                     const msg = err instanceof Error ? err.message : String(err);
-                    console.error(`[hooks] SessionBeforeTree handler error: ${msg}`);
+                    log.error(`SessionBeforeTree handler error: ${msg}`);
                 }
             });
         }
@@ -493,7 +496,7 @@ export function createHooksExtension(hooksConfig: HooksConfig | undefined, cwd: 
                     );
                 } catch (err) {
                     const msg = err instanceof Error ? err.message : String(err);
-                    console.error(`[hooks] ModelSelect handler error: ${msg}`);
+                    log.error(`ModelSelect handler error: ${msg}`);
                 }
             });
         }

@@ -13,6 +13,9 @@
 import type { Server as SocketIOServer, Socket } from "socket.io";
 import type { ModelInfo } from "@pizzapi/protocol";
 import { getEphemeralTtlMs } from "../../sessions/store.js";
+import { createLogger } from "@pizzapi/tools";
+
+const log = createLogger("sio-registry");
 
 // ── Socket.IO server reference ──────────────────────────────────────────────
 
@@ -115,7 +118,7 @@ export function emitToRunner(runnerId: string, eventName: string, data: unknown)
             .to(runnerRoom(runnerId))
             .emit(eventName, data);
     } catch (err) {
-        console.warn("[sio-registry] emitToRunner room emit failed:", (err as Error)?.message);
+        log.warn("emitToRunner room emit failed:", (err as Error)?.message);
     }
     // Compatibility fallback: direct local socket emit.
     // Handles runners on this node that haven't joined the room yet
@@ -146,7 +149,7 @@ export function emitToRelaySession(sessionId: string, eventName: string, data: u
         // only if the session's TUI socket is actually on this server —
         // otherwise the local room is empty and returning true would mislead
         // callers (e.g. MCP OAuth would consume the nonce for a dropped callback).
-        console.warn("[sio-registry] emitToRelaySession failed, falling back to local:", (err as Error)?.message);
+        log.warn("emitToRelaySession failed, falling back to local:", (err as Error)?.message);
         if (!localTuiSockets.has(sessionId)) return false;
         try {
             io.of("/relay")
@@ -179,7 +182,7 @@ export async function emitToRelaySessionVerified(sessionId: string, eventName: s
         io.of("/relay").to(room).emit(eventName, data);
         return true;
     } catch (err) {
-        console.warn("[sio-registry] emitToRelaySessionVerified failed:", (err as Error)?.message);
+        log.warn("emitToRelaySessionVerified failed:", (err as Error)?.message);
         return false;
     }
 }
@@ -236,7 +239,7 @@ export async function emitToRelaySessionAwaitingAck(
 
         return { hadListeners: true, acked: responses.length > 0 };
     } catch (err) {
-        console.warn("[sio-registry] emitToRelaySessionAwaitingAck failed:", (err as Error)?.message);
+        log.warn("emitToRelaySessionAwaitingAck failed:", (err as Error)?.message);
         return { hadListeners: true, acked: false };
     }
 }
@@ -252,7 +255,7 @@ export function broadcastToSessionViewers(sessionId: string, eventName: string, 
             .to(viewerSessionRoom(sessionId))
             .emit(eventName, data);
     } catch (err) {
-        console.warn("[sio-registry] broadcastToSessionViewers failed:", (err as Error)?.message);
+        log.warn("broadcastToSessionViewers failed:", (err as Error)?.message);
     }
 }
 

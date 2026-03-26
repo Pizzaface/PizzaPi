@@ -68,9 +68,11 @@ describe("deleteRelayEventCaches Performance", () => {
         const sessionIds = ["s1"];
         await deleteRelayEventCaches(sessionIds);
 
-        // Should verify that it caught the error and logged it
+        // Should verify that it caught the error and logged it.
+        // The logger outputs: timestamp, "[tag]", message, ...args
         expect(consoleSpy).toHaveBeenCalled();
-        expect(consoleSpy.mock.calls[0][0]).toContain("Failed to delete relay event caches from Redis");
+        const allArgs = consoleSpy.mock.calls[0].join(" ");
+        expect(allArgs).toContain("Failed to delete relay event caches from Redis");
 
         consoleSpy.mockRestore();
     });

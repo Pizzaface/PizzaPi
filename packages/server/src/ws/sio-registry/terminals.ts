@@ -23,8 +23,11 @@ import {
     localTerminalGcTimers,
     terminalRoom,
 } from "./context.js";
+import { createLogger } from "@pizzapi/tools";
 
 // ── Terminal Management ─────────────────────────────────────────────────────
+
+const log = createLogger("sio-terminal");
 
 export interface TerminalSpawnOpts {
     cwd?: string;
@@ -64,7 +67,7 @@ export async function registerTerminal(
     const timer = setTimeout(async () => {
         const t = await getTerminalState(terminalId);
         if (t && !t.spawned) {
-            console.log(`[sio-terminal] GC: removing unspawned terminal ${terminalId} (no viewer within ${TERMINAL_PENDING_TIMEOUT_MS}ms)`);
+            log.info(`GC: removing unspawned terminal ${terminalId} (no viewer within ${TERMINAL_PENDING_TIMEOUT_MS}ms)`);
             await cleanupTerminal(terminalId);
         }
     }, TERMINAL_PENDING_TIMEOUT_MS);
@@ -95,7 +98,7 @@ export async function setTerminalViewer(terminalId: string, socket: Socket): Pro
     // Replay buffered messages
     const buffer = localTerminalBuffers.get(terminalId) ?? [];
     if (buffer.length > 0) {
-        console.log(`[sio-terminal] replaying ${buffer.length} buffered messages for terminal ${terminalId}`);
+        log.info(`replaying ${buffer.length} buffered messages for terminal ${terminalId}`);
         for (const msg of buffer) {
             const msgObj = msg as Record<string, unknown>;
             const eventName = (msgObj.type as string) ?? "terminal_data";
@@ -176,7 +179,7 @@ export async function removeTerminal(terminalId: string): Promise<void> {
     if (existingTimer) clearTimeout(existingTimer);
 
     const timer = setTimeout(async () => {
-        console.log(`[sio-terminal] GC: removing terminal ${terminalId} (no viewer within ${TERMINAL_GC_DELAY_MS}ms)`);
+        log.info(`GC: removing terminal ${terminalId} (no viewer within ${TERMINAL_GC_DELAY_MS}ms)`);
         await cleanupTerminal(terminalId);
     }, TERMINAL_GC_DELAY_MS);
     localTerminalGcTimers.set(terminalId, timer);
@@ -192,7 +195,7 @@ export function sendToTerminalViewer(terminalId: string, msg: unknown): void {
             buffer.push(msg);
         } else {
             const type = msg && typeof msg === "object" ? (msg as Record<string, unknown>).type : "?";
-            console.warn(`[sio-terminal] sendToTerminalViewer: no entry for ${terminalId} (msg.type=${type}) — dropped`);
+            log.warn(`sendToTerminalViewer: no entry for ${terminalId} (msg.type=${type}) — dropped`);
         }
         return;
     }

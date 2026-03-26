@@ -16,8 +16,11 @@
 
 import { randomUUID } from "node:crypto";
 import { buildSessionContext } from "@mariozechner/pi-coding-agent";
+import { createLogger } from "@pizzapi/tools";
 import { getCurrentTodoList } from "../update-todo.js";
 import type { RelayContext } from "../remote-types.js";
+
+const log = createLogger("remote");
 
 /** Estimated payload size (bytes) above which we chunk messages. */
 const CHUNK_THRESHOLD = 5 * 1024 * 1024; // 5 MB — safely below 10 MB server limit
@@ -114,7 +117,7 @@ export function capOversizedMessages(messages: unknown[]): unknown[] {
             }
 
             result[i] = capped;
-            console.warn(
+            log.warn(
                 `pizzapi: message ${i} truncated (~${(size / 1024 / 1024).toFixed(0)} MB exceeds ${(MAX_MESSAGE_SIZE / 1024 / 1024).toFixed(0)} MB cap).`,
             );
         }
@@ -173,7 +176,7 @@ function sendChunkedMessages(rctx: RelayContext, rawMessages: unknown[], snapsho
     const chunks = computeChunkBoundaries(messages);
     const totalChunks = chunks.length;
 
-    console.log(
+    log.info(
         `pizzapi: session is large (${messages.length} messages, ~${(estimateMessagesSize(messages) / 1024 / 1024).toFixed(0)} MB). ` +
         `Sending in ${totalChunks} chunks (snapshot=${snapshotId.slice(0, 8)}).`,
     );

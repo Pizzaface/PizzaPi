@@ -1,4 +1,7 @@
 import { getKysely } from "../auth.js";
+import { createLogger } from "@pizzapi/tools";
+
+const log = createLogger("sessions/store");
 
 const DEFAULT_EPHEMERAL_TTL_MS = 10 * 60 * 1000;
 const DEFAULT_SWEEP_INTERVAL_MS = 60 * 1000;
@@ -93,7 +96,7 @@ export async function ensureRelaySessionTables(): Promise<void> {
             .execute();
     } catch (error) {
         if (!isDuplicateColumnError(error, "isPinned")) {
-            console.error("[sessions/store] Failed to migrate relay_session.isPinned:", error);
+            log.error("Failed to migrate relay_session.isPinned:", error);
             throw error;
         }
     }
@@ -106,7 +109,7 @@ export async function ensureRelaySessionTables(): Promise<void> {
             .execute();
     } catch (error) {
         if (!isDuplicateColumnError(error, "runnerId")) {
-            console.error("[sessions/store] Failed to migrate relay_session.runnerId:", error);
+            log.error("Failed to migrate relay_session.runnerId:", error);
             throw error;
         }
     }
@@ -119,7 +122,7 @@ export async function ensureRelaySessionTables(): Promise<void> {
             .execute();
     } catch (error) {
         if (!isDuplicateColumnError(error, "runnerName")) {
-            console.error("[sessions/store] Failed to migrate relay_session.runnerName:", error);
+            log.error("Failed to migrate relay_session.runnerName:", error);
             throw error;
         }
     }
@@ -246,8 +249,8 @@ export async function updateRelaySessionRunner(
         }
     }
 
-    console.warn(
-        `[sessions/store] updateRelaySessionRunner: gave up linking runner ${runnerId} to session ${sessionId} after ${MAX_ATTEMPTS} attempts`,
+    log.warn(
+        `updateRelaySessionRunner: gave up linking runner ${runnerId} to session ${sessionId} after ${MAX_ATTEMPTS} attempts`,
     );
     return false;
 }

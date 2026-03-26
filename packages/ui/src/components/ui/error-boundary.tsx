@@ -1,6 +1,9 @@
 import * as React from "react";
 import { AlertCircle, RefreshCw } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { createLogger } from "@pizzapi/tools";
+
+const log = createLogger("error-boundary");
 
 export type ErrorBoundaryLevel = "root" | "section" | "widget";
 
@@ -42,7 +45,7 @@ export class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoun
   }
 
   componentDidCatch(error: Error, info: React.ErrorInfo): void {
-    console.error("[ErrorBoundary] Caught render error:", error, info.componentStack);
+    log.error("Caught render error:", error, info.componentStack);
   }
 
   componentDidUpdate(prevProps: ErrorBoundaryProps): void {

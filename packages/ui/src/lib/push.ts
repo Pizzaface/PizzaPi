@@ -1,3 +1,5 @@
+import { createLogger } from "@pizzapi/tools";
+
 /**
  * WebPush notification subscription management for the browser.
  *
@@ -5,6 +7,8 @@
  * to push notifications via the Web Push API. It communicates with the
  * PizzaPi server to register the PushSubscription with VAPID credentials.
  */
+
+const log = createLogger("push");
 
 let cachedVapidKey: string | null = null;
 
@@ -71,14 +75,14 @@ export async function getExistingSubscription(): Promise<PushSubscription | null
  */
 export async function subscribeToPush(): Promise<PushSubscription | null> {
     if (!isPushSupported()) {
-        console.warn("[push] Push notifications are not supported in this browser.");
+        log.warn("Push notifications are not supported in this browser.");
         return null;
     }
 
     // Request permission
     const permission = await Notification.requestPermission();
     if (permission !== "granted") {
-        console.warn("[push] Notification permission denied.");
+        log.warn("Notification permission denied.");
         return null;
     }
 
@@ -107,7 +111,7 @@ export async function subscribeToPush(): Promise<PushSubscription | null> {
     });
 
     if (!res.ok) {
-        console.error("[push] Failed to register subscription with server:", res.status);
+        log.error("Failed to register subscription with server:", res.status);
         // Unsubscribe since server registration failed
         await subscription.unsubscribe();
         return null;
@@ -132,7 +136,7 @@ export async function unsubscribeFromPush(): Promise<boolean> {
             body: JSON.stringify({ endpoint: subscription.endpoint }),
         });
     } catch (err) {
-        console.error("[push] Failed to unregister subscription from server:", err);
+        log.error("Failed to unregister subscription from server:", err);
     }
 
     // Unsubscribe locally

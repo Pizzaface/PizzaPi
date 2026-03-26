@@ -2,6 +2,9 @@ import type { HookEntry, HookMatcher } from "../../config.js";
 import type { HookOutput } from "./types.js";
 import { matchesTool } from "./matcher.js";
 import { runHook, parseHookOutput } from "./runner.js";
+import { createLogger } from "@pizzapi/tools";
+
+const log = createLogger("hooks");
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -91,7 +94,7 @@ export async function runFireAndForgetHooks(
             await runHook(hook, payload, cwd);
         } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
-            console.error(`[hooks] ${eventName} handler error: ${msg}`);
+            log.error(`${eventName} handler error: ${msg}`);
         }
     }
 }

@@ -24,6 +24,9 @@ import {
 import { ErrorAlert } from "@/components/ui/error-alert";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
+import { createLogger } from "@pizzapi/tools";
+
+const log = createLogger("skills-ui");
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -428,7 +431,7 @@ export function SkillsManager({ runnerId, skills: initialSkills, onSkillsChange,
                 handleSkillsChange(data.skills);
             }
         } catch (err) {
-            console.error("Failed to refresh skills:", err);
+            log.error("Failed to refresh skills:", err);
         } finally {
             setRefreshing(false);
         }

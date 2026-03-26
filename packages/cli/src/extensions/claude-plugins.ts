@@ -25,6 +25,9 @@ import { isPluginTrusted, trustPlugin } from "../config.js";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
+import { createLogger } from "@pizzapi/tools";
+
+const log = createLogger("claude-plugins");
 
 // ── Hook executor ─────────────────────────────────────────────────────────────
 
@@ -65,8 +68,7 @@ async function execHookCommand(
                         (error as any).code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" ||
                         (error.message ?? "").includes("maxBuffer");
                     if (isMaxBuffer) {
-                        console.warn(
-                            `[claude-plugins] Hook stdout was truncated (maxBuffer exceeded) for command: ${command}. ` +
+                        log.warn(`Hook stdout was truncated (maxBuffer exceeded) for command: ${command}. ` +
                             `A {"decision":"block"} at the end of large output may have been silently lost.`,
                         );
                     }

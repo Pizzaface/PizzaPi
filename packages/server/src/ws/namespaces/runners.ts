@@ -15,6 +15,9 @@ import type {
 } from "@pizzapi/protocol";
 import { sessionCookieAuthMiddleware } from "./auth.js";
 import { getRunners, runnersUserRoom } from "../sio-registry.js";
+import { createLogger } from "@pizzapi/tools";
+
+const log = createLogger("sio/runners");
 
 export function registerRunnersNamespace(io: SocketIOServer): void {
     const runners: Namespace<
@@ -30,7 +33,7 @@ export function registerRunnersNamespace(io: SocketIOServer): void {
     runners.on("connection", async (socket) => {
         const userId = socket.data.userId ?? "";
 
-        console.log(`[sio/runners] connected: ${socket.id} userId=${userId}`);
+        log.info(`connected: ${socket.id} userId=${userId}`);
 
         // Join per-user room so broadcasts are user-scoped
         await socket.join(runnersUserRoom(userId));
@@ -41,7 +44,7 @@ export function registerRunnersNamespace(io: SocketIOServer): void {
 
         // ── disconnect ───────────────────────────────────────────────────────
         socket.on("disconnect", (reason) => {
-            console.log(`[sio/runners] disconnected: ${socket.id} (${reason})`);
+            log.info(`disconnected: ${socket.id} (${reason})`);
             // Socket.IO automatically removes sockets from rooms on disconnect
         });
     });

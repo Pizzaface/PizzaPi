@@ -11,11 +11,14 @@
 
 import { type PizzaPiConfig } from "../../config.js";
 import { PizzaPiOAuthProvider, type RelayContext } from "../mcp-oauth.js";
-import { isSandboxActive, getResolvedConfig } from "@pizzapi/tools";
+import { createLogger, isSandboxActive, getResolvedConfig } from "@pizzapi/tools";
 import { createStdioMcpClient } from "./transport-stdio.js";
 import { createHttpMcpClient, createStreamableMcpClient } from "./transport-http.js";
 import { allocateProviderSafeToolName } from "./tool-naming.js";
 import { type McpClient, type McpTool } from "./types.js";
+
+const log = createLogger("MCP");
+const sandboxLog = createLogger("sandbox/mcp");
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Config types
@@ -109,8 +112,7 @@ function isMcpDomainAllowed(url: string, serverName: string): boolean {
   const allowedDomains = sandboxCfg.srtConfig.network.allowedDomains;
   // Empty allowedDomains in full mode means deny-all network
   if (allowedDomains.length === 0) {
-    console.warn(
-      `[sandbox/mcp] Blocked MCP server "${serverName}": no domains in allowedDomains (full mode). ` +
+    sandboxLog.warn(`Blocked MCP server "${serverName}": no domains in allowedDomains (full mode). ` +
       `Add the domain to sandbox.network.allowedDomains in config.`,
     );
     return false;
@@ -123,8 +125,7 @@ function isMcpDomainAllowed(url: string, serverName: string): boolean {
     // Normalize to lowercase for case-insensitive DNS matching
     const deniedDomains = (sandboxCfg.srtConfig.network.deniedDomains ?? []).map(d => d.toLowerCase());
     if (deniedDomains.some(d => hostname === d || hostname.endsWith(`.${d.replace(/^\*\./, "")}`))) {
-      console.warn(
-        `[sandbox/mcp] Blocked MCP server "${serverName}": domain "${hostname}" ` +
+      sandboxLog.warn(`Blocked MCP server "${serverName}": domain "${hostname}" ` +
         `is in deniedDomains [${deniedDomains.join(", ")}]`,
       );
       return false;
@@ -134,13 +135,12 @@ function isMcpDomainAllowed(url: string, serverName: string): boolean {
     if (normalizedAllowed.some(d => hostname === d || hostname.endsWith(`.${d.replace(/^\*\./, "")}`))) {
       return true;
     }
-    console.warn(
-      `[sandbox/mcp] Blocked MCP server "${serverName}": domain "${hostname}" ` +
+    sandboxLog.warn(`Blocked MCP server "${serverName}": domain "${hostname}" ` +
       `not in allowedDomains [${allowedDomains.join(", ")}]`,
     );
     return false;
   } catch {
-    console.warn(`[sandbox/mcp] Blocked MCP server "${serverName}": invalid URL "${url}"`);
+    sandboxLog.warn(`Blocked MCP server "${serverName}": invalid URL "${url}"`);
     return false;
   }
 }
@@ -178,7 +178,7 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
           }),
         );
       } catch (err) {
-        console.error(`[MCP] Failed to create stdio client for "${s.name}": ${err}`);
+        log.error(`Failed to create stdio client for "${s.name}": ${err}`);
       }
     } else if (s.transport === "http") {
       if (!isMcpDomainAllowed(s.url, s.name)) continue;
@@ -228,7 +228,7 @@ export async function createMcpClientsFromConfig(config: PizzaPiConfig & McpConf
           }),
         );
       } catch (err) {
-        console.error(`[MCP] Failed to create stdio client for "${name}": ${err}`);
+        log.error(`Failed to create stdio client for "${name}": ${err}`);
       }
       continue;
     }
@@ -649,7 +649,7 @@ export async function registerMcpTools(
           const errStr = String(result.error);
           const isAuthError = /oauth|authentication|auth callback/i.test(errStr);
           if (!isAuthError) {
-            console.warn(`pizzapi: MCP server "${result.name}" failed in background: ${result.error}`);
+            log.warn(`pizzapi: MCP server "${result.name}" failed in background: ${result.error}`);
           }
         }
       }

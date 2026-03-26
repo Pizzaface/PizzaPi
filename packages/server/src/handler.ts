@@ -3,6 +3,10 @@ import { isValidPassword, PASSWORD_REQUIREMENTS_SUMMARY } from "@pizzapi/protoco
 import { handleApi } from "./routes/index.js";
 import { serveStaticFile } from "./static.js";
 import { getClientIp } from "./security.js";
+import { createLogger } from "@pizzapi/tools";
+
+const authLog = createLogger("auth");
+const apiLog = createLogger("api");
 
 /** Default body size limit for API routes (1 MB). */
 export const MAX_BODY_SIZE = 1 * 1024 * 1024;
@@ -248,7 +252,7 @@ async function _handleFetch(req: Request): Promise<Response> {
             const authReq = new Request(req, { headers: authHeaders });
             return await getAuth().handler(authReq);
         } catch (e) {
-            console.error("[auth] handler threw:", e);
+            authLog.error("handler threw:", e);
             return Response.json({ error: "Auth error" }, { status: 500 });
         }
     }
@@ -258,7 +262,7 @@ async function _handleFetch(req: Request): Promise<Response> {
         const res = await handleApi(req, url);
         if (res !== undefined) return res;
     } catch (e) {
-        console.error("[api] handleApi threw:", e);
+        apiLog.error("handleApi threw:", e);
         return Response.json({ error: "Internal server error" }, { status: 500 });
     }
 

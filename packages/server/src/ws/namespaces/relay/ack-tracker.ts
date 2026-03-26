@@ -3,6 +3,9 @@
 // Stored outside socket.data because RelaySocketData doesn't include it.
 
 import type { RelaySocket } from "./types.js";
+import { createLogger } from "@pizzapi/tools";
+
+const log = createLogger("sio/relay");
 
 export const socketAckedSeqs = new Map<string, number>();
 
@@ -20,7 +23,7 @@ export function sendCumulativeEventAck(socket: RelaySocket, seq: number): void {
             // Redis adapter can throw EPIPE when the Redis connection is temporarily
             // closed. Log and swallow — the ack is best-effort and the TUI will
             // resend any un-acked events on reconnect.
-            console.warn("[sio/relay] sendCumulativeEventAck emit failed (Redis EPIPE?):", (err as Error)?.message);
+            log.warn("sendCumulativeEventAck emit failed (Redis EPIPE?):", (err as Error)?.message);
         }
     }
 }

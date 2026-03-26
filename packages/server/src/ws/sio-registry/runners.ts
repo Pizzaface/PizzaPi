@@ -38,6 +38,9 @@ import {
 } from "./context.js";
 import { broadcastToHub } from "./hub.js";
 import { broadcastToRunnersNs } from "./runners-broadcast.js";
+import { createLogger } from "@pizzapi/tools";
+
+const log = createLogger("sio-registry");
 
 // ── Internal helpers ─────────────────────────────────────────────────────────
 
@@ -314,7 +317,7 @@ export async function linkSessionToRunner(runnerId: string, sessionId: string): 
     // Also persist the runner link in SQLite so historical/pinned sessions
     // retain their runner provenance after the Redis session hash is deleted.
     void updateRelaySessionRunner(sessionId, runnerId, runner.name).catch((error) => {
-        console.error("[sio-registry] Failed to persist runner link to SQLite:", error);
+        log.error("Failed to persist runner link to SQLite:", error);
     });
 
     const heartbeat = session.lastHeartbeat ? safeJsonParse(session.lastHeartbeat) : null;
@@ -464,7 +467,7 @@ export async function touchRunner(runnerId: string): Promise<void> {
 export async function sweepOrphanedRunners(): Promise<void> {
     const io = getIo();
     if (!io) {
-        console.warn("[sweepOrphanedRunners] Socket.IO not initialized — skipping sweep");
+        log.warn("Socket.IO not initialized — skipping sweep");
         return;
     }
     const allRunners = await getAllRunners();
@@ -482,7 +485,7 @@ export async function sweepOrphanedRunners(): Promise<void> {
             continue;
         }
 
-        console.log(`[sio-registry] Pruning orphaned runner ${runner.runnerId} (${runner.name ?? "unnamed"}) — not reconnected after restart`);
+        log.info(`Pruning orphaned runner ${runner.runnerId} (${runner.name ?? "unnamed"}) — not reconnected after restart`);
         await deleteRunnerState(runner.runnerId);
         void broadcastToRunnersNs(
             "runner_removed",
@@ -492,6 +495,6 @@ export async function sweepOrphanedRunners(): Promise<void> {
         pruned++;
     }
     if (pruned > 0) {
-        console.log(`[sio-registry] Pruned ${pruned} orphaned runner(s)`);
+        log.info(`Pruned ${pruned} orphaned runner(s)`);
     }
 }

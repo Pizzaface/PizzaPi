@@ -6,6 +6,9 @@
 import { existsSync } from "fs";
 import { stat } from "node:fs/promises";
 import { join, extname, resolve, sep } from "path";
+import { createLogger } from "@pizzapi/tools";
+
+const log = createLogger("static");
 
 // Resolve UI dist directory. Check in order:
 // 1. PIZZAPI_UI_DIR env var
@@ -37,9 +40,9 @@ export function setUiDir(dir: string | null) {
 }
 
 if (UI_DIR) {
-    console.log(`[static] Serving UI from ${UI_DIR}`);
+    log.info(`Serving UI from ${UI_DIR}`);
 } else {
-    console.log("[static] No UI dist found — static file serving disabled");
+    log.info("No UI dist found — static file serving disabled");
 }
 
 const MIME_TYPES: Record<string, string> = {

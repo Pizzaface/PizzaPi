@@ -13,6 +13,9 @@
 import { mkdir, rm, readdir, readFile, writeFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { createLogger } from "@pizzapi/tools";
+
+const log = createLogger("attachments");
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -239,7 +242,7 @@ export async function sweepOrphanedAttachments(activeSessionIds: Set<string>): P
     }
 
     if (removed > 0) {
-        console.log(`pizzapi: swept ${removed} orphaned session attachment director${removed === 1 ? "y" : "ies"}`);
+        log.info(`swept ${removed} orphaned session attachment director${removed === 1 ? "y" : "ies"}`);
     }
     return removed;
 }

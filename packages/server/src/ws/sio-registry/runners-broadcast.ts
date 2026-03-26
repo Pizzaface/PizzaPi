@@ -1,6 +1,9 @@
 // runners-broadcast.ts — Helpers for broadcasting runner events to /runners namespace
 // Room helper lives in context.ts (alongside hubUserRoom) to avoid circular deps.
 import { getIo, runnersUserRoom } from "./context.js";
+import { createLogger } from "@pizzapi/tools";
+
+const log = createLogger("sio-registry");
 
 /**
  * Broadcast a runner lifecycle event to all connected /runners clients.
@@ -21,7 +24,7 @@ export async function broadcastToRunnersNs(
             runnersNs.emit(eventName, data);
         }
     } catch (err) {
-        console.warn("[sio-registry] broadcastToRunnersNs failed, falling back to local:", (err as Error)?.message);
+        log.warn("broadcastToRunnersNs failed, falling back to local:", (err as Error)?.message);
         try {
             const runnersNs = io.of("/runners");
             if (userId) {

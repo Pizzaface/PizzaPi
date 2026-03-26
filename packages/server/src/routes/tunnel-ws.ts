@@ -20,6 +20,9 @@ import { getAuth } from "../auth.js";
 import { getSession } from "../ws/sio-state.js";
 import { getLocalRunnerSocket } from "../ws/sio-registry.js";
 import type { Socket } from "socket.io";
+import { createLogger } from "@pizzapi/tools";
+
+const log = createLogger("tunnel-ws");
 
 /** Pattern: /api/tunnel/:sessionId/:port/<rest> */
 const TUNNEL_PATH_RE = /^\/api\/tunnel\/([^/]+)\/(\d+)(\/.*)?$/;
@@ -80,7 +83,7 @@ export function handleTunnelWsUpgrade(
     // The catch handles any unexpected errors (e.g. auth library throws synchronously
     // after an await point) so the rejected promise never becomes unhandled.
     handleUpgradeAsync(req, socket, head, match, url).catch((err) => {
-        console.error("[tunnel-ws] Unexpected error in upgrade handler:", err);
+        log.error("Unexpected error in upgrade handler:", err);
         if (!socket.destroyed) {
             rejectUpgrade(socket, 500, "Internal Server Error");
         }

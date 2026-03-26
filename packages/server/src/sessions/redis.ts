@@ -1,5 +1,8 @@
 import { createClient } from "redis";
 import { getEphemeralTtlMs } from "./store.js";
+import { createLogger } from "@pizzapi/tools";
+
+const log = createLogger("redis");
 
 const DEFAULT_REDIS_URL = "redis://127.0.0.1:6379";
 const DEFAULT_EVENT_BUFFER_SIZE = 1000;
@@ -52,9 +55,9 @@ function logUnavailableOnce(message: string, error?: unknown) {
     if (unavailableLogged) return;
     unavailableLogged = true;
     if (error) {
-        console.warn(`${message}:`, error);
+        log.warn(`${message}:`, error);
     } else {
-        console.warn(message);
+        log.warn(message);
     }
 }
 
@@ -65,7 +68,7 @@ function activeClient(): RelayRedisClient | null {
 
 export async function initializeRelayRedisCache(): Promise<void> {
     if (isRedisDisabled()) {
-        console.log("Relay Redis cache disabled (PIZZAPI_REDIS_URL=off).");
+        log.info("Relay Redis cache disabled (PIZZAPI_REDIS_URL=off).");
         return;
     }
 
@@ -91,7 +94,7 @@ export async function initializeRelayRedisCache(): Promise<void> {
             await next.connect();
             client = next;
             unavailableLogged = false;
-            console.log(`Relay Redis cache connected at ${url}.`);
+            log.info(`Relay Redis cache connected at ${url}.`);
         } catch (error) {
             logUnavailableOnce("Relay Redis cache unavailable; continuing without event replay", error);
             try {

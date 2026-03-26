@@ -23,6 +23,9 @@ import {
 } from "lucide-react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
+import { createLogger } from "@pizzapi/tools";
+
+const log = createLogger("plugins-ui");
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -370,7 +373,7 @@ export function PluginsManager({ runnerId, plugins: initialPlugins, onPluginsCha
                 }
             }
         } catch (err) {
-            console.error("Failed to refresh plugins:", err);
+            log.error("Failed to refresh plugins:", err);
         } finally {
             setRefreshing(false);
         }

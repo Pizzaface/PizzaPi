@@ -10,13 +10,15 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
+import { logError, logInfo, logWarn, setLogComponent } from "./logger.js";
 import { defaultStatePath, isPidRunning } from "./runner-state.js";
 
 export async function runStop(): Promise<number> {
+    setLogComponent("supervisor");
     const statePath = defaultStatePath();
 
     if (!existsSync(statePath)) {
-        console.error("No runner state file found. Is a runner running?");
+        logError("No runner state file found. Is a runner running?");
         return 1;
     }
 
@@ -28,7 +30,7 @@ export async function runStop(): Promise<number> {
     try {
         state = JSON.parse(readFileSync(statePath, "utf-8"));
     } catch {
-        console.error(`Failed to read runner state from ${statePath}`);
+        logError(`Failed to read runner state from ${statePath}`);
         return 1;
     }
 
@@ -44,21 +46,21 @@ export async function runStop(): Promise<number> {
             : 0;
 
     if (targetPid === 0) {
-        console.log("No running runner process found.");
+        logInfo("No running runner process found.");
         return 0;
     }
 
     const label = targetPid === supervisorPid ? "supervisor" : "daemon";
-    console.log(`Stopping runner ${label} (pid ${targetPid})…`);
+    logInfo(`Stopping runner ${label} (pid ${targetPid})…`);
 
     try {
         process.kill(targetPid, "SIGTERM");
     } catch (err: any) {
         if (err?.code === "ESRCH") {
-            console.log("Process already exited.");
+            logInfo("Process already exited.");
             return 0;
         }
-        console.error(`Failed to send SIGTERM: ${err?.message ?? String(err)}`);
+        logError(`Failed to send SIGTERM: ${err?.message ?? String(err)}`);
         return 1;
     }
 
@@ -66,7 +68,7 @@ export async function runStop(): Promise<number> {
     const deadline = Date.now() + 10_000;
     while (Date.now() < deadline) {
         if (!isPidRunning(targetPid)) {
-            console.log("Runner stopped.");
+            logInfo("Runner stopped.");
             return 0;
         }
         await new Promise((r) => setTimeout(r, 250));
@@ -76,7 +78,7 @@ export async function runStop(): Promise<number> {
     // On Windows, SIGKILL is not supported; use SIGTERM which unconditionally
     // terminates the process on Windows (equivalent to SIGKILL on Unix).
     const forceSignal = process.platform === "win32" ? "SIGTERM" : "SIGKILL";
-    console.warn(`Runner did not exit in time. Force-killing…`);
+    logWarn("Runner did not exit in time. Force-killing…");
     try {
         process.kill(targetPid, forceSignal);
     } catch { /* ignore */ }
@@ -88,6 +90,6 @@ export async function runStop(): Promise<number> {
         } catch { /* ignore */ }
     }
 
-    console.log("Runner force-stopped.");
+    logInfo("Runner force-stopped.");
     return 0;
 }

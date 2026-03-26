@@ -18,6 +18,7 @@ import { existsSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
 import { c } from "./cli-colors.js";
+import { createLogger } from "@pizzapi/tools";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -44,6 +45,7 @@ const WEB_DIR = join(homedir(), ".pizzapi", "web");
 const CONFIG_PATH = join(WEB_DIR, "config.json");
 const HOST_BUILD_STATE_PATH = join(WEB_DIR, "host-build.json");
 const REPO_URL = "https://github.com/Pizzaface/PizzaPi.git";
+const log = createLogger("web");
 
 interface HostBuildState {
     lastLockHash?: string | null;
@@ -401,7 +403,7 @@ function migrateLegacySettings(): Partial<WebConfig> {
     }
 
     if (sources.length > 0) {
-        console.log(`Migrated settings from ${sources.join(", ")} → config.json`);
+        log.info(`Migrated settings from ${sources.join(", ")} → config.json`);
     }
 
     return migrated;
@@ -459,7 +461,7 @@ export function loadWebConfig(): WebConfig {
 
             return config;
         } catch {
-            console.warn("Warning: config.json is corrupted, using defaults.");
+            log.warn("Warning: config.json is corrupted, using defaults.");
         }
     }
 
@@ -471,7 +473,7 @@ export function loadWebConfig(): WebConfig {
         config.vapid = legacy.vapid;
     } else {
         config.vapid = generateVapidKeys();
-        console.log("Generated new VAPID keys for push notifications.");
+        log.info("Generated new VAPID keys for push notifications.");
     }
     if (legacy.vapidSubject) config.vapidSubject = legacy.vapidSubject;
     if (legacy.extraOrigins) config.extraOrigins = legacy.extraOrigins;
@@ -483,7 +485,7 @@ export function loadWebConfig(): WebConfig {
         config.betterAuthSecret = legacy.betterAuthSecret;
     } else {
         config.betterAuthSecret = generateBetterAuthSecret();
-        console.log("Generated BETTER_AUTH_SECRET for authentication.");
+        log.info("Generated BETTER_AUTH_SECRET for authentication.");
     }
 
     saveWebConfig(config);
@@ -503,7 +505,7 @@ function ensureDocker(): void {
         execFileSync("docker", ["--version"], { stdio: "ignore" });
         execFileSync("docker", ["compose", "version"], { stdio: "ignore" });
     } catch {
-        console.error(
+        log.error(
             "Error: Docker with Compose is required for `pizza web`.\n" +
             "Install Docker Desktop: https://docs.docker.com/get-docker/\n"
         );
@@ -541,21 +543,21 @@ function getRepoPath(): string {
 
     const clonedRepo = join(WEB_DIR, "repo");
     if (existsSync(join(clonedRepo, "Dockerfile"))) {
-        console.log("Updating PizzaPi repository...");
+        log.info("Updating PizzaPi repository...");
         try {
             execFileSync("git", ["pull", "--rebase"], { cwd: clonedRepo, stdio: "inherit" });
         } catch {
-            console.warn("Warning: Could not update repo, using existing version.");
+            log.warn("Warning: Could not update repo, using existing version.");
         }
         return clonedRepo;
     }
 
-    console.log("Cloning PizzaPi repository...");
+    log.info("Cloning PizzaPi repository...");
     mkdirSync(WEB_DIR, { recursive: true });
     try {
         execFileSync("git", ["clone", "--depth", "1", REPO_URL, clonedRepo], { stdio: "inherit" });
     } catch {
-        console.error(
+        log.error(
             "Error: Failed to clone the PizzaPi repository.\n\n" +
             "You can clone it manually:\n" +
             `  git clone ${REPO_URL} ${clonedRepo}\n\n` +
@@ -632,11 +634,11 @@ function prebuildUI(repoPath: string): PrebuildResult {
     try {
         execFileSync("bun", ["--version"], { stdio: "ignore" });
     } catch {
-        console.log("bun not found on host — UI will be built inside Docker (slower).");
+        log.info("bun not found on host — UI will be built inside Docker (slower).");
         return { prebuilt: false, rebuilt: false };
     }
 
-    console.log("Pre-building UI on host for faster Docker build...");
+    log.info("Pre-building UI on host for faster Docker build...");
 
     const state = loadHostBuildState();
     let stateDirty = false;
@@ -650,7 +652,7 @@ function prebuildUI(repoPath: string): PrebuildResult {
 
     try {
         if (needsInstall) {
-            console.log("  Installing dependencies (bun install)...");
+            log.info("  Installing dependencies (bun install)...");
             execFileSync("bun", ["install"], { cwd: repoPath, stdio: "inherit" });
             state.lastLockHash = lockHash ?? null;
             stateDirty = true;
@@ -665,7 +667,7 @@ function prebuildUI(repoPath: string): PrebuildResult {
         });
 
         if (!needsUiBuild && distReady) {
-            console.log("  Host UI build is up to date (reusing dist/).");
+            log.info("  Host UI build is up to date (reusing dist/).");
             if (stateDirty) saveHostBuildState(state);
             return { prebuilt: true, rebuilt: false, distHash: computeDistHash(uiDist) };
         }
@@ -675,14 +677,14 @@ function prebuildUI(repoPath: string): PrebuildResult {
         // the filesystem bridge (virtiofs/gRPC-FUSE) can miss subtle changes.
         // Belt-and-suspenders: nuke it ourselves.
         if (existsSync(uiDist)) {
-            console.log("  Cleaning old dist/...");
+            log.info("  Cleaning old dist/...");
             rmSync(uiDist, { recursive: true, force: true });
         }
 
-        console.log("  Building protocol...");
+        log.info("  Building protocol...");
         execFileSync("bun", ["run", "build:protocol"], { cwd: repoPath, stdio: "inherit" });
 
-        console.log("  Building UI...");
+        log.info("  Building UI...");
         execFileSync("bun", ["run", "build:ui"], { cwd: repoPath, stdio: "inherit" });
 
         if (existsSync(uiDistIndex)) {
@@ -690,7 +692,7 @@ function prebuildUI(repoPath: string): PrebuildResult {
             // detects the rebuild, even if Vite produced byte-identical output.
             writeBuildStamp(uiDist);
 
-            console.log("  ✓ UI pre-built successfully.");
+            log.info("  ✓ UI pre-built successfully.");
             if (uiSignature) {
                 state.lastUiSignature = uiSignature;
                 stateDirty = true;
@@ -699,8 +701,8 @@ function prebuildUI(repoPath: string): PrebuildResult {
             return { prebuilt: true, rebuilt: true, distHash: computeDistHash(uiDist) };
         }
     } catch (err) {
-        console.warn("Warning: Host UI build failed, falling back to Docker build.");
-        if (err instanceof Error) console.warn(`  ${err.message}`);
+        log.warn("Warning: Host UI build failed, falling back to Docker build.");
+        if (err instanceof Error) log.warn(`  ${err.message}`);
         if (stateDirty) saveHostBuildState(state);
         return { prebuilt: false, rebuilt: false };
     }
@@ -793,10 +795,10 @@ function generateComposeFile(repoPath: string, config: WebConfig, prebuiltUi: bo
     // Only write if changed
     const existing = existsSync(composePath) ? readFileSync(composePath, "utf-8") : null;
     if (existing === compose) {
-        console.log(`Config unchanged: ${composePath}`);
+        log.info(`Config unchanged: ${composePath}`);
     } else {
         writeFileSync(composePath, compose);
-        console.log(existing ? `Updated ${composePath}` : `Created ${composePath}`);
+        log.info(existing ? `Updated ${composePath}` : `Created ${composePath}`);
     }
 
     return composePath;
@@ -838,12 +840,12 @@ export function parseArgs(args: string[]): ParsedArgs {
         const arg = args[i];
         if (arg === "--port" && args[i + 1]) {
             if (!/^\d+$/.test(args[i + 1])) {
-                console.error("Invalid port number");
+                log.error("Invalid port number");
                 process.exit(1);
             }
             const p = parseInt(args[i + 1], 10);
             if (p < 1 || p > 65535) {
-                console.error("Invalid port number");
+                log.error("Invalid port number");
                 process.exit(1);
             }
             result.port = p;
@@ -851,7 +853,7 @@ export function parseArgs(args: string[]): ParsedArgs {
         } else if (arg === "--origins") {
             const next = args[i + 1];
             if (!next || next.startsWith("-")) {
-                console.error("--origins requires a value (comma-separated origin URLs)");
+                log.error("--origins requires a value (comma-separated origin URLs)");
                 process.exit(1);
             }
             result.origins = next;
@@ -871,35 +873,35 @@ export function parseArgs(args: string[]): ParsedArgs {
 // ─── Help text ────────────────────────────────────────────────────────────────
 
 function printWebHelp(): void {
-    console.log();
-    console.log(`${c.brand("pizza web")} ${c.dim("— Manage the PizzaPi web hub (server + UI via Docker Compose)")}`);
-    console.log();
-    console.log(c.label("Commands"));
-    console.log(`  ${c.cmd("pizza web")} ${c.dim("[flags]")}               Start the web hub`);
-    console.log(`  ${c.cmd("pizza web stop")}                  Stop the web hub`);
-    console.log(`  ${c.cmd("pizza web logs")}                  Tail container logs`);
-    console.log(`  ${c.cmd("pizza web status")}                Show container status`);
-    console.log(`  ${c.cmd("pizza web config")}                Show current configuration`);
-    console.log(`  ${c.cmd("pizza web config set")} ${c.dim("<k> <v>")}    Update a config value`);
-    console.log();
-    console.log(c.label("Flags"));
-    console.log(`  ${c.flag("--port")} ${c.dim("<port>")}       Set the host port ${c.dim("(persisted to config.json)")}`);
-    console.log(`  ${c.flag("--origins")} ${c.dim("<list>")}    Set extra allowed CORS origins ${c.dim("(comma-separated, persisted)")}`);
-    console.log(`  ${c.flag("-f, --foreground")}    Run in the foreground ${c.dim("(don't detach)")}`);
-    console.log(`  ${c.flag("--no-cache")}          Rebuild Docker image without layer cache`);
-    console.log(`  ${c.flag("-h, --help")}          Show this help`);
-    console.log();
-    console.log(`${c.label("Configuration")} ${c.dim(`(${CONFIG_PATH})`)}`);
-    console.log(`  ${c.accent("port")}            Host port ${c.dim("(default: 7492)")}`);
-    console.log(`  ${c.accent("vapidSubject")}    VAPID subject for push notifications`);
-    console.log(`  ${c.accent("extraOrigins")}    Extra CORS origins, comma-separated`);
-    console.log();
-    console.log(c.label("Examples"));
-    console.log(`  ${c.dim("pizza web")}                           Start on default port 7492`);
-    console.log(`  ${c.dim("pizza web --port 8080")}               Start on port 8080 (remembered for next time)`);
-    console.log(`  ${c.dim("pizza web config set port 9000")}      Change port without starting`);
-    console.log(`  ${c.dim('pizza web config set extraOrigins "https://example.com"')}`);
-    console.log();
+    log.info("");
+    log.info(`${c.brand("pizza web")} ${c.dim("— Manage the PizzaPi web hub (server + UI via Docker Compose)")}`);
+    log.info("");
+    log.info(c.label("Commands"));
+    log.info(`  ${c.cmd("pizza web")} ${c.dim("[flags]")}               Start the web hub`);
+    log.info(`  ${c.cmd("pizza web stop")}                  Stop the web hub`);
+    log.info(`  ${c.cmd("pizza web logs")}                  Tail container logs`);
+    log.info(`  ${c.cmd("pizza web status")}                Show container status`);
+    log.info(`  ${c.cmd("pizza web config")}                Show current configuration`);
+    log.info(`  ${c.cmd("pizza web config set")} ${c.dim("<k> <v>")}    Update a config value`);
+    log.info("");
+    log.info(c.label("Flags"));
+    log.info(`  ${c.flag("--port")} ${c.dim("<port>")}       Set the host port ${c.dim("(persisted to config.json)")}`);
+    log.info(`  ${c.flag("--origins")} ${c.dim("<list>")}    Set extra allowed CORS origins ${c.dim("(comma-separated, persisted)")}`);
+    log.info(`  ${c.flag("-f, --foreground")}    Run in the foreground ${c.dim("(don't detach)")}`);
+    log.info(`  ${c.flag("--no-cache")}          Rebuild Docker image without layer cache`);
+    log.info(`  ${c.flag("-h, --help")}          Show this help`);
+    log.info("");
+    log.info(`${c.label("Configuration")} ${c.dim(`(${CONFIG_PATH})`)}`);
+    log.info(`  ${c.accent("port")}            Host port ${c.dim("(default: 7492)")}`);
+    log.info(`  ${c.accent("vapidSubject")}    VAPID subject for push notifications`);
+    log.info(`  ${c.accent("extraOrigins")}    Extra CORS origins, comma-separated`);
+    log.info("");
+    log.info(c.label("Examples"));
+    log.info(`  ${c.dim("pizza web")}                           Start on default port 7492`);
+    log.info(`  ${c.dim("pizza web --port 8080")}               Start on port 8080 (remembered for next time)`);
+    log.info(`  ${c.dim("pizza web config set port 9000")}      Change port without starting`);
+    log.info(`  ${c.dim('pizza web config set extraOrigins "https://example.com"')}`);
+    log.info("");
 }
 
 // ─── Config subcommand ────────────────────────────────────────────────────────
@@ -910,7 +912,7 @@ type SettableKey = typeof SETTABLE_KEYS[number];
 function runConfigSubcommand(args: string[]): void {
     // Handle help before loading config (no side effects)
     if (args.length === 1 && (args[0] === "--help" || args[0] === "-h")) {
-        console.log(`
+        log.info(`
 pizza web config — View or update web hub configuration
 
 Usage:
@@ -929,13 +931,13 @@ Settable keys:
 
     // pizza web config (show)
     if (args.length === 0) {
-        console.log(`PizzaPi Web Config (${CONFIG_PATH}):\n`);
-        console.log(`  port:          ${config.port}`);
-        console.log(`  vapidSubject:  ${config.vapidSubject}`);
-        console.log(`  extraOrigins:  ${config.extraOrigins || "(none)"}`);
-        console.log(`  authSecret:    ${config.betterAuthSecret ? "*".repeat(20) + "..." : "(missing)"}`);
-        console.log(`  vapid.public:  ${config.vapid.publicKey.slice(0, 20)}...`);
-        console.log(`  vapid.private: ${"*".repeat(20)}...`);
+        log.info(`PizzaPi Web Config (${CONFIG_PATH}):\n`);
+        log.info(`  port:          ${config.port}`);
+        log.info(`  vapidSubject:  ${config.vapidSubject}`);
+        log.info(`  extraOrigins:  ${config.extraOrigins || "(none)"}`);
+        log.info(`  authSecret:    ${config.betterAuthSecret ? "*".repeat(20) + "..." : "(missing)"}`);
+        log.info(`  vapid.public:  ${config.vapid.publicKey.slice(0, 20)}...`);
+        log.info(`  vapid.private: ${"*".repeat(20)}...`);
         return;
     }
 
@@ -944,14 +946,14 @@ Settable keys:
         const key = args[1] as SettableKey;
 
         if (!key || args.length < 3) {
-            console.error("Usage: pizza web config set <key> <value>");
-            console.error(`Settable keys: ${SETTABLE_KEYS.join(", ")}`);
+            log.error("Usage: pizza web config set <key> <value>");
+            log.error(`Settable keys: ${SETTABLE_KEYS.join(", ")}`);
             process.exit(1);
         }
 
         if (!SETTABLE_KEYS.includes(key)) {
-            console.error(`Unknown config key: ${key}`);
-            console.error(`Settable keys: ${SETTABLE_KEYS.join(", ")}`);
+            log.error(`Unknown config key: ${key}`);
+            log.error(`Settable keys: ${SETTABLE_KEYS.join(", ")}`);
             process.exit(1);
         }
 
@@ -959,18 +961,18 @@ Settable keys:
 
         if (key === "port") {
             if (!/^\d+$/.test(value)) {
-                console.error("Invalid port number");
+                log.error("Invalid port number");
                 process.exit(1);
             }
             const p = parseInt(value, 10);
             if (p < 1 || p > 65535) {
-                console.error("Invalid port number");
+                log.error("Invalid port number");
                 process.exit(1);
             }
             config.port = p;
         } else if (key === "vapidSubject") {
             if (!value) {
-                console.error("vapidSubject cannot be empty (required for push notifications)");
+                log.error("vapidSubject cannot be empty (required for push notifications)");
                 process.exit(1);
             }
             config.vapidSubject = value;
@@ -980,13 +982,13 @@ Settable keys:
         }
 
         saveWebConfig(config);
-        console.log(`Set ${key} = ${value}`);
-        console.log("Run `pizza web` to apply changes.");
+        log.info(`Set ${key} = ${value}`);
+        log.info("Run `pizza web` to apply changes.");
         return;
     }
 
-    console.error(`Unknown config subcommand: ${args[0]}`);
-    console.error("Run `pizza web config --help` for usage.");
+    log.error(`Unknown config subcommand: ${args[0]}`);
+    log.error("Run `pizza web config --help` for usage.");
     process.exit(1);
 }
 
@@ -1006,10 +1008,10 @@ export async function runWeb(args: string[]): Promise<void> {
         ensureDocker();
         const composePath = join(WEB_DIR, "compose.yml");
         if (!existsSync(composePath)) {
-            console.log("PizzaPi web is not running.");
+            log.info("PizzaPi web is not running.");
             return;
         }
-        console.log("Stopping PizzaPi web...");
+        log.info("Stopping PizzaPi web...");
         await composeExecAsync(composePath, ["down"]);
         return;
     }
@@ -1019,7 +1021,7 @@ export async function runWeb(args: string[]): Promise<void> {
         ensureDocker();
         const composePath = join(WEB_DIR, "compose.yml");
         if (!existsSync(composePath)) {
-            console.log("PizzaPi web is not running.");
+            log.info("PizzaPi web is not running.");
             return;
         }
         await composeExecAsync(composePath, ["logs", "-f", "--tail", "100"]);
@@ -1031,7 +1033,7 @@ export async function runWeb(args: string[]): Promise<void> {
         ensureDocker();
         const composePath = join(WEB_DIR, "compose.yml");
         if (!existsSync(composePath)) {
-            console.log("PizzaPi web is not set up. Run `pizza web` to start.");
+            log.info("PizzaPi web is not set up. Run `pizza web` to start.");
             return;
         }
         await composeExecAsync(composePath, ["ps"]);
@@ -1074,7 +1076,7 @@ export async function runWeb(args: string[]): Promise<void> {
 
     const useHostPrebuild = readBooleanEnv(process.env.PIZZAPI_PREBUILD_UI, true);
     if (!useHostPrebuild) {
-        console.log("Skipping host UI pre-build (PIZZAPI_PREBUILD_UI=false).");
+        log.info("Skipping host UI pre-build (PIZZAPI_PREBUILD_UI=false).");
     }
 
     // Pre-build UI on the host for much faster Docker builds when enabled.
@@ -1083,10 +1085,10 @@ export async function runWeb(args: string[]): Promise<void> {
         : { prebuilt: false, rebuilt: false };
     const composePath = generateComposeFile(repoPath, config, prebuildResult.prebuilt, prebuildResult.distHash);
 
-    console.log(`Starting PizzaPi web on port ${config.port}...`);
-    console.log(`  Repo:    ${repoPath}`);
-    console.log(`  Config:  ${CONFIG_PATH}`);
-    console.log();
+    log.info(`Starting PizzaPi web on port ${config.port}...`);
+    log.info(`  Repo:    ${repoPath}`);
+    log.info(`  Config:  ${CONFIG_PATH}`);
+    log.info("");
 
     // When the host prebuild actually rebuilt, force-recreate containers so
     // Docker picks up the new image even if BuildKit's layer cache didn't
@@ -1096,7 +1098,7 @@ export async function runWeb(args: string[]): Promise<void> {
     // --no-cache: run a separate `docker compose build --no-cache` first,
     // because `docker compose up` doesn't support --no-cache directly.
     if (parsed.noCache) {
-        console.log("Building without cache...");
+        log.info("Building without cache...");
         await composeExecAsync(composePath, ["build", "--no-cache"]);
     }
 
@@ -1104,13 +1106,13 @@ export async function runWeb(args: string[]): Promise<void> {
         const upArgs = ["up", "-d", "--build"];
         if (forceRecreate) upArgs.push("--force-recreate");
         await composeExecAsync(composePath, upArgs);
-        console.log();
-        console.log(`✅ PizzaPi web is running at http://localhost:${config.port}`);
-        console.log();
-        console.log("  pizza web logs      View logs");
-        console.log("  pizza web status    Check status");
-        console.log("  pizza web stop      Stop the hub");
-        console.log("  pizza web config    View configuration");
+        log.info("");
+        log.info(`✅ PizzaPi web is running at http://localhost:${config.port}`);
+        log.info("");
+        log.info("  pizza web logs      View logs");
+        log.info("  pizza web status    Check status");
+        log.info("  pizza web stop      Stop the hub");
+        log.info("  pizza web config    View configuration");
     } else {
         const upArgs = ["up", "--build"];
         if (forceRecreate) upArgs.push("--force-recreate");

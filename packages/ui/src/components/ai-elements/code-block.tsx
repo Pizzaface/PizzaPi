@@ -131,6 +131,9 @@ import {
   MAX_HIGHLIGHTER_CACHE_SIZE,
   MAX_TOKENS_CACHE_SIZE,
 } from "./code-block-cache";
+import { createLogger } from "@pizzapi/tools";
+
+const log = createLogger("code-block");
 
 // Highlighter cache (singleton per language)
 const highlighterCache = new Map<
@@ -237,7 +240,7 @@ export const highlightCode = (
     })
     // oxlint-disable-next-line eslint-plugin-promise(prefer-await-to-then), eslint-plugin-promise(prefer-await-to-callbacks)
     .catch((error) => {
-      console.error("Failed to highlight code:", error);
+      log.error("Failed to highlight code:", error);
       subscribers.delete(tokensCacheKey);
     });
 
