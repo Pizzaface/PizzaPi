@@ -85,37 +85,44 @@ export function registerMessagingHandlers(socket: RelaySocket): void {
         }
 
         const targetSocket = getLocalTuiSocket(targetSessionId);
-        if (!targetSocket) {
-            socket.emit("session_message_error", {
-                targetSessionId,
-                error: "Target session not found or not connected",
-            });
-            return;
-        }
-
-        try {
-            if (data.deliverAs === "input") {
-                // Deliver as agent input — starts a new turn (used by tell_child).
-                // Mirrors the viewer namespace "input" handler behavior.
-                targetSocket.emit("input" as string, {
-                    text: messageText,
-                    attachments: [],
-                    client: "agent",
-                    deliverAs: "followUp",
-                });
-            } else {
-                // Deliver to message bus (used by send_message / wait_for_message).
-                targetSocket.emit("session_message" as string, {
-                    fromSessionId: sessionId,
-                    message: messageText,
-                    ts: new Date().toISOString(),
+        if (targetSocket) {
+            try {
+                if (data.deliverAs === "input") {
+                    // Deliver as agent input — starts a new turn (used by tell_child).
+                    // Mirrors the viewer namespace "input" handler behavior.
+                    targetSocket.emit("input" as string, {
+                        text: messageText,
+                        attachments: [],
+                        client: "agent",
+                        deliverAs: "followUp",
+                    });
+                } else {
+                    // Deliver to message bus (used by send_message / wait_for_message).
+                    targetSocket.emit("session_message" as string, {
+                        fromSessionId: sessionId,
+                        message: messageText,
+                        ts: new Date().toISOString(),
+                    });
+                }
+            } catch {
+                socket.emit("session_message_error", {
+                    targetSessionId,
+                    error: "Failed to deliver message to target session",
                 });
             }
-        } catch {
-            socket.emit("session_message_error", {
-                targetSessionId,
-                error: "Failed to deliver message to target session",
-            });
+        } else {
+            // Cross-node fallback: target TUI socket is on a different server node.
+            // Try to deliver via the relay room using verified cross-node emit.
+            const eventName = data.deliverAs === "input" ? "input" : "session_message";
+            const payload = data.deliverAs === "input"
+                ? { text: messageText, attachments: [], client: "agent", deliverAs: "followUp" }
+                : { fromSessionId: sessionId, message: messageText, ts: new Date().toISOString() };
+            if (!await emitToRelaySessionVerified(targetSessionId, eventName, payload)) {
+                socket.emit("session_message_error", {
+                    targetSessionId,
+                    error: "Target session not found or not connected",
+                });
+            }
         }
     });
 
@@ -177,30 +184,32 @@ export function registerMessagingHandlers(socket: RelaySocket): void {
             await refreshChildSessionsTTL(targetSessionId);
         }
 
+        // For escalations targeting the sender's own session, preserve the
+        // original child sourceSessionId so the viewer can attribute the
+        // escalation to the correct child. For all other triggers, enforce
+        // server-side identity to prevent spoofing.
+        if (trigger.type === "escalate" && targetSessionId === sessionId) {
+            // Escalation to self — keep original sourceSessionId for viewer attribution
+        } else {
+            trigger.sourceSessionId = sessionId;
+        }
+
         const targetSocket = getLocalTuiSocket(targetSessionId);
-        if (!targetSocket) {
+        if (targetSocket) {
+            try {
+                targetSocket.emit("session_trigger" as any, { trigger });
+            } catch {
+                socket.emit("session_message_error", {
+                    targetSessionId,
+                    error: "Failed to deliver trigger to target session",
+                });
+            }
+        } else if (!await emitToRelaySessionVerified(targetSessionId, "session_trigger", { trigger })) {
+            // Cross-node fallback: target TUI socket is on a different server node.
+            // emitToRelaySessionVerified returns false when no relay recipient is present.
             socket.emit("session_message_error", {
                 targetSessionId,
                 error: `Target session ${targetSessionId} is not connected`,
-            });
-            return;
-        }
-
-        try {
-            // For escalations targeting the sender's own session, preserve the
-            // original child sourceSessionId so the viewer can attribute the
-            // escalation to the correct child. For all other triggers, enforce
-            // server-side identity to prevent spoofing.
-            if (trigger.type === "escalate" && targetSessionId === sessionId) {
-                // Escalation to self — keep original sourceSessionId for viewer attribution
-            } else {
-                trigger.sourceSessionId = sessionId;
-            }
-            targetSocket.emit("session_trigger" as any, { trigger });
-        } catch {
-            socket.emit("session_message_error", {
-                targetSessionId,
-                error: "Failed to deliver trigger to target session",
             });
         }
     });
