@@ -50,6 +50,12 @@ const HOP_BY_HOP = new Set([
   "proxy-authorization",
   "proxy-authenticate",
   "host",
+  // Strip accept-encoding so the local service returns uncompressed responses.
+  // The tunnel serialises body chunks as JSON strings (Latin-1 "binary" encoding),
+  // so upstream compression saves nothing.  More critically, the server-side
+  // HTML/JS/CSS rewriting path needs plaintext — if the local service returns
+  // gzip/br, the rewriter interprets compressed bytes as UTF-8 → garbled output.
+  "accept-encoding",
 ]);
 
 const STRIP_AUTH = new Set(["cookie", "authorization", "x-api-key"]);

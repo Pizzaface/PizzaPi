@@ -539,6 +539,11 @@ export const handleTunnelRoute: RouteHandler = async (req, url) => {
         "proxy-authenticate",
         // Rewrite host to 127.0.0.1:{port} in the runner
         "host",
+        // Strip accept-encoding so the local service returns uncompressed
+        // responses.  The tunnel serialises body chunks as JSON strings, so
+        // upstream compression saves nothing.  The HTML/JS/CSS rewriter needs
+        // plaintext — compressed bytes interpreted as UTF-8 produce garbled output.
+        "accept-encoding",
     ]);
 
     // Auth headers that must not be forwarded to the runner/local service.

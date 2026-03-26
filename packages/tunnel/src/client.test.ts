@@ -141,6 +141,50 @@ describe("TunnelClient", () => {
     ]);
   });
 
+  test("strips accept-encoding from forwarded headers so local service returns uncompressed responses", async () => {
+    let seenAcceptEncoding: string | undefined;
+
+    const { server, port } = await startHttpServer((req, res) => {
+      seenAcceptEncoding = req.headers["accept-encoding"];
+      res.writeHead(200, { "content-type": "text/html" });
+      res.end("<html><body>ok</body></html>");
+    });
+
+    try {
+      const client = new TunnelClient({
+        runnerId: "r1",
+        apiKey: "key1",
+        relayUrl: "ws://localhost:9999/_tunnel",
+        autoReconnect: false,
+      });
+      client.exposePort(port);
+      const sent = attachMockRelay(client);
+
+      (client as any).handleMessage(
+        JSON.stringify({
+          type: "request-start",
+          id: "req-enc",
+          port,
+          method: "GET",
+          url: "/",
+          headers: {
+            "accept-encoding": "gzip, deflate, br",
+            "accept": "text/html",
+          },
+        }),
+      );
+      (client as any).handleMessage(JSON.stringify({ type: "request-data-end", id: "req-enc" }));
+
+      await waitUntil(() => decodeSent(sent).some((m) => m.type === "response-data-end"));
+
+      // The local service must NOT see accept-encoding — otherwise it would
+      // compress the response and the tunnel rewriting path would garble it.
+      expect(seenAcceptEncoding).toBeUndefined();
+    } finally {
+      await stopHttpServer(server);
+    }
+  });
+
   test("streams local HTTP responses back to the relay", async () => {
     let seenAuthorization: string | undefined;
     let seenHost: string | undefined;
