@@ -17,6 +17,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
+import { safeFence } from "@/lib/export-markdown";
 import { CheckIcon, CopyIcon } from "lucide-react";
 import {
   createContext,
@@ -113,11 +114,13 @@ interface TokenizedCode {
 
 interface CodeBlockContextType {
   code: string;
+  language: string;
 }
 
 // Context
 const CodeBlockContext = createContext<CodeBlockContextType>({
   code: "",
+  language: "text",
 });
 
 // Cache size limits and FIFO eviction logic — imported from shared utility so
@@ -431,7 +434,7 @@ export const CodeBlock = ({
   children,
   ...props
 }: CodeBlockProps) => {
-  const contextValue = useMemo(() => ({ code }), [code]);
+  const contextValue = useMemo(() => ({ code, language }), [code, language]);
 
   return (
     <CodeBlockContext.Provider value={contextValue}>
@@ -463,7 +466,7 @@ export const CodeBlockCopyButton = ({
 }: CodeBlockCopyButtonProps) => {
   const [isCopied, setIsCopied] = useState(false);
   const timeoutRef = useRef<number>(0);
-  const { code } = useContext(CodeBlockContext);
+  const { code, language } = useContext(CodeBlockContext);
 
   const copyToClipboard = useCallback(async () => {
     if (typeof window === "undefined" || !navigator?.clipboard?.writeText) {
@@ -473,7 +476,7 @@ export const CodeBlockCopyButton = ({
 
     try {
       if (!isCopied) {
-        await navigator.clipboard.writeText(code);
+        await navigator.clipboard.writeText(safeFence(code, language));
         setIsCopied(true);
         onCopy?.();
         timeoutRef.current = window.setTimeout(
@@ -484,7 +487,7 @@ export const CodeBlockCopyButton = ({
     } catch (error) {
       onError?.(error as Error);
     }
-  }, [code, onCopy, onError, timeout, isCopied]);
+  }, [code, language, onCopy, onError, timeout, isCopied]);
 
   useEffect(
     () => () => {

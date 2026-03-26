@@ -73,8 +73,16 @@ import { ProviderIcon } from "@/components/ProviderIcon";
 import { MultipleChoiceQuestions } from "@/components/ai-elements/multiple-choice";
 import { PlanModePanel, type PlanModeAnswer } from "@/components/ai-elements/plan-mode";
 import { formatAnswersForAgent, type QuestionDisplayMode } from "@/lib/ask-user-questions";
+import { exportToMarkdown } from "@/lib/export-markdown";
 import { dismissNotificationsForSession } from "@/lib/push";
-import { AlertTriangleIcon, BookOpen, Bot, CheckCircle2, ChevronsUpDown, Circle, CircleDashed, Copy, Loader2, MessageSquare, OctagonX, PaperclipIcon, Pencil, Plus, Puzzle, ShieldAlert, Zap, Clock, X, Trash2, TerminalIcon, XCircle, FolderTree, GitBranch } from "lucide-react";
+import { AlertTriangleIcon, BookOpen, Bot, Check, CheckCircle2, ChevronsUpDown, Circle, CircleDashed, Copy, Download, Loader2, MessageSquare, MoreHorizontal, OctagonX, PaperclipIcon, Pencil, Plus, Puzzle, ShieldAlert, Zap, Clock, X, Trash2, TerminalIcon, XCircle, FolderTree, GitBranch } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { AtMentionPopover } from "@/components/AtMentionPopover";
 import type { Entry as AtMentionEntry } from "@/hooks/useAtMentionFiles";
 import { McpToggleContext, type McpToggleHandler } from "@/components/session-viewer/McpToggleContext";
@@ -142,6 +150,12 @@ export interface SessionViewerProps {
   onToggleGit?: () => void;
   /** Whether to show the git button */
   showGitButton?: boolean;
+  /** Whether the terminal panel is currently open (used for mobile overflow menu state indicator) */
+  isTerminalOpen?: boolean;
+  /** Whether the file explorer panel is currently open (used for mobile overflow menu state indicator) */
+  isFileExplorerOpen?: boolean;
+  /** Whether the git panel is currently open (used for mobile overflow menu state indicator) */
+  isGitOpen?: boolean;
   /** Extra buttons to render in the header bar (e.g. service panel toggles) */
   extraHeaderButtons?: React.ReactNode;
   /** Current agent todo list */
@@ -443,7 +457,7 @@ const SessionMessageItem = React.memo(({ message, activeToolCalls, agentActive, 
             {message.timestamp && <span>• {new Date(message.timestamp).toLocaleTimeString()}</span>}
             {message.isError && <span className="text-destructive">• Error</span>}
             <MessageCopyButton
-              text={typeof message.content === "string" ? message.content : message.content != null ? JSON.stringify(message.content, null, 2) : message.errorMessage ?? ""}
+              text={exportToMarkdown([message])}
               className="ml-auto opacity-0 group-hover/msg:opacity-100 transition-opacity"
             />
           </div>
@@ -559,7 +573,106 @@ function SessionSkeleton() {
   );
 }
 
-export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, pendingPlan, pluginTrustPrompt, onPluginTrustResponse, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, isCompacting, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onEditQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, onToggleGit, showGitButton, todoList = [], planModeEnabled, runnerId, sessionCwd, onAppendSystemMessage, onSpawnAgentSession, onTriggerResponse, onQuestionDismiss, onPlanDismiss, onDuplicateSession, runnerInfo, extraHeaderButtons, mcpOAuthPastes, onMcpOAuthPaste, onMcpOAuthPasteDismiss, onMcpServerDisable }: SessionViewerProps) {
+interface HeaderOverflowMenuProps {
+  showTerminalButton?: boolean;
+  onToggleTerminal?: () => void;
+  isTerminalOpen?: boolean;
+  showFileExplorerButton?: boolean;
+  onToggleFileExplorer?: () => void;
+  isFileExplorerOpen?: boolean;
+  showGitButton?: boolean;
+  onToggleGit?: () => void;
+  isGitOpen?: boolean;
+  onDuplicateSession?: () => void;
+  messages: RelayMessage[];
+  sessionId: string | null;
+}
+
+function HeaderOverflowMenu({ showTerminalButton, onToggleTerminal, isTerminalOpen, showFileExplorerButton, onToggleFileExplorer, isFileExplorerOpen, showGitButton, onToggleGit, isGitOpen, onDuplicateSession, messages, sessionId }: HeaderOverflowMenuProps) {
+  const [copyState, setCopyState] = React.useState<"idle" | "copied">("idle");
+  const timerRef = React.useRef<ReturnType<typeof setTimeout>>(undefined);
+
+  // Clear the reset timer on unmount to avoid state updates on an unmounted component.
+  React.useEffect(() => () => clearTimeout(timerRef.current), []);
+
+  // The menu always has at least the Copy/Download export items, so no guard needed.
+
+  const handleCopyExport = async () => {
+    const md = exportToMarkdown(messages);
+    try {
+      await navigator.clipboard.writeText(md);
+      setCopyState("copied");
+      clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => setCopyState("idle"), 2000);
+    } catch { /* silent */ }
+  };
+
+  const handleDownloadExport = () => {
+    const md = exportToMarkdown(messages);
+    const blob = new Blob([md], { type: "text/markdown" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `session-${sessionId ?? "export"}.md`;
+    document.body.append(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button className="h-7 w-7 md:hidden" size="icon" type="button" variant="outline" aria-label="More options">
+          <MoreHorizontal className="size-3.5" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-48">
+        {showTerminalButton && onToggleTerminal && (
+          <DropdownMenuItem onSelect={onToggleTerminal}>
+            <TerminalIcon className="size-3.5 mr-2 shrink-0" />
+            Terminal
+            {isTerminalOpen && <Check className="size-3 ml-auto text-primary" />}
+          </DropdownMenuItem>
+        )}
+        {showFileExplorerButton && onToggleFileExplorer && (
+          <DropdownMenuItem onSelect={onToggleFileExplorer}>
+            <FolderTree className="size-3.5 mr-2 shrink-0" />
+            Files
+            {isFileExplorerOpen && <Check className="size-3 ml-auto text-primary" />}
+          </DropdownMenuItem>
+        )}
+        {showGitButton && onToggleGit && (
+          <DropdownMenuItem onSelect={onToggleGit}>
+            <GitBranch className="size-3.5 mr-2 shrink-0" />
+            Git
+            {isGitOpen && <Check className="size-3 ml-auto text-primary" />}
+          </DropdownMenuItem>
+        )}
+        {(showTerminalButton || showFileExplorerButton || showGitButton) && <DropdownMenuSeparator />}
+        <DropdownMenuItem onSelect={handleCopyExport}>
+          <Copy className="size-3.5 mr-2 shrink-0" />
+          {copyState === "copied" ? "Copied!" : "Copy as Markdown"}
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={handleDownloadExport}>
+          <Download className="size-3.5 mr-2 shrink-0" />
+          Download Markdown
+        </DropdownMenuItem>
+        {onDuplicateSession && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={onDuplicateSession}>
+              <Copy className="size-3.5 mr-2 shrink-0" />
+              Duplicate Session
+            </DropdownMenuItem>
+          </>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, pendingPlan, pluginTrustPrompt, onPluginTrustResponse, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, isCompacting, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onEditQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, onToggleGit, showGitButton, isTerminalOpen, isFileExplorerOpen, isGitOpen, todoList = [], planModeEnabled, runnerId, sessionCwd, onAppendSystemMessage, onSpawnAgentSession, onTriggerResponse, onQuestionDismiss, onPlanDismiss, onDuplicateSession, runnerInfo, extraHeaderButtons, mcpOAuthPastes, onMcpOAuthPaste, onMcpOAuthPasteDismiss, onMcpServerDisable }: SessionViewerProps) {
   const [input, setInput] = React.useState("");
   // Per-session draft storage so switching sessions preserves unsent text
   const draftsRef = React.useRef<Map<string, string>>(new Map());
@@ -1581,7 +1694,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button
-                    className="h-7 w-7"
+                    className="hidden md:inline-flex h-7 w-7"
                     onClick={onToggleTerminal}
                     size="icon"
                     type="button"
@@ -1598,7 +1711,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button
-                    className="h-7 w-7"
+                    className="hidden md:inline-flex h-7 w-7"
                     onClick={onToggleFileExplorer}
                     size="icon"
                     type="button"
@@ -1615,7 +1728,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button
-                    className="h-7 w-7"
+                    className="hidden md:inline-flex h-7 w-7"
                     onClick={onToggleGit}
                     size="icon"
                     type="button"
@@ -1634,7 +1747,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                 <ConversationExport
                   messages={sortedMessages}
                   filename={`session-${sessionId || "export"}.md`}
-                  className="static top-auto right-auto h-7 w-7 border-border bg-background hover:bg-accent hover:text-accent-foreground rounded-md"
+                  className="static top-auto right-auto hidden md:inline-flex h-7 w-7 border-border bg-background hover:bg-accent hover:text-accent-foreground rounded-md"
                   variant="outline"
                   size="icon"
                 />
@@ -1645,7 +1758,7 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button
-                    className="h-7 w-7"
+                    className="hidden md:inline-flex h-7 w-7"
                     onClick={onDuplicateSession}
                     size="icon"
                     type="button"
@@ -1658,6 +1771,20 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                 <TooltipContent>Duplicate</TooltipContent>
               </Tooltip>
             )}
+            <HeaderOverflowMenu
+              showTerminalButton={showTerminalButton}
+              onToggleTerminal={onToggleTerminal}
+              isTerminalOpen={isTerminalOpen}
+              showFileExplorerButton={showFileExplorerButton}
+              onToggleFileExplorer={onToggleFileExplorer}
+              isFileExplorerOpen={isFileExplorerOpen}
+              showGitButton={showGitButton}
+              onToggleGit={onToggleGit}
+              isGitOpen={isGitOpen}
+              onDuplicateSession={onDuplicateSession}
+              messages={sortedMessages}
+              sessionId={sessionId}
+            />
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button

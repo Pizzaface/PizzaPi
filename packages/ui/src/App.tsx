@@ -3978,10 +3978,13 @@ export function App() {
                       onClearMessageQueue={clearMessageQueue}
                       onToggleTerminal={() => setShowTerminal((v) => !v)}
                       showTerminalButton
+                      isTerminalOpen={showTerminal}
                       onToggleFileExplorer={() => setShowFileExplorer((v) => !v)}
                       showFileExplorerButton={!!activeSessionInfo?.runnerId && !!activeSessionInfo?.cwd}
+                      isFileExplorerOpen={showFileExplorer}
                       onToggleGit={() => setShowGit((v) => !v)}
                       showGitButton={!!activeSessionInfo?.runnerId && !!activeSessionInfo?.cwd}
+                      isGitOpen={showGit}
                       extraHeaderButtons={
                         <ServicePanelButtons
                           availableServices={availableServices}
