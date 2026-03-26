@@ -141,7 +141,7 @@ function createFakeIo() {
 
 const { initSioRegistry, runnersUserRoom } = await import("./context.js");
 const { initStateRedis } = await import("../sio-state.js");
-const { registerRunner, removeRunner, updateRunnerSkills, updateRunnerAgents, updateRunnerPlugins } =
+const { registerRunner, removeRunner, updateRunnerSkills, updateRunnerAgents, updateRunnerPlugins, updateRunnerServices, getRunnerServices } =
     await import("./runners.js");
 
 describe("runners broadcast", () => {
@@ -317,5 +317,104 @@ describe("runners broadcast", () => {
         await removeRunner("ghost-runner");
         const removed = emitCalls.find((c) => c.event === "runner_removed");
         expect(removed).toBeUndefined();
+    });
+
+    it("persists and retrieves service announce data via updateRunnerServices/getRunnerServices", async () => {
+        const socket = { join: mock(async () => {}), data: {} } as any;
+        const result = await registerRunner(socket, {
+            name: "services-runner",
+            roots: [],
+            skills: [],
+            agents: [],
+            plugins: [],
+            hooks: [],
+            version: "1.0.0",
+            platform: "darwin",
+            userId: "user6",
+            userName: "User Six",
+        });
+        expect(result instanceof Error).toBe(false);
+        const runnerId = result as string;
+
+        // Initially no services
+        const before = await getRunnerServices(runnerId);
+        expect(before).toBeNull();
+
+        // Persist service announce
+        await updateRunnerServices(
+            runnerId,
+            ["terminal", "file-explorer", "git", "tunnel", "monitor"],
+            [{ serviceId: "monitor", port: 9090, label: "System Monitor", icon: "activity" }],
+        );
+
+        // Retrieve
+        const after = await getRunnerServices(runnerId);
+        expect(after).not.toBeNull();
+        expect(after!.serviceIds).toEqual(["terminal", "file-explorer", "git", "tunnel", "monitor"]);
+        expect(after!.panels).toHaveLength(1);
+        expect(after!.panels![0].serviceId).toBe("monitor");
+        expect(after!.panels![0].port).toBe(9090);
+    });
+
+    it("includes serviceIds and panels in runnerDataToInfo broadcast", async () => {
+        const socket = { join: mock(async () => {}), data: {} } as any;
+        const result = await registerRunner(socket, {
+            name: "full-runner",
+            roots: [],
+            skills: [],
+            agents: [],
+            plugins: [],
+            hooks: [],
+            version: "2.0.0",
+            platform: "linux",
+            userId: "user7",
+            userName: "User Seven",
+        });
+        expect(result instanceof Error).toBe(false);
+        const runnerId = result as string;
+
+        // Persist services then trigger a broadcast via updateRunnerSkills
+        await updateRunnerServices(
+            runnerId,
+            ["terminal", "git"],
+            [{ serviceId: "dashboard", port: 8080, label: "Dashboard", icon: "layout" }],
+        );
+        emitCalls.length = 0;
+
+        await updateRunnerSkills(runnerId, [{ name: "test-skill", description: "test", filePath: "/path" }]);
+
+        const updated = emitCalls.find(
+            (c) => c.namespace === "/runners" && c.event === "runner_updated",
+        );
+        expect(updated).toBeDefined();
+        const data = updated!.data as any;
+        expect(data.serviceIds).toEqual(["terminal", "git"]);
+        expect(data.panels).toHaveLength(1);
+        expect(data.panels[0].serviceId).toBe("dashboard");
+    });
+
+    it("updateRunnerServices with no panels stores empty array", async () => {
+        const socket = { join: mock(async () => {}), data: {} } as any;
+        const result = await registerRunner(socket, {
+            name: "no-panels-runner",
+            roots: [],
+            skills: [],
+            agents: [],
+            plugins: [],
+            hooks: [],
+            version: null,
+            platform: null,
+            userId: "user8",
+            userName: "User Eight",
+        });
+        expect(result instanceof Error).toBe(false);
+        const runnerId = result as string;
+
+        await updateRunnerServices(runnerId, ["terminal", "git"]);
+
+        const services = await getRunnerServices(runnerId);
+        expect(services).not.toBeNull();
+        expect(services!.serviceIds).toEqual(["terminal", "git"]);
+        expect(services!.panels).toBeUndefined();
     });
 });

@@ -192,6 +192,10 @@ export interface RedisRunnerData {
     version: string | null;
     /** Node.js process.platform value (e.g. "darwin", "linux", "win32") */
     platform?: string | null;
+    /** JSON-stringified string[] — service IDs from last service_announce */
+    serviceIds?: string;
+    /** JSON-stringified ServicePanelInfo[] — panel metadata from last service_announce */
+    panels?: string;
 }
 
 export interface RedisTerminalData {
@@ -264,6 +268,8 @@ function parseRunnerFromHash(hash: Record<string, string>): RedisRunnerData | nu
         hooks: hash.hooks || "[]",
         version: hash.version || null,
         platform: hash.platform || null,
+        serviceIds: hash.serviceIds || undefined,
+        panels: hash.panels || undefined,
     };
 }
 

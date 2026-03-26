@@ -239,9 +239,11 @@ interface PendingTunnelRequest {
 const pendingTunnelRequests = new Map<string, PendingTunnelRequest>();
 
 // ── Runner service announce cache ─────────────────────────────────────────────
-// Stores the last service_announce payload per runnerId so newly-joining
-// viewers can receive it immediately without waiting for a fresh announce.
+// In-memory hot cache for service_announce payloads. Also persisted to Redis
+// via updateRunnerServices() so late-joining viewers (or viewers after a server
+// restart) can receive the data without waiting for a fresh announce.
 import type { ServiceAnnounceData } from "@pizzapi/protocol";
+import { updateRunnerServices, getRunnerServices } from "../sio-registry/index.js";
 
 const runnerServiceAnnounce = new Map<string, ServiceAnnounceData>();
 
@@ -250,9 +252,25 @@ export function getRunnerServiceIds(runnerId: string): string[] {
     return runnerServiceAnnounce.get(runnerId)?.serviceIds ?? [];
 }
 
-/** Get the full cached service announce data for a runner. */
+/** Get the full cached service announce data for a runner (in-memory). */
 export function getRunnerServiceAnnounce(runnerId: string): ServiceAnnounceData | null {
     return runnerServiceAnnounce.get(runnerId) ?? null;
+}
+
+/**
+ * Load service announce data from Redis into the in-memory cache.
+ * Called after runner registration to seed the cache from persisted data
+ * (e.g. after a server restart when the runner reconnects).
+ */
+export async function seedServiceAnnounceCache(runnerId: string): Promise<void> {
+    if (runnerServiceAnnounce.has(runnerId)) return; // already cached
+    const persisted = await getRunnerServices(runnerId);
+    if (persisted) {
+        runnerServiceAnnounce.set(runnerId, {
+            serviceIds: persisted.serviceIds,
+            panels: persisted.panels,
+        });
+    }
 }
 
 /**
@@ -384,6 +402,12 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
                     sessionSet.add(sid.sessionId);
                 }
             }
+
+            // Seed in-memory service announce cache from Redis.
+            // On reconnect the runner will emit a fresh service_announce after
+            // service init, but this ensures viewers connecting in the gap
+            // between registration and announce still get service data.
+            void seedServiceAnnounceCache(result).catch(() => {});
 
             socket.emit("runner_registered", {
                 runnerId: result,
@@ -727,8 +751,12 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
         socket.on("service_announce", (data: ServiceAnnounceData) => {
             const runnerId = socket.data.runnerId;
             if (!runnerId) return;
-            // Cache for late-joining viewers
+            // Cache in memory for fast lookups
             runnerServiceAnnounce.set(runnerId, data);
+            // Persist to Redis so the data survives server restarts
+            void updateRunnerServices(runnerId, data.serviceIds, data.panels).catch((err) => {
+                console.error(`[sio/runner] failed to persist service_announce to Redis for ${runnerId}:`, err);
+            });
             const sessionIds = runnerSessionIds.get(runnerId);
             if (!sessionIds || sessionIds.size === 0) return;
             for (const sessionId of sessionIds) {

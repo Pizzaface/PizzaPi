@@ -11,6 +11,18 @@ export interface TestServerOptions {
     trustedOrigins?: string[];
     /** Disable signup-after-first-user restriction (default: true = disabled) */
     disableSignupAfterFirstUser?: boolean;
+    /**
+     * Behavior when another harness server is already active in this Bun worker.
+     *
+     * - "serialize" (default): wait until the active server is cleaned up
+     * - "error": throw immediately (legacy strict behavior)
+     */
+    activeServerMode?: "serialize" | "error";
+    /**
+     * Max wait time (ms) when activeServerMode="serialize".
+     * Default is 5 minutes.
+     */
+    waitForActiveServerMs?: number;
 }
 
 export interface TestServer {

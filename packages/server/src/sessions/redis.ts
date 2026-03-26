@@ -63,7 +63,14 @@ function activeClient(): RelayRedisClient | null {
     return client;
 }
 
-export async function initializeRelayRedisCache(): Promise<void> {
+/**
+ * Initialize the relay Redis cache for event replay.
+ *
+ * @param createClientOverride — Optional override for `createClient`.  The test
+ *   harness passes the real function captured at preload time so that
+ *   initialization is immune to `mock.module("redis", …)` contamination.
+ */
+export async function initializeRelayRedisCache(createClientOverride?: typeof createClient): Promise<void> {
     if (isRedisDisabled()) {
         console.log("Relay Redis cache disabled (PIZZAPI_REDIS_URL=off).");
         return;
@@ -74,9 +81,10 @@ export async function initializeRelayRedisCache(): Promise<void> {
         return;
     }
 
+    const factory = createClientOverride ?? createClient;
     const url = redisUrl();
     initPromise = (async () => {
-        const next = createClient({
+        const next = factory({
             url,
             socket: {
                 reconnectStrategy: (attempt) => Math.min(1000 * 2 ** attempt, 30_000),

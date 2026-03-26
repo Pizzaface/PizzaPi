@@ -300,6 +300,37 @@ describe("shared types — RunnerInfo", () => {
     expect(info.plugins).toHaveLength(1);
     expect(info.hooks).toHaveLength(1);
   });
+
+  test("optional serviceIds and panels", () => {
+    const info: RunnerInfo = {
+      runnerId: "r3",
+      name: "Runner",
+      roots: [],
+      sessionCount: 0,
+      skills: [],
+      agents: [],
+      version: "1.0.0",
+      serviceIds: ["terminal", "file-explorer", "git", "tunnel"],
+      panels: [{ serviceId: "monitor", port: 9090, label: "System Monitor", icon: "activity" }],
+    };
+    expect(info.serviceIds).toHaveLength(4);
+    expect(info.panels).toHaveLength(1);
+    expect(info.panels![0].serviceId).toBe("monitor");
+  });
+
+  test("serviceIds and panels default to undefined", () => {
+    const info: RunnerInfo = {
+      runnerId: "r4",
+      name: null,
+      roots: [],
+      sessionCount: 0,
+      skills: [],
+      agents: [],
+      version: null,
+    };
+    expect(info.serviceIds).toBeUndefined();
+    expect(info.panels).toBeUndefined();
+  });
 });
 
 describe("shared types — Attachment", () => {

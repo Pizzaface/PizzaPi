@@ -56,18 +56,41 @@ describe("createTestServer", () => {
         }
     }, TEST_TIMEOUT_MS);
 
-    test("rejects concurrent server creation", async () => {
+    test("rejects concurrent server creation in strict mode", async () => {
         // Module-level singletons (auth, sio-state) mean only one active
-        // test server is supported. The guard should throw on a second call.
+        // test server is supported. Strict mode keeps legacy immediate-failure
+        // behavior for callers that want hard enforcement.
         const s1 = await createTestServer();
         try {
-            await expect(createTestServer()).rejects.toThrow(
+            await expect(createTestServer({ activeServerMode: "error" })).rejects.toThrow(
                 "Another test server is already active",
             );
         } finally {
             await s1.cleanup();
         }
     }, TEST_TIMEOUT_MS);
+
+    test("serializes concurrent server creation by default", async () => {
+        const s1 = await createTestServer();
+        let s2Resolved = false;
+        const s2Promise = createTestServer().then((s) => {
+            s2Resolved = true;
+            return s;
+        });
+
+        // While s1 is still active, s2 should be waiting (not failed, not resolved).
+        await new Promise<void>((resolve) => setTimeout(resolve, 100));
+        expect(s2Resolved).toBe(false);
+
+        // Once s1 is cleaned up, s2 should proceed.
+        await s1.cleanup();
+        const s2 = await s2Promise;
+        try {
+            expect(s2.port).toBeGreaterThan(0);
+        } finally {
+            await s2.cleanup();
+        }
+    }, TEST_TIMEOUT_MS * 2);
 
     test("allows sequential server creation after cleanup", async () => {
         // First server — create, verify, cleanup

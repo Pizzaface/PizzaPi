@@ -51,6 +51,10 @@ export interface RunnerInfo {
   version: string | null;
   /** Node.js process.platform value (e.g. "darwin", "linux", "win32") */
   platform?: string | null;
+  /** Service IDs available on this runner (cached from last service_announce). */
+  serviceIds?: string[];
+  /** Panel metadata for services that expose a UI panel. */
+  panels?: ServicePanelInfo[];
 }
 
 /** A discovered Claude Code plugin on a runner */
