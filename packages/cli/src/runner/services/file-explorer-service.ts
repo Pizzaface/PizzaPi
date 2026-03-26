@@ -11,7 +11,18 @@ const execFileAsync = promisify(execFile);
 export class FileExplorerService implements ServiceHandler {
     readonly id = "file-explorer";
 
+    // Socket reference and named handler refs — kept so dispose() can call
+    // socket.off() with the exact same function object that was passed to
+    // socket.on().  Without this, each reconnect would add a new listener
+    // while the old one stayed registered (listener leak).
+    private _socket: Socket | null = null;
+    private _onListFiles: ((data: any) => void) | null = null;
+    private _onSearchFiles: ((data: any) => void) | null = null;
+    private _onReadFile: ((data: any) => void) | null = null;
+
     init(socket: Socket, { isShuttingDown }: ServiceInitOptions): void {
+        this._socket = socket;
+
         // Helper: emit file_result on both channels (direct + service envelope).
         // ALL file_result emissions in this service go through this helper so
         // error paths and success paths are both covered.
@@ -24,7 +35,7 @@ export class FileExplorerService implements ServiceHandler {
             });
         };
 
-        socket.on("list_files", async (data: any) => {
+        this._onListFiles = async (data: any) => {
             if (isShuttingDown()) return;
             const requestId = data.requestId;
             const dirPath = data.path ?? "";
@@ -74,9 +85,10 @@ export class FileExplorerService implements ServiceHandler {
                     message: err instanceof Error ? err.message : String(err),
                 });
             }
-        });
+        };
+        socket.on("list_files", this._onListFiles);
 
-        socket.on("search_files", async (data: any) => {
+        this._onSearchFiles = async (data: any) => {
             if (isShuttingDown()) return;
             const requestId = data.requestId;
             const cwd = (data as any).cwd ?? "";
@@ -133,9 +145,10 @@ export class FileExplorerService implements ServiceHandler {
                     message: err instanceof Error ? err.message : String(err),
                 });
             }
-        });
+        };
+        socket.on("search_files", this._onSearchFiles);
 
-        socket.on("read_file", async (data: any) => {
+        this._onReadFile = async (data: any) => {
             if (isShuttingDown()) return;
             const requestId = data.requestId;
             const filePath = data.path ?? "";
@@ -185,10 +198,21 @@ export class FileExplorerService implements ServiceHandler {
                     message: err instanceof Error ? err.message : String(err),
                 });
             }
-        });
+        };
+        socket.on("read_file", this._onReadFile);
     }
 
     dispose(): void {
-        // No persistent resources to clean up
+        // Remove all socket listeners registered by init() so that reconnects
+        // don't accumulate N+1 handlers per event.
+        if (this._socket) {
+            if (this._onListFiles) (this._socket as any).off("list_files", this._onListFiles);
+            if (this._onSearchFiles) (this._socket as any).off("search_files", this._onSearchFiles);
+            if (this._onReadFile) (this._socket as any).off("read_file", this._onReadFile);
+            this._socket = null;
+        }
+        this._onListFiles = null;
+        this._onSearchFiles = null;
+        this._onReadFile = null;
     }
 }

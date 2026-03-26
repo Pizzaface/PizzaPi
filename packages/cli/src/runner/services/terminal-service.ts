@@ -14,8 +14,21 @@ import { logInfo, logWarn, logError } from "../logger.js";
 export class TerminalService implements ServiceHandler {
     readonly id = "terminal";
 
+    // Socket reference and named handler refs — kept so dispose() can call
+    // socket.off() with the exact same function object that was passed to
+    // socket.on().  Without this, each reconnect would add a new listener
+    // while the old one stayed registered (listener leak).
+    private _socket: Socket | null = null;
+    private _onNewTerminal: ((data: any) => void) | null = null;
+    private _onTerminalInput: ((data: any) => void) | null = null;
+    private _onTerminalResize: ((data: any) => void) | null = null;
+    private _onKillTerminal: ((data: any) => void) | null = null;
+    private _onListTerminals: (() => void) | null = null;
+
     init(socket: Socket, { isShuttingDown }: ServiceInitOptions): void {
-        socket.on("new_terminal", (data: any) => {
+        this._socket = socket;
+
+        this._onNewTerminal = (data: any) => {
             if (isShuttingDown()) return;
             const { terminalId, cwd: requestedCwd, cols, rows, shell } = data;
             logInfo(
@@ -74,9 +87,10 @@ export class TerminalService implements ServiceHandler {
                 rows,
                 shell,
             });
-        });
+        };
+        socket.on("new_terminal", this._onNewTerminal);
 
-        socket.on("terminal_input", (data: any) => {
+        this._onTerminalInput = (data: any) => {
             if (isShuttingDown()) return;
             const { terminalId, data: inputData } = data;
             if (!terminalId || !inputData) {
@@ -86,9 +100,10 @@ export class TerminalService implements ServiceHandler {
                 return;
             }
             writeTerminalInput(terminalId, inputData);
-        });
+        };
+        socket.on("terminal_input", this._onTerminalInput);
 
-        socket.on("terminal_resize", (data: any) => {
+        this._onTerminalResize = (data: any) => {
             if (isShuttingDown()) return;
             const { terminalId, cols, rows } = data;
             if (!terminalId) {
@@ -97,9 +112,10 @@ export class TerminalService implements ServiceHandler {
             }
             logInfo(`[terminal] terminal_resize: terminalId=${terminalId} ${cols}x${rows}`);
             resizeTerminal(terminalId, cols, rows);
-        });
+        };
+        socket.on("terminal_resize", this._onTerminalResize);
 
-        socket.on("kill_terminal", (data: any) => {
+        this._onKillTerminal = (data: any) => {
             if (isShuttingDown()) return;
             const { terminalId } = data;
             if (!terminalId) {
@@ -126,9 +142,10 @@ export class TerminalService implements ServiceHandler {
                     payload: { terminalId, message: "Terminal not found" },
                 });
             }
-        });
+        };
+        socket.on("kill_terminal", this._onKillTerminal);
 
-        socket.on("list_terminals", () => {
+        this._onListTerminals = () => {
             if (isShuttingDown()) return;
             const list = listTerminals();
             logInfo(`[terminal] list_terminals: ${list.length} active (${list.join(", ") || "none"})`);
@@ -140,10 +157,26 @@ export class TerminalService implements ServiceHandler {
                 type: "terminals_list",
                 payload: { terminals: list },
             });
-        });
+        };
+        socket.on("list_terminals", this._onListTerminals);
     }
 
     dispose(): void {
+        // Remove all socket listeners registered by init() so that reconnects
+        // don't accumulate N+1 handlers per event.
+        if (this._socket) {
+            if (this._onNewTerminal) (this._socket as any).off("new_terminal", this._onNewTerminal);
+            if (this._onTerminalInput) (this._socket as any).off("terminal_input", this._onTerminalInput);
+            if (this._onTerminalResize) (this._socket as any).off("terminal_resize", this._onTerminalResize);
+            if (this._onKillTerminal) (this._socket as any).off("kill_terminal", this._onKillTerminal);
+            if (this._onListTerminals) (this._socket as any).off("list_terminals", this._onListTerminals);
+            this._socket = null;
+        }
+        this._onNewTerminal = null;
+        this._onTerminalInput = null;
+        this._onTerminalResize = null;
+        this._onKillTerminal = null;
+        this._onListTerminals = null;
         killAllTerminals();
     }
 }

@@ -273,11 +273,21 @@ export class TunnelService implements ServiceHandler {
         }
     }
 
+    // Named handler refs — kept so dispose() can call socket.off() with the
+    // exact same function object that was passed to socket.on().  Without this,
+    // each reconnect adds a new listener while the old one stays registered
+    // (listener leak).
+    private _onServiceMessage: ((envelope: ServiceEnvelope) => void) | null = null;
+    private _onTunnelRequest: ((data: TunnelRequestData) => void) | null = null;
+    private _onTunnelWsOpen: ((data: TunnelWsOpenData) => void) | null = null;
+    private _onTunnelWsData: ((data: TunnelWsDataPayload) => void) | null = null;
+    private _onTunnelWsClose: ((data: TunnelWsCloseData) => void) | null = null;
+
     init(socket: Socket, { isShuttingDown }: ServiceInitOptions): void {
         this.socket = socket;
 
         // ── Viewer → Runner: service_message commands ─────────────────────────
-        (socket as any).on("service_message", (envelope: ServiceEnvelope) => {
+        this._onServiceMessage = (envelope: ServiceEnvelope) => {
             if (isShuttingDown()) return;
             if (envelope.serviceId !== "tunnel") return;
 
@@ -292,34 +302,54 @@ export class TunnelService implements ServiceHandler {
                     this.handleUnexpose(envelope.payload as { port: number });
                     break;
             }
-        });
+        };
+        (socket as any).on("service_message", this._onServiceMessage);
 
         // ── Server → Runner: tunnel_request (HTTP proxy) ───────────────────────
-        (socket as any).on("tunnel_request", async (data: TunnelRequestData) => {
+        this._onTunnelRequest = async (data: TunnelRequestData) => {
             if (isShuttingDown()) return;
             await this.handleHttpRequest(data);
-        });
+        };
+        (socket as any).on("tunnel_request", this._onTunnelRequest);
 
         // ── Server → Runner: tunnel_ws_open (WebSocket proxy) ─────────────────
-        (socket as any).on("tunnel_ws_open", (data: TunnelWsOpenData) => {
+        this._onTunnelWsOpen = (data: TunnelWsOpenData) => {
             if (isShuttingDown()) return;
             this.handleWsOpen(data);
-        });
+        };
+        (socket as any).on("tunnel_ws_open", this._onTunnelWsOpen);
 
         // ── Server → Runner: tunnel_ws_data (WebSocket frame from viewer) ─────
-        (socket as any).on("tunnel_ws_data", (data: TunnelWsDataPayload) => {
+        this._onTunnelWsData = (data: TunnelWsDataPayload) => {
             if (isShuttingDown()) return;
             this.handleWsData(data);
-        });
+        };
+        (socket as any).on("tunnel_ws_data", this._onTunnelWsData);
 
         // ── Server → Runner: tunnel_ws_close (viewer WS closed) ──────────────
-        (socket as any).on("tunnel_ws_close", (data: TunnelWsCloseData) => {
+        this._onTunnelWsClose = (data: TunnelWsCloseData) => {
             if (isShuttingDown()) return;
             this.handleWsClose(data);
-        });
+        };
+        (socket as any).on("tunnel_ws_close", this._onTunnelWsClose);
     }
 
     dispose(): void {
+        // Remove all socket listeners registered by init() so that reconnects
+        // don't accumulate N+1 handlers per event.
+        if (this.socket) {
+            if (this._onServiceMessage) (this.socket as any).off("service_message", this._onServiceMessage);
+            if (this._onTunnelRequest) (this.socket as any).off("tunnel_request", this._onTunnelRequest);
+            if (this._onTunnelWsOpen) (this.socket as any).off("tunnel_ws_open", this._onTunnelWsOpen);
+            if (this._onTunnelWsData) (this.socket as any).off("tunnel_ws_data", this._onTunnelWsData);
+            if (this._onTunnelWsClose) (this.socket as any).off("tunnel_ws_close", this._onTunnelWsClose);
+            this.socket = null;
+        }
+        this._onServiceMessage = null;
+        this._onTunnelRequest = null;
+        this._onTunnelWsOpen = null;
+        this._onTunnelWsData = null;
+        this._onTunnelWsClose = null;
         // Close all active WebSocket tunnel connections
         for (const [, ws] of this.wsConnections) {
             try { ws.close(1001, "tunnel service disposed"); } catch { /* ignore */ }
@@ -328,7 +358,6 @@ export class TunnelService implements ServiceHandler {
         this.wsPortMap.clear();
         this.tunnels.clear();
         this.responseCache.clear();
-        this.socket = null;
     }
 
     // ── Internal API (called by daemon, not via socket) ───────────────────

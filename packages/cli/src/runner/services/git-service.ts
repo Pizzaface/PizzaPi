@@ -9,7 +9,17 @@ const execFileAsync = promisify(execFile);
 export class GitService implements ServiceHandler {
     readonly id = "git";
 
+    // Socket reference and named handler refs — kept so dispose() can call
+    // socket.off() with the exact same function object that was passed to
+    // socket.on().  Without this, each reconnect would add a new listener
+    // while the old one stayed registered (listener leak).
+    private _socket: Socket | null = null;
+    private _onGitStatus: ((data: any) => void) | null = null;
+    private _onGitDiff: ((data: any) => void) | null = null;
+
     init(socket: Socket, { isShuttingDown }: ServiceInitOptions): void {
+        this._socket = socket;
+
         // Helper: emit file_result on both channels (direct + service envelope).
         // ALL file_result emissions in this service go through this helper so
         // error paths and success paths are both covered.
@@ -22,7 +32,7 @@ export class GitService implements ServiceHandler {
             });
         };
 
-        socket.on("git_status", async (data: any) => {
+        this._onGitStatus = async (data: any) => {
             if (isShuttingDown()) return;
             const requestId = data.requestId;
             const cwd = data.cwd ?? "";
@@ -94,9 +104,10 @@ export class GitService implements ServiceHandler {
                     message: err instanceof Error ? err.message : String(err),
                 });
             }
-        });
+        };
+        socket.on("git_status", this._onGitStatus);
 
-        socket.on("git_diff", async (data: any) => {
+        this._onGitDiff = async (data: any) => {
             if (isShuttingDown()) return;
             const requestId = data.requestId;
             const cwd = data.cwd ?? "";
@@ -122,10 +133,19 @@ export class GitService implements ServiceHandler {
                     message: err instanceof Error ? err.message : String(err),
                 });
             }
-        });
+        };
+        socket.on("git_diff", this._onGitDiff);
     }
 
     dispose(): void {
-        // No persistent resources to clean up
+        // Remove all socket listeners registered by init() so that reconnects
+        // don't accumulate N+1 handlers per event.
+        if (this._socket) {
+            if (this._onGitStatus) (this._socket as any).off("git_status", this._onGitStatus);
+            if (this._onGitDiff) (this._socket as any).off("git_diff", this._onGitDiff);
+            this._socket = null;
+        }
+        this._onGitStatus = null;
+        this._onGitDiff = null;
     }
 }
