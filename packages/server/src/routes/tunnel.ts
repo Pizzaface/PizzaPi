@@ -53,7 +53,21 @@ function buildTunnelInterceptScript(basePath: string): string {
   function rw(u){
     if(typeof u!=="string")return u;
     if(u.startsWith(B))return u;
-    if(u.startsWith("/"))return B+u;
+    if(u.startsWith("/")){return B+u;}
+    // Full URLs — same origin or localhost — must also go through the tunnel.
+    // Without this, apps that construct "https://host/path" API calls (e.g.
+    // Jellyfin) bypass the tunnel and hit the PizzaPi server directly → 404.
+    var m=u.match(/^(https?:)\\/\\/([^\\/]+)(\\/.*)$/);
+    if(m){
+      var proto=m[1],host=m[2],path=m[3];
+      if(host===location.host){
+        if(path.startsWith(B))return u;
+        return proto+"//"+host+B+path;
+      }
+      if(host.split(":")[0]==="127.0.0.1"||host.split(":")[0]==="localhost"){
+        return location.protocol+"//"+location.host+B+path;
+      }
+    }
     return u;
   }
   function rwInput(input,init){

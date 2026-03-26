@@ -199,6 +199,94 @@ describe("tunnel route HTML rewriting", () => {
 
         expect(capturedUrls).toEqual(["wss://jordans-mac-mini.tail65556b.ts.net/api/tunnel/s-1/3000/"]);
     });
+
+    test("rewriteTunnelHtml fetch/XHR interceptor rewrites same-origin and localhost full URLs", () => {
+        const html = `<!doctype html><html><head></head><body>hello</body></html>`;
+        const rewritten = rewriteTunnelHtml(html, "s-1", 8096);
+        const scriptMatch = rewritten.match(/<script data-pizzapi-tunnel-intercept>\n([\s\S]*?)<\/script>/);
+        expect(scriptMatch).toBeTruthy();
+        const scriptBody = scriptMatch![1];
+
+        const fetchedUrls: string[] = [];
+        const xhrUrls: string[] = [];
+
+        class MockXHR {
+            open(_method: string, url: string): void {
+                xhrUrls.push(url);
+            }
+        }
+
+        const mockWindow = {
+            fetch: (input: string | Request) => {
+                fetchedUrls.push(typeof input === "string" ? input : input.url);
+                return Promise.resolve(new Response(null, { status: 200 }));
+            },
+            WebSocket: function () {} as unknown as typeof WebSocket,
+            EventSource: undefined as undefined,
+        };
+        // Copy static props to avoid errors
+        (mockWindow.WebSocket as any).prototype = {};
+        (mockWindow.WebSocket as any).CONNECTING = 0;
+        (mockWindow.WebSocket as any).OPEN = 1;
+        (mockWindow.WebSocket as any).CLOSING = 2;
+        (mockWindow.WebSocket as any).CLOSED = 3;
+
+        const mockLocation = { protocol: "https:", host: "pizzapi.example.com" };
+
+        const runScript = new Function("window", "location", "XMLHttpRequest", "Request", scriptBody) as (
+            window: typeof mockWindow,
+            location: typeof mockLocation,
+            XMLHttpRequest: typeof MockXHR,
+            RequestCtor: typeof Request,
+        ) => void;
+
+        runScript(mockWindow, mockLocation, MockXHR, Request);
+
+        // ── fetch: same-origin full URL ──
+        mockWindow.fetch("https://pizzapi.example.com/Users/AuthenticateByName");
+        expect(fetchedUrls.at(-1)).toBe(
+            "https://pizzapi.example.com/api/tunnel/s-1/8096/Users/AuthenticateByName",
+        );
+
+        // ── fetch: same-origin URL already tunnel-prefixed ──
+        mockWindow.fetch("https://pizzapi.example.com/api/tunnel/s-1/8096/System/Info");
+        expect(fetchedUrls.at(-1)).toBe(
+            "https://pizzapi.example.com/api/tunnel/s-1/8096/System/Info",
+        );
+
+        // ── fetch: localhost full URL ──
+        mockWindow.fetch("http://127.0.0.1:8096/System/Info/Public");
+        expect(fetchedUrls.at(-1)).toBe(
+            "https://pizzapi.example.com/api/tunnel/s-1/8096/System/Info/Public",
+        );
+
+        // ── fetch: localhost (hostname) full URL ──
+        mockWindow.fetch("http://localhost:8096/Items");
+        expect(fetchedUrls.at(-1)).toBe(
+            "https://pizzapi.example.com/api/tunnel/s-1/8096/Items",
+        );
+
+        // ── fetch: external URL — should NOT be rewritten ──
+        mockWindow.fetch("https://api.external.com/data");
+        expect(fetchedUrls.at(-1)).toBe("https://api.external.com/data");
+
+        // ── fetch: root-relative — still works ──
+        mockWindow.fetch("/Users/AuthenticateByName");
+        expect(fetchedUrls.at(-1)).toBe("/api/tunnel/s-1/8096/Users/AuthenticateByName");
+
+        // ── XHR: same-origin full URL ──
+        // The interceptor patches XMLHttpRequest.prototype.open (the MockXHR passed
+        // as the XMLHttpRequest parameter), so we instantiate MockXHR directly.
+        const xhr = new MockXHR();
+        xhr.open("GET", "https://pizzapi.example.com/System/Info");
+        expect(xhrUrls.at(-1)).toBe(
+            "https://pizzapi.example.com/api/tunnel/s-1/8096/System/Info",
+        );
+
+        // ── XHR: root-relative ──
+        xhr.open("POST", "/Users/AuthenticateByName");
+        expect(xhrUrls.at(-1)).toBe("/api/tunnel/s-1/8096/Users/AuthenticateByName");
+    });
 });
 
 describe("tunnel JS module rewriting", () => {
