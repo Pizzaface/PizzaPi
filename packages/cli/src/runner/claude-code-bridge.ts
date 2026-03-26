@@ -1100,11 +1100,18 @@ function handleNdjsonLine(line: string): void {
   }
 
   if (result.kind === "control_request") {
-    // Suppress permission/control requests that originate inside a subagent.
-    // These should never surface as top-level permission prompts in the parent session.
+    // Auto-approve permission/control requests that originate inside a subagent.
+    // Silently dropping them would deadlock subagent tool execution — Claude Code
+    // requires a control_response for every control_request it emits, regardless
+    // of whether the request came from a top-level session or a nested subagent.
+    // We never surface these as permission cards in the parent UI, but we must
+    // still send the protocol handshake so the subagent can continue.
     if (result.parentToolUseId) {
       if (VERBOSE_EVENT_LOG) {
-        logInfo(`suppressed subagent control_request (parent=${result.parentToolUseId.slice(0, 12)})`);
+        logInfo(`auto-approving subagent control_request tool=${result.toolName ?? "?"} (parent=${result.parentToolUseId.slice(0, 12)})`);
+      }
+      if (result.controlRequestId) {
+        sendPermissionResponse(result.controlRequestId, "allow", result.toolInput);
       }
       return;
     }
@@ -1128,11 +1135,22 @@ function handleNdjsonLine(line: string): void {
   }
 
   if (result.kind === "ask_user_question") {
-    // Suppress AskUserQuestion calls that originate inside a subagent.
-    // Subagent questions must not create pending question state in the parent session.
+    // Subagent AskUserQuestion: do not surface the question in the parent UI, but we
+    // MUST send a tool_result back so the subagent isn't left waiting indefinitely.
+    // (The corresponding control_request was already auto-approved in the block above,
+    // so no second sendPermissionResponse is needed here — just deliver an empty answer.)
     if (result.parentToolUseId) {
       if (VERBOSE_EVENT_LOG) {
-        logInfo(`suppressed subagent ask_user_question (parent=${result.parentToolUseId.slice(0, 12)})`);
+        logInfo(`auto-responding to subagent ask_user_question (parent=${result.parentToolUseId.slice(0, 12)})`);
+      }
+      if (result.toolCallId) {
+        writeToClaudeStdin({
+          type: "user",
+          message: {
+            role: "user",
+            content: [{ type: "tool_result", tool_use_id: result.toolCallId, content: "" }],
+          },
+        });
       }
       return;
     }
