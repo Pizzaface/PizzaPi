@@ -173,7 +173,10 @@ async function replayPersistedSnapshot(
             });
         }
 
-        socket.emit("disconnected", { reason: "Session is no longer live (snapshot replay)." });
+        socket.emit("disconnected", {
+            reason: "Session is no longer live (snapshot replay).",
+            code: "snapshot_replay",
+        });
         // Use disconnect() without `true` so the client can still auto-reconnect
         // when the session comes back online. disconnect(true) sets reason to
         // "io server disconnect" on the client, which permanently disables
@@ -521,7 +524,7 @@ export function registerViewerNamespace(io: SocketIOServer): void {
         // and reduces startup resync churn.
         const ok = await addViewer(sessionId, socket);
         if (!ok) {
-            socket.emit("disconnected", { reason: "Session ended" });
+            socket.emit("disconnected", { reason: "Session ended", code: "session_ended" });
             // Use disconnect() (not true) so the client can still auto-reconnect;
             // the session may have just cycled and will come back shortly.
             socket.disconnect();
@@ -547,7 +550,7 @@ export function registerViewerNamespace(io: SocketIOServer): void {
         ]);
 
         if (!freshSession) {
-            socket.emit("disconnected", { reason: "Session ended" });
+            socket.emit("disconnected", { reason: "Session ended", code: "session_ended" });
             socket.disconnect();
             return;
         }

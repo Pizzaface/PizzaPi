@@ -36,6 +36,7 @@ import {
     getRunner as getRunnerState,
 } from "../sio-state.js";
 import {
+    getPersistedRelaySessionRunner,
     recordRelaySessionStart,
     recordRelaySessionEnd,
     recordRelaySessionState,
@@ -159,6 +160,19 @@ export async function registerTuiSession(
         if (assoc) {
             runnerId = assoc.runnerId;
             runnerName = assoc.runnerName;
+        }
+    }
+
+    // Redis-side runner association keys can disappear during a Redis restart
+    // even though SQLite still has durable session provenance. Fall back to the
+    // persisted session row so reconnecting live sessions keep their runner link
+    // (service panels, runner routing, etc.) after the relay re-registers.
+    if (!runnerId) {
+        const persistedRunner = await getPersistedRelaySessionRunner(sessionId);
+        if (persistedRunner?.runnerId) {
+            runnerId = persistedRunner.runnerId;
+            runnerName = persistedRunner.runnerName;
+            await setRunnerAssociation(sessionId, runnerId, runnerName);
         }
     }
 
@@ -659,6 +673,16 @@ export async function sendSnapshotToViewer(sessionId: string, socket: Socket): P
     }
 }
 
+function viewerDisconnectPayload(reason: string): { reason: string; code?: "session_ended" | "session_reconnected" } {
+    if (reason === "Session reconnected") {
+        return { reason, code: "session_reconnected" };
+    }
+    if (reason === "Session ended") {
+        return { reason, code: "session_ended" };
+    }
+    return { reason };
+}
+
 /** End a shared session: notify viewers, clean up Redis, broadcast to hub. */
 export async function endSharedSession(sessionId: string, reason: string = "Session ended"): Promise<void> {
     const io = getIo();
@@ -667,18 +691,20 @@ export async function endSharedSession(sessionId: string, reason: string = "Sess
     const session = await getSession(sessionId);
     if (!session) return;
 
+    const disconnectPayload = viewerDisconnectPayload(reason);
+
     // Notify all viewers in the room and disconnect them
     try {
         io.of("/viewer")
             .to(viewerSessionRoom(sessionId))
-            .emit("disconnected", { reason });
+            .emit("disconnected", disconnectPayload);
     } catch (err) {
         log.warn("endSharedSession viewer notify failed, falling back to local:", (err as Error)?.message);
         try {
             io.of("/viewer")
                 .local
                 .to(viewerSessionRoom(sessionId))
-                .emit("disconnected", { reason });
+                .emit("disconnected", disconnectPayload);
         } catch {
             // Local delivery also failed.
         }

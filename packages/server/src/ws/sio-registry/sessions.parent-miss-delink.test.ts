@@ -106,8 +106,12 @@ mock.module("redis", () => ({
 // Prevent this unit test from touching the real SQLite-backed session store or
 // the global Socket.IO hub registry. Those are covered by separate integration
 // tests; here we only care about parent link resolution.
+const mockGetPersistedRelaySessionRunner = mock(
+    async (_sessionId: string): Promise<{ runnerId: string | null; runnerName: string | null } | null> => null,
+);
 mock.module("../../sessions/store.js", () => ({
     getEphemeralTtlMs: () => 60_000,
+    getPersistedRelaySessionRunner: mockGetPersistedRelaySessionRunner,
     recordRelaySessionStart: async () => {},
     recordRelaySessionEnd: async () => {},
     recordRelaySessionState: async () => {},
@@ -130,6 +134,8 @@ describe("registerTuiSession parent resolution", () => {
         store.clear();
         setStore.clear();
         ttlStore.clear();
+        mockGetPersistedRelaySessionRunner.mockReset();
+        mockGetPersistedRelaySessionRunner.mockImplementation(async () => null);
         await initStateRedis();
     });
 
@@ -178,5 +184,37 @@ describe("registerTuiSession parent resolution", () => {
         // The delink marker means the parent ran /new — do not re-add the child
         // to the old parent's membership set even if the parent is currently offline.
         expect(setStore.has("pizzapi:sio:children:parent-old")).toBe(false);
+    });
+
+    it("restores runner association from persisted session data when Redis association is missing", async () => {
+        const socket = {
+            join: async () => {},
+            data: {},
+        } as any;
+
+        mockGetPersistedRelaySessionRunner.mockImplementation(async (sessionId: string) => {
+            expect(sessionId).toBe("session-with-persisted-runner");
+            return { runnerId: "runner-persisted", runnerName: "Persisted Runner" };
+        });
+
+        await registerTuiSession(socket, "/repo", {
+            sessionId: "session-with-persisted-runner",
+            userId: "u1",
+            userName: "User",
+            isEphemeral: false,
+        });
+
+        const sessionHash = JSON.parse(
+            store.get("__hash__:pizzapi:sio:session:session-with-persisted-runner") ?? "{}",
+        ) as Record<string, string>;
+        expect(sessionHash.runnerId).toBe("runner-persisted");
+        expect(sessionHash.runnerName).toBe("Persisted Runner");
+
+        const runnerAssoc = store.get("pizzapi:sio:runner-assoc:session-with-persisted-runner");
+        expect(runnerAssoc).toBeDefined();
+        expect(JSON.parse(runnerAssoc ?? "null")).toEqual({
+            runnerId: "runner-persisted",
+            runnerName: "Persisted Runner",
+        });
     });
 });

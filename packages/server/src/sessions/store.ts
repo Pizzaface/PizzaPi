@@ -69,6 +69,11 @@ export interface PersistedRelaySessionSummary {
     runnerName: string | null;
 }
 
+export interface PersistedRelaySessionRunnerInfo {
+    runnerId: string | null;
+    runnerName: string | null;
+}
+
 export async function ensureRelaySessionTables(): Promise<void> {
     await getKysely().schema
         .createTable("relay_session")
@@ -315,6 +320,22 @@ export async function recordRelaySessionEnd(sessionId: string): Promise<void> {
             ]),
         )
         .execute();
+}
+
+export async function getPersistedRelaySessionRunner(
+    sessionId: string,
+): Promise<PersistedRelaySessionRunnerInfo | null> {
+    const row = await getKysely()
+        .selectFrom("relay_session")
+        .select(["runnerId", "runnerName"])
+        .where("id", "=", sessionId)
+        .executeTakeFirst();
+
+    if (!row) return null;
+    return {
+        runnerId: row.runnerId ?? null,
+        runnerName: row.runnerName ?? null,
+    };
 }
 
 export async function getPersistedRelaySessionSnapshot(
