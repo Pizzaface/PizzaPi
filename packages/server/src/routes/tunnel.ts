@@ -118,6 +118,25 @@ function buildTunnelInterceptScript(basePath: string): string {
     window.EventSource=function(url,cfg){return new _E(rw(url),cfg)};
     window.EventSource.prototype=_E.prototype;
   }
+  // Patch history navigation used by SPA routers (e.g. Next.js router.push).
+  if(history&&history.pushState){
+    var _ps=history.pushState.bind(history);
+    history.pushState=function(state,title,url){return _ps(state,title,typeof url==="string"?rw(url):url)};
+  }
+  if(history&&history.replaceState){
+    var _rs=history.replaceState.bind(history);
+    history.replaceState=function(state,title,url){return _rs(state,title,typeof url==="string"?rw(url):url)};
+  }
+  // Patch direct location navigation. Shadowing instance methods is sufficient
+  // for our iframe runtime and keeps the patch self-contained.
+  if(location&&location.assign){
+    var _la=location.assign.bind(location);
+    location.assign=function(url){return _la(typeof url==="string"?rw(url):url)};
+  }
+  if(location&&location.replace){
+    var _lr=location.replace.bind(location);
+    location.replace=function(url){return _lr(typeof url==="string"?rw(url):url)};
+  }
   // Patch navigator.sendBeacon
   if(navigator.sendBeacon){
     var _b=navigator.sendBeacon.bind(navigator);
@@ -126,6 +145,29 @@ function buildTunnelInterceptScript(basePath: string): string {
   // Patch window.open
   var _wo=window.open;
   window.open=function(url,target,features){return _wo.call(this,typeof url==="string"?rw(url):url,target,features)};
+  // Patch dynamic resources created at runtime (e.g. Next.js webpack chunk loader
+  // sets script.src = "/_next/static/chunks/..." directly, bypassing fetch/XHR).
+  if(typeof Element!=="undefined"){
+    var _sa=Element.prototype.setAttribute;
+    Element.prototype.setAttribute=function(name,value){
+      var ln=String(name).toLowerCase();
+      if((ln==="src"||ln==="href"||ln==="action")&&typeof value==="string") value=rw(value);
+      return _sa.call(this,name,value);
+    };
+    function iprop(P,n){
+      if(!P) return;
+      var d=Object.getOwnPropertyDescriptor(P,n);
+      if(!d||!d.set) return;
+      Object.defineProperty(P,n,{get:d.get,set:function(v){d.set.call(this,typeof v==="string"?rw(v):v)},configurable:true,enumerable:true});
+    }
+    if(typeof HTMLScriptElement!=="undefined") iprop(HTMLScriptElement.prototype,"src");
+    if(typeof HTMLImageElement!=="undefined") iprop(HTMLImageElement.prototype,"src");
+    if(typeof HTMLLinkElement!=="undefined") iprop(HTMLLinkElement.prototype,"href");
+    if(typeof HTMLMediaElement!=="undefined") iprop(HTMLMediaElement.prototype,"src");
+    if(typeof HTMLSourceElement!=="undefined") iprop(HTMLSourceElement.prototype,"src");
+    if(typeof HTMLIFrameElement!=="undefined") iprop(HTMLIFrameElement.prototype,"src");
+    if(typeof HTMLFormElement!=="undefined") iprop(HTMLFormElement.prototype,"action");
+  }
   // Patch WebSocket
   var _W=window.WebSocket;
   window.WebSocket=function(url,protocols){
