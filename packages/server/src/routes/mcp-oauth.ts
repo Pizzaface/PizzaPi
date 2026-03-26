@@ -18,11 +18,20 @@
 import type { RouteHandler } from "./types.js";
 import { emitToRelaySession } from "../ws/sio-registry.js";
 
-/** In-memory set of consumed nonces to prevent replay (cleared periodically). */
-const consumedNonces = new Set<string>();
+/** In-memory map of consumed nonces → consume timestamp for replay prevention. */
+const consumedNonces = new Map<string, number>();
 
-// Clean up old nonces every 10 minutes
-setInterval(() => consumedNonces.clear(), 10 * 60 * 1000);
+/** TTL for individual nonce entries: 15 minutes. */
+const NONCE_TTL_MS = 15 * 60 * 1000;
+
+// Sweep expired nonces every 2 minutes — removes only entries older than NONCE_TTL_MS,
+// so recently-consumed nonces remain protected during the full replay window.
+setInterval(() => {
+    const cutoff = Date.now() - NONCE_TTL_MS;
+    for (const [key, ts] of consumedNonces) {
+        if (ts < cutoff) consumedNonces.delete(key);
+    }
+}, 2 * 60 * 1000);
 
 export const handleMcpOAuthRoute: RouteHandler = async (req, url) => {
     if (url.pathname !== "/api/mcp-oauth-callback") return undefined;
@@ -80,7 +89,7 @@ export const handleMcpOAuthRoute: RouteHandler = async (req, url) => {
     // In a multi-instance deployment, the OAuth callback may hit a different
     // server than the one owning the runner's relay socket. Emit to the
     // session room (broadcast via Redis) instead of looking up a local socket.
-    consumedNonces.add(nonceKey);
+    consumedNonces.set(nonceKey, Date.now());
 
     const emitted = emitToRelaySession(sessionId, "mcp_oauth_callback", {
         sessionId,

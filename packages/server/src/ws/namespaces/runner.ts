@@ -671,6 +671,12 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
             // Otherwise broadcast to all sessions on this runner (e.g. push announcements).
             const targetSessionId = (envelope as ServiceEnvelope & { sessionId?: string }).sessionId;
             if (targetSessionId) {
+                // Security: verify the target session belongs to this runner to prevent
+                // cross-session injection by a compromised or malicious runner.
+                if (!runnerSessionIds.get(runnerId)?.has(targetSessionId)) {
+                    console.warn(`[sio/runner] service_message rejected: session ${targetSessionId} not owned by runner ${runnerId}`);
+                    return;
+                }
                 broadcastToSessionViewers(targetSessionId, "service_message", envelope);
             } else {
                 const sessionIds = runnerSessionIds.get(runnerId);

@@ -252,6 +252,13 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
             return Response.json({ error: "Forbidden" }, { status: 403 });
         }
 
+        if (requestedCwd) {
+            const roots = parseJsonArray(runner.roots);
+            if (roots.length > 0 && !cwdMatchesRoots(roots, requestedCwd)) {
+                return Response.json({ error: `Runner cannot access cwd: ${requestedCwd}` }, { status: 400 });
+            }
+        }
+
         const terminalId = crypto.randomUUID();
         await registerTerminal(terminalId, runnerId, identity.userId, {
             cwd: requestedCwd,
@@ -561,6 +568,11 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         const path = typeof body.path === "string" ? body.path : "";
         if (!path) return Response.json({ error: "Missing path" }, { status: 400 });
 
+        const filesRoots = parseJsonArray(runner.roots);
+        if (filesRoots.length > 0 && !cwdMatchesRoots(filesRoots, path)) {
+            return Response.json({ error: `Runner cannot access path: ${path}` }, { status: 400 });
+        }
+
         try {
             const result = await sendRunnerCommand(runnerId, { type: "list_files", path });
             if (!(result as any).ok) return Response.json({ error: (result as any).message ?? "Failed to list files" }, { status: 500 });
@@ -591,6 +603,11 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         if (!cwd) return Response.json({ error: "Missing cwd" }, { status: 400 });
         if (!query) return Response.json({ ok: true, files: [] });
 
+        const searchRoots = parseJsonArray(runner.roots);
+        if (searchRoots.length > 0 && !cwdMatchesRoots(searchRoots, cwd)) {
+            return Response.json({ error: `Runner cannot access cwd: ${cwd}` }, { status: 400 });
+        }
+
         try {
             const result = await sendRunnerCommand(runnerId, { type: "search_files", cwd, query, limit });
             if (!(result as any).ok) return Response.json({ error: (result as any).message ?? "Search failed" }, { status: 500 });
@@ -616,6 +633,11 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
 
         const path = typeof body.path === "string" ? body.path : "";
         if (!path) return Response.json({ error: "Missing path" }, { status: 400 });
+
+        const readFileRoots = parseJsonArray(runner.roots);
+        if (readFileRoots.length > 0 && !cwdMatchesRoots(readFileRoots, path)) {
+            return Response.json({ error: `Runner cannot access path: ${path}` }, { status: 400 });
+        }
 
         const encoding = body.encoding === "base64" ? "base64" : "utf8";
         const maxBytes = encoding === "base64" ? 10 * 1024 * 1024 : 512 * 1024;
@@ -647,6 +669,11 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         const cwd = typeof body.cwd === "string" ? body.cwd : "";
         if (!cwd) return Response.json({ error: "Missing cwd" }, { status: 400 });
 
+        const gitStatusRoots = parseJsonArray(runner.roots);
+        if (gitStatusRoots.length > 0 && !cwdMatchesRoots(gitStatusRoots, cwd)) {
+            return Response.json({ error: `Runner cannot access cwd: ${cwd}` }, { status: 400 });
+        }
+
         try {
             const result = await sendRunnerCommand(runnerId, { type: "git_status", cwd });
             if (!(result as any).ok) return Response.json({ error: (result as any).message ?? "Failed to get git status" }, { status: 500 });
@@ -674,6 +701,11 @@ export const handleRunnersRoute: RouteHandler = async (req, url) => {
         const path = typeof body.path === "string" ? body.path : "";
         const staged = body.staged === true;
         if (!cwd || !path) return Response.json({ error: "Missing cwd or path" }, { status: 400 });
+
+        const gitDiffRoots = parseJsonArray(runner.roots);
+        if (gitDiffRoots.length > 0 && !cwdMatchesRoots(gitDiffRoots, cwd)) {
+            return Response.json({ error: `Runner cannot access cwd: ${cwd}` }, { status: 400 });
+        }
 
         try {
             const result = await sendRunnerCommand(runnerId, { type: "git_diff", cwd, path, staged });
