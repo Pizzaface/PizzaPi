@@ -14,6 +14,9 @@ import {
 import { setMcpBridge } from "./mcp-bridge.js";
 import type { RelayContext } from "./mcp-oauth.js";
 import { waitForRelayRegistration } from "./remote.js";
+import { createLogger } from "@pizzapi/tools";
+
+const log = createLogger("mcp");
 
 type McpServerConfigEntry = {
   name: string;
@@ -588,7 +591,7 @@ export const mcpExtension: ExtensionFactory = async (pi: any) => {
       // Ignore expected aborts when session lifecycle changes.
       const msg = err instanceof Error ? err.message : String(err);
       if (!/aborted/i.test(msg)) {
-        console.warn(`pizzapi: MCP eager init failed, will retry in session_start: ${msg}`);
+        log.warn(`pizzapi: MCP eager init failed, will retry in session_start: ${msg}`);
       }
       return null;
     });

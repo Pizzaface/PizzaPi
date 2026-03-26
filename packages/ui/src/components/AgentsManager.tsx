@@ -24,6 +24,9 @@ import {
 import { ErrorAlert } from "@/components/ui/error-alert";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
+import { createLogger } from "@pizzapi/tools";
+
+const log = createLogger("agents-ui");
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -436,7 +439,7 @@ export function AgentsManager({ runnerId, agents: initialAgents, onAgentsChange,
                 handleAgentsChange(data.agents);
             }
         } catch (err) {
-            console.error("Failed to refresh agents:", err);
+            log.error("Failed to refresh agents:", err);
         } finally {
             setRefreshing(false);
         }

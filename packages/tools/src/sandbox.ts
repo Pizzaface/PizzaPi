@@ -15,9 +15,11 @@ import {
     type SandboxRuntimeConfig,
     getDefaultWritePaths,
 } from "@anthropic-ai/sandbox-runtime";
+import { createLogger } from "./log.js";
 
 /** Whether the current platform is case-insensitive (macOS, Windows). */
 const _caseInsensitiveFS = platform() === "darwin" || platform() === "win32";
+const log = createLogger("sandbox");
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -114,14 +116,12 @@ export async function initSandbox(config: ResolvedSandboxConfig): Promise<void> 
     // Detect SSH agent socket for allowlisting
     _sshAuthSock = process.env.SSH_AUTH_SOCK ?? null;
     if (_sshAuthSock) {
-        console.log(`[sandbox] SSH agent detected: ${_sshAuthSock}`);
+        log.info(`SSH agent detected: ${_sshAuthSock}`);
     }
 
     // Check platform support
     if (!SandboxManager.isSupportedPlatform()) {
-        console.warn(
-            "[sandbox] Platform not supported for sandboxing. Running unsandboxed.",
-        );
+        log.warn("Platform not supported for sandboxing. Running unsandboxed.");
         _initialized = true;
         _initFailed = true;
         return;
@@ -134,10 +134,7 @@ export async function initSandbox(config: ResolvedSandboxConfig): Promise<void> 
         await SandboxManager.initialize(runtimeConfig);
         _initialized = true;
     } catch (err) {
-        console.error(
-            "[sandbox] Failed to initialize sandbox. Continuing unsandboxed:",
-            err instanceof Error ? err.message : String(err),
-        );
+        log.error(`Failed to initialize sandbox. Continuing unsandboxed: ${err instanceof Error ? err.message : String(err)}`);
         _initialized = true;
         _initFailed = true;
     }
@@ -165,7 +162,7 @@ export async function wrapCommand(cmd: string): Promise<string> {
     } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         // Fail closed: block the command rather than run it unsandboxed.
-        console.error(`[sandbox] Failed to wrap command, blocking: ${msg}`);
+        log.error(`Failed to wrap command, blocking: ${msg}`);
         throw new Error(`Sandbox enforcement failed: ${msg}`);
     }
 }
@@ -301,10 +298,7 @@ export async function cleanupSandbox(): Promise<void> {
         try {
             await SandboxManager.reset();
         } catch (err) {
-            console.error(
-                "[sandbox] Error during cleanup:",
-                err instanceof Error ? err.message : String(err),
-            );
+            log.error(`Error during cleanup: ${err instanceof Error ? err.message : String(err)}`);
         }
     }
 

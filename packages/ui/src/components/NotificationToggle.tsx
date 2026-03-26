@@ -25,6 +25,9 @@ import {
     getSuppressChildNotifications,
     setSuppressChildNotifications,
 } from "@/lib/push";
+import { createLogger } from "@pizzapi/tools";
+
+const log = createLogger("push");
 
 function usePushState() {
     const [subscribed, setSubscribed] = React.useState(false);
@@ -71,7 +74,7 @@ function usePushState() {
                 }
             }
         } catch (err) {
-            console.error("[push] toggle failed:", err);
+            log.error("toggle failed:", err);
         } finally {
             setLoading(false);
         }
@@ -85,7 +88,7 @@ function usePushState() {
             const ok = await setSuppressChildNotifications(next);
             if (ok) setSuppressChild(next);
         } catch (err) {
-            console.error("[push] suppressChild toggle failed:", err);
+            log.error("suppressChild toggle failed:", err);
         } finally {
             setSuppressChildLoading(false);
         }

@@ -44,7 +44,7 @@ async function createAuthStorageWithRetry(authPath: string, maxAttempts = 5): Pr
                     if (Object.keys(data).length > 0) {
                         // File has data but AuthStorage didn't load it — lock contention.
                         // Wait and retry.
-                        console.warn(
+                        logWarn(
                             `pizzapi worker: auth.json has ${Object.keys(data).length} provider(s) but AuthStorage loaded 0 (attempt ${attempt}/${maxAttempts}, likely lock contention)`,
                         );
                         lastError = new Error("Lock contention: auth.json has data but AuthStorage loaded empty");
@@ -83,7 +83,7 @@ async function createAuthStorageWithRetry(authPath: string, maxAttempts = 5): Pr
     // at least stale-but-valid credentials rather than none.
     // Retry the lockless read a few times with short delays because a
     // concurrent writeFileSync can produce empty/partial JSON momentarily.
-    console.warn(
+    logWarn(
         `pizzapi worker: AuthStorage lock retries exhausted (${maxAttempts} attempts), falling back to lockless read`,
     );
     const locklessRetries = 3;
@@ -106,7 +106,7 @@ async function createAuthStorageWithRetry(authPath: string, maxAttempts = 5): Pr
                 try {
                     const fileStorage = AuthStorage.create(authPath);
                     if (fileStorage.list().length > 0) {
-                        console.log(
+                        logInfo(
                             `pizzapi worker: lock released — file-backed AuthStorage loaded ${fileStorage.list().length} provider(s) on final retry`,
                         );
                         return fileStorage;
@@ -118,7 +118,7 @@ async function createAuthStorageWithRetry(authPath: string, maxAttempts = 5): Pr
                 // refreshes won't be persisted and credential updates won't
                 // be visible, but at least the worker can start).
                 const storage = AuthStorage.inMemory(data);
-                console.warn(
+                logWarn(
                     `pizzapi worker: lockless fallback loaded ${Object.keys(data).length} provider(s) from ${authPath} (in-memory snapshot — token refreshes will not persist)`,
                 );
                 return storage;
@@ -128,20 +128,20 @@ async function createAuthStorageWithRetry(authPath: string, maxAttempts = 5): Pr
         } catch (err) {
             // Partial JSON (concurrent write) — retry
             if (lr < locklessRetries) {
-                console.warn(
+                logWarn(
                     `pizzapi worker: lockless read attempt ${lr}/${locklessRetries} got bad JSON, retrying...`,
                 );
                 await Bun.sleep(50 * lr);
                 continue;
             }
-            console.warn(
+            logWarn(
                 `pizzapi worker: lockless fallback read failed after ${locklessRetries} attempts: ${err instanceof Error ? err.message : String(err)}`,
             );
         }
     }
 
     // Truly nothing worked — return default (will fail at model selection time)
-    console.error(
+    logError(
         `pizzapi worker: failed to load auth credentials after ${maxAttempts} attempts: ${lastError instanceof Error ? lastError.message : String(lastError)}`,
     );
     return AuthStorage.create(authPath);

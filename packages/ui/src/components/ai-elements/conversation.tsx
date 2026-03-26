@@ -15,6 +15,9 @@ import { cn } from "@/lib/utils";
 import { ArrowDownIcon, CheckIcon, ClipboardIcon, DownloadIcon, ShareIcon } from "lucide-react";
 import { useCallback, useEffect, useState, useRef } from "react";
 import { StickToBottom, useStickToBottomContext } from "use-stick-to-bottom";
+import { createLogger } from "@pizzapi/tools";
+
+const log = createLogger("conversation");
 
 /**
  * Default distance-from-bottom (in px) within which auto-follow remains
@@ -223,7 +226,7 @@ export const ConversationExport = ({
       clearTimeout(timerRef.current);
       timerRef.current = setTimeout(() => setCopied(false), feedbackMs);
     } catch {
-      console.warn("Clipboard write failed");
+      log.warn("Clipboard write failed");
     }
   }, [messages, feedbackMs]);
 
@@ -305,7 +308,7 @@ export const MessageCopyButton = ({
       clearTimeout(timerRef.current);
       timerRef.current = setTimeout(() => setCopied(false), feedbackMs);
     } catch {
-      console.warn("Clipboard write failed");
+      log.warn("Clipboard write failed");
     }
   }, [text, feedbackMs]);
 

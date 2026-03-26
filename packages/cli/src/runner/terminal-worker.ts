@@ -31,6 +31,7 @@
 
 import { spawn as spawnPty } from "@zenyr/bun-pty";
 import { homedir } from "node:os";
+import { logError } from "./logger.js";
 import { getShellArgs, resolveDefaultShell } from "./terminal-utils.js";
 
 const terminalId = process.env.TERMINAL_WORKER_ID ?? "unknown";
@@ -118,7 +119,7 @@ process.on("message", (msg: unknown) => {
                 // PTY fd may already be closed (shell exited). Ignore.
                 const errMsg = err instanceof Error ? err.message : String(err);
                 if (!errMsg.includes("EBADF")) {
-                    console.error(`[terminal ${terminalId}] resize error: ${errMsg}`);
+                    logError(`[terminal ${terminalId}] resize error: ${errMsg}`);
                 }
             }
             break;

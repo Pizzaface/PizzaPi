@@ -21,6 +21,9 @@ import {
 } from "../sio-registry.js";
 import { getSession } from "../sio-state.js";
 import { getSessionMetaState, sessionMetaRoom } from "../sio-registry/meta.js";
+import { createLogger } from "@pizzapi/tools";
+
+const log = createLogger("sio/hub");
 
 export function registerHubNamespace(io: SocketIOServer): void {
     const hub: Namespace<
@@ -36,7 +39,7 @@ export function registerHubNamespace(io: SocketIOServer): void {
     hub.on("connection", async (socket) => {
         const userId = socket.data.userId ?? "";
 
-        console.log(`[sio/hub] connected: ${socket.id} userId=${userId}`);
+        log.info(`connected: ${socket.id} userId=${userId}`);
 
         // Join hub room (filtered by user)
         await addHubClient(socket, userId);
@@ -47,7 +50,7 @@ export function registerHubNamespace(io: SocketIOServer): void {
 
         // ── disconnect ───────────────────────────────────────────────────────
         socket.on("disconnect", async (reason) => {
-            console.log(`[sio/hub] disconnected: ${socket.id} (${reason})`);
+            log.info(`disconnected: ${socket.id} (${reason})`);
             await removeHubClient(socket, userId);
         });
 
@@ -59,7 +62,7 @@ export function registerHubNamespace(io: SocketIOServer): void {
           // Validate ownership — only the session owner may subscribe
           const session = await getSession(sessionId);
           if (!session || session.userId !== userId) {
-            console.warn(`[sio/hub] subscribe_session_meta: unauthorized userId=${userId} sessionId=${sessionId}`);
+            log.warn(`subscribe_session_meta: unauthorized userId=${userId} sessionId=${sessionId}`);
             return;
           }
 
@@ -81,14 +84,14 @@ export function registerHubNamespace(io: SocketIOServer): void {
           const state = await getSessionMetaState(sessionId) ?? stateBeforeJoin;
           socket.emit("state_snapshot", { sessionId, state });
 
-          console.log(`[sio/hub] meta subscribe: ${socket.id} → session ${sessionId}`);
+          log.info(`meta subscribe: ${socket.id} → session ${sessionId}`);
         });
 
         socket.on("unsubscribe_session_meta", async (data: unknown) => {
           if (!data || typeof (data as Record<string, unknown>).sessionId !== "string") return;
           const sessionId = (data as { sessionId: string }).sessionId;
           socket.leave(sessionMetaRoom(sessionId));
-          console.log(`[sio/hub] meta unsubscribe: ${socket.id} ← session ${sessionId}`);
+          log.info(`meta unsubscribe: ${socket.id} ← session ${sessionId}`);
         });
     });
 }

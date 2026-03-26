@@ -108,6 +108,9 @@ import {
 } from "@/lib/message-helpers";
 import { evictLruIfNeeded, touchSessionCache, MAX_SESSION_UI_CACHE_SIZE } from "@/lib/session-ui-cache";
 import { analyzeIncomingSeq, mergeConnectedSeq, shouldDeferEventForHydration } from "@/lib/session-seq";
+import { createLogger } from "@pizzapi/tools";
+
+const log = createLogger("relay");
 
 // Sync all CSS animations (pulse, chase-spin, etc.) to the same phase globally.
 initAnimationSync();
@@ -2400,7 +2403,7 @@ export function App() {
       if (!socket.connected) return;
       const elapsed = Date.now() - lastViewerEventAtRef.current;
       if (elapsed > STALE_THRESHOLD_MS) {
-        console.warn(`[relay] Stale connection detected (${Math.round(elapsed / 1000)}s since last event). Reconnecting…`);
+        log.warn(`Stale connection detected (${Math.round(elapsed / 1000)}s since last event). Reconnecting…`);
         socket.disconnect();
         socket.connect();
       }
@@ -2469,7 +2472,7 @@ export function App() {
         }
         if (decision.gap && decision.expected !== null) {
           // Gap detected — request a resync snapshot from the server.
-          console.warn(`[relay] Sequence gap: expected ${decision.expected}, got ${seq}. Requesting resync.`);
+          log.warn(`Sequence gap: expected ${decision.expected}, got ${seq}. Requesting resync.`);
           socket.emit("resync", {});
         }
         lastSeqRef.current = decision.nextSeq;

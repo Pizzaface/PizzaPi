@@ -1,5 +1,8 @@
 import type { ExtensionFactory } from "@mariozechner/pi-coding-agent";
+import { createLogger } from "@pizzapi/tools";
 import { waitForRelayRegistration } from "./remote.js";
+
+const log = createLogger("worker");
 
 /**
  * InitialPrompt extension — handles one-time model selection, initial prompt
@@ -51,19 +54,19 @@ export const initialPromptExtension: ExtensionFactory = (pi) => {
                 try {
                     const ok = await pi.setModel(model);
                     if (ok) {
-                        console.log(`pizzapi worker: initial model set to ${initialModelProvider}/${initialModelId}`);
+                        log.info(`pizzapi worker: initial model set to ${initialModelProvider}/${initialModelId}`);
                     } else {
-                        console.warn(
+                        log.warn(
                             `pizzapi worker: model ${initialModelProvider}/${initialModelId} selected but no valid credentials found — using default`,
                         );
                     }
                 } catch (err) {
-                    console.warn(
+                    log.warn(
                         `pizzapi worker: failed to set initial model ${initialModelProvider}/${initialModelId}: ${err instanceof Error ? err.message : String(err)}`,
                     );
                 }
             } else {
-                console.warn(
+                log.warn(
                     `pizzapi worker: requested model ${initialModelProvider}/${initialModelId} not found in registry`,
                 );
             }
@@ -73,9 +76,9 @@ export const initialPromptExtension: ExtensionFactory = (pi) => {
         if (agentName) {
             try {
                 pi.setSessionName(`🤖 ${agentName}`);
-                console.log(`pizzapi worker: session name set to agent "${agentName}"`);
+                log.info(`pizzapi worker: session name set to agent "${agentName}"`);
             } catch (err) {
-                console.warn(
+                log.warn(
                     `pizzapi worker: failed to set agent session name: ${err instanceof Error ? err.message : String(err)}`,
                 );
             }
@@ -122,13 +125,13 @@ export const initialPromptExtension: ExtensionFactory = (pi) => {
                 // no tools resolved — an empty set is safer than full access.
                 pi.setActiveTools(uniqueAllowed);
                 if (uniqueAllowed.length > 0) {
-                    console.log(`pizzapi worker: agent tool allowlist applied: ${uniqueAllowed.join(", ")}`);
+                    log.info(`pizzapi worker: agent tool allowlist applied: ${uniqueAllowed.join(", ")}`);
                 } else {
-                    console.warn(`pizzapi worker: agent tool allowlist matched no known tools (requested: ${requested.join(", ")}). All tools disabled for safety.`);
+                    log.warn(`pizzapi worker: agent tool allowlist matched no known tools (requested: ${requested.join(", ")}). All tools disabled for safety.`);
                 }
             } catch (err) {
-                console.warn(
-                    `pizzapi worker: failed to apply agent tool allowlist: ${err instanceof Error ? err.message : String(err)}`,
+                log.warn(
+                    `failed to apply agent tool allowlist: ${err instanceof Error ? err.message : String(err)}`,
                 );
             }
         }
@@ -151,10 +154,10 @@ export const initialPromptExtension: ExtensionFactory = (pi) => {
                 const filtered = current.filter(t => !denied.has(t.toLowerCase()));
                 if (filtered.length < current.length) {
                     pi.setActiveTools(filtered);
-                    console.log(`pizzapi worker: agent tool denylist applied, removed: ${[...denied].join(", ")}`);
+                    log.info(`pizzapi worker: agent tool denylist applied, removed: ${[...denied].join(", ")}`);
                 }
             } catch (err) {
-                console.warn(
+                log.warn(
                     `pizzapi worker: failed to apply agent tool denylist: ${err instanceof Error ? err.message : String(err)}`,
                 );
             }
@@ -166,7 +169,7 @@ export const initialPromptExtension: ExtensionFactory = (pi) => {
         // to the parent. Falls back after 10s if relay never connects.
         if (initialPrompt) {
             waitForRelayRegistration(10_000).then(() => {
-                console.log(`pizzapi worker: sending initial prompt (${initialPrompt.length} chars)`);
+                log.info(`pizzapi worker: sending initial prompt (${initialPrompt.length} chars)`);
                 pi.sendUserMessage(initialPrompt);
             });
         }

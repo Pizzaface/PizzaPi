@@ -36,8 +36,11 @@ import { isChildOfParent } from "../sio-state.js";
 import { getPendingChunkedSnapshot } from "./relay/index.js";
 import { getPersistedRelaySessionSnapshot } from "../../sessions/store.js";
 import { getCachedRelayEvents } from "../../sessions/redis.js";
+import { createLogger } from "@pizzapi/tools";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
+
+const log = createLogger("sio/viewer");
 
 type ViewerSocket = Socket<
     ViewerClientToServerEvents,
@@ -179,7 +182,7 @@ async function replayPersistedSnapshot(
     } catch (error) {
         socket.emit("error", { message: "Failed to load session snapshot" });
         socket.disconnect();
-        console.error("[sio/viewer] Failed to replay persisted snapshot:", error);
+        log.error("Failed to replay persisted snapshot:", error);
     }
 }
 
@@ -222,7 +225,7 @@ export function registerViewerNamespace(io: SocketIOServer): void {
 
         socket.data.sessionId = sessionId;
 
-        console.log(`[sio/viewer] connected: ${socket.id} sessionId=${sessionId} userId=${viewerUserId}`);
+        log.info(`connected: ${socket.id} sessionId=${sessionId} userId=${viewerUserId}`);
 
         // Look up the live session
         const session = await getSharedSession(sessionId);
@@ -508,7 +511,7 @@ export function registerViewerNamespace(io: SocketIOServer): void {
 
         // ── disconnect ───────────────────────────────────────────────────────
         socket.on("disconnect", async (reason) => {
-            console.log(`[sio/viewer] disconnected: ${socket.id} sessionId=${sessionId} (${reason})`);
+            log.info(`disconnected: ${socket.id} sessionId=${sessionId} (${reason})`);
             await removeViewer(sessionId, socket);
         });
 
@@ -559,11 +562,11 @@ export function registerViewerNamespace(io: SocketIOServer): void {
 
         // Send cached service_announce so the viewer knows which runner
         // services are available without waiting for a fresh announce.
-        console.log(`[sio/viewer] service_announce check: runnerId=${freshSession.runnerId ?? "null"}`);
+        log.info(`service_announce check: runnerId=${freshSession.runnerId ?? "null"}`);
         if (freshSession.runnerId) {
             const announce = getRunnerServiceAnnounce(freshSession.runnerId);
             const serviceIds = announce?.serviceIds ?? [];
-            console.log(`[sio/viewer] service_announce: runnerId=${freshSession.runnerId}, cached serviceIds=[${serviceIds.join(",")}]`);
+            log.info(`service_announce: runnerId=${freshSession.runnerId}, cached serviceIds=[${serviceIds.join(",")}]`);
             if (serviceIds.length > 0) {
                 socket.emit("service_announce", announce!);
             }

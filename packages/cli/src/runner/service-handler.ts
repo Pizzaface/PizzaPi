@@ -1,4 +1,5 @@
 import type { Socket } from "socket.io-client";
+import { logError } from "./logger.js";
 
 /**
  * Interface for runner-side service handlers.
@@ -77,7 +78,7 @@ export class ServiceRegistry {
             try {
                 handler.dispose();
             } catch (err) {
-                console.error(`[ServiceRegistry] dispose error for service "${handler.id}":`, err);
+                logError(`[ServiceRegistry] dispose error for service "${handler.id}": ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
             }
         }
     }

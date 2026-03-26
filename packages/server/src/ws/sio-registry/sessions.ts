@@ -59,6 +59,9 @@ import {
     emitToRunner,
 } from "./context.js";
 import { broadcastToHub } from "./hub.js";
+import { createLogger } from "@pizzapi/tools";
+
+const log = createLogger("sio-registry");
 
 // ── Internal helpers ─────────────────────────────────────────────────────────
 
@@ -303,7 +306,7 @@ export async function registerTuiSession(
         runnerId,
         runnerName,
     }).catch((error) => {
-        console.error("[sio-registry] Failed to persist relay session start:", error);
+        log.error("Failed to persist relay session start:", error);
     });
 
     // Broadcast to hub
@@ -394,7 +397,7 @@ export async function updateSessionState(sessionId: string, state: unknown): Pro
     try {
         strippedState = await storeAndReplaceImages(state, sessionId, userId);
     } catch (err) {
-        console.error("[sio-registry] Image extraction failed, using original state:", err);
+        log.error("Image extraction failed, using original state:", err);
         strippedState = state;
     }
 
@@ -430,7 +433,7 @@ export async function updateSessionState(sessionId: string, state: unknown): Pro
     }
 
     void recordRelaySessionState(sessionId, strippedState).catch((error) => {
-        console.error("[sio-registry] Failed to persist relay session state:", error);
+        log.error("Failed to persist relay session state:", error);
     });
 }
 
@@ -466,7 +469,7 @@ export async function touchSessionActivity(sessionId: string): Promise<void> {
     }
 
     void touchRelaySession(sessionId).catch((error) => {
-        console.error("[sio-registry] Failed to touch relay session:", error);
+        log.error("Failed to touch relay session:", error);
     });
 }
 
@@ -483,7 +486,7 @@ export async function broadcastSessionEventToViewers(sessionId: string, event: u
             .to(viewerSessionRoom(sessionId))
             .emit("event", { event, seq });
     } catch (err) {
-        console.warn("[sio-registry] broadcastSessionEventToViewers failed:", (err as Error)?.message);
+        log.warn("broadcastSessionEventToViewers failed:", (err as Error)?.message);
         try {
             io.of("/viewer")
                 .local
@@ -519,7 +522,7 @@ export async function publishSessionEvent(sessionId: string, event: unknown): Pr
     try {
         strippedEvent = await storeAndReplaceImagesInEvent(event, sessionId, userId);
     } catch (err) {
-        console.error("[sio-registry] Image extraction from event failed, using original event:", err);
+        log.error("Image extraction from event failed, using original event:", err);
         strippedEvent = event;
     }
 
@@ -540,7 +543,7 @@ export async function publishSessionEvent(sessionId: string, event: unknown): Pr
         // Fall back to local-only delivery so viewers on this server still receive
         // the event and its seq — without seeing the new seq they'd never trigger
         // a resync and would permanently miss this event even though it was cached.
-        console.warn("[sio-registry] publishSessionEvent broadcast failed, falling back to local:", (err as Error)?.message);
+        log.warn("publishSessionEvent broadcast failed, falling back to local:", (err as Error)?.message);
         try {
             io.of("/viewer")
                 .local
@@ -670,7 +673,7 @@ export async function endSharedSession(sessionId: string, reason: string = "Sess
             .to(viewerSessionRoom(sessionId))
             .emit("disconnected", { reason });
     } catch (err) {
-        console.warn("[sio-registry] endSharedSession viewer notify failed, falling back to local:", (err as Error)?.message);
+        log.warn("endSharedSession viewer notify failed, falling back to local:", (err as Error)?.message);
         try {
             io.of("/viewer")
                 .local
@@ -704,7 +707,7 @@ export async function endSharedSession(sessionId: string, reason: string = "Sess
 
     // Persist end in SQLite
     void recordRelaySessionEnd(sessionId).catch((error) => {
-        console.error("[sio-registry] Failed to persist relay session end:", error);
+        log.error("Failed to persist relay session end:", error);
     });
 
     // Broadcast removal to hub
@@ -790,8 +793,8 @@ export async function sweepOrphanedSessions(nowMs: number): Promise<void> {
         // Verify locally right before teardown to catch fresh reconnections
         if (localTuiSockets.has(candidate.sessionId)) continue;
 
-        console.log(
-            `[sio-registry] Sweeping orphaned session ${candidate.sessionId} ` +
+        log.info(
+            `Sweeping orphaned session ${candidate.sessionId} ` +
             `(last activity: ${new Date(candidate.lastActivity).toISOString()})`,
         );
         await endSharedSession(candidate.sessionId, "Session orphaned (no active relay connection)");
@@ -833,7 +836,7 @@ export function broadcastToViewers(sessionId: string, eventName: string, data: u
         // cached in Redis, so viewers can't recover them via replay. Fall back
         // to local-only delivery so at least viewers connected to this server
         // instance still receive the event.
-        console.warn("[sio-registry] broadcastToViewers Redis broadcast failed, falling back to local:", (err as Error)?.message);
+        log.warn("broadcastToViewers Redis broadcast failed, falling back to local:", (err as Error)?.message);
         try {
             io.of("/viewer")
                 .local

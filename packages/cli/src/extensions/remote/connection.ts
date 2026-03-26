@@ -7,6 +7,7 @@
 
 import { io, type Socket } from "socket.io-client";
 import type { RelayClientToServerEvents, RelayServerToClientEvents } from "@pizzapi/protocol";
+import { createLogger } from "@pizzapi/tools";
 import { loadConfig } from "../../config.js";
 import { RELAY_BACKOFF_DEFAULTS, computeBackoffDelay } from "../../backoff.js";
 import { getMcpBridge } from "../mcp-bridge.js";
@@ -34,6 +35,7 @@ let connectFailureNotified = false;
 
 /** Pending OAuth callback resolvers, keyed by nonce. */
 const oauthPendingCallbacks = new Map<string, (result: { code: string; state?: string }) => void>();
+const log = createLogger("relay");
 
 // ── Dependency injection for factory-closure callbacks ────────────────────────
 
@@ -175,7 +177,7 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
     }
 
     const sioUrl = socketIoUrl(rctx);
-    console.log(`pizzapi: connecting to relay at ${sioUrl}/relay…`);
+    log.info(`pizzapi: connecting to relay at ${sioUrl}/relay…`);
 
     const sock: Socket<RelayServerToClientEvents, RelayClientToServerEvents> = io(
         sioUrl + "/relay",
@@ -206,17 +208,17 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
         const approxDelayMs = computeBackoffDelay(attempt - 1);
         const delaySec = (approxDelayMs / 1000).toFixed(1);
         rctx.setRelayStatus(`Reconnecting to relay… (attempt ${attempt})`);
-        console.log(`pizzapi: relay reconnect attempt ${attempt} — retrying in ~${delaySec}s`);
+        log.info(`pizzapi: relay reconnect attempt ${attempt} — retrying in ~${delaySec}s`);
     });
 
     sock.io.on("reconnect", (attempt: number) => {
-        console.log(
+        log.info(
             `pizzapi: relay reconnected after ${attempt} attempt${attempt === 1 ? "" : "s"}`,
         );
     });
 
     sock.io.on("reconnect_error", (err: Error) => {
-        console.log(`pizzapi: relay reconnect error — ${err?.message ?? String(err)}`);
+        log.info(`pizzapi: relay reconnect error — ${err?.message ?? String(err)}`);
     });
 
     // ── Connection lifecycle ──────────────────────────────────────────────
@@ -246,7 +248,7 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
         };
         connectFailureNotified = false;
         rctx.setRelayStatus("Connected to Relay");
-        console.log(
+        log.info(
             wasReconnect
                 ? `pizzapi: relay reconnected — session ${data.sessionId} (${data.shareUrl})`
                 : `pizzapi: relay connected — session ${data.sessionId} (${data.shareUrl})`,
@@ -279,12 +281,12 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
             case "link":
                 rctx.parentSessionId = parentStateDecision.parentSessionId;
                 rctx.isChildSession = true;
-                console.log(`pizzapi: linked as child of parent session ${parentStateDecision.parentSessionId}`);
+                log.info(`pizzapi: linked as child of parent session ${parentStateDecision.parentSessionId}`);
                 break;
             case "ignore_stale_server_link":
                 // The child ran /new while disconnected — don't restore the
                 // stale parent link from Redis.
-                console.log("pizzapi: ignoring stale parentSessionId from server (pendingDelinkOwnParent)");
+                log.info("pizzapi: ignoring stale parentSessionId from server (pendingDelinkOwnParent)");
                 rctx.parentSessionId = null;
                 rctx.isChildSession = false;
                 break;
@@ -333,7 +335,7 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
         // the old parent can still inject tell_child / follow-up input.
         // Drop agent-originated input until the server-side link is severed.
         if (handlers.isPendingDelinkOwnParent() && (data as any).client === "agent") {
-            console.log("pizzapi: dropping stale parent tell_child/follow-up input — delink_own_parent pending");
+            log.info("pizzapi: dropping stale parent tell_child/follow-up input — delink_own_parent pending");
             return;
         }
 
@@ -357,7 +359,7 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
                 const message = await buildUserMessageFromRemoteInput(inputText, attachments, httpBase, key ?? "", relaySessionId);
                 handlers.sendUserMessage(message, deliverAs ? { deliverAs } : undefined);
             } catch (err) {
-                console.error(`pizzapi: failed to deliver remote input: ${err instanceof Error ? err.message : String(err)}`);
+                log.error(`pizzapi: failed to deliver remote input: ${err instanceof Error ? err.message : String(err)}`);
             }
         })();
     });
@@ -378,13 +380,13 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
     sock.on("session_message", (data) => {
         // Drop session_messages only from senders we know are pre-/new children.
         if (handlers.isStaleChild(data.fromSessionId)) {
-            console.log(`pizzapi: dropping stale session_message from ${data.fromSessionId} — sender is a pre-/new child`);
+            log.info(`pizzapi: dropping stale session_message from ${data.fromSessionId} — sender is a pre-/new child`);
             return;
         }
         // Drop stale send_message traffic from old parent during pending delink.
         const stalePrimary = handlers.getStalePrimaryParentId();
         if (handlers.isPendingDelinkOwnParent() && stalePrimary && data.fromSessionId === stalePrimary) {
-            console.log(`pizzapi: dropping stale session_message from old parent ${data.fromSessionId} — delink_own_parent pending`);
+            log.info(`pizzapi: dropping stale session_message from old parent ${data.fromSessionId} — delink_own_parent pending`);
             return;
         }
         messageBus.receive({
@@ -399,7 +401,7 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
         if (!trigger) return;
         // Drop triggers from known pre-/new children.
         if (handlers.isStaleChild(trigger.sourceSessionId)) {
-            console.log(`pizzapi: dropping stale session_trigger (${trigger.type}) from ${trigger.sourceSessionId} — sender is a pre-/new child`);
+            log.info(`dropping stale session_trigger (${trigger.type}) from ${trigger.sourceSessionId} — sender is a pre-/new child`);
             return;
         }
 
@@ -482,7 +484,7 @@ export function connect(rctx: RelayContext, handlers: ConnectionHandlers): void 
         const url = socketIoUrl(rctx);
         const reason = err?.message ?? String(err);
         rctx.setRelayStatus(`Relay connection failed (${url})`);
-        console.log(`pizzapi: relay connection error — ${reason}`);
+        log.info(`pizzapi: relay connection error — ${reason}`);
 
         if (!connectFailureNotified && rctx.latestCtx) {
             connectFailureNotified = true;

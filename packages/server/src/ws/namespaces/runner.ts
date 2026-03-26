@@ -62,6 +62,9 @@ import {
     broadcastToSessionViewers,
 } from "../sio-registry.js";
 import { resolveSpawnReady, resolveSpawnError } from "../runner-control.js";
+import { createLogger } from "@pizzapi/tools";
+
+const log = createLogger("sio/runner");
 
 // ── Skill request/response registry ──────────────────────────────────────────
 // Maps requestId → { resolve, timer }. Used to correlate skill command
@@ -335,7 +338,7 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
     const runnerSessionIds = new Map<string, Set<string>>();
 
     runner.on("connection", (socket) => {
-        console.log(`[sio/runner] connected: ${socket.id}`);
+        log.info(`connected: ${socket.id}`);
 
         // ── Periodic Redis TTL refresh ───────────────────────────────────────
         // The runner's Redis key has a 2-hour TTL. Without periodic refresh,
@@ -634,8 +637,8 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
         socket.on("terminal_ready", (data) => {
             const terminalId = data.terminalId;
             if (!terminalId) return;
-            console.log(
-                `[sio/runner] terminal_ready terminalId=${terminalId} runnerId=${socket.data.runnerId}`,
+            log.info(
+                `terminal_ready terminalId=${terminalId} runnerId=${socket.data.runnerId}`,
             );
             sendToTerminalViewer(terminalId, {
                 type: "terminal_ready",
@@ -656,8 +659,8 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
         socket.on("terminal_exit", async (data) => {
             const terminalId = data.terminalId;
             if (!terminalId) return;
-            console.log(
-                `[sio/runner] terminal_exit terminalId=${terminalId} exitCode=${data.exitCode} runnerId=${socket.data.runnerId}`,
+            log.info(
+                `terminal_exit terminalId=${terminalId} exitCode=${data.exitCode} runnerId=${socket.data.runnerId}`,
             );
             sendToTerminalViewer(terminalId, {
                 type: "terminal_exit",
@@ -670,8 +673,8 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
         socket.on("terminal_error", async (data) => {
             const terminalId = data.terminalId;
             if (!terminalId) return;
-            console.warn(
-                `[sio/runner] terminal_error terminalId=${terminalId} message="${data.message}" runnerId=${socket.data.runnerId}`,
+            log.warn(
+                `terminal_error terminalId=${terminalId} message="${data.message}" runnerId=${socket.data.runnerId}`,
             );
             const entry = await getTerminalEntry(terminalId);
             sendToTerminalViewer(terminalId, {
@@ -732,7 +735,7 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
                 // Security: verify the target session belongs to this runner to prevent
                 // cross-session injection by a compromised or malicious runner.
                 if (!runnerSessionIds.get(runnerId)?.has(targetSessionId)) {
-                    console.warn(`[sio/runner] service_message rejected: session ${targetSessionId} not owned by runner ${runnerId}`);
+                    log.warn(`service_message rejected: session ${targetSessionId} not owned by runner ${runnerId}`);
                     return;
                 }
                 broadcastToSessionViewers(targetSessionId, "service_message", envelope);
@@ -755,7 +758,7 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
             runnerServiceAnnounce.set(runnerId, data);
             // Persist to Redis so the data survives server restarts
             void updateRunnerServices(runnerId, data.serviceIds, data.panels).catch((err) => {
-                console.error(`[sio/runner] failed to persist service_announce to Redis for ${runnerId}:`, err);
+                log.error(`failed to persist service_announce to Redis for ${runnerId}:`, err);
             });
             const sessionIds = runnerSessionIds.get(runnerId);
             if (!sessionIds || sessionIds.size === 0) return;
@@ -766,7 +769,7 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
 
         // ── disconnect — clean up runner resources ───────────────────────────
         socket.on("disconnect", async (reason) => {
-            console.log(`[sio/runner] disconnected: ${socket.id} (${reason})`);
+            log.info(`disconnected: ${socket.id} (${reason})`);
             if (runnerTtlTimer) {
                 clearInterval(runnerTtlTimer);
                 runnerTtlTimer = null;
@@ -781,7 +784,7 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
                 // state for runners that genuinely crashed during the brief
                 // shutdown window.
                 if (shouldPreserveOnSocketDisconnect(reason)) {
-                    console.log(`[sio/runner] server shutting down — preserving Redis state for runner ${runnerId}`);
+                    log.info(`server shutting down — preserving Redis state for runner ${runnerId}`);
                     return;
                 }
 

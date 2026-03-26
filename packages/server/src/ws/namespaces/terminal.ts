@@ -21,6 +21,9 @@ import {
     removeTerminalViewer,
     getLocalRunnerSocket,
 } from "../sio-registry.js";
+import { createLogger } from "@pizzapi/tools";
+
+const log = createLogger("sio/terminal");
 
 export function registerTerminalNamespace(io: SocketIOServer): void {
     const terminal: Namespace<
@@ -52,15 +55,15 @@ export function registerTerminalNamespace(io: SocketIOServer): void {
 
         socket.data.terminalId = terminalId;
 
-        console.log(
-            `[sio/terminal] viewer connected: terminalId=${terminalId} userId=${socket.data.userId}`,
+        log.info(
+            `viewer connected: terminalId=${terminalId} userId=${socket.data.userId}`,
         );
 
         // Validate terminal exists
         const entry = await getTerminalEntry(terminalId);
         if (!entry) {
-            console.warn(
-                `[sio/terminal] viewer connected but no terminal entry found: terminalId=${terminalId}`,
+            log.warn(
+                `viewer connected but no terminal entry found: terminalId=${terminalId}`,
             );
             socket.emit("terminal_error", { terminalId, message: "Terminal not found" });
             socket.disconnect(true);
@@ -69,8 +72,8 @@ export function registerTerminalNamespace(io: SocketIOServer): void {
 
         // Validate user owns the terminal
         if (entry.userId !== socket.data.userId) {
-            console.warn(
-                `[sio/terminal] viewer forbidden: terminalId=${terminalId} ` +
+            log.warn(
+                `viewer forbidden: terminalId=${terminalId} ` +
                     `entry.userId=${entry.userId} viewer.userId=${socket.data.userId}`,
             );
             socket.emit("terminal_error", { terminalId, message: "Forbidden" });
@@ -86,8 +89,8 @@ export function registerTerminalNamespace(io: SocketIOServer): void {
             return;
         }
 
-        console.log(
-            `[sio/terminal] viewer attached to runnerId=${entry.runnerId}: terminalId=${terminalId}`,
+        log.info(
+            `viewer attached to runnerId=${entry.runnerId}: terminalId=${terminalId}`,
         );
         socket.emit("terminal_connected", { terminalId });
 
@@ -101,8 +104,8 @@ export function registerTerminalNamespace(io: SocketIOServer): void {
 
             const runnerSocket = getLocalRunnerSocket(te.runnerId);
             if (!runnerSocket) {
-                console.warn(
-                    `[sio/terminal] runner not found runnerId=${te.runnerId} for terminalId=${tid} — input dropped`,
+                log.warn(
+                    `runner not found runnerId=${te.runnerId} for terminalId=${tid} — input dropped`,
                 );
                 return;
             }
@@ -123,8 +126,8 @@ export function registerTerminalNamespace(io: SocketIOServer): void {
 
             const runnerSocket = getLocalRunnerSocket(te.runnerId);
             if (!runnerSocket) {
-                console.warn(
-                    `[sio/terminal] runner not found runnerId=${te.runnerId} for terminalId=${tid} — resize dropped`,
+                log.warn(
+                    `runner not found runnerId=${te.runnerId} for terminalId=${tid} — resize dropped`,
                 );
                 return;
             }
@@ -147,8 +150,8 @@ export function registerTerminalNamespace(io: SocketIOServer): void {
                         ? data.rows
                         : (spawnOpts.rows ?? 24);
 
-                console.log(
-                    `[sio/terminal] deferred spawn: viewer sent resize → spawning PTY ` +
+                log.info(
+                    `deferred spawn: viewer sent resize → spawning PTY ` +
                         `terminalId=${tid} ${cols}x${rows} cwd=${spawnOpts.cwd ?? "(default)"}`,
                 );
 
@@ -163,8 +166,8 @@ export function registerTerminalNamespace(io: SocketIOServer): void {
                         rows,
                     });
                 } catch (err) {
-                    console.error(
-                        `[sio/terminal] deferred spawn: failed to send new_terminal to runner ` +
+                    log.error(
+                        `deferred spawn: failed to send new_terminal to runner ` +
                             `runnerId=${te.runnerId} terminalId=${tid}:`,
                         err,
                     );
@@ -177,8 +180,8 @@ export function registerTerminalNamespace(io: SocketIOServer): void {
             }
 
             // Normal resize: forward to runner
-            console.log(
-                `[sio/terminal] viewer→runner: terminalId=${tid} terminal_resize cols=${data.cols} rows=${data.rows}`,
+            log.info(
+                `viewer→runner: terminalId=${tid} terminal_resize cols=${data.cols} rows=${data.rows}`,
             );
             runnerSocket.emit("terminal_resize" as string, {
                 terminalId: tid,
@@ -204,8 +207,8 @@ export function registerTerminalNamespace(io: SocketIOServer): void {
         // ── disconnect ───────────────────────────────────────────────────────
         socket.on("disconnect", async (reason) => {
             const tid = socket.data.terminalId;
-            console.log(
-                `[sio/terminal] viewer disconnected: terminalId=${tid} userId=${socket.data.userId} (${reason})`,
+            log.info(
+                `viewer disconnected: terminalId=${tid} userId=${socket.data.userId} (${reason})`,
             );
             if (tid) {
                 await removeTerminalViewer(tid, socket);

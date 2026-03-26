@@ -3,6 +3,9 @@ import { apiKey } from "better-auth/plugins";
 import { BunSqliteDialect } from "kysely-bun-sqlite";
 import { Kysely } from "kysely";
 import { Database } from "bun:sqlite";
+import { createLogger } from "@pizzapi/tools";
+
+const log = createLogger("auth");
 
 // ── DB schema types ───────────────────────────────────────────────────────────
 
@@ -255,12 +258,12 @@ export function initAuth(config: AuthConfig = {}): void {
             throw new Error(`[auth] ${msg}`);
         } else {
             const fallback = crypto.randomUUID().replace(/-/g, "") + crypto.randomUUID().replace(/-/g, "");
-            console.warn(`[auth] WARNING: ${msg}\n  Using a random ephemeral secret for this development session.`);
+            log.warn(`WARNING: ${msg}\n  Using a random ephemeral secret for this development session.`);
             secret = fallback;
         }
     } else if (secret.length < 32) {
-        console.warn(
-            `[auth] WARNING: BETTER_AUTH_SECRET is shorter than 32 characters (got ${secret.length}). ` +
+        log.warn(
+            `WARNING: BETTER_AUTH_SECRET is shorter than 32 characters (got ${secret.length}). ` +
             "A longer secret is strongly recommended for security.",
         );
     }
@@ -287,7 +290,7 @@ export function initAuth(config: AuthConfig = {}): void {
             : []);
     const isProduction = process.env.NODE_ENV === "production";
     if (isProduction && !process.env.PIZZAPI_BASE_URL) {
-        console.warn("WARNING: PIZZAPI_BASE_URL is not set in production. This may cause CORS or WebSocket connection issues.");
+        log.warn("WARNING: PIZZAPI_BASE_URL is not set in production. This may cause CORS or WebSocket connection issues.");
     }
     const baseOrigins: string[] = [];
     if (process.env.PIZZAPI_BASE_URL) {

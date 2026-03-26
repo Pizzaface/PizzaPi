@@ -7,6 +7,9 @@
 
 import type { RemoteInputAttachment } from "./remote-types.js";
 import { saveSessionAttachment } from "./session-attachments.js";
+import { createLogger } from "@pizzapi/tools";
+
+const log = createLogger("remote-input");
 
 /** MIME types and file extensions recognized as text-based (safe to decode as UTF-8). */
 const TEXT_MIME_PREFIXES = ["text/"];
@@ -99,13 +102,13 @@ export async function loadAttachmentFromRelay(
             headers: { "x-api-key": apiKey },
         });
     } catch (err) {
-        console.error(`pizzapi: attachment fetch failed (network error): ${url} — ${err instanceof Error ? err.message : String(err)}`);
+        log.error(`attachment fetch failed (network error): ${url} — ${err instanceof Error ? err.message : String(err)}`);
         return null;
     }
 
     if (!response.ok) {
         const body = await response.text().catch(() => "");
-        console.error(`pizzapi: attachment fetch failed: ${response.status} ${response.statusText} — ${url}${body ? ` — ${body}` : ""}`);
+        log.error(`pizzapi: attachment fetch failed: ${response.status} ${response.statusText} — ${url}${body ? ` — ${body}` : ""}`);
         return null;
     }
 
@@ -175,7 +178,7 @@ export async function buildUserMessageFromRemoteInput(
                 const saved = await saveSessionAttachment(sessionId, attachFilename, mediaType, buf);
                 savedPath = saved.filePath;
             } catch (err) {
-                console.error(`pizzapi: failed to persist attachment: ${err instanceof Error ? err.message : String(err)}`);
+                log.error(`pizzapi: failed to persist attachment: ${err instanceof Error ? err.message : String(err)}`);
             }
         }
 

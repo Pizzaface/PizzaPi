@@ -23,6 +23,9 @@ import {
     clearParentSessionId,
 } from "../../sio-state.js";
 import type { RelaySocket } from "./types.js";
+import { createLogger } from "@pizzapi/tools";
+
+const log = createLogger("sio/relay");
 
 export function registerChildLifecycleHandlers(socket: RelaySocket, io: SocketIOServer): void {
     // ── cleanup_child_session — parent requests child teardown on ack ────
@@ -67,7 +70,7 @@ export function registerChildLifecycleHandlers(socket: RelaySocket, io: SocketIO
             return;
         }
 
-        console.log(`[sio/relay] cleanup_child_session: parent=${sessionId} child=${childSessionId}`);
+        log.info(`cleanup_child_session: parent=${sessionId} child=${childSessionId}`);
 
         try {
             // Terminate the child process via two complementary paths:
@@ -118,7 +121,7 @@ export function registerChildLifecycleHandlers(socket: RelaySocket, io: SocketIO
 
             if (typeof ack === "function") ack({ ok: true });
         } catch (err: any) {
-            console.error(`[sio/relay] cleanup_child_session failed: parent=${sessionId} child=${childSessionId}`, err);
+            log.error(`cleanup_child_session failed: parent=${sessionId} child=${childSessionId}`, err);
             if (typeof ack === "function") ack({ ok: false, error: err?.message ?? "Internal error" });
         }
     });
@@ -140,7 +143,7 @@ export function registerChildLifecycleHandlers(socket: RelaySocket, io: SocketIO
         const epoch: number | undefined =
             typeof data.epoch === "number" && data.epoch > 0 ? data.epoch : undefined;
 
-        console.log(`[sio/relay] delink_children: parent=${sessionId}${epoch ? ` epoch=${new Date(epoch).toISOString()}` : ""}`);
+        log.info(`delink_children: parent=${sessionId}${epoch ? ` epoch=${new Date(epoch).toISOString()}` : ""}`);
 
         try {
             // Snapshot current children plus any children whose
@@ -178,9 +181,9 @@ export function registerChildLifecycleHandlers(socket: RelaySocket, io: SocketIO
                         const hasDelinkMarker = await isChildDelinked(childId);
                         if (hasDelinkMarker) {
                             filtered.push(childId);
-                            console.log(`[sio/relay] delink_children: including child ${childId} (startedAt > epoch but has delink marker)`);
+                            log.info(`delink_children: including child ${childId} (startedAt > epoch but has delink marker)`);
                         } else {
-                            console.log(`[sio/relay] delink_children: skipping child ${childId} (startedAt=${childSession.startedAt} > epoch)`);
+                            log.info(`delink_children: skipping child ${childId} (startedAt=${childSession.startedAt} > epoch)`);
                         }
                     }
                 }
@@ -242,7 +245,7 @@ export function registerChildLifecycleHandlers(socket: RelaySocket, io: SocketIO
             // new conversation.
             if (typeof ack === "function") ack({ ok: true });
         } catch (err) {
-            console.error(`[sio/relay] delink_children failed for parent=${sessionId}:`, err);
+            log.error(`delink_children failed for parent=${sessionId}:`, err);
             // Always nack so the client can clear its pendingDelink guard
             // and retry on reconnect rather than latching permanently.
             if (typeof ack === "function") ack({ ok: false, error: String(err) });
@@ -274,13 +277,13 @@ export function registerChildLifecycleHandlers(socket: RelaySocket, io: SocketIO
             // left behind to avoid a /new race window.
             const oldParentId = typeof data?.oldParentId === "string" ? data.oldParentId : null;
             if (oldParentId) {
-                console.log(
-                    `[sio/relay] delink_own_parent: child=${sessionId} parentSessionId already cleared — removing stale child entry from parent=${oldParentId}`,
+                log.info(
+                    `delink_own_parent: child=${sessionId} parentSessionId already cleared — removing stale child entry from parent=${oldParentId}`,
                 );
                 try {
                     await removeChildSession(oldParentId, sessionId);
                 } catch (err) {
-                    console.error("[sio/relay] delink_own_parent: failed to remove stale child entry:", err);
+                    log.error("delink_own_parent: failed to remove stale child entry:", err);
                     if (typeof ack === "function") ack({ ok: false, error: err instanceof Error ? err.message : String(err) });
                     return;
                 }
@@ -292,7 +295,7 @@ export function registerChildLifecycleHandlers(socket: RelaySocket, io: SocketIO
             try {
                 await clearParentSessionId(sessionId);
             } catch (err) {
-                console.error("[sio/relay] delink_own_parent: failed to clear linkedParentId:", err);
+                log.error("delink_own_parent: failed to clear linkedParentId:", err);
                 // Non-fatal: suppression will self-correct once the membership set expires.
             }
             // Already delinked or never linked — confirm success so the
@@ -301,7 +304,7 @@ export function registerChildLifecycleHandlers(socket: RelaySocket, io: SocketIO
             return;
         }
 
-        console.log(`[sio/relay] delink_own_parent: child=${sessionId} parent=${parentId}`);
+        log.info(`delink_own_parent: child=${sessionId} parent=${parentId}`);
 
         // Clear our own parentSessionId FIRST — this closes the race
         // window where a stale ack/followUp/cleanup_child_session from
@@ -314,7 +317,7 @@ export function registerChildLifecycleHandlers(socket: RelaySocket, io: SocketIO
             await clearParentSessionId(sessionId);
             await removeChildSession(parentId, sessionId);
         } catch (err) {
-            console.error("[sio/relay] delink_own_parent: Redis write failed:", err);
+            log.error("delink_own_parent: Redis write failed:", err);
             if (typeof ack === "function") ack({ ok: false, error: err instanceof Error ? err.message : String(err) });
             return;
         }

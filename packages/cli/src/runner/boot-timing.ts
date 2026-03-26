@@ -1,10 +1,12 @@
+import { logInfo } from "./logger.js";
+
 type TimerEntry = {
     label: string;
     startedAtMs: number;
 };
 
 /**
- * Lightweight boot timer that logs to stdout via console.log.
+ * Lightweight boot timer that logs to stdout via the runner logger.
  *
  * Node/Bun's console.timeEnd() writes to stderr, which causes normal
  * boot instrumentation to appear as error logs when workers are spawned
@@ -25,7 +27,7 @@ export function createBootTimer(): {
             if (!timer) return;
             timers.delete(name);
             const elapsedMs = performance.now() - timer.startedAtMs;
-            console.log(`${timer.label}: ${elapsedMs.toFixed(3)}ms`);
+            logInfo(`${timer.label}: ${elapsedMs.toFixed(3)}ms`);
         },
     };
 }

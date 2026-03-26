@@ -4,8 +4,10 @@ import { join, dirname } from "path";
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { saveGlobalConfig } from "./config.js";
 import { validatePassword, PASSWORD_REQUIREMENTS } from "@pizzapi/protocol";
+import { createLogger } from "@pizzapi/tools";
 import { c } from "./cli-colors.js";
 
+const log = createLogger("setup");
 const RELAY_DEFAULT = "http://localhost:7492";
 
 function rl() {
@@ -85,19 +87,19 @@ export async function runSetup(opts: { force?: boolean } = {}): Promise<boolean>
         const configPath = join(homedir(), ".pizzapi", "config.json");
 
         const frame = c.label("─".repeat(43));
-        console.log();
-        console.log(c.label("┌") + frame + c.label("┐"));
-        console.log(c.label("│") + `     ${c.brand("🍕 PizzaPi")} ${c.dim("— first-run setup")}     ` + c.label("│"));
-        console.log(c.label("└") + frame + c.label("┘"));
-        console.log();
-        console.log("Connect this node to a PizzaPi relay server so your sessions");
-        console.log("can be monitored from the web UI.");
-        console.log();
+        log.info("");
+        log.info(c.label("┌") + frame + c.label("┐"));
+        log.info(c.label("│") + `     ${c.brand("🍕 PizzaPi")} ${c.dim("— first-run setup")}     ` + c.label("│"));
+        log.info(c.label("└") + frame + c.label("┘"));
+        log.info("");
+        log.info("Connect this node to a PizzaPi relay server so your sessions");
+        log.info("can be monitored from the web UI.");
+        log.info("");
 
         if (!opts.force) {
             const skip = await ask(iface, "Skip setup and continue without relay? [y/N] ");
             if (skip.trim().toLowerCase() === "y") {
-                console.log("\nSkipping relay setup. Run `pizzapi setup` at any time to configure.\n");
+                log.info("\nSkipping relay setup. Run `pizzapi setup` at any time to configure.\n");
                 return false;
             }
         }
@@ -113,7 +115,7 @@ export async function runSetup(opts: { force?: boolean } = {}): Promise<boolean>
         const name = (await ask(iface, "Your name (leave blank if account already exists): ")).trim();
         const email = (await ask(iface, "Email: ")).trim();
         if (!email) {
-            console.log(`\n${c.error("✗")} Email is required. Aborting setup.\n`);
+            log.info(`\n${c.error("✗")} Email is required. Aborting setup.\n`);
             return false;
         }
 
@@ -122,7 +124,7 @@ export async function runSetup(opts: { force?: boolean } = {}): Promise<boolean>
 
         const password = await askPassword("Password: ");
         if (!password) {
-            console.log(`\n${c.error("✗")} Password is required. Aborting setup.\n`);
+            log.info(`\n${c.error("✗")} Password is required. Aborting setup.\n`);
             return false;
         }
 
@@ -130,12 +132,12 @@ export async function runSetup(opts: { force?: boolean } = {}): Promise<boolean>
         if (name) {
             const check = validatePassword(password);
             if (!check.valid) {
-                console.log(`\n${c.error("✗")} Password does not meet the requirements:`);
+                log.info(`\n${c.error("✗")} Password does not meet the requirements:`);
                 for (const chk of check.checks) {
                     const icon = chk.met ? c.success("✓") : c.error("✗");
-                    console.log(`  ${icon} ${chk.label}`);
+                    log.info(`  ${icon} ${chk.label}`);
                 }
-                console.log();
+                log.info("");
                 return false;
             }
         }
@@ -143,14 +145,14 @@ export async function runSetup(opts: { force?: boolean } = {}): Promise<boolean>
         process.stdout.write(`\n${c.dim("Connecting to relay server…")} `);
         const result = await registerCli(relayUrl, name, email, password);
         if (!result.ok || !result.key) {
-            console.log(c.error("✗") + "\n");
-            console.error(
+            log.info(c.error("✗") + "\n");
+            log.error(
                 `Could not register with the relay server: ${result.error ?? "unknown error"}\n` +
                 "Check that the server is running, your credentials are correct, and try again.\n",
             );
             return false;
         }
-        console.log(c.success("✓") + "\n");
+        log.info(c.success("✓") + "\n");
 
         // Derive ws:// URL for the relay config
         const wsRelayUrl = relayUrl.replace(/^http/, "ws");
@@ -160,8 +162,8 @@ export async function runSetup(opts: { force?: boolean } = {}): Promise<boolean>
         process.env.PIZZAPI_API_KEY = result.key;
         process.env.PIZZAPI_RELAY_URL = wsRelayUrl;
 
-        console.log(`${c.success("✓")} API key saved to ${c.dim(configPath)}`);
-        console.log(`${c.success("✓")} Relay: ${c.accent(wsRelayUrl)}\n`);
+        log.info(`${c.success("✓")} API key saved to ${c.dim(configPath)}`);
+        log.info(`${c.success("✓")} Relay: ${c.accent(wsRelayUrl)}\n`);
 
         // Auto-select the PizzaPi dark theme for new installations
         try {
@@ -175,10 +177,10 @@ export async function runSetup(opts: { force?: boolean } = {}): Promise<boolean>
                 piSettings.theme = "pizzapi-dark";
                 mkdirSync(dirname(piSettingsPath), { recursive: true });
                 writeFileSync(piSettingsPath, JSON.stringify(piSettings, null, 2) + "\n", "utf-8");
-                console.log("✓ Theme set to pizzapi-dark\n");
+                log.info("✓ Theme set to pizzapi-dark\n");
             }
         } catch (err) {
-            console.warn("Note: Could not set default theme:", err instanceof Error ? err.message : String(err));
+            log.warn("Note: Could not set default theme:", err instanceof Error ? err.message : String(err));
         }
 
         return true;

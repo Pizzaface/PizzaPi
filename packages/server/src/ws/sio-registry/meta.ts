@@ -8,8 +8,11 @@
 import { defaultMetaState, type SessionMetaState, type MetaRelayEvent } from "@pizzapi/protocol";
 import { getSession, updateSessionFields } from "../sio-state.js";
 import { getIo } from "./context.js";
+import { createLogger } from "@pizzapi/tools";
 
 // ── Hub broadcasting ─────────────────────────────────────────────────────────
+
+const log = createLogger("meta");
 
 export function sessionMetaRoom(sessionId: string): string {
   return `session:${sessionId}:meta`;
@@ -28,7 +31,7 @@ export async function broadcastToSessionMeta(
     const room = sessionMetaRoom(sessionId);
     io.of("/hub").to(room).emit("meta_event", { sessionId, version, ...event });
   } catch (err) {
-    console.warn("[meta] broadcastToSessionMeta failed:", (err as Error)?.message);
+    log.warn("broadcastToSessionMeta failed:", (err as Error)?.message);
   }
 }
 

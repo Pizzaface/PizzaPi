@@ -11,6 +11,7 @@ import { runAllMigrations } from "./migrations.js";
 
 import { setServerShuttingDown } from "./health.js";
 import { handleTunnelWsUpgrade } from "./routes/tunnel-ws.js";
+import { createLogger } from "@pizzapi/tools";
 
 // ── Process-level safety net ─────────────────────────────────────────────────
 // The Socket.IO Redis adapter can throw EPIPE synchronously when the Redis
@@ -18,11 +19,11 @@ import { handleTunnelWsUpgrade } from "./routes/tunnel-ws.js";
 // try/catches so the server never exits on a transient Redis disconnect.
 process.on("uncaughtException", (err: Error) => {
     if ((err as NodeJS.ErrnoException).code === "EPIPE") {
-        console.warn("[process] Caught EPIPE (Redis connection dropped) — ignoring:", err.message);
+        processLog.warn("Caught EPIPE (Redis connection dropped) — ignoring:", err.message);
         return;
     }
     // Re-throw anything that isn't an EPIPE so genuine bugs still surface.
-    console.error("[process] Uncaught exception:", err);
+    processLog.error("Uncaught exception:", err);
     process.exit(1);
 });
 
@@ -45,6 +46,14 @@ const PORT = parseInt(process.env.PORT ?? "7492");
 export { serverHealth } from "./health.js";
 import { serverHealth } from "./health.js";
 
+const log = createLogger("index");
+const processLog = createLogger("process");
+const startupLog = createLogger("startup");
+const httpLog = createLogger("http");
+const healthLog = createLogger("health");
+const socketIoLog = createLogger("Socket.IO");
+const shutdownLog = createLogger("shutdown");
+
 await runAllMigrations();
 void initializeRelayRedisCache();
 
@@ -52,9 +61,9 @@ void initializeRelayRedisCache();
 // session state survive server restarts.
 try {
     const count = await rehydrateExtractedAttachments();
-    if (count > 0) console.log(`[startup] Rehydrated ${count} extracted image attachment(s) from database.`);
+    if (count > 0) startupLog.info(`Rehydrated ${count} extracted image attachment(s) from database.`);
 } catch (err) {
-    console.error("[startup] Failed to rehydrate extracted attachments:", err);
+    startupLog.error("Failed to rehydrate extracted attachments:", err);
 }
 
 // ── Helpers: convert node:http request/response ↔ fetch API ──────────────
@@ -143,7 +152,7 @@ const httpServer = createServer(async (req, res) => {
         const fetchRes = await handleFetch(fetchReq);
         await sendFetchResponse(res, fetchRes);
     } catch (e) {
-        console.error("[http] Unhandled error:", e);
+        httpLog.error("Unhandled error:", e);
         if (!res.headersSent) {
             res.writeHead(500, {
                 "content-type": "application/json",
@@ -195,7 +204,7 @@ try {
     pubClient.on("ready", () => {
         pubReady = true;
         syncRedisHealth();
-        console.log("[health] Redis pub connected — health flags updated");
+        healthLog.info("Redis pub connected — health flags updated");
     });
 
     pubClient.on("error", (err: Error) => {
@@ -203,20 +212,20 @@ try {
         pubReady = false;
         syncRedisHealth();
         if (wasHealthy) {
-            console.warn("[health] Redis pub connection error — health flags set to degraded:", err.message);
+            healthLog.warn("Redis pub connection error — health flags set to degraded:", err.message);
         }
     });
 
     pubClient.on("reconnecting", () => {
         pubReady = false;
         syncRedisHealth();
-        console.warn("[health] Redis pub reconnecting — health flags set to degraded");
+        healthLog.warn("Redis pub reconnecting — health flags set to degraded");
     });
 
     subClient.on("ready", () => {
         subReady = true;
         syncRedisHealth();
-        console.log("[health] Redis sub connected — health flags updated");
+        healthLog.info("Redis sub connected — health flags updated");
     });
 
     subClient.on("error", (err: Error) => {
@@ -224,14 +233,14 @@ try {
         subReady = false;
         syncRedisHealth();
         if (wasHealthy) {
-            console.warn("[health] Redis sub connection error — health flags set to degraded:", err.message);
+            healthLog.warn("Redis sub connection error — health flags set to degraded:", err.message);
         }
     });
 
     subClient.on("reconnecting", () => {
         subReady = false;
         syncRedisHealth();
-        console.warn("[health] Redis sub reconnecting — health flags set to degraded");
+        healthLog.warn("Redis sub reconnecting — health flags set to degraded");
     });
 
     await Promise.all([pubClient.connect(), subClient.connect()]);
@@ -297,16 +306,16 @@ try {
         sioInitialized = true;
         serverHealth.socketio = true;
     } catch (sioErr) {
-        console.error("[Socket.IO] Failed to initialize Socket.IO layer:", sioErr);
-        console.error("[Socket.IO] The server will continue without real-time Socket.IO support.");
+        socketIoLog.error("Failed to initialize Socket.IO layer:", sioErr);
+        socketIoLog.error("The server will continue without real-time Socket.IO support.");
     }
 } catch (err) {
-    console.error("[Socket.IO] Failed to connect to Redis:", err);
-    console.error("[Socket.IO] The server will continue without Redis and Socket.IO support.");
+    socketIoLog.error("Failed to connect to Redis:", err);
+    socketIoLog.error("The server will continue without Redis and Socket.IO support.");
 }
 
 httpServer.listen(PORT, () => {
-    console.log(`PizzaPi server running on http://localhost:${PORT}`);
+    log.info(`PizzaPi server running on http://localhost:${PORT}`);
 });
 
 // ── Periodic maintenance ──────────────────────────────────────────────────
@@ -321,11 +330,11 @@ setInterval(() => {
             return deleteRelayEventCaches(expiredIds);
         })
         .catch((error) => {
-            console.error("Failed to prune expired relay sessions", error);
+            log.error("Failed to prune expired relay sessions", error);
         });
 }, sweepMs);
 
-console.log(`Relay session maintenance enabled (every ${Math.round(sweepMs / 1000)}s).`);
+log.info(`Relay session maintenance enabled (every ${Math.round(sweepMs / 1000)}s).`);
 
 // ── Post-startup orphaned runner sweep ───────────────────────────────────────
 // After a graceful shutdown, runner Redis entries are intentionally preserved
@@ -336,7 +345,7 @@ console.log(`Relay session maintenance enabled (every ${Math.round(sweepMs / 100
 const RUNNER_RECONNECT_GRACE_MS = 90_000;
 setTimeout(() => {
     void sweepOrphanedRunners().catch((err) => {
-        console.error("[startup] Failed to sweep orphaned runners:", err);
+        startupLog.error("Failed to sweep orphaned runners:", err);
     });
 }, RUNNER_RECONNECT_GRACE_MS);
 
@@ -345,29 +354,29 @@ setTimeout(() => {
 // if SIGTERM arrives during startup.  Sets isServerShuttingDown before closing
 // Socket.IO so disconnect handlers can skip destructive Redis cleanup.
 function onShutdownSignal(signal: string): void {
-    console.log(`[shutdown] Received ${signal} — marking server as shutting down`);
+    shutdownLog.info(`Received ${signal} — marking server as shutting down`);
     setServerShuttingDown();
 
     // Close the Socket.IO server so disconnect handlers fire with the
     // shuttingDown flag already set, then close the HTTP server.
     if (io) {
         io.close(() => {
-            console.log("[shutdown] Socket.IO closed");
+            shutdownLog.info("Socket.IO closed");
             httpServer.close(() => {
-                console.log("[shutdown] HTTP server closed");
+                shutdownLog.info("HTTP server closed");
                 process.exit(0);
             });
         });
     } else {
         httpServer.close(() => {
-            console.log("[shutdown] HTTP server closed");
+            shutdownLog.info("HTTP server closed");
             process.exit(0);
         });
     }
 
     // Force exit after 10s if graceful shutdown stalls
     setTimeout(() => {
-        console.warn("[shutdown] Graceful shutdown timed out — forcing exit");
+        shutdownLog.warn("Graceful shutdown timed out — forcing exit");
         process.exit(1);
     }, 10_000).unref();
 }

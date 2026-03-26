@@ -20,9 +20,12 @@ import { registerEventHandler } from "./event-pipeline.js";
 import { registerSessionLifecycleHandlers } from "./session-lifecycle.js";
 import { registerMessagingHandlers } from "./messaging.js";
 import { registerChildLifecycleHandlers } from "./child-lifecycle.js";
+import { createLogger } from "@pizzapi/tools";
 
 // Re-export for viewer.ts compatibility
 export { getPendingChunkedSnapshot } from "./event-pipeline.js";
+
+const log = createLogger("sio/relay");
 
 export function registerRelayNamespace(io: SocketIOServer): void {
     const relay: Namespace<
@@ -36,7 +39,7 @@ export function registerRelayNamespace(io: SocketIOServer): void {
     relay.use(apiKeyAuthMiddleware() as Parameters<typeof relay.use>[0]);
 
     relay.on("connection", (socket) => {
-        console.log(`[sio/relay] connected: ${socket.id}`);
+        log.info(`connected: ${socket.id}`);
 
         registerSessionLifecycleHandlers(socket);
         registerEventHandler(socket);

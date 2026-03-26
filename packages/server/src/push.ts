@@ -1,5 +1,8 @@
 import webpush from "web-push";
 import { getKysely } from "./auth.js";
+import { createLogger } from "@pizzapi/tools";
+
+const log = createLogger("push");
 
 // ── VAPID configuration ─────────────────────────────────────────────────────
 //
@@ -33,18 +36,18 @@ function areVapidKeysValid(publicKey: string, privateKey: string): boolean {
 if (!areVapidKeysValid(vapidPublicKey, vapidPrivateKey)) {
     if (vapidPublicKey || vapidPrivateKey) {
         // Keys were provided but are malformed — warn loudly so the user can fix them.
-        console.warn("[push] ⚠️  VAPID keys are set but invalid (private key must be 32 bytes, public key 65 bytes when base64url-decoded).");
-        console.warn("[push]    Falling back to ephemeral keys.");
+        log.warn("⚠️  VAPID keys are set but invalid (private key must be 32 bytes, public key 65 bytes when base64url-decoded).");
+        log.warn("   Falling back to ephemeral keys.");
     }
     const generated = webpush.generateVAPIDKeys();
     vapidPublicKey = generated.publicKey;
     vapidPrivateKey = generated.privateKey;
-    console.warn("[push] ⚠️  No valid VAPID keys configured — using ephemeral keys.");
-    console.warn("[push]    Push subscriptions will break on every server restart.");
-    console.warn("[push]    To fix, add these to your environment:");
-    console.warn(`[push]    VAPID_PUBLIC_KEY=${vapidPublicKey}`);
-    console.warn(`[push]    VAPID_PRIVATE_KEY=${vapidPrivateKey}`);
-    console.warn(`[push]    VAPID_SUBJECT=mailto:your@email.com`);
+    log.warn("⚠️  No valid VAPID keys configured — using ephemeral keys.");
+    log.warn("   Push subscriptions will break on every server restart.");
+    log.warn("   To fix, add these to your environment:");
+    log.warn(`   VAPID_PUBLIC_KEY=${vapidPublicKey}`);
+    log.warn(`   VAPID_PRIVATE_KEY=${vapidPrivateKey}`);
+    log.warn(`   VAPID_SUBJECT=mailto:your@email.com`);
 }
 
 const vapidSubject = process.env.VAPID_SUBJECT ?? "mailto:admin@pizzapi.local";
@@ -277,7 +280,7 @@ export async function sendPushToUser(userId: string, payload: PushPayload, isChi
                     // Subscription expired or unregistered — clean up
                     staleIds.push(sub.id);
                 } else {
-                    console.error(`[push] Failed to send to ${sub.endpoint.slice(0, 60)}…:`, err?.statusCode ?? err?.message);
+                    log.error(`Failed to send to ${sub.endpoint.slice(0, 60)}…:`, err?.statusCode ?? err?.message);
                 }
             }
         }),
@@ -303,7 +306,7 @@ export function notifyAgentFinished(userId: string, sessionId: string, sessionNa
         body: `Your agent in "${label}" has finished its task.`,
         sessionId,
     }, isChildSession).catch((err) => {
-        console.error("[push] notifyAgentFinished failed:", err);
+        log.error("notifyAgentFinished failed:", err);
     });
 }
 
@@ -362,7 +365,7 @@ export function notifyAgentNeedsInput(
             ...(toolCallId ? { toolCallId } : {}),
         },
     }, isChildSession).catch((err) => {
-        console.error("[push] notifyAgentNeedsInput failed:", err);
+        log.error("notifyAgentNeedsInput failed:", err);
     });
 }
 
@@ -380,6 +383,6 @@ export function notifyAgentError(userId: string, sessionId: string, errorMessage
         body,
         sessionId,
     }, isChildSession).catch((err) => {
-        console.error("[push] notifyAgentError failed:", err);
+        log.error("notifyAgentError failed:", err);
     });
 }

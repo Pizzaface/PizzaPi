@@ -1,6 +1,9 @@
 import { mkdir, rm, access } from "node:fs/promises";
 import path from "node:path";
 import { getKysely } from "../auth.js";
+import { createLogger } from "@pizzapi/tools";
+
+const log = createLogger("attachments");
 
 export interface StoredAttachment {
     attachmentId: string;
@@ -168,7 +171,7 @@ export async function storeExtractedImage(input: {
         // delete an image that's still used by a durable session.
         addSessionRef(attachmentId, sessionId);
         await persistExtractedAttachment(existing).catch((err) => {
-            console.error("[attachments] Failed to persist refreshed expiry:", err);
+            log.error("Failed to persist refreshed expiry:", err);
         });
         await persistSessionRef(attachmentId, sessionId).catch(() => {});
         return existing;
@@ -211,7 +214,7 @@ export async function storeExtractedImage(input: {
     // this, a crash between the file-write and the SQLite commit leaves dangling
     // /api/attachments/:id URLs in snapshots that can never be rehydrated.
     await persistExtractedAttachment(record).catch((err) => {
-        console.error("[attachments] Failed to persist extracted attachment:", err);
+        log.error("Failed to persist extracted attachment:", err);
     });
     await persistSessionRef(attachmentId, sessionId).catch(() => {});
     return record;

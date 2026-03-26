@@ -14,7 +14,9 @@ import { c, usageBar, colorPct, colorRemaining } from "./cli-colors.js";
 import { buildInteractiveSkillPaths } from "./skills.js";
 import { buildPizzaPiExtensionFactories } from "./extensions/factories.js";
 import { runSetup } from "./setup.js";
-import { initSandbox, cleanupSandbox, isSandboxActive } from "@pizzapi/tools";
+import { createLogger, initSandbox, cleanupSandbox, isSandboxActive } from "@pizzapi/tools";
+
+const log = createLogger("cli");
 
 async function main() {
     const args = process.argv.slice(2);
@@ -94,7 +96,7 @@ async function main() {
             const accessToken = await authStorage.getApiKey("anthropic");
             if (!accessToken) {
                 if (providerArg === "anthropic") {
-                    console.error("No Anthropic credentials found. Log in with /login inside pizzapi.");
+                    log.error("No Anthropic credentials found. Log in with /login inside pizzapi.");
                     process.exit(1);
                 }
                 // silently skip when showing all providers
@@ -111,15 +113,15 @@ async function main() {
                 } catch (err) {
                     const cause = err instanceof Error && (err as any).cause instanceof Error ? (err as any).cause.message : null;
                     const detail = cause ?? (err instanceof Error ? err.message : String(err));
-                    console.error(`Failed to fetch Anthropic usage: network error (${detail})`);
+                    log.error(`Failed to fetch Anthropic usage: network error (${detail})`);
                     process.exit(1);
                 }
 
                 if (!res.ok) {
-                    console.error(`Failed to fetch Anthropic usage: HTTP ${res.status} ${res.statusText}`);
+                    log.error(`Failed to fetch Anthropic usage: HTTP ${res.status} ${res.statusText}`);
                     try {
                         const body = await res.text();
-                        if (body) console.error(body);
+                        if (body) log.error(body);
                     } catch { /* ignore */ }
                     process.exit(1);
                 }
@@ -140,24 +142,24 @@ async function main() {
                 try {
                     usage = (await res.json()) as AnthropicUsageResponse;
                 } catch (err) {
-                    console.error(`Failed to parse Anthropic usage response: ${err instanceof Error ? err.message : String(err)}`);
+                    log.error(`Failed to parse Anthropic usage response: ${err instanceof Error ? err.message : String(err)}`);
                     process.exit(1);
                 }
 
                 if (showJson) {
-                    console.log(JSON.stringify({ provider: "anthropic", usage }, null, 2));
+                    log.info(JSON.stringify({ provider: "anthropic", usage }, null, 2));
                     printedAny = true;
                 } else {
                     const formatWindow = (label: string, w: UsageWindow) => {
                         if (!w) return;
                         const bar = usageBar(w.utilization);
                         const reset = new Date(w.resets_at).toLocaleString();
-                        console.log(`  ${label.padEnd(22)} ${bar}  ${c.dim(`resets ${reset}`)}`);
+                        log.info(`  ${label.padEnd(22)} ${bar}  ${c.dim(`resets ${reset}`)}`);
                     };
 
-                    console.log();
-                    console.log(c.label("Claude usage") + c.dim(" (OAuth subscription)"));
-                    console.log(c.dim("─".repeat(58)));
+                    log.info("");
+                    log.info(c.label("Claude usage") + c.dim(" (OAuth subscription)"));
+                    log.info(c.dim("─".repeat(58)));
                     formatWindow("5-hour window", usage.five_hour);
                     formatWindow("7-day window", usage.seven_day);
                     formatWindow("7-day (OAuth apps)", usage.seven_day_oauth_apps);
@@ -167,11 +169,11 @@ async function main() {
 
                     const ex = usage.extra_usage;
                     if (ex?.is_enabled) {
-                        console.log();
-                        console.log(`  ${c.accent("Extra usage enabled")}`);
-                        if (ex.monthly_limit != null) console.log(`    Monthly limit:   ${c.bold(`$${ex.monthly_limit}`)}`);
-                        if (ex.used_credits != null) console.log(`    Credits used:    ${c.bold(`$${ex.used_credits}`)}`);
-                        if (ex.utilization != null) console.log(`    Utilization:     ${colorPct(ex.utilization)}`);
+                        log.info("");
+                        log.info(`  ${c.accent("Extra usage enabled")}`);
+                        if (ex.monthly_limit != null) log.info(`    Monthly limit:   ${c.bold(`$${ex.monthly_limit}`)}`);
+                        if (ex.used_credits != null) log.info(`    Credits used:    ${c.bold(`$${ex.used_credits}`)}`);
+                        if (ex.utilization != null) log.info(`    Utilization:     ${colorPct(ex.utilization)}`);
                     }
                     printedAny = true;
                 }
@@ -183,7 +185,7 @@ async function main() {
             const rawCred = await authStorage.getApiKey("google-gemini-cli");
             if (!rawCred) {
                 if (providerArg === "gemini") {
-                    console.error("No Gemini credentials found. Log in with /login inside pizzapi.");
+                    log.error("No Gemini credentials found. Log in with /login inside pizzapi.");
                     process.exit(1);
                 }
                 // silently skip when showing all providers
@@ -197,7 +199,7 @@ async function main() {
                     token = parsed.token;
                     projectId = parsed.projectId;
                 } catch {
-                    console.error("Gemini credentials are malformed. Use /login inside pizzapi to re-authenticate.");
+                    log.error("Gemini credentials are malformed. Use /login inside pizzapi to re-authenticate.");
                     process.exit(1);
                 }
 
@@ -219,15 +221,15 @@ async function main() {
                 } catch (err) {
                     const cause = err instanceof Error && (err as any).cause instanceof Error ? (err as any).cause.message : null;
                     const detail = cause ?? (err instanceof Error ? err.message : String(err));
-                    console.error(`Failed to fetch Gemini usage: network error (${detail})`);
+                    log.error(`Failed to fetch Gemini usage: network error (${detail})`);
                     process.exit(1);
                 }
 
                 if (!quotaRes.ok) {
-                    console.error(`Failed to fetch Gemini usage: HTTP ${quotaRes.status} ${quotaRes.statusText}`);
+                    log.error(`Failed to fetch Gemini usage: HTTP ${quotaRes.status} ${quotaRes.statusText}`);
                     try {
                         const body = await quotaRes.text();
-                        if (body) console.error(body);
+                        if (body) log.error(body);
                     } catch { /* ignore */ }
                     process.exit(1);
                 }
@@ -245,22 +247,22 @@ async function main() {
                 try {
                     quotaData = (await quotaRes.json()) as GeminiQuotaResponse;
                 } catch (err) {
-                    console.error(`Failed to parse Gemini usage response: ${err instanceof Error ? err.message : String(err)}`);
+                    log.error(`Failed to parse Gemini usage response: ${err instanceof Error ? err.message : String(err)}`);
                     process.exit(1);
                 }
 
                 if (showJson) {
-                    console.log(JSON.stringify({ provider: "gemini", project: projectId, usage: quotaData }, null, 2));
+                    log.info(JSON.stringify({ provider: "gemini", project: projectId, usage: quotaData }, null, 2));
                     printedAny = true;
                 } else {
-                    console.log();
-                    console.log(c.label("Gemini usage") + c.dim(" (Google Cloud Code Assist, OAuth)"));
-                    console.log(`  ${c.dim("Project:")} ${projectId}`);
-                    console.log(c.dim("─".repeat(58)));
+                    log.info("");
+                    log.info(c.label("Gemini usage") + c.dim(" (Google Cloud Code Assist, OAuth)"));
+                    log.info(`  ${c.dim("Project:")} ${projectId}`);
+                    log.info(c.dim("─".repeat(58)));
 
                     const buckets = quotaData.buckets ?? [];
                     if (buckets.length === 0) {
-                        console.log("  No quota buckets returned.");
+                        log.info("  No quota buckets returned.");
                     } else {
                         for (const bucket of buckets) {
                             const label = [bucket.tokenType, bucket.modelId].filter(Boolean).join(" / ") || "bucket";
@@ -274,7 +276,7 @@ async function main() {
                                 : "";
                             const amt = bucket.remainingAmount != null ? c.dim(` (${bucket.remainingAmount} left)`) : "";
                             const reset = bucket.resetTime ? c.dim(`  resets ${new Date(bucket.resetTime).toLocaleString()}`) : "";
-                            console.log(`  ${label.padEnd(28)} ${bar}${remainingStr}${amt}${reset}`);
+                            log.info(`  ${label.padEnd(28)} ${bar}${remainingStr}${amt}${reset}`);
                         }
                     }
                     printedAny = true;
@@ -283,9 +285,9 @@ async function main() {
         }
 
         if (!printedAny && !showJson) {
-            console.log("\nNo usage data found. Log in with /login inside pizzapi to authenticate.");
+            log.info("\nNo usage data found. Log in with /login inside pizzapi to authenticate.");
         }
-        console.log();
+        log.info("");
         return;
     }
 
@@ -316,13 +318,13 @@ async function main() {
             });
 
         if (args.includes("--json")) {
-            console.log(JSON.stringify({ models: configuredModels }, null, 2));
+            log.info(JSON.stringify({ models: configuredModels }, null, 2));
             return;
         }
 
         if (configuredModels.length === 0) {
-            console.log("No configured models found.");
-            console.log(`Checked credentials in ${join(agentDir, "auth.json")}`);
+            log.info("No configured models found.");
+            log.info(`Checked credentials in ${join(agentDir, "auth.json")}`);
             return;
         }
 
@@ -336,57 +338,57 @@ async function main() {
 
         const modelWidth = Math.max(...configuredModels.map((m) => m.id.length), "model".length);
 
-        console.log();
+        log.info("");
         for (const [provider, models] of byProvider) {
-            console.log(c.label(provider));
+            log.info(c.label(provider));
             for (const model of models) {
                 const noteParts: string[] = [];
                 if (model.reasoning) noteParts.push(c.accent("reasoning"));
                 if (model.contextWindow) noteParts.push(c.dim(`${model.contextWindow.toLocaleString()} ctx`));
                 if (model.name && model.name !== model.id) noteParts.push(c.dim(model.name));
                 const notes = noteParts.join(c.dim(" • "));
-                console.log(`  ${c.cmd(model.id.padEnd(modelWidth))}  ${notes}`);
+                log.info(`  ${c.cmd(model.id.padEnd(modelWidth))}  ${notes}`);
             }
-            console.log();
+            log.info("");
         }
         return;
     }
 
     if (args.includes("--version") || args.includes("-v")) {
         const { default: pkg } = await import("../package.json");
-        console.log(`pizzapi v${pkg.version}`);
+        log.info(`pizzapi v${pkg.version}`);
         return;
     }
 
     if (args[0] === "--help" || args[0] === "-h" || args[0] === "help") {
         const { default: pkg } = await import("../package.json");
         const ver = c.dim(`v${pkg.version}`);
-        console.log();
-        console.log(`${c.brand("🍕 PizzaPi")} ${ver}`);
-        console.log();
-        console.log(c.label("Commands"));
-        console.log(`  ${c.cmd("pizza")}                       Start an interactive agent session`);
-        console.log(`  ${c.cmd("pizza web")} ${c.dim("[flags]")}           Manage the PizzaPi web hub (Docker)`);
-        console.log(`  ${c.cmd("pizza runner")} ${c.dim("[args]")}         Manage the background runner daemon`);
-        console.log(`  ${c.cmd("pizza runner stop")}           Stop the runner daemon`);
-        console.log(`  ${c.cmd("pizza setup")}                 Run first-time setup`);
-        console.log(`  ${c.cmd("pizza usage")} ${c.dim("[provider]")}      Show API usage stats`);
-        console.log(`  ${c.cmd("pizza models")}                List available models`);
-        console.log(`  ${c.cmd("pizza plugins")} ${c.dim("[cmd]")}         Manage Claude Code plugins`);
-        console.log();
-        console.log(c.label("Flags"));
-        console.log(`  ${c.flag("--cwd")} ${c.dim("<path>")}         Set working directory`);
-        console.log(`  ${c.flag("--sandbox")} ${c.dim("<mode>")}      Set sandbox mode: ${c.dim("enforce, audit, or off")}`);
-        console.log(`  ${c.flag("--safe-mode")}            Skip MCP, plugins, hooks, and relay`);
-        console.log(`  ${c.flag("--no-mcp")}               Skip MCP server connections`);
-        console.log(`  ${c.flag("--no-plugins")}           Skip Claude Code plugin loading`);
-        console.log(`  ${c.flag("--no-hooks")}             Skip hook execution`);
-        console.log(`  ${c.flag("--no-relay")}             Skip relay server connection`);
-        console.log(`  ${c.flag("-v, --version")}          Show version`);
-        console.log(`  ${c.flag("-h, --help")}             Show this help`);
-        console.log();
-        console.log(c.dim(`Run pizza <command> --help for command-specific help.`));
-        console.log();
+        log.info("");
+        log.info(`${c.brand("🍕 PizzaPi")} ${ver}`);
+        log.info("");
+        log.info(c.label("Commands"));
+        log.info(`  ${c.cmd("pizza")}                       Start an interactive agent session`);
+        log.info(`  ${c.cmd("pizza web")} ${c.dim("[flags]")}           Manage the PizzaPi web hub (Docker)`);
+        log.info(`  ${c.cmd("pizza runner")} ${c.dim("[args]")}         Manage the background runner daemon`);
+        log.info(`  ${c.cmd("pizza runner stop")}           Stop the runner daemon`);
+        log.info(`  ${c.cmd("pizza setup")}                 Run first-time setup`);
+        log.info(`  ${c.cmd("pizza usage")} ${c.dim("[provider]")}      Show API usage stats`);
+        log.info(`  ${c.cmd("pizza models")}                List available models`);
+        log.info(`  ${c.cmd("pizza plugins")} ${c.dim("[cmd]")}         Manage Claude Code plugins`);
+        log.info("");
+        log.info(c.label("Flags"));
+        log.info(`  ${c.flag("--cwd")} ${c.dim("<path>")}         Set working directory`);
+        log.info(`  ${c.flag("--sandbox")} ${c.dim("<mode>")}      Set sandbox mode: ${c.dim("enforce, audit, or off")}`);
+        log.info(`  ${c.flag("--safe-mode")}            Skip MCP, plugins, hooks, and relay`);
+        log.info(`  ${c.flag("--no-mcp")}               Skip MCP server connections`);
+        log.info(`  ${c.flag("--no-plugins")}           Skip Claude Code plugin loading`);
+        log.info(`  ${c.flag("--no-hooks")}             Skip hook execution`);
+        log.info(`  ${c.flag("--no-relay")}             Skip relay server connection`);
+        log.info(`  ${c.flag("-v, --version")}          Show version`);
+        log.info(`  ${c.flag("-h, --help")}             Show this help`);
+        log.info("");
+        log.info(c.dim(`Run pizza <command> --help for command-specific help.`));
+        log.info("");
         return;
     }
 
@@ -441,7 +443,7 @@ async function main() {
 
     if (safeMode) {
         if (process.stdout.isTTY) {
-            console.log(
+            log.info(
                 "\n\x1b[33m⚡ Safe mode\x1b[0m\x1b[2m — \x1b[0m" +
                 "\x1b[31mMCP servers\x1b[0m\x1b[2m, \x1b[0m" +
                 "\x1b[31mplugins\x1b[0m\x1b[2m, \x1b[0m" +
@@ -449,7 +451,7 @@ async function main() {
                 "\x1b[31mrelay\x1b[0m\x1b[2m are disabled.\x1b[0m\n",
             );
         } else {
-            console.log("\n⚡ Safe mode — MCP servers, plugins, hooks, and relay are disabled.\n");
+            log.info("\n⚡ Safe mode — MCP servers, plugins, hooks, and relay are disabled.\n");
         }
     }
 
@@ -473,7 +475,7 @@ async function main() {
     try {
         await initSandbox(sandboxConfig);
     } catch (err) {
-        console.warn(
+        log.warn(
             `pizzapi: sandbox init failed, continuing unsandboxed: ${err instanceof Error ? err.message : String(err)}`,
         );
     }
@@ -481,7 +483,7 @@ async function main() {
         process.env.PIZZAPI_SANDBOX_ACTIVE = "1";
         process.env.PIZZAPI_SANDBOX_MODE = sandboxConfig.mode;
     } else if (sandboxConfig.mode !== "none") {
-        console.warn("pizzapi: sandbox was requested but is not active (platform unsupported or init failed)");
+        log.warn("pizzapi: sandbox was requested but is not active (platform unsupported or init failed)");
     }
 
     // Load AGENTS.md from cwd (if present)
@@ -492,7 +494,7 @@ async function main() {
             const content = await readFile(agentsMdPath, "utf-8");
             agentFiles.push({ path: agentsMdPath, content });
         } catch (err) {
-            console.warn(`Warning: skipping unreadable ${agentsMdPath}: ${err instanceof Error ? err.message : String(err)}`);
+            log.warn(`Warning: skipping unreadable ${agentsMdPath}: ${err instanceof Error ? err.message : String(err)}`);
         }
     }
 
@@ -508,7 +510,7 @@ async function main() {
                     const content = await readFile(filePath, "utf-8");
                     return { path: filePath, content };
                 } catch (err) {
-                    console.warn(`Warning: skipping unreadable agent file ${filePath}: ${err instanceof Error ? err.message : String(err)}`);
+                    log.warn(`Warning: skipping unreadable agent file ${filePath}: ${err instanceof Error ? err.message : String(err)}`);
                     return null;
                 }
             })
@@ -566,6 +568,6 @@ async function main() {
 }
 
 main().catch((err) => {
-    console.error(err instanceof Error ? err.message : String(err));
+    log.error(err instanceof Error ? err.message : String(err));
     process.exit(1);
 });

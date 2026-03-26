@@ -15,6 +15,9 @@ import {
 import { ErrorAlert } from "@/components/ui/error-alert";
 import type { HubSession } from "@/components/SessionSidebar";
 import type { RunnerInfo } from "@pizzapi/protocol";
+import { createLogger } from "@pizzapi/tools";
+
+const log = createLogger("runner-ui");
 
 export interface RunnerManagerProps {
     /** Runner list from the /runners WS feed — passed from App.tsx (single hook instance) */
@@ -108,7 +111,7 @@ export function RunnerManager({
                 setError(`Failed to restart runner: ${data.error || "Unknown error"}`);
             }
         } catch (err) {
-            console.error("Failed to restart runner:", err);
+            log.error("Failed to restart runner:", err);
         } finally {
             setTimeout(() => {
                 setRestarting((prev) => {
@@ -142,7 +145,7 @@ export function RunnerManager({
                 setError(`Failed to stop runner: ${data.error || "Unknown error"}`);
             }
         } catch (err) {
-            console.error("Failed to stop runner:", err);
+            log.error("Failed to stop runner:", err);
         } finally {
             setTimeout(() => {
                 setStopping((prev) => {

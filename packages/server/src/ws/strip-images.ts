@@ -12,6 +12,9 @@
 
 import { createHash } from "node:crypto";
 import { storeExtractedImage, getExtractedImageUrl } from "../attachments/store.js";
+import { createLogger } from "@pizzapi/tools";
+
+const log = createLogger("strip-images");
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -208,8 +211,8 @@ export async function storeAndReplaceImages(
         ),
     );
 
-    console.log(
-        `[strip-images] Extracted ${result.extracted.length} image(s) from session ${sessionId}, ` +
+    log.info(
+        `Extracted ${result.extracted.length} image(s) from session ${sessionId}, ` +
         `saved ~${(result.savedBytes / 1024 / 1024).toFixed(1)} MB from state payload`,
     );
 
@@ -245,8 +248,8 @@ export async function storeAndReplaceImagesInEvent(
         ),
     );
 
-    console.log(
-        `[strip-images] Extracted ${result.extracted.length} image(s) from agent_end for session ${sessionId}, ` +
+    log.info(
+        `Extracted ${result.extracted.length} image(s) from agent_end for session ${sessionId}, ` +
         `saved ~${(result.savedBytes / 1024 / 1024).toFixed(1)} MB`,
     );
 

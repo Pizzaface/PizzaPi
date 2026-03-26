@@ -9,6 +9,9 @@ import {
     isPlainObject,
 } from "./types.js";
 import { mergeSandboxConfig } from "./sandbox.js";
+import { createLogger } from "@pizzapi/tools";
+
+const log = createLogger("hooks");
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
@@ -116,8 +119,8 @@ export function loadConfig(cwd: string = process.cwd()): PizzaPiConfig {
     const projectHooksTrusted = isProjectHooksTrusted(global);
     const projectHooks = projectHooksTrusted ? project.hooks : undefined;
     if (project.hooks && !projectHooksTrusted) {
-        console.warn(
-            "[hooks] Project hooks found in .pizzapi/config.json but not trusted. " +
+        log.warn(
+            "Project hooks found in .pizzapi/config.json but not trusted. " +
                 'Set "allowProjectHooks": true in ~/.pizzapi/config.json or ' +
                 "PIZZAPI_ALLOW_PROJECT_HOOKS=1 to enable.",
         );
