@@ -41,20 +41,25 @@ export function useServiceChannel<TSend = unknown, TPayload = unknown>(
             setAvailable(data.serviceIds.includes(serviceId));
         };
 
-        const handleDisconnect = () => setAvailable(false);
-        const handleConnect = () => setAvailable(false);
+        // NOTE: No handleDisconnect listener — we intentionally preserve
+        // the previous `available` state when the socket disconnects during
+        // a session switch. The old socket fires `disconnect` synchronously
+        // before the new socket is set, which would flash available to false
+        // and cause TunnelPanel to show "unavailable" briefly. Instead, we
+        // only set available=false when the effect re-runs with socket===null
+        // (handled above), and the new socket's service_announce will update
+        // availability once it arrives.
+        //
+        // On reconnect (socket.io auto-reconnect within the same socket
+        // instance), the server re-sends service_announce which updates
+        // availability via handleAnnounce.
 
         socket.on("service_message", handleMessage);
         socket.on("service_announce", handleAnnounce);
-        socket.on("disconnect", handleDisconnect);
-        socket.on("connect", handleConnect);
 
         return () => {
             socket.off("service_message", handleMessage);
             socket.off("service_announce", handleAnnounce);
-            socket.off("disconnect", handleDisconnect);
-            socket.off("connect", handleConnect);
-            setAvailable(false);
         };
     }, [socket, serviceId]);
 

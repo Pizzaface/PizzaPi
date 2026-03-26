@@ -89,6 +89,7 @@ export function useRunnerServices(socket: Socket | null): RunnerServicesState {
         }
 
         // Read eagerly in case announce arrived before this effect ran
+        // (e.g. seeded via seedServiceCache for same-runner switches).
         const cached = getEagerServiceIds(socket);
         if (cached.size > 0) {
             setServices(cached);
@@ -102,17 +103,20 @@ export function useRunnerServices(socket: Socket | null): RunnerServicesState {
             setServices(new Set(data.serviceIds));
             setPanels(data.panels ?? []);
         };
-        const handleDisconnect = () => {
-            setServices(new Set());
-            setPanels([]);
-        };
+
+        // NOTE: No handleDisconnect listener — we intentionally preserve
+        // the previous services/panels state when the socket disconnects
+        // during a session switch. The old socket fires `disconnect`
+        // synchronously before the new socket is set, which would flash
+        // panels to empty and cause them to unmount/remount. Instead, we
+        // only clear when the effect re-runs with socket === null (no
+        // session selected), and the new socket's service_announce will
+        // replace the values once it arrives.
 
         socket.on("service_announce", handleAnnounce);
-        socket.on("disconnect", handleDisconnect);
 
         return () => {
             socket.off("service_announce", handleAnnounce);
-            socket.off("disconnect", handleDisconnect);
         };
     }, [socket]);
 
