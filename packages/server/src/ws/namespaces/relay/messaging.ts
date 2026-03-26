@@ -85,7 +85,7 @@ export function registerMessagingHandlers(socket: RelaySocket): void {
         }
 
         const targetSocket = getLocalTuiSocket(targetSessionId);
-        if (targetSocket) {
+        if (targetSocket?.connected) {
             try {
                 if (data.deliverAs === "input") {
                     // Deliver as agent input — starts a new turn (used by tell_child).
@@ -195,7 +195,7 @@ export function registerMessagingHandlers(socket: RelaySocket): void {
         }
 
         const targetSocket = getLocalTuiSocket(targetSessionId);
-        if (targetSocket) {
+        if (targetSocket?.connected) {
             try {
                 targetSocket.emit("session_trigger" as any, { trigger });
             } catch {
