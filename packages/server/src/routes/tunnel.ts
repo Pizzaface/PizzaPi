@@ -57,9 +57,9 @@ function buildTunnelInterceptScript(basePath: string): string {
     // Full URLs — same origin or localhost — must also go through the tunnel.
     // Without this, apps that construct "https://host/path" API calls (e.g.
     // Jellyfin) bypass the tunnel and hit the PizzaPi server directly → 404.
-    var m=u.match(/^(https?:)\\/\\/([^\\/]+)(\\/.*)$/);
+    var m=u.match(/^(https?:)\\/\\/([^\\/]+)(\\/.+)?$/);
     if(m){
-      var proto=m[1],host=m[2],path=m[3];
+      var proto=m[1],host=m[2],path=m[3]||"/";
       if(host===location.host){
         if(path.startsWith(B))return u;
         return proto+"//"+host+B+path;
@@ -118,6 +118,14 @@ function buildTunnelInterceptScript(basePath: string): string {
     window.EventSource=function(url,cfg){return new _E(rw(url),cfg)};
     window.EventSource.prototype=_E.prototype;
   }
+  // Patch navigator.sendBeacon
+  if(navigator.sendBeacon){
+    var _b=navigator.sendBeacon.bind(navigator);
+    navigator.sendBeacon=function(url,data){return _b(rw(url),data)};
+  }
+  // Patch window.open
+  var _wo=window.open;
+  window.open=function(url,target,features){return _wo.call(this,typeof url==="string"?rw(url):url,target,features)};
   // Patch WebSocket
   var _W=window.WebSocket;
   window.WebSocket=function(url,protocols){
