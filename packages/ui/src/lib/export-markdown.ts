@@ -109,7 +109,7 @@ function contentToString(content: unknown): string {
  * Pick a fence delimiter that doesn't collide with content.
  * If the text contains ```, use a longer fence (````` or more).
  */
-function safeFence(text: string, lang = ""): string {
+export function safeFence(text: string, lang = ""): string {
   let fence = "```";
   while (text.includes(fence)) fence += "`";
   return `${fence}${lang}\n${text}\n${fence}`;

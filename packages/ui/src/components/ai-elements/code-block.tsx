@@ -17,6 +17,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
+import { safeFence } from "@/lib/export-markdown";
 import { CheckIcon, CopyIcon } from "lucide-react";
 import {
   createContext,
@@ -475,8 +476,7 @@ export const CodeBlockCopyButton = ({
 
     try {
       if (!isCopied) {
-        const fenced = `\`\`\`${language}\n${code}\n\`\`\``;
-        await navigator.clipboard.writeText(fenced);
+        await navigator.clipboard.writeText(safeFence(code, language));
         setIsCopied(true);
         onCopy?.();
         timeoutRef.current = window.setTimeout(
