@@ -15,7 +15,6 @@ routes/
 ├── runners.ts        /api/runners/* — spawn, restart, stop, terminal, skills, files, git
 ├── sessions.ts       /api/sessions/* — list, pin/unpin
 ├── attachments.ts    Upload (POST /api/sessions/:id/attachments), download (GET /api/attachments/:id)
-├── chat.ts           POST /api/chat, GET /api/models
 ├── push.ts           /api/push/* — VAPID key, subscribe, unsubscribe, events
 ├── settings.ts       /api/settings/hidden-models — GET & PUT
 ├── index.test.ts     Dispatcher tests (health, 404, router delegation)
@@ -79,8 +78,6 @@ type RouteHandler = (req: Request, url: URL) => Promise<Response | undefined>;
 | DELETE | `/api/sessions/:id/pin` | sessions.ts | Session |
 | POST | `/api/sessions/:id/attachments` | attachments.ts | Session |
 | GET | `/api/attachments/:id` | attachments.ts | Session or API key |
-| POST | `/api/chat` | chat.ts | Session |
-| GET | `/api/models` | chat.ts | Session |
 | GET | `/api/push/vapid-public-key` | push.ts | No |
 | POST | `/api/push/subscribe` | push.ts | Session |
 | POST | `/api/push/unsubscribe` | push.ts | Session |

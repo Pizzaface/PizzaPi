@@ -77,25 +77,6 @@ Register a new account or log in to an existing one and issue a CLI API key. Use
 
 ---
 
-## Models
-
-### `GET /api/models`
-
-List available AI models across all configured providers.
-
-**Auth:** API key or session cookie.
-
-**Response:**
-
-```json
-[
-  { "id": "claude-opus-4-5", "provider": "anthropic", "name": "Claude Opus 4.5" },
-  { "id": "gemini-2.5-pro", "provider": "google",    "name": "Gemini 2.5 Pro" }
-]
-```
-
----
-
 ## Runners
 
 ### `GET /api/runners`
@@ -226,25 +207,6 @@ Upload a file attachment to a session (e.g. for the agent to process).
 ### `GET /api/attachments/{attachmentId}`
 
 Download a previously uploaded attachment.
-
----
-
-## Chat
-
-### `POST /api/chat`
-
-Send a message to the agent in an active session.
-
-**Auth:** API key or session cookie.
-
-**Request body:**
-
-```json
-{
-  "sessionId": "session_x1y2z3",
-  "message": "Now refactor the auth module to use JWT."
-}
-```
 
 ---
 
