@@ -223,9 +223,9 @@ export async function sendRunnerCommand(
     });
 }
 
-// ── Tunnel HTTP proxy request/response registry ───────────────────────────────
-// Maps requestId → resolve callback. Correlates server-initiated tunnel_request
-// events with tunnel_response events from the runner.
+// ── Legacy tunnel HTTP proxy request/response registry ───────────────────────
+// Fallback path during streaming-tunnel rollout. Maps requestId → resolve
+// callback for server-initiated tunnel_request / tunnel_response events.
 //
 // This map is module-level (not per-socket) because the HTTP route handler
 // that calls sendTunnelRequest() lives outside the socket connection handler.
@@ -279,9 +279,10 @@ export async function seedServiceAnnounceCache(runnerId: string): Promise<void> 
 /**
  * Send an HTTP proxy request to a runner and await its response.
  *
- * The runner receives a `tunnel_request` event and must respond with
- * `tunnel_response` carrying the same `requestId`.  The response is NOT
- * broadcast to viewers — it is resolved here and returned to the HTTP caller.
+ * Legacy fallback transport during the relay rollout. The runner receives a
+ * `tunnel_request` event and must respond with `tunnel_response` carrying the
+ * same `requestId`. The response is NOT broadcast to viewers — it is resolved
+ * here and returned to the HTTP caller.
  *
  * Throws if the runner is not connected or the request times out.
  */
@@ -687,7 +688,7 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
             }
         });
 
-        // ── tunnel_response — runner responds to an HTTP proxy request ────────
+        // ── tunnel_response — legacy HTTP tunnel fallback ─────────────────────
         // Resolve the pending request (initiated by sendTunnelRequest) so the
         // HTTP route handler can write the response back to the viewer.
         // This event must NOT be forwarded to viewers.
@@ -700,7 +701,7 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
             }
         });
 
-        // ── tunnel_ws_opened — runner confirms local WS connection is open ───
+        // ── tunnel_ws_opened — legacy WS tunnel fallback ─────────────────────
         socket.on("tunnel_ws_opened" as any, (data: TunnelWsOpenedData) => {
             handleTunnelWsOpened(data.tunnelWsId, data.protocol);
         });
