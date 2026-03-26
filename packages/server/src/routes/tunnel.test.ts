@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
     getTunnelBasePath,
     rewriteTunnelHtml,
+    rewriteInlineModuleScripts,
     rewriteTunnelUrl,
     shouldRewriteTunnelHtml,
     shouldRewriteTunnelJs,
@@ -82,15 +83,28 @@ describe("tunnel route HTML rewriting", () => {
         expect(interceptIdx).toBeLessThan(bodyIdx);
     });
 
+    test("rewriteTunnelHtml rewrites inline module script imports used by Vite dev", () => {
+        const html = `<!doctype html><html><head></head><body>
+<script type="module">
+  import RefreshRuntime from "/@react-refresh";
+  import "/src/main.tsx";
+</script>
+</body></html>`;
+        const rewritten = rewriteTunnelHtml(html, "s-1", 5173);
+        expect(rewritten).toContain('from "/api/tunnel/s-1/5173/@react-refresh"');
+        expect(rewritten).toContain('import "/api/tunnel/s-1/5173/src/main.tsx"');
+    });
+
     test("rewriteTunnelHtml includes WebSocket intercept in the injected script", () => {
         const html = `<!doctype html><html><head></head><body>hello</body></html>`;
         const rewritten = rewriteTunnelHtml(html, "s-1", 3000);
         // The intercept script must patch WebSocket constructor
         expect(rewritten).toContain("WebSocket");
         expect(rewritten).toContain("rwWs");
-        // Should handle ws:// and wss:// localhost URLs
-        expect(rewritten).toContain("127\\.0\\.0\\.1");
-        expect(rewritten).toContain("localhost");
+        // Should handle ws:// and wss:// localhost and same-origin URLs
+        expect(rewritten).toContain('host==="127.0.0.1"');
+        expect(rewritten).toContain('host==="localhost"');
+        expect(rewritten).toContain("location.host");
         // Should copy static properties from native WebSocket
         expect(rewritten).toContain("CONNECTING");
         expect(rewritten).toContain("OPEN");
@@ -100,10 +114,19 @@ describe("tunnel route HTML rewriting", () => {
 });
 
 describe("tunnel JS module rewriting", () => {
+    test("rewriteInlineModuleScripts rewrites inline module bodies but skips external module scripts", () => {
+        const html = `<script type="module">import "/src/main.tsx"</script><script type="module" src="/src/other.ts"></script>`;
+        const rewritten = rewriteInlineModuleScripts(html, "s-1", 5173);
+        expect(rewritten).toContain('import "/api/tunnel/s-1/5173/src/main.tsx"');
+        expect(rewritten).toContain('src="/src/other.ts"');
+    });
+
     test("shouldRewriteTunnelJs matches JavaScript content types", () => {
         expect(shouldRewriteTunnelJs("application/javascript")).toBe(true);
         expect(shouldRewriteTunnelJs("application/javascript; charset=utf-8")).toBe(true);
         expect(shouldRewriteTunnelJs("text/javascript")).toBe(true);
+        expect(shouldRewriteTunnelJs("application/typescript")).toBe(true);
+        expect(shouldRewriteTunnelJs("text/typescript")).toBe(true);
         expect(shouldRewriteTunnelJs("text/html")).toBe(false);
         expect(shouldRewriteTunnelJs("text/css")).toBe(false);
         expect(shouldRewriteTunnelJs(null)).toBe(false);
