@@ -104,6 +104,123 @@ const HOP_BY_HOP = new Set([
  */
 const STRIP_AUTH_HEADERS = new Set(["cookie", "authorization"]);
 
+// ── Response cache ────────────────────────────────────────────────────────
+
+interface CacheEntry {
+    status: number;
+    headers: Record<string, string>;
+    body: string;
+    expiresAt: number;
+}
+
+const CACHE_TTL_MS = 60_000;
+const CACHE_MAX_SIZE = 100;
+
+// ── Standalone HTTP proxy ─────────────────────────────────────────────────
+
+export interface ProxyResult {
+    status: number;
+    headers: Record<string, string>;
+    body: string; // base64-encoded
+    error?: string;
+}
+
+/**
+ * Proxy a single HTTP request to a local port and return the result.
+ *
+ * Security features:
+ *  - SSRF guard: validates final URL hostname is 127.0.0.1 (via URL constructor)
+ *  - Hop-by-hop header stripping
+ *  - Auth header stripping (cookie, authorization)
+ *  - Body size guard (MAX_RESPONSE_BYTES)
+ *  - Redirect blocking (`redirect: "manual"`)
+ *  - 10s timeout via AbortSignal.timeout
+ *  - Forces `accept-encoding: identity` so local services send uncompressed bodies
+ *  - Strips `content-encoding` from response headers (Bun transparently decompresses)
+ */
+export async function httpProxy(
+    port: number,
+    method: string,
+    path: string,
+    headers: Record<string, string>,
+    bodyBase64: string | undefined,
+): Promise<ProxyResult> {
+    try {
+        const rawUrl = `http://127.0.0.1:${port}${path}`;
+
+        // SSRF via path injection guard: a path containing `@` can cause URL
+        // parsers to treat `127.0.0.1:${port}` as credentials.
+        // Parse and assert the final hostname before fetching.
+        const parsedUrl = new URL(rawUrl);
+        if (parsedUrl.hostname !== "127.0.0.1") {
+            const error = `SSRF guard: unexpected hostname '${parsedUrl.hostname}'`;
+            return { status: 400, headers: {}, body: Buffer.from(error).toString("base64"), error };
+        }
+
+        const bodyBytes = bodyBase64 ? Buffer.from(bodyBase64, "base64") : undefined;
+
+        // Strip hop-by-hop and auth headers before forwarding.
+        // Auth headers (cookie, authorization) must not leak from the
+        // viewer's authenticated session to the tunneled localhost service.
+        const forwardHeaders: Record<string, string> = {};
+        for (const [k, v] of Object.entries(headers)) {
+            const lk = k.toLowerCase();
+            if (!HOP_BY_HOP.has(lk) && !STRIP_AUTH_HEADERS.has(lk)) forwardHeaders[k] = v;
+        }
+
+        // Force identity encoding so local services don't compress bodies.
+        // Bun's fetch transparently decompresses gzip/br, so any Content-Encoding
+        // in the response would be stale and mislead the relay consumer.
+        forwardHeaders["accept-encoding"] = "identity";
+
+        // SSRF via redirect-following guard: use `redirect: "manual"` so a
+        // localhost service cannot redirect us to an internal network address
+        // (169.254.169.254, 10.x.x.x, etc.). 3xx responses are passed back as-is.
+        const fetchResponse = await fetch(parsedUrl.toString(), {
+            method,
+            headers: forwardHeaders,
+            // body must be undefined for bodyless methods to avoid fetch errors
+            body: bodyBytes && bodyBytes.byteLength > 0 ? bodyBytes : undefined,
+            signal: AbortSignal.timeout(10_000),
+            redirect: "manual",
+        });
+
+        const responseBuffer = await fetchResponse.arrayBuffer();
+
+        if (responseBuffer.byteLength > MAX_RESPONSE_BYTES) {
+            const error = `Response body exceeds ${MAX_RESPONSE_BYTES / 1024 / 1024} MB limit`;
+            return { status: 413, headers: {}, body: Buffer.from(error).toString("base64"), error };
+        }
+
+        const responseHeaders: Record<string, string> = {};
+        // Strip hop-by-hop and content-encoding from response headers.
+        // Since we forced accept-encoding: identity, any content-encoding value
+        // in the response is stale after Bun's transparent decompression.
+        fetchResponse.headers.forEach((v, k) => {
+            const lk = k.toLowerCase();
+            if (!HOP_BY_HOP.has(lk) && lk !== "content-encoding") {
+                responseHeaders[k] = v;
+            }
+        });
+
+        return {
+            status: fetchResponse.status,
+            headers: responseHeaders,
+            body: Buffer.from(responseBuffer).toString("base64"),
+        };
+    } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
+        return {
+            status: 502,
+            headers: {},
+            body: Buffer.from(error).toString("base64"),
+            error,
+        };
+    }
+}
+
+// ── TunnelService ─────────────────────────────────────────────────────────
+
 export class TunnelService implements ServiceHandler {
     readonly id = "tunnel";
 
@@ -111,6 +228,46 @@ export class TunnelService implements ServiceHandler {
     private socket: Socket | null = null;
     /** Active WebSocket tunnel connections: tunnelWsId → WebSocket */
     private wsConnections = new Map<string, WebSocket>();
+
+    // ── Response cache (LRU via Map insertion-order) ──────────────────────
+    private responseCache = new Map<string, CacheEntry>();
+
+    /** Return a cached entry if it exists and has not expired, or undefined. */
+    private cacheGet(key: string): CacheEntry | undefined {
+        const entry = this.responseCache.get(key);
+        if (!entry) return undefined;
+        if (Date.now() > entry.expiresAt) {
+            this.responseCache.delete(key);
+            return undefined;
+        }
+        // Promote to MRU: delete + re-insert so Map iteration order reflects recency.
+        this.responseCache.delete(key);
+        this.responseCache.set(key, entry);
+        return entry;
+    }
+
+    /** Store an entry, sweeping expired entries and evicting LRU if at capacity. */
+    private cacheSet(key: string, data: Omit<CacheEntry, "expiresAt">): void {
+        // Sweep expired entries first.
+        const now = Date.now();
+        for (const [k, v] of this.responseCache) {
+            if (now > v.expiresAt) this.responseCache.delete(k);
+        }
+        // Evict least-recently-used (first entry in Map) if still at max.
+        if (this.responseCache.size >= CACHE_MAX_SIZE) {
+            const lruKey = this.responseCache.keys().next().value;
+            if (lruKey !== undefined) this.responseCache.delete(lruKey);
+        }
+        this.responseCache.set(key, { ...data, expiresAt: now + CACHE_TTL_MS });
+    }
+
+    /** Invalidate all cached entries for a given port (called on unexpose). */
+    private cacheInvalidatePort(port: number): void {
+        const prefix = `${port}:`;
+        for (const k of this.responseCache.keys()) {
+            if (k.startsWith(prefix)) this.responseCache.delete(k);
+        }
+    }
 
     init(socket: Socket, { isShuttingDown }: ServiceInitOptions): void {
         this.socket = socket;
@@ -164,6 +321,7 @@ export class TunnelService implements ServiceHandler {
         }
         this.wsConnections.clear();
         this.tunnels.clear();
+        this.responseCache.clear();
         this.socket = null;
     }
 
@@ -237,6 +395,7 @@ export class TunnelService implements ServiceHandler {
         const { port } = payload;
 
         if (this.tunnels.delete(port)) {
+            this.cacheInvalidatePort(port);
             logInfo(`[tunnel] unexposed port ${port}`);
             (this.socket as any).emit("service_message", {
                 serviceId: "tunnel",
@@ -268,78 +427,52 @@ export class TunnelService implements ServiceHandler {
             return;
         }
 
-        try {
-            const rawUrl = `http://127.0.0.1:${port}${path}`;
-
-            // ── Bug 2: SSRF via path injection ────────────────────────────────
-            // A path containing `@` can cause URL parsers to treat
-            // `127.0.0.1:${port}` as credentials (e.g. http://127.0.0.1:3000@evil/).
-            // Parse and assert the final hostname before fetching.
-            const parsedUrl = new URL(rawUrl);
-            if (parsedUrl.hostname !== "127.0.0.1") {
-                response.status = 400;
-                response.error = `SSRF guard: unexpected hostname '${parsedUrl.hostname}'`;
-                response.body = Buffer.from(response.error).toString("base64");
-                (this.socket as any).emit("tunnel_response", response);
+        // ── Cache lookup (GET requests only) ──────────────────────────────────
+        const cacheKey = `${port}:${method}:${path}`;
+        if (method === "GET") {
+            const cached = this.cacheGet(cacheKey);
+            if (cached) {
+                (this.socket as any).emit("tunnel_response", {
+                    requestId,
+                    status: cached.status,
+                    headers: cached.headers,
+                    body: cached.body,
+                } satisfies TunnelResponseData);
                 return;
             }
-
-            const bodyBytes = body ? Buffer.from(body, "base64") : undefined;
-
-            // Strip hop-by-hop and auth headers before forwarding.
-            // Auth headers (cookie, authorization) must not leak from the
-            // viewer's authenticated session to the tunneled localhost service.
-            const forwardHeaders: Record<string, string> = {};
-            for (const [k, v] of Object.entries(headers)) {
-                const lk = k.toLowerCase();
-                if (!HOP_BY_HOP.has(lk) && !STRIP_AUTH_HEADERS.has(lk)) forwardHeaders[k] = v;
-            }
-
-            // ── Bug 1: SSRF via redirect-following ────────────────────────────
-            // Default fetch follows 301/302 — a localhost service could redirect
-            // to an internal network address (169.254.169.254, 10.x.x.x, etc.).
-            // Use `redirect: "manual"` and pass 3xx responses back as-is.
-            const fetchResponse = await fetch(parsedUrl.toString(), {
-                method,
-                headers: forwardHeaders,
-                // body must be undefined for bodyless methods to avoid fetch errors
-                body: bodyBytes && bodyBytes.byteLength > 0 ? bodyBytes : undefined,
-                signal: AbortSignal.timeout(10_000),
-                redirect: "manual",
-            });
-
-            // ── P2: Race guard — dispose() may have nulled the socket ─────────
-            // We awaited above; re-check before touching this.socket.
-            if (!this.socket) return;
-
-            const responseBuffer = await fetchResponse.arrayBuffer();
-
-            // Re-check after second await.
-            if (!this.socket) return;
-
-            if (responseBuffer.byteLength > MAX_RESPONSE_BYTES) {
-                response.status = 413;
-                response.error = `Response body exceeds ${MAX_RESPONSE_BYTES / 1024 / 1024} MB limit`;
-                response.body = Buffer.from(response.error).toString("base64");
-            } else {
-                response.status = fetchResponse.status;
-                response.body = Buffer.from(responseBuffer).toString("base64");
-                // Copy response headers (strip hop-by-hop)
-                fetchResponse.headers.forEach((v, k) => {
-                    if (!HOP_BY_HOP.has(k.toLowerCase())) response.headers[k] = v;
-                });
-            }
-        } catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            logError(`[tunnel] HTTP proxy error for port ${port}: ${msg}`);
-            response.status = 502;
-            response.error = msg;
-            response.body = Buffer.from(msg).toString("base64");
         }
 
-        // Final null-guard: socket may have been cleared by dispose() during
-        // one of the awaits above.
+        // ── Proxy the request ─────────────────────────────────────────────────
+        const result = await httpProxy(port, method, path, headers, body);
+
+        // Re-check socket after awaiting — dispose() may have run during the request.
         if (!this.socket) return;
+
+        if (result.error) {
+            logError(`[tunnel] HTTP proxy error for port ${port}: ${result.error}`);
+        }
+
+        // ── Cache storage (GET 200 without no-store/no-cache) ─────────────────
+        if (
+            method === "GET" &&
+            result.status === 200 &&
+            !result.error
+        ) {
+            const cc = (result.headers["cache-control"] ?? "").toLowerCase();
+            if (!cc.includes("no-store") && !cc.includes("no-cache")) {
+                this.cacheSet(cacheKey, {
+                    status: result.status,
+                    headers: result.headers,
+                    body: result.body,
+                });
+            }
+        }
+
+        response.status = result.status;
+        response.headers = result.headers;
+        response.body = result.body;
+        if (result.error) response.error = result.error;
+
         (this.socket as any).emit("tunnel_response", response);
     }
 
