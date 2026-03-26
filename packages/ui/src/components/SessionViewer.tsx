@@ -73,6 +73,7 @@ import { ProviderIcon } from "@/components/ProviderIcon";
 import { MultipleChoiceQuestions } from "@/components/ai-elements/multiple-choice";
 import { PlanModePanel, type PlanModeAnswer } from "@/components/ai-elements/plan-mode";
 import { formatAnswersForAgent, type QuestionDisplayMode } from "@/lib/ask-user-questions";
+import { exportToMarkdown } from "@/lib/export-markdown";
 import { dismissNotificationsForSession } from "@/lib/push";
 import { AlertTriangleIcon, BookOpen, Bot, Check, CheckCircle2, ChevronsUpDown, Circle, CircleDashed, Copy, Download, Loader2, MessageSquare, MoreHorizontal, OctagonX, PaperclipIcon, Pencil, Plus, Puzzle, ShieldAlert, Zap, Clock, X, Trash2, TerminalIcon, XCircle, FolderTree, GitBranch } from "lucide-react";
 import {
@@ -457,7 +458,7 @@ const SessionMessageItem = React.memo(({ message, activeToolCalls, agentActive, 
             {message.timestamp && <span>• {new Date(message.timestamp).toLocaleTimeString()}</span>}
             {message.isError && <span className="text-destructive">• Error</span>}
             <MessageCopyButton
-              text={typeof message.content === "string" ? message.content : message.content != null ? JSON.stringify(message.content, null, 2) : message.errorMessage ?? ""}
+              text={exportToMarkdown([message])}
               className="ml-auto opacity-0 group-hover/msg:opacity-100 transition-opacity"
             />
           </div>
