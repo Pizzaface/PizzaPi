@@ -74,7 +74,7 @@ import { MultipleChoiceQuestions } from "@/components/ai-elements/multiple-choic
 import { PlanModePanel, type PlanModeAnswer } from "@/components/ai-elements/plan-mode";
 import { formatAnswersForAgent, type QuestionDisplayMode } from "@/lib/ask-user-questions";
 import { dismissNotificationsForSession } from "@/lib/push";
-import { AlertTriangleIcon, BookOpen, Bot, CheckCircle2, ChevronsUpDown, Circle, CircleDashed, Copy, Loader2, MessageSquare, OctagonX, PaperclipIcon, Pencil, Plus, Puzzle, ShieldAlert, Zap, Clock, X, Trash2, TerminalIcon, XCircle, FolderTree } from "lucide-react";
+import { AlertTriangleIcon, BookOpen, Bot, CheckCircle2, ChevronsUpDown, Circle, CircleDashed, Copy, Loader2, MessageSquare, OctagonX, PaperclipIcon, Pencil, Plus, Puzzle, ShieldAlert, Zap, Clock, X, Trash2, TerminalIcon, XCircle, FolderTree, GitBranch } from "lucide-react";
 import { AtMentionPopover } from "@/components/AtMentionPopover";
 import type { Entry as AtMentionEntry } from "@/hooks/useAtMentionFiles";
 import { McpToggleContext, type McpToggleHandler } from "@/components/session-viewer/McpToggleContext";
@@ -138,6 +138,10 @@ export interface SessionViewerProps {
   onToggleFileExplorer?: () => void;
   /** Whether to show the file explorer button */
   showFileExplorerButton?: boolean;
+  /** Toggle the git panel */
+  onToggleGit?: () => void;
+  /** Whether to show the git button */
+  showGitButton?: boolean;
   /** Extra buttons to render in the header bar (e.g. service panel toggles) */
   extraHeaderButtons?: React.ReactNode;
   /** Current agent todo list */
@@ -555,7 +559,7 @@ function SessionSkeleton() {
   );
 }
 
-export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, pendingPlan, pluginTrustPrompt, onPluginTrustResponse, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, isCompacting, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onEditQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, todoList = [], planModeEnabled, runnerId, sessionCwd, onAppendSystemMessage, onSpawnAgentSession, onTriggerResponse, onQuestionDismiss, onPlanDismiss, onDuplicateSession, runnerInfo, extraHeaderButtons, mcpOAuthPastes, onMcpOAuthPaste, onMcpOAuthPasteDismiss, onMcpServerDisable }: SessionViewerProps) {
+export function SessionViewer({ sessionId, sessionName, messages, activeModel, activeToolCalls, pendingQuestion, pendingPlan, pluginTrustPrompt, onPluginTrustResponse, availableCommands, resumeSessions, resumeSessionsLoading, onRequestResumeSessions, onSendInput, onExec, onShowModelSelector, agentActive, isCompacting, effortLevel, tokenUsage, lastHeartbeatAt, viewerStatus, retryState, messageQueue, onRemoveQueuedMessage, onEditQueuedMessage, onClearMessageQueue, onToggleTerminal, showTerminalButton, onToggleFileExplorer, showFileExplorerButton, onToggleGit, showGitButton, todoList = [], planModeEnabled, runnerId, sessionCwd, onAppendSystemMessage, onSpawnAgentSession, onTriggerResponse, onQuestionDismiss, onPlanDismiss, onDuplicateSession, runnerInfo, extraHeaderButtons, mcpOAuthPastes, onMcpOAuthPaste, onMcpOAuthPasteDismiss, onMcpServerDisable }: SessionViewerProps) {
   const [input, setInput] = React.useState("");
   // Per-session draft storage so switching sessions preserves unsent text
   const draftsRef = React.useRef<Map<string, string>>(new Map());
@@ -1605,6 +1609,23 @@ export function SessionViewer({ sessionId, sessionName, messages, activeModel, a
                   </Button>
                 </TooltipTrigger>
                 <TooltipContent>Files</TooltipContent>
+              </Tooltip>
+            )}
+            {showGitButton && onToggleGit && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    className="h-7 w-7"
+                    onClick={onToggleGit}
+                    size="icon"
+                    type="button"
+                    variant="outline"
+                    aria-label="Toggle git panel"
+                  >
+                    <GitBranch className="size-3.5" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Git</TooltipContent>
               </Tooltip>
             )}
             {extraHeaderButtons}

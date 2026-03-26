@@ -608,7 +608,7 @@ function FileViewer({
 
 // ── Git Changes View ──────────────────────────────────────────────────────────
 
-function GitChangesView({
+export function GitChangesView({
   runnerId,
   cwd,
   outerRef,
@@ -1050,7 +1050,6 @@ function PositionPicker({
 // ── Main File Explorer Component ──────────────────────────────────────────────
 
 export function FileExplorer({ runnerId, cwd, className, onClose, position = "left", onPositionChange, onDragStart }: FileExplorerProps) {
-  const [tab, setTab] = React.useState<"files" | "git">("files");
   const [files, setFiles] = React.useState<FileEntry[] | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
@@ -1149,156 +1148,58 @@ export function FileExplorer({ runnerId, cwd, className, onClose, position = "le
 
   return (
     <div ref={outerRef} className={cn("flex flex-col bg-background text-foreground", className)}>
-      {/* Header with tabs */}
-      <div className="flex items-center border-b border-border bg-muted/50">
-        {/* Mobile back button */}
-        {onClose && (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="gap-1.5 text-sm text-muted-foreground hover:text-foreground h-9 px-2 md:hidden"
-            onClick={onClose}
-          >
-            <ChevronLeft className="size-4" />
-            Back
-          </Button>
-        )}
-
-        {/* Tab buttons */}
-        <div className="flex items-center flex-1">
-          <button
-            type="button"
-            onClick={() => setTab("files")}
-            className={cn(
-              "flex items-center gap-1.5 px-3 py-2 text-sm font-medium transition-colors border-b-2",
-              tab === "files"
-                ? "border-primary text-foreground"
-                : "border-transparent text-muted-foreground hover:text-foreground",
-            )}
-          >
-            <FolderTree className="size-3.5" />
-            Files
-          </button>
-          <button
-            type="button"
-            onClick={() => setTab("git")}
-            className={cn(
-              "flex items-center gap-1.5 px-3 py-2 text-sm font-medium transition-colors border-b-2",
-              tab === "git"
-                ? "border-primary text-foreground"
-                : "border-transparent text-muted-foreground hover:text-foreground",
-            )}
-          >
-            <GitBranch className="size-3.5" />
-            Git
-          </button>
-        </div>
-
-        {/* Refresh button for files tab */}
-        {tab === "files" && (
-          <TooltipProvider>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  type="button"
-                  onClick={fetchFiles}
-                  className="text-muted-foreground hover:text-foreground transition-colors px-2 py-1"
-                  aria-label="Refresh file list"
-                >
-                  <RefreshCw className="size-3.5" />
-                </button>
-              </TooltipTrigger>
-              <TooltipContent>Refresh file list</TooltipContent>
-            </Tooltip>
-          </TooltipProvider>
-        )}
-
-        {/* Desktop: grip + position buttons + close */}
-        <div className="hidden md:flex items-center gap-px pr-1 shrink-0">
-          {onDragStart && (
-            <TooltipProvider>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <div
-                    className="flex items-center justify-center size-7 rounded cursor-grab active:cursor-grabbing text-muted-foreground/60 hover:text-muted-foreground hover:bg-accent transition-colors touch-none select-none"
-                    onPointerDown={onDragStart}
-                    aria-label="Drag to reposition panel"
-                  >
-                    <GripHorizontal size={13} />
-                  </div>
-                </TooltipTrigger>
-                <TooltipContent>Drag to reposition panel</TooltipContent>
-              </Tooltip>
-            </TooltipProvider>
-          )}
-          {onPositionChange && (
-            <>
-              <div className="w-px h-4 bg-border mx-1 shrink-0" />
-              <PositionPicker position={position} onPositionChange={onPositionChange} />
-              <div className="w-px h-4 bg-border mx-1 shrink-0" />
-            </>
-          )}
-          {onClose && (
-            <TooltipProvider>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button
-                    type="button"
-                    onClick={onClose}
-                    className="flex items-center justify-center size-7 rounded text-muted-foreground/60 hover:text-foreground hover:bg-accent transition-colors"
-                    aria-label="Close file explorer"
-                  >
-                    <X className="size-3.5" />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent>Close file explorer</TooltipContent>
-              </Tooltip>
-            </TooltipProvider>
-          )}
-        </div>
-
-        {/* Mobile close (back button already handles this, but keep X for symmetry) */}
-      </div>
-
       {/* Path breadcrumb */}
-      <div className="px-3 py-1.5 text-[0.65rem] text-muted-foreground font-mono truncate border-b border-border/50" title={cwd}>
-        {cwd}
+      <div className="flex items-center border-b border-border/50 bg-muted/50">
+        <div className="flex-1 px-3 py-1.5 text-[0.65rem] text-muted-foreground font-mono truncate" title={cwd}>
+          {cwd}
+        </div>
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={fetchFiles}
+                className="text-muted-foreground hover:text-foreground transition-colors px-2 py-1"
+                aria-label="Refresh file list"
+              >
+                <RefreshCw className="size-3.5" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>Refresh file list</TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
       </div>
 
       {/* Content */}
       <div className="flex-1 min-h-0 overflow-auto">
-        {tab === "files" ? (
-          loading ? (
-            <div className="flex items-center justify-center p-8">
-              <Spinner className="size-5" />
-            </div>
-          ) : error ? (
-            <div className="p-4">
-              <p className="text-sm text-red-400 mb-3">{error}</p>
-              <Button variant="outline" size="sm" onClick={fetchFiles}>
-                <RefreshCw className="size-3 mr-1.5" /> Retry
-              </Button>
-            </div>
-          ) : files && files.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-8 text-muted-foreground gap-2">
-              <Folder className="size-8 opacity-30" />
-              <p className="text-sm">Empty directory</p>
-            </div>
-          ) : (
-            <div className="py-1">
-              {files?.map((entry) => (
-                <FileTreeNode
-                  key={entry.path}
-                  entry={entry}
-                  depth={0}
-                  runnerId={runnerId}
-                  onSelectFile={setViewingFile}
-                />
-              ))}
-            </div>
-          )
+        {loading ? (
+          <div className="flex items-center justify-center p-8">
+            <Spinner className="size-5" />
+          </div>
+        ) : error ? (
+          <div className="p-4">
+            <p className="text-sm text-red-400 mb-3">{error}</p>
+            <Button variant="outline" size="sm" onClick={fetchFiles}>
+              <RefreshCw className="size-3 mr-1.5" /> Retry
+            </Button>
+          </div>
+        ) : files && files.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-8 text-muted-foreground gap-2">
+            <Folder className="size-8 opacity-30" />
+            <p className="text-sm">Empty directory</p>
+          </div>
         ) : (
-          <GitChangesView runnerId={runnerId} cwd={cwd} outerRef={outerRef} />
+          <div className="py-1">
+            {files?.map((entry) => (
+              <FileTreeNode
+                key={entry.path}
+                entry={entry}
+                depth={0}
+                runnerId={runnerId}
+                onSelectFile={setViewingFile}
+              />
+            ))}
+          </div>
         )}
       </div>
     </div>

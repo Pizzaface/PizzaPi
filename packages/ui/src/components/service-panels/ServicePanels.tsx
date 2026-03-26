@@ -12,6 +12,7 @@ import { SERVICE_PANELS, type ServicePanelDef } from "./registry";
 import { DynamicLucideIcon } from "./lucide-icon";
 import { IframeServicePanel } from "./IframeServicePanel";
 import type { ServicePanelInfo } from "@pizzapi/protocol";
+import type { PanelPosition } from "@/hooks/usePanelLayout";
 
 // ── Buttons for the header bar ────────────────────────────────────────────────
 
@@ -19,14 +20,14 @@ interface ServicePanelButtonsProps {
     availableServices: Set<string>;
     /** Dynamic panels announced by runner services at runtime. */
     dynamicPanels?: ServicePanelInfo[];
-    activePanelId: string | null;
+    activePanelIds: Set<string>;
     onTogglePanel: (serviceId: string) => void;
 }
 
 export function ServicePanelButtons({
     availableServices,
     dynamicPanels = [],
-    activePanelId,
+    activePanelIds,
     onTogglePanel,
 }: ServicePanelButtonsProps) {
     // Static panels from the compiled registry
@@ -44,7 +45,7 @@ export function ServicePanelButtons({
                     <TooltipTrigger asChild>
                         <Button
                             className={`h-7 w-7 ${
-                                activePanelId === panel.serviceId ? "bg-accent text-accent-foreground" : ""
+                                activePanelIds.has(panel.serviceId) ? "bg-accent text-accent-foreground" : ""
                             }`}
                             onClick={() => onTogglePanel(panel.serviceId)}
                             size="icon"
@@ -63,7 +64,7 @@ export function ServicePanelButtons({
                     <TooltipTrigger asChild>
                         <Button
                             className={`h-7 w-7 ${
-                                activePanelId === panel.serviceId ? "bg-accent text-accent-foreground" : ""
+                                activePanelIds.has(panel.serviceId) ? "bg-accent text-accent-foreground" : ""
                             }`}
                             onClick={() => onTogglePanel(panel.serviceId)}
                             size="icon"
@@ -150,16 +151,60 @@ export function ServicePanelContainer({
 
 // ── Hook for managing service panel state ─────────────────────────────────────
 
+const SERVICE_PANEL_POSITIONS_KEY = "pp-service-panel-positions";
+
+function loadPanelPositions(): Map<string, PanelPosition> {
+    try {
+        const raw = localStorage.getItem(SERVICE_PANEL_POSITIONS_KEY);
+        if (raw) return new Map(JSON.parse(raw) as [string, PanelPosition][]);
+    } catch { /* ignore */ }
+    return new Map();
+}
+
+function savePanelPositions(positions: Map<string, PanelPosition>) {
+    try { localStorage.setItem(SERVICE_PANEL_POSITIONS_KEY, JSON.stringify([...positions])); } catch { /* ignore */ }
+}
+
 export function useServicePanelState() {
-    const [activePanelId, setActivePanelId] = useState<string | null>(null);
+    const [activePanelIds, setActivePanelIds] = useState<Set<string>>(new Set());
+    const [panelPositions, setPanelPositions] = useState<Map<string, PanelPosition>>(loadPanelPositions);
 
     const togglePanel = useCallback((serviceId: string) => {
-        setActivePanelId(prev => prev === serviceId ? null : serviceId);
+        setActivePanelIds(prev => {
+            const next = new Set(prev);
+            if (next.has(serviceId)) {
+                next.delete(serviceId);
+            } else {
+                next.add(serviceId);
+            }
+            return next;
+        });
     }, []);
 
-    const closePanel = useCallback(() => {
-        setActivePanelId(null);
+    const closePanelById = useCallback((serviceId: string) => {
+        setActivePanelIds(prev => {
+            const next = new Set(prev);
+            next.delete(serviceId);
+            return next;
+        });
     }, []);
 
-    return { activePanelId, togglePanel, closePanel };
+    const closeAllPanels = useCallback(() => {
+        setActivePanelIds(new Set());
+    }, []);
+
+    const getPanelPosition = useCallback((serviceId: string): PanelPosition => {
+        return panelPositions.get(serviceId) ?? "right";
+    }, [panelPositions]);
+
+    const setPanelPosition = useCallback((serviceId: string, pos: PanelPosition) => {
+        setPanelPositions(prev => {
+            const next = new Map(prev);
+            next.set(serviceId, pos);
+            savePanelPositions(next);
+            return next;
+        });
+    }, []);
+
+    return { activePanelIds, togglePanel, closePanelById, closeAllPanels, getPanelPosition, setPanelPosition };
 }
