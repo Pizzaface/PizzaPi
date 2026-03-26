@@ -10,8 +10,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
-import { io } from "socket.io-client";
-import type { HubServerToClientEvents, HubClientToServerEvents } from "@pizzapi/protocol";
+import { useHubSocket } from "@/lib/hub-socket-context";
 import { extractWorktreeName, formatPathTail, worktreeRoots } from "@/lib/path";
 import { ProviderIcon } from "@/components/ProviderIcon";
 import { PanelLeftClose, PanelLeftOpen, Plus, X, HardDrive, FolderOpen, CheckSquare, Square, CheckCheck, Trash2, Pin, PinOff, ChevronDown, ChevronRight, MessageSquare, Copy } from "lucide-react";
@@ -434,6 +433,10 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     const [dotState, setDotState] = React.useState<DotState>("connecting");
     const [hasLoaded, setHasLoaded] = React.useState(false);
 
+    // Use the shared hub socket provided by App.tsx via context — avoids a
+    // second /hub WebSocket connection per browser tab.
+    const hubSocket = useHubSocket();
+
     // ── Pinned sessions ──────────────────────────────────────────────────
     const [pinnedSessions, setPinnedSessions] = React.useState<PinnedSession[]>([]);
     const [pinnedSessionIds, setPinnedSessionIds] = React.useState<Set<string>>(new Set());
@@ -603,7 +606,8 @@ export const SessionSidebar = React.memo(function SessionSidebar({
     }, [activeSessionId]);
 
     React.useEffect(() => {
-        const socket = io("/hub", { withCredentials: true });
+        if (!hubSocket) return;
+
         let disposed = false;
         let connectEpoch = 0;
         let latestHubSnapshotEpoch = 0;
@@ -629,26 +633,26 @@ export const SessionSidebar = React.memo(function SessionSidebar({
             }
         };
 
-        socket.on("connect", () => {
+        const handleConnect = () => {
             setDotState("connected");
             const epoch = ++connectEpoch;
             void resyncLiveSessionsFromApi(epoch);
-        });
+        };
 
-        socket.on("disconnect", () => {
+        const handleDisconnect = () => {
             setDotState("disconnected");
-        });
+        };
 
-        socket.on("connect_error", () => {
+        const handleConnectError = () => {
             setDotState("disconnected");
-        });
+        };
 
-        socket.on("sessions", (data) => {
+        const handleSessions = (data: unknown) => {
             latestHubSnapshotEpoch = connectEpoch;
             applyLiveSessionsSnapshot(parseHubSessionsPayload(data));
-        });
+        };
 
-        socket.on("session_added", (data) => {
+        const handleSessionAdded = (data: unknown) => {
             const s = data as unknown as HubSession;
             setLiveSessions((prev) => {
                 if (prev.some((p) => p.sessionId === s.sessionId)) return prev;
@@ -673,13 +677,21 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                     },
                 ];
             });
-        });
+        };
 
-        socket.on("session_removed", (data) => {
+        const handleSessionRemoved = (data: { sessionId: string }) => {
             setLiveSessions((prev) => prev.filter((s) => s.sessionId !== data.sessionId));
-        });
+        };
 
-        socket.on("session_status", (data) => {
+        const handleSessionStatus = (data: {
+            sessionId: string;
+            isActive: boolean;
+            lastHeartbeatAt: string | null;
+            model?: { provider: string; id: string; name?: string } | null;
+            sessionName?: string | null;
+            runnerId?: string | null;
+            runnerName?: string | null;
+        }) => {
             const { sessionId, isActive, lastHeartbeatAt, model, sessionName, runnerId, runnerName } = data;
             setLiveSessions((prev) =>
                 prev.map((s) =>
@@ -712,13 +724,37 @@ export const SessionSidebar = React.memo(function SessionSidebar({
                     ),
                 );
             }
-        });
+        };
+
+        hubSocket.on("connect", handleConnect);
+        hubSocket.on("disconnect", handleDisconnect);
+        hubSocket.on("connect_error", handleConnectError);
+        hubSocket.on("sessions", handleSessions);
+        hubSocket.on("session_added", handleSessionAdded);
+        hubSocket.on("session_removed", handleSessionRemoved);
+        hubSocket.on("session_status", handleSessionStatus);
+
+        // If the shared socket is already connected by the time this effect runs,
+        // sync the session list immediately via REST — we will have missed the
+        // server's initial "sessions" emit that fires on namespace join.
+        if (hubSocket.connected) {
+            setDotState("connected");
+            const epoch = ++connectEpoch;
+            void resyncLiveSessionsFromApi(epoch);
+        }
 
         return () => {
             disposed = true;
-            socket.disconnect();
+            // Only remove our event handlers — App.tsx owns the socket lifecycle.
+            hubSocket.off("connect", handleConnect);
+            hubSocket.off("disconnect", handleDisconnect);
+            hubSocket.off("connect_error", handleConnectError);
+            hubSocket.off("sessions", handleSessions);
+            hubSocket.off("session_added", handleSessionAdded);
+            hubSocket.off("session_removed", handleSessionRemoved);
+            hubSocket.off("session_status", handleSessionStatus);
         };
-    }, []);
+    }, [hubSocket]);
 
     interface ProjectGroup {
         cwd: string;

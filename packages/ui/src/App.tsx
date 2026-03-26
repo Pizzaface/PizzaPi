@@ -63,6 +63,7 @@ import { FileExplorer, GitChangesView } from "@/components/FileExplorer";
 import { CombinedPanel, type CombinedPanelTab } from "@/components/CombinedPanel";
 import { DockedPanelGroup } from "@/components/DockedPanelGroup";
 import { ViewerSocketContext } from "@/lib/viewer-socket-context";
+import { HubSocketContext } from "@/lib/hub-socket-context";
 import { useRunnerServices, attachServiceAnnounceListener } from "@/hooks/useRunnerServices";
 import { ServicePanelButtons, useServicePanelState } from "@/components/service-panels/ServicePanels";
 import { SERVICE_PANELS } from "@/components/service-panels/registry";
@@ -124,6 +125,12 @@ export function App() {
   });
   const [activeSessionId, setActiveSessionId] = React.useState<string | null>(null);
   const [messages, setMessages] = React.useState<RelayMessage[]>([]);
+  // Ref kept in sync with `messages` via useLayoutEffect so we can read the
+  // latest committed value in event handlers without needing functional updaters.
+  // This lets us move patchSessionCache side effects OUT of setMessages updaters,
+  // which would otherwise be called speculatively in React concurrent mode.
+  const messagesRef = React.useRef<RelayMessage[]>(messages);
+  React.useLayoutEffect(() => { messagesRef.current = messages; }, [messages]);
   const [viewerStatus, setViewerStatus] = React.useState("Idle");
   const [retryState, setRetryState] = React.useState<{ errorMessage: string; detectedAt: number } | null>(null);
   const [relayStatus, setRelayStatus] = React.useState<DotState>("connecting");
@@ -407,6 +414,8 @@ export function App() {
   // Tracked as state so ViewerSocketContext consumers re-render when the socket changes.
   const [viewerSocket, setViewerSocket] = React.useState<Socket<ViewerServerToClientEvents, ViewerClientToServerEvents> | null>(null);
   const hubSocketRef = React.useRef<Socket<HubServerToClientEvents, HubClientToServerEvents> | null>(null);
+  // Tracked as state so HubSocketContext consumers re-render when the socket changes.
+  const [hubSocket, setHubSocket] = React.useState<Socket<HubServerToClientEvents, HubClientToServerEvents> | null>(null);
   const activeSessionRef = React.useRef<string | null>(null);
 
   // Cache last-known UI state per relay session so switching sessions feels instant.
@@ -753,11 +762,9 @@ export function App() {
       content: typeof content === "string" ? content.trim() : content,
     };
 
-    setMessages((prev) => {
-      const next = [...prev, message];
-      patchSessionCache({ messages: next });
-      return next;
-    });
+    const next = [...messagesRef.current, message];
+    setMessages(next);
+    patchSessionCache({ messages: next });
   }, [patchSessionCache]);
 
 
@@ -801,12 +808,21 @@ export function App() {
       content: parts.join("\n"),
       isError: hasErrors,
     };
+    // Use a functional updater so this chains correctly with any preceding
+    // setMessages(prev => ...) call in the same React batch (e.g. the final
+    // snapshot chunk updater).  Reading messagesRef.current here would be
+    // stale because the ref is only synced after the React commit.
+    let mcpNext: RelayMessage[] | null = null;
     setMessages((prev) => {
-      if (prev.some((m) => m.key?.startsWith(`mcp_startup:${reportTs}`))) return prev;
-      const next = [...prev, message];
-      patchSessionCache({ messages: next });
-      return next;
+      if (prev.some((m) => m.key?.startsWith(`mcp_startup:${reportTs}`))) {
+        return prev; // already appended — no change
+      }
+      mcpNext = [...prev, message];
+      return mcpNext;
     });
+    if (mcpNext !== null) {
+      patchSessionCache({ messages: mcpNext });
+    }
   }, [patchSessionCache]);
 
   const applyMetaStateSnapshot = React.useCallback((state: SessionMetaState) => {
@@ -1392,7 +1408,17 @@ export function App() {
         .map((m, i) => toRelayMessage(m, `snapshot-${keyOffset + i}`))
         .filter((m): m is RelayMessage => m !== null);
 
-      setMessages((prev) => [...prev, ...convertedChunk]);
+      // For the final chunk, append + dedupe in a single updater pass so the
+      // dedup operates on the complete message array (including this chunk).
+      // For non-final chunks, just append.
+      let dedupedForSideEffects: RelayMessage[] | null = null;
+      setMessages((prev) => {
+        const appended = [...prev, ...convertedChunk];
+        if (!isFinal) return appended;
+        const deduped = deduplicateMessages(appended);
+        dedupedForSideEffects = deduped;
+        return deduped;
+      });
 
       // Update chunked delivery tracking
       if (chunkedDeliveryRef.current) {
@@ -1414,16 +1440,12 @@ export function App() {
         }
         setViewerStatus("Connected");
 
-        // Now that all messages are assembled, run global dedupe to remove
-        // cross-chunk duplicates (e.g., partial messages from one chunk and
-        // their final timestamped versions from another). This prevents
-        // duplicate assistant/tool content from appearing in large-session reloads.
-        setMessages((current) => {
-          const deduped = deduplicateMessages(current);
-          setActiveToolCalls(detectInFlightTools(deduped));
-          patchSessionCache({ messages: deduped });
-          return deduped;
-        });
+        // Side effects from the deduped result — the updater above assigned
+        // dedupedForSideEffects synchronously before returning.
+        if (dedupedForSideEffects) {
+          setActiveToolCalls(detectInFlightTools(dedupedForSideEffects));
+          patchSessionCache({ messages: dedupedForSideEffects });
+        }
       }
       return;
     }
@@ -1755,11 +1777,9 @@ export function App() {
           setMessages((prev) => prev.map((m) => m.key === stableKey ? message : m));
         } else {
           injectedMessagesRef.current = [...injectedMessagesRef.current, message];
-          setMessages((prev) => {
-            const next = [...prev, message];
-            patchSessionCache({ messages: next });
-            return next;
-          });
+          const next = [...messagesRef.current, message];
+          setMessages(next);
+          patchSessionCache({ messages: next });
         }
       }
       return;
@@ -1790,11 +1810,9 @@ export function App() {
           setMessages((prev) => prev.map((m) => m.key === stableKey ? message : m));
         } else {
           injectedMessagesRef.current = [...injectedMessagesRef.current, message];
-          setMessages((prev) => {
-            const next = [...prev, message];
-            patchSessionCache({ messages: next });
-            return next;
-          });
+          const next = [...messagesRef.current, message];
+          setMessages(next);
+          patchSessionCache({ messages: next });
         }
         // Add/update pending paste prompt (always update nonce/authUrl)
         setMcpOAuthPastes((prev) => [
@@ -1813,13 +1831,13 @@ export function App() {
         (m) => m.key !== stableKey && !m.key.startsWith(`${stableKey}:`),
       );
       // Also remove from rendered messages
-      setMessages((prev) => {
-        const next = prev.filter((m) => m.key !== stableKey && !m.key.startsWith(`${stableKey}:`));
-        if (next.length !== prev.length) {
-          patchSessionCache({ messages: next });
-        }
-        return next.length !== prev.length ? next : prev;
-      });
+      const filteredNext = messagesRef.current.filter(
+        (m) => m.key !== stableKey && !m.key.startsWith(`${stableKey}:`),
+      );
+      if (filteredNext.length !== messagesRef.current.length) {
+        setMessages(filteredNext);
+        patchSessionCache({ messages: filteredNext });
+      }
       // Remove from pending paste prompts
       setMcpOAuthPastes((prev) => prev.filter((p) => p.serverName !== serverName));
       return;
@@ -1837,11 +1855,9 @@ export function App() {
         content: `⚠ ${label}: ${message}`,
         isError: true,
       };
-      setMessages((prev) => {
-        const next = [...prev, errMessage];
-        patchSessionCache({ messages: next });
-        return next;
-      });
+      const next = [...messagesRef.current, errMessage];
+      setMessages(next);
+      patchSessionCache({ messages: next });
       return;
     }
 
@@ -2120,6 +2136,7 @@ export function App() {
   React.useEffect(() => {
     const socket = io("/hub", { withCredentials: true });
     hubSocketRef.current = socket;
+    setHubSocket(socket);
 
     const handleStateSnapshot = ({ sessionId, state }: { sessionId: string; state: SessionMetaState }) => {
       const currentSessionId = activeSessionRef.current;
@@ -2239,6 +2256,7 @@ export function App() {
       socket.off("connect", handleReconnect);
       socket.disconnect();
       hubSocketRef.current = null;
+      setHubSocket(null);
     };
   }, [applyMetaStateSnapshot, applyMetaPatch, applyMcpReport]);
 
@@ -3480,6 +3498,7 @@ export function App() {
   }
 
   return (
+    <HubSocketContext.Provider value={hubSocket}>
     <ViewerSocketContext.Provider value={viewerSocket}>
     <TooltipProvider delayDuration={0}>
     <div className="flex h-[100dvh] w-full flex-col overflow-hidden bg-background pp-safe-left pp-safe-right">
@@ -4033,11 +4052,13 @@ export function App() {
                         injectedMessagesRef.current = injectedMessagesRef.current.filter(
                           (m) => m.key !== stableKey && !m.key.startsWith(`${stableKey}:`),
                         );
-                        setMessages((prev) => {
-                          const next = prev.filter((m) => m.key !== stableKey && !m.key.startsWith(`${stableKey}:`));
-                          if (next.length !== prev.length) patchSessionCache({ messages: next });
-                          return next.length !== prev.length ? next : prev;
-                        });
+                        const disableNext = messagesRef.current.filter(
+                          (m) => m.key !== stableKey && !m.key.startsWith(`${stableKey}:`),
+                        );
+                        if (disableNext.length !== messagesRef.current.length) {
+                          setMessages(disableNext);
+                          patchSessionCache({ messages: disableNext });
+                        }
                         const socket = viewerWsRef.current;
                         if (socket?.connected) {
                           socket.emit("exec", {
@@ -4165,5 +4186,6 @@ export function App() {
     </div>
     </TooltipProvider>
     </ViewerSocketContext.Provider>
+    </HubSocketContext.Provider>
   );
 }
