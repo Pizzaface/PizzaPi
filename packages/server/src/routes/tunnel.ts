@@ -3,11 +3,11 @@
  *
  * Translates an authenticated viewer's HTTP request into a tunnel_request
  * Socket.IO event sent to the runner daemon, then writes the tunnel_response
- * back as an HTTP response.
+ * back as an HTTP response. WebSocket upgrades on this path are handled by
+ * tunnel-ws.ts (WS-over-Socket.IO framing).
  *
- * Option C limitations (documented intentionally):
- *   - No WebSocket upgrade (no HMR, no Socket.IO through tunnel)
- *   - No streaming responses (body fully buffered, max 10 MB)
+ * Remaining limitations:
+ *   - No streaming HTTP responses (body fully buffered, max 10 MB)
  *   - No SSE support
  *   - No CORS handling beyond header passthrough
  *   - Not suitable for large file downloads (>10 MB)
@@ -73,6 +73,28 @@ function buildTunnelInterceptScript(basePath: string): string {
     }
     return [input,init];
   }
+  // Rewrite ws:// and wss:// URLs pointing at localhost or same-origin through the tunnel
+  function rwWs(u){
+    if(typeof u!=="string")return u;
+    // Absolute ws(s)://<host>/<path> URLs
+    var m=u.match(/^wss?:\\/\\/([^\\/]+)(\\/.*)$/);
+    if(m){
+      var host=m[1];
+      var path=m[2]||"/";
+      if(host==="127.0.0.1"||host==="localhost"||host===location.host){
+        var proto=location.protocol==="https:"?"wss:":"ws:";
+        if(path.startsWith(B)) return proto+"//"+location.host+path;
+        return proto+"//"+location.host+B+path;
+      }
+    }
+    // Root-relative paths (e.g. "/__vite_hmr") — rewrite through tunnel
+    if(u.startsWith("/")){
+      var proto2=location.protocol==="https:"?"wss:":"ws:";
+      if(u.startsWith(B)) return proto2+"//"+location.host+u;
+      return proto2+"//"+location.host+B+u;
+    }
+    return u;
+  }
   // Patch fetch
   var _f=window.fetch;
   window.fetch=function(input,init){
@@ -91,18 +113,40 @@ function buildTunnelInterceptScript(basePath: string): string {
     window.EventSource=function(url,cfg){return new _E(rw(url),cfg)};
     window.EventSource.prototype=_E.prototype;
   }
+  // Patch WebSocket
+  var _W=window.WebSocket;
+  window.WebSocket=function(url,protocols){
+    return new _W(rwWs(url),protocols);
+  };
+  window.WebSocket.prototype=_W.prototype;
+  window.WebSocket.CONNECTING=_W.CONNECTING;
+  window.WebSocket.OPEN=_W.OPEN;
+  window.WebSocket.CLOSING=_W.CLOSING;
+  window.WebSocket.CLOSED=_W.CLOSED;
 })();
 </script>`;
 }
 
+function rewriteInlineModuleScripts(html: string, sessionId: string, port: number): string {
+    return html.replace(/<script\b([^>]*)type=["']module["']([^>]*)>([\s\S]*?)<\/script>/gi, (match, before, after, scriptBody) => {
+        // Skip external module scripts; their src attribute is already rewritten separately.
+        if (/\bsrc\s*=/i.test(before) || /\bsrc\s*=/i.test(after)) return match;
+        return `<script${before}type="module"${after}>${rewriteTunnelJsModule(scriptBody, sessionId, port)}</script>`;
+    });
+}
+
 function rewriteTunnelHtml(html: string, sessionId: string, port: number): string {
     const basePath = getTunnelBasePath(sessionId, port);
-    const rewritten = html
-        .replace(/(<(?:img|script|iframe|audio|video|source|track|embed|input)\b[^>]*\bsrc=["'])(\/[^"']*)(["'])/gi, (_m, start, path, end) => `${start}${rewriteTunnelUrl(path, sessionId, port)}${end}`)
-        .replace(/(<(?:a|link|area)\b[^>]*\bhref=["'])(\/[^"']*)(["'])/gi, (_m, start, path, end) => `${start}${rewriteTunnelUrl(path, sessionId, port)}${end}`)
-        .replace(/(<(?:form)\b[^>]*\baction=["'])(\/[^"']*)(["'])/gi, (_m, start, path, end) => `${start}${rewriteTunnelUrl(path, sessionId, port)}${end}`)
-        .replace(/(<meta\b[^>]*\bcontent=["'][^"']*?url=)(\/[^"']*)(["'])/gi, (_m, start, path, end) => `${start}${rewriteTunnelUrl(path, sessionId, port)}${end}`)
-        .replace(/(\burl\(["']?)(\/[^)"']*)(["']?\))/gi, (_m, start, path, end) => `${start}${rewriteTunnelUrl(path, sessionId, port)}${end}`);
+    const rewritten = rewriteInlineModuleScripts(
+        html
+            .replace(/(<(?:img|script|iframe|audio|video|source|track|embed|input)\b[^>]*\bsrc=["'])(\/[^"']*)(["'])/gi, (_m, start, path, end) => `${start}${rewriteTunnelUrl(path, sessionId, port)}${end}`)
+            .replace(/(<(?:a|link|area)\b[^>]*\bhref=["'])(\/[^"']*)(["'])/gi, (_m, start, path, end) => `${start}${rewriteTunnelUrl(path, sessionId, port)}${end}`)
+            .replace(/(<(?:form)\b[^>]*\baction=["'])(\/[^"']*)(["'])/gi, (_m, start, path, end) => `${start}${rewriteTunnelUrl(path, sessionId, port)}${end}`)
+            .replace(/(<meta\b[^>]*\bcontent=["'][^"']*?url=)(\/[^"']*)(["'])/gi, (_m, start, path, end) => `${start}${rewriteTunnelUrl(path, sessionId, port)}${end}`)
+            .replace(/(\burl\(["']?)(\/[^)"']*)(["']?\))/gi, (_m, start, path, end) => `${start}${rewriteTunnelUrl(path, sessionId, port)}${end}`),
+        sessionId,
+        port,
+    );
 
     const injection = `<base href="${basePath}/">${buildTunnelInterceptScript(basePath)}`;
 
@@ -115,6 +159,80 @@ function rewriteTunnelHtml(html: string, sessionId: string, port: number): strin
 
 function shouldRewriteTunnelHtml(contentType: string | null): boolean {
     return !!contentType && /text\/html|application\/xhtml\+xml/i.test(contentType);
+}
+
+/**
+ * Check if the response is a JavaScript/TypeScript module that may contain
+ * absolute import paths needing tunnel-prefix rewriting.
+ */
+function shouldRewriteTunnelJs(contentType: string | null): boolean {
+    if (!contentType) return false;
+    return /application\/(?:javascript|ecmascript|x-javascript|typescript)|text\/(?:javascript|ecmascript|x-javascript|typescript)/i.test(contentType);
+}
+
+/**
+ * Check if the response is CSS that may contain absolute @import or url() paths.
+ */
+function shouldRewriteTunnelCss(contentType: string | null): boolean {
+    if (!contentType) return false;
+    return /text\/css/i.test(contentType);
+}
+
+/**
+ * Rewrite absolute paths in ES module source code so imports resolve through
+ * the tunnel proxy prefix instead of hitting the host origin directly.
+ *
+ * Handles:
+ *   - Static imports:  `import x from "/path"`, `import "/path"`
+ *   - Re-exports:      `export { x } from "/path"`
+ *   - Dynamic imports: `import("/path")`
+ *   - `new URL("/path", import.meta.url)`
+ *
+ * Only rewrites root-relative paths (`/...`). Leaves relative paths, bare
+ * specifiers, and full URLs (http://, //) untouched.
+ */
+function rewriteTunnelJsModule(js: string, sessionId: string, port: number): string {
+    const basePath = getTunnelBasePath(sessionId, port);
+
+    // Already-rewritten paths start with basePath — skip them.
+    // The regex matches: (from/import)( whitespace "or' )( /path )( "or' )
+    // We capture the absolute path and prefix it.
+    return js
+        // Static import/export ... from "/path"
+        // Matches: from "/...", from '/...'
+        .replace(/((?:from|import)\s*)(["'])(\/(?!\/)[^"']*)(["'])/g, (match, prefix, q1, path, q2) => {
+            if (path.startsWith(basePath)) return match; // already rewritten
+            return `${prefix}${q1}${basePath}${path}${q2}`;
+        })
+        // Dynamic import("/path") — import( "/..." ) or import( '/...' )
+        .replace(/(import\s*\(\s*)(["'])(\/(?!\/)[^"']*)(["'])/g, (match, prefix, q1, path, q2) => {
+            if (path.startsWith(basePath)) return match;
+            return `${prefix}${q1}${basePath}${path}${q2}`;
+        })
+        // new URL("/path", import.meta.url)
+        .replace(/(new\s+URL\s*\(\s*)(["'])(\/(?!\/)[^"']*)(["'])/g, (match, prefix, q1, path, q2) => {
+            if (path.startsWith(basePath)) return match;
+            return `${prefix}${q1}${basePath}${path}${q2}`;
+        });
+}
+
+/**
+ * Rewrite absolute paths in CSS — @import and url() references.
+ */
+function rewriteTunnelCss(css: string, sessionId: string, port: number): string {
+    const basePath = getTunnelBasePath(sessionId, port);
+
+    return css
+        // @import "/path" or @import '/path' or @import url("/path")
+        .replace(/(@import\s+)(["'])(\/(?!\/)[^"']*)(["'])/g, (match, prefix, q1, path, q2) => {
+            if (path.startsWith(basePath)) return match;
+            return `${prefix}${q1}${basePath}${path}${q2}`;
+        })
+        // url(/path), url("/path"), url('/path')
+        .replace(/(url\s*\(\s*)(["']?)(\/(?!\/)[^)"']*)(["']?\s*\))/g, (match, prefix, q1, path, q2) => {
+            if (path.startsWith(basePath)) return match;
+            return `${prefix}${q1}${basePath}${path}${q2}`;
+        });
 }
 
 /**
@@ -154,8 +272,17 @@ export const handleTunnelRoute: RouteHandler = async (req, url) => {
         return Response.json({ error: "Invalid port" }, { status: 400 });
     }
 
-    // Reconstruct proxy path with query string
-    const pathWithQuery = url.search ? `${proxyPath}${url.search}` : proxyPath;
+    // Reconstruct proxy path with query string, stripping auth query params (apiKey)
+    // so they are not forwarded to the local service — SSRF auth-leakage vector.
+    let pathWithQuery: string;
+    if (url.search) {
+        const qs = new URLSearchParams(url.search.slice(1));
+        qs.delete("apiKey");
+        const qsStr = qs.toString();
+        pathWithQuery = qsStr ? `${proxyPath}?${qsStr}` : proxyPath;
+    } else {
+        pathWithQuery = proxyPath;
+    }
 
     // ── Look up session and verify ownership ─────────────────────────────────
     const sessionData = await getSession(sessionId);
@@ -203,9 +330,15 @@ export const handleTunnelRoute: RouteHandler = async (req, url) => {
         "host",
     ]);
 
+    // Auth headers that must not be forwarded to the runner/local service.
+    // x-api-key is used to authenticate against the PizzaPi server — it must
+    // never reach the tunneled localhost service (SSRF auth-leakage vector).
+    const STRIP_AUTH = new Set(["cookie", "authorization", "x-api-key"]);
+
     const forwardHeaders: Record<string, string> = {};
     req.headers.forEach((v, k) => {
-        if (!HOP_BY_HOP.has(k.toLowerCase())) forwardHeaders[k] = v;
+        const lk = k.toLowerCase();
+        if (!HOP_BY_HOP.has(lk) && !STRIP_AUTH.has(lk)) forwardHeaders[k] = v;
     });
 
     // ── Build requestId and emit tunnel_request ───────────────────────────────
@@ -249,9 +382,20 @@ export const handleTunnelRoute: RouteHandler = async (req, url) => {
         responseHeaders.set("location", rewriteTunnelUrl(location, sessionId, port));
     }
 
-    if (shouldRewriteTunnelHtml(responseHeaders.get("content-type"))) {
+    const contentType = responseHeaders.get("content-type");
+    if (shouldRewriteTunnelHtml(contentType)) {
         const html = responseBody.toString("utf8");
         responseBody = Buffer.from(rewriteTunnelHtml(html, sessionId, port), "utf8");
+        responseHeaders.delete("content-length");
+        responseHeaders.delete("content-encoding");
+    } else if (shouldRewriteTunnelJs(contentType)) {
+        const js = responseBody.toString("utf8");
+        responseBody = Buffer.from(rewriteTunnelJsModule(js, sessionId, port), "utf8");
+        responseHeaders.delete("content-length");
+        responseHeaders.delete("content-encoding");
+    } else if (shouldRewriteTunnelCss(contentType)) {
+        const css = responseBody.toString("utf8");
+        responseBody = Buffer.from(rewriteTunnelCss(css, sessionId, port), "utf8");
         responseHeaders.delete("content-length");
         responseHeaders.delete("content-encoding");
     }
@@ -265,4 +409,14 @@ export const handleTunnelRoute: RouteHandler = async (req, url) => {
     });
 };
 
-export { getTunnelBasePath, rewriteTunnelUrl, rewriteTunnelHtml, shouldRewriteTunnelHtml };
+export {
+    getTunnelBasePath,
+    rewriteTunnelUrl,
+    rewriteTunnelHtml,
+    rewriteInlineModuleScripts,
+    shouldRewriteTunnelHtml,
+    shouldRewriteTunnelJs,
+    shouldRewriteTunnelCss,
+    rewriteTunnelJsModule,
+    rewriteTunnelCss,
+};

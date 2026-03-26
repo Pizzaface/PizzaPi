@@ -20,6 +20,14 @@ import type {
     RunnerAgent,
 } from "@pizzapi/protocol";
 import { shouldPreserveOnSocketDisconnect } from "../../health.js";
+import {
+    handleTunnelWsOpened,
+    handleTunnelWsData,
+    handleTunnelWsClose,
+    handleTunnelWsError,
+    cleanupRunnerTunnelWs,
+    cleanupFrameParser,
+} from "../../routes/tunnel-ws.js";
 
 // Inline definitions mirror packages/protocol/src/shared.ts.
 // Using local aliases avoids a cross-worktree symlink resolution issue where
@@ -28,6 +36,10 @@ import { shouldPreserveOnSocketDisconnect } from "../../health.js";
 type ServiceEnvelope = { serviceId: string; type: string; requestId?: string; payload: unknown };
 type TunnelRequestData = { requestId: string; port: number; method: string; path: string; headers: Record<string, string>; body?: string };
 type TunnelResponseData = { requestId: string; status: number; headers: Record<string, string>; body: string; error?: string };
+type TunnelWsOpenedData = { tunnelWsId: string; protocol?: string };
+type TunnelWsDataPayload = { tunnelWsId: string; data: string; binary?: boolean };
+type TunnelWsCloseData = { tunnelWsId: string; code?: number; reason?: string };
+type TunnelWsErrorData = { tunnelWsId: string; message: string };
 import { apiKeyAuthMiddleware } from "./auth.js";
 import {
     registerRunner,
@@ -661,6 +673,28 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
             }
         });
 
+        // ── tunnel_ws_opened — runner confirms local WS connection is open ───
+        socket.on("tunnel_ws_opened" as any, (data: TunnelWsOpenedData) => {
+            handleTunnelWsOpened(data.tunnelWsId, data.protocol);
+        });
+
+        // ── tunnel_ws_data — runner forwards a WS frame from local service ───
+        socket.on("tunnel_ws_data" as any, (data: TunnelWsDataPayload) => {
+            handleTunnelWsData(data.tunnelWsId, data.data, data.binary);
+        });
+
+        // ── tunnel_ws_close — runner signals local WS closed ─────────────────
+        socket.on("tunnel_ws_close" as any, (data: TunnelWsCloseData) => {
+            handleTunnelWsClose(data.tunnelWsId, data.code, data.reason);
+            cleanupFrameParser(data.tunnelWsId);
+        });
+
+        // ── tunnel_ws_error — runner reports a WS error ──────────────────────
+        socket.on("tunnel_ws_error" as any, (data: TunnelWsErrorData) => {
+            handleTunnelWsError(data.tunnelWsId, data.message);
+            cleanupFrameParser(data.tunnelWsId);
+        });
+
         // ── Generic service message relay: runner → viewers ──────────────────
         // Forward service envelopes verbatim to all viewers watching sessions
         // on this runner. The relay does not inspect serviceId — it just routes.
@@ -732,6 +766,8 @@ export function registerRunnerNamespace(io: SocketIOServer): void {
                         pending.reject(new Error("Runner disconnected"));
                     }
                 }
+                // Clean up tunnel WebSocket connections for this runner
+                cleanupRunnerTunnelWs(runnerId);
                 // Clean up local session tracking
                 runnerSessionIds.delete(runnerId);
                 runnerServiceAnnounce.delete(runnerId);

@@ -1,5 +1,15 @@
 import { describe, expect, test } from "bun:test";
-import { getTunnelBasePath, rewriteTunnelHtml, rewriteTunnelUrl, shouldRewriteTunnelHtml } from "./tunnel";
+import {
+    getTunnelBasePath,
+    rewriteTunnelHtml,
+    rewriteInlineModuleScripts,
+    rewriteTunnelUrl,
+    shouldRewriteTunnelHtml,
+    shouldRewriteTunnelJs,
+    shouldRewriteTunnelCss,
+    rewriteTunnelJsModule,
+    rewriteTunnelCss,
+} from "./tunnel";
 
 describe("tunnel route URL rewriting", () => {
     test("getTunnelBasePath builds the session-scoped proxy prefix", () => {
@@ -71,5 +81,151 @@ describe("tunnel route HTML rewriting", () => {
         const interceptIdx = rewritten.indexOf('data-pizzapi-tunnel-intercept');
         const bodyIdx = rewritten.indexOf('<body>');
         expect(interceptIdx).toBeLessThan(bodyIdx);
+    });
+
+    test("rewriteTunnelHtml rewrites inline module script imports used by Vite dev", () => {
+        const html = `<!doctype html><html><head></head><body>
+<script type="module">
+  import RefreshRuntime from "/@react-refresh";
+  import "/src/main.tsx";
+</script>
+</body></html>`;
+        const rewritten = rewriteTunnelHtml(html, "s-1", 5173);
+        expect(rewritten).toContain('from "/api/tunnel/s-1/5173/@react-refresh"');
+        expect(rewritten).toContain('import "/api/tunnel/s-1/5173/src/main.tsx"');
+    });
+
+    test("rewriteTunnelHtml includes WebSocket intercept in the injected script", () => {
+        const html = `<!doctype html><html><head></head><body>hello</body></html>`;
+        const rewritten = rewriteTunnelHtml(html, "s-1", 3000);
+        // The intercept script must patch WebSocket constructor
+        expect(rewritten).toContain("WebSocket");
+        expect(rewritten).toContain("rwWs");
+        // Should handle ws:// and wss:// localhost and same-origin URLs
+        expect(rewritten).toContain('host==="127.0.0.1"');
+        expect(rewritten).toContain('host==="localhost"');
+        expect(rewritten).toContain("location.host");
+        // Should copy static properties from native WebSocket
+        expect(rewritten).toContain("CONNECTING");
+        expect(rewritten).toContain("OPEN");
+        expect(rewritten).toContain("CLOSING");
+        expect(rewritten).toContain("CLOSED");
+    });
+});
+
+describe("tunnel JS module rewriting", () => {
+    test("rewriteInlineModuleScripts rewrites inline module bodies but skips external module scripts", () => {
+        const html = `<script type="module">import "/src/main.tsx"</script><script type="module" src="/src/other.ts"></script>`;
+        const rewritten = rewriteInlineModuleScripts(html, "s-1", 5173);
+        expect(rewritten).toContain('import "/api/tunnel/s-1/5173/src/main.tsx"');
+        expect(rewritten).toContain('src="/src/other.ts"');
+    });
+
+    test("shouldRewriteTunnelJs matches JavaScript content types", () => {
+        expect(shouldRewriteTunnelJs("application/javascript")).toBe(true);
+        expect(shouldRewriteTunnelJs("application/javascript; charset=utf-8")).toBe(true);
+        expect(shouldRewriteTunnelJs("text/javascript")).toBe(true);
+        expect(shouldRewriteTunnelJs("application/typescript")).toBe(true);
+        expect(shouldRewriteTunnelJs("text/typescript")).toBe(true);
+        expect(shouldRewriteTunnelJs("text/html")).toBe(false);
+        expect(shouldRewriteTunnelJs("text/css")).toBe(false);
+        expect(shouldRewriteTunnelJs(null)).toBe(false);
+    });
+
+    test("rewriteTunnelJsModule rewrites static import paths", () => {
+        const js = `import React from "/node_modules/.vite/deps/react.js";
+import { useState } from "/node_modules/.vite/deps/react.js";`;
+        const rewritten = rewriteTunnelJsModule(js, "s-1", 3000);
+        expect(rewritten).toContain('from "/api/tunnel/s-1/3000/node_modules/.vite/deps/react.js"');
+        expect(rewritten).not.toContain('from "/node_modules/');
+    });
+
+    test("rewriteTunnelJsModule rewrites bare import (side-effect only)", () => {
+        const js = `import "/src/index.css";`;
+        const rewritten = rewriteTunnelJsModule(js, "s-1", 3000);
+        expect(rewritten).toBe(`import "/api/tunnel/s-1/3000/src/index.css";`);
+    });
+
+    test("rewriteTunnelJsModule rewrites export-from", () => {
+        const js = `export { useState } from "/node_modules/.vite/deps/react.js";`;
+        const rewritten = rewriteTunnelJsModule(js, "s-1", 3000);
+        expect(rewritten).toContain('from "/api/tunnel/s-1/3000/node_modules/.vite/deps/react.js"');
+    });
+
+    test("rewriteTunnelJsModule rewrites dynamic imports", () => {
+        const js = `const mod = await import("/src/lazy-component.tsx");`;
+        const rewritten = rewriteTunnelJsModule(js, "s-1", 3000);
+        expect(rewritten).toContain('import("/api/tunnel/s-1/3000/src/lazy-component.tsx")');
+    });
+
+    test("rewriteTunnelJsModule rewrites new URL() with import.meta.url", () => {
+        const js = `const url = new URL("/src/assets/logo.png", import.meta.url);`;
+        const rewritten = rewriteTunnelJsModule(js, "s-1", 3000);
+        expect(rewritten).toContain('new URL("/api/tunnel/s-1/3000/src/assets/logo.png"');
+    });
+
+    test("rewriteTunnelJsModule leaves relative paths alone", () => {
+        const js = `import foo from "./utils.js";
+import bar from "../lib/bar.js";`;
+        const rewritten = rewriteTunnelJsModule(js, "s-1", 3000);
+        expect(rewritten).toBe(js);
+    });
+
+    test("rewriteTunnelJsModule leaves external URLs alone", () => {
+        const js = `import("https://cdn.example.com/lib.js");`;
+        const rewritten = rewriteTunnelJsModule(js, "s-1", 3000);
+        expect(rewritten).toBe(js);
+    });
+
+    test("rewriteTunnelJsModule leaves protocol-relative URLs alone", () => {
+        const js = `import "//cdn.example.com/lib.js";`;
+        const rewritten = rewriteTunnelJsModule(js, "s-1", 3000);
+        // Protocol-relative starts with // — the regex checks /(?!/), so should not match
+        expect(rewritten).toBe(js);
+    });
+
+    test("rewriteTunnelJsModule does not double-rewrite", () => {
+        const js = `import React from "/api/tunnel/s-1/3000/node_modules/.vite/deps/react.js";`;
+        const rewritten = rewriteTunnelJsModule(js, "s-1", 3000);
+        expect(rewritten).toBe(js);
+    });
+
+    test("rewriteTunnelJsModule handles single-quoted imports", () => {
+        const js = `import React from '/node_modules/.vite/deps/react.js';`;
+        const rewritten = rewriteTunnelJsModule(js, "s-1", 3000);
+        expect(rewritten).toContain("from '/api/tunnel/s-1/3000/node_modules/.vite/deps/react.js'");
+    });
+});
+
+describe("tunnel CSS rewriting", () => {
+    test("shouldRewriteTunnelCss matches CSS content types", () => {
+        expect(shouldRewriteTunnelCss("text/css")).toBe(true);
+        expect(shouldRewriteTunnelCss("text/css; charset=utf-8")).toBe(true);
+        expect(shouldRewriteTunnelCss("text/html")).toBe(false);
+        expect(shouldRewriteTunnelCss(null)).toBe(false);
+    });
+
+    test("rewriteTunnelCss rewrites @import paths", () => {
+        const css = `@import "/src/styles/reset.css";`;
+        const rewritten = rewriteTunnelCss(css, "s-1", 3000);
+        expect(rewritten).toBe(`@import "/api/tunnel/s-1/3000/src/styles/reset.css";`);
+    });
+
+    test("rewriteTunnelCss rewrites url() paths", () => {
+        const css = `body { background: url(/assets/bg.png); }`;
+        const rewritten = rewriteTunnelCss(css, "s-1", 3000);
+        expect(rewritten).toContain("url(/api/tunnel/s-1/3000/assets/bg.png)");
+    });
+
+    test("rewriteTunnelCss rewrites quoted url() paths", () => {
+        const css = `body { background: url("/assets/bg.png"); }`;
+        const rewritten = rewriteTunnelCss(css, "s-1", 3000);
+        expect(rewritten).toContain('url("/api/tunnel/s-1/3000/assets/bg.png")');
+    });
+
+    test("rewriteTunnelCss does not double-rewrite", () => {
+        const css = `@import "/api/tunnel/s-1/3000/src/styles/reset.css";`;
+        const rewritten = rewriteTunnelCss(css, "s-1", 3000);
+        expect(rewritten).toBe(css);
     });
 });

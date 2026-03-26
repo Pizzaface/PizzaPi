@@ -44,7 +44,15 @@ export function TunnelPanel({ sessionId }: TunnelPanelProps) {
     });
 
     useEffect(() => {
-        if (available) send("tunnel_list", {});
+        if (available) {
+            send("tunnel_list", {});
+        } else {
+            // Clear stale state immediately on disconnect so that when the
+            // socket reconnects and `available` flips back to true, the panel
+            // does not briefly flash the previous (dead) tunnel entries.
+            setTunnels([]);
+            setPreviewPort(null);
+        }
     }, [available, send]);
 
     // Auto-preview the first tunnel when it appears

@@ -10,6 +10,7 @@ import { sweepExpiredAttachments, rehydrateExtractedAttachments } from "./attach
 import { runAllMigrations } from "./migrations.js";
 
 import { setServerShuttingDown } from "./health.js";
+import { handleTunnelWsUpgrade } from "./routes/tunnel-ws.js";
 
 // ── Process-level safety net ─────────────────────────────────────────────────
 // The Socket.IO Redis adapter can throw EPIPE synchronously when the Redis
@@ -271,6 +272,25 @@ try {
         initSioRegistry(io);
 
         registerNamespaces(io);
+
+        // ── Tunnel WebSocket upgrade interception ─────────────────────────
+        // Socket.IO attaches its own 'upgrade' listener to httpServer.
+        // We intercept tunnel-path upgrades BEFORE Socket.IO sees them by
+        // removing all existing upgrade listeners, adding ours first, then
+        // re-adding the original listeners.
+        const existingUpgradeListeners = httpServer.listeners("upgrade").slice();
+        httpServer.removeAllListeners("upgrade");
+
+        httpServer.on("upgrade", (req, socket, head) => {
+            // Check if this is a tunnel WebSocket upgrade
+            if (handleTunnelWsUpgrade(req, socket, head)) {
+                return; // handled — don't pass to Socket.IO
+            }
+            // Not a tunnel path — delegate to Socket.IO's upgrade handlers
+            for (const listener of existingUpgradeListeners) {
+                (listener as Function).call(httpServer, req, socket, head);
+            }
+        });
 
         // Mark Socket.IO as initialized so the Redis event listeners above
         // can also flip serverHealth.socketio on future reconnects/disconnects.
