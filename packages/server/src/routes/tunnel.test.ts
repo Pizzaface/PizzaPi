@@ -72,6 +72,41 @@ describe("tunnel route HTML rewriting", () => {
         expect(rewritten).toContain("url('/api/tunnel/session-123/60434/bg.png')");
     });
 
+    test("rewriteTunnelHtml uses sub-path-aware base href when proxyPath is provided", () => {
+        const html = `<!doctype html><html><head></head><body>
+<script src="runtime.bundle.js"></script>
+</body></html>`;
+        // Jellyfin scenario: HTML served from /web/index.html
+        const rewritten = rewriteTunnelHtml(html, "session-123", 8096, "/web/index.html");
+        // Base should point to the document's directory, not the tunnel root
+        expect(rewritten).toContain('<base href="/api/tunnel/session-123/8096/web/">');
+        // Interceptor script should still use tunnel root for absolute path rewrites
+        expect(rewritten).toContain('var B="/api/tunnel/session-123/8096"');
+    });
+
+    test("rewriteTunnelHtml uses directory path for trailing-slash proxyPath", () => {
+        const html = `<!doctype html><html><head></head><body>hello</body></html>`;
+        const rewritten = rewriteTunnelHtml(html, "s-1", 3000, "/app/dashboard/");
+        expect(rewritten).toContain('<base href="/api/tunnel/s-1/3000/app/dashboard/">');
+    });
+
+    test("rewriteTunnelHtml defaults to tunnel root when proxyPath is omitted", () => {
+        const html = `<!doctype html><html><head></head><body>hello</body></html>`;
+        const rewritten = rewriteTunnelHtml(html, "s-1", 3000);
+        expect(rewritten).toContain('<base href="/api/tunnel/s-1/3000/">');
+    });
+
+    test("rewriteTunnelHtml strips existing <base> tags from original HTML", () => {
+        const html = `<!doctype html><html><head><base href="/web/"></head><body>hello</body></html>`;
+        const rewritten = rewriteTunnelHtml(html, "s-1", 3000, "/web/index.html");
+        // Should only have one <base> — the injected one
+        const baseMatches = rewritten.match(/<base\b[^>]*>/gi);
+        expect(baseMatches).toHaveLength(1);
+        expect(rewritten).toContain('<base href="/api/tunnel/s-1/3000/web/">');
+        // Original <base href="/web/"> should be gone
+        expect(rewritten).not.toContain('<base href="/web/">');
+    });
+
     test("rewriteTunnelHtml injects fetch/XHR interceptor script", () => {
         const html = `<!doctype html><html><head></head><body>hello</body></html>`;
         const rewritten = rewriteTunnelHtml(html, "s-1", 3000);
