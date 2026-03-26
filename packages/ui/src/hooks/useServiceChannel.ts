@@ -63,6 +63,14 @@ export function useServiceChannel<TSend = unknown, TPayload = unknown>(
         };
     }, [socket, serviceId]);
 
+    /**
+     * Send a message to the service.
+     *
+     * **Important:** Only call `send` when `available === true`. The socket
+     * may be disconnected or the service may not yet be registered when
+     * `available` is `false`, so any message sent in that state will be
+     * silently dropped. Consumers should gate all calls behind `if (available)`.
+     */
     const send = useCallback((type: string, payload: TSend, requestId?: string) => {
         if (!socket) return;
         const envelope: ServiceEnvelope = { serviceId, type, payload, requestId };
