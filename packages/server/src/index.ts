@@ -107,8 +107,10 @@ function nodeReqToFetchRequest(req: IncomingMessage): Request {
 }
 
 async function sendFetchResponse(res: ServerResponse, response: Response): Promise<void> {
-    // Security headers are already injected by withSecurityHeaders in handleFetch.
-    // Do NOT add them here — duplicating would produce header arrays on the wire.
+    // Security headers are already stamped by withSecurityHeaders() (called inside
+    // handleFetch) before this function runs.  Do NOT pre-seed them here — doing
+    // so would merge them with the headers already present on `response`, causing
+    // each header to appear twice (as an array) on the wire.
     const headers: Record<string, string | string[]> = {};
     response.headers.forEach((value, key) => {
         const existing = headers[key];

@@ -407,33 +407,64 @@ describe("withSecurityHeaders", () => {
         expect(res.headers.get("Content-Security-Policy")).not.toBeNull();
     });
 
-
-    test("no duplicate security headers when response is collected via sendFetchResponse-style merging", () => {
-        // Regression test for the P0 bug where sendFetchResponse had its own hardcoded
-        // security headers AND withSecurityHeaders also set them, producing header arrays.
-        // After the fix, sendFetchResponse starts with an empty map and only populates it
-        // from the Response headers — so each security header must appear exactly once.
+    test("no duplicate security headers: pre-seeded merge (old buggy path) produces arrays", () => {
+        // Documents the regression: before the fix, sendFetchResponse pre-seeded the
+        // four security headers before iterating response.headers.  Because
+        // withSecurityHeaders() had already set the same headers on the response, the
+        // merge logic turned each one into a two-element array.  This test proves that
+        // behaviour is wrong so it can never be silently re-introduced.
         const response = withSecurityHeaders(new Response("ok", { status: 200 }));
 
-        // Simulate the sendFetchResponse header-collection loop
-        const collected: Record<string, string | string[]> = {};
+        // Simulate the OLD sendFetchResponse header-collection: start with pre-seeded map
+        const buggyHeaders: Record<string, string | string[]> = {
+            "x-content-type-options": "nosniff",
+            "x-frame-options": "DENY",
+            "x-xss-protection": "0",
+            "referrer-policy": "strict-origin-when-cross-origin",
+        };
         response.headers.forEach((value, key) => {
-            const existing = collected[key];
+            const existing = buggyHeaders[key];
             if (existing !== undefined) {
-                collected[key] = Array.isArray(existing)
+                buggyHeaders[key] = Array.isArray(existing)
                     ? [...existing, value]
                     : [existing, value];
             } else {
-                collected[key] = value;
+                buggyHeaders[key] = value;
+            }
+        });
+
+        // The pre-seeded path produces duplicates — each header becomes an array
+        expect(Array.isArray(buggyHeaders["x-content-type-options"])).toBe(true);
+        expect(Array.isArray(buggyHeaders["x-frame-options"])).toBe(true);
+        expect(Array.isArray(buggyHeaders["x-xss-protection"])).toBe(true);
+        expect(Array.isArray(buggyHeaders["referrer-policy"])).toBe(true);
+    });
+
+    test("no duplicate security headers: fixed sendFetchResponse path (empty-start merge)", () => {
+        // After the fix, sendFetchResponse starts with an empty map and only populates
+        // it from the Response headers produced by withSecurityHeaders(), so each
+        // security header appears exactly once on the wire.
+        const response = withSecurityHeaders(new Response("ok", { status: 200 }));
+
+        // Simulate the FIXED sendFetchResponse header-collection: start from empty map
+        const headers: Record<string, string | string[]> = {};
+        response.headers.forEach((value, key) => {
+            const existing = headers[key];
+            if (existing !== undefined) {
+                headers[key] = Array.isArray(existing)
+                    ? [...existing, value]
+                    : [existing, value];
+            } else {
+                headers[key] = value;
             }
         });
 
         // Each security header must be a plain string, not an array
-        expect(collected["x-content-type-options"]).toBe("nosniff");
-        expect(collected["x-frame-options"]).toBe("DENY");
-        expect(collected["x-xss-protection"]).toBe("0");
-        expect(collected["referrer-policy"]).toBe("strict-origin-when-cross-origin");
-        expect(collected["permissions-policy"]).toBe("camera=(), microphone=(), geolocation=()");
-        expect(typeof collected["content-security-policy"]).toBe("string");
+        expect(headers["x-content-type-options"]).toBe("nosniff");
+        expect(headers["x-frame-options"]).toBe("DENY");
+        expect(headers["x-xss-protection"]).toBe("0");
+        expect(headers["referrer-policy"]).toBe("strict-origin-when-cross-origin");
+        expect(headers["permissions-policy"]).toBe("camera=(), microphone=(), geolocation=()");
+        expect(typeof headers["content-security-policy"]).toBe("string");
     });
 });
