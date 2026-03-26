@@ -3,11 +3,11 @@
  *
  * Translates an authenticated viewer's HTTP request into a tunnel_request
  * Socket.IO event sent to the runner daemon, then writes the tunnel_response
- * back as an HTTP response.
+ * back as an HTTP response. WebSocket upgrades on this path are handled by
+ * tunnel-ws.ts (WS-over-Socket.IO framing).
  *
- * Option C limitations (documented intentionally):
- *   - No WebSocket upgrade (no HMR, no Socket.IO through tunnel)
- *   - No streaming responses (body fully buffered, max 10 MB)
+ * Remaining limitations:
+ *   - No streaming HTTP responses (body fully buffered, max 10 MB)
  *   - No SSE support
  *   - No CORS handling beyond header passthrough
  *   - Not suitable for large file downloads (>10 MB)
@@ -73,6 +73,22 @@ function buildTunnelInterceptScript(basePath: string): string {
     }
     return [input,init];
   }
+  // Rewrite ws:// and wss:// URLs pointing at localhost through the tunnel
+  function rwWs(u){
+    if(typeof u!=="string")return u;
+    // Absolute ws(s)://localhost or ws(s)://127.0.0.1 URLs
+    var m=u.match(/^wss?:\\/\\/(127\\.0\\.0\\.1|localhost)(:\\d+)?(\\/.*)$/);
+    if(m){
+      var proto=location.protocol==="https:"?"wss:":"ws:";
+      return proto+"//"+location.host+B+(m[3]||"/");
+    }
+    // Root-relative paths (e.g. "/__vite_hmr") — rewrite through tunnel
+    if(u.startsWith("/")){
+      var proto2=location.protocol==="https:"?"wss:":"ws:";
+      return proto2+"//"+location.host+B+u;
+    }
+    return u;
+  }
   // Patch fetch
   var _f=window.fetch;
   window.fetch=function(input,init){
@@ -91,6 +107,16 @@ function buildTunnelInterceptScript(basePath: string): string {
     window.EventSource=function(url,cfg){return new _E(rw(url),cfg)};
     window.EventSource.prototype=_E.prototype;
   }
+  // Patch WebSocket
+  var _W=window.WebSocket;
+  window.WebSocket=function(url,protocols){
+    return new _W(rwWs(url),protocols);
+  };
+  window.WebSocket.prototype=_W.prototype;
+  window.WebSocket.CONNECTING=_W.CONNECTING;
+  window.WebSocket.OPEN=_W.OPEN;
+  window.WebSocket.CLOSING=_W.CLOSING;
+  window.WebSocket.CLOSED=_W.CLOSED;
 })();
 </script>`;
 }
