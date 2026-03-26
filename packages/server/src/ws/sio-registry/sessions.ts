@@ -36,6 +36,7 @@ import {
     getRunner as getRunnerState,
 } from "../sio-state.js";
 import {
+    getPersistedRelaySessionRunner,
     recordRelaySessionStart,
     recordRelaySessionEnd,
     recordRelaySessionState,
@@ -159,6 +160,19 @@ export async function registerTuiSession(
         if (assoc) {
             runnerId = assoc.runnerId;
             runnerName = assoc.runnerName;
+        }
+    }
+
+    // Redis-side runner association keys can disappear during a Redis restart
+    // even though SQLite still has durable session provenance. Fall back to the
+    // persisted session row so reconnecting live sessions keep their runner link
+    // (service panels, runner routing, etc.) after the relay re-registers.
+    if (!runnerId) {
+        const persistedRunner = await getPersistedRelaySessionRunner(sessionId);
+        if (persistedRunner?.runnerId) {
+            runnerId = persistedRunner.runnerId;
+            runnerName = persistedRunner.runnerName;
+            await setRunnerAssociation(sessionId, runnerId, runnerName);
         }
     }
 

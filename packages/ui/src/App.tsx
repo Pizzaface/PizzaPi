@@ -65,6 +65,7 @@ import { DockedPanelGroup } from "@/components/DockedPanelGroup";
 import { ViewerSocketContext } from "@/lib/viewer-socket-context";
 import { HubSocketContext } from "@/lib/hub-socket-context";
 import { shouldStopViewerReconnect } from "@/lib/viewer-connection";
+import { getConfirmedMetaSubscriptionTargets } from "@/lib/meta-subscriptions";
 import { useRunnerServices, attachServiceAnnounceListener } from "@/hooks/useRunnerServices";
 import { ServicePanelButtons, useServicePanelState } from "@/components/service-panels/ServicePanels";
 import { SERVICE_PANELS } from "@/components/service-panels/registry";
@@ -317,6 +318,8 @@ export function App() {
 
   // Tracks which session's meta room we've joined so we can unsubscribe when needed.
   const prevMetaSessionRef = React.useRef<string | null>(null);
+  const confirmedMetaLiveSessionIdsRef = React.useRef<Set<string>>(new Set());
+  const [metaInventoryVersion, setMetaInventoryVersion] = React.useState(0);
 
   // Chunked session delivery: when session_active arrives with chunked:true,
   // messages follow as session_messages_chunk events. This ref tracks state.
@@ -349,6 +352,11 @@ export function App() {
     handleSidebarPointerDown, handleSidebarPointerMove, handleSidebarPointerUp,
   } = useMobileSidebar();
   const [liveSessions, setLiveSessions] = React.useState<HubSession[]>([]);
+
+  React.useEffect(() => {
+    confirmedMetaLiveSessionIdsRef.current = new Set(liveSessions.map((s) => s.sessionId));
+    setMetaInventoryVersion((version) => version + 1);
+  }, [liveSessions]);
 
   // Derive sidebar runners from the /runners WS feed
   React.useEffect(() => {
@@ -2232,27 +2240,16 @@ export function App() {
     // version counter to 0 on restart, so any previously-seen version would cause
     // all new events to be silently ignored.
     const handleReconnect = () => {
-      const currentSessionId = activeSessionRef.current;
-      if (currentSessionId) {
-        metaVersionsRef.current.delete(currentSessionId);
-        socket.emit("subscribe_session_meta", { sessionId: currentSessionId });
-      }
-      // Re-subscribe background sessions and clear their version state.
-      for (const id of backgroundMetaIdsRef.current) {
-        metaVersionsRef.current.delete(id);
-        socket.emit("subscribe_session_meta", { sessionId: id });
-      }
+      metaVersionsRef.current.clear();
+      prevMetaSessionRef.current = null;
+      backgroundMetaIdsRef.current.clear();
+      confirmedMetaLiveSessionIdsRef.current = new Set();
+      setMetaInventoryVersion((version) => version + 1);
     };
 
     socket.on("state_snapshot", handleStateSnapshot);
     socket.on("meta_event", handleMetaEvent);
     socket.on("connect", handleReconnect);
-
-    const initialSessionId = activeSessionRef.current;
-    if (initialSessionId) {
-      socket.emit("subscribe_session_meta", { sessionId: initialSessionId });
-      prevMetaSessionRef.current = initialSessionId;
-    }
 
     return () => {
       socket.off("state_snapshot", handleStateSnapshot);
@@ -2268,21 +2265,27 @@ export function App() {
     const hubSock = hubSocketRef.current;
     if (!hubSock) return;
 
+    const { activeSessionId: confirmedActiveSessionId } = getConfirmedMetaSubscriptionTargets({
+      liveSessionIds: liveSessions.map((s) => s.sessionId),
+      confirmedLiveSessionIds: confirmedMetaLiveSessionIdsRef.current,
+      activeSessionId,
+    });
     const prevId = prevMetaSessionRef.current;
-    const nextId = activeSessionId;
 
-    if (prevId && prevId !== nextId) {
+    if (prevId && prevId !== confirmedActiveSessionId) {
       hubSock.emit("unsubscribe_session_meta", { sessionId: prevId });
       metaVersionsRef.current.delete(prevId);
     }
 
-    if (nextId) {
-      hubSock.emit("subscribe_session_meta", { sessionId: nextId });
-      prevMetaSessionRef.current = nextId;
+    if (confirmedActiveSessionId) {
+      if (prevId !== confirmedActiveSessionId) {
+        hubSock.emit("subscribe_session_meta", { sessionId: confirmedActiveSessionId });
+      }
+      prevMetaSessionRef.current = confirmedActiveSessionId;
     } else {
       prevMetaSessionRef.current = null;
     }
-  }, [activeSessionId]);
+  }, [hubSocket, activeSessionId, liveSessions, metaInventoryVersion]);
 
   // Subscribe to meta rooms for ALL live sessions (not just the active one) so
   // that background sessions can update the sidebar pending-question badge.
@@ -2293,9 +2296,12 @@ export function App() {
     const hubSock = hubSocketRef.current;
     if (!hubSock) return;
 
-    const currentIds = new Set(
-      liveSessions.map((s) => s.sessionId).filter((id) => id !== activeSessionId),
-    );
+    const { backgroundSessionIds } = getConfirmedMetaSubscriptionTargets({
+      liveSessionIds: liveSessions.map((s) => s.sessionId),
+      confirmedLiveSessionIds: confirmedMetaLiveSessionIdsRef.current,
+      activeSessionId,
+    });
+    const currentIds = new Set(backgroundSessionIds);
     const prev = backgroundMetaIdsRef.current;
 
     // Unsubscribe from sessions that are no longer in the live list.
@@ -2319,7 +2325,7 @@ export function App() {
         prev.add(id);
       }
     }
-  }, [liveSessions, activeSessionId]);
+  }, [hubSocket, liveSessions, activeSessionId, metaInventoryVersion]);
 
   const openSession = React.useCallback((relaySessionId: string) => {
     // Flush/cancel any pending RAF queues (streaming deltas & tool-stream

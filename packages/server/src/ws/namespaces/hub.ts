@@ -59,9 +59,16 @@ export function registerHubNamespace(io: SocketIOServer): void {
           if (!data || typeof (data as Record<string, unknown>).sessionId !== "string") return;
           const sessionId = (data as { sessionId: string }).sessionId;
 
-          // Validate ownership — only the session owner may subscribe
+          // Validate ownership — only the session owner may subscribe.
+          // Distinguish "session is not live yet / no longer live" from an
+          // actual cross-user subscription attempt so restart-time reconnect
+          // races don't look like auth failures in the logs.
           const session = await getSession(sessionId);
-          if (!session || session.userId !== userId) {
+          if (!session) {
+            log.info(`subscribe_session_meta: session missing userId=${userId} sessionId=${sessionId}`);
+            return;
+          }
+          if (session.userId !== userId) {
             log.warn(`subscribe_session_meta: unauthorized userId=${userId} sessionId=${sessionId}`);
             return;
           }
