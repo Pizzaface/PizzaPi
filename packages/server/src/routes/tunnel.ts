@@ -73,18 +73,24 @@ function buildTunnelInterceptScript(basePath: string): string {
     }
     return [input,init];
   }
-  // Rewrite ws:// and wss:// URLs pointing at localhost through the tunnel
+  // Rewrite ws:// and wss:// URLs pointing at localhost or same-origin through the tunnel
   function rwWs(u){
     if(typeof u!=="string")return u;
-    // Absolute ws(s)://localhost or ws(s)://127.0.0.1 URLs
-    var m=u.match(/^wss?:\\/\\/(127\\.0\\.0\\.1|localhost)(:\\d+)?(\\/.*)$/);
+    // Absolute ws(s)://<host>/<path> URLs
+    var m=u.match(/^wss?:\\/\\/([^\\/]+)(\\/.*)$/);
     if(m){
-      var proto=location.protocol==="https:"?"wss:":"ws:";
-      return proto+"//"+location.host+B+(m[3]||"/");
+      var host=m[1];
+      var path=m[2]||"/";
+      if(host==="127.0.0.1"||host==="localhost"||host===location.host){
+        var proto=location.protocol==="https:"?"wss:":"ws:";
+        if(path.startsWith(B)) return proto+"//"+location.host+path;
+        return proto+"//"+location.host+B+path;
+      }
     }
     // Root-relative paths (e.g. "/__vite_hmr") — rewrite through tunnel
     if(u.startsWith("/")){
       var proto2=location.protocol==="https:"?"wss:":"ws:";
+      if(u.startsWith(B)) return proto2+"//"+location.host+u;
       return proto2+"//"+location.host+B+u;
     }
     return u;
@@ -121,14 +127,26 @@ function buildTunnelInterceptScript(basePath: string): string {
 </script>`;
 }
 
+function rewriteInlineModuleScripts(html: string, sessionId: string, port: number): string {
+    return html.replace(/<script\b([^>]*)type=["']module["']([^>]*)>([\s\S]*?)<\/script>/gi, (match, before, after, scriptBody) => {
+        // Skip external module scripts; their src attribute is already rewritten separately.
+        if (/\bsrc\s*=/i.test(before) || /\bsrc\s*=/i.test(after)) return match;
+        return `<script${before}type="module"${after}>${rewriteTunnelJsModule(scriptBody, sessionId, port)}</script>`;
+    });
+}
+
 function rewriteTunnelHtml(html: string, sessionId: string, port: number): string {
     const basePath = getTunnelBasePath(sessionId, port);
-    const rewritten = html
-        .replace(/(<(?:img|script|iframe|audio|video|source|track|embed|input)\b[^>]*\bsrc=["'])(\/[^"']*)(["'])/gi, (_m, start, path, end) => `${start}${rewriteTunnelUrl(path, sessionId, port)}${end}`)
-        .replace(/(<(?:a|link|area)\b[^>]*\bhref=["'])(\/[^"']*)(["'])/gi, (_m, start, path, end) => `${start}${rewriteTunnelUrl(path, sessionId, port)}${end}`)
-        .replace(/(<(?:form)\b[^>]*\baction=["'])(\/[^"']*)(["'])/gi, (_m, start, path, end) => `${start}${rewriteTunnelUrl(path, sessionId, port)}${end}`)
-        .replace(/(<meta\b[^>]*\bcontent=["'][^"']*?url=)(\/[^"']*)(["'])/gi, (_m, start, path, end) => `${start}${rewriteTunnelUrl(path, sessionId, port)}${end}`)
-        .replace(/(\burl\(["']?)(\/[^)"']*)(["']?\))/gi, (_m, start, path, end) => `${start}${rewriteTunnelUrl(path, sessionId, port)}${end}`);
+    const rewritten = rewriteInlineModuleScripts(
+        html
+            .replace(/(<(?:img|script|iframe|audio|video|source|track|embed|input)\b[^>]*\bsrc=["'])(\/[^"']*)(["'])/gi, (_m, start, path, end) => `${start}${rewriteTunnelUrl(path, sessionId, port)}${end}`)
+            .replace(/(<(?:a|link|area)\b[^>]*\bhref=["'])(\/[^"']*)(["'])/gi, (_m, start, path, end) => `${start}${rewriteTunnelUrl(path, sessionId, port)}${end}`)
+            .replace(/(<(?:form)\b[^>]*\baction=["'])(\/[^"']*)(["'])/gi, (_m, start, path, end) => `${start}${rewriteTunnelUrl(path, sessionId, port)}${end}`)
+            .replace(/(<meta\b[^>]*\bcontent=["'][^"']*?url=)(\/[^"']*)(["'])/gi, (_m, start, path, end) => `${start}${rewriteTunnelUrl(path, sessionId, port)}${end}`)
+            .replace(/(\burl\(["']?)(\/[^)"']*)(["']?\))/gi, (_m, start, path, end) => `${start}${rewriteTunnelUrl(path, sessionId, port)}${end}`),
+        sessionId,
+        port,
+    );
 
     const injection = `<base href="${basePath}/">${buildTunnelInterceptScript(basePath)}`;
 
@@ -149,7 +167,7 @@ function shouldRewriteTunnelHtml(contentType: string | null): boolean {
  */
 function shouldRewriteTunnelJs(contentType: string | null): boolean {
     if (!contentType) return false;
-    return /application\/javascript|text\/javascript|application\/x-javascript|text\/x-javascript/i.test(contentType);
+    return /application\/(?:javascript|ecmascript|x-javascript|typescript)|text\/(?:javascript|ecmascript|x-javascript|typescript)/i.test(contentType);
 }
 
 /**
@@ -380,6 +398,7 @@ export {
     getTunnelBasePath,
     rewriteTunnelUrl,
     rewriteTunnelHtml,
+    rewriteInlineModuleScripts,
     shouldRewriteTunnelHtml,
     shouldRewriteTunnelJs,
     shouldRewriteTunnelCss,
