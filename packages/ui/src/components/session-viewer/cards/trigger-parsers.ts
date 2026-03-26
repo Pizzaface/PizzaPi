@@ -26,24 +26,28 @@ export interface ParsedTrigger {
 }
 
 export function parseTriggerBody(body: string): ParsedTrigger {
-  // Detect trigger type from content patterns
-  // ask_user_question: may or may not have Options line (open-ended questions omit it)
-  if (body.includes('" asks:')) {
-    return parsAskUserQuestion(body);
-  }
-  if (body.includes("submitted a plan for review")) {
-    return parsePlanReview(body);
-  }
-  // Anchor session_complete to the first line BEFORE checking for "encountered an error:"
-  // because session_complete summaries can contain that phrase in their body text,
-  // which would otherwise cause a false positive match for session_error.
+  // Detect trigger type from content patterns.
+  //
+  // IMPORTANT: anchored regex checks must run BEFORE unanchored includes() checks.
+  // session_complete summaries can contain phrases like `" asks:"` or
+  // "submitted a plan for review" in their body text, which would cause
+  // a false-positive match if the includes() checks ran first.
+
+  // Anchored: session_complete — must be first so summary text can't hijack ask/plan
   if (/^🔗 Child "[^"]+" (?:completed|was killed|errored):/.test(body)) {
     return parseSessionComplete(body);
   }
-  // Anchor session_error to the first line as well, so that summary text embedded
-  // in other trigger types (e.g. session_complete) cannot trigger a false match.
+  // Anchored: session_error — same reasoning; summary text may mention errors
   if (/^⚠️ Child "[^"]+" encountered an error:/.test(body)) {
     return parseSessionError(body);
+  }
+  // Unanchored: ask_user_question — safe because session_complete/error already handled above
+  if (body.includes('" asks:')) {
+    return parsAskUserQuestion(body);
+  }
+  // Unanchored: plan_review — same
+  if (body.includes("submitted a plan for review")) {
+    return parsePlanReview(body);
   }
   if (body.includes("Trigger escalated")) {
     return parseEscalateTrigger(body);

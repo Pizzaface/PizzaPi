@@ -422,7 +422,7 @@ export function registerViewerNamespace(io: SocketIOServer): void {
         // handler in the parent to forward the response.
         socket.on("trigger_response", async (data: any, ack?: (...args: any[]) => void) => {
             const { triggerId, response, action, targetSessionId } = data ?? {};
-            if (!triggerId || !response) return;
+            if (!triggerId || response == null) return;
 
             // Require collab mode — same gate as input/exec/model_set
             const currentSession = await getSharedSession(sessionId);
