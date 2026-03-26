@@ -18,13 +18,6 @@ export type {
   ServicePanelInfo,
   ServiceAnnounceData,
   TunnelInfo,
-  TunnelRequestData,
-  TunnelResponseData,
-  TunnelWsOpenData,
-  TunnelWsDataPayload,
-  TunnelWsCloseData,
-  TunnelWsErrorData,
-  TunnelWsOpenedData,
 } from "./shared.js";
 
 // Password validation (shared across server, UI, CLI)

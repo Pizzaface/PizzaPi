@@ -1,22 +1,14 @@
 /**
  * Tunnel HTTP proxy route — /api/tunnel/:sessionId/:port/*
  *
- * Translates an authenticated viewer's HTTP request into a tunnel_request
- * Socket.IO event sent to the runner daemon, then writes the tunnel_response
- * back as an HTTP response. WebSocket upgrades on this path are handled by
- * tunnel-ws.ts (WS-over-Socket.IO framing).
- *
- * Remaining limitations:
- *   - No streaming HTTP responses (body fully buffered, max 10 MB)
- *   - No SSE support
- *   - No CORS handling beyond header passthrough
- *   - Not suitable for large file downloads (>10 MB)
+ * Translates an authenticated viewer's HTTP request into a streamed relay
+ * request sent to the runner daemon, then writes the streamed response back as
+ * an HTTP response. WebSocket upgrades on this path are handled by tunnel-ws.ts.
  */
 
 import type { TunnelRelay } from "@pizzapi/tunnel";
 import { requireSession } from "../middleware.js";
 import { getTunnelRelay } from "../tunnel-relay.js";
-import { sendTunnelRequest } from "../ws/namespaces/runner.js";
 import { getSession } from "../ws/sio-state.js";
 import type { RouteHandler } from "./types.js";
 
@@ -564,65 +556,21 @@ export const handleTunnelRoute: RouteHandler = async (req, url) => {
     const requestId = `${sessionId}-${port}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
     const relay = getTunnelRelay();
-    if (relay?.hasRunner(runnerId)) {
-        return proxyTunnelRequestViaRelay(
-            req,
-            relay,
-            runnerId,
-            requestId,
-            sessionId,
-            port,
-            proxyPath,
-            pathWithQuery,
-            forwardHeaders,
-        );
+    if (!relay?.hasRunner(runnerId)) {
+        return tunnelErrorResponse(`Runner ${runnerId} not connected`);
     }
 
-    // ── Fallback: existing Socket.IO transport ───────────────────────────────
-    let bodyBase64: string | undefined;
-    if (req.body && method !== "GET" && method !== "HEAD") {
-        const bodyBuffer = await req.arrayBuffer();
-        if (bodyBuffer.byteLength > 0) {
-            bodyBase64 = Buffer.from(bodyBuffer).toString("base64");
-        }
-    }
-
-    let tunnelResponse;
-    try {
-        tunnelResponse = await sendTunnelRequest(runnerId, {
-            requestId,
-            port,
-            method,
-            path: pathWithQuery,
-            headers: forwardHeaders,
-            body: bodyBase64,
-        });
-    } catch (err) {
-        return tunnelErrorResponse(err instanceof Error ? err.message : String(err));
-    }
-
-    const responseHeaders = new Headers();
-    for (const [key, value] of Object.entries(tunnelResponse.headers)) {
-        try {
-            responseHeaders.set(key, value);
-        } catch {
-            // Skip headers that are invalid in the Headers API.
-        }
-    }
-
-    const responseBody = rewriteBufferedTunnelResponse(
-        Buffer.from(tunnelResponse.body, "base64"),
-        responseHeaders,
+    return proxyTunnelRequestViaRelay(
+        req,
+        relay,
+        runnerId,
+        requestId,
         sessionId,
         port,
         proxyPath,
+        pathWithQuery,
+        forwardHeaders,
     );
-    applyTunnelResponseHeaders(responseHeaders, sessionId, port);
-
-    return new Response(bufferToBodyInit(responseBody), {
-        status: tunnelResponse.status,
-        headers: responseHeaders,
-    });
 };
 
 export {

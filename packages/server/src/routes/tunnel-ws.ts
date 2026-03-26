@@ -109,7 +109,7 @@ async function handleUpgradeAsync(
 
     const relay = getTunnelRelay();
     if (!relay?.hasRunner(runnerId)) {
-        handleLegacyTunnelWsUpgrade(req, rawSocket, head);
+        rejectUpgrade(rawSocket, 503, "Runner not available");
         return;
     }
 
