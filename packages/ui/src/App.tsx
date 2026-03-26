@@ -63,6 +63,7 @@ import { FileExplorer, GitChangesView } from "@/components/FileExplorer";
 import { CombinedPanel, type CombinedPanelTab } from "@/components/CombinedPanel";
 import { DockedPanelGroup } from "@/components/DockedPanelGroup";
 import { ViewerSocketContext } from "@/lib/viewer-socket-context";
+import { HubSocketContext } from "@/lib/hub-socket-context";
 import { useRunnerServices, attachServiceAnnounceListener } from "@/hooks/useRunnerServices";
 import { ServicePanelButtons, useServicePanelState } from "@/components/service-panels/ServicePanels";
 import { SERVICE_PANELS } from "@/components/service-panels/registry";
@@ -407,6 +408,8 @@ export function App() {
   // Tracked as state so ViewerSocketContext consumers re-render when the socket changes.
   const [viewerSocket, setViewerSocket] = React.useState<Socket<ViewerServerToClientEvents, ViewerClientToServerEvents> | null>(null);
   const hubSocketRef = React.useRef<Socket<HubServerToClientEvents, HubClientToServerEvents> | null>(null);
+  // Tracked as state so HubSocketContext consumers re-render when the socket changes.
+  const [hubSocket, setHubSocket] = React.useState<Socket<HubServerToClientEvents, HubClientToServerEvents> | null>(null);
   const activeSessionRef = React.useRef<string | null>(null);
 
   // Cache last-known UI state per relay session so switching sessions feels instant.
@@ -2120,6 +2123,7 @@ export function App() {
   React.useEffect(() => {
     const socket = io("/hub", { withCredentials: true });
     hubSocketRef.current = socket;
+    setHubSocket(socket);
 
     const handleStateSnapshot = ({ sessionId, state }: { sessionId: string; state: SessionMetaState }) => {
       const currentSessionId = activeSessionRef.current;
@@ -2239,6 +2243,7 @@ export function App() {
       socket.off("connect", handleReconnect);
       socket.disconnect();
       hubSocketRef.current = null;
+      setHubSocket(null);
     };
   }, [applyMetaStateSnapshot, applyMetaPatch, applyMcpReport]);
 
@@ -3480,6 +3485,7 @@ export function App() {
   }
 
   return (
+    <HubSocketContext.Provider value={hubSocket}>
     <ViewerSocketContext.Provider value={viewerSocket}>
     <TooltipProvider delayDuration={0}>
     <div className="flex h-[100dvh] w-full flex-col overflow-hidden bg-background pp-safe-left pp-safe-right">
@@ -4161,5 +4167,6 @@ export function App() {
     </div>
     </TooltipProvider>
     </ViewerSocketContext.Provider>
+    </HubSocketContext.Provider>
   );
 }
