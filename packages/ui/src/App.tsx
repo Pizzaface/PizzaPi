@@ -808,10 +808,20 @@ export function App() {
       content: parts.join("\n"),
       isError: hasErrors,
     };
-    if (!messagesRef.current.some((m) => m.key?.startsWith(`mcp_startup:${reportTs}`))) {
-      const next = [...messagesRef.current, message];
-      setMessages(next);
-      patchSessionCache({ messages: next });
+    // Use a functional updater so this chains correctly with any preceding
+    // setMessages(prev => ...) call in the same React batch (e.g. the final
+    // snapshot chunk updater).  Reading messagesRef.current here would be
+    // stale because the ref is only synced after the React commit.
+    let mcpNext: RelayMessage[] | null = null;
+    setMessages((prev) => {
+      if (prev.some((m) => m.key?.startsWith(`mcp_startup:${reportTs}`))) {
+        return prev; // already appended — no change
+      }
+      mcpNext = [...prev, message];
+      return mcpNext;
+    });
+    if (mcpNext !== null) {
+      patchSessionCache({ messages: mcpNext });
     }
   }, [patchSessionCache]);
 

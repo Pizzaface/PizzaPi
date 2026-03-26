@@ -687,7 +687,7 @@ export const SessionSidebar = React.memo(function SessionSidebar({
             sessionId: string;
             isActive: boolean;
             lastHeartbeatAt: string | null;
-            model?: string | null;
+            model?: { provider: string; id: string; name?: string } | null;
             sessionName?: string | null;
             runnerId?: string | null;
             runnerName?: string | null;
