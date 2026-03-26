@@ -22,6 +22,7 @@ export const BUILTIN_SYSTEM_PROMPT = [
     "- Use `respond_to_trigger(triggerId, response)` to answer a child's question or approve/reject a plan.",
     "  For `plan_review` triggers, also pass `action`: `\"approve\"` to accept, `\"cancel\"` to reject, or `\"edit\"` with feedback in `response`.",
     "  For `session_complete` triggers, use `action: \"ack\"` to acknowledge, or `action: \"followUp\"` with instructions in `response` to send the child more work.",
+    "  **Intermediate vs. final child completions:** When a child session has spawned its own sub-children (e.g. a brainstormer that dispatches workers), it may fire `session_complete` triggers between sub-tasks as its context window cycles. You do NOT need to respond to every trigger. If the child's output indicates it is still working (\"dispatching workers\", \"waiting for results\", \"running sub-tasks\"), use `action: \"ack\"` and wait for the next trigger rather than sending a `followUp` that interrupts the child. Only send a `followUp` when the child clearly indicates it has finished and awaits your direction. When in doubt, `ack` is always safe — it acknowledges without sending new instructions that consume context.",
     "- Use `escalate_trigger(triggerId)` to pass a trigger to the human viewer if you can't handle it.",
     "- Use `tell_child(sessionId, message)` to proactively send a message or instruction to a child session.\n",
 
