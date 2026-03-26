@@ -193,12 +193,14 @@ export async function httpProxy(
         }
 
         const responseHeaders: Record<string, string> = {};
-        // Strip hop-by-hop and content-encoding from response headers.
-        // Since we forced accept-encoding: identity, any content-encoding value
-        // in the response is stale after Bun's transparent decompression.
+        // Strip hop-by-hop, content-encoding, and content-length from response headers.
+        // Since we forced accept-encoding: identity, any content-encoding value in the
+        // response is stale after Bun's transparent decompression.  content-length is
+        // also stripped because the relay consumer determines body size from the base64
+        // payload, and the original byte-length would be misleading.
         fetchResponse.headers.forEach((v, k) => {
             const lk = k.toLowerCase();
-            if (!HOP_BY_HOP.has(lk) && lk !== "content-encoding") {
+            if (!HOP_BY_HOP.has(lk) && lk !== "content-encoding" && lk !== "content-length") {
                 responseHeaders[k] = v;
             }
         });
@@ -228,6 +230,8 @@ export class TunnelService implements ServiceHandler {
     private socket: Socket | null = null;
     /** Active WebSocket tunnel connections: tunnelWsId → WebSocket */
     private wsConnections = new Map<string, WebSocket>();
+    /** Reverse index: tunnelWsId → port (for bulk-close on unexpose) */
+    private wsPortMap = new Map<string, number>();
 
     // ── Response cache (LRU via Map insertion-order) ──────────────────────
     private responseCache = new Map<string, CacheEntry>();
@@ -310,16 +314,18 @@ export class TunnelService implements ServiceHandler {
 
         // ── Server → Runner: tunnel_ws_close (viewer WS closed) ──────────────
         (socket as any).on("tunnel_ws_close", (data: TunnelWsCloseData) => {
+            if (isShuttingDown()) return;
             this.handleWsClose(data);
         });
     }
 
     dispose(): void {
         // Close all active WebSocket tunnel connections
-        for (const [id, ws] of this.wsConnections) {
+        for (const [, ws] of this.wsConnections) {
             try { ws.close(1001, "tunnel service disposed"); } catch { /* ignore */ }
         }
         this.wsConnections.clear();
+        this.wsPortMap.clear();
         this.tunnels.clear();
         this.responseCache.clear();
         this.socket = null;
@@ -396,6 +402,25 @@ export class TunnelService implements ServiceHandler {
 
         if (this.tunnels.delete(port)) {
             this.cacheInvalidatePort(port);
+
+            // Close all active WS connections proxying through this port.
+            // Collect IDs first to avoid mutating the Map during iteration.
+            const toClose: string[] = [];
+            for (const [tunnelWsId, wsPort] of this.wsPortMap) {
+                if (wsPort === port) toClose.push(tunnelWsId);
+            }
+            for (const tunnelWsId of toClose) {
+                const ws = this.wsConnections.get(tunnelWsId);
+                if (ws) {
+                    try { ws.close(1001, "tunnel unexposed"); } catch { /* ignore */ }
+                }
+                this.wsConnections.delete(tunnelWsId);
+                this.wsPortMap.delete(tunnelWsId);
+            }
+            if (toClose.length > 0) {
+                logInfo(`[tunnel] closed ${toClose.length} WS connection(s) for unexposed port ${port}`);
+            }
+
             logInfo(`[tunnel] unexposed port ${port}`);
             (this.socket as any).emit("service_message", {
                 serviceId: "tunnel",
@@ -524,10 +549,17 @@ export class TunnelService implements ServiceHandler {
         forwardHeaders["host"] = `127.0.0.1:${port}`;
 
         try {
-            const ws = new WebSocket(parsedUrl.toString(), protocols);
+            // Use Bun's extended WebSocket constructor to forward headers
+            // (e.g. Host override) to the local service.  The standard two-arg
+            // `new WebSocket(url, protocols)` form does not accept headers.
+            const ws = new (WebSocket as any)(parsedUrl.toString(), {
+                headers: forwardHeaders,
+                protocols,
+            }) as WebSocket;
 
-            // Store immediately so we can close on dispose
+            // Store immediately so we can close on dispose or unexpose
             this.wsConnections.set(tunnelWsId, ws);
+            this.wsPortMap.set(tunnelWsId, port);
 
             ws.binaryType = "arraybuffer";
 
@@ -554,6 +586,7 @@ export class TunnelService implements ServiceHandler {
 
             ws.addEventListener("close", (event: CloseEvent) => {
                 this.wsConnections.delete(tunnelWsId);
+                this.wsPortMap.delete(tunnelWsId);
                 if (!this.socket) return;
                 (this.socket as any).emit("tunnel_ws_close", {
                     tunnelWsId,
@@ -565,6 +598,7 @@ export class TunnelService implements ServiceHandler {
 
             ws.addEventListener("error", (_event: Event) => {
                 this.wsConnections.delete(tunnelWsId);
+                this.wsPortMap.delete(tunnelWsId);
                 if (!this.socket) return;
                 (this.socket as any).emit("tunnel_ws_error", {
                     tunnelWsId,
@@ -576,6 +610,7 @@ export class TunnelService implements ServiceHandler {
             const msg = err instanceof Error ? err.message : String(err);
             logError(`[tunnel] WS open error for port ${port}: ${msg}`);
             this.wsConnections.delete(tunnelWsId);
+            this.wsPortMap.delete(tunnelWsId);
             if (this.socket) {
                 (this.socket as any).emit("tunnel_ws_error", {
                     tunnelWsId,
@@ -608,6 +643,7 @@ export class TunnelService implements ServiceHandler {
         if (!ws) return;
 
         this.wsConnections.delete(tunnelWsId);
+        this.wsPortMap.delete(tunnelWsId);
         try {
             ws.close(code ?? 1000, reason ?? "");
         } catch { /* ignore — may already be closed */ }
