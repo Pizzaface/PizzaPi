@@ -30,13 +30,15 @@ function detectAxisDecision(dx: number, dy: number): AxisDecision {
 
 /**
  * Swipe-offset clamping — mirrors the clamped value computation in
- * handleSidebarPointerMove: `Math.min(8, dx)`.
+ * handleSidebarPointerMove: `Math.max(-288, Math.min(8, dx))`.
  *
  * Only leftward drags produce significant negative offsets; rightward motion
  * is limited to a small (8 px) overscroll to give tactile feedback.
+ * Leftward motion is bounded at -288 px (full sidebar width) to prevent
+ * runaway offsets from over-translation.
  */
 function clampSwipeOffset(dx: number): number {
-  return Math.min(8, dx);
+  return Math.max(-288, Math.min(8, dx));
 }
 
 /**
@@ -86,10 +88,18 @@ describe("detectAxisDecision", () => {
 // ── Swipe-offset clamping ────────────────────────────────────────────────────
 
 describe("clampSwipeOffset", () => {
-  test("passes leftward (negative) drag values through unchanged", () => {
+  test("passes leftward (negative) drag values through unchanged when within -288px bound", () => {
     expect(clampSwipeOffset(-10)).toBe(-10);
     expect(clampSwipeOffset(-80)).toBe(-80);
     expect(clampSwipeOffset(-200)).toBe(-200);
+    expect(clampSwipeOffset(-288)).toBe(-288); // boundary — exactly at limit
+  });
+
+  test("clamps leftward drag at -288px (full sidebar width) lower bound", () => {
+    expect(clampSwipeOffset(-289)).toBe(-288);
+    expect(clampSwipeOffset(-300)).toBe(-288);
+    expect(clampSwipeOffset(-500)).toBe(-288);
+    expect(clampSwipeOffset(-1000)).toBe(-288);
   });
 
   test("clamps rightward (positive) drag to 8px maximum", () => {

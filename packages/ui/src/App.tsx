@@ -3651,7 +3651,7 @@ export function App() {
                 </button>
               )}
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="center" className="w-72 max-h-[70vh] overflow-y-auto">
+            <DropdownMenuContent align="center" className="w-72 max-h-[70dvh] overflow-y-auto">
               <DropdownMenuLabel className="flex items-center justify-between">
                 <span>Sessions</span>
                 <span className={`inline-block h-1.5 w-1.5 rounded-full ${relayStatus === "connected" ? "bg-green-500 shadow-[0_0_4px_#22c55e80]" : relayStatus === "connecting" ? "bg-slate-400" : "bg-red-500"}`} />
@@ -3899,6 +3899,7 @@ export function App() {
             "pp-sidebar-overlay absolute inset-0 z-30 bg-black/50 md:hidden transition-opacity duration-300",
             sidebarOpen ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none",
           )}
+          style={{ touchAction: 'none' }}
           onPointerDown={sidebarOpen ? handleSidebarPointerDown : undefined}
           onPointerMove={sidebarOpen ? handleSidebarPointerMove : undefined}
           onPointerUp={sidebarOpen ? handleSidebarPointerUp : undefined}
@@ -4079,7 +4080,7 @@ export function App() {
             {mobilePanelTabs.length > 0 && (
               <div
                 className="md:hidden fixed inset-0 z-[60] flex flex-col bg-background pp-safe-left pp-safe-right"
-                style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
+                style={{ paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' }}
               >
                 <CombinedPanel
                   activeTabId={resolveActiveTabId(mobilePanelTabs)}
