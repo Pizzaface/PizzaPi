@@ -52,10 +52,14 @@ describe("viewer — ViewerServerToClientEvents payloads", () => {
     expect(full.replay).toBe(true);
   });
 
-  test("disconnected carries reason string", () => {
+  test("disconnected carries reason string with optional structured code", () => {
     type Payload = Parameters<ViewerServerToClientEvents["disconnected"]>[0];
     const p: Payload = { reason: "TUI disconnected" };
     expect(typeof p.reason).toBe("string");
+    expect(p.code).toBeUndefined();
+
+    const structured: Payload = { reason: "Session is no longer live (snapshot replay).", code: "snapshot_replay" };
+    expect(structured.code).toBe("snapshot_replay");
   });
 
   test("exec_result carries id, ok, and command", () => {

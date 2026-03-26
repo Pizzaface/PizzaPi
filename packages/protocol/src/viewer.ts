@@ -4,6 +4,8 @@
 
 import type { Attachment, ServiceAnnounceData, ServiceEnvelope } from "./shared.js";
 
+export type ViewerDisconnectCode = "snapshot_replay" | "session_ended" | "session_reconnected";
+
 // ---------------------------------------------------------------------------
 // Server → Client (Server sends to browser viewer)
 // ---------------------------------------------------------------------------
@@ -29,6 +31,7 @@ export interface ViewerServerToClientEvents {
   /** Notifies the viewer that the TUI disconnected */
   disconnected: (data: {
     reason: string;
+    code?: ViewerDisconnectCode;
   }) => void;
 
   /** Forwards an exec result back to the viewer */

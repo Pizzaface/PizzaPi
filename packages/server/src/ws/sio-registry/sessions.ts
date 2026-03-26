@@ -659,6 +659,16 @@ export async function sendSnapshotToViewer(sessionId: string, socket: Socket): P
     }
 }
 
+function viewerDisconnectPayload(reason: string): { reason: string; code?: "session_ended" | "session_reconnected" } {
+    if (reason === "Session reconnected") {
+        return { reason, code: "session_reconnected" };
+    }
+    if (reason === "Session ended") {
+        return { reason, code: "session_ended" };
+    }
+    return { reason };
+}
+
 /** End a shared session: notify viewers, clean up Redis, broadcast to hub. */
 export async function endSharedSession(sessionId: string, reason: string = "Session ended"): Promise<void> {
     const io = getIo();
@@ -667,18 +677,20 @@ export async function endSharedSession(sessionId: string, reason: string = "Sess
     const session = await getSession(sessionId);
     if (!session) return;
 
+    const disconnectPayload = viewerDisconnectPayload(reason);
+
     // Notify all viewers in the room and disconnect them
     try {
         io.of("/viewer")
             .to(viewerSessionRoom(sessionId))
-            .emit("disconnected", { reason });
+            .emit("disconnected", disconnectPayload);
     } catch (err) {
         log.warn("endSharedSession viewer notify failed, falling back to local:", (err as Error)?.message);
         try {
             io.of("/viewer")
                 .local
                 .to(viewerSessionRoom(sessionId))
-                .emit("disconnected", { reason });
+                .emit("disconnected", disconnectPayload);
         } catch {
             // Local delivery also failed.
         }

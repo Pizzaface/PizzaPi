@@ -45,7 +45,11 @@ export const sessionEventQueues = new Map<string, Promise<void>>();
 
 export function enqueueSessionEvent(sessionId: string, fn: () => Promise<void>): void {
     const prev = sessionEventQueues.get(sessionId) ?? Promise.resolve();
-    const next = prev.then(fn, fn); // always chain, even on prior rejection
+    const next = prev
+        .then(fn, fn) // always chain, even on prior rejection
+        .catch((error) => {
+            console.error(`[sio/relay] Session event pipeline failed for ${sessionId}:`, error);
+        });
     sessionEventQueues.set(sessionId, next);
     // Clean up the map entry when the chain settles to avoid unbounded growth.
     // Use .finally() so cleanup runs even if fn rejects (otherwise the map

@@ -64,6 +64,7 @@ import { CombinedPanel, type CombinedPanelTab } from "@/components/CombinedPanel
 import { DockedPanelGroup } from "@/components/DockedPanelGroup";
 import { ViewerSocketContext } from "@/lib/viewer-socket-context";
 import { HubSocketContext } from "@/lib/hub-socket-context";
+import { shouldStopViewerReconnect } from "@/lib/viewer-connection";
 import { useRunnerServices, attachServiceAnnounceListener } from "@/hooks/useRunnerServices";
 import { ServicePanelButtons, useServicePanelState } from "@/components/service-panels/ServicePanels";
 import { SERVICE_PANELS } from "@/components/service-panels/registry";
@@ -2512,6 +2513,13 @@ export function App() {
       setPendingQuestion(null);
       setPendingPlan(null);
       setIsChangingModel(false);
+
+      // Snapshot replay means the session is no longer live. If we leave the
+      // namespace socket active, socket.io-client keeps retrying forever,
+      // creating repeated /viewer reconnect churn for a dead session.
+      if (shouldStopViewerReconnect(data)) {
+        socket.disconnect();
+      }
     });
 
     socket.on("error", (data) => {
