@@ -3338,6 +3338,27 @@ export function App() {
     [feedRunners, activeSessionInfo?.runnerId],
   );
 
+  // Stable session ID for tunnel URLs — stays constant across same-runner
+  // session switches so iframe service panels don't reload. The tunnel proxy
+  // resolves sessionId → runnerId anyway, so any valid session on the same
+  // runner routes to the same localhost ports.
+  //
+  // If the cached session goes offline (ended/removed), we fall back to the
+  // current activeSessionId and update the cache.
+  const tunnelSessionMapRef = React.useRef<Map<string, string>>(new Map());
+  const tunnelSessionId = React.useMemo(() => {
+    if (!activeSessionId || !activeSessionInfo?.runnerId) return activeSessionId;
+    const runnerId = activeSessionInfo.runnerId;
+    const cached = tunnelSessionMapRef.current.get(runnerId);
+    if (cached) {
+      // Verify the cached session is still live — if it was ended, the
+      // tunnel proxy would 404. Fall through to adopt the current session.
+      if (liveSessions.some((s) => s.sessionId === cached)) return cached;
+    }
+    tunnelSessionMapRef.current.set(runnerId, activeSessionId);
+    return activeSessionId;
+  }, [activeSessionId, activeSessionInfo?.runnerId, liveSessions]);
+
   // Runner service panels — dynamically discovered
   const { services: availableServices, panels: dynamicPanels } = useRunnerServices(viewerSocket);
   const { activePanelIds: activeServicePanels, togglePanel: toggleServicePanel, closePanelById: closeServicePanelById, closeAllPanels: closeAllServicePanels, getPanelPosition: getServicePanelPosition, setPanelPosition: setServicePanelPosition } = useServicePanelState();
@@ -3410,7 +3431,12 @@ export function App() {
   } : null, [showGit, activeSessionInfo?.runnerId, activeSessionInfo?.cwd, startPanelDragWith, handleGitPositionChange]);
 
   const servicePanelTabs = React.useMemo<CombinedPanelTab[]>(() => {
-    if (activeServicePanels.size === 0 || !activeSessionId) return [];
+    // Use tunnelSessionId (runner-stable) instead of activeSessionId so
+    // iframe service panels don't reload on same-runner session switches.
+    // The tunnel proxy resolves sessionId → runnerId, so any valid session
+    // on the same runner reaches the same localhost ports.
+    const effectiveSessionId = tunnelSessionId ?? activeSessionId;
+    if (activeServicePanels.size === 0 || !effectiveSessionId) return [];
 
     const tabs: CombinedPanelTab[] = [];
     for (const serviceId of activeServicePanels) {
@@ -3422,8 +3448,8 @@ export function App() {
       const label = staticDef?.label ?? dynamicDef!.label;
       const icon = staticDef?.icon ?? <DynamicLucideIcon name={dynamicDef!.icon} />;
       const content = staticDef
-        ? <staticDef.component sessionId={activeSessionId} />
-        : <IframeServicePanel sessionId={activeSessionId} port={dynamicDef!.port} />;
+        ? <staticDef.component sessionId={effectiveSessionId} />
+        : <IframeServicePanel sessionId={effectiveSessionId} port={dynamicDef!.port} />;
 
       tabs.push({
         id: serviceId,
@@ -3435,7 +3461,7 @@ export function App() {
       });
     }
     return tabs;
-  }, [activeServicePanels, activeSessionId, dynamicPanels, startPanelDragWith, setServicePanelPosition, closeServicePanelById]);
+  }, [activeServicePanels, tunnelSessionId, activeSessionId, dynamicPanels, startPanelDragWith, setServicePanelPosition, closeServicePanelById]);
 
   const panelGroups = React.useMemo(() => {
     const groups: Record<"left" | "right" | "bottom", CombinedPanelTab[]> = { left: [], right: [], bottom: [] };
